@@ -48,6 +48,8 @@ import {
   readRepairContext,
   repairHistoryState,
   repairPaperPlan,
+  repairPaperScope,
+  repairPaperWanted,
   repairPlanIssues,
   requiredAnchorsOf,
   requiredUnlocksOf,
@@ -60,7 +62,7 @@ import { applyAssignmentMutations, type AssignmentWriteResult } from '../service
 import { assignmentSegments } from '../services/assignment-history';
 import { assertMachinistSelectable } from '../services/drivers';
 import { correctionFingerprint } from '../services/waybill-correction';
-import type { Esm2SheetPlan } from '../services/esm2-plan';
+import type { DateRangeSet, Esm2SheetPlan } from '../services/esm2-plan';
 import type { Esm2IssuePreparations } from '../services/waybill-esm2';
 // Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
 // провенансом (§10, Р32). Рукопожатие по листам (Б4) спрашивается тем же общим правилом.
@@ -382,9 +384,8 @@ export default async function vehicleRequestAssignmentRepairRoutes(
               effects: ctx.effects,
               operationId: ctx.operation?.id ?? null,
               sheetPlan: ctx.plan.paperPlan,
-              // Области у ремонта нет и по устройству двери: он чинит историю заявки целиком, а не
-              // диапазон дней, и `isPaperFree` (Р29) считается по тому же целому плану.
-              paperScope: [],
+              // The scope the plan was computed in: the days the command changes (ADR 0214).
+              paperScope: ctx.plan.paperScope,
               sheets: ctx.plan.context.sheets,
               displayNumbers: new Map(
                 ctx.plan.context.sheets.map((sheet) => [sheet.id, sheet.displayNumber]),
@@ -460,6 +461,11 @@ interface RepairComputed {
    * must name to re-issue (R11). It answers nothing else — see `planRepairCommand`.
    */
   probePlan: Esm2SheetPlan;
+  /**
+   * The paper scope both plans were computed in (§8, ADR 0214): what the preview names, the
+   * unlocks are counted over, and step 12 records in its sync event.
+   */
+  paperScope: DateRangeSet;
   paperFree: boolean;
   restoreRequired: boolean;
   unlockFingerprint: string | null;
@@ -556,13 +562,37 @@ async function planRepairCommand(
   // R27: the outcome is a comparison of sets, and a refusal here comes before any write.
   const stateAfter = repairHistoryState(blockersBefore, blockersAfter);
 
+  // The wanted sheets of both cuts go into the effects so that `paperScope` is the document
+  // closure of the command's days (§7), not its bare day ranges.
+  const wanted = repairPaperWanted(context, plan.changesAfter, term, asOf);
   const effects = assignmentCommandEffects({
     changes: context.changes,
     term,
     asOf,
     mutations: plan.effectMutations,
     sheets: context.sheets,
+    wanted,
   });
+  /*
+   * The paper scope: the documents of the days the command changes, widened by `restore` to the
+   * live part of the term (§8, ADR 0214 — see `repairPaperScope`). Without it the correction
+   * permit of a repair touching the past issued every past hole of the term with a known person.
+   *
+   * The inspection has no work and so no command scope; it keeps the whole-term plan it always
+   * showed — a hint for the window's first step, never executed (its fingerprint is refused by the
+   * command schema).
+   */
+  const paperScope: DateRangeSet | undefined =
+    body.mode === 'inspect'
+      ? undefined
+      : repairPaperScope({
+          commandScope: effects.paperScope,
+          restore,
+          mutable,
+          sheets: context.sheets,
+          wanted,
+          asOf,
+        });
 
   /*
    * Two paper plans, and they answer different questions (R11, R29).
@@ -578,25 +608,18 @@ async function planRepairCommand(
    * for the locked past looked paper-free. For an archived request that meant a fill went through
    * without `restore` and minted blanks for a request left in the archive (R29, ADR 0214).
    */
-  const probePlan = repairPaperPlan(
-    context,
-    plan.changesAfter,
-    term,
-    asOf,
-    undefined,
-    plan.distrustWaybillIds,
-  );
-  const unlocks = requiredUnlocksOf(context, probePlan, effects.paperScope);
+  const probePlan = repairPaperPlan(context, plan.changesAfter, term, asOf, {
+    ...(paperScope ? { scope: paperScope } : {}),
+    distrustWaybillIds: plan.distrustWaybillIds,
+  });
+  const unlocks = requiredUnlocksOf(context, probePlan, paperScope ?? effects.paperScope);
   const unlockFingerprint =
     unlocks.length === 0 ? null : correctionFingerprint(unlocks.map((sheet) => sheet.id).sort());
-  const paperPlan = repairPaperPlan(
-    context,
-    plan.changesAfter,
-    term,
-    asOf,
-    { waybillIds: unlocks.map((sheet) => sheet.id), correction: effects.needsCorrection },
-    plan.distrustWaybillIds,
-  );
+  const paperPlan = repairPaperPlan(context, plan.changesAfter, term, asOf, {
+    ...(paperScope ? { scope: paperScope } : {}),
+    unlock: { waybillIds: unlocks.map((sheet) => sheet.id), correction: effects.needsCorrection },
+    distrustWaybillIds: plan.distrustWaybillIds,
+  });
   const paperFree = isPaperFree(paperPlan);
   /*
    * R29: paper-free is decided by the computed plan, not by the archive flag. Soft deletion never
@@ -608,10 +631,9 @@ async function planRepairCommand(
   const restoreRequired = request.deletedAt !== null && !paperFree;
 
   /*
-   * Предупреждения и снимок бланка — шагом 6, вместе с планом и до первой записи (§7, Б4).
-   *
-   * Считаются по **исполняемому** плану, а не по пробному: пробный существует ради одного вопроса
-   * («paper-free ли ремонт») и разблокировок не знает, а подтверждает человек то, что выпишется.
+   * Warnings and the blank snapshot are computed at step 6, together with the plan and before any
+   * write (§7, B4) — by the EXECUTABLE plan: the probe knows no unlocks, and a person confirms
+   * what will be printed.
    */
   const planIssues = await repairPlanIssues(ctx.tx, {
     requestId: request.id,
@@ -627,6 +649,7 @@ async function planRepairCommand(
     blockersBefore,
     paperPlan,
     probePlan,
+    paperScope: paperScope ?? effects.paperScope,
     paperFree,
     restoreRequired,
     unlockFingerprint,
@@ -679,6 +702,7 @@ async function planRepairCommand(
       },
       unlockFingerprint,
       restore,
+      paperScope: computed.paperScope,
     }),
     plan: { ...plan, ...computed },
   };
@@ -858,7 +882,7 @@ function previewDto(
     blockedShiftDays: [],
     clearedShiftDays: [],
     clearedShiftsFingerprint: null,
-    requiredUnlocks: requiredUnlocksOf(plan.context, plan.probePlan, effects.paperScope).map(
+    requiredUnlocks: requiredUnlocksOf(plan.context, plan.probePlan, plan.paperScope).map(
       (sheet) => ({
         waybillId: sheet.id,
         displayNumber: sheet.displayNumber,

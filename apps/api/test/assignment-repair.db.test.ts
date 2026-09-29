@@ -2041,6 +2041,15 @@ describeReadModes(readMode, 'бумага починенной истории (�
     expect((await requestState(scene.requestId)).state).toBe('materialized');
 
     const after = await sheetsOf(scene.requestId);
+    /*
+     * The documents the command touches are those its days reach — the anchor's range runs from
+     * the prior Monday to today — closed over whole sheets (§7). A sheet lying wholly on the
+     * other blocker's days (from tomorrow, the machinist cleared) is outside the paper scope and
+     * is left alone (§8, ADR 0214).
+     */
+    const touched = before.filter((sheet) => sheet.period_from <= TODAY);
+    const untouched = before.filter((sheet) => sheet.period_from > TODAY);
+    expect(untouched.length).toBeGreaterThan(0);
     const expected = byReadMode(mode, {
       // Бумага не тронута: недельная сверка эту работу не делает, и делать вид, что сделала, нечем.
       legacy: {
@@ -2054,9 +2063,13 @@ describeReadModes(readMode, 'бумага починенной истории (�
       /*
        * А здесь видно, чем отрезок отличается от недели. Текущая неделя перестала быть единицей:
        * машинист известен по сегодня включительно, и лист выписан ровно на эти дни — от
-       * понедельника до сегодня. Дни со снятым машинистом (с завтра и до конца срока) остаются без
-       * бумаги вовсе, и лист следующей недели сгорает без замены: истории, которая назвала бы его
-       * человека, нет.
+       * понедельника до сегодня. Остаток текущего листа со снятым машинистом (с завтра до
+       * воскресенья) остаётся без бумаги: этот лист команда гасит, потому что её дни его задевают.
+       *
+       * Лист следующей недели лежит целиком на днях второго блокера, которого команда не чинила, и
+       * остаётся на месте (§8: вне области не трогать ничего). До ADR 0214 он сгорал без замены —
+       * план ремонта шёл по всему сроку, и частичный ремонт заодно жёг бумагу чужого блокера,
+       * которую человек в предпросмотре не выбирал. Решит его ремонт второго блокера.
        *
        * ПОЧЕМУ СОСТАВ СЧИТАЕТСЯ, А НЕ ПИШЕТСЯ ДВУМЯ СТРОКАМИ. Предмет случая — **границы отрезка**:
        * бумага начинается там же, где починенная история (`PREV_MONDAY`), и обрывается последним
@@ -2069,12 +2082,16 @@ describeReadModes(readMode, 'бумага починенной истории (�
        * Перебором по трёхлетию таких дней 317 из 1095 — почти каждый третий.
        */
       history: {
-        composition: esm2Periods(PREV_MONDAY, TODAY).map(
-          (period) => `${period.from}|${period.to}|${ctx.ownVehicle.id}|${ctx.personB}`,
-        ),
-        burned: before.map((sheet) => sheet.id).sort(),
+        composition: [
+          ...esm2Periods(PREV_MONDAY, TODAY).map(
+            (period) => `${period.from}|${period.to}|${ctx.ownVehicle.id}|${ctx.personB}`,
+          ),
+          ...compositionOf(untouched),
+        ],
+        burned: touched.map((sheet) => sheet.id).sort(),
         events: 1,
-        paperBeyondToday: false,
+        // The next week's blank of the other blocker is still live — see above.
+        paperBeyondToday: true,
       },
     });
     expect(compositionOf(after)).toEqual(expected.composition);
@@ -2082,12 +2099,19 @@ describeReadModes(readMode, 'бумага починенной истории (�
     expect(await esm2EventsOf(scene.requestId)).toHaveLength(expected.events);
 
     /*
-     * И отдельно — то, ради чего случай и написан: в боевом режиме за починенным участком не
-     * остаётся ни одного действующего листа, и заявка живёт с этим дальше — без отката, без
-     * отказа и без выдуманного машиниста на завтра.
+     * И отдельно — то, ради чего случай и написан: в боевом режиме у починенного участка нет
+     * листа дальше сегодняшнего дня, и заявка живёт с этим дальше — без отката, без отказа и без
+     * выдуманного машиниста на завтра. Лист чужого блокера на следующей неделе — не его бумага.
      */
     const live = after.filter((sheet) => sheet.status !== 'cancelled');
     expect(live.some((sheet) => sheet.period_to >= TOMORROW)).toBe(expected.paperBeyondToday);
+    if (mode === 'history') {
+      const repaired = live.filter((sheet) => sheet.driver_person_id === ctx.personB);
+      expect(repaired.every((sheet) => sheet.period_to <= TODAY)).toBe(true);
+      expect(live.filter((sheet) => sheet.period_from > TODAY).map((sheet) => sheet.id)).toEqual(
+        untouched.map((sheet) => sheet.id),
+      );
+    }
   });
   it('линейный заказ: ремонт истории не трогает бланк, выписанный по просьбе', async () => {
     if (!DB_URL) return;
@@ -2449,6 +2473,132 @@ describeReadModes(
       // The event names the burned blanks by their printed numbers, one per minted sheet.
       expect(new Set(events[1]!.metadata.cancelled).size).toBe(mintedIds.length);
       expect(events[1]!.metadata.issued).toEqual([]);
+    });
+
+    /*
+     * The paper scope of a repair (§8, §13 "a hole … is not filled on the side", ADR 0214). The
+     * scene holds a stretch of known history with no paper at all — B from the fourth week of the
+     * term — next to the unknown head the command works on. A repair touching the past carries the
+     * correction permit, and before the scope that permit was global: the fill of the first week
+     * planned blanks for B's weeks as well, and `history` executed them.
+     */
+    const holeHistory = (): NonNullable<SceneOptions['history']> => [
+      { effectiveDate: DEEP_FROM, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
+      { effectiveDate: DEEP_FROM, dimension: 'driver', driverState: 'unknown' },
+      {
+        effectiveDate: shiftDateKey(DEEP_FROM, 21),
+        dimension: 'driver',
+        driverState: 'set',
+        driverPersonId: ctx.personB,
+        origin: 'machinist_change',
+      },
+    ];
+
+    it('заполнение и его отмена не трогают чужую прошлую дыру без бумаги (§13)', async () => {
+      if (!DB_URL) return;
+      const scene = await makeScene({
+        dateFrom: DEEP_FROM,
+        dateTo: GAP_TO,
+        history: holeHistory(),
+      });
+      const weekEnd = shiftDateKey(DEEP_FROM, 6);
+      const body = {
+        mode: 'repair',
+        version: 0,
+        knownFills: [{ from: DEEP_FROM, to: weekEnd, personId: ctx.personA }],
+        operation: operation('Табель первой недели'),
+      };
+      const preview = await previewRepair(ctx.admin, scene.requestId, body);
+      expect(preview.statusCode, preview.body).toBe(200);
+      const dto = preview.json<RepairPreview>();
+      // Only the filled days — none of B's weeks, which the command does not touch.
+      expect(planIssueOf(dto)).toEqual(
+        periodsOf(DEEP_FROM, weekEnd, ctx.ownVehicle.id, ctx.personA),
+      );
+      expect(dto.plan.cancel).toEqual([]);
+
+      const filled = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+      expect(filled.statusCode, filled.body).toBe(200);
+      const minted = compositionOf(await sheetsOf(scene.requestId));
+      expect(minted).toEqual(
+        byReadMode(mode, {
+          legacy: [] as string[],
+          history: periodsOf(DEEP_FROM, weekEnd, ctx.ownVehicle.id, ctx.personA),
+        }),
+      );
+
+      // The cancel burns what the fill minted and nothing else; B's weeks stay without paper.
+      const group = actual(await rowsOf(scene.requestId)).find(
+        (row) => row.origin === 'known_fill',
+      )!.change_group_id;
+      const cancel = {
+        mode: 'cancel_fill',
+        version: filled.json<{ version: number }>().version,
+        target: { changeGroupId: group },
+        operation: operation('Табель оказался чужим'),
+      };
+      const cancelDto = (
+        await previewRepair(ctx.admin, scene.requestId, cancel)
+      ).json<RepairPreview>();
+      expect(cancelDto.plan.issue).toEqual([]);
+      expect(cancelDto.plan.cancel).toHaveLength(minted.length);
+      const cancelled = await postRepair(ctx.admin, scene.requestId, {
+        ...cancel,
+        ...handshakeOf(cancelDto),
+      });
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      const after = await sheetsOf(scene.requestId);
+      expect(compositionOf(after)).toEqual([]);
+      expect(after).toHaveLength(minted.length);
+    });
+
+    it('якорь-коррекция выписывает свои дни, а чужую прошлую дыру — нет (§13)', async () => {
+      if (!DB_URL) return;
+      /*
+       * B is known from the term start with no paper, the history turns unknown on the fourth
+       * week and runs into mutable days: the anchor goes on that start, in the locked past, so it
+       * is a crew correction with the permit for the past — and its paper must stop where its days
+       * do.
+       */
+      const turn = shiftDateKey(DEEP_FROM, 21);
+      const scene = await makeScene({
+        dateFrom: DEEP_FROM,
+        dateTo: TERM_TO,
+        history: [
+          { effectiveDate: DEEP_FROM, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
+          {
+            effectiveDate: DEEP_FROM,
+            dimension: 'driver',
+            driverState: 'set',
+            driverPersonId: ctx.personB,
+            origin: 'machinist_change',
+          },
+          { effectiveDate: turn, dimension: 'driver', driverState: 'unknown' },
+        ],
+      });
+      const seen = (await inspectRepair(ctx.admin, scene.requestId)).json<RepairPreview>();
+      expect(seen.requiredAnchors.map((anchor) => anchor.effectiveDate)).toEqual([turn]);
+
+      const body = {
+        mode: 'repair',
+        version: 0,
+        anchors: [{ effectiveDate: turn, driverPersonId: ctx.personA }],
+        operation: operation('С четвёртой недели работал Машинистов'),
+      };
+      const preview = await previewRepair(ctx.admin, scene.requestId, body);
+      expect(preview.statusCode, preview.body).toBe(200);
+      const dto = preview.json<RepairPreview>();
+      expect(dto.operationRequirement).toMatchObject({ kind: 'crew' });
+      expect(planIssueOf(dto)).toEqual(periodsOf(turn, TERM_TO, ctx.ownVehicle.id, ctx.personA));
+
+      const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(compositionOf(await sheetsOf(scene.requestId))).toEqual(
+        byReadMode(mode, {
+          legacy: [] as string[],
+          history: periodsOf(turn, TERM_TO, ctx.ownVehicle.id, ctx.personA),
+        }),
+      );
     });
 
     it('заполнение поверх отработанного листа с другим человеком — 422 с номером листа (Ф1)', async () => {
@@ -2955,6 +3105,55 @@ describeReadModes(readMode, 'ремонт архивной заявки прот
     expect(compositionOf(after)).toEqual(expected.composition);
     expect(burnedOf(after)).toEqual(expected.burned);
     expect(await esm2EventsOf(scene.requestId)).toHaveLength(expected.events);
+  });
+
+  it('restore с решением хвоста сверяет живую часть срока, а прошлую дыру не трогает (Р29, §8)', async () => {
+    if (!DB_URL) return;
+    /*
+     * The tail decision is dormant: its own scope is empty. Restore still owes the request a
+     * post-restore sync (R29), so its scope takes in the live part of the term — the current week
+     * whole and what follows, as ordinary work would — and no more: the prior week, known and
+     * paperless, is a past hole and stays one (§13, ADR 0214).
+     */
+    const scene = await makeScene({
+      dateFrom: PREV_MONDAY,
+      dateTo: PAPER_TO,
+      assignment: ctx.ownVehicleB,
+      history: [
+        { effectiveDate: PREV_MONDAY, dimension: 'vehicle', vehicleId: ctx.ownVehicle.id },
+        {
+          effectiveDate: PREV_MONDAY,
+          dimension: 'driver',
+          driverState: 'set',
+          driverPersonId: ctx.personA,
+          origin: 'machinist_change',
+        },
+      ],
+      state: 'ready',
+      archived: true,
+    });
+    const body = {
+      mode: 'repair',
+      version: 0,
+      tailResolution: { kind: 'assignment_wins' },
+      restore: true,
+      operation: operation('Вернули заявку: дальше машина назначения'),
+    };
+    const preview = await previewRepair(ctx.admin, scene.requestId, body);
+    expect(preview.statusCode, preview.body).toBe(200);
+    const dto = preview.json<RepairPreview>();
+    const live = esm2Periods(PREV_MONDAY, PAPER_TO)
+      .filter((period) => period.to >= TODAY)
+      .map((period) => `${period.from}|${period.to}|${ctx.ownVehicle.id}|${ctx.personA}`);
+    expect(live.length).toBeGreaterThan(0);
+    expect(planIssueOf(dto)).toEqual(live);
+
+    const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((await requestState(scene.requestId)).deleted_at).toBeNull();
+    expect(compositionOf(await sheetsOf(scene.requestId))).toEqual(
+      byReadMode(mode, { legacy: [] as string[], history: live }),
+    );
   });
 
   it('заполнение архивной заявки — только с восстановлением: без restore 422 и ничего не записано (Р29)', async () => {

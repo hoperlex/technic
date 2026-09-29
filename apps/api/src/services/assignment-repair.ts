@@ -9,6 +9,7 @@ import {
   type AssignmentPlanIssueDto,
   type DriverState,
   type Esm2Mode,
+  type Esm2Period,
   type KnownFill,
   type MachinistAnchor,
   type RequiredAnchor,
@@ -51,6 +52,7 @@ import {
   type AssignmentWriteMutation,
 } from './assignment-write';
 import {
+  documentClosure,
   esm2PaperSegments,
   esm2RequestedSheetPlan,
   esm2SheetPlan,
@@ -1499,44 +1501,16 @@ function setGroup(map: Map<string, string>, key: string, value: string): string 
   return value;
 }
 
-// ── План бумаги (Р29) ──
+// ── Paper plan (R29) ──
 
-/**
- * План листов для **гипотетического `deleted_at = null`** и по реально существующим листам.
- *
- * Мягкое удаление сверку не зовёт, поэтому листы, выписанные до архивирования, остаются
- * действующими, и «в архиве `esm2Mode` = none» ничего не говорит о бумаге. Без этого расчёта
- * ремонт архивной заявки правил бы историю «бесплатно», restore снимал бы архив — и живая заявка
- * расходилась бы с действующим бланком, причём сверки могло не случиться ещё месяц.
- *
- * ВЕТКА ВЫБИРАЕТСЯ РЕЖИМОМ — тем же выбором, каким её выбирают сокращение срока
- * ([assignment-shorten-term.ts](assignment-shorten-term.ts)) и теневое сличение
- * ([assignment-shadow.ts](assignment-shadow.ts)), и по той же причине: «сколько бумаги нужно
- * заказу» у режимов спрашивается из разных мест, а «что делать с выданным листом» у них общее.
- *
- * Ветки `on_demand` здесь не было, и это была третья дверь того же класса (раздел 7 плана
- * `docs/vehicle-request-actual-end-date-plan.md`). Последствие у неё хуже, чем у двух прежних, и
- * вот почему. У линейного заказа машиниста не называют на заявке вовсе — его называют на каждый
- * лист отдельно (ADR 0100 §6), — и бэкфилл честно оставляет ему **одну** строку истории: машину с
- * начала срока и ни слова о человеке ([assignment-ensure.ts](assignment-ensure.ts), правило 1). А
- * отрезок без человека бумаги не ожидает (`wantedSheets`): ожиданий не оставалось ни на один день,
- * и план получался «погасить всё выписанное». То есть **сжечь номера строгой отчётности** за
- * недели, которые человек просил сам, — и не выписать взамен ничего, потому что выписывать не на
- * кого. Доходило это до бумаги при `read_mode = history`: шаг 12 двери исполняет ровно тот план,
- * который здесь посчитан.
- *
- * Ветвей две, а не три, и `none` среди них нет намеренно: у этой двери его не бывает по
- * построению — режим ей считается с гипотетическим `deleted_at = null`
- * ({@link readRepairPaperMode}), а прочие `none` (грузоперевозка, аренда, заявка не в работе)
- * попадают в ту же ветку разреза, в какой были и до починки. Заведи мы им пустой план, ремонт
- * архивной заявки снова стал бы «бесплатным» — тот самый Р29, ради которого архив здесь и
- * снимается.
- */
-export function repairPaperPlan(
-  context: RepairContext,
-  changesAfter: readonly AssignmentChangeRecord[],
-  term: AssignmentTerm,
-  asOf: string,
+/** What a repair paper plan is computed with, beyond the history it plans for. */
+export interface RepairPaperPlanOptions {
+  /**
+   * The paper scope (R11, §8): outside it nothing is issued or burned, even where the plan sees a
+   * mismatch. Absent — the whole term; only the inspection, which has no work, plans that way.
+   * Every command passes {@link repairPaperScope}, see there why.
+   */
+  scope?: DateRangeSet;
   /**
    * The keys that lift the protection of the past (R11, R21). They only work together: unlocking
    * a worked-out sheet without permitting an ended segment would burn a number and issue nothing
@@ -1548,7 +1522,7 @@ export function repairPaperPlan(
    * whether a repair is paper-free is wrong: it cannot issue an ended day, so a fill of the locked
    * past looked paper-free while its executable plan minted blanks (ADR 0214).
    */
-  unlock?: { waybillIds: readonly string[]; correction: boolean },
+  unlock?: { waybillIds: readonly string[]; correction: boolean };
   /**
    * Sheets the plan may neither keep nor trim — the blanks of a fill being cancelled
    * ({@link RepairPlan.distrustWaybillIds}). Both plans get them: the probe so that its `locked`
@@ -1558,11 +1532,50 @@ export function repairPaperPlan(
    * blanks (ADR 0100 §5), so a distrusted blank there would burn and come back as its own twin; a
    * fill mints nothing for it in the first place, its paper coming only from the requester.
    */
-  distrustWaybillIds: readonly string[] = [],
+  distrustWaybillIds?: readonly string[];
+}
+
+/**
+ * The sheet plan for a **hypothetical `deleted_at = null`**, against the sheets that really exist.
+ *
+ * Soft deletion never calls the sync, so blanks issued before archiving stay live, and "archived
+ * means `esm2Mode` = none" says nothing about paper. Without this computation a repair of an
+ * archived request would edit history "for free", a restore would lift the archive — and the live
+ * request would contradict a live blank, possibly for a month before any sync ran.
+ *
+ * THE BRANCH IS CHOSEN BY THE MODE — the same choice the term shortening
+ * ([assignment-shorten-term.ts](assignment-shorten-term.ts)) and the shadow comparison
+ * ([assignment-shadow.ts](assignment-shadow.ts)) make, for the same reason: "how much paper the
+ * request needs" is asked of each mode differently, while "what to do with an issued sheet" is
+ * shared.
+ *
+ * The `on_demand` branch was missing here once, and that was the third door of the same class
+ * (section 7 of `docs/vehicle-request-actual-end-date-plan.md`) with the worst consequence. A
+ * linear request names no machinist on the request at all — it names one per sheet (ADR 0100 §6)
+ * — and the backfill honestly leaves it ONE history row: the vehicle from the term start and not a
+ * word about the person ([assignment-ensure.ts](assignment-ensure.ts), rule 1). A segment without
+ * a person expects no paper (`wantedSheets`), no day expected any, and the plan came out as "burn
+ * everything issued": strict reporting numbers for weeks the person had asked for himself, with
+ * nothing issued instead. Under `read_mode = history` step 12 executes exactly this plan.
+ *
+ * Two branches, not three, and `none` is deliberately not among them: this door never has it —
+ * its mode is computed with the hypothetical `deleted_at = null` ({@link readRepairPaperMode}),
+ * and other `none` cases (freight, rental, not in work) fall into the same cut branch they fell
+ * into before. An empty plan for them would make an archived repair "free" again — the very R29
+ * this computation lifts the archive for.
+ */
+export function repairPaperPlan(
+  context: RepairContext,
+  changesAfter: readonly AssignmentChangeRecord[],
+  term: AssignmentTerm,
+  asOf: string,
+  options: RepairPaperPlanOptions = {},
 ): Esm2SheetPlan {
+  const { scope, unlock, distrustWaybillIds = [] } = options;
   const planContext = {
     ownershipByVehicle: context.ownershipByVehicle,
     today: asOf,
+    ...(scope ? { scope } : {}),
     ...(unlock ? { unlockWaybillIds: unlock.waybillIds } : {}),
     ...(unlock?.correction ? { correction: { allowed: true as const } } : {}),
   };
@@ -1572,6 +1585,65 @@ export function repairPaperPlan(
         ...planContext,
         distrustWaybillIds,
       });
+}
+
+/**
+ * The wanted sheets before and after the command — the second input of the document closure
+ * (§7): a replacement is counted by both cuts, otherwise the scope would miss the segment the
+ * command abolishes. Taken from {@link repairPaperPlan} itself, so an `on_demand` request gets
+ * its wanted sheets from its blanks exactly as its plan does.
+ */
+export function repairPaperWanted(
+  context: RepairContext,
+  changesAfter: readonly AssignmentChangeRecord[],
+  term: AssignmentTerm,
+  asOf: string,
+): Esm2Period[] {
+  return [
+    ...repairPaperPlan(context, context.changes, term, asOf).wanted,
+    ...repairPaperPlan(context, changesAfter, term, asOf).wanted,
+  ];
+}
+
+/**
+ * The paper scope of a repair command: the documents of the days the command really changes
+ * (§8: "команда истории, ремонт — `documentClosure(paperRange)`"; ADR 0214).
+ *
+ * WHY A SCOPE AT ALL. The executable plan of a repair touching the past carries the correction
+ * permit, and without a scope that permit is global: it issues every ended segment of the term
+ * that has a known person and no blank. A fill of one January week used to mint blanks for a March
+ * stretch nobody had named in the command — the "past hole filled on the side" §13 forbids ("дыра…
+ * не заполняется попутно"), and with `read_mode = history` step 12 executed it. The command's own
+ * days — anchors, fills, the cancelled fill, the tail decision — are exactly `effects.paperScope`:
+ * the day ranges of its mutations, closed over the documents they touch.
+ *
+ * `restore: true` widens it, and only toward the live part. §8 gives restore "the full
+ * post-restore plan": a restored request must converge where ordinary work goes on, and the
+ * restore of a dormant tail decision has an empty command scope, yet its sync still has to run
+ * (R29). So the scope adds what an ordinary sync would reach — the mutable days (cancellable
+ * blanks and today onward) and every wanted sheet not yet ended, the current week whole — closed
+ * the same way. The past outside the command stays out even then: taking all live sheets in would
+ * demand an unlock of every worked-out blank of the request, and the correction permit would mint
+ * the old holes again.
+ */
+export function repairPaperScope(params: {
+  /** `effects.paperScope` of the command — the closure of its day ranges. */
+  commandScope: DateRangeSet;
+  restore: boolean;
+  mutable: DateRangeSet;
+  sheets: readonly RepairSheet[];
+  wanted: readonly Esm2Period[];
+  asOf: string;
+}): DateRangeSet {
+  if (!params.restore) return params.commandScope;
+  const live = params.wanted
+    .filter((want) => want.to >= params.asOf)
+    .map((want) => ({ from: want.from, to: want.to }));
+  return documentClosure(
+    [...params.commandScope, ...params.mutable, ...live],
+    params.sheets,
+    params.wanted,
+  );
 }
 
 /**
