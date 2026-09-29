@@ -486,6 +486,51 @@ export function introducedBlockers(
   return out.sort((a, b) => (factKey(a) < factKey(b) ? -1 : 1));
 }
 
+/**
+ * A command of fills only must leave the blockers of mutable days exactly as it found them
+ * (C4, ADR 0214).
+ *
+ * A fill addresses LOCKED days only; mutable days are repaired by anchors, and there is no second
+ * way to name a person there (C4). So a fill-only command that changes the blocker set in any
+ * direction has done something it has no right to: removing a blocker means the person it named
+ * leaked into mutable days (the defect this guard backs up), adding one means it opened a hole.
+ * R27 alone would not catch the leak — it refuses only INTRODUCED blockers, and a vanished one
+ * reads to it as a successful partial repair.
+ *
+ * This is a backstop behind {@link fillNeedsRemainder}, not the rule itself: with the remainder
+ * measured by the `unknown` segment the sets already coincide, and a refusal here means the fold
+ * met rows it did not expect. Commands with anchors or a tail decision are not fill-only and are
+ * judged by R27 as before.
+ */
+export function assertFillsKeepMutableBlockers(
+  body: RepairPlanInput['body'] | { mode: 'inspect' },
+  before: readonly AssignmentBlockerFact[],
+  after: readonly AssignmentBlockerFact[],
+): void {
+  if (body.mode !== 'repair') return;
+  if (!body.knownFills?.length || body.anchors?.length || body.tailResolution) return;
+  if (blockerFingerprintOf(before) === blockerFingerprintOf(after)) return;
+  const changed = normalizeRangeSet(
+    [...introducedBlockers(before, after), ...introducedBlockers(after, before)].map((fact) => ({
+      from: fact.date,
+      to: fact.date,
+    })),
+  );
+  throw new AppError(
+    422,
+    'known_fill_touches_mutable_days',
+    'Заполнение прошлого изменило бы машиниста в днях, которые ещё правятся обычным путём: ' +
+      changed
+        .slice(0, 3)
+        .map((range) => (range.from === range.to ? range.from : `${range.from} — ${range.to}`))
+        .join(', ') +
+      (changed.length > 3 ? ` и ещё ${changed.length - 3}` : '') +
+      '. Заполните только отработанные дни, а машиниста на эти дни назовите отдельной операцией',
+    { knownFills: 'Заполнение задевает изменяемые дни' },
+    { changed },
+  );
+}
+
 /** Дни блокеров интервалами — проекция для карточки и отчёта, а не единица сравнения. */
 export function blockedDaysOf(facts: readonly AssignmentBlockerFact[]): DateRangeSet {
   return normalizeRangeSet(facts.map((fact) => ({ from: fact.date, to: fact.date })));
@@ -806,14 +851,27 @@ function planAnchors(
     const existing = actualOn(context.changes, 'driver', anchor.effectiveDate);
     const value: DriverState = { state: 'set', personId: anchor.driverPersonId };
     if (existing) {
-      // Правка принятого решения: строка на этой дате уже есть (`unknown` бэкфилла), и якорь её
-      // **заменяет**. Группу замена наследует — она правит решение, а не заводит своё.
+      /*
+       * A row already stands on this date (a backfill `unknown`, or the remainder of a fill), and
+       * the anchor REPLACES it. A replacement normally inherits the group: it edits a decision
+       * rather than starting one.
+       *
+       * The exception is a fill's remainder. Since a fill that reaches the end of the locked days
+       * puts its remainder on the first mutable day, that is exactly where the next anchor lands
+       * ("two operations", ADR 0214). Inheriting would add a `machinist_change` row to the fill
+       * group, which then no longer matches Yu2 ("one `known_fill` plus at most one
+       * `unknown_remainder`"): the fill could not be cancelled any more, and a plain cancel of the
+       * group would take the fill along with the anchor. So the anchor starts its own group there.
+       */
       plan.writeMutations.push({
         kind: 'replace',
         // Логический ключ у строки, восстановленной расчётом (Р10): `id` она получит на шаге 11 —
         // раньше этой замены, но позже расчёта, который её называет.
         target: assignmentChangeTargetOf(existing),
         origin: 'machinist_change',
+        ...(existing.origin === 'unknown_remainder'
+          ? { group: `anchor-${anchor.effectiveDate}` }
+          : {}),
         value: { dimension: 'driver', driver: value },
       });
       plan.effectMutations.push({ kind: 'replace', changeId: existing.id });
@@ -843,28 +901,28 @@ function planAnchors(
 // ── Заполнение `unknown` (Ф1, Щ1, Э1) ──
 
 /**
- * Заполнение отрезка известным человеком.
+ * A fill of a stretch of `unknown` with a known person.
  *
- * Строк у заполнения две: `set` на `from` и граница `unknown` на `to + 1`, обе одной группой (Щ1).
- * Вторая пишется только тогда, когда за отрезком остаётся неизвестное: заполнили до конца
- * промежутка — там уже стоит следующее изменение, и вторая граница была бы мусором.
+ * A fill has two rows: `set` on `from` and an `unknown` boundary on `to + 1`, both in one group
+ * (Shch1). The second is written whenever the driver scale stays unknown past the stretch — see
+ * {@link fillNeedsRemainder}: it is measured by the `unknown` SEGMENT, not by the fill address.
  *
- * ЗАПОЛНЕНИЕ НОРМАЛИЗУЕТ ОТРЕЗОК (Э1): все актуальные `unknown`-строки внутри `(from, to]` гаснут,
- * откуда бы они ни взялись. Без этого цикл «заполнил середину → отменил → заполнил заново, начиная
- * раньше» дал бы свёртку, где новый `set` перебит оставшейся границей: человек виден по 31 января
- * вместо 31 марта, и молча.
+ * A FILL NORMALIZES ITS STRETCH (E1): every actual `unknown` row inside `(from, to]` is cancelled,
+ * wherever it came from. Without it the cycle "fill the middle → cancel → fill again starting
+ * earlier" would leave a fold where the new `set` is cut short by a leftover boundary: the person
+ * visible until 31 January instead of 31 March, silently.
  *
- * ГРУППА У ЗАПОЛНЕНИЯ ВСЕГДА СВОЯ, И ЗАМЕНА ЕЁ НЕ НАСЛЕДУЕТ. Ю2 описывает отменяемую группу как
- * «ровно одна актуальная `known_fill` плюс не более одной `unknown_remainder`», а группа бэкфилла
- * этому описанию не отвечает — в ней лежит ещё и vehicle-строка перехода принадлежности. Поэтому
- * `set`, встающий на дату существующей строки, **заменяет** её (Щ2) и уходит в собственную группу,
- * названную ключом команды: замена правит чужое решение, но начинает своё. Спутник — граница
- * `unknown_remainder` — называет тот же ключ и ложится рядом.
+ * A FILL ALWAYS HAS ITS OWN GROUP AND A REPLACEMENT DOES NOT INHERIT IT. Yu2 describes the
+ * cancellable group as "exactly one actual `known_fill` plus at most one `unknown_remainder`", and
+ * a backfill group does not fit that — it also holds the vehicle row of an ownership turn. So a
+ * `set` landing on the date of an existing row REPLACES it (Shch2) and goes into its own group,
+ * named by the command key: the replacement edits someone else's decision but starts its own. The
+ * remainder names the same key and lies next to it.
  *
- * Заменой, а не парой `cancel` + `insert`: гашение групповое (В2), и левая граница дыры сплошь и
- * рядом приходится ровно на переход принадлежности, где `unknown` бэкфилла лежит в одной группе с
- * vehicle-строкой. Отмена унесла бы vehicle-границу заодно — то есть заполнение дыры стёрло бы
- * решение о машине.
+ * A replacement, not a `cancel` + `insert` pair: cancellation is group-wide (V2), and the left edge
+ * of a gap often falls exactly on an ownership turn where the backfill `unknown` shares a group
+ * with the vehicle row. A cancel would take the vehicle boundary along — the fill would erase a
+ * decision about the vehicle.
  */
 function planFills(
   plan: RepairPlan,
@@ -886,8 +944,8 @@ function planFills(
     }
     const group = `fill-${index}`;
 
-    // 1. Дата `from`: строка, стоящая на ней, **заменяется** (Щ2), а не гасится, — и замена уходит
-    //    в группу заполнения, а не в группу заменённой строки.
+    // 1. The row standing on `from` is REPLACED (Shch2), not cancelled, and the replacement goes
+    //    into the fill's group, not into the group of the replaced row.
     const value: AssignmentChangeValue = {
       dimension: 'driver',
       driver: { state: 'set', personId: fill.personId },
@@ -918,7 +976,7 @@ function planFills(
       });
     }
 
-    // 2. Нормализация отрезка: всё, что осталось `unknown` внутри `(from, to]`, гаснет.
+    // 2. Normalization: every `unknown` still actual inside `(from, to]` is cancelled.
     for (const row of context.changes) {
       if (row.dimension !== 'driver' || row.supersededAt !== null) continue;
       if (row.driverState !== 'unknown') continue;
@@ -928,9 +986,9 @@ function planFills(
       plan.effectMutations.push({ kind: 'cancel', changeId: row.id });
     }
 
-    // 3. Граница остатка: за отрезком неизвестное продолжается, и сказать об этом обязана строка.
+    // 3. The remainder boundary: past the stretch the driver stays unknown, and a row must say so.
     const boundary = shiftDateKey(fill.to, 1);
-    if (boundary <= gap.to) {
+    if (fillNeedsRemainder(context.changes, term, fills, boundary)) {
       plan.writeMutations.push({
         kind: 'insert',
         effectiveDate: boundary,
@@ -947,6 +1005,42 @@ function planFills(
     }
     plan.summary.fills.push({ from: fill.from, to: fill.to, personId: fill.personId });
   });
+}
+
+/**
+ * Whether a fill must close itself with an `unknown_remainder` on `boundary = to + 1` (Sh4, C4).
+ *
+ * The question is about the `unknown` segment of the driver scale, not about the fill address.
+ * The fold carries a state until the next change, so a `set` with nothing after it runs on to the
+ * end of the term — and a fill address ends where the LOCKED days end, which is not where the
+ * `unknown` ends. The remainder used to be bounded by the address (`boundary <= gap.to`): a fill
+ * "up to yesterday" wrote none, and the person it named leaked into today and the days ahead. The
+ * mutable blocker vanished without an anchor, the history reported `ready`, and under `history`
+ * blanks were minted forward for a person nobody had named on those days (ADR 0214).
+ *
+ * The boundary is written when all of these hold:
+ * - it lies inside the term: past the end there is no day this command could borrow;
+ * - no actual driver row stands on it, and no other fill of this command starts there: then the
+ *   next change is already in place, and a second actual row on the same scale and date would
+ *   break the partial UNIQUE;
+ * - before the command the driver there is `unknown` or not set at all. Given the first two, this
+ *   follows from the fill lying inside an `unknown` gap; it is checked anyway, because a `set`
+ *   carried over from the far side would mean rows the fold does not expect, and a remainder must
+ *   never overwrite a known person.
+ *
+ * On a mutable boundary the remainder keeps the day a blocker: the anchor for it is named by a
+ * second operation, the way `requiredAnchors` asks after the fill ("two operations", ADR 0214).
+ */
+function fillNeedsRemainder(
+  changes: readonly AssignmentChangeRecord[],
+  term: AssignmentTerm,
+  fills: readonly KnownFill[],
+  boundary: string,
+): boolean {
+  if (boundary > (term.dateTo || term.dateFrom)) return false;
+  if (actualOn(changes, 'driver', boundary)) return false;
+  if (fills.some((other) => other.from === boundary)) return false;
+  return blockerKindOf(assignmentStateOn(changes, boundary).driver) === 'unknown';
 }
 
 /**

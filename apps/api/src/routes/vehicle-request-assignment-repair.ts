@@ -35,6 +35,7 @@ import {
   type AssignmentHistoryUnrestorable,
 } from '../services/assignment-ensure';
 import {
+  assertFillsKeepMutableBlockers,
   assertKnownFillsAllowed,
   blockedDaysOf,
   blockerFactsOf,
@@ -549,7 +550,10 @@ async function planRepairCommand(
   const segmentsAfter = assignmentSegments(plan.changesAfter, term);
   const blockersBefore = blockerFactsOf(segmentsBefore, term, context.ownershipByVehicle, mutable);
   const blockersAfter = blockerFactsOf(segmentsAfter, term, context.ownershipByVehicle, mutable);
-  // Р27: исход считается сравнением множеств, и отказ здесь — до единой записи.
+  // A fill-only command compares the blocker sets both ways, before R27 looks only at additions:
+  // a fill that makes a mutable blocker vanish has leaked into days it may not address (C4).
+  assertFillsKeepMutableBlockers(body, blockersBefore, blockersAfter);
+  // R27: the outcome is a comparison of sets, and a refusal here comes before any write.
   const stateAfter = repairHistoryState(blockersBefore, blockersAfter);
 
   const effects = assignmentCommandEffects({

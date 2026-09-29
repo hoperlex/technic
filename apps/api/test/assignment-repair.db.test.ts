@@ -1339,6 +1339,102 @@ describe('заполнение отрезка и его отмена (Щ1, Щ2, 
     );
   });
 
+  /**
+   * Two adjacent fills in one command. The first one's remainder would land exactly on the
+   * second one's `from`, and two actual driver rows on one date break the partial UNIQUE — so the
+   * remainder is measured by what stands on the boundary AFTER the command, other fills included.
+   */
+  it('смежные заполнения одной командой: остатка на стыке нет, строки ложатся в базу', async () => {
+    if (!DB_URL) return;
+    const first = { from: shiftDateKey(MID_TO, 2), to: shiftDateKey(MID_TO, 5) };
+    const second = { from: shiftDateKey(MID_TO, 6), to: shiftDateKey(MID_TO, 8) };
+    await gapScene({ from: MID, to: MID_TO }, async ({ tx, requestId, correctionId }) => {
+      const context = await ctx.repair.readRepairContext(tx, requestId);
+      const plan = ctx.repair.planRepair({
+        context,
+        term: { dateFrom: DEEP_FROM, dateTo: LAST },
+        asOf: TODAY,
+        request: { id: requestId, num: 1 },
+        body: {
+          mode: 'repair',
+          knownFills: [
+            { ...first, personId: ctx.personA },
+            { ...second, personId: ctx.personB },
+          ],
+        },
+      });
+      const onSeam = plan.writeMutations.filter(
+        (mutation) => mutation.kind === 'insert' && mutation.effectiveDate === second.from,
+      );
+      expect(onSeam.map((mutation) => mutation.kind === 'insert' && mutation.origin)).toEqual([
+        'known_fill',
+      ]);
+      await ctx.write.applyAssignmentMutations(tx, {
+        requestId,
+        actorUserId: ctx.admin.id,
+        correctionId,
+        mutations: plan.writeMutations,
+        denormalization: plan.denormalization,
+      });
+      expect(await foldDriver(tx, requestId, first.to)).toEqual({
+        state: 'set',
+        personId: ctx.personA,
+      });
+      expect(await foldDriver(tx, requestId, second.from)).toEqual({
+        state: 'set',
+        personId: ctx.personB,
+      });
+      // Past the second fill the gap goes on, and its own remainder says so.
+      expect(await foldDriver(tx, requestId, shiftDateKey(second.to, 1))).toEqual({
+        state: 'unknown',
+      });
+    });
+  });
+
+  /**
+   * The backstop behind the remainder rule (C4, ADR 0214): a fill-only command may not change
+   * the blockers of mutable days in either direction. R27 alone would read a vanished blocker as a
+   * successful partial repair. Commands that also name anchors are judged by R27 as before.
+   */
+  it('страж: команда из одних заполнений не меняет блокеры изменяемых дней', () => {
+    if (!DB_URL) return;
+    const fill = { from: DEEP_FROM, to: MID, personId: randomUUID() };
+    const blocker = { date: TODAY, kind: 'unknown' as const };
+    const refusal = (run: () => void) => {
+      try {
+        run();
+      } catch (e) {
+        return (e as { code?: string }).code ?? null;
+      }
+      return null;
+    };
+    const guard = ctx.repair.assertFillsKeepMutableBlockers;
+    // Vanished and introduced blockers are both refused.
+    expect(refusal(() => guard({ mode: 'repair', knownFills: [fill] }, [blocker], []))).toBe(
+      'known_fill_touches_mutable_days',
+    );
+    expect(refusal(() => guard({ mode: 'repair', knownFills: [fill] }, [], [blocker]))).toBe(
+      'known_fill_touches_mutable_days',
+    );
+    // The same set passes; an anchor makes the command not fill-only.
+    expect(refusal(() => guard({ mode: 'repair', knownFills: [fill] }, [blocker], [blocker]))).toBe(
+      null,
+    );
+    expect(
+      refusal(() =>
+        guard(
+          {
+            mode: 'repair',
+            knownFills: [fill],
+            anchors: [{ effectiveDate: TODAY, driverPersonId: randomUUID() }],
+          },
+          [blocker],
+          [],
+        ),
+      ),
+    ).toBe(null);
+  });
+
   it('чужая группа под отмену заполнения — 422 not_a_known_fill_group (Ю2)', async () => {
     if (!DB_URL) return;
     await gapScene({ from: MID, to: MID_TO }, async ({ tx, requestId }) => {
@@ -2433,13 +2529,14 @@ describeReadModes(
       }
     });
 
-    it('[DIVERGENCE: history paper defects card] заполнение до конца заблокированной части называет человека и в изменяемых днях (Ц4)', async () => {
+    it('заполнение по вчерашний день не протекает в изменяемые дни: якорь — второй операцией (Ц4)', async () => {
       if (!DB_URL) return;
       /*
        * The gap starts in locked past and runs on into mutable days (today to the end of term).
        * Only its locked part is a fill address; the mutable part is a blocker that an anchor closes
        * (C4: "on mutable days the same hole is repaired by anchors, and no second way to name a
-       * person is introduced there").
+       * person is introduced there"). This is also what the repair window offers by default: the
+       * whole fill address, which ends on the last locked day.
        */
       const scene = await makeScene({
         dateFrom: DEEP_FROM,
@@ -2462,32 +2559,82 @@ describeReadModes(
       expect(preview.statusCode, preview.body).toBe(200);
       const dto = preview.json<RepairPreview>();
       /*
-       * DIVERGENCE (C4): the fill writes no `unknown_remainder` when it ends on the last locked day,
-       * because `planFills` bounds the remainder by the fill address (`boundary <= gap.to`) rather
-       * than by the `unknown` segment. The `set` therefore runs on through today and the future,
-       * the mutable blocker disappears without an anchor, and the history reports `ready`.
+       * The remainder is measured by the `unknown` segment, not by the fill address (Sh4, C4,
+       * ADR 0214): the fill closes itself on the first mutable day, so the mutable blocker stays
+       * and the history stays `materialized`. Blanks are planned for the locked days only.
        */
-      expect(dto.stateAfter).toBe('ready');
+      expect(dto.stateAfter).toBe('materialized');
       expect(planIssueOf(dto)).toEqual(
-        periodsOf(DEEP_FROM, TERM_TO, ctx.ownVehicle.id, ctx.personA),
+        periodsOf(DEEP_FROM, lockedEnd, ctx.ownVehicle.id, ctx.personA),
       );
 
       const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
       expect(res.statusCode, res.body).toBe(200);
-      expect(res.json<{ state: string }>().state).toBe('ready');
-      const driverRows = actual(await rowsOf(scene.requestId)).filter(
+      expect(res.json<{ state: string }>().state).toBe('materialized');
+      const fillRows = actual(await rowsOf(scene.requestId)).filter(
         (row) => row.dimension === 'driver',
       );
-      expect(driverRows.map((row) => [row.effective_date, row.origin])).toEqual([
+      expect(fillRows.map((row) => [row.effective_date, row.origin])).toEqual([
         [DEEP_FROM, 'known_fill'],
+        [TODAY, 'unknown_remainder'],
       ]);
-      // In `history` the leak reaches paper: blanks are minted for today and the days ahead as well.
+      const fillGroup = fillRows[0]!.change_group_id;
+      expect(fillRows[1]!.change_group_id).toBe(fillGroup);
       expect(compositionOf(await sheetsOf(scene.requestId))).toEqual(
         byReadMode(mode, {
           legacy: [] as string[],
-          history: periodsOf(DEEP_FROM, TERM_TO, ctx.ownVehicle.id, ctx.personA),
+          history: periodsOf(DEEP_FROM, lockedEnd, ctx.ownVehicle.id, ctx.personA),
         }),
       );
+
+      /*
+       * The second operation. After the fill the window asks for the anchor on the first mutable
+       * day — today — and no longer offers a fill address: the locked part is known now.
+       */
+      const next = (await inspectRepair(ctx.admin, scene.requestId)).json<RepairPreview>();
+      expect(next.fillableGaps).toEqual([]);
+      expect(
+        next.requiredAnchors.map((anchor) => [anchor.effectiveDate, anchor.from, anchor.to]),
+      ).toEqual([[TODAY, TODAY, TERM_TO]]);
+
+      const anchor = {
+        mode: 'repair',
+        version: res.json<{ version: number }>().version,
+        anchors: [{ effectiveDate: TODAY, driverPersonId: ctx.personB }],
+        operation: operation('С сегодняшнего дня работает сменщик'),
+      };
+      const anchorDto = (
+        await previewRepair(ctx.admin, scene.requestId, anchor)
+      ).json<RepairPreview>();
+      expect(anchorDto.stateAfter).toBe('ready');
+      // Today and the days ahead touch no worked-out day: the anchor is not a crew correction.
+      expect(anchorDto.operationRequirement).not.toMatchObject({ kind: 'crew' });
+      const anchored = await postRepair(ctx.admin, scene.requestId, {
+        ...anchor,
+        ...handshakeOf(anchorDto),
+      });
+      expect(anchored.statusCode, anchored.body).toBe(200);
+      expect(anchored.json<{ state: string }>().state).toBe('ready');
+
+      /*
+       * The anchor replaced the remainder, yet it did not join the fill's group: the fill is still
+       * one `known_fill` (Yu2) and stays cancellable on its own, without taking the anchor along.
+       */
+      const rows = actual(await rowsOf(scene.requestId)).filter(
+        (row) => row.dimension === 'driver',
+      );
+      expect(rows.map((row) => [row.effective_date, row.origin, row.driver_person_id])).toEqual([
+        [DEEP_FROM, 'known_fill', ctx.personA],
+        [TODAY, 'machinist_change', ctx.personB],
+      ]);
+      expect(rows[1]!.change_group_id).not.toBe(fillGroup);
+      const cancelPreview = await previewRepair(ctx.admin, scene.requestId, {
+        mode: 'cancel_fill',
+        version: anchored.json<{ version: number }>().version,
+        target: { changeGroupId: fillGroup },
+        operation: operation('Проверка: заполнение отменяемо'),
+      });
+      expect(cancelPreview.statusCode, cancelPreview.body).toBe(200);
     });
   },
 );
