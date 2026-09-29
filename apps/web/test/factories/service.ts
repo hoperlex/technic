@@ -100,6 +100,8 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     objectMismatch: false,
     // Расхождение никто не заявлял — значит и разбирать было нечего (план перемещения, Р8).
     objectMismatchResolvedBy: null,
+    // The unit has not moved since filing: the snapshot is the answer (ADR 0215).
+    currentPlace: null,
     customerDepartment: null,
     equipmentDepartment: null,
     // Подразделение заявителя (Н11): у учётки без отделов и площадок его нет вовсе — законное

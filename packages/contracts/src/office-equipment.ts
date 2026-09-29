@@ -93,6 +93,32 @@ export const officeEquipmentStateColors: Record<OfficeEquipmentState, string | u
 };
 
 /**
+ * A unit's place in words — "code — site · room · state (note)", empty parts dropped (ADR 0215).
+ *
+ * One wording for the portal and for letters: a contractor reads the letter, an executor reads the
+ * request card, and the two must name the same place the same way. The site goes with its code
+ * because site names repeat ("Склад"). "On site" is the working state and is not spelled out —
+ * only its note, when there is one.
+ */
+export function officeEquipmentPlaceWords(place: {
+  objectCode: string;
+  objectName: string;
+  location: string;
+  state: OfficeEquipmentState;
+  stateNote: string;
+}): string {
+  const state =
+    place.state === 'on_site'
+      ? place.stateNote
+      : `${officeEquipmentStateLabels[place.state].toLowerCase()}${
+          place.stateNote ? ` (${place.stateNote})` : ''
+        }`;
+  return [`${place.objectCode} — ${place.objectName}`, place.location, state]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
  * Состояния, которые обязаны быть уточнены (то же держит CHECK в БД): «на складе» и «у сотрудника»
  * без уточнения — потерянная техника, искать её по такой записи негде. У «на объекте» место уже
  * есть колонкой `location`, у «в ремонте» — сервисная компания в заявке.

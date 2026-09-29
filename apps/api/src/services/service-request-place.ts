@@ -1,7 +1,18 @@
-import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
+import {
+  isServiceRequestClosed,
+  type ServiceRequestCurrentPlaceDto,
+  type ServiceRequestStatus,
+} from '@technic/contracts';
 import { db } from '../db/client';
-import { officeEquipmentMovements, serviceRequests, users } from '../db/schema';
+import {
+  constructionObjects,
+  officeEquipment,
+  officeEquipmentMovements,
+  serviceRequests,
+  users,
+} from '../db/schema';
 
 /**
  * Заявленное место аппарата: когда расхождение считается РАЗОБРАННЫМ (план перемещения из карточки
@@ -103,4 +114,109 @@ export async function confirmedPlaceByRequest(
     });
   }
   return result;
+}
+
+type Reader = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** The request fields the current place depends on — a page row or a mail row alike. */
+export interface CurrentPlaceSubject {
+  id: string;
+  officeEquipmentId: string | null;
+  status: ServiceRequestStatus;
+  createdAt: Date;
+}
+
+/**
+ * Where each request's unit stands now (ADR 0215) — ONE query per page, the same batching as the
+ * place confirmations above: the block is shown in every list row, and a query per row would cost
+ * fifty round trips.
+ *
+ * The gate is "the unit moved AFTER the request was filed", and ANY movement counts — recorded from
+ * this request, from another one, or straight from the directory (owner's decision 29.09.2026).
+ * Narrowing it to movements linked to this request would leave the executor with a stale header
+ * whenever IT fixed the directory from the fleet screen, which is the common path.
+ *
+ * Without a movement the snapshot stays the answer even if the card differs: that difference is
+ * either the declared-but-unchecked place (showing the card would contradict the requester before
+ * anyone looked) or an ordinary directory edit, which is not a move.
+ *
+ * The place itself is read from the live card, not from the movement's target side: the room and
+ * the state note are also editable on the card without a movement, and "stands now" must follow
+ * those edits. Archived cards give nothing — there is no "now" for a unit taken out of the fleet.
+ */
+export async function currentPlaceByRequest(
+  requests: readonly CurrentPlaceSubject[],
+  // A mail is assembled inside the transaction that sends it; reading through the pool there would
+  // take a second connection while the first one is held.
+  reader: Reader = db,
+): Promise<Map<string, ServiceRequestCurrentPlaceDto>> {
+  const result = new Map<string, ServiceRequestCurrentPlaceDto>();
+  const open = requests.filter(
+    (r): r is CurrentPlaceSubject & { officeEquipmentId: string } =>
+      r.officeEquipmentId !== null && !isServiceRequestClosed(r.status),
+  );
+  if (open.length === 0) return result;
+  const equipmentIds = [...new Set(open.map((r) => r.officeEquipmentId))];
+
+  const rows = await reader
+    .selectDistinctOn([officeEquipmentMovements.equipmentId], {
+      equipmentId: officeEquipmentMovements.equipmentId,
+      recordedAt: officeEquipmentMovements.createdAt,
+      movedOn: officeEquipmentMovements.movedOn,
+      objectId: constructionObjects.id,
+      objectCode: constructionObjects.code,
+      objectName: constructionObjects.name,
+      location: officeEquipment.location,
+      state: officeEquipment.state,
+      stateNote: officeEquipment.stateNote,
+    })
+    .from(officeEquipmentMovements)
+    .innerJoin(officeEquipment, eq(officeEquipmentMovements.equipmentId, officeEquipment.id))
+    .innerJoin(constructionObjects, eq(officeEquipment.objectId, constructionObjects.id))
+    .where(
+      and(
+        inArray(officeEquipmentMovements.equipmentId, equipmentIds),
+        isNull(officeEquipment.deletedAt),
+      ),
+    )
+    // Latest by RECORDING time, id as the tie-break: the gate asks "did the snapshot miss this
+    // movement", and the snapshot was taken at the request's recording time. Comparing the
+    // backdatable move day instead would drop a Friday move entered on Monday for a request filed
+    // on Saturday — although the Saturday snapshot never saw it.
+    .orderBy(
+      officeEquipmentMovements.equipmentId,
+      desc(officeEquipmentMovements.createdAt),
+      desc(officeEquipmentMovements.id),
+    );
+  const latest = new Map(rows.map((row) => [row.equipmentId, row]));
+
+  for (const request of open) {
+    const row = latest.get(request.officeEquipmentId);
+    if (!row || row.recordedAt <= request.createdAt) continue;
+    result.set(request.id, {
+      object: { id: row.objectId, code: row.objectCode, name: row.objectName },
+      location: row.location,
+      state: row.state,
+      stateNote: row.stateNote,
+      movedOn: row.movedOn,
+    });
+  }
+  return result;
+}
+
+/**
+ * The room copied into a new request's snapshot (ADR 0215): the card's room only when the request
+ * is filed on the card's own site.
+ *
+ * When the requester names another site (or the form writes the request onto the customer's site
+ * for a unit listed elsewhere), the card's room belongs to the site the unit is NOT on, and the
+ * header used to read "declared site · room from the old site" — a place that does not exist.
+ * Empty is honest: nobody has said where on the new site the unit stands, and IT fills it in with
+ * the movement that confirms the place.
+ */
+export function snapshotLocationFor(
+  card: { objectId: string; location: string },
+  requestObjectId: string | null,
+): string {
+  return requestObjectId === card.objectId ? card.location : '';
 }

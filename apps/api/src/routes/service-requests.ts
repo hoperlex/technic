@@ -141,6 +141,7 @@ import {
   type ServiceWaitingOn,
   type ServiceWarrantyRowDto,
   type ServiceRequestChatSummaryDto,
+  type ServiceRequestCurrentPlaceDto,
   type ServiceRequestDto,
   type ServiceRequestRepeatDto,
   type ServiceRequestExecutorDto,
@@ -262,7 +263,9 @@ import {
  */
 import {
   confirmedPlaceByRequest,
+  currentPlaceByRequest,
   placeNotConfirmedWhere,
+  snapshotLocationFor,
   type PlaceConfirmation,
 } from '../services/service-request-place';
 /*
@@ -802,6 +805,11 @@ function toDto(
    */
   placeConfirmation: PlaceConfirmation | null,
   /**
+   * Where the unit stands now (ADR 0215): `null` — closed request, no unit, or no movement since
+   * filing. Comes from the page-wide batch for the same reason as the confirmation above.
+   */
+  currentPlace: ServiceRequestCurrentPlaceDto | null,
+  /**
    * Формат действующей ревизии объёма работ (Р5 плана освобождения): `null` — ревизий у заявки нет
    * вовсе, и планка закрывающего документа у неё сегодняшняя. Приходит снимком пакетной догрузки по
    * той же причине, что и подтверждение места: строка на заявку стоила бы полусотни запросов на
@@ -993,6 +1001,7 @@ function toDto(
        */
       placeConfirmation === null,
     objectMismatchResolvedBy: placeConfirmation,
+    currentPlace,
     customerDepartment: row.customerDepartmentId
       ? {
           id: row.customerDepartmentId,
@@ -1169,6 +1178,7 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
     consumableMap,
     repeatMap,
     placeMap,
+    currentPlaceMap,
     formatMap,
     exemptionMap,
     disputeMap,
@@ -1183,6 +1193,15 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
     ),
     // Подтверждения заявленного места — тем же пакетным приёмом и по той же причине (Р8).
     confirmedPlaceByRequest(ids),
+    // Where the unit stands now (ADR 0215) — the same batching: the list row shows it too.
+    currentPlaceByRequest(
+      rows.map((row) => ({
+        id: row.r.id,
+        officeEquipmentId: row.r.officeEquipmentId,
+        status: row.r.status,
+        createdAt: row.r.createdAt,
+      })),
+    ),
     /*
      * Формат действующей ревизии (Р5) — тоже одним запросом на страницу: его спрашивает планка
      * закрывающего документа, то есть портал зовёт её на каждой строке списка, и строка на заявку
@@ -1269,6 +1288,7 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
       }),
       repeatMap.get(row.r.id),
       placeMap.get(row.r.id) ?? null,
+      currentPlaceMap.get(row.r.id) ?? null,
       // Ревизий у заявки нет — в карте нет и ключа: `null` здесь и означает планку наследия.
       formatMap.get(row.r.id) ?? null,
       // Заявления не было — ключа в карте нет: `null` означает «освобождение не заявляли», а не
@@ -4391,9 +4411,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             equipmentSerialNumber: equipment?.serialNumber ?? candidate?.serialNumber ?? '',
             equipmentInventoryNumber:
               equipment?.inventoryNumber ?? candidate?.inventoryNumber ?? '',
-            // Место — часть того же снимка: сервис поедет по нему, а карточка к тому времени
-            // могла переехать (Р57).
-            equipmentLocation: equipment?.location ?? candidate?.location ?? '',
+            // The room is part of the same snapshot — the service travels by it, and the card may
+            // have moved by then (Р57). It is copied only onto the card's own site (ADR 0215):
+            // a declared or customer site with the old site's room is a place that does not exist.
+            equipmentLocation: equipment
+              ? snapshotLocationFor(equipment, equipmentObjectId)
+              : (candidate?.location ?? ''),
             kind,
             description: body.description,
             responsibleName: body.responsibleName,

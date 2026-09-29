@@ -10,6 +10,7 @@ import {
 } from '@technic/contracts';
 import {
   isAwaitingDocuments,
+  ServiceCurrentPlaceTag,
   serviceDocumentCounts,
   serviceRequestEquipmentName,
   serviceRequestObjectLabel,
@@ -190,6 +191,14 @@ export function PlaceCell({ request }: { request: ServiceRequestDto }) {
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         {hint || KEEP_LINE}
       </Typography.Text>
+      {/* After a move the two lines above stay the request's own site: the object filter, the
+          sort and the scope all work on it, and a top line reading "C" that the filter "C" does
+          not find would look like a broken filter. Where to go is added below (ADR 0215). */}
+      {request.currentPlace && (
+        <div style={{ marginTop: 2 }}>
+          <ServiceCurrentPlaceTag request={request} />
+        </div>
+      )}
     </div>
   );
 }

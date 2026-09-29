@@ -4,6 +4,7 @@ import {
   DEFAULT_MAIL_ACCOUNT,
   formatServiceRequestNumber,
   moduleMailEventLabels,
+  officeEquipmentPlaceWords,
   SERVICE_REQUEST_NO_EQUIPMENT,
   serviceFileKindLabels,
   serviceRequestStatusLabels,
@@ -11,6 +12,7 @@ import {
   type ModuleMailOutcome,
   type ServiceMailTargets,
   type ServiceFileKind,
+  type ServiceRequestCurrentPlaceDto,
   type ServiceRequestStatus,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -29,6 +31,7 @@ import { logger } from '../logger';
 import { writeAuditTx } from '../lib/audit';
 import { renderMail, type MailContent } from './mail-templates';
 import { queuePreparedMail, type MailKind } from './mail';
+import { currentPlaceByRequest } from './service-request-place';
 import {
   addressOf,
   collectServiceMailRecipients,
@@ -928,6 +931,12 @@ export interface ServiceLetterData {
    */
   objectCode: string | null;
   objectName: string | null;
+  /**
+   * Where the unit stands now, when it moved after filing (ADR 0215). Contractors often read only
+   * the letter, so the letter must not keep sending them to the declared site after IT recorded
+   * where the unit really is.
+   */
+  currentPlace: ServiceRequestCurrentPlaceDto | null;
   departmentName: string | null;
   attachments: number;
   authorName: string | null;
@@ -984,6 +993,7 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
     .leftJoin(counterparties, eq(serviceRequests.serviceCounterpartyId, counterparties.id))
     .where(eq(serviceRequests.id, requestId));
   if (!row) throw new Error(`Заявка ${requestId} не найдена при сборке письма`);
+  const currentPlace = await currentPlaceByRequest([row.r], tx);
 
   return {
     requestId,
@@ -1003,6 +1013,7 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
     equipmentLocation: row.r.equipmentLocation,
     objectCode: row.objectCode,
     objectName: row.objectName,
+    currentPlace: currentPlace.get(requestId) ?? null,
     departmentName: row.departmentName,
     attachments: row.attachments,
     authorName: row.authorName,
@@ -1012,9 +1023,39 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
   };
 }
 
-/** Номера единицы одной строкой: их печатает производитель и клеит бухгалтерия. */
+/**
+ * "Where it stands" lines (ADR 0215). After a move the letter names the current place first and
+ * keeps the request's own site as a second line only when the site differs — the reader must know
+ * both where to go and why the request still says otherwise.
+ */
+function placeLinesOf(data: ServiceLetterData): string[] {
+  const filed = `${data.objectCode ?? ''} — ${data.objectName ?? ''}${
+    data.equipmentLocation ? `, ${data.equipmentLocation}` : ''
+  }`;
+  const now = data.currentPlace;
+  if (!now) return [`Где стоит: ${filed}`];
+  const words = officeEquipmentPlaceWords({
+    objectCode: now.object.code,
+    objectName: now.object.name,
+    location: now.location,
+    state: now.state,
+    stateNote: now.stateNote,
+  });
+  return [
+    `Где стоит сейчас: ${words} (перемещён ${dayOf(now.movedOn)})`,
+    ...(now.object.code !== data.objectCode ? [`В заявке указано: ${filed}`] : []),
+  ];
+}
+
+/** "2026-09-29" → "29.09.2026": letters are read outside the portal, in Russian day order. */
+function dayOf(iso: string): string {
+  const [yyyy, mm, dd] = iso.split('-');
+  return `${dd}.${mm}.${yyyy}`;
+}
+
+/** Unit identifiers on one line: the serial is printed by the maker, the inventory tag by finance. */
 function numbersOf(data: ServiceLetterData): string {
-  // У заявки без аппарата номеров нет вовсе, и спрашивать снимок незачем: он пуст.
+  // A request without a unit has no identifiers at all, so its empty snapshot adds nothing.
   if (data.officeEquipmentId === null) return '';
   const parts = [
     data.equipmentInventoryNumber ? `инв. ${data.equipmentInventoryNumber}` : '',
@@ -1247,11 +1288,7 @@ function buildServiceLetter(
      * задавал. Откуда заявка, читается строкой «Отдел» ниже.
      */
     ...(fields.place && (data.objectCode !== null || data.objectName !== null)
-      ? [
-          `Где стоит: ${data.objectCode ?? ''} — ${data.objectName ?? ''}${
-            data.equipmentLocation ? `, ${data.equipmentLocation}` : ''
-          }`,
-        ]
+      ? placeLinesOf(data)
       : []),
     ...(fields.department && data.departmentName ? [`Отдел: ${data.departmentName}`] : []),
     ...(fields.contact && (data.responsibleName || data.responsiblePhone)

@@ -29,6 +29,8 @@ import { equipmentCandidateInputSchema } from './office-equipment-candidates';
 // Только тип: перечень состояний кандидата объявлен там же, где сам кандидат, и переписанный сюда
 // союз из четырёх слов разошёлся бы с ним молча — ровно как разошлась бы третья копия `CHECK`.
 import type { OfficeEquipmentCandidateStatus } from './office-equipment-candidates';
+// Type-only: `office-equipment` imports this module at runtime, so a value import would be a cycle.
+import type { OfficeEquipmentState } from './office-equipment';
 import type { ModuleMailOutcome } from './module-mail';
 import type { RequestChangeDto } from './request-history';
 
@@ -3868,6 +3870,29 @@ export interface ServiceRequestObjectDto {
   name: string;
 }
 
+/**
+ * Where the unit stands today, when it moved after the request was filed (ADR 0215).
+ *
+ * The request keeps its own snapshot (`object`, `equipment.location`) because that snapshot is the
+ * request's scope and its testimony — moving the unit must not move the request out of its
+ * customer's area. But executors travel to the unit, not to the testimony: without this block the
+ * header kept naming the declared site (or the stale room copied from the card) after IT had
+ * already recorded where the unit really is.
+ *
+ * The values are the LIVE card, not the last movement's target side: the room and the state note
+ * can also be edited on the card without a movement, and "stands now" must not lag behind that.
+ * The movement journal only answers whether the unit moved since filing — without that gate the
+ * block would contradict the declaration before IT has checked anything.
+ */
+export interface ServiceRequestCurrentPlaceDto {
+  object: ServiceRequestObjectDto;
+  location: string;
+  state: OfficeEquipmentState;
+  stateNote: string;
+  /** Day of the latest movement (the physical move day, not the day it was recorded). */
+  movedOn: string;
+}
+
 export interface ServiceRequestDepartmentDto {
   id: string;
   code: string;
@@ -4328,6 +4353,18 @@ export interface ServiceRequestDto {
     at: string;
     actorName: string | null;
   } | null;
+  /**
+   * Where the unit stands now (ADR 0215): `null` — the request is closed, has no unit, or the unit
+   * has not moved since the request was filed, so the snapshot above is still the answer.
+   *
+   * Optional for the rollout window, the same way as `equipmentCandidate`: a cached bundle may talk
+   * to the old server, which never sends the field. The server always sends it; readers take
+   * `?? null` and treat both as "nothing moved".
+   *
+   * Open requests only: executors need the place while the work is going on, and a closed request
+   * showing "stands now" would describe a unit nobody is travelling to any more.
+   */
+  currentPlace?: ServiceRequestCurrentPlaceDto | null;
   /** Отдел-заказчик и отдел-владелец: по ним считается область роли отдела. */
   customerDepartment: ServiceRequestDepartmentDto | null;
   equipmentDepartment: ServiceRequestDepartmentDto | null;
@@ -5104,6 +5141,10 @@ export const SERVICE_REQUEST_FIELD_AUDIENCE = {
   objectMismatch: 'all',
   // Кем разобрано расхождение — не про деньги, а про место: видно тем же, кому видна сама заявка.
   objectMismatchResolvedBy: 'all',
+  // The place executors travel to. Shown to service contractors too even though the directory is
+  // closed to them: the owner accepted that on 29.09.2026 (ADR 0215) — the unit's place is what the
+  // request is about, not a view into the fleet.
+  currentPlace: 'all',
   customerDepartment: 'all',
   equipmentDepartment: 'all',
   requesterPlace: 'all',

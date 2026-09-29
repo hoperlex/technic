@@ -50,6 +50,7 @@ import {
   selectCandidates,
 } from '../services/office-equipment-candidates';
 import { officeEquipmentCandidateDiff } from '../services/office-equipment-candidate-diff';
+import { snapshotLocationFor } from '../services/service-request-place';
 import {
   prepareCandidateMail,
   queueCandidateMail,
@@ -234,6 +235,8 @@ interface LockedRequest {
   kind: 'repair' | 'consumable';
   status: ServiceRequestStatus;
   deletedAt: Date | null;
+  /** The declared site — decides whether the resolved card's room fits the request (ADR 0215). */
+  equipmentObjectId: string | null;
 }
 
 /**
@@ -257,6 +260,7 @@ async function lockLinkedRequest(tx: Tx, candidateId: string): Promise<LockedReq
       kind: serviceRequests.kind,
       status: serviceRequests.status,
       deletedAt: serviceRequests.deletedAt,
+      equipmentObjectId: serviceRequests.equipmentObjectId,
     })
     .from(serviceRequests)
     .where(eq(serviceRequests.equipmentCandidateId, candidateId))
@@ -581,6 +585,7 @@ async function requireMergeTarget(
   name: string;
   serialNumber: string;
   inventoryNumber: string;
+  objectId: string;
   location: string;
 }> {
   const [row] = await tx
@@ -589,6 +594,7 @@ async function requireMergeTarget(
       name: officeEquipment.name,
       serialNumber: officeEquipment.serialNumber,
       inventoryNumber: officeEquipment.inventoryNumber,
+      objectId: officeEquipment.objectId,
       location: officeEquipment.location,
       isActive: officeEquipment.isActive,
     })
@@ -668,19 +674,26 @@ async function assertCardFreeOfOpenRequest(
  * заявка сменила бы круг тех, кто её видит, посреди работы — и сменила бы молча, без всякого
  * действия её участников. Физическое место аппарата назвал заявитель (Р7), и оно остаётся за ним.
  */
-function requestPatchOf(card: {
-  id: string;
-  name: string;
-  serialNumber: string;
-  inventoryNumber: string;
-  location: string;
-}): NonNullable<DecisionRecord['requestPatch']> {
+function requestPatchOf(
+  card: {
+    id: string;
+    name: string;
+    serialNumber: string;
+    inventoryNumber: string;
+    objectId: string;
+    location: string;
+  },
+  request: LockedRequest,
+): NonNullable<DecisionRecord['requestPatch']> {
   return {
     officeEquipmentId: card.id,
     equipmentName: card.name,
     equipmentSerialNumber: card.serialNumber,
     equipmentInventoryNumber: card.inventoryNumber,
-    equipmentLocation: card.location,
+    // The request keeps the site the requester named, so the card's room is copied only when the
+    // card sits on that same site (ADR 0215). Merging with a card the directory lists elsewhere is
+    // exactly the "directory is wrong" case, and its room belongs to the site the unit is not on.
+    equipmentLocation: snapshotLocationFor(card, request.equipmentObjectId),
   };
 }
 
@@ -930,6 +943,7 @@ export default async function officeEquipmentCandidatesRoutes(app: FastifyInstan
           name: created.name,
           serialNumber: b.equipment.serialNumber,
           inventoryNumber: b.equipment.inventoryNumber,
+          objectId: b.equipment.objectId,
           location: b.equipment.location,
         };
         return {
@@ -940,7 +954,7 @@ export default async function officeEquipmentCandidatesRoutes(app: FastifyInstan
           // Ею же оно называет себя и в истории заявки — подписью заведённой карточки, собранной
           // из имени ИЗ БАЗЫ и присланных номеров.
           subjectTitle: officeEquipmentTitle(card),
-          requestPatch: requestPatchOf(card),
+          requestPatch: requestPatchOf(card, linked),
           metadata: { officeEquipmentId: created.id, requestNum: linked.num },
           /*
            * ВТОРАЯ СТРОКА ЖУРНАЛА — О САМОЙ КАРТОЧКЕ, и пишется она обычным именем действия
@@ -995,7 +1009,7 @@ export default async function officeEquipmentCandidatesRoutes(app: FastifyInstan
           // Та же подпись, что уходит в журнал решения ниже: в истории заявки объединение называет
           // карточку тем именем, под которым его принимали.
           subjectTitle: officeEquipmentTitle(target),
-          requestPatch: requestPatchOf(target),
+          requestPatch: requestPatchOf(target, linked),
           metadata: {
             officeEquipmentId: target.id,
             // Подпись цели — той же функцией, что в списке и в письме: по ней решение читают в

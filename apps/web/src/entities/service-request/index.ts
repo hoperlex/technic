@@ -36,9 +36,11 @@ export {
   serviceDocumentCounts,
 } from './model/documents';
 export {
+  serviceRequestCurrentPlaceLine,
   serviceRequestEquipmentName,
   serviceRequestObjectLabel,
   serviceRequestPlaceLine,
+  serviceRequestWhereToGoLine,
 } from './model/subject';
 export { ServiceConsumableFactRows } from './ui/ServiceConsumableFactRows';
 export { ServiceConsumablesTable } from './ui/ServiceConsumablesTable';
@@ -46,6 +48,7 @@ export { ServiceDocumentUpload } from './ui/ServiceDocumentUpload';
 export { ServiceEstimateTable } from './ui/ServiceEstimateTable';
 export { ServiceHint } from './ui/ServiceHint';
 export { ServiceRequestContext } from './ui/ServiceRequestContext';
+export { ServiceCurrentPlaceTag } from './ui/ServiceCurrentPlaceTag';
 export { RepeatTag } from './ui/RepeatTag';
 export { ServiceStatusTag } from './ui/ServiceStatusTag';
 export { UrgentTag } from './ui/UrgentTag';

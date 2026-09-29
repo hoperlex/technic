@@ -934,4 +934,152 @@ describe.skipIf(!DB_URL)('перемещение оргтехники из ка�
       expect((await movements(id, ctx.admin.auth))[0]!.serviceRequestId).toBe(request.id);
     });
   });
+
+  // ── 10. Where the unit stands now (ADR 0215) ──
+
+  describe('где стоит сейчас (ADR 0215)', () => {
+    /** The request as its card reads it — the block the executor looks at. */
+    async function requestDto(requestId: string): Promise<ServiceRequestDto> {
+      const res = await inject('GET', `${REQUESTS}/${requestId}`, ctx.operator.auth);
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json() as ServiceRequestDto;
+    }
+
+    it('declared another site: the card room is not copied, nothing is "now" before a move', async () => {
+      const id = await makeEquipment('now-declared', { location: 'кабинет 101' });
+      const request = await createRequest(id, 'Стоит на другой площадке', ctx.objectB);
+      expect(request.object?.id).toBe(ctx.objectB);
+      // The room belongs to site A, where the unit is NOT: "B · кабинет 101" is a place that does
+      // not exist, and executors went looking for it.
+      expect(request.equipment?.location).toBe('');
+      // No movement yet: the card still says A, and showing it would contradict the requester
+      // before anyone checked.
+      expect(request.currentPlace).toBeNull();
+    });
+
+    it('filed on the card site: the room is copied as before', async () => {
+      const id = await makeEquipment('now-plain', { location: 'кабинет 102' });
+      const request = await createRequest(id, 'Обычная заявка');
+      expect(request.object?.id).toBe(ctx.objectA);
+      expect(request.equipment?.location).toBe('кабинет 102');
+      expect(request.currentPlace).toBeNull();
+    });
+
+    it('moved to a third site from the request: the card shows it, the snapshot stays', async () => {
+      const id = await makeEquipment('now-third');
+      const request = await createRequest(id, 'Заявили B, нашёлся на C', ctx.objectB);
+      const res = await move(id, {
+        objectId: ctx.objectC,
+        location: 'кабинет 305',
+        reason: 'Нашёлся на площадке C',
+        serviceRequestId: request.id,
+        confirmsDeclaredPlace: true,
+      });
+      expect(res.statusCode, res.body).toBe(201);
+
+      const dto = await requestDto(request.id);
+      expect(dto.currentPlace).toMatchObject({
+        object: { id: ctx.objectC },
+        location: 'кабинет 305',
+        state: 'on_site',
+        stateNote: '',
+        movedOn: TODAY,
+      });
+      // The request itself is not rewritten: its site is the scope and the testimony.
+      expect(dto.object?.id).toBe(ctx.objectB);
+      expect(dto.equipment?.location).toBe('');
+      expect(dto.objectOverridden).toBe(true);
+
+      // The list row carries the same block — the executor picks the request from the list.
+      const list = await inject('GET', `${REQUESTS}?pageSize=200`, ctx.operator.auth);
+      expect(list.statusCode, list.body).toBe(200);
+      const row = (list.json() as { items: ServiceRequestDto[] }).items.find(
+        (item) => item.id === request.id,
+      );
+      expect(row?.currentPlace?.object.id).toBe(ctx.objectC);
+    });
+
+    it('a move recorded from the directory, without the request, counts too', async () => {
+      const id = await makeEquipment('now-directory');
+      const request = await createRequest(id, 'Переносили из справочника');
+      const res = await move(id, {
+        objectId: ctx.objectB,
+        location: 'склад',
+        state: 'in_stock',
+        stateNote: 'стеллаж 2',
+        reason: 'Разбор справочника',
+      });
+      expect(res.statusCode, res.body).toBe(201);
+
+      const dto = await requestDto(request.id);
+      expect(dto.currentPlace).toMatchObject({
+        object: { id: ctx.objectB },
+        location: 'склад',
+        state: 'in_stock',
+        stateNote: 'стеллаж 2',
+      });
+    });
+
+    it('a room edited on the card after the move is followed — the block reads the live card', async () => {
+      const id = await makeEquipment('now-live');
+      const request = await createRequest(id, 'Кабинет уточнили правкой карточки');
+      const moved = await move(id, { objectId: ctx.objectB, location: 'кабинет 201' });
+      expect(moved.statusCode, moved.body).toBe(201);
+      const patched = await inject('PATCH', `${EQUIPMENT}/${id}`, ctx.operator.auth, {
+        location: 'кабинет 207',
+      });
+      expect(patched.statusCode, patched.body).toBe(200);
+
+      expect((await requestDto(request.id)).currentPlace?.location).toBe('кабинет 207');
+    });
+
+    it('a move recorded before filing is already in the snapshot — nothing is "now"', async () => {
+      const id = await makeEquipment('now-before');
+      const moved = await move(id, { objectId: ctx.objectB, location: 'кабинет 210' });
+      expect(moved.statusCode, moved.body).toBe(201);
+      const request = await createRequest(id, 'Заведена после переезда');
+      expect(request.object?.id).toBe(ctx.objectB);
+      expect(request.equipment?.location).toBe('кабинет 210');
+      expect(request.currentPlace).toBeNull();
+    });
+
+    it('a closed request shows nothing: nobody travels to a unit of a closed request', async () => {
+      const id = await makeEquipment('now-closed');
+      const request = await createRequest(id, 'Отменят после переезда');
+      const moved = await move(id, { objectId: ctx.objectB, location: 'кабинет 220' });
+      expect(moved.statusCode, moved.body).toBe(201);
+      expect((await requestDto(request.id)).currentPlace?.object.id).toBe(ctx.objectB);
+
+      const cancelled = await inject(
+        'PATCH',
+        `${REQUESTS}/${request.id}/status`,
+        ctx.operator.auth,
+        { status: 'cancelled', reason: 'Не нужна', version: request.version },
+      );
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      expect((await requestDto(request.id)).currentPlace).toBeNull();
+    });
+
+    it('the letter names where to go first and keeps the filed site as a second line', async () => {
+      const id = await makeEquipment('now-letter');
+      const request = await createRequest(id, 'Письмо после переезда', ctx.objectB);
+      const moved = await move(id, {
+        objectId: ctx.objectC,
+        location: 'кабинет 330',
+        state: 'at_service',
+        reason: 'Увезли в сервис',
+        serviceRequestId: request.id,
+      });
+      expect(moved.statusCode, moved.body).toBe(201);
+
+      const mail = await import('../src/services/service-request-mail');
+      const data = await ctx.db.transaction(async (tx) =>
+        mail.loadServiceLetterData(tx, request.id),
+      );
+      const letter = mail.renderServiceLetter('service_request_created', data);
+      expect(letter.text).toContain(`Где стоит сейчас: MV-C-${RUN} — Площадка C ${RUN}`);
+      expect(letter.text).toContain('кабинет 330 · в ремонте');
+      expect(letter.text).toContain(`В заявке указано: MV-B-${RUN} — Площадка B ${RUN}`);
+    });
+  });
 });

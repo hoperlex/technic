@@ -1,4 +1,8 @@
-import { SERVICE_REQUEST_NO_EQUIPMENT, type ServiceRequestDto } from '@technic/contracts';
+import {
+  officeEquipmentPlaceWords,
+  SERVICE_REQUEST_NO_EQUIPMENT,
+  type ServiceRequestDto,
+} from '@technic/contracts';
 
 /**
  * Предмет заявки словами: что показать вместо аппарата и площадки, когда их нет (Р8 плана
@@ -46,4 +50,37 @@ export function serviceRequestPlaceLine(
 ): string | null {
   const parts = [serviceRequestObjectLabel(request), request.equipment?.location].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/**
+ * Where the unit stands now, as one line (ADR 0215); `null` — nothing moved since filing, and the
+ * request's own snapshot above is still the answer.
+ *
+ * `?? null` on purpose: a portal bundle may talk to a server that predates the field, and "field
+ * absent" means the same as "nothing moved" — there is no place to show.
+ */
+export function serviceRequestCurrentPlaceLine(
+  request: Pick<ServiceRequestDto, 'currentPlace'>,
+): string | null {
+  const place = request.currentPlace ?? null;
+  if (!place) return null;
+  return officeEquipmentPlaceWords({
+    objectCode: place.object.code,
+    objectName: place.object.name,
+    location: place.location,
+    state: place.state,
+    stateNote: place.stateNote,
+  });
+}
+
+/**
+ * "Where to go" for a single line (phone card): the current place after a move, the snapshot
+ * otherwise. The prefix says which one it is — without it a moved unit's line would read as the
+ * place the request was filed for.
+ */
+export function serviceRequestWhereToGoLine(
+  request: Pick<ServiceRequestDto, 'equipment' | 'object' | 'currentPlace'>,
+): string | null {
+  const now = serviceRequestCurrentPlaceLine(request);
+  return now ? `Сейчас: ${now}` : serviceRequestPlaceLine(request);
 }

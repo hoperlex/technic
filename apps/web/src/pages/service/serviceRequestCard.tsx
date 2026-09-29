@@ -4,7 +4,7 @@ import type { ServiceRequestDto } from '@technic/contracts';
 import {
   RepeatTag,
   serviceRequestEquipmentName,
-  serviceRequestPlaceLine,
+  serviceRequestWhereToGoLine,
   serviceStatusLine,
   statusAgeLabel,
   UrgentTag,
@@ -57,7 +57,8 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
       (r) => (r.isUrgent ? `Срочно: ${r.urgencyReason}` : null),
       // Площадки у заявки «от отдела» нет вовсе: строка пропускается целиком — пустые карточка не
       // рисует, — а прочерк на телефоне читался бы как недогруженная запись (Р8).
-      (r) => serviceRequestPlaceLine(r),
+      // After a move the phone card names where to go, not where the request was filed (ADR 0215).
+      (r) => serviceRequestWhereToGoLine(r),
       (r) => r.description,
       (r) => (r.service ? `Сервис: ${r.service.name}` : 'Сервис не назначен'),
       // Денежная строка карточки решается по аудитории САМОЙ СТРОКИ, а не по набору страницы

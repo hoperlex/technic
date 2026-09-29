@@ -852,6 +852,7 @@ describe.skipIf(!DB_URL)('карточка заявки на обслужива�
       objectOverridden: false,
       objectMismatch: false,
       objectMismatchResolvedBy: null,
+      currentPlace: null,
       equipmentCandidate: null,
       customerDepartment: {
         id: ctx.departmentId,

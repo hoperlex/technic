@@ -1,6 +1,7 @@
 import { Descriptions, Space, Tag, Typography } from 'antd';
 import type { ServiceRequestDto } from '@technic/contracts';
 import { serviceRequestEquipmentName, serviceRequestObjectLabel } from '../model/subject';
+import { ServiceCurrentPlaceTag } from './ServiceCurrentPlaceTag';
 
 /**
  * Шапка окна действия: о какой заявке речь (план модернизации, Р57).
@@ -63,13 +64,21 @@ export function ServiceRequestContext({ request }: { request: ServiceRequestDto 
                 key: 'object',
                 label: objectLabel ? 'Где стоит' : 'Для кого',
                 children: (
-                  <Space size={8} wrap>
-                    <span>{customer}</span>
-                    {/* Место внутри объекта — снимок на момент заведения: мастер едет по нему.
-                        У заявки без аппарата снимка нет — показывать нечего. */}
-                    {equipment?.location && (
-                      <Typography.Text type="secondary">{equipment.location}</Typography.Text>
-                    )}
+                  <Space orientation="vertical" size={4}>
+                    {/* After a move the window names where the unit is now (ADR 0215); the
+                        request's own site stays below as "в заявке". */}
+                    <ServiceCurrentPlaceTag request={request} />
+                    <Space size={8} wrap>
+                      {request.currentPlace && objectLabel && (
+                        <Typography.Text type="secondary">в заявке:</Typography.Text>
+                      )}
+                      <span>{customer}</span>
+                      {/* The room inside the site is the snapshot taken at filing — the service
+                          travels by it. A request without a unit has no snapshot to show. */}
+                      {equipment?.location && (
+                        <Typography.Text type="secondary">{equipment.location}</Typography.Text>
+                      )}
+                    </Space>
                   </Space>
                 ),
               },

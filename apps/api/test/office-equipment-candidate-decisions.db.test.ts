@@ -674,6 +674,34 @@ describe.skipIf(!DB_URL)(
         expect((await auditRows(card.id)).map((r) => r.action)).toEqual(['officeEquipment.create']);
       });
 
+      it('card listed on another site: its room is not copied into the request (ADR 0215)', async () => {
+        // The requester reported the unit on site B; the directory lists it on A with A's room.
+        // This is exactly the "directory is wrong" case: the request keeps B, and A's room next to
+        // B would name a place that does not exist.
+        const pair = await makePair({ tag: 'M5', objectId: ctx.objectB });
+        const card = await makeCard('M5');
+        const res = await decide('merge', 'admin', pair.candidateId, {
+          expectedVersion: 1,
+          officeEquipmentId: card.id,
+        });
+        expect(res.statusCode, res.body).toBe(200);
+        const request = await requestRow(pair.requestId);
+        expect(request.office_equipment_id).toBe(card.id);
+        expect(request.equipment_object_id).toBe(ctx.objectB);
+        expect(request.equipment_location).toBe('');
+      });
+
+      it('card on the same site: its room is copied as before', async () => {
+        const pair = await makePair({ tag: 'M6' });
+        const card = await makeCard('M6');
+        const res = await decide('merge', 'reviewer', pair.candidateId, {
+          expectedVersion: 1,
+          officeEquipmentId: card.id,
+        });
+        expect(res.statusCode, res.body).toBe(200);
+        expect((await requestRow(pair.requestId)).equipment_location).toBe('кабинет 101');
+      });
+
       it('неактивную карточку не принимает — иначе объединение обошло бы замок Ф2', async () => {
         const pair = await makePair({ tag: 'M2' });
         const card = await makeCard('M2', { isActive: false });

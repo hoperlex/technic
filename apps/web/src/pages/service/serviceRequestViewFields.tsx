@@ -18,6 +18,7 @@ import type { ViewField } from '@shared/ui';
 import { formatDateTime } from '@shared/lib';
 import { MoveEquipmentButton } from './serviceRequestCells';
 import { serviceRepeatFields } from './serviceRequestRepeat';
+import { ServiceRequestPlaceValue } from './ServiceRequestPlaceValue';
 import { ServiceRequestSubjectName } from './ServiceRequestSubjectName';
 import { ServiceStatusCell } from './ServiceStatusCell';
 import type { ServiceMenuItem } from './serviceStatusChoices';
@@ -222,37 +223,7 @@ export function serviceRequestViewFields({
        */
       label: objectLabel ? 'Где стоит и для кого' : 'Для кого',
       full: true,
-      children: (
-        <Space size={8} wrap>
-          {objectLabel && <span>{objectLabel}</span>}
-          {/* «Не тот объект» (Р16): объект в этой заявке назвал человек, а не подставила карточка
-              техники. Пометка историчная и неизменная — это факт заявления, а не расхождение:
-              расхождение вычисляется соединением с карточкой на сервере и гаснет само, когда
-              ИТ-служба перенесёт единицу. Поэтому подпись говорит про заявление, а не про то, что
-              аппарат «стоит не там»: к моменту чтения его могли уже перенести.
-              У заявки без аппарата этой пары не бывает: спорить с карточкой техники, которой нет,
-              не о чем — дверь закрыта на сервере (Р7). */}
-          {request.objectOverridden && (
-            <Tooltip title="Заявитель указал, что аппарат стоит на другом объекте: справочник этим не правится — единицу переносит ИТ-служба, разобрав отбор расхождений">
-              <Tag color="gold">Объект указан заявителем</Tag>
-            </Tooltip>
-          )}
-          {/* Место внутри объекта — снимок на момент заведения (Р57): по нему сервис и едет,
-              а карточка единицы к моменту ремонта могла уже переехать. */}
-          {request.equipment?.location && (
-            <Typography.Text type="secondary">{request.equipment.location}</Typography.Text>
-          )}
-          {request.customerDepartment && <Tag>{request.customerDepartment.name}</Tag>}
-          {/* Отдел-владелец техники: по нему считается область, и он бывает не тем же, что
-              отдел-заказчик — соседний отдел чинит «чужой» принтер чаще, чем кажется. */}
-          {request.equipmentDepartment &&
-            request.equipmentDepartment.id !== request.customerDepartment?.id && (
-              <Typography.Text type="secondary">
-                владелец: {request.equipmentDepartment.name}
-              </Typography.Text>
-            )}
-        </Space>
-      ),
+      children: <ServiceRequestPlaceValue request={request} />,
     },
     {
       key: 'description',

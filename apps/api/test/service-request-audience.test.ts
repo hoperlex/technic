@@ -176,6 +176,15 @@ const FULL: ServiceRequestDto = {
     at: '2026-08-18T07:30:00.000Z',
     actorName: 'Петров П. П.',
   },
+  // Where the unit stands now (ADR 0215): filled for the same reason as its neighbours — an empty
+  // field would not prove that the projection keeps it for every audience.
+  currentPlace: {
+    object: { id: UUID, code: 'ОБ-3', name: 'Склад' },
+    location: 'кабинет 5',
+    state: 'at_service',
+    stateNote: 'СЦ Принт',
+    movedOn: '2026-08-18',
+  },
   estimateRevision: 3,
   /*
    * ЧЕТЫРЕ ПОЛЯ ВОЛНЫ ОСВОБОЖДЕНИЯ (план `docs/office-equipment-on-site-and-invoice-estimate-plan.md`,
