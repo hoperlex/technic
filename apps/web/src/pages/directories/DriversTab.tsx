@@ -269,11 +269,10 @@ export function DriversTab() {
     onSuccess: () => {
       message.success('Сохранено');
       invalidate();
-      // The card owns the name and the phone, so the server copies both into the live account of
-      // that same person (`PATCH /drivers/:id`). Accounts sit under their own root, which
-      // `driverKeys.root` does not cover — without this the «Пользователи» tab and every account
-      // picker keep offering the person under the old name. Of the directory's doors only this one
-      // writes to `users`: purging a driver refuses outright while a live account points at him.
+      // The card owns the name and the phone, so the server copies both into the live account of the
+      // same person — under its own root, uncovered by `driverKeys.root`. Without this the
+      // «Пользователи» tab and every account picker keep the old name. Of the directory's doors only
+      // this one writes to `users`: purging refuses while a live account points at the person.
       void qc.invalidateQueries({ queryKey: userAccountKeys.root });
       setOpen(false);
     },

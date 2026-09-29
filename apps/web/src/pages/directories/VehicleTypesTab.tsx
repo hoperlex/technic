@@ -328,10 +328,9 @@ export function VehicleTypesTab() {
       if (saved.unhitchedTrailers)
         message.warning(unhitchedNotice(saved.unhitchedTrailers, saved.unhitchedVehicles), 8);
       // Moving a type onto the "форма № 3" blank strips the hitches of EVERY vehicle of that type
-      // (`releaseHitchesOfVehicleType`) — trailer rows, under their own root, missed by
-      // `invalidateTypes`. Here and not in the `finally`: the release rides in the PATCH
-      // transaction, so a failed save let no hitch go. Skip it and freed trailers still show a
-      // tractor whose blank has no slot to print them in.
+      // (`releaseHitchesOfVehicleType`) — trailer rows under their own root, missed by
+      // `invalidateTypes`, so freed trailers keep showing a tractor whose blank cannot print them.
+      // Here and not in `finally`: the release rides in the PATCH, and a failed save frees nothing.
       void qc.invalidateQueries({ queryKey: trailerKeys.root });
       setOpen(false);
     } catch (e) {

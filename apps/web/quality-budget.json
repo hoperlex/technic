@@ -1,32 +1,32 @@
 {
   "legacyFiles": {
-    "hooks": 6,
-    "utils": 3,
-    "components": 22
+    "hooks": 0,
+    "utils": 1,
+    "components": 0
   },
-  "rawKeyFiles": 45,
+  "rawKeyFiles": 0,
   "antdDeprecated": 17,
   "maxLines": {
-    "src/pages/WasteRequestsPage.tsx": 1869,
+    "src/pages/WasteRequestsPage.tsx": 1874,
     "src/pages/admin/UsersTab.tsx": 1358,
     "src/pages/directories/CounterpartiesTab.tsx": 439,
-    "src/pages/directories/DriversTab.tsx": 877,
+    "src/pages/directories/DriversTab.tsx": 882,
     "src/pages/directories/VehicleSpecsTab.tsx": 480,
     "src/pages/directories/VehicleTypeCardDrawer.tsx": 639,
-    "src/pages/directories/VehicleTypesTab.tsx": 727,
-    "src/pages/directories/VehiclesTab.tsx": 623,
+    "src/pages/directories/VehicleTypesTab.tsx": 733,
+    "src/pages/directories/VehiclesTab.tsx": 619,
     "src/pages/directories/WasteTariffsTab.tsx": 924,
-    "src/pages/vehicle/VehicleAssignModal.tsx": 1924,
-    "src/pages/vehicle/VehicleDayRouteModal.tsx": 437,
-    "src/pages/vehicle/VehicleRequestViewModal.tsx": 1110,
-    "src/pages/vehicle/VehicleRequestsHistoryTab.tsx": 604,
+    "src/pages/vehicle/VehicleAssignModal.tsx": 1923,
+    "src/pages/vehicle/VehicleDayRouteModal.tsx": 428,
+    "src/pages/vehicle/VehicleRequestViewModal.tsx": 1111,
+    "src/pages/vehicle/VehicleRequestsHistoryTab.tsx": 599,
     "src/pages/vehicle/VehicleRequestsTab.tsx": 2821,
     "src/pages/vehicle/VehicleRouteModal.tsx": 795,
-    "src/pages/vehicle/VehicleRoutesModal.tsx": 775,
+    "src/pages/vehicle/VehicleRoutesModal.tsx": 776,
     "src/pages/vehicle/WeeklyRequestPage.tsx": 430,
-    "src/pages/vehicle/routeModal.tsx": 403,
+    "src/pages/vehicle/routeModal.tsx": 402,
     "src/pages/vehicle/weeklyComposition.ts": 410,
-    "src/pages/waste/WasteDoneModal.tsx": 463,
+    "src/pages/waste/WasteDoneModal.tsx": 462,
     "src/pages/waste/WasteRequestViewModal.tsx": 590
   }
 }

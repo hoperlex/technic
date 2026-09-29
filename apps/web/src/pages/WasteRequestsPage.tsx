@@ -872,10 +872,9 @@ function RequestsTab() {
       setRollbackTarget(null);
       setDoneTarget(null);
       void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
-      // Rollback to "new" deletes the request's tickets, pages, file rows and accepted mismatches
-      // in the same transaction as the status (`purgeRequestRecognition`), and closing enqueues the
-      // fresh paper. Neither reaches the request root — without this the card keeps listing erased
-      // tickets and offering actions on rows that no longer exist.
+      // Rollback to "new" erases the tickets with their pages and accepted mismatches in the same
+      // transaction as the status (`purgeRequestRecognition`) — under their own root, so without
+      // this the card keeps listing them and offering actions on rows that no longer exist.
       void qc.invalidateQueries({ queryKey: wasteTicketKeys.root });
     },
     onError: (e) => {
