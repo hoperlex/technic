@@ -1,5 +1,5 @@
 import { Alert } from 'antd';
-import type { RepairPreviewDto, RepairResultDto } from '@technic/contracts';
+import type { OperationRequirement, RepairPreviewDto, RepairResultDto } from '@technic/contracts';
 import { formatDateOnly } from '@shared/lib';
 import { listStyle } from './consequencesList';
 
@@ -38,6 +38,20 @@ export function RepairRestoreAlert() {
  */
 export const RESTORE_RECHECK =
   'Ремонт этой архивной заявки проходит только вместе с её восстановлением — последствия пересчитаны с ним. Прочитайте и подтвердите заново.';
+
+/**
+ * Why the repair asks for a reason, by the outcome the server computed (R32) — not by the calendar.
+ *
+ * The two outcomes read differently to the person. `crew` rewrites worked days and their paper;
+ * `assignment_tail` touches no worked day but still goes to the journal — the typical case is the
+ * anchor offered after a fill, from today to the end of the term. Telling that person "the repair
+ * touches worked days" would be false and would make them look for paper that is not there.
+ */
+export function repairReasonHint(requirement: OperationRequirement): string {
+  return requirement.kind === 'crew'
+    ? 'Ремонт задевает уже отработанные дни: он пойдёт записью в журнал коррекций, и без объяснения её там быть не может.'
+    : 'Ремонт меняет уже принятое решение о машинисте: он пойдёт записью в журнал коррекций, и без объяснения её там быть не может.';
+}
 
 /**
  * The toast after a repair, chosen by the fresh inspection: "history fixed" only when nothing is

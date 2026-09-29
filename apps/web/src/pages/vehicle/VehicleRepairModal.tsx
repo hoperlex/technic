@@ -33,6 +33,7 @@ import {
 import {
   RepairLeftoverAlert,
   repairDoneMessage,
+  repairReasonHint,
   RepairRestoreAlert,
   RESTORE_RECHECK,
 } from './RepairNotices';
@@ -377,7 +378,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
               name="reason"
               label="Причина"
               style={{ marginBottom: 0 }}
-              extra="Ремонт задевает уже отработанные дни: он пойдёт записью в журнал коррекций, и без объяснения её там быть не может."
+              extra={repairReasonHint(dto.operationRequirement)}
               rules={[{ required: true, message: 'Укажите причину' }]}
             >
               <Input.TextArea

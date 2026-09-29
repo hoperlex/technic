@@ -438,6 +438,67 @@ describe('починка истории: что осталось после за
     expect(second.knownFills).toBeUndefined();
   });
 
+  /*
+   * An anchor from today to the end of the term is an `assignment_tail` outcome: it changes a
+   * decision already taken, so the server wants a journal operation with a reason. The window asks
+   * for it by `operationRequirement`, not by the calendar, and does not send the command without it
+   * (the server would answer 422); the hint must not claim worked days are touched.
+   */
+  it('шаг якоря просит причину, когда её требует сервер, и без неё не уходит', async () => {
+    let repaired = false;
+    const http = renderModal({
+      'GET /vehicle-requests/:id/assignment-changes/repair/state': () =>
+        json(repairPreview({ state: 'materialized', requiredAnchors: [ANCHOR] })),
+      'POST /vehicle-requests/:id/assignment-changes/repair/preview': () =>
+        json(
+          repairPreview({
+            state: 'materialized',
+            stateAfter: 'ready',
+            operationRequirement: {
+              kind: 'assignment_tail',
+              reasonRequired: true,
+              operationIdRequired: true,
+            },
+          }),
+        ),
+      'POST /vehicle-requests/:id/assignment-changes/repair': () => {
+        repaired = true;
+        return json({
+          ok: true,
+          repeated: false,
+          version: 4,
+          state: 'ready',
+          operationId: 'op-1',
+          archived: false,
+        });
+      },
+    });
+
+    await selectOption(`Кто работал ${fmt(ANCHOR.from)} — ${fmt(ANCHOR.to)}`, /Кузнецов/);
+    press('Показать последствия');
+    await screen.findByText('Причина');
+    expect(screen.getByText(/меняет уже принятое решение о машинисте/)).toBeDefined();
+    expect(screen.queryByText(/задевает уже отработанные дни/)).toBeNull();
+
+    press('Подтвердить');
+    await screen.findByText('Укажите причину');
+    expect(repaired).toBe(false);
+
+    fireEvent.change(document.querySelector('.ant-modal textarea')!, {
+      target: { value: 'С сегодняшнего дня работает Кузнецов' },
+    });
+    press('Подтвердить');
+    await waitFor(() => expect(repaired).toBe(true));
+    const applied = bodyOf(http, 'POST /vehicle-requests/:id/assignment-changes/repair');
+    expect(applied.anchors).toEqual([
+      { effectiveDate: ANCHOR.effectiveDate, driverPersonId: KUZNETSOV.id },
+    ]);
+    expect(applied.operation).toMatchObject({ reason: 'С сегодняшнего дня работает Кузнецов' });
+    expect((applied.operation as { operationId: string }).operationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-/,
+    );
+  });
+
   it('полная после ремонта история — «исправлена», без списка остатка', async () => {
     let repaired = false;
     renderModal({
