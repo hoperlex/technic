@@ -235,15 +235,16 @@ export default async function vehicleRequestAssignmentRepairRoutes(
           plan: (ctx) => planRepairCommand(ctx, body),
           handshake: (ctx) => {
             /*
-             * Р29: paper-free определяется расчётом, а не архивным статусом. Мягкое удаление сверку
-             * не зовёт, поэтому листы, выписанные до архивирования, остаются действующими, и «в
-             * архиве `esm2Mode` = none» ничего не говорит о бумаге. Иначе получалось бы так: в
-             * архиве лежит лист `A + Иван`, ремонт «бесплатно» правит историю на `B + Петров`,
-             * restore снимает архив — и живая заявка расходится с действующим бланком, причём
-             * сверки может не случиться ещё месяц.
+             * R29: an archived request whose executable paper plan is not empty is repaired only
+             * together with `restore`. Soft deletion never calls the sync, so blanks issued before
+             * archiving stay live; without this refusal an archived sheet `A + Ivan` could be
+             * contradicted "for free" by a history of `B + Petrov`, and the request restored later
+             * would live against a live blank until some sync happened to run. The same holds for
+             * a fill and for its cancellation: both mint or burn blanks, so on an archived request
+             * both go only with `restore` (ADR 0214).
              *
-             * Отказ стоит здесь, а не в расчёте: предпросмотр обязан **показать** человеку, что
-             * нужен режим восстановления, а не ответить ему отказом вместо плана.
+             * The refusal sits here, not in the computation: the preview must SHOW that restore is
+             * needed, not answer with a refusal instead of a plan.
              */
             if (ctx.plan.restoreRequired && !restore) {
               throw err.unprocessable(
@@ -448,9 +449,15 @@ interface RepairComputed {
   stateAfter: AssignmentHistoryState;
   blockerFingerprint: string;
   blockersBefore: AssignmentBlockerFact[];
-  /** Исполняемый план бумаги: он же показывается, он же хешируется, он же исполняется шагом 12. */
+  /**
+   * The executable paper plan: the one the preview shows, the fingerprint hashes, step 12 executes
+   * and `paperFree` (R29) is judged by.
+   */
   paperPlan: Esm2SheetPlan;
-  /** Пробный план — без разблокировок: им считаются `paperFree` (Р29) и множество разблокировок. */
+  /**
+   * The probe plan, without unlocks: its `locked` is the set of worked-out sheets the operation
+   * must name to re-issue (R11). It answers nothing else — see `planRepairCommand`.
+   */
   probePlan: Esm2SheetPlan;
   paperFree: boolean;
   restoreRequired: boolean;
@@ -554,24 +561,20 @@ async function planRepairCommand(
   });
 
   /*
-   * Планов бумаги два, и разница между ними смысловая (Р11, Р29).
+   * Two paper plans, and they answer different questions (R11, R29).
    *
-   * **Пробный** — без разблокировок: его `cancel`/`issue` отвечают на вопрос «paper-free ли этот
-   * ремонт», а его `locked` и есть множество отработанных листов, которые операция обязана назвать
-   * поимённо, чтобы их переоформить. Считать это по плану, которому разблокировки уже отданы,
-   * нельзя: там их в `locked` уже не будет.
+   * The **probe** plan has no unlocks: its `locked` is exactly the set of worked-out sheets the
+   * operation must name to re-issue them. It cannot come from the executable plan, where those
+   * sheets are already unlocked and no longer `locked`.
    *
-   * **Исполняемый** — с разблокировками и разрешением на прошлое: его показывает предпросмотр, его
-   * хеширует отпечаток, и его же исполняет шаг 12. Показывать одно, а исполнять другое означало бы
-   * обещание, которого дверь не держит.
+   * The **executable** plan carries the unlocks and the permit for the past: the preview shows it,
+   * the fingerprint hashes it, step 12 executes it — and `paperFree` is judged by it. The probe was
+   * once used for `paperFree` too, and it is blind precisely where a repair does its work: without
+   * the correction permit it cannot issue a day that has already ended, so a fill that mints blanks
+   * for the locked past looked paper-free. For an archived request that meant a fill went through
+   * without `restore` and minted blanks for a request left in the archive (R29, ADR 0214).
    */
   const probePlan = repairPaperPlan(context, plan.changesAfter, term, asOf);
-  const paperFree = isPaperFree(probePlan);
-  // Р29: paper-free определяется расчётом, а не архивным статусом. Мягкое удаление сверку не
-  // зовёт, поэтому листы, выписанные до архивирования, остаются действующими, и «в архиве
-  // `esm2Mode` = none» ничего не говорит о бумаге.
-  const restoreRequired = request.deletedAt !== null && !paperFree;
-
   const unlocks = requiredUnlocksOf(context, probePlan, effects.paperScope);
   const unlockFingerprint =
     unlocks.length === 0 ? null : correctionFingerprint(unlocks.map((sheet) => sheet.id).sort());
@@ -579,6 +582,15 @@ async function planRepairCommand(
     waybillIds: unlocks.map((sheet) => sheet.id),
     correction: effects.needsCorrection,
   });
+  const paperFree = isPaperFree(paperPlan);
+  /*
+   * R29: paper-free is decided by the computed plan, not by the archive flag. Soft deletion never
+   * calls the sync, so blanks issued before archiving stay live and "archived means `esm2Mode` =
+   * none" says nothing about paper. A non-empty plan on an archived request is refused without
+   * `restore` in the handshake; the preview reports it rather than refusing, so the window can
+   * offer the restore instead of a dead end.
+   */
+  const restoreRequired = request.deletedAt !== null && !paperFree;
 
   /*
    * Предупреждения и снимок бланка — шагом 6, вместе с планом и до первой записи (§7, Б4).

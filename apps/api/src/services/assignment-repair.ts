@@ -99,15 +99,19 @@ import type { Esm2IssuePreparations } from './waybill-esm2';
  * выключенным рубильником: свернуть фичу обратно — снятие того же одного значения, а не выпутывание
  * условий из кода.
  *
- * ЧЕГО ЗДЕСЬ НЕТ. Записи: модуль считает и планирует, а пишет ядро (`assignment-write.ts`) под
- * каноном (`assignment-command.ts`). Бумагу исполняет шаг 12 двери
- * ([vehicle-request-assignment-repair.ts](../routes/vehicle-request-assignment-repair.ts)) — и
- * только при `read_mode = history`: до переключения чтения бланки ведёт недельная сверка, которая
- * знает одну машину и одного машиниста на заявку и переписала бы починенные отрезки вопреки
- * ремонту. Планов при этом два, и разница между ними смысловая: **пробный** (без разблокировок)
- * отвечает на вопрос «paper-free ли ремонт» (Р29) и называет листы, которые операция обязана
- * подтвердить, **исполняемый** (с разблокировками и разрешением на прошлое) показывается человеку,
- * хешируется отпечатком и исполняется.
+ * WHAT IS NOT HERE. Writes: this module computes and plans, the write core
+ * (`assignment-write.ts`) writes under the canon (`assignment-command.ts`). Paper is executed by
+ * step 12 of the door ([vehicle-request-assignment-repair.ts](../routes/vehicle-request-assignment-repair.ts))
+ * and only under `read_mode = history`: before the read switch the weekly sync owns the blanks, and
+ * it knows one vehicle and one machinist per request — it would rewrite the repaired segments
+ * against the repair.
+ *
+ * Two paper plans are computed, and the difference is one of meaning: the **probe** plan (no
+ * unlocks) only names the worked-out sheets the operation must confirm by name (R11); the
+ * **executable** plan (unlocks plus the permit for the past) is shown, fingerprinted, executed —
+ * and judged for "paper-free" (R29). The probe cannot answer that last question: without the
+ * permit it never issues a day that has already ended, so it called a fill of the locked past
+ * paper-free while the executable plan minted blanks for it (ADR 0214).
  */
 
 // ── Механический запрет заполнения (Х1, Ф1) ──
@@ -1274,12 +1278,15 @@ export function repairPaperPlan(
   term: AssignmentTerm,
   asOf: string,
   /**
-   * Ключи снятия неприкосновенности прошлого (Р11, Р21). Порознь они не работают: разблокировав
-   * отработанный лист, но не разрешив прошедший отрезок, план сжёг бы номер и не выписал замены.
+   * The keys that lift the protection of the past (R11, R21). They only work together: unlocking
+   * a worked-out sheet without permitting an ended segment would burn a number and issue nothing
+   * in its place.
    *
-   * Не переданы — план **пробный**: им считаются `isPaperFree` (Р29) и множество листов, которые
-   * операция обязана назвать поимённо. Переданы — план **исполняемый**: его показывает предпросмотр,
-   * его хеширует отпечаток, и его же исполняет шаг 12.
+   * Absent — the plan is the **probe**: it only yields the set of sheets the operation must name
+   * (its `locked`). Present — the plan is **executable**: the preview shows it, the fingerprint
+   * hashes it, step 12 executes it, and `isPaperFree` (R29) is asked of it. Asking the probe
+   * whether a repair is paper-free is wrong: it cannot issue an ended day, so a fill of the locked
+   * past looked paper-free while its executable plan minted blanks (ADR 0214).
    */
   unlock?: { waybillIds: readonly string[]; correction: boolean },
 ): Esm2SheetPlan {
@@ -1295,13 +1302,15 @@ export function repairPaperPlan(
 }
 
 /**
- * Пуст ли бумажный план: только это и означает «paper-free» (Р29).
+ * Whether a paper plan is empty — the only meaning of "paper-free" (R29). Ask it of the
+ * EXECUTABLE plan (see {@link repairPaperPlan}): the probe cannot issue an ended day and would
+ * call a fill of the locked past paper-free.
  *
- * Правка периода считается наравне с гашением и выпиской (Р5): она меняет выданный бланк строгой
- * отчётности — период документа, снимок, по которому он печатается, и его версию, — и план из
- * одной такой правки «бумаги не касается» не означает ни в каком смысле. Это гейт: им команда
- * решает, спрашивать ли право и причину, и просмотреть в нём сокращение значило бы пропустить
- * правку строгого документа как безбумажную.
+ * A period trim counts on a par with a cancel and an issue (R5): it changes an issued strict
+ * reporting blank — the document's period, the snapshot it prints from and its version — and a
+ * plan of one such trim "does not touch paper" in no sense. This is a gate: it decides whether an
+ * archived request needs `restore`, and overlooking a trim would let an edit of a strict document
+ * pass as paperless.
  */
 export function isPaperFree(plan: Esm2SheetPlan): boolean {
   return plan.cancel.length === 0 && plan.issue.length === 0 && plan.trim.length === 0;

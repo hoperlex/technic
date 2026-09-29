@@ -2195,7 +2195,7 @@ describeReadModes(
   readMode,
   'заполнение unknown и его отмена против бумаги (Х1, Ф1, Э1)',
   (mode) => {
-    it('[DIVERGENCE: history paper defects card] заполнение дыры без бумаги: отпечаток обязателен, в history бланки выписываются задним числом', async () => {
+    it('заполнение дыры без бумаги: отпечаток обязателен, в history бланки выписываются задним числом', async () => {
       if (!DB_URL) return;
       const scene = await makeScene({ dateFrom: DEEP_FROM, dateTo: GAP_TO, history: gapHistory() });
       const body = fillBody('Нашли табель');
@@ -2224,12 +2224,14 @@ describeReadModes(
       expect(planIssueOf(dto)).toEqual(filled);
       expect(dto.issues.some((issue) => issue.warnings.length > 0)).toBe(true);
       /*
-       * DIVERGENCE (R29, contract `RepairPreviewDto.paperFree`: "is the paper plan empty"): the
-       * preview reports `paperFree: true` while its own plan issues blanks. `paperFree` is taken from
-       * the probe plan, which has neither unlocks nor the correction permit, and a probe cannot see
-       * work that lies wholly in the locked past. The archive case below shows what this costs.
+       * `paperFree` answers for the plan the preview shows (R29, contract `RepairPreviewDto`):
+       * this one issues blanks, so it is not paper-free. It used to be asked of the probe plan,
+       * which has no permit for the past and cannot see work lying wholly in locked days — the
+       * archive case below shows what that cost (ADR 0214).
        */
-      expect(dto.paperFree).toBe(true);
+      expect(dto.paperFree).toBe(false);
+      // Not archived, so nothing to restore: the flag only gates archived requests.
+      expect(dto.restoreRequired).toBe(false);
 
       const applied = await postRepair(ctx.admin, scene.requestId, {
         ...body,
@@ -2633,7 +2635,7 @@ describeReadModes(readMode, 'ремонт архивной заявки прот
     expect(await esm2EventsOf(scene.requestId)).toHaveLength(expected.events);
   });
 
-  it('[DIVERGENCE: history paper defects card] заполнение архивной заявки не просит восстановления, а в history выписывает ей бланки (Р29)', async () => {
+  it('заполнение архивной заявки — только с восстановлением: без restore 422 и ничего не записано (Р29)', async () => {
     if (!DB_URL) return;
     const scene = await makeScene({
       dateFrom: DEEP_FROM,
@@ -2642,26 +2644,60 @@ describeReadModes(readMode, 'ремонт архивной заявки прот
       archived: true,
     });
     const body = fillBody('Табель архивной заявки');
+    const rowsBefore = await rowsOf(scene.requestId);
     const preview = await previewRepair(ctx.admin, scene.requestId, body);
     expect(preview.statusCode, preview.body).toBe(200);
     const dto = preview.json<RepairPreview>();
     expect(dto.archived).toBe(true);
     expect(dto.plan.issue.length).toBeGreaterThan(0);
     /*
-     * DIVERGENCE (R29: "a non-empty plan rejects the repair and demands `restore: true`; one
-     * transaction lifts the archive, writes history and calls the sync"): the same probe-plan
-     * blind spot as in the paperless fill above. The plan issues blanks, yet `paperFree` is true
-     * and `restoreRequired` false, so the repair goes through with the archive left in place.
+     * R29: "a non-empty plan rejects the repair and demands `restore: true`". The fill mints
+     * blanks for the locked past, so its plan is not empty and the preview says so — in both
+     * modes, because the plan is computed whatever the mode (§10).
      */
-    expect(dto.paperFree).toBe(true);
-    expect(dto.restoreRequired).toBe(false);
+    expect(dto.paperFree).toBe(false);
+    expect(dto.restoreRequired).toBe(true);
 
-    const res = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+    const refused = await postRepair(ctx.admin, scene.requestId, { ...body, ...handshakeOf(dto) });
+    expect(refused.statusCode, refused.body).toBe(422);
+    expect(refused.json<{ message: string }>().message).toMatch(/восстановлен/i);
+    // Refused at the handshake, before step 10: no journal row, no history, no paper, no version.
+    expect(await rowsOf(scene.requestId)).toEqual(rowsBefore);
+    expect(await sheetsOf(scene.requestId)).toEqual([]);
+    const refusedState = await requestState(scene.requestId);
+    expect(refusedState.deleted_at).not.toBeNull();
+    expect(refusedState.version).toBe(0);
+
+    // `restore` is part of the consequences and of the fingerprint, so the preview carries it too:
+    // reusing the fingerprint of the plain preview would be a 409, not the command under test.
+    const restorePreview = await previewRepair(ctx.admin, scene.requestId, {
+      ...body,
+      restore: true,
+    });
+    expect(restorePreview.statusCode, restorePreview.body).toBe(200);
+    const restoreDto = restorePreview.json<RepairPreview>();
+    expect(planIssueOf(restoreDto)).toEqual(planIssueOf(dto));
+    const res = await postRepair(ctx.admin, scene.requestId, {
+      ...body,
+      restore: true,
+      ...handshakeOf(restoreDto),
+    });
     expect(res.statusCode, res.body).toBe(200);
-    expect((await requestState(scene.requestId)).deleted_at).not.toBeNull();
-    // In `history` the blanks are really minted — for a request that stays in the archive.
+    expect(res.json<{ archived: boolean; state: string }>()).toMatchObject({
+      archived: false,
+      state: 'ready',
+    });
+    // One transaction: the archive lifted, the fill written, two events for two facts.
+    expect((await requestState(scene.requestId)).deleted_at).toBeNull();
+    expect(
+      actual(await rowsOf(scene.requestId)).filter((row) => row.origin === 'known_fill'),
+    ).toHaveLength(1);
+    const actions = await auditActionsOf(scene.requestId);
+    expect(actions).toContain('vehicle_request.assignment_repair');
+    expect(actions).toContain('vehicle_request.restore');
+    // In `history` the blanks are minted for a request that is live again, not one left archived.
     expect(compositionOf(await sheetsOf(scene.requestId))).toEqual(
-      byReadMode(mode, { legacy: [] as string[], history: planIssueOf(dto) }),
+      byReadMode(mode, { legacy: [] as string[], history: planIssueOf(restoreDto) }),
     );
   });
 });
