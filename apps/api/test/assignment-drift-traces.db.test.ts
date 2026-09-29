@@ -182,10 +182,17 @@ async function repairOperation(
     anchors?: { effectiveDate: string; driverPersonId: string }[];
     cancelledFillGroup?: string | null;
   },
-  extra: { restore?: boolean; stateBefore?: string; stateAfter?: string } = {},
+  extra: {
+    restore?: boolean;
+    stateBefore?: string;
+    stateAfter?: string;
+    /** The days the command changed (`effects.paperRange`/`paperScope`); default — the fills. */
+    scope?: { from: string; to: string }[];
+  } = {},
 ): Promise<{ id: string; createdAt: string }> {
+  const changed = extra.scope ?? (repair.fills ?? []).map(({ from, to }) => ({ from, to }));
   const payload = {
-    effects: {},
+    effects: { paperRange: changed, paperScope: changed },
     repair: {
       anchors: repair.anchors ?? [],
       fills: repair.fills ?? [],
@@ -363,7 +370,13 @@ async function leakScene(options: { twoFills?: boolean } = {}) {
   const fills = options.twoFills
     ? [fill, { from: shiftDateKey(MONDAY, 7), to: TERM_TO, personId: person }]
     : [fill];
-  const op = await repairOperation(request.id, { fills });
+  // The door measured the fill's `set` on history before it: it ran to the end of the term, so the
+  // leaked days are part of the command's own range, and their blanks are not "in passing".
+  const op = await repairOperation(
+    request.id,
+    { fills },
+    { scope: [{ from: TERM_FROM, to: TERM_TO }] },
+  );
   const group = await knownFill(request.id, request.unknownRowId, fill, op.id, false);
   // The door re-issued the whole term under the operation: the filled weeks and the leaked ones.
   await mintedBy(request.id, op.id, TERM_FROM, TERM_TO);
@@ -611,6 +624,32 @@ describe.skipIf(!readMode.enabled)('следы двери ремонта и их
     const paper = await paperOf(request.id);
     expect((await heal(request.id)).correctionId).toBeNull();
     expect(await paperOf(request.id)).toEqual(paper);
+  });
+
+  it('Д: бланк, выписанный ремонтом на дни вне его команды, — только отчёт', async () => {
+    const person = await newPerson('Попутов');
+    const request = await scene(person);
+    // The fill covers the first worked week only; the door's scope-less paper plan re-issued the
+    // second one as well, because history happened to know its person.
+    const fill = { from: TERM_FROM, to: shiftDateKey(MONDAY, -8), personId: person };
+    const op = await repairOperation(request.id, { fills: [fill] });
+    await knownFill(request.id, request.unknownRowId, fill, op.id, true);
+    await mintedBy(request.id, op.id, TERM_FROM, shiftDateKey(MONDAY, -1));
+
+    const found = await inspect(request.id);
+    expect(ctx.traces.traceKindsOf(found)).toEqual(['incidental_sheet']);
+    // Only the blanks of the second week: those of the filled week are the command's own paper.
+    expect(found.incidentalSheets.length).toBeGreaterThan(0);
+    for (const item of found.incidentalSheets) {
+      expect(item.sheet.from > fill.to).toBe(true);
+      expect(item.outside).toEqual([{ from: item.sheet.from, to: item.sheet.to }]);
+    }
+
+    const paper = await paperOf(request.id);
+    const history = await historyOf(request.id);
+    expect((await heal(request.id)).correctionId).toBeNull();
+    expect(await paperOf(request.id)).toEqual(paper);
+    expect(await historyOf(request.id)).toEqual(history);
   });
 
   it('команда: отчёт без env портала, --apply --fix=leak лечит, повтор чист', async () => {

@@ -23,6 +23,7 @@ import {
   DRIFT_FIXES,
   inspectTraces,
   listTraceCandidates,
+  traceHealPlanOf,
   traceKindsOf,
   type DriftFix,
   type RequestTraces,
@@ -61,7 +62,8 @@ import {
  * human look, then the next run (the user's decision of 29.09.2026).
  *
  * Exit codes: 0 — nothing left for a human; 3 — some items need a human (listed as «ВРУЧНУЮ»,
- * orphans and archived repairs); 1 — the run failed; 2 — bad arguments.
+ * orphans, archived repairs, blanks a repair printed in passing); 1 — the run failed; 2 — bad
+ * arguments.
  *
  *   docker compose -f deploy/docker-compose.yml -p technic --profile tools run --rm assignment-drift
  *   docker compose … run --rm assignment-drift --apply --fix=leak,fill-paper --actor=<email>
@@ -133,6 +135,7 @@ const TRACE_LETTER: Record<TraceKind, string> = {
   cancelled_fill: 'А',
   orphan: 'Б',
   archived_repair: 'Г',
+  incidental_sheet: 'Д',
 };
 
 const short = (id: string | null): string => (id ? id.slice(0, 8) : '—');
@@ -169,12 +172,13 @@ function describeDrift(num: number, verdict: DriftVerdict, applied: boolean): st
   return `${head}: ${applied ? 'ПОЧИНЕНО' : 'будет починено'} с ${verdict.boundary} — ${pointsLine(verdict)}`;
 }
 
-/** Lines of the four trace sections, and how many items in them need a human. */
+/** Lines of the trace sections, and how many items in them need a human. */
 interface TraceSections {
   leak: string[];
   cancelled_fill: string[];
   orphan: string[];
   archived_repair: string[];
+  incidental_sheet: string[];
   manual: number;
   curable: number;
   healed: number;
@@ -289,6 +293,17 @@ function addTraceLines(
         '→ решить вручную: восстановить заявку и сверить бумагу либо аннулировать выписанное',
     );
   }
+
+  for (const item of traces.incidentalSheets) {
+    out.manual += 1;
+    const op = item.operation;
+    const days = item.outside.map((range) => `${range.from}…${range.to}`).join(', ');
+    out.incidental_sheet.push(
+      `  ${head}: ${sheetLine(item.sheet)} выписан операцией ремонта ${short(op.operationId)} ` +
+        `от ${op.day} на дни вне её команды: ${days} → бланк выписан попутно, команда эти дни не ` +
+        'меняла; оставить или аннулировать — решает пользователь',
+    );
+  }
 }
 
 async function readOnly<T>(
@@ -328,8 +343,11 @@ async function main(): Promise<number> {
       return n;
     });
   if (apply && !flags.get('actor')) throw new UsageError('--apply требует --actor=<email>');
-  const reason =
-    flags.get('reason')?.trim() || 'Починка истории назначения по выданным листам (ADR 0212)';
+  const given = flags.get('reason')?.trim();
+  const reason = given || 'Починка истории назначения по выданным листам (ADR 0212)';
+  // The cure's reason lands in `cancel_reason` of every blank it burns: it must say why the number
+  // was burned, not repeat the drift repair's words.
+  const healReason = given || 'Лечение следа двери ремонта истории назначения (ADR 0212)';
   const heal = apply && (fixes.has('leak') || fixes.has('fill-paper'));
 
   const access = resolveMaintenanceAccess();
@@ -362,6 +380,7 @@ async function main(): Promise<number> {
       cancelled_fill: [],
       orphan: [],
       archived_repair: [],
+      incidental_sheet: [],
       manual: 0,
       curable: 0,
       healed: 0,
@@ -372,20 +391,21 @@ async function main(): Promise<number> {
 
     for (const [id, request] of ordered) {
       try {
-        let before: RequestTraces;
+        let before = await readOnly(db, (tx) => inspectTraces(tx, id, asOf));
         let plan: TraceHealPlan | null = null;
-        if (heal) {
+        // The writing transaction (door gate, row lock) is opened only where the report found a
+        // cure; the cure itself is recomputed under the lock, never taken from this read.
+        const curable = traceHealPlanOf(before, fixes);
+        if (heal && (curable.remainders.length > 0 || curable.cancels.length > 0)) {
           const outcome = await applyTraceHeal(db, {
             requestId: id,
             asOf,
             actorUserId: actor!.id,
-            reason,
+            reason: healReason,
             fixes,
           });
           before = outcome.before;
           plan = outcome.plan;
-        } else {
-          before = await readOnly(db, (tx) => inspectTraces(tx, id, asOf));
         }
         const kinds = traceKindsOf(before);
         if (kinds.length > 0) {
@@ -446,6 +466,10 @@ async function main(): Promise<number> {
     section(
       'Г. Ремонт архивной заявки без восстановления (Д2) — только отчёт',
       sections.archived_repair,
+    );
+    section(
+      'Д. Бланки, выписанные ремонтом попутно, на дни вне его команды — только отчёт',
+      sections.incidental_sheet,
     );
     body.push('', 'Сверка истории с листами (ADR 0212, решение 5)');
     body.push(

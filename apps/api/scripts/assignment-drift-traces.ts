@@ -38,7 +38,11 @@ import type * as CorrectionJournal from '../src/services/waybill-correction';
  * - `orphan` (D5) — a fill burned (or trimmed) a sheet and issued nothing in its place: days of a
  *   worked week are left without a blank;
  * - `archived_repair` (D2) — a repair of an archived request without `restore` minted or burned
- *   blanks of a request nobody sees.
+ *   blanks of a request nobody sees;
+ * - `incidental_sheet` — the repair's executable paper plan ran without a scope, so any repair in
+ *   `history` also printed blanks for days its command never touched: past days without a blank
+ *   whose person history happened to know (against section 13 of the periods plan). The blank
+ *   agrees with history, which is exactly why the drift verdict cannot see it.
  *
  * The drift repair is never applied to a request with any of these (the user's decision of
  * 29.09.2026): following the paper there would launder the defect into history.
@@ -52,9 +56,10 @@ import type * as CorrectionJournal from '../src/services/waybill-correction';
  *   then asks for an anchor — the second operation the fixed door asks for as well;
  * - `cancelled_fill`: the active blanks the cancelled fill issued are cancelled through the journal.
  *
- * Orphans and archived repairs are reported with a hint for a dispatcher: the cure there is a
- * decision about people (who worked the orphaned days) or about the archive, not a mechanical
- * write. Anything ambiguous — several fills in one operation, a blank straddling filled and leaked
+ * Orphans, archived repairs and incidental blanks are reported with a hint for a dispatcher: the
+ * cure there is a decision about people (who worked the orphaned days), about the archive, or about
+ * whether a blank nobody asked for should stay in circulation — not a mechanical write. Anything
+ * ambiguous — several fills in one operation, a blank straddling filled and leaked
  * days, a worked or signed blank, overlaps with another fill — stays in the report with its reason.
  *
  * WHY NOTHING HERE TRUSTS THE REPORT. The same `inspectTraces` runs in the dry run and inside the
@@ -69,7 +74,8 @@ type Tx = Parameters<Parameters<Handle['transaction']>[0]>[0];
 export const DRIFT_FIXES = ['drift', 'leak', 'fill-paper'] as const;
 export type DriftFix = (typeof DRIFT_FIXES)[number];
 
-export type TraceKind = 'leak' | 'cancelled_fill' | 'orphan' | 'archived_repair';
+export type TraceKind =
+  'leak' | 'cancelled_fill' | 'orphan' | 'archived_repair' | 'incidental_sheet';
 
 /** Door name in the journal fingerprint target: keeps these operations apart from the doors'. */
 const JOURNAL_DOOR = 'assignment-drift';
@@ -153,6 +159,15 @@ export interface ArchivedRepairTrace {
   trimmed: TraceSheet[];
 }
 
+export interface IncidentalSheetTrace {
+  kind: 'incidental_sheet';
+  requestId: string;
+  operation: TraceOperation;
+  sheet: TraceSheet;
+  /** Days of the blank outside the days the command changed (its own `paperScope`). */
+  outside: AssignmentRange[];
+}
+
 export interface RequestTraces {
   requestId: string;
   num: number;
@@ -162,6 +177,7 @@ export interface RequestTraces {
   cancelledFills: CancelledFillTrace[];
   orphans: OrphanTrace[];
   archivedRepairs: ArchivedRepairTrace[];
+  incidentalSheets: IncidentalSheetTrace[];
 }
 
 /** Which trace kinds a request carries — the drift repair is withheld when this is non-empty. */
@@ -173,15 +189,17 @@ export function traceKindsOf(traces: RequestTraces): TraceKind[] {
   if (traces.cancelledFills.some((trace) => trace.sheets.length > 0)) kinds.push('cancelled_fill');
   if (traces.orphans.length > 0) kinds.push('orphan');
   if (traces.archivedRepairs.length > 0) kinds.push('archived_repair');
+  if (traces.incidentalSheets.length > 0) kinds.push('incidental_sheet');
   return kinds;
 }
 
 // ── Listing ──
 
 /**
- * Requests that may carry a trace: every request that ever had a known fill, plus every request
- * repaired while archived. Both markers are permanent (history rows are never deleted, audit rows
- * neither), so a trace cannot hide from this list by having been superseded.
+ * Requests that may carry a trace: every request that ever had a known fill, every request
+ * repaired while archived, and every request with an active blank minted by a repair operation.
+ * The first two markers are permanent (history rows are never deleted, audit rows neither), so a
+ * trace cannot hide from this list by having been superseded; the third is the trace itself.
  */
 export async function listTraceCandidates(
   db: Handle | Tx,
@@ -196,7 +214,11 @@ export async function listTraceCandidates(
             OR EXISTS (SELECT 1 FROM audit_log a
                         WHERE a.entity_type = 'vehicle_request' AND a.entity_id = r.id::text
                           AND a.action = 'vehicle_request.assignment_repair'
-                          AND a.metadata->>'archived' = 'true'))
+                          AND a.metadata->>'archived' = 'true')
+            OR EXISTS (SELECT 1 FROM waybills w
+                         JOIN waybill_corrections c ON c.id = w.correction_id
+                        WHERE w.source_request_id = r.id AND w.status <> 'cancelled'
+                          AND c.payload -> 'repair' IS NOT NULL))
        ${
          params.nums && params.nums.length > 0
            ? sql`AND r.num IN (${sql.join(
@@ -457,6 +479,36 @@ function repairSummaryOf(payload: unknown): RepairSummary | null {
   };
 }
 
+const isRange = (value: unknown): value is AssignmentRange => {
+  const range = value as Record<string, unknown> | null;
+  return (
+    typeof range?.from === 'string' &&
+    typeof range.to === 'string' &&
+    DATE_RE.test(range.from) &&
+    DATE_RE.test(range.to)
+  );
+};
+
+/**
+ * The days a repair operation's command changed, as the door itself recorded them: its
+ * `paperRange` (logical days of every mutation) and `paperScope` (those days closed over whole
+ * documents). Taken from the snapshot rather than re-derived from `payload.repair`: the door
+ * computed them from history as it stood before the command — an anchor's range ends at the next
+ * machinist row of that moment, a leaking fill's runs to its end — and today's history can no
+ * longer tell. `null` — not a repair operation, or a snapshot this command does not recognise.
+ */
+function commandScopeOf(payload: unknown): AssignmentRange[] | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.repair !== 'object' || record.repair === null) return null;
+  const effects = record.effects as Record<string, unknown> | undefined;
+  const scope = effects?.paperScope;
+  const range = effects?.paperRange;
+  if (!Array.isArray(scope) || !Array.isArray(range)) return null;
+  const all = [...(scope as unknown[]), ...(range as unknown[])];
+  return all.every(isRange) ? all : null;
+}
+
 // ── Inspection ──
 
 function publicSheet(sheet: SheetRow): TraceSheet {
@@ -508,6 +560,7 @@ export async function inspectTraces(
     cancelledFills: [],
     orphans: [],
     archivedRepairs: [],
+    incidentalSheets: [],
   };
   // Linear requests keep no machinist in history (ADR 0100 §6): fills do not exist there.
   if (!head || head.isLinear || head.dateFrom === null) return empty;
@@ -517,13 +570,14 @@ export async function inspectTraces(
   const actual = rows.filter((row) => row.supersededAt === null);
   const fillRows = rows.filter((row) => row.origin === 'known_fill' && row.correctionId);
   const archivedOps = await readArchivedRepairs(tx, requestId);
-  if (fillRows.length === 0 && archivedOps.length === 0) return empty;
-
   const sheets = await readSheets(tx, requestId);
   const active = sheets.filter((sheet) => sheet.status !== 'cancelled');
+  const minting = active.flatMap((sheet) => (sheet.correctionId ? [sheet.correctionId] : []));
+  if (fillRows.length === 0 && archivedOps.length === 0 && minting.length === 0) return empty;
+
   const used = await readUsedSheets(tx, requestId, sheets);
   const operations = await readOperations(tx, [
-    ...new Set(fillRows.map((row) => row.correctionId!)),
+    ...new Set([...fillRows.map((row) => row.correctionId!), ...minting]),
   ]);
   const transitions = await readModeTransitions(tx);
   const opRef = (op: OperationRow): TraceOperation => ({
@@ -649,6 +703,30 @@ export async function inspectTraces(
       trimmed: trimmed.map(publicSheet),
     });
   }
+
+  // Blanks a repair minted on days its command did not change. An archived repair is listed whole
+  // above, and one list per operation is enough for a human.
+  const archivedIds = new Set(archivedOps.map((op) => op.id));
+  for (const op of operations.values()) {
+    if (archivedIds.has(op.id)) continue;
+    const scope = commandScopeOf(op.payload);
+    if (!scope) continue;
+    for (const sheet of active) {
+      if (sheet.correctionId !== op.id) continue;
+      const inTerm = clip({ from: sheet.from, to: sheet.to }, term);
+      if (!inTerm) continue;
+      let outside: AssignmentRange[] = [inTerm];
+      for (const range of scope) outside = subtract(outside, range);
+      if (outside.length === 0) continue;
+      traces.incidentalSheets.push({
+        kind: 'incidental_sheet',
+        requestId,
+        operation: opRef(op),
+        sheet: publicSheet(sheet),
+        outside,
+      });
+    }
+  }
   return traces;
 }
 
@@ -739,7 +817,9 @@ function leakOf(input: {
       manual.push(`лист ${sheet.number} захватывает и заполненные, и протекшие дни`);
     } else if (sheet.to > through) {
       manual.push(`лист ${sheet.number} выходит за протекшие дни (до ${through})`);
-    } else if (!canCancelWaybill({ issuedForDate: sheet.issuedForDate, periodTo: sheet.to }, asOf)) {
+    } else if (
+      !canCancelWaybill({ issuedForDate: sheet.issuedForDate, periodTo: sheet.to }, asOf)
+    ) {
       manual.push(`лист ${sheet.number} отработан (кончился ${sheet.to})`);
     } else if (sheet.driverPersonId !== fill.personId) {
       manual.push(`лист ${sheet.number} печатает не того человека, что заполнение`);
