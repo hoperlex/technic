@@ -297,7 +297,9 @@ function addTraceLines(
   for (const item of traces.incidentalSheets) {
     out.manual += 1;
     const op = item.operation;
-    const days = item.outside.map((range) => `${range.from}…${range.to}`).join(', ');
+    const days = item.outside
+      .map((range) => `${range.from}…${range.to} (${range.locked ? 'прошлое' : 'впереди'})`)
+      .join(', ');
     out.incidental_sheet.push(
       `  ${head}: ${sheetLine(item.sheet)} выписан операцией ремонта ${short(op.operationId)} ` +
         `от ${op.day} на дни вне её команды: ${days} → бланк выписан попутно, команда эти дни не ` +

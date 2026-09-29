@@ -164,8 +164,11 @@ export interface IncidentalSheetTrace {
   requestId: string;
   operation: TraceOperation;
   sheet: TraceSheet;
-  /** Days of the blank outside the days the command changed (its own `paperScope`). */
-  outside: AssignmentRange[];
+  /**
+   * Days of the blank outside the days the command changed (its own `paperScope`), split by the
+   * calendar: a past day is a retroactive blank nobody asked for, a coming one merely early paper.
+   */
+  outside: (AssignmentRange & { locked: boolean })[];
 }
 
 export interface RequestTraces {
@@ -723,7 +726,7 @@ export async function inspectTraces(
         requestId,
         operation: opRef(op),
         sheet: publicSheet(sheet),
-        outside,
+        outside: outside.flatMap((range) => splitByToday(range, asOf)),
       });
     }
   }

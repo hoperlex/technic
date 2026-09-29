@@ -642,7 +642,7 @@ describe.skipIf(!readMode.enabled)('следы двери ремонта и их
     expect(found.incidentalSheets.length).toBeGreaterThan(0);
     for (const item of found.incidentalSheets) {
       expect(item.sheet.from > fill.to).toBe(true);
-      expect(item.outside).toEqual([{ from: item.sheet.from, to: item.sheet.to }]);
+      expect(item.outside).toEqual([{ from: item.sheet.from, to: item.sheet.to, locked: true }]);
     }
 
     const paper = await paperOf(request.id);
