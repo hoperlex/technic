@@ -2649,6 +2649,103 @@ describeReadModes(
       expect((await requestState(scene.requestId)).version).toBe(0);
     });
 
+    it('«Сменить машиниста» с даты остатка заполнения называет человека, а заполнение остаётся отменяемым', async () => {
+      if (!DB_URL) return;
+      /*
+       * Since a fill reaching the end of the locked days closes itself on the first mutable day
+       * (ADR 0214, decision 2), the remainder is exactly where the next machinist is named — and
+       * the machinist door is the ordinary way to name one from today. It used to refuse any
+       * remainder row as "a fill of the unknown past"; replacing a remainder does not withdraw the
+       * fill's claim, it names who works after it. The replacement starts its own group, like the
+       * repair door's anchor: inherited, it would break the fill group (Yu2) and the fill could no
+       * longer be cancelled.
+       */
+      const scene = await makeScene({
+        dateFrom: DEEP_FROM,
+        dateTo: TERM_TO,
+        history: gapHistory(),
+      });
+      const lockedEnd = shiftDateKey(TODAY, -1);
+      const fill = {
+        mode: 'repair',
+        version: 0,
+        knownFills: [{ from: DEEP_FROM, to: lockedEnd, personId: ctx.personA }],
+        operation: operation('Табель по вчерашний день'),
+      };
+      const fillDto = (await previewRepair(ctx.admin, scene.requestId, fill)).json<RepairPreview>();
+      const filled = await postRepair(ctx.admin, scene.requestId, {
+        ...fill,
+        ...handshakeOf(fillDto),
+      });
+      expect(filled.statusCode, filled.body).toBe(200);
+      const fillGroup = actual(await rowsOf(scene.requestId)).find(
+        (row) => row.origin === 'known_fill',
+      )!.change_group_id;
+
+      const command = {
+        kind: 'set',
+        dimension: 'driver',
+        effectiveDate: TODAY,
+        driverPersonId: ctx.personB,
+        version: filled.json<{ version: number }>().version,
+      };
+      const preview = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/vehicle-requests/${scene.requestId}/assignment-changes/preview`,
+        headers: ctx.admin.auth,
+        payload: command,
+      });
+      /*
+       * `legacy` has a gate of its own here (B3): the weekly sync owns paper there, and a date
+       * that cuts an issued week is refused unless it is a week boundary — so mid-week this case
+       * cannot pass in `legacy` by design. What it must not be is the old refusal of the remainder.
+       */
+      if (mode === 'legacy' && preview.statusCode !== 200) {
+        const refusal = preview.json<{ message: string; fields?: Record<string, string> }>();
+        expect(refusal.message).not.toMatch(/заполнение неизвестного прошлого/i);
+        expect(refusal.fields).toHaveProperty('effectiveDate');
+        return;
+      }
+      expect(preview.statusCode, preview.body).toBe(200);
+      const dto = preview.json<{
+        fingerprint: string;
+        unlockFingerprint: string | null;
+        issues: PreviewIssues;
+        operationRequirement: { kind: string } | null;
+      }>();
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/vehicle-requests/${scene.requestId}/assignment-changes`,
+        headers: ctx.admin.auth,
+        payload: {
+          ...command,
+          previewFingerprint: dto.fingerprint,
+          ...(dto.unlockFingerprint ? { unlockFingerprint: dto.unlockFingerprint } : {}),
+          acknowledgements: acknowledgementsOf(dto.issues),
+          ...(dto.operationRequirement
+            ? { operation: operation('С сегодняшнего дня работает сменщик') }
+            : {}),
+        },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+
+      const rows = actual(await rowsOf(scene.requestId)).filter(
+        (row) => row.dimension === 'driver',
+      );
+      expect(rows.map((row) => [row.effective_date, row.origin, row.driver_person_id])).toEqual([
+        [DEEP_FROM, 'known_fill', ctx.personA],
+        [TODAY, 'machinist_change', ctx.personB],
+      ]);
+      expect(rows[1]!.change_group_id).not.toBe(fillGroup);
+      const cancelPreview = await previewRepair(ctx.admin, scene.requestId, {
+        mode: 'cancel_fill',
+        version: res.json<{ version: number }>().version,
+        target: { changeGroupId: fillGroup },
+        operation: operation('Проверка: заполнение отменяемо'),
+      });
+      expect(cancelPreview.statusCode, cancelPreview.body).toBe(200);
+    });
+
     it('тот же человек, но граница заполнения внутри листа — 422; по границам листа — проходит без гашения (Ф1)', async () => {
       if (!DB_URL) return;
       const scene = await paperScene();

@@ -607,7 +607,7 @@ function planSet(
   }
 
   const existing = changes.find((row) => row.dimension === 'driver' && row.effectiveDate === date);
-  const row = syntheticRow(date, next, existing?.changeGroupId);
+  const row = syntheticRow(date, next, existing ? inheritedGroupOf(existing) : undefined);
   const inTermOfMain = plannedEffectRange(changes, 'driver', date, term).inTerm;
   if (!existing) {
     return {
@@ -631,6 +631,7 @@ function planSet(
         // (Р10): её саму запишет `ensureAssignmentHistory` тем же шагом 11, но раньше замены.
         target: assignmentChangeTargetOf(existing),
         origin: CREW_ORIGIN,
+        ...ownGroupOver(existing),
         value: driverValue(next),
       },
     ],
@@ -691,17 +692,24 @@ function planCancel(
 }
 
 /**
- * Что этой дверью **правится**.
+ * What this door may **edit**.
  *
- * Замена не трогает ни даты, ни шкалы, ни группы: она переписывает значение одной driver-строки, и
- * vehicle-спутник рядом с ней остаётся на месте. Поэтому правка начального решения (`origin =
- * 'assignment'`) здесь законна и нужна — это и есть коррекция «в марте работал не тот человек».
+ * A replacement touches neither the date nor the scale: it rewrites the value of one driver row,
+ * and the vehicle companion next to it stays in place. So editing the initial decision (`origin =
+ * 'assignment'`) is legitimate and needed here — it is the very correction "in March the wrong
+ * person worked".
  *
- * Не правятся только строки заполнения неизвестного прошлого: у них своя дверь и свой смысл (Р29,
- * Ю2) — там снимается утверждение о факте, а не меняется решение.
+ * Only the `set` of a known fill is not edited: it has its own door and its own meaning (R29, Yu2)
+ * — there a claim about a fact is withdrawn, not a decision changed.
+ *
+ * The fill's remainder IS edited (ADR 0214). It claims nothing — it is the boundary saying "from
+ * here the person is unknown again" — and since a fill reaching the end of the locked days puts it
+ * on the first mutable day, it is exactly where "Сменить машиниста" from today lands. Refusing it
+ * sent the dispatcher to the repair window for an ordinary change from today. The replacement does
+ * not stay in the fill's group — see {@link inheritedGroupOf}.
  */
 function assertReplaceable(row: AssignmentChangeRecord): void {
-  if (row.origin === 'known_fill' || row.origin === 'unknown_remainder') {
+  if (row.origin === 'known_fill') {
     throw err.unprocessable(
       'Это заполнение неизвестного прошлого — правит и снимает его та же дверь, что заполняла (ремонт истории)',
       { target: 'Заполнение прошлого' },
@@ -820,12 +828,13 @@ function planAnchor(
   }
   assertReplaceable(existing);
   return {
-    rows: [syntheticRow(anchor.effectiveDate, value, existing.changeGroupId)],
+    rows: [syntheticRow(anchor.effectiveDate, value, inheritedGroupOf(existing))],
     mutations: [
       {
         kind: 'replace',
         target: { changeId: existing.id },
         origin: CREW_ORIGIN,
+        ...ownGroupOver(existing),
         value: driverValue(value),
       },
     ],
@@ -1071,6 +1080,25 @@ function clampToTerm(date: string, term: AssignmentTerm): string {
 let syntheticSeq = 0;
 
 /** Строка, которой ещё нет: у неё есть всё, что читает свёртка, и ничего сверх того. */
+/**
+ * The group a replacement of `row` belongs to: normally the replaced row's — an edit of a decision
+ * keeps the decision's composition — but never a known fill's.
+ *
+ * A fill group is "exactly one actual `known_fill` plus at most one `unknown_remainder`" (Yu2),
+ * and its cancellation looks the group up by that description. A `machinist_change` inherited
+ * into it would make the fill uncancellable, and a plain cancel of the group would take the fill
+ * along with the new machinist. So a replaced remainder hands over no group: the replacement is a
+ * decision of its own. `undefined` — a new group.
+ */
+function inheritedGroupOf(row: AssignmentChangeRecord): string | undefined {
+  return row.origin === 'unknown_remainder' ? undefined : row.changeGroupId;
+}
+
+/** The write-core form of {@link inheritedGroupOf}: a named group of its own, or the default. */
+function ownGroupOver(row: AssignmentChangeRecord): { group?: string } {
+  return row.origin === 'unknown_remainder' ? { group: `crew-${row.effectiveDate}` } : {};
+}
+
 function syntheticRow(
   effectiveDate: string,
   driver: DriverState,
