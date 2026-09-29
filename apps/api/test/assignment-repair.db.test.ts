@@ -56,8 +56,8 @@ import { byReadMode, describeReadModes, useReadModeDatabase } from './assignment
  *    which knows one machinist per request; `history` re-issues sheets by history segments;
  * 7. **the door against paper** — a fill and its cancellation, the tail decision, an archived
  *    request with `restore`, the per-sheet handshake (B4) and the keyed replay (R9), each asserting
- *    what happens to the strict-reporting blanks in both read modes. Cases marked DIVERGENCE there
- *    record where the code, as of this commit, does not do what the plan says.
+ *    what happens to the strict-reporting blanks in both read modes. The six cases once recorded
+ *    there as divergences from the plan are fixed and assert the plan's behaviour (ADR 0214).
  *
  * WHY ALMOST EVERYTHING RUNS IN BOTH READ MODES. The door always computes its paper plan and the
  * mode decides only whether step 12 executes it, so any case that reaches step 12 can differ
@@ -2183,13 +2183,13 @@ describeReadModes(readMode, 'бумага починенной истории (�
 // only whether step 12 EXECUTES it. So every case asserts the same command in both worlds and
 // states, per mode, what happened to the strict-reporting blanks.
 //
-// Cases marked DIVERGENCE document where the code, as of this commit, does not do what the plan
-// (`docs/assignment-periods-plan.md`) says. They assert what the code does, not what the plan
-// wants, so the suite stays a faithful record rather than a wish list; the comment names the plan
-// rule, and whoever fixes the code must flip the marked assertions together with it. The test NAME
-// carries the `[DIVERGENCE: …]` label as well: a run report lists names, not comments, and a green
-// name without the label would read as the norm. The defects are tracked as one task-journal card
-// ("дверь ремонта в history расходится с планом в шести местах"); cutover waits for their fix.
+// Until ADR 0214 several cases here were marked DIVERGENCE: the plan was computed in both modes
+// but executed only in `history`, so the code could disagree with the plan unseen until the read
+// switch. The fixed behaviour is asserted now — `paperFree` by the executable plan and `restore`
+// for an archived fill (R29), the remainder measured by the `unknown` segment (C4), a cancelled
+// fill burning its blanks (E2), a fill refused against worked-out paper (F1). A new disagreement
+// with the plan is recorded the same way: the assertion states what the code does, and the test
+// name carries a `[DIVERGENCE: …]` label, since a run report lists names, not comments.
 
 /**
  * Provenance of every sheet of the request: which journal operation minted it, which one burned
