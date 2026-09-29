@@ -1,9 +1,13 @@
 import { Alert, Button, DatePicker, Form, Radio, Space, Typography } from 'antd';
-import type { DriverDto, RepairPreviewDto } from '@technic/contracts';
+import type { AssignmentChangeDto, DriverDto, RepairPreviewDto } from '@technic/contracts';
 import { AutoSelect } from '@shared/ui';
 import dayjs from 'dayjs';
 import { machinistOption } from './assignDriverHints';
-import type { AssignmentSegment } from './assignmentTimeline';
+import {
+  assignmentSegments,
+  type AssignmentSegment,
+  type AssignmentTerm,
+} from './assignmentTimeline';
 import { formatDateOnly } from '@shared/lib';
 
 /**
@@ -117,6 +121,25 @@ export function KnownFillFields({
       ))}
     </Space>
   );
+}
+
+/**
+ * Fills made earlier and still in force, one per decision group (Ю2): the door removes them with a
+ * separate command, and the list below is what it offers to remove. A group counts as long as any
+ * of its rows is current — a superseded fill has nothing left to cancel.
+ */
+export function madeFillsOf(
+  changes: readonly AssignmentChangeDto[],
+  term: AssignmentTerm,
+): { changeGroupId: string; segment: AssignmentSegment }[] {
+  return assignmentSegments(changes, term)
+    .flatMap((segment) => {
+      const row = segment.starts.find((s) => s.origin === 'known_fill');
+      return row ? [{ changeGroupId: row.changeGroupId, segment }] : [];
+    })
+    .filter(({ changeGroupId }) =>
+      changes.some((c) => c.changeGroupId === changeGroupId && c.supersededKind === null),
+    );
 }
 
 /**

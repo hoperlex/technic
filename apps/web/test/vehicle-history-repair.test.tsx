@@ -255,3 +255,115 @@ describe('окно починки истории', () => {
     await screen.findByText(/нужно право на коррекцию путевых листов/);
   });
 });
+
+/**
+ * An archived request whose repair touches still-valid paper (R29, defect N3 of the repair wave).
+ *
+ * `restore` is part of the fingerprint. The window used to preview without it and confirm with
+ * `restore: restoreRequired` — a different command, so the server answered 409 "stale", the window
+ * re-previewed with the same body, and the circle never closed. Now the window asks the preview
+ * again with `restore` as soon as the answer says it is required, shows why, and the command
+ * repeats exactly the input of the shown preview.
+ */
+describe('починка истории архивной заявки', () => {
+  const RESTORE_BANNER = 'Заявка в архиве — починка восстановит её';
+
+  it('перезапрашивает предпросмотр с восстановлением и подтверждает тем же телом', async () => {
+    const http = renderModal({
+      'POST /vehicle-requests/:id/assignment-changes/repair/preview': ({ body }) =>
+        json(
+          (body as { restore?: boolean }).restore
+            ? repairPreview({ archived: true, restoreRequired: true, fingerprint: 'fp-restore' })
+            : repairPreview({ archived: true, restoreRequired: true, fingerprint: 'fp-plain' }),
+        ),
+    });
+    await screen.findByText('Кто работал в неизвестные дни');
+
+    await selectOption(`Кто работал ${fmt(GAP.from)} — ${fmt(GAP.to)}`, /Семёнов/);
+    press('Показать последствия');
+
+    await screen.findByText(RESTORE_BANNER);
+    const previews = http.calls.filter(
+      (c) => c.method === 'POST' && c.path.endsWith('/repair/preview'),
+    );
+    expect(previews).toHaveLength(2);
+    expect((previews[0]!.body as Record<string, unknown>).restore).toBeUndefined();
+    expect((previews[1]!.body as Record<string, unknown>).restore).toBe(true);
+
+    press('Подтвердить');
+    await waitFor(() =>
+      expect(http.lastCall('POST /vehicle-requests/:id/assignment-changes/repair')).toBeTruthy(),
+    );
+    const applied = bodyOf(http, 'POST /vehicle-requests/:id/assignment-changes/repair');
+    // The shown preview's input and fingerprint — never a mix of two previews.
+    expect(applied.restore).toBe(true);
+    expect(applied.previewFingerprint).toBe('fp-restore');
+  });
+
+  it('без требования восстановления не шлёт restore вовсе', async () => {
+    const http = renderModal();
+    await screen.findByText('Кто работал в неизвестные дни');
+
+    await selectOption(`Кто работал ${fmt(GAP.from)} — ${fmt(GAP.to)}`, /Семёнов/);
+    press('Показать последствия');
+    await screen.findByRole('button', { name: 'Подтвердить' });
+    expect(http.countOf('POST /vehicle-requests/:id/assignment-changes/repair/preview')).toBe(1);
+    expect(screen.queryByText(RESTORE_BANNER)).toBeNull();
+
+    press('Подтвердить');
+    await waitFor(() =>
+      expect(http.lastCall('POST /vehicle-requests/:id/assignment-changes/repair')).toBeTruthy(),
+    );
+    expect(bodyOf(http, 'POST /vehicle-requests/:id/assignment-changes/repair')).not.toHaveProperty(
+      'restore',
+    );
+  });
+
+  it('отказ «нужно восстановление» на команде — пересчёт с восстановлением, а не тост', async () => {
+    let commands = 0;
+    const refusal =
+      'Решение о машине после конца срока у архивной заявки принимается только вместе с восстановлением — включите режим восстановления';
+    const http = renderModal({
+      'POST /vehicle-requests/:id/assignment-changes/repair/preview': ({ body }) =>
+        json(
+          repairPreview({
+            archived: true,
+            fingerprint: (body as { restore?: boolean }).restore ? 'fp-restore' : 'fp-plain',
+          }),
+        ),
+      'POST /vehicle-requests/:id/assignment-changes/repair': () => {
+        commands += 1;
+        if (commands === 1) {
+          return apiError(422, {
+            code: 'unprocessable_entity',
+            message: refusal,
+            fields: { restore: 'Требуется восстановление' },
+          });
+        }
+        return json({
+          ok: true,
+          repeated: false,
+          version: 4,
+          state: 'ready',
+          operationId: null,
+          archived: false,
+        });
+      },
+    });
+    await screen.findByText('Кто работал в неизвестные дни');
+    await selectOption(`Кто работал ${fmt(GAP.from)} — ${fmt(GAP.to)}`, /Семёнов/);
+    press('Показать последствия');
+    await screen.findByRole('button', { name: 'Подтвердить' });
+    press('Подтвердить');
+
+    await screen.findByText(RESTORE_BANNER);
+    expect(screen.queryByText(refusal)).toBeNull();
+    press('Подтвердить');
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/:id/assignment-changes/repair')).toBe(2),
+    );
+    const applied = bodyOf(http, 'POST /vehicle-requests/:id/assignment-changes/repair');
+    expect(applied.restore).toBe(true);
+    expect(applied.previewFingerprint).toBe('fp-restore');
+  });
+});

@@ -5,6 +5,7 @@ import type {
   RepairPreviewDto,
   TailResolution,
 } from '@technic/contracts';
+import { acknowledgementsOf, warnedSheetsOf } from './assignmentWarnings';
 
 /**
  * Сборка тела двери ремонта (подэтап 6a плана `docs/assignment-periods-plan.md`, Р29).
@@ -34,8 +35,14 @@ interface Handshake {
   previewFingerprint?: string | undefined;
   unlockFingerprint?: string | null | undefined;
   operation?: { operationId: string; reason: string } | null;
-  /** Вывести заявку из архива вместе с ремонтом (Р29): спрашивается только там, где сервер требует. */
+  /**
+   * Take the request out of the archive with the repair (R29). Part of the semantic body, not a
+   * confirmation: it is sent with the preview too, because the server hashes it into the
+   * fingerprint, and a preview without it never matches a command with it.
+   */
   restore?: boolean;
+  /** Signatures per warned sheet (B4), from the shown preview; see `assignmentWarnings.ts`. */
+  acknowledgements?: Record<string, string>;
 }
 
 /**
@@ -54,6 +61,7 @@ export function repairBody(draft: RepairDraft, hand: Handshake): RepairBody {
     ...(hand.unlockFingerprint ? { unlockFingerprint: hand.unlockFingerprint } : {}),
     ...(hand.operation ? { operation: hand.operation } : {}),
     ...(hand.restore ? { restore: true } : {}),
+    ...(hand.acknowledgements ? { acknowledgements: hand.acknowledgements } : {}),
   };
   if (draft.kind === 'cancel_fill') {
     return { mode: 'cancel_fill', target: { changeGroupId: draft.changeGroupId }, ...common };
@@ -65,6 +73,40 @@ export function repairBody(draft: RepairDraft, hand: Handshake): RepairBody {
     ...(draft.tail ? { tailResolution: draft.tail } : {}),
     ...common,
   };
+}
+
+/** A shown preview together with the input it was computed from. */
+export interface RepairShown {
+  draft: RepairDraft;
+  dto: RepairPreviewDto;
+  /** Whether the preview was asked with `restore` (R29); the command repeats it verbatim. */
+  restore: boolean;
+}
+
+/**
+ * The command body for a preview the person has read and confirmed: the same input plus every
+ * handshake that preview handed out, and nothing it did not.
+ *
+ * `restore` is the flag the shown preview was asked with, not `restoreRequired` of its answer: the
+ * fingerprint covers `restore`, so any other value is a different command and answers 409 "stale".
+ * Signatures are built from the same shown preview; the window has already checked that the tick
+ * belongs to exactly that warning set.
+ */
+export function repairCommandBody(
+  shown: RepairShown,
+  hand: { version: number; operationId: string; reason: string },
+): RepairBody {
+  const { draft, dto } = shown;
+  return repairBody(draft, {
+    version: hand.version,
+    previewFingerprint: dto.fingerprint,
+    unlockFingerprint: dto.unlockFingerprint,
+    operation: dto.operationRequirement
+      ? { operationId: hand.operationId, reason: hand.reason.trim() }
+      : null,
+    restore: shown.restore,
+    ...acknowledgementsOf(warnedSheetsOf(dto)),
+  });
 }
 
 /**

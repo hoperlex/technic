@@ -5,7 +5,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   type KnownFill,
   type MachinistAnchor,
-  type RepairPreviewDto,
   type RepairResultDto,
   type SpecialEquipmentRequestDto,
   type TailResolution,
@@ -14,15 +13,23 @@ import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
-import { waybillKeys } from '@entities/waybill';
+import { waybillKeys, WarnedSheetsConfirm } from '@entities/waybill';
 import { driverKeys, driversApi } from '@entities/driver';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { assignmentSegments } from './assignmentTimeline';
+import { recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
 import { MachinistAnchorFields } from './MachinistFields';
 import { MachinistChangePreview, MachinistForbiddenAlert } from './MachinistChangePreview';
-import { KnownFillFields, KnownFillsMade, TailResolutionField } from './RepairFields';
-import { fillFitsGap, repairBody, repairHasWork, type RepairDraft } from './repairCommand';
-import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
+import { KnownFillFields, KnownFillsMade, madeFillsOf, TailResolutionField } from './RepairFields';
+import {
+  fillFitsGap,
+  repairBody,
+  repairCommandBody,
+  repairHasWork,
+  type RepairDraft,
+  type RepairShown,
+} from './repairCommand';
+import { RepairRestoreAlert, RESTORE_RECHECK } from './RepairNotices';
 
 /**
  * Окно «Починка истории» (подэтап 6a плана `docs/assignment-periods-plan.md`, Р29, Р31, Ц4).
@@ -43,6 +50,11 @@ import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
  * ЧТО ОКНО НЕ ДЕЛАЕТ САМО. Не подставляет ни человека, ни границы отрезка (ADR 0083): заполнение
  * утверждает факт о прошлом, за которым портал выпишет бланки строгой отчётности задним числом.
  * Не решает за сервер, нужна ли причина и хватает ли прав, — и то и другое приходит ответом.
+ *
+ * WHAT IT ASKS BEFORE SENDING, besides the reason: a tick under the warnings of every issued sheet
+ * (B4) — in `history` read mode the door refuses an unsigned warned sheet — and, for an archived
+ * request, nothing: whether the repair must restore it is the server's answer (`restoreRequired`),
+ * and the window just recomputes the preview with `restore` and says so.
  */
 
 interface FormValues {
@@ -51,6 +63,8 @@ interface FormValues {
   fills?: Record<string, { personId?: string; range?: [Dayjs, Dayjs] } | undefined>;
   /** Имена на границах, которые назвал предпросмотр (Р16): ключ — дата якоря. */
   anchors?: Record<string, string | undefined>;
+  /** Signature of the confirmed warning set (`WarnedSheetsConfirm`), not a plain boolean. */
+  warningsAck?: string;
   reason?: string;
 }
 
@@ -73,8 +87,11 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
   // Ключ операции — один на открытое окно, а не на нажатие (Р9): связь оборвалась, ответа нет,
   // человек жмёт ещё раз — и сервер возвращает прежний результат вместо второго сгоревшего номера.
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
-  /** Показанные последствия и набор, которым их посчитали: подтверждение отправляет именно его. */
-  const [shown, setShown] = useState<{ draft: RepairDraft; dto: RepairPreviewDto } | null>(null);
+  /**
+   * The shown consequences and the input they were computed from; the confirmation sends exactly
+   * that input, `restore` included — the server hashes it into the fingerprint.
+   */
+  const [shown, setShown] = useState<RepairShown | null>(null);
   const [staleReason, setStaleReason] = useState<string | null>(null);
   /** Отказ по правам (Р32): его показывают текстом в окне, а не тостом в углу. */
   const [forbidden, setForbidden] = useState<string | null>(null);
@@ -116,30 +133,36 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
     machinists.data?.items.find((d) => d.id === personId)?.fullName;
 
   const previewMut = useMutation({
-    mutationFn: async (v: { draft: RepairDraft; stale: string | null }) => ({
-      ...v,
-      dto: await vehicleRequestsApi.repairPreview(targetId!, repairBody(v.draft, { version })),
-    }),
-    onSuccess: ({ draft, dto, stale }) => {
+    mutationFn: async (v: { draft: RepairDraft; stale: string | null; restore?: boolean }) => {
+      const ask = (restore: boolean) =>
+        vehicleRequestsApi.repairPreview(targetId!, repairBody(v.draft, { version, restore }));
+      let restore = v.restore ?? false;
+      let dto = await ask(restore);
+      /*
+       * An archived request whose repair touches still-valid paper passes only with `restore`
+       * (R29), and `restore` is part of the fingerprint. Showing this preview and sending the
+       * command with `restore` would answer 409 "stale" forever; so the preview is asked again
+       * with `restore` right away, and the person reads the consequences that will be executed.
+       */
+      if (dto.restoreRequired && !restore) {
+        restore = true;
+        dto = await ask(true);
+      }
+      return { draft: v.draft, stale: v.stale, restore, dto };
+    },
+    onSuccess: ({ draft, dto, stale, restore }) => {
       setForbidden(null);
       setStaleReason(stale);
-      setShown({ draft, dto });
+      setShown({ draft, dto, restore });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
 
   const applyMut = useMutation({
-    mutationFn: (v: { draft: RepairDraft; dto: RepairPreviewDto; reason: string }) =>
+    mutationFn: (v: RepairShown & { reason: string }) =>
       vehicleRequestsApi.repairAssignmentHistory(
         targetId!,
-        repairBody(v.draft, {
-          version,
-          previewFingerprint: v.dto.fingerprint,
-          unlockFingerprint: v.dto.unlockFingerprint,
-          operation: v.dto.operationRequirement ? { operationId, reason: v.reason.trim() } : null,
-          // Архив снимается только там, где сервер сказал, что иначе ремонт не пройдёт (Р29).
-          restore: v.dto.restoreRequired,
-        }),
+        repairCommandBody(v, { version, operationId, reason: v.reason }),
       ),
     onSuccess: (res) => {
       message.success(res.repeated ? 'Этот ремонт уже был проведён' : 'История заявки исправлена');
@@ -158,16 +181,19 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
     },
     onError: (e, v) => {
       /*
-       * 409 — не ошибка, а вопрос: между просмотром и нажатием план изменился, не тронув заявку
-       * вовсе (чужая команда, аннулированный лист, наступившая полночь). Ответ на него — не тост,
-       * а пересчитанный перечень с объяснением, почему окно вернуло человека назад.
+       * These refusals are questions, not errors: between reading and pressing the plan changed
+       * without touching the request (someone else's command, a cancelled sheet, midnight), a
+       * driver's documents changed the warnings, or the archived request turned out to need
+       * `restore`. The answer is a recomputed list with the reason the window stepped back — not a
+       * toast. `restore` restarts from `false` except in the last case: the server decides again.
        */
-      if (isApiError(e) && e.code === ASSIGNMENT_PREVIEW_STALE) {
-        previewMut.mutate({
-          draft: v.draft,
-          stale:
-            'Последствия изменились с того момента, как вы их смотрели, — вот что произойдёт теперь. Прочитайте и подтвердите заново.',
-        });
+      const recheck = recheckReasonOf(e);
+      if (recheck) {
+        previewMut.mutate({ draft: v.draft, stale: recheck });
+        return;
+      }
+      if (isApiError(e) && e.status === 422 && e.fields?.restore !== undefined) {
+        previewMut.mutate({ draft: v.draft, stale: RESTORE_RECHECK, restore: true });
         return;
       }
       // Коррекционные права спрашивает сервер и по посчитанному исходу (Р32) — из тела это не
@@ -190,24 +216,9 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
   const dto = shown?.dto ?? null;
   const secondStep = !!dto;
   const asking = dto ? dto.requiredAnchors : (seen?.requiredAnchors ?? []);
+  const warned = dto ? warnedSheetsOf(dto) : [];
 
-  /** Сделанные заполнения: их снимает та же дверь, но другой командой (Ю2). */
-  const madeFills =
-    request && history.data
-      ? assignmentSegments(history.data.changes, {
-          dateFrom: request.dateFrom,
-          dateTo: request.dateTo,
-        })
-          .flatMap((segment) => {
-            const row = segment.starts.find((s) => s.origin === 'known_fill');
-            return row ? [{ changeGroupId: row.changeGroupId, segment }] : [];
-          })
-          .filter(({ changeGroupId }) =>
-            history.data!.changes.some(
-              (c) => c.changeGroupId === changeGroupId && c.supersededKind === null,
-            ),
-          )
-      : [];
+  const madeFills = request && history.data ? madeFillsOf(history.data.changes, request) : [];
 
   const askPreview = (draft: RepairDraft) => {
     setForbidden(null);
@@ -236,8 +247,11 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
   const onSubmit = () => {
     if (dto && shown) {
       void form
-        .validateFields(dto.operationRequirement ? ['reason'] : [])
-        .then((v) => applyMut.mutate({ draft: shown.draft, dto, reason: v.reason ?? '' }))
+        .validateFields([
+          ...(dto.operationRequirement ? ['reason'] : []),
+          ...(warned.length > 0 ? ['warningsAck'] : []),
+        ])
+        .then((v) => applyMut.mutate({ ...shown, reason: v.reason ?? '' }))
         .catch(() => undefined);
       return;
     }
@@ -324,12 +338,16 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
           )}
 
           {dto && shown && (
-            <MachinistChangePreview
-              preview={dto}
-              cancelling={null}
-              driverName={driverName}
-              staleReason={staleReason}
-            />
+            <>
+              {shown.restore && <RepairRestoreAlert />}
+              <MachinistChangePreview
+                preview={dto}
+                cancelling={null}
+                driverName={driverName}
+                staleReason={staleReason}
+              />
+              <WarnedSheetsConfirm name="warningsAck" sheets={warned} />
+            </>
           )}
 
           {/* Причина спрашивается по `operationRequirement`, а не по календарю (Р32). */}

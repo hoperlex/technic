@@ -7,10 +7,19 @@ import {
   type AssignmentPreviewDto,
   type WaybillWarning,
 } from '@technic/contracts';
+import { selectOption } from './antd';
 import { json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
-import { assignmentPreview, vehicleRequest } from './factories/vehicle';
+import { list } from './factories/common';
+import {
+  assignmentHistory,
+  assignmentPreview,
+  machinist,
+  repairPreview,
+  vehicleRequest,
+} from './factories/vehicle';
 import { VehiclePeriodModal } from '../src/pages/vehicle/VehiclePeriodModal';
+import { VehicleRepairModal } from '../src/pages/vehicle/VehicleRepairModal';
 
 /**
  * Warnings per issued sheet at the history doors — repair and period (B4, defect N1 of the repair
@@ -242,5 +251,122 @@ describe('срок работ: предупреждения по выписыв�
       unknown
     >;
     expect(sent.acknowledgements).toEqual({ '0': 'fp-warn-2' });
+  });
+});
+
+describe('починка истории: предупреждения по выписываемым листам', () => {
+  const GAP = { from: day(-60), to: day(-30) };
+  const SEMENOV = machinist();
+
+  function renderRepair(routes: RouteMap) {
+    const http = mockHttp({
+      'GET /drivers': () => json(list([SEMENOV])),
+      'GET /vehicle-requests/:id/assignment-changes': () => json(assignmentHistory()),
+      'GET /vehicle-requests/:id/assignment-changes/repair/state': () =>
+        json(repairPreview({ state: 'materialized', fillableGaps: [GAP] })),
+      'POST /vehicle-requests/:id/assignment-changes/repair': () =>
+        json({
+          ok: true,
+          repeated: false,
+          version: 6,
+          state: 'ready',
+          operationId: null,
+          archived: false,
+        }),
+      ...routes,
+    });
+    renderWithUser(
+      <VehicleRepairModal request={REQUEST} onCancel={() => {}} onRepaired={() => {}} />,
+    );
+    return http;
+  }
+
+  async function showConsequences() {
+    await screen.findByText('Кто работал в неизвестные дни');
+    await selectOption(`Кто работал ${fmt(GAP.from)} — ${fmt(GAP.to)}`, /Семёнов/);
+    press('Показать последствия');
+    await screen.findByRole('button', { name: 'Подтвердить' });
+  }
+
+  it('показывает предупреждения на втором шаге и шлёт подпись только после галочки', async () => {
+    const http = renderRepair({
+      'POST /vehicle-requests/:id/assignment-changes/repair/preview': () =>
+        json(repairPreview({ state: 'materialized', ...FIRST })),
+    });
+    await showConsequences();
+
+    await screen.findByText('Листы выпишутся с предупреждениями');
+    expect(modalText()).toContain(SNILS.message);
+
+    press('Подтвердить');
+    await screen.findByText('Подтвердите предупреждения по листам');
+    expect(http.countOf('POST /vehicle-requests/:id/assignment-changes/repair')).toBe(0);
+
+    tick();
+    press('Подтвердить');
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/:id/assignment-changes/repair')).toBe(1),
+    );
+    const body = http.lastCall('POST /vehicle-requests/:id/assignment-changes/repair')!
+      .body as Record<string, unknown>;
+    expect(body.acknowledgements).toEqual({ '0': 'fp-warn-1' });
+    // The preview never carries signatures: it hands them out, it does not take them.
+    const preview = http.lastCall('POST /vehicle-requests/:id/assignment-changes/repair/preview')!
+      .body as Record<string, unknown>;
+    expect(preview).not.toHaveProperty('acknowledgements');
+  });
+
+  it('409 «предупреждения изменились» — перезапрос предпросмотра и новая галочка', async () => {
+    let previews = 0;
+    let commands = 0;
+    const http = renderRepair({
+      'POST /vehicle-requests/:id/assignment-changes/repair/preview': () => {
+        previews += 1;
+        return json(repairPreview({ state: 'materialized', ...(previews === 1 ? FIRST : SECOND) }));
+      },
+      'POST /vehicle-requests/:id/assignment-changes/repair': () => {
+        commands += 1;
+        if (commands === 1) return ackRequired();
+        return json({
+          ok: true,
+          repeated: false,
+          version: 6,
+          state: 'ready',
+          operationId: null,
+          archived: false,
+        });
+      },
+    });
+    await showConsequences();
+
+    await screen.findByText(SNILS.message);
+    tick();
+    press('Подтвердить');
+
+    await screen.findByText(LICENSE.message);
+    expect(modalText()).toContain('Последствия пересчитаны');
+    expect(modalText()).toContain('Предупреждения по листам изменились');
+    expect(screen.queryByText(ACK_REFUSAL)).toBeNull();
+    // The same draft went back to the preview: the person does not re-enter the fill.
+    expect(
+      (
+        http.lastCall('POST /vehicle-requests/:id/assignment-changes/repair/preview')!.body as {
+          knownFills: unknown;
+        }
+      ).knownFills,
+    ).toEqual([{ from: GAP.from, to: GAP.to, personId: SEMENOV.id }]);
+
+    press('Подтвердить');
+    await screen.findByText('Подтвердите предупреждения по листам');
+    expect(http.countOf('POST /vehicle-requests/:id/assignment-changes/repair')).toBe(1);
+
+    tick();
+    press('Подтвердить');
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/:id/assignment-changes/repair')).toBe(2),
+    );
+    const body = http.lastCall('POST /vehicle-requests/:id/assignment-changes/repair')!
+      .body as Record<string, unknown>;
+    expect(body.acknowledgements).toEqual({ '0': 'fp-warn-2' });
   });
 });
