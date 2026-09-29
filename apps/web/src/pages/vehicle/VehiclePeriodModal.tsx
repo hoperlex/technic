@@ -1,15 +1,15 @@
-import { useEffect, useEffectEvent } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { Alert, App, Checkbox, Form, Input, Skeleton, Space, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PeriodPreviewDto, SpecialEquipmentRequestDto } from '@technic/contracts';
 import { FormModal } from '@shared/ui';
-import { isApiError } from '@shared/api';
 import { calendarDaysLabel, formatDateOnly } from '@shared/lib';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
-import { waybillKeys } from '@entities/waybill';
+import { waybillKeys, WarnedSheetsConfirm } from '@entities/waybill';
 import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entities/vehicle-request';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
+import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
 import { cancelGroupLine } from './cancelGroups';
 
 /**
@@ -32,6 +32,10 @@ import { cancelGroupLine } from './cancelGroups';
  * ЧТО УЕЗЖАЕТ ПОДТВЕРЖДЕНИЯМИ. Отпечаток последствий (их видел человек), перечень гасимых решений
  * (их он подтвердил галочкой) и отпечаток отработанных листов, которые операция переоформит.
  * Отпечатки портал не разбирает — он их только носит обратно.
+ *
+ * Plus a signature per issued sheet with warnings (B4): in `history` read mode this door issues the
+ * blanks itself and refuses an unsigned warned sheet with 409, so the window shows every warned
+ * sheet and sends the signatures only after an explicit tick (`assignmentWarnings.ts`).
  */
 
 /** Семантическая половина команды: пропущенное поле — «не трогали», `null` у `dateTo` — «сняли». */
@@ -64,6 +68,8 @@ interface Props {
 interface FormValues {
   /** Подтверждение перечня гасимых решений о технике (Д2). */
   cancelAck?: boolean;
+  /** Signature of the confirmed warning set (`WarnedSheetsConfirm`), not a plain boolean. */
+  warningsAck?: string;
   reason?: string;
 }
 
@@ -79,6 +85,12 @@ export function VehiclePeriodModal({
   const { message } = App.useApp();
   const qc = useQueryClient();
   const open = !!request && !!command;
+  /**
+   * Why the window recomputed the consequences on its own. Set on a refusal that means "what you
+   * read is no longer true" and shown above the new list instead of a toast: the toast disappears,
+   * while the person has to know why the list in front of them changed.
+   */
+  const [recheck, setRecheck] = useState<string | null>(null);
 
   /**
    * Последствия — запросом на каждое открытие, без кэша: между вчерашним просмотром и сегодняшним
@@ -100,7 +112,8 @@ export function VehiclePeriodModal({
   const targetKey = `${request?.id ?? ''}|${command?.dateFrom ?? ''}|${String(command?.dateTo)}`;
   const resetForTarget = useEffectEvent((_key: string, _open: boolean) => {
     if (!open) return;
-    form.setFieldsValue({ cancelAck: false, reason: initialReason ?? '' });
+    setRecheck(null);
+    form.setFieldsValue({ cancelAck: false, warningsAck: undefined, reason: initialReason ?? '' });
   });
   useEffect(() => resetForTarget(targetKey, open), [targetKey, open]);
 
@@ -118,6 +131,9 @@ export function VehiclePeriodModal({
           ? { cancelGroupsFingerprint: dto.cancelGroupsFingerprint }
           : {}),
         ...(dto.unlockFingerprint !== null ? { unlockFingerprint: dto.unlockFingerprint } : {}),
+        // Built from the same preview the person just confirmed; the form rule has already
+        // checked that the tick belongs to exactly this set.
+        ...acknowledgementsOf(warnedSheetsOf(dto)),
         ...(dto.operationRequirement
           ? { operation: { operationId, reason: (v.reason ?? '').trim() } }
           : {}),
@@ -132,17 +148,26 @@ export function VehiclePeriodModal({
       onApplied(res);
     },
     onError: (e) => {
-      message.error(errorMessage(e));
       /*
-       * Последствия изменились между просмотром и нажатием — сервер отвечает 409, и правильный
-       * ответ портала не «повторите», а «посмотрите заново»: перечень гасимых решений мог стать
-       * другим, и подтверждать прежний человек больше не вправе.
+       * The consequences or the warnings changed between reading and pressing. The right answer is
+       * not "try again" but "read again": the list of cancelled decisions or of warned sheets may
+       * be different now, and the person may not confirm the old one. The new preview replaces the
+       * old in place, with the reason above it, and the tick under the cancelled decisions is taken
+       * back (the warning tick needs no reset: it is bound to the set it was given for).
        */
-      if (isApiError(e) && e.code === 'assignment_preview_stale') void preview.refetch();
+      const reason = recheckReasonOf(e);
+      if (!reason) {
+        message.error(errorMessage(e));
+        return;
+      }
+      setRecheck(reason);
+      form.setFieldsValue({ cancelAck: false });
+      void preview.refetch();
     },
   });
 
   const dto = preview.data ?? null;
+  const warned = dto ? warnedSheetsOf(dto) : [];
   const submit = (v: FormValues) => {
     if (!dto) return;
     applyMut.mutate(v);
@@ -167,8 +192,9 @@ export function VehiclePeriodModal({
       // Кнопка называет действие, а не «Сохранить»: за ней сгорают и выписываются бланки строгой
       // отчётности, а у сокращения ещё и гаснут решения о технике.
       okText="Изменить срок"
-      // Последствий нет — подтверждать нечего: пока предпросмотр не ответил, нажимать не на что.
-      okDisabled={!dto}
+      // Nothing to confirm until the preview answers — and nothing while it is being recomputed:
+      // the list on screen is then the one the server has just called outdated.
+      okDisabled={!dto || preview.isFetching}
       width={720}
     >
       <Form form={form} layout="vertical" onFinish={submit}>
@@ -185,7 +211,13 @@ export function VehiclePeriodModal({
             />
           )}
 
+          {recheck && (
+            <Alert type="warning" showIcon title="Последствия пересчитаны" description={recheck} />
+          )}
+
           {dto && <PeriodConsequences preview={dto} />}
+
+          <WarnedSheetsConfirm name="warningsAck" sheets={warned} />
 
           {dto && dto.cancelGroups.length > 0 && (
             <Form.Item

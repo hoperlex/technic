@@ -2,6 +2,7 @@ import { Space, Typography } from 'antd';
 import type { HookAPI as ModalApi } from 'antd/es/modal/useModal';
 import { WAYBILL_ACK_REQUIRED_CODE, type WaybillWarning } from '@technic/contracts';
 import { isApiError } from '@shared/api';
+import { WaybillWarningList } from '@entities/waybill';
 
 /**
  * Рукопожатие выписки в портале (Р21, Р21а плана `docs/route-trips-plan.md`): разбор отказа 409
@@ -17,6 +18,11 @@ import { isApiError } from '@shared/api';
  * `Esm2AckRequiredDetails` — заявку и неделю, рейса у недельного листа не существует. Совпадают в
  * них отпечаток и список, то есть в точности то, что окно читает. Повтор запроса остаётся у
  * вызывающего: тело выписки знает только та мутация, которая его отправляла.
+ *
+ * The assignment doors (history repair, period) answer the same 409 code with a different body: a
+ * per-sheet `issues` list instead of one fingerprint, because one command there issues several
+ * blanks. `ackRequiredDetails` returns `null` for that body on purpose — those doors read it through
+ * `assignmentWarnings.ts`, and only the warning list itself (`@entities/waybill`) is shared.
  */
 
 /** Что окно читает из отказа: общая часть обоих тел — прочитанный набор и его отпечаток. */
@@ -64,13 +70,9 @@ export function confirmWaybillWarnings(
     width: 560,
     content: (
       <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-        <ul style={{ margin: 0, paddingInlineStart: 20 }}>
-          {details.warnings.map((warning) => (
-            // Ключом — код и объект, о котором предупреждение: индекс переставился бы вместе со
-            // списком при повторном ответе сервера.
-            <li key={`${warning.facts.code}:${warning.entities.join(',')}`}>{warning.message}</li>
-          ))}
-        </ul>
+        {/* The list itself is shared with the assignment doors: one wording for every path that
+          spends a blank number. */}
+        <WaybillWarningList warnings={details.warnings} />
         <Typography.Text type="secondary">
           Номер бланка израсходуется: чтобы переписать лист, его придётся аннулировать.
         </Typography.Text>

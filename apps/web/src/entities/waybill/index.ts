@@ -24,6 +24,13 @@ export {
 } from './ui/WaybillPrint';
 
 /*
+ * Warnings shown before a blank number is spent. The display is shared by every path that spends
+ * one (route and weekly ESM-2 issue, the assignment doors); the doors keep only their adapters,
+ * because the answers they read differ in shape.
+ */
+export { type WarnedSheet, WarnedSheetsConfirm, WaybillWarningList } from './ui/WaybillWarnings';
+
+/*
  * Право перейти к бланку по его номеру. Журнал листов — отдельный экран без окна, и номер уводит
  * туда же, куда уводил; `null` вместо адреса оставляет номер текстом у роли, которой журнал не
  * положен.

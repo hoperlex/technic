@@ -1,0 +1,91 @@
+import { WAYBILL_ACK_REQUIRED_CODE, type AssignmentPreviewDto } from '@technic/contracts';
+import { isApiError } from '@shared/api';
+import { formatDateOnly } from '@shared/lib';
+import type { WarnedSheet } from '@entities/waybill';
+import { ASSIGNMENT_PREVIEW_STALE } from './ReassignPreview';
+
+/**
+ * Per-sheet warning signatures of the assignment doors (B4) — the adapter between their preview and
+ * the shared confirmation block of `@entities/waybill`.
+ *
+ * WHY THE WINDOWS NEED IT. In `history` read mode the repair and period doors issue ESM-2 blanks
+ * from their own plan and demand a signature for every sheet with warnings; without one the command
+ * answers 409 `waybill_ack_required`. The portal used to send none, so any plan with a warned sheet
+ * was a dead end in those windows: a toast and no way forward.
+ *
+ * WHAT IS READ, NOT DECIDED. The warnings, the fingerprints and which sheets carry them all come
+ * from the preview. "A sheet needs a signature iff its warning set is non-empty" is the contract of
+ * `assignmentAcknowledgementsSchema`, not a portal rule: sending one for a clean sheet is rejected
+ * as superfluous, so the filter below mirrors the contract instead of choosing.
+ */
+
+/** Warned sheets of a preview, named the way the consequences list names them. */
+export function warnedSheetsOf(
+  preview: Pick<AssignmentPreviewDto, 'plan' | 'issues'>,
+): WarnedSheet[] {
+  const planned = new Map(preview.plan.issue.map((sheet) => [sheet.issueKey, sheet]));
+  return preview.issues
+    .filter((issue) => issue.warnings.length > 0)
+    .map((issue) => {
+      const sheet = planned.get(issue.issueKey);
+      return {
+        // The contract's canonical key: the decimal `issueKey`, no leading zeros — `String` gives
+        // exactly that, and a second spelling would sign the same sheet twice.
+        key: String(issue.issueKey),
+        // Composition, not just dates: a week can be split between people, and "the sheet for
+        // 10–16 August" would not say whose documents the warning is about.
+        title: sheet
+          ? `Лист за ${formatDateOnly(sheet.from)} — ${formatDateOnly(sheet.to)}: ${sheet.vehicleName}, машинист ${sheet.driverName}`
+          : `Лист № ${issue.issueKey + 1} плана`,
+        warnings: issue.warnings,
+        fingerprint: issue.warningFingerprint,
+      };
+    });
+}
+
+/**
+ * The `acknowledgements` part of a command body; nothing at all when no sheet is warned.
+ *
+ * The field is omitted rather than sent empty for the same reason every other handshake of these
+ * doors is: its presence is dictated by the server's answer, not by the client.
+ */
+export function acknowledgementsOf(sheets: readonly WarnedSheet[]): {
+  acknowledgements?: Record<string, string>;
+} {
+  if (sheets.length === 0) return {};
+  return {
+    acknowledgements: Object.fromEntries(sheets.map((sheet) => [sheet.key, sheet.fingerprint])),
+  };
+}
+
+/**
+ * Did the server refuse because the warning set is no longer the one the person confirmed?
+ *
+ * Two answers mean that. 409 `waybill_ack_required` — a warning appeared or its facts changed.
+ * 422 on the `acknowledgements` field — a warning disappeared (someone completed the driver's
+ * documents), so a signature now points at a sheet with nothing to confirm. Both are cured the same
+ * way: recompute the preview and let the person read the new list, not by a toast.
+ */
+function warningsChanged(e: unknown): boolean {
+  if (!isApiError(e)) return false;
+  if (e.status === 409 && e.code === WAYBILL_ACK_REQUIRED_CODE) return true;
+  return e.status === 422 && e.fields?.acknowledgements !== undefined;
+}
+
+/**
+ * A refusal after which the window recomputes the consequences instead of showing an error, and the
+ * words it explains the step back with; `null` — a real error for the caller to show.
+ *
+ * Shared by the repair and period windows so that both say the same thing about the same refusal.
+ * Matched by code, not status: 409 at these doors is also a version conflict, which is cured by
+ * reloading the list, not by reading the consequences again.
+ */
+export function recheckReasonOf(e: unknown): string | null {
+  if (isApiError(e) && e.code === ASSIGNMENT_PREVIEW_STALE) {
+    return 'Последствия изменились с того момента, как вы их смотрели, — вот что произойдёт теперь. Прочитайте и подтвердите заново.';
+  }
+  if (warningsChanged(e)) {
+    return 'Предупреждения по листам изменились с того момента, как вы их смотрели, — вот актуальный перечень. Прочитайте и подтвердите заново.';
+  }
+  return null;
+}
