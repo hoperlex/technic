@@ -4,8 +4,8 @@ import { useMutation } from '@tanstack/react-query';
 import type { AssignmentPreviewDto, VehicleRequestDto } from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { WarnedSheetsConfirm } from '@entities/waybill';
-import { errorMessage } from '../../utils/format';
 import type { AssignCommand } from './assignCommand';
 import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
 import {
