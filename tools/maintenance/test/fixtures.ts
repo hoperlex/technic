@@ -153,6 +153,7 @@ export function findingFixture(overrides: Partial<Finding> = {}): TrackedFinding
     id: 'F1',
     category: 'dead-code',
     title: 'находка',
+    subject: 'symbol x',
     severity: 'medium',
     confidence: 0.95,
     files: ['apps/api/src/x.ts'],

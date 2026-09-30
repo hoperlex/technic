@@ -37,6 +37,8 @@ export interface Verdict {
   readonly finding: TrackedFinding;
   readonly decision: Decision;
   readonly reason: string;
+  /** Whether a fresh small batch with an empty budget can reconsider this finding. */
+  readonly retryable?: boolean;
 }
 
 export interface Selection {
@@ -76,7 +78,12 @@ export function selectFindings(options: SelectOptions): Selection {
   for (const finding of ordered) {
     const blocked = blockingReason(finding, options);
     if (blocked !== null) {
-      verdicts.push({ finding, decision: blocked.decision, reason: blocked.reason });
+      verdicts.push({
+        finding,
+        decision: blocked.decision,
+        reason: blocked.reason,
+        retryable: false,
+      });
       continue;
     }
 
@@ -85,6 +92,7 @@ export function selectFindings(options: SelectOptions): Selection {
         finding,
         decision: 'deferred',
         reason: `в проход берётся не больше ${budget.maxFindingsPerPass} находок`,
+        retryable: true,
       });
       continue;
     }
@@ -96,6 +104,7 @@ export function selectFindings(options: SelectOptions): Selection {
         finding,
         decision: 'deferred',
         reason: `лимит файлов в партии — ${budget.maxFilesChanged}`,
+        retryable: new Set(finding.files).size <= budget.maxFilesChanged && selected.length > 0,
       });
       continue;
     }
@@ -106,6 +115,7 @@ export function selectFindings(options: SelectOptions): Selection {
         finding,
         decision: 'deferred',
         reason: `лимит изменённых строк — ${budget.maxChangedLines}`,
+        retryable: cost <= budget.maxChangedLines && selected.length > 0,
       });
       continue;
     }
@@ -113,7 +123,12 @@ export function selectFindings(options: SelectOptions): Selection {
     selected.push(finding);
     lines += cost;
     for (const file of nextFiles) files.add(file);
-    verdicts.push({ finding, decision: 'selected', reason: 'в пределах бюджета и допуска' });
+    verdicts.push({
+      finding,
+      decision: 'selected',
+      reason: 'в пределах бюджета и допуска',
+      retryable: false,
+    });
   }
 
   return { verdicts, selected, files: [...files].sort(), estimatedLines: lines };

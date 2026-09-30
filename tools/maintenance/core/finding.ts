@@ -19,6 +19,12 @@ export interface Finding {
   readonly id: string;
   readonly category: string;
   readonly title: string;
+  /**
+   * Stable identity of the problem inside the listed files, for example a symbol, duplicated
+   * concept, or violated invariant. Unlike the title and evidence, this field is not prose for a
+   * report and must remain unchanged when the reviewer rephrases the same observation.
+   */
+  readonly subject: string;
   readonly severity: FindingSeverity;
   /** Уверенность агента, от 0 до 1. Ниже порога находка не чинится, но и не исчезает: она в отчёте. */
   readonly confidence: number;
@@ -47,27 +53,41 @@ export interface TrackedFinding extends Finding {
 }
 
 /**
- * Отпечаток находки — для узнавания той же проблемы в следующем прогоне.
+ * Identify the same problem across runs without depending on reviewer prose.
  *
- * Считается по природе находки (правило, вид, файлы, доказательство), а НЕ по её номеру и не по
- * формулировке: идентификатор меняется каждый прогон, а текст модель перепишет иначе, и тогда
- * система спрашивала бы про одно и то же вечно.
- *
- * Номера строк в отпечаток не входят намеренно: сдвиг файла на десять строк не делает проблему
- * новой.
+ * Category, affected files, and a stable subject describe identity. Title, evidence, policy
+ * wording, line numbers, severity, and confidence may change while the underlying debt remains
+ * the same. Exact evidence still has its own digest in the ledger to reopen materially changed
+ * observations without creating a new identity.
  */
 export function fingerprintOf(finding: Finding): string {
   const parts = [
-    finding.policy ?? '',
     finding.category,
     [...finding.files].sort().join('|'),
-    normalizeEvidence(finding.evidence),
+    normalizeSubject(finding.subject),
   ];
   return createHash('sha256').update(parts.join(' ')).digest('hex').slice(0, 16);
 }
 
-/** Доказательство приводится к сравнимому виду: пробелы, регистр и числа значения не имеют. */
-function normalizeEvidence(evidence: string): string {
+/**
+ * Transitional identity used only to migrate ledger entries written before stable subject
+ * existed. New callers must use fingerprintOf.
+ */
+export function legacyFingerprintOf(finding: Finding): string {
+  const parts = [
+    finding.policy ?? '',
+    finding.category,
+    [...finding.files].sort().join('|'),
+    normalizeLegacyEvidence(finding.evidence),
+  ];
+  return createHash('sha256').update(parts.join(' ')).digest('hex').slice(0, 16);
+}
+
+function normalizeSubject(subject: string): string {
+  return subject.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+function normalizeLegacyEvidence(evidence: string): string {
   return evidence.toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().slice(0, 400);
 }
 

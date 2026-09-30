@@ -14,6 +14,7 @@ const GOOD: Finding = {
   id: 'F1',
   category: 'dead-code',
   title: 'Неиспользуемая обёртка',
+  subject: 'function wrap',
   severity: 'medium',
   confidence: 0.9,
   files: ['apps/api/src/x.ts'],
@@ -81,8 +82,7 @@ test('ответ без объекта JSON не роняет разбор, а �
 });
 
 test('отпечаток не зависит от номера находки, номеров строк и регистра', () => {
-  // Сравниваются две записи ОДНОЙ проблемы, сделанные в разных прогонах: сменился номер находки,
-  // регистр, лишний пробел и номер строки. Сама проблема та же — отпечаток обязан совпасть.
+  // These are two reports of the same subject; run-local ids and evidence wording may differ.
   const a = fingerprintOf({
     ...GOOD,
     evidence: 'функция wrap не вызывается ни из одного файла (строка 120)',
@@ -95,11 +95,42 @@ test('отпечаток не зависит от номера находки, �
   assert.equal(a, b);
 });
 
-test('отпечаток меняется, когда меняется само доказательство', () => {
-  assert.notEqual(
+test('перефразированное доказательство не создаёт новую находку', () => {
+  assert.equal(
     fingerprintOf(GOOD),
     fingerprintOf({ ...GOOD, evidence: 'функция wrap вызывается только из теста' }),
   );
+});
+
+test('дублирование pathOf узнаётся после смены заголовка, доказательства и правила', () => {
+  const files = [
+    'packages/contracts/src/client-contract.ts',
+    'tools/maintenance/core/maintenance.ts',
+  ];
+  const subject = 'duplicate pathOf helper between client-contract and maintenance';
+  const before = fingerprintOf({
+    ...GOOD,
+    category: 'duplication',
+    files,
+    subject,
+    title: 'Повторяется pathOf',
+    evidence: 'Обе стороны содержат функцию pathOf с одинаковым телом',
+    policy: 'old-policy',
+  });
+  const after = fingerprintOf({
+    ...GOOD,
+    category: 'duplication',
+    files: [...files].reverse(),
+    subject,
+    title: 'Два локальных преобразователя пути',
+    evidence: 'В двух файлах независимо нормализуется относительный путь',
+    policy: 'new-policy',
+  });
+  assert.equal(before, after);
+});
+
+test('отпечаток меняется, когда меняется стабильный предмет проблемы', () => {
+  assert.notEqual(fingerprintOf(GOOD), fingerprintOf({ ...GOOD, subject: 'function unwrap' }));
 });
 
 test('отпечаток меняется, когда меняется место проблемы', () => {

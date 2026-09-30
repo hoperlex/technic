@@ -57,6 +57,10 @@ import { filesChangedSince, lastChangeOf } from '../analyzers/git.ts';
 export interface ConvergeArgs {
   /** Каким адаптером относить задание: ручным или командным. `null` — как сказано в конфиге. */
   readonly agent: 'manual' | 'command' | null;
+  /** Разовый выбор CLI; `null` — настройка `agent.provider`. */
+  readonly provider: 'claude' | 'codex' | null;
+  /** Разовый id модели; `null` — настройка `agent.model` или умолчание выбранного CLI. */
+  readonly model: string | null;
   readonly allowConcurrent: boolean;
   readonly levels: readonly string[];
   readonly abort: boolean;
@@ -310,7 +314,10 @@ async function emitReviewTask(
    * оба режима идут одной дорогой: ручной адаптер делает ровно то же, что делал цикл, а командный
    * зовёт агента сам.
    */
-  const adapter = adapterFor(config, 'reviewer', args.agent, out);
+  const adapter = adapterFor(config, 'reviewer', args.agent, out, {
+    provider: args.provider,
+    model: args.model,
+  });
   asked.reviewer = true;
   const reply = deliver(adapter, packet, work, workspace, out);
   if (reply.kind !== 'answer') return { ok: reply.kind === 'awaiting' };
@@ -556,7 +563,16 @@ async function takeReview(
   out.heading('задание исполнителю');
   out.item(`находок: ${selection.selected.length}, файлов: ${allowed.length}, точка ${checkpoint}`);
 
-  const reply = deliver(adapterFor(config, 'fixer', args.agent, out), packet, work, workspace, out);
+  const reply = deliver(
+    adapterFor(config, 'fixer', args.agent, out, {
+      provider: args.provider,
+      model: args.model,
+    }),
+    packet,
+    work,
+    workspace,
+    out,
+  );
   if (reply.kind !== 'answer') return { ok: reply.kind === 'awaiting' };
   return takeFix(config, policies, workspace, out, next, args);
 }

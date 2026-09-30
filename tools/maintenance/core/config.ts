@@ -102,11 +102,15 @@ export interface AnalysisConfig {
  */
 export interface AgentConfig {
   readonly mode: 'manual' | 'command';
+  /** Which supported CLI receives reviewer and fixer work packets. */
+  readonly provider?: 'claude' | 'codex';
+  /** Model id passed to the selected CLI. `null` lets that CLI choose its own default. */
+  readonly model?: string | null;
   /**
-   * Путь к программе агента. `null` — найти самому: `PATH`, затем расширение редактора.
+   * Path to the selected agent binary. `null` resolves it from `PATH`, then editor extensions.
    *
-   * Не строка в конфиге по умолчанию потому, что в редакторе программа лежит внутри расширения, а
-   * путь туда содержит номер версии и меняется при каждом обновлении.
+   * The repository must not pin an extension path because its version component changes whenever
+   * the editor updates the extension.
    */
   readonly binary?: string | null;
   /**

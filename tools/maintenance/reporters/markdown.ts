@@ -14,6 +14,7 @@
 import type { Decision, Verdict } from '../core/selector.ts';
 import type { TrackedFinding } from '../core/finding.ts';
 import type { PassRecord, RunState, RunStep, StopReason } from '../core/run-state.ts';
+import type { WindowState } from '../core/deep-window.ts';
 import type { Outcome } from '../verification/verifier.ts';
 
 /**
@@ -486,7 +487,9 @@ function moment(iso: string): string {
 const WINDOW_STOP_TITLE: Record<string, string> = {
   timeBudgetSpent: 'вышло время зоны, и продолжать не стали',
   maxBatchesReached: 'сделано столько партий, сколько разрешает политика',
-  queueEmpty: 'очередь долга пуста: разбирать было нечего',
+  queueEmpty: 'очередь пуста (причина записана старой версией оркестратора)',
+  noFindings: 'ревьюеры не нашли долга',
+  nothingEligible: 'долг найден, но автоматическая правка ни для одной находки не разрешена',
   zonesDone: 'все зоны пройдены',
   repeatedRollbacks: 'два отката подряд: окно остановилось само',
   regressionInStabilization: 'откат в зоне стабилизации — признак, что правки идут во вред',
@@ -508,33 +511,7 @@ export interface WindowReportOptions {
  * «куда ушли три часа и что из этого осталось в дереве», — и таблица проходов на такой вопрос не
  * отвечает.
  */
-export function renderWindowReport(
-  state: {
-    readonly windowId: string;
-    readonly startedAt: string;
-    readonly deadline: string;
-    readonly zoneIndex: number;
-    readonly step: string;
-    readonly batches: readonly {
-      readonly zone: string;
-      readonly startedAt: string;
-      readonly findings: readonly string[];
-      readonly outcome: Outcome | null;
-      readonly reason: string | null;
-      readonly changedFiles: readonly string[];
-      readonly changedLines: number;
-      readonly finishedAt: string | null;
-    }[];
-    readonly stop: { readonly reason: string; readonly detail: string } | null;
-    readonly totals: {
-      readonly files: number;
-      readonly lines: number;
-      readonly accepted: number;
-      readonly rollbacks: number;
-    };
-  },
-  options: WindowReportOptions = {},
-): string {
+export function renderWindowReport(state: WindowState, options: WindowReportOptions = {}): string {
   const lines: string[] = [];
   const say = (text = '') => lines.push(text);
 
@@ -546,12 +523,51 @@ export function renderWindowReport(
       `Партий: ${state.batches.length}, принято ${state.totals.accepted}, откачено ${state.totals.rollbacks}.`,
   );
   say();
+  const redBase = state.baseGates.filter((gate) => !gate.ok);
+  say(
+    state.baseGates.length === 0
+      ? '**База ворот:** не записана (окно создано старой версией).'
+      : `**База ворот:** ${redBase.length === 0 ? 'зелёная' : `красная: ${redBase.map((gate) => gate.id).join(', ')}`}.`,
+  );
+  say();
   if (state.stop !== null) {
     say(`**Почему закрылось:** ${WINDOW_STOP_TITLE[state.stop.reason] ?? state.stop.reason}.`);
     say();
     say(`> ${state.stop.detail}`);
     say();
   }
+
+  say('## Обзоры зон');
+  say();
+  if (state.reviews.length === 0) {
+    say('Ответы ревьюеров ещё не приняты.');
+  } else {
+    lines.push(
+      ...renderTable(
+        [
+          { title: 'Зона', align: 'left' },
+          { title: 'Найдено', align: 'right' },
+          { title: 'Свежих', align: 'right' },
+          { title: 'Снято журналом', align: 'right' },
+          { title: 'По зонам', align: 'right' },
+          { title: 'Без зоны', align: 'right' },
+        ],
+        state.reviews.map((review) => [
+          review.zone,
+          String(review.observed),
+          String(review.fresh),
+          String(review.suppressed),
+          String(review.classified),
+          String(review.unclassified),
+        ]),
+      ),
+    );
+    say();
+    for (const review of state.reviews) {
+      say(`- ${review.zone}: исходный ответ — \`${review.artifact}\``);
+    }
+  }
+  say();
 
   say('## Партии');
   say();
@@ -608,17 +624,48 @@ export function renderWindowReport(
   say('## Что осталось в очереди долга');
   say();
   if (queue.length === 0) {
-    say('Очередь пуста.');
+    say('Активная автоматическая очередь пуста.');
   } else {
     for (const item of queue.slice(0, 20)) say(`- ${item.title} (вес ${item.score.toFixed(2)})`);
     if (queue.length > 20) say(`- … и ещё ${queue.length - 20}`);
   }
   say();
 
+  const residual = state.findings.filter((finding) =>
+    ['unclassified', 'deferred', 'manual', 'rejected', 'rolled-back'].includes(finding.status),
+  );
+  say('## Что найдено, но не исправлено автоматически');
+  say();
+  if (residual.length === 0) {
+    say('Непринятых находок нет.');
+  } else {
+    for (const finding of residual) {
+      const route =
+        `источник: ${finding.sourceZones.join(', ')}` +
+        (finding.targetZone === null ? '' : `; целевая зона: ${finding.targetZone}`);
+      say(
+        `- **${finding.title}** [${finding.status}] — ${finding.reason} (${route}; вид: ${finding.category})`,
+      );
+    }
+  }
+  say();
+
+  const suppressed = state.findings.filter((finding) => finding.status === 'suppressed');
+  if (suppressed.length > 0) {
+    say('## Что снял журнал решений');
+    say();
+    for (const finding of suppressed) {
+      say(`- **${finding.title}** — ${finding.reason}`);
+    }
+    say();
+  }
+
   say('## Где подробности');
   say();
   say('- проверка каждой партии: `.maintenance/reports/<окно>-batch-N.json` — базовая линия,');
   say('  нарушения замка, вывод упавших шагов;');
+  say('- исходные ответы зон: `.maintenance/reports/<окно>-<зона>-review-*.json`;');
+  say('- полные вердикты отбора: `.maintenance/reports/<окно>-<зона>-selection-N.json`;');
   say('- решения по находкам: `.maintenance/state/ledger.json` и `maintain ledger`;');
   say('- ход окна поминутно: `.maintenance/logs/maintain.log`.');
   say();

@@ -260,6 +260,35 @@ function runLevels(
 }
 
 /**
+ * Measure every enabled gate once on an isolated HEAD and keep only comparison facts.
+ *
+ * Deep windows reuse this immutable baseline for every batch. Re-running the base after each
+ * edit would waste minutes and could accidentally compare different repository states.
+ */
+export function measureGateBaseline(
+  config: MaintenanceConfig,
+  tmpDir: string,
+  extraLevels: readonly string[] = [],
+  notify: (text: string) => void = () => {},
+): readonly LevelFacts[] {
+  const base = createIsolatedTree({
+    root: config.root,
+    home: path.join(tmpDir, 'trees'),
+    files: [],
+    linkPaths: config.analysis.linkPaths ?? [],
+  });
+  try {
+    return runLevels(base.path, config, extraLevels, notify).map((level) => ({
+      id: level.id,
+      ok: level.ok,
+      marks: level.marks ?? [],
+    }));
+  } finally {
+    base.dispose();
+  }
+}
+
+/**
  * Чья это краснота: партии или базы.
  *
  * Вынесено из решения отдельной функцией не ради длины: здесь единственное место, где система

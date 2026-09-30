@@ -31,7 +31,7 @@
  * заводить второе имя одному типу значит заставить читателя выяснять, чем они отличаются.
  */
 import type { DeepMaintenanceBudget } from './types.ts';
-import type { Outcome } from '../verification/verifier.ts';
+import type { LevelFacts, Outcome } from '../verification/verifier.ts';
 
 /** На чьём ходу окно. Шагов ожидания ровно два: разбор очереди и правка исполнителя. */
 export type WindowStep = 'awaiting-review' | 'awaiting-fix' | 'finished';
@@ -47,6 +47,8 @@ export type WindowStop =
   | 'timeBudgetSpent'
   | 'maxBatchesReached'
   | 'queueEmpty'
+  | 'noFindings'
+  | 'nothingEligible'
   | 'zonesDone'
   | 'repeatedRollbacks'
   | 'regressionInStabilization'
@@ -79,6 +81,41 @@ export interface WindowTotals {
   readonly accepted: number;
 }
 
+export type WindowFindingStatus =
+  | 'suppressed'
+  | 'unclassified'
+  | 'queued'
+  | 'selected'
+  | 'deferred'
+  | 'manual'
+  | 'rejected'
+  | 'accepted'
+  | 'rolled-back';
+
+/** A finding's trace from review through acceptance or an explicit residual state. */
+export interface WindowFindingRecord {
+  readonly fingerprint: string;
+  readonly title: string;
+  readonly category: string;
+  readonly files: readonly string[];
+  readonly sourceZones: readonly string[];
+  readonly targetZone: string | null;
+  readonly score: number | null;
+  readonly status: WindowFindingStatus;
+  readonly reason: string;
+}
+
+/** Summary of one reviewer response and the path to its immutable raw artifact. */
+export interface WindowReviewRecord {
+  readonly zone: string;
+  readonly observed: number;
+  readonly fresh: number;
+  readonly suppressed: number;
+  readonly classified: number;
+  readonly unclassified: number;
+  readonly artifact: string;
+}
+
 export interface WindowState {
   readonly windowId: string;
   readonly startedAt: string;
@@ -97,6 +134,12 @@ export interface WindowState {
   readonly batches: readonly BatchRecord[];
   readonly stop: { readonly reason: WindowStop; readonly detail: string } | null;
   readonly totals: WindowTotals;
+  /** Gate facts measured once on the immutable HEAD used as the window baseline. */
+  readonly baseGates: readonly LevelFacts[];
+  /** Every zone response, not only the last overwritten review.json file. */
+  readonly reviews: readonly WindowReviewRecord[];
+  /** Every observed problem and its latest explainable disposition. */
+  readonly findings: readonly WindowFindingRecord[];
 }
 
 /** Исход проверки партии вместе с тем, что она оставила в дереве. */
@@ -120,7 +163,11 @@ const MINUTE_MS = 60_000;
  * него есть штатный обход флагом команды. Знать про обход должна команда, а не автомат: проверка
  * тут сделала бы обход невозможным, не добавив ни одной гарантии.
  */
-export function startWindow(policy: DeepMaintenanceBudget, now: Date): WindowState {
+export function startWindow(
+  policy: DeepMaintenanceBudget,
+  now: Date,
+  baseGates: readonly LevelFacts[] = [],
+): WindowState {
   if (policy.zones.length === 0) {
     throw new Error('в политике не описано ни одной зоны: разбирать долг нечем');
   }
@@ -137,6 +184,9 @@ export function startWindow(policy: DeepMaintenanceBudget, now: Date): WindowSta
     batches: [],
     stop: null,
     totals: { files: 0, lines: 0, rollbacks: 0, accepted: 0 },
+    baseGates,
+    reviews: [],
+    findings: [],
   };
 }
 
@@ -252,9 +302,8 @@ export function recordBatchOutcome(
  * 4. `timeBudgetSpent` — на следующую партию времени заведомо нет. Выше всех «потолков» ниже,
  *    потому что часы идут независимо от нас: назвать нехватку времени исчерпанием наших же
  *    лимитов значит соврать человеку о том, почему окно оказалось коротким;
- * 5. `queueEmpty` — очередь не дала окну ни одной партии: долг разобран, и второе окно не нужно.
- *    Это лучший исход, и он сообщается прежде потолков — как `noSelectedFindings` в цикле
- *    сходимости;
+ * 5. `noFindings` / `nothingEligible` — no batch was possible. The first means reviewers found
+ *    no debt; the second means findings exist but none may enter automatic repair;
  * 6. `maxBatchesReached` — исчерпан потолок ремонтных партий. Штатный предел, но всё же предел:
  *    остаток очереди уходит в backlog, и человек должен знать, что окно упёрлось, а не закончило;
  * 7. `zonesDone` — зоны пройдены по порядку и очередь последней из них пуста. Последним намеренно:
@@ -311,9 +360,16 @@ export function evaluateWindowStop(
    */
   const exhausted = queueLeft <= 0 && state.zoneIndex >= policy.zones.length - 1;
   if (exhausted && state.batches.length === 0) {
+    const observed = state.reviews.reduce((sum, review) => sum + review.observed, 0);
+    const residual = state.findings.filter(
+      (finding) => finding.status !== 'accepted' && finding.status !== 'suppressed',
+    ).length;
     candidates.push({
-      reason: 'queueEmpty',
-      detail: `очередь пуста во всех зонах (${policy.zones.length}): разбирать нечего`,
+      reason: observed === 0 ? 'noFindings' : 'nothingEligible',
+      detail:
+        observed === 0
+          ? `ревьюеры не нашли ни одной находки в ${policy.zones.length} зонах`
+          : `ревьюеры нашли ${observed}, автоматически взять не удалось; остаток: ${residual}`,
     });
   }
 

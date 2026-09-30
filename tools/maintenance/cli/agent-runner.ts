@@ -18,11 +18,19 @@ import type { AgentAdapter, AgentReply } from '../agents/adapter.ts';
 import { manualAdapter } from '../agents/manual.ts';
 import { commandAdapter } from '../agents/command.ts';
 import { CLAUDE_ROLE_ARGS, resolveClaudeBinary } from '../agents/claude-cli.ts';
+import { CODEX_ROLE_ARGS, resolveCodexBinary } from '../agents/codex-cli.ts';
 import type { PacketRole, WorkPacket } from '../work-packets/types.ts';
 import type { Workspace } from '../state/workspace.ts';
 
 /** Потолок ожидания по умолчанию: двадцать минут. Ноль означал бы «ждать вечно». */
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
+
+export interface AgentCommandOverride {
+  /** One-run provider override. `null` keeps the repository setting. */
+  readonly provider: 'claude' | 'codex' | null;
+  /** One-run model override. `null` keeps the repository setting or the CLI default. */
+  readonly model: string | null;
+}
 
 /**
  * Какой адаптер взять для этой роли.
@@ -35,37 +43,47 @@ export function adapterFor(
   role: PacketRole,
   override: 'manual' | 'command' | null,
   out: Reporter,
+  commandOverride: AgentCommandOverride = { provider: null, model: null },
 ): AgentAdapter {
   const settings = config.agent;
   const mode = override ?? settings?.mode ?? 'manual';
   if (mode === 'manual') return manualAdapter();
 
-  const binary = resolveClaudeBinary(settings?.binary ?? null);
+  const provider = commandOverride.provider ?? settings?.provider ?? 'claude';
+  const configuredModel = commandOverride.model ?? settings?.model ?? null;
+  const model = configuredModel?.trim() ?? null;
+  if (configuredModel !== null && model === '') {
+    throw new Error('модель агента не может быть пустой строкой');
+  }
+  const binary =
+    provider === 'codex'
+      ? resolveCodexBinary(settings?.binary ?? null)
+      : resolveClaudeBinary(settings?.binary ?? null);
   if (binary === null) {
-    /*
-     * Программы нет — а человек просил самоходный прогон. Молча вернуться к ручному режиму нельзя:
-     * он ждал бы ответа, которого никто не принесёт, и решил бы, что агент ничего не нашёл.
-     */
+    // Falling back to manual mode would leave an unattended run waiting for an answer forever.
     throw new Error(
-      'режим command выбран, но программа агента не найдена: ни в настройке, ни в PATH, ни в расширениях редактора',
+      `режим command выбран, но ${provider} не найден: ни в настройке, ни в PATH, ни в расширениях редактора`,
     );
   }
 
-  // Умолчания флагов живут рядом с самой программой, а не здесь: раннер знает роль и адаптер, но
-  // не должен знать, какими ключами эта конкретная программа запрещает правку.
+  // Provider-specific permissions stay next to the CLI integration; custom args remain an escape hatch.
+  const defaults = provider === 'codex' ? CODEX_ROLE_ARGS : CLAUDE_ROLE_ARGS;
   const roleArgs =
     role === 'reviewer'
-      ? (settings?.reviewerArgs ?? CLAUDE_ROLE_ARGS.reviewer)
-      : (settings?.fixerArgs ?? CLAUDE_ROLE_ARGS.fixer);
+      ? (settings?.reviewerArgs ?? defaults.reviewer)
+      : (settings?.fixerArgs ?? defaults.fixer);
+  // Both supported CLIs accept `--model` as a global option. Keep it before role-specific
+  // arguments so Codex sees it before the stdin marker (`-`) at the end of `exec`.
+  const commandArgs = model === null ? roleArgs : ['--model', model, ...roleArgs];
 
   out.item(
-    `агент: ${binary.version ?? 'версия неизвестна'} (${binary.source}), роль ${role}, аргументы: ${roleArgs.join(' ')}`,
+    `агент: ${provider} ${binary.version ?? 'версия неизвестна'} (${binary.source}), модель ${model ?? 'по умолчанию CLI'}, роль ${role}, аргументы: ${commandArgs.join(' ')}`,
   );
 
   return commandAdapter({
-    command: [binary.path, ...roleArgs],
-    id: `claude-${role}`,
-    title: `claude (${role})`,
+    command: [binary.path, ...commandArgs],
+    id: `${provider}-${role}`,
+    title: `${provider} (${role})`,
     dryRun: settings?.dryRun === true,
     log: (text) => out.line(`      ${text}`),
   });

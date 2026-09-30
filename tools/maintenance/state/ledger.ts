@@ -27,6 +27,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { TrackedFinding } from '../core/finding.ts';
+import { legacyFingerprintOf } from '../core/finding.ts';
 import type { LedgerPolicy } from '../core/types.ts';
 
 /**
@@ -54,10 +55,10 @@ export interface LedgerEntry {
   /**
    * Отпечаток доказательства.
    *
-   * Не дублирует `fingerprint`: тот намеренно огрубляет доказательство — гасит регистр, пробелы и
-   * ЧИСЛА, чтобы сдвиг строк и переформулировка не делали проблему новой. Но «функция не
-   * вызывается из 2 мест» и «из 17 мест» — это один отпечаток и разный масштаб проблемы. Дайджест
-   * считается по точному тексту и ловит ровно такой случай.
+   * This does not duplicate `fingerprint`: identity uses category, files, and stable subject and
+   * deliberately excludes prose. Evidence can still change the scale or nature of the observation
+   * while identity remains stable. Its exact digest reopens the prior decision without inventing a
+   * new finding.
    */
   readonly evidenceDigest: string;
 }
@@ -183,7 +184,12 @@ export function reconcile(input: ReconcileInput): ReconcileResult {
 
   for (const finding of input.findings) {
     const digest = evidenceDigestOf(finding.evidence);
-    const previous = known.get(finding.fingerprint);
+    const previous = known.get(finding.fingerprint) ?? known.get(legacyFingerprintOf(finding));
+
+    // Remove the old key before refreshEntry writes the stable-subject fingerprint.
+    if (previous !== undefined && previous.fingerprint !== finding.fingerprint) {
+      known.delete(previous.fingerprint);
+    }
 
     // Правило 1: отпечаток незнаком — находку никто не видел, решения нет. Она `new` и идёт агенту.
     if (!previous) {
@@ -319,6 +325,7 @@ function refreshEntry(
 ): LedgerEntry {
   return {
     ...entry,
+    fingerprint: finding.fingerprint,
     title: finding.title,
     files: [...finding.files],
     ...(finding.policy === undefined ? {} : { policy: finding.policy }),

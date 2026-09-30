@@ -16,7 +16,12 @@ import type { MaintenanceConfig } from '../core/config.ts';
 import type { Reporter } from '../core/contracts.ts';
 import type { DeepMaintenanceBudget, PolicySet, ConvergenceBudget } from '../core/types.ts';
 import type { TrackedFinding } from '../core/finding.ts';
-import type { WindowState } from '../core/deep-window.ts';
+import type {
+  WindowFindingRecord,
+  WindowFindingStatus,
+  WindowReviewRecord,
+  WindowState,
+} from '../core/deep-window.ts';
 import {
   advanceWindow,
   beginBatch,
@@ -24,10 +29,10 @@ import {
   recordBatchOutcome,
   startWindow,
 } from '../core/deep-window.ts';
-import { rankDebt, type DebtItem } from '../core/debt-queue.ts';
+import { rankDebtDetailed, zoneForNextDebtBatch, type DebtItem } from '../core/debt-queue.ts';
 import { parseFindings } from '../core/finding-io.ts';
 import { EMPTY_FIX_REPORT, parseFixReport } from '../core/fix-report.ts';
-import { selectFindings } from '../core/selector.ts';
+import { selectFindings, type Verdict } from '../core/selector.ts';
 import { collectFacts, decisionsFor, saveFacts, widenScope } from '../analyzers/facts.ts';
 import { changedSince, collectGit, fileHotness } from '../analyzers/git.ts';
 import { renderWindowReport } from '../reporters/markdown.ts';
@@ -38,7 +43,7 @@ import { FileCheckpointTransaction } from '../git/transaction.ts';
 import { ensureWorkspace, type Workspace } from '../state/workspace.ts';
 import { JsonFindingStore, reconcile } from '../state/ledger.ts';
 import { snapshotBaseline } from '../verification/behavior-lock.ts';
-import { measureBaseline, verifyBatch } from '../verification/verifier.ts';
+import { measureBaseline, measureGateBaseline, verifyBatch } from '../verification/verifier.ts';
 import { reviewerPacket } from '../work-packets/reviewer.ts';
 import { fixerPacket } from '../work-packets/fixer.ts';
 import { adapterFor, deliver } from './agent-runner.ts';
@@ -56,6 +61,10 @@ export interface DeepArgs {
   readonly abort: boolean;
   /** Каким адаптером относить задание: ручным или командным. */
   readonly agent: 'manual' | 'command' | null;
+  /** Разовый выбор CLI; `null` — настройка `agent.provider`. */
+  readonly provider: 'claude' | 'codex' | null;
+  /** Разовый id модели; `null` — настройка `agent.model` или умолчание выбранного CLI. */
+  readonly model: string | null;
 }
 
 const WINDOW_FILE = 'window.json';
@@ -86,6 +95,9 @@ function readWindow(workspace: Workspace): WindowState | null {
       ...batch,
       changedFiles: batch.changedFiles ?? [],
     })),
+    baseGates: raw.baseGates ?? [],
+    reviews: raw.reviews ?? [],
+    findings: raw.findings ?? [],
   };
 }
 
@@ -98,6 +110,82 @@ function readQueue(workspace: Workspace): QueuedItem[] {
 function saveState(workspace: Workspace, state: WindowState, queue: readonly QueuedItem[]): void {
   writeFileSync(windowFile(workspace), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
   writeFileSync(queueFile(workspace), `${JSON.stringify(queue, null, 2)}\n`, 'utf8');
+}
+
+function findingRecord(
+  finding: TrackedFinding,
+  sourceZone: string,
+  status: WindowFindingStatus,
+  reason: string,
+  targetZone: string | null = null,
+  score: number | null = null,
+): WindowFindingRecord {
+  return {
+    fingerprint: finding.fingerprint,
+    title: finding.title,
+    category: finding.category,
+    files: finding.files,
+    sourceZones: [sourceZone],
+    targetZone,
+    score,
+    status,
+    reason,
+  };
+}
+
+/** Update a finding while retaining every zone that independently reported it. */
+function withFindings(state: WindowState, records: readonly WindowFindingRecord[]): WindowState {
+  const merged = new Map(state.findings.map((record) => [record.fingerprint, record]));
+  for (const record of records) {
+    const previous = merged.get(record.fingerprint);
+    const sources =
+      previous === undefined
+        ? record.sourceZones
+        : [...new Set([...previous.sourceZones, ...record.sourceZones])];
+    // A later reviewer may rediscover accepted debt; rediscovery must not reopen completed work.
+    const retainAccepted = previous?.status === 'accepted' && record.status === 'queued';
+    merged.set(
+      record.fingerprint,
+      previous === undefined
+        ? record
+        : retainAccepted
+          ? { ...previous, sourceZones: sources }
+          : {
+              ...record,
+              sourceZones: sources,
+            },
+    );
+  }
+  return { ...state, findings: [...merged.values()] };
+}
+
+function withReview(
+  state: WindowState,
+  review: WindowReviewRecord,
+  records: readonly WindowFindingRecord[],
+): WindowState {
+  return {
+    ...withFindings(state, records),
+    reviews: [...state.reviews, review],
+  };
+}
+
+function withVerdicts(state: WindowState, verdicts: readonly Verdict[]): WindowState {
+  const known = new Map(state.findings.map((record) => [record.fingerprint, record]));
+  return withFindings(
+    state,
+    verdicts.map((verdict) => {
+      const previous = known.get(verdict.finding.fingerprint);
+      return findingRecord(
+        verdict.finding,
+        previous?.sourceZones.at(-1) ?? 'unknown',
+        verdict.decision,
+        verdict.reason,
+        previous?.targetZone ?? null,
+        previous?.score ?? null,
+      );
+    }),
+  );
 }
 
 /**
@@ -156,8 +244,9 @@ export async function deep(
       out.item('провести его разово можно флагом --force');
       return { ok: false };
     }
-    if (!checkWindowStart(config, policies, out)) return { ok: false };
-    state = startWindow(policy, new Date());
+    const start = checkWindowStart(config, policies, workspace, out);
+    if (!start.allowed) return { ok: false };
+    state = startWindow(policy, new Date(), start.baseGates);
     saveState(workspace, state, []);
     out.heading(`окно ${state.windowId}`);
     out.item(`бюджет: ${policy.zoneMinutes} мин, партий не больше ${policy.maxRepairBatches}`);
@@ -184,16 +273,25 @@ export async function deep(
 /**
  * Стартовая точка окна: те же правила, что у цикла, и по той же причине.
  *
- * Окно длиннее и правит больше, поэтому красная вершина здесь дороже вдвойне: шесть неудачных
- * партий подряд съедят весь бюджет времени и не дадут ни одной принятой.
+ * A deep window always pays for one full baseline before any edit. The same facts are then reused
+ * by every batch, so a pre-existing failure cannot be blamed on a repair and the baseline cannot
+ * drift during the window.
  */
-function checkWindowStart(config: MaintenanceConfig, policies: PolicySet, out: Reporter): boolean {
+function checkWindowStart(
+  config: MaintenanceConfig,
+  policies: PolicySet,
+  workspace: Workspace,
+  out: Reporter,
+) {
   const git = collectGit(config.root);
   const anchor = readReleaseAnchor(config.root);
+  out.heading('базовая линия ворот');
+  const baseGates = measureGateBaseline(config, workspace.tmp, [], (text) => out.item(text));
+  const gatesGreen = baseGates.every((level) => level.ok);
   const decision = decideStart(
     {
       treeClean: git.clean,
-      gatesGreen: null,
+      gatesGreen,
       anchorNamed: anchorNamed(anchor),
       foreignWorkInTree: git.changedFiles.length,
     },
@@ -201,11 +299,14 @@ function checkWindowStart(config: MaintenanceConfig, policies: PolicySet, out: R
   );
   out.heading('стартовая точка');
   out.item(`выпуск: ${anchor.version ?? 'не прочитан'}`);
+  for (const gate of baseGates) {
+    out.item(`${gate.id}: ${gate.ok ? 'зелено' : `красно, следов ${gate.marks.length}`}`);
+  }
   for (const reason of decision.reasons) {
     if (decision.verdict === 'blocked') out.error(reason);
     else out.item(reason);
   }
-  return decision.verdict !== 'blocked';
+  return { allowed: decision.verdict !== 'blocked', baseGates };
 }
 
 /** Выдать задание ревьюеру по текущей зоне: окно смотрит зону целиком, а не только изменённое. */
@@ -251,7 +352,7 @@ async function emitZoneReview(
 
   const pass = {
     id: zone.id,
-    goal: `Зона «${zone.id}». Ищите: ${zone.looksFor.join(', ')}. Менять допустимо: ${zone.mayChange.join(', ')}.`,
+    goal: `Зона «${zone.id}». Ищите: ${zone.looksFor.map((kind) => kind.id).join(', ')}. Менять допустимо: ${zone.mayChange.join(', ')}.`,
     forbids: zone.mustNotChange,
   };
   const outputFile = path.join(path.relative(config.root, workspace.results), 'review.json');
@@ -265,7 +366,10 @@ async function emitZoneReview(
     outputFile,
     decisions: decisionsFor(config, widened.facts),
   });
-  const adapter = adapterFor(config, 'reviewer', args.agent, out);
+  const adapter = adapterFor(config, 'reviewer', args.agent, out, {
+    provider: args.provider,
+    model: args.model,
+  });
   asked.reviewer = true;
   const reply = deliver(adapter, packet, config, workspace, out);
   if (reply.kind !== 'answer') {
@@ -298,11 +402,18 @@ async function takeZoneReview(
     return { ok: true };
   }
 
-  const parsed = parseFindings(readFileSync(answer, 'utf8'), path.relative(config.root, answer));
+  const zone = policies.maintenance.deepMaintenance.zones[state.zoneIndex]?.id ?? '';
+  const rawAnswer = readFileSync(answer, 'utf8');
+  const artifact = path.join(
+    workspace.reports,
+    `${state.windowId}-${zone}-review-${Date.now()}.json`,
+  );
+  writeFileSync(artifact, rawAnswer, 'utf8');
+
+  const parsed = parseFindings(rawAnswer, path.relative(config.root, answer));
   for (const problem of parsed.problems) out.warn(problem);
   if (parsed.findings.length === 0 && parsed.problems.length > 0) {
-    // Неразобранный ответ — не «в зоне чисто»: окно закрылось бы причиной «очередь пуста», то есть
-    // отчиталось бы о разобранном долге там, где не получило ни одного ответа.
+    // An invalid answer is not an empty zone: keep the raw artifact and wait for a valid reply.
     out.error('ответ ревьюера не разобран: окно ждёт исправленный ответ');
     out.item(`файл: ${path.relative(config.root, answer)}`);
     out.item(
@@ -319,8 +430,7 @@ async function takeZoneReview(
     findings: parsed.findings,
     policy: policies.maintenance.ledger,
     now: new Date(),
-    // В окне журнал спрашивают мягче: код с прошлого решения мог не меняться, но окно и созвано
-    // затем, чтобы вернуться к отложенному. Переоткрытие по сроку делает `reconcile` сам.
+    // A deep window revisits debt by schedule; the ledger itself decides when a decision expires.
     codeChanged: () => false,
     policyChanged: () => false,
   });
@@ -330,7 +440,7 @@ async function takeZoneReview(
   }
 
   const policy = policies.maintenance.deepMaintenance;
-  const ranked = rankDebt({
+  const routed = rankDebtDetailed({
     findings: sifted.fresh,
     zones: policy.zones,
     signals: {
@@ -338,22 +448,78 @@ async function takeZoneReview(
       ageDays: ageFromLedger(sifted.entries),
     },
   });
-  const zone = policy.zones[state.zoneIndex]?.id ?? '';
-  const mine = ranked.filter((item) => item.zone === zone);
-  const queue: QueuedItem[] = mine.map((item) => ({
-    zone: item.zone,
-    score: item.score,
-    finding: item.finding,
-  }));
+
+  const records: WindowFindingRecord[] = [
+    ...sifted.suppressed.map(({ finding, why }) => findingRecord(finding, zone, 'suppressed', why)),
+    ...routed.unclassified.map((finding) =>
+      findingRecord(
+        finding,
+        zone,
+        'unclassified',
+        `вид «${finding.category}» не назначен ни одной зоне; автоматическая правка запрещена`,
+      ),
+    ),
+  ];
+
+  const existing = readQueue(workspace);
+  const queue = new Map(existing.map((item) => [item.finding.fingerprint, item]));
+  const accepted = new Set(
+    state.findings
+      .filter((finding) => finding.status === 'accepted')
+      .map((finding) => finding.fingerprint),
+  );
+  for (const item of routed.ranked) {
+    const targetIndex = policy.zones.findIndex((candidate) => candidate.id === item.zone);
+    const late = targetIndex < state.zoneIndex;
+    records.push(
+      findingRecord(
+        item.finding,
+        zone,
+        'queued',
+        item.zone === zone
+          ? `поставлена в очередь зоны ${zone}`
+          : late
+            ? `целевая зона ${item.zone} уже просмотрена; находка будет разобрана после последнего обзора`
+            : `перенесена из зоны ${zone} в очередь зоны ${item.zone}`,
+        item.zone,
+        item.score,
+      ),
+    );
+    if (!accepted.has(item.finding.fingerprint)) {
+      queue.set(item.finding.fingerprint, {
+        zone: item.zone,
+        score: item.score,
+        finding: item.finding,
+      });
+    }
+  }
+
+  const nextState = withReview(
+    state,
+    {
+      zone,
+      observed: parsed.findings.length,
+      fresh: sifted.fresh.length,
+      suppressed: sifted.suppressed.length,
+      classified: routed.ranked.length,
+      unclassified: routed.unclassified.length,
+      artifact: path.relative(config.root, artifact),
+    },
+    records,
+  );
+  const orderedQueue = [...queue.values()].sort((a, b) => b.score - a.score);
+  const mine = orderedQueue.filter((item) => item.zone === zone);
 
   out.heading('очередь долга');
-  out.item(`в зоне ${zone}: ${queue.length} из ${ranked.length} находок`);
+  out.item(
+    `после обзора ${zone}: в текущей зоне ${mine.length}, всего в межзонной очереди ${orderedQueue.length}, без зоны ${routed.unclassified.length}`,
+  );
   for (const item of mine.slice(0, 5)) {
     out.line(`      ${item.score.toFixed(2)} — ${item.finding.title}`);
   }
 
-  saveState(workspace, state, queue);
-  return takeNextBatch(config, policies, workspace, out, state, queue, args);
+  saveState(workspace, nextState, orderedQueue);
+  return takeNextBatch(config, policies, workspace, out, nextState, orderedQueue, args);
 }
 
 /** Взять из очереди следующую партию и выдать её исполнителю. */
@@ -408,12 +574,17 @@ async function takeNextBatch(
   args: DeepArgs,
 ): Promise<CommandResult> {
   const policy = policies.maintenance.deepMaintenance;
-  let advanced = advanceWindow(state, policy, new Date(), queue.length);
+  const zoneId =
+    zoneForNextDebtBatch(state.zoneIndex, policy.zones, queue) ??
+    policy.zones[state.zoneIndex]?.id ??
+    '';
+  const currentQueue = queue.filter((item) => item.zone === zoneId);
+  let advanced = advanceWindow(state, policy, new Date(), currentQueue.length);
   if (advanced.stop?.reason === 'timeBudgetSpent') {
     const extended = askForMoreTime(policy, advanced, out);
     if (extended !== null) {
-      // Время добавлено — окно возвращается к работе с той же зоной и той же очередью.
-      advanced = advanceWindow(extended, policy, new Date(), queue.length);
+      // The extension belongs to the current zone; future-zone debt remains untouched.
+      advanced = advanceWindow(extended, policy, new Date(), currentQueue.length);
     }
   }
   if (advanced.step === 'finished') {
@@ -424,9 +595,9 @@ async function takeNextBatch(
     return { ok: true };
   }
 
-  // Зона сменилась — очередь прежней зоны больше не нужна, и новый обзор пойдёт по новой зоне.
+  // A zone change must retain findings already routed to another zone.
   if (advanced.zoneIndex !== state.zoneIndex) {
-    saveState(workspace, advanced, []);
+    saveState(workspace, advanced, queue);
     return emitZoneReview(config, policies, workspace, out, advanced, args);
   }
 
@@ -435,23 +606,32 @@ async function takeNextBatch(
     config,
     policies,
     budget,
-    findings: queue.map((item) => item.finding),
+    findings: currentQueue.map((item) => item.finding),
   });
+  const verdicts = new Map(
+    selection.verdicts.map((verdict) => [verdict.finding.fingerprint, verdict]),
+  );
   const rest = queue.filter(
-    (item) =>
-      !selection.selected.some((finding) => finding.fingerprint === item.finding.fingerprint),
+    (item) => item.zone !== zoneId || verdicts.get(item.finding.fingerprint)?.retryable === true,
+  );
+  const selectedState = withVerdicts(advanced, selection.verdicts);
+  writeFileSync(
+    path.join(
+      workspace.reports,
+      `${state.windowId}-${zoneId}-selection-${state.batches.length + 1}.json`,
+    ),
+    `${JSON.stringify(selection, null, 2)}\n`,
+    'utf8',
   );
 
   if (selection.selected.length === 0) {
-    /*
-     * В зоне брать нечего. Записывать это ремонтной партией нельзя, хотя соблазн есть: пустая
-     * запись съела бы одну из шести партий окна и подменила бы исход — вместо «долг разобран»
-     * человек прочитал бы «зоны пройдены». Поэтому просто идём дальше с пустой очередью, а
-     * решение о переходе или закрытии принимает автомат.
-     */
-    out.item('из очереди зоны отбор не взял ничего: остальное — человеку');
-    saveState(workspace, advanced, []);
-    return takeNextBatch(config, policies, workspace, out, advanced, [], args);
+    // A fresh empty batch cannot change any verdict, so remove this zone from the active queue.
+    const futureQueue = queue.filter((item) => item.zone !== zoneId);
+    out.item(
+      `из очереди зоны отбор не взял ничего; ${selection.verdicts.length} решений сохранено для отчёта`,
+    );
+    saveState(workspace, selectedState, futureQueue);
+    return takeNextBatch(config, policies, workspace, out, selectedState, futureQueue, args);
   }
 
   const allowed = [...new Set(selection.selected.flatMap((finding) => finding.files))].sort();
@@ -467,9 +647,8 @@ async function takeNextBatch(
     createdAt: new Date().toISOString(),
   });
 
-  const zoneId = policy.zones[advanced.zoneIndex]?.id ?? '';
   const started = beginBatch(
-    advanced,
+    selectedState,
     zoneId,
     selection.selected.map((finding) => finding.fingerprint),
     new Date(),
@@ -491,7 +670,10 @@ async function takeNextBatch(
       .map((level) => level.command.join(' ')),
   });
   const reply = deliver(
-    adapterFor(config, 'fixer', args.agent, out),
+    adapterFor(config, 'fixer', args.agent, out, {
+      provider: args.provider,
+      model: args.model,
+    }),
     packet,
     config,
     workspace,
@@ -548,6 +730,7 @@ async function takeBatchFix(
     claimed: report.claimed,
     allowConcurrent: args.allowConcurrent,
     tmpDir: workspace.tmp,
+    baseGates: state.baseGates,
     extraLevels: [],
   });
   out.item(`проверка: ${result.outcome} — ${result.reason}`);
@@ -572,26 +755,44 @@ async function takeBatchFix(
     rmSync(path.join(workspace.state, 'batch.json'), { force: true });
   }
 
+  const verifiedState =
+    result.baseGates === undefined ? state : { ...state, baseGates: result.baseGates };
   const closed = recordBatchOutcome(
-    state,
+    verifiedState,
     {
       outcome: result.outcome,
       reason: result.reason,
       changedFiles: changed,
-      // Строки — по контрольной точке: бюджет окна на партию в 400 строк до этого не считался
-      // вовсе и сработать не мог.
+      // Count from the checkpoint so the per-batch line budget reflects the actual edit.
       changedLines: lines,
     },
     new Date(),
   );
+  const completed = new Set(closed.batches.at(-1)?.findings ?? []);
+  const status: WindowFindingStatus =
+    result.outcome === 'accept'
+      ? 'accepted'
+      : result.outcome === 'rollback'
+        ? 'rolled-back'
+        : 'manual';
+  const finalized = withFindings(
+    closed,
+    closed.findings
+      .filter((finding) => completed.has(finding.fingerprint))
+      .map((finding) => ({
+        ...finding,
+        status,
+        reason: result.reason,
+      })),
+  );
   const queue = readQueue(workspace);
-  saveState(workspace, closed, queue);
+  saveState(workspace, finalized, queue);
 
   if (result.outcome === 'manual-review') {
     out.item('партия оставлена человеку: окно приостановлено до его решения');
     return { ok: false };
   }
-  return takeNextBatch(config, policies, workspace, out, closed, queue, args);
+  return takeNextBatch(config, policies, workspace, out, finalized, queue, args);
 }
 
 /** Возраст находок в днях: берётся из журнала, потому что только он помнит первую встречу. */

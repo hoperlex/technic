@@ -19,24 +19,34 @@ import {
 } from './context.ts';
 import type { WorkPacket } from './types.ts';
 
-const SCHEMA = `{
-  "findings": [
+function schemaFor(policies: PolicySet): string {
+  const categories = policies.maintenance.deepMaintenance.zones.flatMap((zone) =>
+    zone.looksFor.map((kind) => kind.id),
+  );
+  return JSON.stringify(
     {
-      "id": "F1",
-      "category": "module-boundary | dead-code | duplication | stale-comment | naming | complexity | other",
-      "title": "одна строка: что не так",
-      "severity": "high | medium | low",
-      "confidence": 0.0,
-      "files": ["путь/от/корня.ts"],
-      "evidence": "что именно видно в коде: имена, строки, наблюдаемый факт",
-      "policy": "id правила из architecture.yaml, если находка о его нарушении",
-      "relatedAdr": "docs/adr/0000-имя.md, если решение есть",
-      "behaviorRisk": "low | medium | high",
-      "suggestedAction": "что сделать, одним-двумя предложениями",
-      "estimatedLines": 0
-    }
-  ]
-}`;
+      findings: [
+        {
+          id: 'F1',
+          category: categories.join(' | '),
+          subject: 'стабильная сущность проблемы: символ, пара дубликатов или инвариант',
+          title: 'одна строка: что не так',
+          severity: 'high | medium | low',
+          confidence: 0,
+          files: ['путь/от/корня.ts'],
+          evidence: 'что именно видно в коде: имена, строки, наблюдаемый факт',
+          policy: 'id правила из architecture.yaml, если находка о его нарушении',
+          relatedAdr: 'docs/adr/0000-имя.md, если решение есть',
+          behaviorRisk: 'low | medium | high',
+          suggestedAction: 'что сделать, одним-двумя предложениями',
+          estimatedLines: 0,
+        },
+      ],
+    },
+    null,
+    2,
+  );
+}
 
 export interface ReviewerOptions {
   readonly facts: ProjectFacts;
@@ -68,11 +78,13 @@ export function reviewerPacket(options: ReviewerOptions): WorkPacket {
     ],
     constraints: [
       `Не больше ${budget.maxFindingsPerPass * 3} находок: система всё равно возьмёт в работу не более ${budget.maxFindingsPerPass}, а остальное станет очередью.`,
+      'subject — краткая стабильная идентичность проблемы, а не заголовок и не доказательство. Для той же проблемы сохраняйте тот же символ, пару сущностей или имя инварианта при любом перефразировании.',
       'Каждая находка обязана иметь наблюдаемое доказательство: имя файла и то, что в нём видно. Догадка о намерении автора доказательством не является.',
       `Уверенность ставьте честно: ниже ${budget.minAutofixConfidence} находка не пойдёт в автоматическую правку, но останется в отчёте человеку. Завышенная уверенность — это не «помощь», а поломка отбора.`,
       'Риск для поведения оценивайте по худшему случаю: если правка теоретически способна изменить наблюдаемое поведение, это не `low`.',
       `Этот проход не занимается: ${pass.forbids.join(', ')}.`,
       'Область — перечисленные файлы. Если важная находка лежит за их пределами, опишите её отдельной находкой и честно укажите её файлы: расширять область самому не нужно.',
+      'Для вида comments ищите устаревшие, бессмысленные и избыточные пересказы кода, а также неанглийские комментарии. Полезный комментарий должен самодостаточно объяснять инвариант, причину решения и последствия нарушения для следующего AI-агента; число строк само по себе не доказывает избыточность.',
     ],
     forbidden: [
       'Править код. Ответ этого задания — только описание находок.',
@@ -84,7 +96,7 @@ export function reviewerPacket(options: ReviewerOptions): WorkPacket {
     ],
     expectedOutput:
       'Один JSON-объект со списком находок. Без текста вокруг, без пояснений до и после — только объект.',
-    outputSchema: SCHEMA,
+    outputSchema: schemaFor(policies),
     outputFile: options.outputFile,
   };
 }

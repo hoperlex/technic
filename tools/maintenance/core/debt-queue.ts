@@ -64,6 +64,11 @@ export interface RankInput {
   readonly weights?: Partial<DebtWeights>;
 }
 
+export interface RankedDebt {
+  readonly ranked: readonly DebtItem[];
+  readonly unclassified: readonly TrackedFinding[];
+}
+
 export const DEFAULT_DEBT_WEIGHTS: DebtWeights = {
   severity: 3,
   confidence: 1,
@@ -128,28 +133,70 @@ export function zoneOf(
 ): string | null {
   const category = normalizeKind(finding.category);
   for (const zone of zones) {
-    if (zone.looksFor.some((kind) => normalizeKind(kind) === category)) return zone.id;
+    if (
+      zone.looksFor.some(
+        (kind) =>
+          normalizeKind(kind.id) === category ||
+          kind.aliases.some((alias) => normalizeKind(alias) === category),
+      )
+    ) {
+      return zone.id;
+    }
   }
   return null;
 }
 
 /**
- * Очередь долга: находки, отсортированные по счёту.
+ * Choose the zone whose debt may enter the next batch without repeating any review.
  *
- * Находки вне зон отбрасываются молча — это штатный исход, а не ошибка: широкий скан видит весь
- * репозиторий, а окно работает только там, где заданы границы.
+ * Normal progress stays on the current zone and lets the window advance in policy order. Once
+ * the final review is complete, findings routed back to an earlier zone are drained under their
+ * own zone name but the final zone's remaining deadline. This preserves late cross-zone debt
+ * without silently granting a second time budget or starting another review loop.
  */
-export function rankDebt(input: RankInput): readonly DebtItem[] {
+export function zoneForNextDebtBatch(
+  currentZoneIndex: number,
+  zones: readonly DeepMaintenanceZone[],
+  queue: readonly { readonly zone: string }[],
+): string | null {
+  const current = zones[currentZoneIndex]?.id;
+  if (current === undefined) return null;
+  if (queue.some((item) => item.zone === current)) return current;
+  if (currentZoneIndex < zones.length - 1) return current;
+
+  const known = new Set(zones.map((zone) => zone.id));
+  for (const item of queue) {
+    if (known.has(item.zone)) return item.zone;
+  }
+  return current;
+}
+
+/**
+ * Return both the ranked queue and findings without a policy-owned zone.
+ *
+ * Unclassified findings still cannot be fixed automatically because no change boundary applies
+ * to them. They must remain visible so the caller can report why routing failed.
+ */
+export function rankDebtDetailed(input: RankInput): RankedDebt {
   const weights = resolveWeights(input.weights);
   const items: DebtItem[] = [];
+  const unclassified: TrackedFinding[] = [];
 
   for (const finding of input.findings) {
     const zone = zoneOf(finding, input.zones);
-    if (zone === null) continue;
+    if (zone === null) {
+      unclassified.push(finding);
+      continue;
+    }
     items.push(scoreFinding(finding, zone, input.signals, weights));
   }
 
-  return items.sort(compareItems);
+  return { ranked: items.sort(compareItems), unclassified };
+}
+
+/** Compatibility helper for consumers that only need ranked items. */
+export function rankDebt(input: RankInput): readonly DebtItem[] {
+  return rankDebtDetailed(input).ranked;
 }
 
 /**

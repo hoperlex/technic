@@ -91,13 +91,21 @@ function readFinding(value: unknown, where: string, problems: string[]): Finding
   const id = text(node['id']);
   const title = text(node['title']);
   const category = text(node['category']);
+  const subject = text(node['subject']);
   const evidence = text(node['evidence']);
   const action = text(node['suggestedAction']);
   const files = stringList(node['files']);
 
-  if (id === null || title === null || category === null || evidence === null || action === null) {
+  if (
+    id === null ||
+    title === null ||
+    category === null ||
+    subject === null ||
+    evidence === null ||
+    action === null
+  ) {
     problems.push(
-      `${where}: нет обязательных полей id, category, title, evidence, suggestedAction`,
+      `${where}: нет обязательных полей id, category, subject, title, evidence, suggestedAction`,
     );
     return null;
   }
@@ -125,6 +133,7 @@ function readFinding(value: unknown, where: string, problems: string[]): Finding
     id,
     category,
     title,
+    subject,
     severity,
     confidence,
     files,

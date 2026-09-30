@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { verifyBatch } from '../verification/verifier.ts';
+import { measureGateBaseline, verifyBatch } from '../verification/verifier.ts';
 import type { MaintenanceConfig, VerificationLevel } from '../core/config.ts';
 import { configFixture, policySetFixture } from './fixtures.ts';
 
@@ -90,6 +90,23 @@ const OPTIONAL_RED: VerificationLevel = {
   command: ['false'],
   enabledByDefault: false,
 };
+
+test('стартовый baseline один раз измеряет все явно включённые ворота', () => {
+  const dir = repoWithEdit();
+  try {
+    const baseline = measureGateBaseline(
+      configWith(dir, [GREEN, OPTIONAL_RED]),
+      path.join(dir, 'tmp'),
+      ['db'],
+    );
+    assert.deepEqual(baseline, [
+      { id: 'gates', ok: true, marks: [] },
+      { id: 'db', ok: false, marks: [] },
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('зелёная проверка при целом замке — приём', () => {
   const dir = repoWithEdit();

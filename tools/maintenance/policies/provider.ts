@@ -189,13 +189,44 @@ export class YamlPolicyProvider implements PolicyProvider {
       { optional: true },
     ).map((node, index) => {
       const at: Where = { file: shortName, at: `deepMaintenance.zones[${index}]` };
+      const looksAt: Where = { file: shortName, at: at.at + '.looksFor' };
       return {
         id: str(at, node, 'id'),
-        looksFor: strList(at, node, 'looksFor'),
+        looksFor: nodeList(looksAt, node['looksFor']).map((kind, kindIndex) => {
+          const kindAt: Where = {
+            file: shortName,
+            at: looksAt.at + '[' + kindIndex + ']',
+          };
+          return {
+            id: str(kindAt, kind, 'id'),
+            aliases: strList(kindAt, kind, 'aliases', { optional: true }),
+          };
+        }),
         mayChange: strList(at, node, 'mayChange'),
         mustNotChange: strList(at, node, 'mustNotChange'),
       };
     });
+
+    /*
+     * An id or alias names exactly one debt category across the window. A duplicate would make
+     * routing depend on zone order, so it is a policy error rather than a first-match rule.
+     */
+    const categories = new Map<string, string>();
+    for (const zone of zones) {
+      for (const kind of zone.looksFor) {
+        for (const name of [kind.id, ...kind.aliases]) {
+          const normalized = name.trim().toLowerCase();
+          const owner = categories.get(normalized);
+          if (owner !== undefined) {
+            throw new MaintenanceConfigError(
+              shortName,
+              'вид долга ' + name + ' объявлен в зонах ' + owner + ' и ' + zone.id,
+            );
+          }
+          categories.set(normalized, zone.id);
+        }
+      }
+    }
 
     /*
      * Условия старта необязательны в файле: политика, написанная до появления F12, обязана

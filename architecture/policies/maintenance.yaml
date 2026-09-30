@@ -23,8 +23,9 @@ start:
   # Требовать чистое рабочее дерево. Включать имеет смысл для релизного прогона, где старт обязан
   # совпасть с выпуском.
   requireClean: false
-  # Прогнать ворота ДО первой правки и отказаться начинать на красной вершине. Стоит шесть минут
-  # один раз на прогон, а не на шаг.
+  # Для короткого цикла: прогнать ворота ДО первой правки и отказаться начинать на красной
+  # вершине. Тяжёлое окно всегда снимает полный baseline и применяет это условие независимо от
+  # флага: иначе каждая его партия может откатываться из-за чужой исходной красноты.
   requireGreen: false
 
 convergence:
@@ -85,15 +86,36 @@ deepMaintenance:
   fullScan: allowed
   zones:
     - id: architecture
-      looksFor: [cycles, leakage, ownership, shared-inflation, obsolete-abstractions]
+      looksFor:
+        - { id: cycles, aliases: [] }
+        - { id: leakage, aliases: [] }
+        - { id: ownership, aliases: [module-boundary] }
+        - { id: shared-inflation, aliases: [] }
+        - { id: obsolete-abstractions, aliases: [] }
       mayChange: [boundaries, imports, module-structure]
       mustNotChange: [product-architecture-without-adr]
     - id: cleanup
-      looksFor: [dead-code, duplication, stale-wrappers, comments, todo]
+      looksFor:
+        - { id: dead-code, aliases: [] }
+        - { id: duplication, aliases: [] }
+        - { id: stale-wrappers, aliases: [] }
+        - {
+            id: comments,
+            aliases:
+              [
+                stale-comment,
+                redundant-comment,
+                meaningless-comment,
+                excessive-comment,
+                non-english-comment,
+              ],
+          }
+        - { id: todo, aliases: [] }
       mayChange: [local-cleanup, deletions, simplifications]
       mustNotChange: [user-visible-behavior]
     - id: stabilization
-      looksFor: [regressions-from-batches]
+      looksFor:
+        - { id: regressions-from-batches, aliases: [] }
       mayChange: [defects-created-by-this-run]
       mustNotChange: [new-refactor-initiatives]
 

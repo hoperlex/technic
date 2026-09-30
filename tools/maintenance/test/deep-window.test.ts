@@ -43,9 +43,24 @@ function policyFixture(overrides: Partial<DeepMaintenanceBudget> = {}): DeepMain
     maxChangedLinesPerBatch: 400,
     fullScan: 'allowed',
     zones: [
-      { id: 'architecture', looksFor: ['cycles'], mayChange: ['imports'], mustNotChange: [] },
-      { id: 'cleanup', looksFor: ['dead-code'], mayChange: ['deletions'], mustNotChange: [] },
-      { id: 'stabilization', looksFor: ['regressions'], mayChange: ['defects'], mustNotChange: [] },
+      {
+        id: 'architecture',
+        looksFor: [{ id: 'cycles', aliases: [] }],
+        mayChange: ['imports'],
+        mustNotChange: [],
+      },
+      {
+        id: 'cleanup',
+        looksFor: [{ id: 'dead-code', aliases: [] }],
+        mayChange: ['deletions'],
+        mustNotChange: [],
+      },
+      {
+        id: 'stabilization',
+        looksFor: [{ id: 'regressions', aliases: [] }],
+        mayChange: ['defects'],
+        mustNotChange: [],
+      },
     ],
     ...overrides,
   };
@@ -89,6 +104,9 @@ test('окно открывается со сроком, посчитанным 
   assert.deepEqual(state.batches, []);
   assert.equal(state.stop, null);
   assert.deepEqual(state.totals, { files: 0, lines: 0, rollbacks: 0, accepted: 0 });
+  assert.deepEqual(state.baseGates, []);
+  assert.deepEqual(state.reviews, []);
+  assert.deepEqual(state.findings, []);
 });
 
 test('рубильник политики автомат не читает: его дело — команда', () => {
@@ -207,14 +225,49 @@ test('пустая очередь зоны переводит окно к сле
   assert.equal(moved.stop, null);
 });
 
-test('очередь не дала ни одной партии — окно закрывается как пустое', () => {
+test('ревьюеры не нашли долг — окно закрывается отдельной честной причиной', () => {
   let state = fresh();
   for (let step = 0; step < policy.zones.length; step += 1) {
     state = advanceWindow(state, policy, at(1 + step), 0);
   }
   assert.equal(state.step, 'finished');
-  assert.equal(state.stop?.reason, 'queueEmpty');
+  assert.equal(state.stop?.reason, 'noFindings');
   assert.equal(state.zoneIndex, policy.zones.length - 1);
+});
+
+test('находки есть, но ни одна не допустима — это не пустая очередь долга', () => {
+  let state: WindowState = {
+    ...fresh(),
+    reviews: [
+      {
+        zone: 'architecture',
+        observed: 1,
+        fresh: 1,
+        suppressed: 0,
+        classified: 0,
+        unclassified: 1,
+        artifact: '.maintenance/reports/review.json',
+      },
+    ],
+    findings: [
+      {
+        fingerprint: 'fp-1',
+        title: 'вид не описан политикой',
+        category: 'other',
+        files: ['apps/api/src/a.ts'],
+        sourceZones: ['architecture'],
+        targetZone: null,
+        score: null,
+        status: 'unclassified',
+        reason: 'вид не назначен ни одной зоне',
+      },
+    ],
+  };
+  for (let step = 0; step < policy.zones.length; step += 1) {
+    state = advanceWindow(state, policy, at(1 + step), 0);
+  }
+  assert.equal(state.stop?.reason, 'nothingEligible');
+  assert.match(state.stop?.detail ?? '', /нашли 1.*остаток: 1/);
 });
 
 test('зоны пройдены с работой — окно закрывается как отработавшее', () => {

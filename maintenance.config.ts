@@ -129,24 +129,15 @@ export default defineMaintenanceConfig({
 
   agent: {
     mode: 'command',
-    // Путь ищется сам: в редакторе программа лежит внутри расширения, и её версия меняется.
+    // Switch this single value to 'codex' to route both reviewer and fixer packets to Codex CLI.
+    provider: 'claude',
+    // Set a provider-specific model id, or leave null to use that CLI's default model.
+    model: null,
+    // Resolve the selected provider from PATH or its editor extension.
     binary: null,
-    /*
-     * Ревьюеру инструменты правки ЗАПРЕЩЕНЫ явно. Задание и так это запрещает словами, но слова —
-     * не граница: правка, сделанная ревьюером, обошла бы отбор, бюджет и контрольную точку, то
-     * есть всё, ради чего система построена.
-     */
-    reviewerArgs: ['-p', '--disallowed-tools', 'Edit', 'Write', 'NotebookEdit'],
-    /*
-     * Исполнителю правка разрешена: в этом его роль. Держат его не права процесса, а пофайловая
-     * контрольная точка, замок поведения и откат — они работают независимо от того, что он сделал.
-     */
-    fixerArgs: ['-p', '--permission-mode', 'acceptEdits'],
+    // Provider defaults enforce read-only review and workspace-scoped fixing.
     timeoutMs: 20 * 60 * 1000,
-    /*
-     * Сухой прогон выключен 16.09.2026, после того как человек посмотрел глазами, какую программу
-     * и с какими правами система пускает в дерево. Включить обратно — одна строка `dryRun: true`.
-     */
+    // Set to true to inspect the resolved command without starting an external agent.
     dryRun: false,
   },
 

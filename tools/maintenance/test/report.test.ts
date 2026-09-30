@@ -19,13 +19,15 @@ import {
   pluralize,
   renderDecisionItems,
   renderRunReport,
+  renderWindowReport,
   renderVerdictTable,
 } from '../reporters/markdown.ts';
 import { evaluateStop } from '../core/convergence.ts';
+import { startWindow } from '../core/deep-window.ts';
 import { fixerPacket } from '../work-packets/fixer.ts';
 import type { Verdict } from '../core/selector.ts';
 import type { PassRecord, RunState, StopReason } from '../core/run-state.ts';
-import type { ConvergenceBudget } from '../core/types.ts';
+import type { ConvergenceBudget, DeepMaintenanceBudget } from '../core/types.ts';
 import { findingFixture, policySetFixture } from './fixtures.ts';
 
 test('раздел решений печатается один раз и берёт переданный список', () => {
@@ -461,6 +463,68 @@ test('итоги не обещают больше, чем считают: раз
   assert.match(report, /изменено 2 файла/);
   assert.match(report, /Файлы здесь считаются разные за весь прогон/);
   assert.match(report, /принято 2 партии с изменениями/);
+});
+
+test('отчёт окна не называет долг пустым, когда отбор не принял найденную находку', () => {
+  const budget: DeepMaintenanceBudget = {
+    enabled: true,
+    zoneMinutes: 180,
+    maxRepairBatches: 6,
+    maxFindingsPerBatch: 3,
+    maxFilesPerBatch: 8,
+    maxChangedLinesPerBatch: 400,
+    fullScan: 'allowed',
+    zones: [
+      {
+        id: 'cleanup',
+        looksFor: [{ id: 'comments', aliases: ['stale-comment'] }],
+        mayChange: ['local-cleanup'],
+        mustNotChange: [],
+      },
+    ],
+  };
+  const opened = startWindow(budget, new Date('2026-09-24T06:15:32.000Z'), [
+    { id: 'gates', ok: false, marks: ['долг вырос'] },
+  ]);
+  const report = renderWindowReport({
+    ...opened,
+    step: 'finished',
+    stop: {
+      reason: 'nothingEligible',
+      detail: 'ревьюеры нашли 1, автоматически взять не удалось; остаток: 1',
+    },
+    reviews: [
+      {
+        zone: 'cleanup',
+        observed: 1,
+        fresh: 1,
+        suppressed: 0,
+        classified: 1,
+        unclassified: 0,
+        artifact: '.maintenance/reports/window-cleanup-review.json',
+      },
+    ],
+    findings: [
+      {
+        fingerprint: 'fp-1',
+        title: 'Устаревшая шапка',
+        category: 'stale-comment',
+        files: ['apps/web/src/x.ts'],
+        sourceZones: ['cleanup'],
+        targetZone: 'cleanup',
+        score: 2.5,
+        status: 'deferred',
+        reason: 'уверенность 0.80 ниже порога 0.88',
+      },
+    ],
+  });
+
+  assert.match(report, /долг найден, но автоматическая правка/);
+  assert.match(report, /Найдено.*Свежих.*Без зоны/);
+  assert.match(report, /Устаревшая шапка/);
+  assert.match(report, /уверенность 0\.80 ниже порога 0\.88/);
+  assert.match(report, /База ворот:\*\* красная: gates/);
+  assert.doesNotMatch(report, /разбирать нечего/);
 });
 
 test('согласование числительных в задании исполнителю берётся из той же функции', () => {

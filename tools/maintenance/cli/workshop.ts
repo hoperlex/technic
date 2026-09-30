@@ -174,8 +174,6 @@ function commitMessage(findings: readonly TrackedFinding[], batch: BatchState): 
     'ворота прогнаны там же. Находки прохода:',
     '',
     ...findings.map((finding) => `- ${finding.id} ${finding.title}`),
-    '',
-    'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>',
   ];
   return lines.join('\n');
 }

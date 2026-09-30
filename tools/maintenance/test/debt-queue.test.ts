@@ -12,7 +12,13 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_DEBT_WEIGHTS, rankDebt, zoneOf } from '../core/debt-queue.ts';
+import {
+  DEFAULT_DEBT_WEIGHTS,
+  rankDebt,
+  rankDebtDetailed,
+  zoneForNextDebtBatch,
+  zoneOf,
+} from '../core/debt-queue.ts';
 import type { DebtSignals, DebtWeights } from '../core/debt-queue.ts';
 import type { Finding, TrackedFinding } from '../core/finding.ts';
 import type { DeepMaintenanceZone } from '../core/types.ts';
@@ -21,13 +27,19 @@ import { findingFixture } from './fixtures.ts';
 const zones: readonly DeepMaintenanceZone[] = [
   {
     id: 'architecture',
-    looksFor: ['cycles', 'leakage'],
+    looksFor: [
+      { id: 'cycles', aliases: [] },
+      { id: 'leakage', aliases: ['module-boundary'] },
+    ],
     mayChange: ['boundaries'],
     mustNotChange: [],
   },
   {
     id: 'cleanup',
-    looksFor: ['dead-code', 'duplication'],
+    looksFor: [
+      { id: 'dead-code', aliases: [] },
+      { id: 'duplication', aliases: [] },
+    ],
     mayChange: ['local-cleanup'],
     mustNotChange: [],
   },
@@ -137,12 +149,21 @@ test('при равных счетах порядок решает отпеча�
   );
 });
 
-test('находка вне зон в очередь не попадает, и это не ошибка', () => {
+test('находка вне зон не чинится, но возвращается как неклассифицированная', () => {
   const stray = findingFixture({ id: 'X', category: 'наблюдение' });
-  const ranked = rank([stray, findingFixture({ id: 'A' })]);
+  const ordinary = findingFixture({ id: 'A' });
+  const result = rankDebtDetailed({
+    findings: [stray, ordinary],
+    zones,
+    signals: noSignals,
+  });
   assert.deepEqual(
-    ranked.map((item) => item.finding.id),
+    result.ranked.map((item) => item.finding.id),
     ['A'],
+  );
+  assert.deepEqual(
+    result.unclassified.map((finding) => finding.id),
+    ['X'],
   );
   assert.equal(zoneOf(stray, zones), null);
 });
@@ -151,7 +172,18 @@ test('зона определяется видом находки и берёт�
   assert.equal(zoneOf(findingFixture({ category: 'cycles' }), zones), 'architecture');
   assert.equal(zoneOf(findingFixture({ category: 'dead-code' }), zones), 'cleanup');
   assert.equal(zoneOf(findingFixture({ category: ' Dead-Code ' }), zones), 'cleanup');
+  assert.equal(zoneOf(findingFixture({ category: 'module-boundary' }), zones), 'architecture');
   assert.equal(rank([findingFixture({ category: 'duplication' })])[0]?.zone, 'cleanup');
+});
+
+test('последняя зона добирает находку, направленную в уже просмотренную зону', () => {
+  assert.equal(zoneForNextDebtBatch(0, zones, [{ zone: 'cleanup' }]), 'architecture');
+  assert.equal(
+    zoneForNextDebtBatch(1, zones, [{ zone: 'architecture' }, { zone: 'cleanup' }]),
+    'cleanup',
+  );
+  assert.equal(zoneForNextDebtBatch(1, zones, [{ zone: 'architecture' }]), 'architecture');
+  assert.equal(zoneForNextDebtBatch(1, zones, []), 'cleanup');
 });
 
 test('reasons называет каждое слагаемое счёта', () => {

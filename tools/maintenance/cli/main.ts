@@ -55,6 +55,7 @@ function help(): void {
   out.line('  abort [--rollback]      снять открытую партию: с откатом или оставив дерево');
   out.line();
   out.line('  converge [--status] [--abort] [--allow-concurrent] [--agent manual|command]');
+  out.line('           [--provider claude|codex] [--model <id>]');
   out.line(
     '                          цикл сходимости: продвигает прогон на шаг и называет следующий',
   );
@@ -64,12 +65,18 @@ function help(): void {
     '                          хук коммита: кладёт коммиты в очередь прогона; --auto заводит прогон сам',
   );
   out.line();
-  out.line(
-    '  deep [--force] [--status] [--report] [--abort] [--agent manual|command] [--allow-concurrent]',
-  );
+  out.line('  deep [--force] [--status] [--report] [--abort] [--agent manual|command]');
+  out.line('       [--provider claude|codex] [--model <id>] [--allow-concurrent]');
   out.line(
     '                          тяжёлое окно: зоны, очередь долга, малые партии, бюджет времени',
   );
+  out.line();
+  out.line('  Выбор вызываемого AI-агента:');
+  out.line('    постоянно — maintenance.config.ts, секция agent: mode, provider, model');
+  out.line(
+    '    разово     — --agent command --provider codex --model <id> (для Claude: --provider claude)',
+  );
+  out.line('    без --model выбранный CLI использует свою модель по умолчанию');
 }
 
 /** Значение именованного аргумента: `--since HEAD~3`. Отсутствует — `null`, а не пустая строка. */
@@ -105,6 +112,16 @@ function agentArg(args: readonly string[]): 'manual' | 'command' | null {
   throw new MaintenanceConfigError(
     'аргументы',
     `--agent ожидает manual или command, получено ${value}`,
+  );
+}
+
+function providerArg(args: readonly string[]): 'claude' | 'codex' | null {
+  const value = valueArg(args, '--provider');
+  if (value === null) return null;
+  if (value === 'claude' || value === 'codex') return value;
+  throw new MaintenanceConfigError(
+    'аргументы',
+    `--provider ожидает claude или codex, получено ${value}`,
   );
 }
 
@@ -167,6 +184,8 @@ async function main(): Promise<number> {
         allowConcurrent: args.includes('--allow-concurrent'),
         levels: allValues(args, '--level'),
         abort: args.includes('--abort'),
+        provider: providerArg(args),
+        model: valueArg(args, '--model'),
         status: args.includes('--status'),
       });
       break;
@@ -196,6 +215,8 @@ async function main(): Promise<number> {
         report: args.includes('--report'),
         abort: args.includes('--abort'),
         agent: agentArg(args),
+        provider: providerArg(args),
+        model: valueArg(args, '--model'),
       });
       break;
     default:

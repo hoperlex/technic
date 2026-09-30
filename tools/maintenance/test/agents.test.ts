@@ -15,7 +15,11 @@ import path from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { manualAdapter } from '../agents/manual.ts';
 import { commandAdapter } from '../agents/command.ts';
+import { CODEX_ROLE_ARGS } from '../agents/codex-cli.ts';
 import type { AgentContext } from '../agents/adapter.ts';
+import type { Reporter } from '../core/contracts.ts';
+import { adapterFor } from '../cli/agent-runner.ts';
+import { configFixture } from './fixtures.ts';
 import type { WorkPacket } from '../work-packets/types.ts';
 
 const REPO = path.resolve(import.meta.dirname, '..', '..', '..');
@@ -242,6 +246,72 @@ test('задание называет способ ответа по адапт�
     assert.match(commandTask, /Напечатайте ответ в стандартный вывод/);
     // Слова про файл в командном задании быть не должно вовсе: агент принял бы его за место ответа.
     assert.ok(!commandTask.includes('Положите ответ в файл'));
+  } finally {
+    box.dispose();
+  }
+});
+
+test('provider переключает Claude и Codex, а роли Codex получают разные sandbox-права', () => {
+  const out: Reporter = {
+    line: () => {},
+    heading: () => {},
+    item: () => {},
+    warn: () => {},
+    error: () => {},
+  };
+  const base = configFixture();
+  const selected = (provider: 'claude' | 'codex') =>
+    adapterFor(
+      {
+        ...base,
+        agent: { mode: 'command', provider, binary: '/bin/true', dryRun: true },
+      },
+      'reviewer',
+      null,
+      out,
+    );
+
+  assert.equal(selected('claude').id, 'claude-reviewer');
+  assert.equal(selected('codex').id, 'codex-reviewer');
+  assert.ok(CODEX_ROLE_ARGS.reviewer.includes('read-only'));
+  assert.doesNotMatch(CODEX_ROLE_ARGS.reviewer.join(' '), /workspace-write/);
+  assert.ok(CODEX_ROLE_ARGS.fixer.includes('workspace-write'));
+  assert.ok(CODEX_ROLE_ARGS.fixer.includes('--approve-for-me'));
+});
+
+test('разовые provider и model главнее конфига и попадают в фактическую команду', () => {
+  const box = sandbox();
+  const printed: string[] = [];
+  const out: Reporter = {
+    line: (text = '') => printed.push(text),
+    heading: () => {},
+    item: (text) => printed.push(text),
+    warn: () => {},
+    error: () => {},
+  };
+  try {
+    const base = configFixture();
+    const adapter = adapterFor(
+      {
+        ...base,
+        agent: {
+          mode: 'command',
+          provider: 'claude',
+          model: 'configured-model',
+          binary: '/bin/true',
+          dryRun: true,
+        },
+      },
+      'reviewer',
+      null,
+      out,
+      { provider: 'codex', model: 'one-run-model' },
+    );
+
+    assert.equal(adapter.id, 'codex-reviewer');
+    assert.equal(adapter.deliver(PACKET, box.context).kind, 'awaiting');
+    assert.match(printed.join('\n'), /модель one-run-model/);
+    assert.match(printed.join('\n'), /\/bin\/true --model one-run-model exec/);
   } finally {
     box.dispose();
   }

@@ -23,7 +23,12 @@ import {
   type LedgerEntry,
   type ReconcileInput,
 } from '../state/ledger.ts';
-import { trackFinding, type Finding, type TrackedFinding } from '../core/finding.ts';
+import {
+  legacyFingerprintOf,
+  trackFinding,
+  type Finding,
+  type TrackedFinding,
+} from '../core/finding.ts';
 import type { LedgerPolicy } from '../core/types.ts';
 
 const REPO = path.resolve(import.meta.dirname, '..', '..', '..');
@@ -39,6 +44,7 @@ const BASE: Finding = {
   id: 'F1',
   category: 'dead-code',
   title: 'Неиспользуемая обёртка',
+  subject: 'function wrap',
   severity: 'medium',
   confidence: 0.9,
   files: ['apps/api/src/x.ts'],
@@ -166,8 +172,7 @@ test('у осознанного долга срока нет: время его 
 });
 
 test('существенно изменившееся доказательство переоткрывает решение', () => {
-  // Отпечаток гасит числа, поэтому «из 2 мест» и «из 17 мест» — одна находка. Дайджест видит, что
-  // масштаб проблемы стал другим, и решение о прежнем масштабе больше не действует.
+  // Stable subject keeps identity intact; the evidence digest detects that the scale changed.
   const before = trackFinding({ ...BASE, evidence: 'wrap вызывается из 2 мест' });
   const after = trackFinding({ ...BASE, evidence: 'wrap вызывается из 17 мест' });
   assert.equal(before.fingerprint, after.fingerprint);
@@ -180,6 +185,18 @@ test('существенно изменившееся доказательств
   assert.equal(result.fresh.length, 1);
   assert.equal(result.reopened.length, 1);
   assert.equal(result.reopened[0]?.status, 'reopened');
+});
+
+test('старый evidence-based отпечаток мигрирует на stable subject без потери решения', () => {
+  const legacy: LedgerEntry = {
+    ...decided('accepted-debt', '2026-09-01T00:00:00.000Z'),
+    fingerprint: legacyFingerprintOf(BASE),
+  };
+  const result = sync({ entries: [legacy] });
+  assert.equal(result.suppressed.length, 1);
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0]?.fingerprint, FOUND.fingerprint);
+  assert.notEqual(result.entries[0]?.fingerprint, legacy.fingerprint);
 });
 
 test('исправленная находка, появившаяся снова, — регрессия', () => {
@@ -215,7 +232,7 @@ test('запись, не встретившаяся в прогоне, оста�
 
 test('решение записывается и не теряет остальные записи', () => {
   const first = sync({
-    findings: [FOUND, trackFinding({ ...BASE, id: 'F2', evidence: 'другое' })],
+    findings: [FOUND, trackFinding({ ...BASE, id: 'F2', subject: 'function other' })],
   });
   assert.equal(first.entries.length, 2);
   const after = decide(first.entries, FOUND.fingerprint, 'accepted-debt', {

@@ -136,9 +136,20 @@ export interface ConvergenceBudget {
   readonly passes: readonly ConvergencePass[];
 }
 
+/**
+ * Canonical debt category for deep maintenance.
+ *
+ * Aliases stay next to the canonical id so reviewer instructions, routing, and reporting consume
+ * one dictionary. Separate lists previously let a model-produced synonym disappear silently.
+ */
+export interface DeepMaintenanceCategory {
+  readonly id: string;
+  readonly aliases: readonly string[];
+}
+
 export interface DeepMaintenanceZone {
   readonly id: string;
-  readonly looksFor: readonly string[];
+  readonly looksFor: readonly DeepMaintenanceCategory[];
   readonly mayChange: readonly string[];
   readonly mustNotChange: readonly string[];
 }
