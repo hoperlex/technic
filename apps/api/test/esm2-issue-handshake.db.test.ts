@@ -79,20 +79,40 @@ const DOCS_RUN = String(Date.now()).slice(-9);
 let docsCounter = 0;
 const nextDocsNo = (): string => String((docsCounter += 1) % 100).padStart(2, '0');
 
-// ── Календарь сцен ──
+// ── Scene calendar ──
 //
-// Считается от понедельника текущей недели: у срока есть и отработанная неделя (прошлая), и ещё не
-// кончившаяся (текущая), и предстоящая. Без отработанной нечего разблокировать, без текущей нечего
-// резать, без предстоящей нечего выписывать.
+// The term spans a completed week, the current week, and a future week. The completed interval
+// exercises unlocks, the current one can be cut, and the future interval gives the plan work to
+// remove or reissue.
 
 const TODAY = moscowDateKeyOf(new Date());
 const MONDAY = weekStartKey(TODAY);
-/** Понедельник прошлой недели: к сегодня её лист отработан и потому заперт (Р21). */
+/** The previous Monday: its sheet has ended by today and is locked under R21. */
 const PREV_MONDAY = shiftDateKey(MONDAY, -7);
-/** Воскресенье текущей недели. */
+/** The current Sunday. */
 const THIS_SUNDAY = shiftDateKey(MONDAY, 6);
-/** Воскресенье следующей недели: срок, у которого есть куда сокращаться. */
+/** The next Sunday, leaving enough future term for shortening. */
 const NEXT_SUNDAY = shiftDateKey(MONDAY, 13);
+
+/**
+ * Pick a cut whose paper interval continues into the following day.
+ *
+ * ESM-2 sheets split at both week and month boundaries. A cut on either boundary leaves the
+ * retained day's sheet outside the removed tail, so an early end correctly cancels future sheets
+ * without reissuing the retained one. This handshake scenario needs a reissue and therefore must
+ * choose a non-boundary day instead of depending on the wall-clock date of the test run.
+ */
+function earlyEndCutDate(): string {
+  for (let offset = 0; offset < 7; offset += 1) {
+    const date = shiftDateKey(TODAY, offset);
+    const next = shiftDateKey(date, 1);
+    if (weekStartKey(date) === weekStartKey(next) && date.slice(0, 7) === next.slice(0, 7)) {
+      return date;
+    }
+  }
+  throw new Error('no non-boundary ESM-2 cut date found within a week');
+}
+const EARLY_END_TO = earlyEndCutDate();
 
 interface Account {
   id: string;
@@ -519,10 +539,12 @@ async function reassignScene(): Promise<Scene> {
 }
 
 /**
- * Досрочное завершение: с сегодняшнего дня заказ ведёт человек без документов, а бумага выписана
- * прежней сверкой на всю неделю и прежним человеком. Сокращение срока до сегодня забирает у этого
- * листа часть дней — сократить его в такое ожидание нельзя (хвост ждёт другой документ), — и лист
- * гаснет, а взамен выписывается новый: с пробелами, которые человек обязан подтвердить.
+ * Early end: the assignment switches to the driver with missing documents on the retained final
+ * day, while the legacy sheet still names the documented driver for the whole paper interval.
+ *
+ * `EARLY_END_TO` is deliberately not a week or month boundary. The removed tail therefore pulls
+ * that sheet into the document closure; the plan cancels it and issues a replacement for the
+ * retained day, whose warnings require the approver's acknowledgement.
  */
 async function earlyEndScene(): Promise<Scene> {
   const gapped = await newGapped();
@@ -534,7 +556,7 @@ async function earlyEndScene(): Promise<Scene> {
       history: [
         { effectiveDate: PREV_MONDAY, dimension: 'vehicle', vehicleId: ctx.vehicleA.id },
         { effectiveDate: PREV_MONDAY, dimension: 'driver', driverPersonId: ctx.documented },
-        { effectiveDate: TODAY, dimension: 'driver', driverPersonId: gapped },
+        { effectiveDate: EARLY_END_TO, dimension: 'driver', driverPersonId: gapped },
       ],
       sheetsDriver: ctx.documented,
     }),
@@ -724,7 +746,7 @@ describeReadModes(
       if (!readMode.enabled) return;
       const scene = await earlyEndScene();
       const { requestId } = scene;
-      await pendingEarlyEnd(requestId, TODAY, NEXT_SUNDAY);
+      await pendingEarlyEnd(requestId, EARLY_END_TO, NEXT_SUNDAY);
       const before = await sheetsOf(requestId);
 
       const preview = await previewEarlyEndDecision(requestId, await versionOf(requestId));
@@ -774,7 +796,7 @@ describeReadModes(
       if (!readMode.enabled) return;
       const scene = await earlyEndScene();
       const { requestId } = scene;
-      await pendingEarlyEnd(requestId, TODAY, NEXT_SUNDAY);
+      await pendingEarlyEnd(requestId, EARLY_END_TO, NEXT_SUNDAY);
 
       const first = await previewEarlyEndDecision(requestId, await versionOf(requestId));
       expect(first.statusCode, first.body).toBe(200);
@@ -883,7 +905,7 @@ it('в `legacy` ремонт и досрочное завершение прох
     expect(repaired.statusCode, repaired.body).toBe(200);
 
     const earlyId = (await earlyEndScene()).requestId;
-    await pendingEarlyEnd(earlyId, TODAY, NEXT_SUNDAY);
+    await pendingEarlyEnd(earlyId, EARLY_END_TO, NEXT_SUNDAY);
     const earlyPreview = await previewEarlyEndDecision(earlyId, await versionOf(earlyId));
     expect(earlyPreview.statusCode, earlyPreview.body).toBe(200);
     const earlyDto = earlyPreview.json<EarlyEndApprovalPreviewDto>();
