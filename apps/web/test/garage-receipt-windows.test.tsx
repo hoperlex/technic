@@ -97,7 +97,7 @@ const GARAGE_SUMMARY: GarageVehiclesSummaryDto = {
   onDate: ON_DATE,
 };
 
-function renderParts(route: string, role: 'mechanic' | 'admin' = 'mechanic'): HttpMock {
+function renderParts(route: string, role: 'mechanic' | 'manager' | 'admin' = 'mechanic'): HttpMock {
   const http = mockHttp({
     'GET /garage/vehicles': () => json({ ...emptyList(), onDate: ON_DATE }),
     'GET /garage/vehicles/summary': () => json(GARAGE_SUMMARY),
@@ -151,6 +151,15 @@ describe('карточка чека', () => {
 });
 
 describe('окно «Принять чек»', () => {
+  it('менеджер открывает форму по праву роли', async () => {
+    renderParts(`/garage?tab=parts&date=${ON_DATE}`, 'manager');
+
+    const create = await screen.findByRole('button', { name: /Принять чек/ });
+    fireEvent.click(create);
+
+    await waitFor(() => expect(document.querySelector('.ant-modal')).not.toBeNull());
+  });
+
   it('не отпускает без скана, номера и строк — и называет поле', async () => {
     renderParts(`/garage?tab=parts&newReceipt=1&date=${ON_DATE}`);
 

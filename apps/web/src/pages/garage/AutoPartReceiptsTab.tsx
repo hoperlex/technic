@@ -40,9 +40,9 @@ import { VehiclePartsSpendModal } from './VehiclePartsSpendModal';
  * над таблицей относятся ровно к тому, что видно, — иначе «Сумма» над отфильтрованным списком
  * называла бы чужое число.
  *
- * **Действия закрыты правом ведения** (`autoParts.manage`): «Принять чек» видит механик, а не
- * всякий, кому виден гараж. Сам список права не спрашивает вовсе — чеки читают под `garage.read`
- * (Р5), и ответить «покупали ли на эту машину» должен и диспетчер, и менеджер.
+ * **Actions require the management permission** (`autoParts.manage`): mechanics and the
+ * temporary manager role can accept receipts, while a garage reader cannot. The list itself uses
+ * `garage.read` because receipt visibility is broader than mutation access.
  */
 export function AutoPartReceiptsTab() {
   const { can, user } = useAuth();

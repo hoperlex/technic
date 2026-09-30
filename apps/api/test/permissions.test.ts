@@ -143,7 +143,8 @@ describe('права ролей', () => {
    * С 10.09.2026 расхождение стало ДВУСТОРОННИМ (ADR 0181): круг заявителя оргтехники выдан
    * менеджеру матрицей, а диспетчеру он по-прежнему приходит набором «Оргтехника: заявитель».
    * Поэтому вычитаются теперь оба списка, а не один: односторонняя проверка молча пропустила бы
-   * право, дописанное менеджеру сверх названного здесь круга.
+   * право, дописанное менеджеру сверх названного здесь круга. Решение
+   * `docs/adr/0217-manager-auto-part-receipts.md` добавило ведение чеков автозапчастей.
    */
   it('диспетчер ведёт справочники наравне с менеджером и расходится с ним в обе стороны', () => {
     expect(can(of('dispatcher'), 'directories.write')).toBe(true);
@@ -184,6 +185,10 @@ describe('права ролей', () => {
       // том же шаге выбора предмета, поэтому право живёт в общем списке заказчика и приезжает
       // менеджеру вместе с ним.
       'officeEquipment.propose',
+      // `docs/adr/0217-manager-auto-part-receipts.md`: temporary `manager` needs the broader
+      // workflow. The permission includes receipt creation and editing, but permanent deletion
+      // remains administrator-only under `autoParts.delete`.
+      'autoParts.manage',
     ];
     expect(
       [...ROLE_PERMISSIONS.dispatcher].filter((p) => !DISPATCHER_ONLY.includes(p)).sort(),

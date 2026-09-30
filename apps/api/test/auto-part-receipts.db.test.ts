@@ -74,9 +74,11 @@ interface Ctx {
   users: {
     /** Единственный держатель `autoParts.delete` (Р4а): право неназначаемо и достаётся роли `admin`. */
     admin: string;
+    /** Temporary broad-access role; see `docs/adr/0217-manager-auto-part-receipts.md`. */
+    manager: string;
     /** `garage.read` + `autoParts.manage`: заводит, правит, помечает — но не удаляет. */
     mech: string;
-    /** `garage.read` без единого права ведения (роль `manager`): читает и не пишет (Р5). */
+    /** A garage reader without receipt management (the `dispatcher` role). */
     reader: string;
     /** Ни гаража, ни запчастей (роль `site`): чек ему не виден вовсе. */
     outsider: string;
@@ -172,7 +174,10 @@ async function cleanup(db: typeof AppDb): Promise<void> {
 
 // ── Подопытные ──
 
-async function newUser(tag: string, role: 'admin' | 'manager' | 'site' | 'mechanic') {
+async function newUser(
+  tag: string,
+  role: 'admin' | 'manager' | 'dispatcher' | 'site' | 'mechanic',
+) {
   seq += 1;
   const [row] = await ctx.db
     .insert(ctx.schema.users)
@@ -726,6 +731,7 @@ const LINK_CASES: { table: string; link: (fileId: string) => Promise<void> }[] =
 
 describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение, суммы, доступ и след (план, §10)', () => {
   let admin: Headers;
+  let manager: Headers;
   let mech: Headers;
   let reader: Headers;
   let outsider: Headers;
@@ -768,13 +774,15 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
 
     ctx.users = {
       admin: await newUser('admin', 'admin'),
+      manager: await newUser('manager', 'manager'),
       mech: await newUser('mech', 'mechanic'),
-      reader: await newUser('reader', 'manager'),
+      reader: await newUser('reader', 'dispatcher'),
       outsider: await newUser('outsider', 'site'),
       exMech: await newUser('exmech', 'mechanic'),
     };
     admin = await headersOf(ctx.users.admin);
     mech = await headersOf(ctx.users.mech);
+    manager = await headersOf(ctx.users.manager);
     reader = await headersOf(ctx.users.reader);
     outsider = await headersOf(ctx.users.outsider);
     parents = await seedLinkParents();
@@ -1424,14 +1432,27 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
     expect((await remove(admin, plain.id, plain.version)).statusCode).toBe(200);
   });
 
+  it('роль менеджера принимает чек, но не удаляет его насовсем', async () => {
+    const dto = await createReceipt(
+      manager,
+      receiptBody({
+        documentNumber: `ЧЕК-МЕНЕДЖЕР-${RUN}`,
+        fileIds: [(await newFile(ctx.users.manager)).id],
+      }),
+    );
+
+    expect((await card(manager, dto.id)).statusCode).toBe(200);
+    expect((await remove(manager, dto.id, dto.version)).statusCode).toBe(403);
+  });
+
   it('`garage.read` читает раздел и не пишет в него (Р5)', async () => {
     const dto = await createReceipt(
       mech,
       receiptBody({ documentNumber: `ЧЕК-ЧТЕНИЕ-${RUN}`, fileIds: [(await newFile()).id] }),
     );
 
-    // Вопрос «сколько вложено в эту машину» задаёт всякий, кому виден гараж: и механик, и
-    // диспетчер, и менеджер. Персональных данных в чеке нет.
+    // Receipt reading follows `garage.read`; dispatcher intentionally proves that reading alone
+    // does not open management after manager receives `autoParts.manage`.
     expect((await feed(reader)).statusCode).toBe(200);
     expect((await summary(reader)).statusCode).toBe(200);
     expect((await card(reader, dto.id)).statusCode).toBe(200);

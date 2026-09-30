@@ -523,9 +523,12 @@ export const PERMISSIONS = [
    * называло ведение складской номенклатуры, а рядом стояло `autoParts.stock` — движение остатка.
    * Склад ушёл вместе со своим предметом: остатка портал больше не считает, ручек, которые его
    * двигали, в коде нет, — и права, которое их охраняло, нет в словаре. «Ведение автозапчастей»
-   * осталось тем же словом с другим содержимым: ведут теперь чеки. Аудитория поэтому не
+   * осталось тем же словом с другим содержимым: ведут теперь чеки. При заморозке аудитория не
    * изменилась ни на человека (`mechanic`, `chief_mechanic`), и ни одной выдачи полномочий
-   * заморозка не потребовала.
+   * не потребовалось. Решение `docs/adr/0217-manager-auto-part-receipts.md` позже добавило
+   * `manager`: временная роль уже принадлежит реальным
+   * сотрудникам, которым нужен расширенный рабочий доступ, поэтому право приходит самой ролью,
+   * а не поимённым набором.
    *
    * Отвергнуто было завести рядом `autoPartReceipts.manage`: в окне учётки остались бы два права,
    * из которых одно не открывает ни одной ручки, — а «право, которое ничего не даёт» портал
@@ -778,13 +781,14 @@ const VEHICLE_MAINTENANCE_PERMISSIONS = [
 ] as const;
 
 /**
- * Автозапчасти (план чеков, Р4). Список из одного права — и это не огрызок прежней пары, а её
- * итог: движение остатка ушло из словаря вместе со складом, а второе право модуля
- * (`autoParts.delete`) не выдано ни одной роли и выдано не будет (Р4а). Списком, а не строкой в
- * каждой роли, — потому что обе роли службы главного механика получают из модуля ровно одно и то
- * же: заказчик назвал держателем службу целиком, а не механика отдельно от главного механика.
- * Разойдись однажды их состав — разойтись он обязан правкой этого списка, на виду, а не тем, что
- * право дописали в одну роль и забыли про вторую.
+ * Auto-part receipt management is one indivisible permission: create, edit, recognize scans, and
+ * request deletion. The old stock permission left the catalog with the stock workflow; permanent
+ * deletion remains a separate, non-grantable administrator permission.
+ *
+ * Both mechanic roles receive this list as the garage service. The decision in
+ * `docs/adr/0217-manager-auto-part-receipts.md` deliberately reuses the
+ * same list for the temporary manager role: it needs the established workflow, not a second
+ * manager-only copy that could drift from the route guards.
  */
 const AUTO_PARTS_PERMISSIONS = ['autoParts.manage'] as const;
 
@@ -975,6 +979,10 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     // Гараж (ADR 0076) идёт вместе с водителями и листами: день парка распределяет тот же
     // человек, который заводит рейсы и выписывает бланки.
     'garage.read',
+    // `docs/adr/0217-manager-auto-part-receipts.md`: manager is a temporary broad-access role.
+    // Reusing the module permission keeps the web button and every server mutation on one rule;
+    // irreversible deletion is still excluded by the separate `autoParts.delete` permission.
+    ...AUTO_PARTS_PERMISSIONS,
     ...VEHICLE_READING_PERMISSIONS,
     // Журнал ТО (Р14) — там же, где день парка: акт привозят диспетчерской, и заводит его тот, кто
     // ведёт машину в портале. У службы главного механика это право тоже есть, и оно не «её»: ТО
