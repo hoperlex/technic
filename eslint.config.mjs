@@ -19,6 +19,15 @@ const SHARED_TYPES = ['shared-config', 'shared-api', 'shared-lib', 'shared-ui'];
  * фикстурах).
  */
 const ENTITY_TYPES = ['entity-request', 'entity-request-kin', 'entities'];
+const PAGE_ROUTE_ENTRY_FILES = [
+  'routeModal.tsx',
+  'WeeklyRequestPage.tsx',
+  'ServiceRequestsPage.tsx',
+  'MechRequestsPage.tsx',
+  'DriverLayout.tsx',
+  'DriverPage.tsx',
+  'DriverReadingsPage.tsx',
+];
 const LAYER_GROUPS = [SHARED_TYPES, ENTITY_TYPES, ['features'], ['widgets'], ['pages'], ['app']];
 
 /**
@@ -55,6 +64,22 @@ const sharedElements = SHARED_TYPES.map((type) => ({
   // разметки — и матрица молчала бы.
   pattern: `apps/web/src/shared/${type.replace('shared-', '')}`,
 }));
+
+const compositionFiles = [
+  { category: 'page-support', pattern: 'apps/web/src/pages/captchaPage.tsx', exclusive: true },
+  { category: 'page-shell', pattern: 'apps/web/src/pages/*.{ts,tsx}' },
+  { category: 'app-root', pattern: 'apps/web/src/app/*.{ts,tsx}' },
+  {
+    category: 'app-root',
+    pattern: [
+      'apps/web/src/App.tsx',
+      'apps/web/src/main.tsx',
+      'apps/web/src/theme.ts',
+      'apps/web/src/styles.css',
+      'apps/web/src/vite-env.d.ts',
+    ],
+  },
+];
 
 const allElements = [
   ...sharedElements,
@@ -95,6 +120,68 @@ const entityKinPolicies = [
   },
   // Контракты доступны всем слоям: это общий словарь портала, а не чей-то слой.
   { from: { element: { type: '*' } }, allow: { to: { element: { type: 'contracts' } } } },
+];
+
+/**
+ * Root page files are composition shells for their existing page folders. Application roots may
+ * render those shells, while the explicit route-entry list keeps App.tsx from reaching arbitrary
+ * page internals. File categories close the classifier gap without reshaping page monoliths.
+ */
+const compositionPolicies = [
+  {
+    from: { file: { categories: 'page-shell' } },
+    allow: { to: { element: { type: 'pages' } } },
+  },
+  {
+    from: { file: { categories: 'page-shell' } },
+    allow: { to: { file: { categories: 'page-support' } } },
+  },
+  {
+    from: { file: { categories: { anyOf: ['page-shell', 'page-support'] } } },
+    allow: {
+      to: {
+        element: {
+          types: { anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets'] },
+          fileInternalPath: 'index.ts',
+        },
+      },
+    },
+  },
+  {
+    from: { file: { categories: { anyOf: ['page-shell', 'page-support'] } } },
+    allow: { to: { element: { type: 'contracts' } } },
+  },
+  {
+    from: { element: { type: 'app' } },
+    allow: { to: { file: { categories: 'page-shell' } } },
+  },
+  {
+    from: { file: { categories: 'app-root' } },
+    allow: { to: { file: { categories: { anyOf: ['page-shell', 'app-root'] } } } },
+  },
+  {
+    from: { file: { categories: 'app-root' } },
+    allow: {
+      to: {
+        element: {
+          types: { anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets', 'app'] },
+          fileInternalPath: 'index.ts',
+        },
+      },
+    },
+  },
+  {
+    from: { file: { categories: 'app-root' } },
+    allow: { to: { element: { type: 'pages', fileInternalPath: PAGE_ROUTE_ENTRY_FILES } } },
+  },
+  {
+    from: { file: { categories: 'app-root' } },
+    allow: { to: { element: { type: 'app', fileInternalPath: 'ProtectedRoute.tsx' } } },
+  },
+  {
+    from: { file: { categories: 'app-root' } },
+    allow: { to: { element: { type: 'contracts' } } },
+  },
 ];
 
 export default tseslint.config(
@@ -267,13 +354,14 @@ export default tseslint.config(
     },
   },
   {
-    // Границы слоёв FSD. Пока `src/` разложен не весь, правило молчит на нераспределённых
-    // файлах: `boundaries/no-unknown-dependencies` здесь не включается (это делает этап 7),
-    // а сами правила проверяются фикстурами в apps/web/test/fixtures/boundaries.
+    // Layer direction applies to every classified source. Scoped no-unknown rules below decide
+    // when an unclassified target is migration debt and when the build must reject it.
+    // Dedicated fixtures verify both element and file-category policies.
     files: ['apps/web/src/**/*.{ts,tsx}'],
     plugins: { boundaries },
     settings: {
       'boundaries/elements': allElements,
+      'boundaries/files': compositionFiles,
       'import/resolver': {
         typescript: { project: 'apps/web/tsconfig.json' },
       },
@@ -284,44 +372,61 @@ export default tseslint.config(
         {
           default: 'disallow',
           message: 'слой видит только то, что ниже него, и только через index.ts слайса',
-          policies: [...layerPolicies, ...sharedPolicies, ...entityKinPolicies],
+          policies: [
+            ...layerPolicies,
+            ...sharedPolicies,
+            ...entityKinPolicies,
+            ...compositionPolicies,
+          ],
         },
       ],
+      'boundaries/no-unknown-files': 'error',
     },
   },
   {
     /*
-     * Слой обязан зависеть только от размеченного. Без этого правила `shared`, `entities` и
-     * `features` могли бы импортировать что угодно из каталога вне слоёв — и линт молчал бы:
-     * неклассифицированный элемент под политики не подпадает вовсе, он «известен как файл» и
-     * проверку проходит. Проверено экспериментом до этапа 1.
+     * Element-only layers may depend only on classified elements. The dependency policy alone
+     * skips unknown targets, so this rule prevents legacy code from leaking back into clean layers.
      *
-     * `features` под правилом с 28.09.2026. До этого дня каталог оттого и вырос до 34 слайсов,
-     * молча тянущих неразмеченное: на день включения нарушений было 66 в 50 файлах, и снимали их
-     * шестью узлами — форматирование и календарь в фундамент, контекст доступа и три оси области в
-     * слайс сессии, подписи ошибок к владельцам полей, удаление записи и вложения листа в фичи,
-     * контакты поддержки в свой слайс. Правило включено на нуле: пока его не было, каждый
-     * следующий такой импорт обходился даром, и волна засыпалась бы быстрее, чем шла.
-     *
-     * `widgets` и `pages` под правило пока не заведены, и мешает им не раскладка, а дыра в самой
-     * разметке: элементы описаны шаблоном `<слой>/*`, поэтому файл, лежащий ПРЯМО в каталоге слоя,
-     * не классифицируется вовсе (14 файлов в `pages`, один в `app`). Пока шаблоны не станут
-     * рекурсивными, правило для этих слоёв поймало бы не всё и создало бы ложное чувство охвата.
+     * Composition layers use the any-axis rule below because their flat roots are classified as
+     * files, while these layers must always resolve imports to elements.
      */
     files: [
       'apps/web/src/shared/**/*.{ts,tsx}',
       'apps/web/src/entities/**/*.{ts,tsx}',
       'apps/web/src/features/**/*.{ts,tsx}',
+      'apps/web/src/widgets/**/*.{ts,tsx}',
     ],
     plugins: { boundaries },
     settings: {
       'boundaries/elements': allElements,
+      'boundaries/files': compositionFiles,
       'import/resolver': { typescript: { project: 'apps/web/tsconfig.json' } },
     },
     rules: {
-      // `require: 'element'` — иначе правило молчит: по умолчанию ему достаточно, чтобы цель была
-      // известна хоть по одной оси, а файл вне слоёв известен как файл и проверку проходит.
+      // File categories are reserved for composition roots; these layers must reach an element,
+      // not merely a path that happens to have a file classification.
       'boundaries/no-unknown-dependencies': ['error', { require: 'element' }],
+    },
+  },
+  {
+    /*
+     * Page and app composition target both slice elements and explicitly classified flat files.
+     * Requiring either axis still rejects truly unknown targets, which have neither.
+     */
+    files: [
+      'apps/web/src/pages/**/*.{ts,tsx}',
+      'apps/web/src/app/**/*.{ts,tsx}',
+      'apps/web/src/*.{ts,tsx}',
+    ],
+    plugins: { boundaries },
+    settings: {
+      'boundaries/elements': allElements,
+      'boundaries/files': compositionFiles,
+      'import/resolver': { typescript: { project: 'apps/web/tsconfig.json' } },
+    },
+    rules: {
+      'boundaries/no-unknown-dependencies': ['error', { require: 'any' }],
     },
   },
 );

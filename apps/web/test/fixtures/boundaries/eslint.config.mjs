@@ -2,18 +2,17 @@
 import boundaries from 'eslint-plugin-boundaries';
 
 /**
- * Конфиг для фикстур границ — отдельный от рабочего.
+ * Boundary fixtures use a dedicated config instead of the production one.
  *
- * Рабочий конфиг классифицирует элементы по путям внутри `apps/web/src`, а фикстуры лежат вне его:
- * ими он не описывает ничего, правило вернуло бы ноль сообщений, и «зелёный» тест означал бы лишь,
- * что плагин не понял, на что смотрит. Поэтому здесь свои `boundaries/elements` с корнем в каталоге
- * фикстур и свои алиасы для резолвера.
+ * Production descriptors are rooted in `apps/web/src`, while fixtures live outside that tree.
+ * Reusing them would classify nothing, so a green test would only prove that the plugin understood
+ * no files. This config has its own descriptors, root, and resolver aliases.
  *
- * `boundaries/no-unknown-dependencies` включён именно тут: неклассифицированный файл должен падать,
- * а не проходить молча — иначе положительные случаи ничего не доказывают.
+ * Both no-unknown rules are intentional: positive fixtures must prove their source classification,
+ * and dependencies to unclassified targets must fail instead of passing silently.
  *
- * Разметка повторяет рабочую: сегменты `shared` — самостоятельные типы, слои описаны группами.
- * Если здесь и там она разойдётся, фикстуры начнут проверять несуществующие правила.
+ * The descriptors mirror production: shared segments are separate element types, layers are
+ * grouped, and flat composition files use file categories. Drift would test imaginary policies.
  */
 
 /** Сегменты нижнего слоя: для верхних слоёв все они одинаково «ниже». */
@@ -23,6 +22,7 @@ const SHARED_TYPES = ['shared-config', 'shared-api', 'shared-lib', 'shared-ui'];
  * способ сопоставления, и с ним правило переставало запрещать импорт соседа (проверено).
  */
 const ENTITY_TYPES = ['entity-request', 'entity-request-kin', 'entities'];
+const PAGE_ROUTE_ENTRY_FILES = ['ScreenPage.ts'];
 const LAYER_GROUPS = [SHARED_TYPES, ENTITY_TYPES, ['features'], ['widgets'], ['pages'], ['app']];
 
 /** Слой видит всё, что ниже него, и только через публичный вход слайса. */
@@ -53,6 +53,60 @@ const entityKinPolicies = [
     allow: { to: { element: { type: 'entity-request', fileInternalPath: 'index.ts' } } },
   },
 ];
+const compositionFiles = [
+  { category: 'page-support', pattern: 'pages/captchaPage.ts', exclusive: true },
+  { category: 'page-shell', pattern: 'pages/*.{ts,tsx}' },
+  { category: 'app-root', pattern: 'app/*.{ts,tsx}' },
+  {
+    category: 'app-root',
+    pattern: ['App.ts', 'main.ts', 'theme.ts', 'styles.css'],
+  },
+];
+
+const compositionPolicies = [
+  {
+    from: { file: { categories: 'page-shell' } },
+    allow: { to: { element: { type: 'pages' } } },
+  },
+  {
+    from: { file: { categories: 'page-shell' } },
+    allow: { to: { file: { categories: 'page-support' } } },
+  },
+  {
+    from: { file: { categories: { anyOf: ['page-shell', 'page-support'] } } },
+    allow: {
+      to: {
+        element: {
+          types: { anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets'] },
+          fileInternalPath: 'index.ts',
+        },
+      },
+    },
+  },
+  {
+    from: { element: { type: 'app' } },
+    allow: { to: { file: { categories: 'page-shell' } } },
+  },
+  {
+    from: { file: { categories: 'app-root' } },
+    allow: { to: { file: { categories: { anyOf: ['page-shell', 'app-root'] } } } },
+  },
+  {
+    from: { file: { categories: 'app-root' } },
+    allow: {
+      to: {
+        element: {
+          types: { anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets', 'app'] },
+          fileInternalPath: 'index.ts',
+        },
+      },
+    },
+  },
+  {
+    from: { file: { categories: 'app-root' } },
+    allow: { to: { element: { type: 'pages', fileInternalPath: PAGE_ROUTE_ENTRY_FILES } } },
+  },
+];
 
 export default [
   {
@@ -75,6 +129,7 @@ export default [
           .filter((type) => !type.startsWith('entity-'))
           .map((type) => ({ type, pattern: `${type}/*` })),
       ],
+      'boundaries/files': compositionFiles,
       'boundaries/root-path': import.meta.dirname,
       'import/resolver': {
         typescript: { project: `${import.meta.dirname}/tsconfig.json` },
@@ -88,10 +143,16 @@ export default [
           message: 'слой видит только то, что ниже него, и только через index.ts слайса',
           // Импорты внутри одного элемента правило не проверяет: разрез на модули — его
           // внутреннее дело, снаружи виден только публичный вход.
-          policies: [...layerPolicies, ...sharedPolicies, ...entityKinPolicies],
+          policies: [
+            ...layerPolicies,
+            ...sharedPolicies,
+            ...entityKinPolicies,
+            ...compositionPolicies,
+          ],
         },
       ],
-      'boundaries/no-unknown-dependencies': ['error', { require: 'element' }],
+      'boundaries/no-unknown-files': 'error',
+      'boundaries/no-unknown-dependencies': ['error', { require: 'any' }],
     },
   },
 ];

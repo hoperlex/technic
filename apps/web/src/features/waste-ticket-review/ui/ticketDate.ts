@@ -1,12 +1,11 @@
 import { formatWaybillDate } from '@technic/contracts';
 
 /**
- * Дата с талона человеку: `17.08.2026`.
+ * A ticket date as printed for a person: `17.08.2026`.
  *
- * Не через `formatDate` из `utils/format`: тот переводит момент времени в московскую зону, а дата
- * талона — **календарный день на бумаге**, а не момент. Зональный перевод сдвинул бы его на сутки
- * там, где браузер живёт западнее Москвы, — и портал спорил бы с бланком, который человек держит
- * в руке.
+ * Do not use `formatDate` from `@shared/lib`: it converts an instant to Moscow time, while a ticket
+ * carries a **calendar date on paper**, not an instant. Timezone conversion could move it by one
+ * day in a browser west of Moscow and make the portal disagree with the form in the user's hand.
  */
 export function ticketDate(iso: string | null | undefined): string {
   return iso ? formatWaybillDate(iso) : '—';

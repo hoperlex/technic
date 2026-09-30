@@ -23,9 +23,10 @@ async function lintFixture(relativePath: string) {
   return (result?.messages ?? []).map((m) => m.ruleId);
 }
 
-/** Разрешённый импорт — это отсутствие сообщений обоих правил границ, а не «хоть что-то прошло». */
+/** An allowed fixture must be classified and produce no dependency-rule messages. */
 async function expectAllowed(relativePath: string) {
   const rules = await lintFixture(relativePath);
+  expect(rules).not.toContain('boundaries/no-unknown-files');
   expect(rules).not.toContain('boundaries/dependencies');
   expect(rules).not.toContain('boundaries/no-unknown-dependencies');
 }
@@ -49,6 +50,34 @@ describe('границы слоёв', () => {
     // Точка входа выражена тем же правилом: разрешение выдано только на `index.ts` слайса,
     // поэтому импорт внутреннего модуля под него не подпадает и запрещён по умолчанию.
     expect(await lintFixture('features/x/bad-deep.ts')).toContain('boundaries/dependencies');
+  });
+});
+
+describe('классификация плоских composition-файлов', () => {
+  it('корневая страница классифицирована и компонует свой page-каталог', async () => {
+    await expectAllowed('pages/ShellPage.ts');
+  });
+
+  it('прямой app-файл классифицирован и может отрисовать корневую страницу', async () => {
+    await expectAllowed('app/RootBoundary.ts');
+  });
+
+  it('корневой entrypoint классифицирован и видит только заявленные точки композиции', async () => {
+    await expectAllowed('App.ts');
+  });
+
+  it('корневой entrypoint не получает общий доступ к внутренностям pages', async () => {
+    expect(await lintFixture('main.ts')).toContain('boundaries/dependencies');
+  });
+
+  it('вложенная страница не зависит от неразмеченного кода', async () => {
+    expect(await lintFixture('pages/screen/bad-unknown.ts')).toContain(
+      'boundaries/no-unknown-dependencies',
+    );
+  });
+
+  it('файл без element или file classification запрещён', async () => {
+    expect(await lintFixture('unknown.ts')).toContain('boundaries/no-unknown-files');
   });
 });
 

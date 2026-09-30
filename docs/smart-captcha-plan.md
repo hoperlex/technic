@@ -345,7 +345,7 @@ Prometheus это штатно, оговаривается в ADR. Пороги 
   пока `EMAIL_VERIFICATION_ENABLED = false` ([App.tsx:78](../apps/web/src/App.tsx#L78)), но код её
   живёт и флаг вернут — правки и тесты она получает наравне с остальными.
 - [api/auth.ts](../apps/web/src/api/auth.ts) — метод остаётся, меняется тип ответа.
-- [format.ts:61](../apps/web/src/utils/format.ts#L61) — `captchaAnswer` убирается,
+- [session error labels](../apps/web/src/entities/session/model/errorMessage.ts) — `captchaAnswer` убирается,
   `captchaToken: 'Проверка'` остаётся.
 
 **Деплой и стенд**
