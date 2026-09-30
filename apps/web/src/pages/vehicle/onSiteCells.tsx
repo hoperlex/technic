@@ -11,7 +11,7 @@ import {
   vehicleOnSitePresenceLabels,
 } from '@technic/contracts';
 import { calendarDayCount, formatDateOnly } from '@shared/lib';
-import { EarlyEndTag } from './shared';
+import { VehicleRequestEarlyEndTag } from '@entities/vehicle-request';
 import type { useEarlyEnd } from './earlyEndActions';
 
 /**
@@ -44,7 +44,7 @@ export function presenceCell(r: SpecialEquipmentRequestDto, onDate: string) {
         без тега площадка узнала бы об отъезде техники в день отъезда. */}
       {r.earlyEnd?.status === 'pending' && (
         <div style={{ marginTop: 2 }}>
-          <EarlyEndTag earlyEnd={r.earlyEnd} />
+          <VehicleRequestEarlyEndTag earlyEnd={r.earlyEnd} />
         </div>
       )}
     </div>
@@ -72,7 +72,7 @@ export function termCell(r: SpecialEquipmentRequestDto) {
       )}
       {r.earlyEnd?.status === 'approved' && (
         <div>
-          <EarlyEndTag earlyEnd={r.earlyEnd} />
+          <VehicleRequestEarlyEndTag earlyEnd={r.earlyEnd} />
         </div>
       )}
     </div>

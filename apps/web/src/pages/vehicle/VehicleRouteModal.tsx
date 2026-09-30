@@ -38,7 +38,7 @@ import { RoutePointsBlock } from './RoutePointsBlock';
 import { RouteRequestRow } from './RouteRequestRow';
 import { RouteTaskRowsBlock } from './RouteTaskRowsBlock';
 import { formatDateOnly } from '@shared/lib';
-import { tripsCountLabel } from './shared';
+import { tripsCountLabel } from '@entities/vehicle-request';
 import { VehicleRouteCorrectionModal } from './VehicleRouteCorrectionModal';
 import { VehicleRouteTransferCorrectionModal } from './VehicleRouteTransferCorrectionModal';
 import { ackRequiredDetails, confirmWaybillWarnings } from './waybillAckConfirm';

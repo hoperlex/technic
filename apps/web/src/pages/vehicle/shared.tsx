@@ -1,13 +1,8 @@
 import { useState, type ReactNode } from 'react';
-import { App, Button, Form, Select, Tag, Tooltip, Typography, Upload } from 'antd';
+import { App, Button, Form, Select, Typography, Upload } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
-import {
-  assignmentTitle,
-  type VehicleRequestAssignmentDto,
-  type VehicleRequestEarlyEndDto,
-  vehicleOptionLabel,
-} from '@technic/contracts';
+import { vehicleOptionLabel } from '@technic/contracts';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { FileLinkList, filesApi } from '@entities/file';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
@@ -15,10 +10,11 @@ import type {
   VehicleClassificationGroup,
   VehicleClassificationOption,
 } from '@entities/vehicle-type';
-import { AutoSelect, ExpandableCell, type FilterDefinition } from '@shared/ui';
-import { formatDateOnly } from '@shared/lib';
+import { AutoSelect, type FilterDefinition } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import { objectsApi, objectKeys } from '@entities/object';
+
+export { VehicleRequestAssignmentCell } from '@entities/vehicle-request';
 
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
@@ -213,48 +209,6 @@ export function FileEditor({ editor }: { editor: ReturnType<typeof useFileEditor
   );
 }
 
-/*
- * Контакты заявки и счёт ездок живут своим модулем (`requestContacts.tsx`), а отсюда
- * переизлучаются: их зовут восемь экранов по имени из `shared`, и переучивать их разом — правка
- * шире самой причины.
- */
-export { requestContacts, RequestContactsCell, tripsCountLabel } from './requestContacts';
-
-/**
- * Назначенная техника в строке списка (ADR 0027): чем заявку взяли, а под этим — приписка, ради
- * которой колонку читают дальше. Саму приписку задаёт вкладка, и намеренно: в работе спрашивают
- * «во сколько встало» и там стоит ставка, а в журнале стоимость разнесена по своим колонкам, и на
- * этом месте полезнее арендодатель. Общей вынесена оболочка ячейки — иначе одна и та же колонка
- * «Техника» держала бы высоту строки по-разному на каждой вкладке.
- *
- * Ячейка сворачивается (`ExpandableCell`): у назначения ровно две строки, замер скрытого ничего не
- * найдёт и кнопки не покажет, — фиксированная высота заведена не ради него, а ради состава
- * недельной заявки, который ложится в эту же колонку строкой на каждую единицу техники.
- *
- * Заявка без назначения — прочерк без обёртки: сворачивать в нём нечего, а лишний замер и
- * позиционирование кнопки пришлись бы на каждую «Новую» заявку списка.
- */
-export function RequestAssignmentCell({
-  assignment,
-  detail,
-}: {
-  assignment: VehicleRequestAssignmentDto | null;
-  /** Вторая строка. Функцией, а не строкой: у вкладок она разная и считается по назначению. */
-  detail: (assignment: VehicleRequestAssignmentDto) => string;
-}) {
-  if (!assignment) return <Typography.Text type="secondary">—</Typography.Text>;
-  return (
-    <ExpandableCell>
-      <div>{assignmentTitle(assignment)}</div>
-      <div>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {detail(assignment)}
-        </Typography.Text>
-      </div>
-    </ExpandableCell>
-  );
-}
-
 /**
  * Выбор заказываемой техники (ADR 0028): одна позиция классификатора — категория типа
  * («Автокраны, г/п 130 т») либо сам тип, если ТТХ у него нет («Ямобур»). Список сгруппирован по
@@ -304,32 +258,5 @@ export function VehicleClassificationSelect({
         }}
       />
     </Form.Item>
-  );
-}
-
-/**
- * Досрочное завершение в строке списка (ADR 0044): ожидание визы — оранжевым, состоявшееся
- * сокращение — серой припиской «срок сокращён с …».
- *
- * Ожидающий визы запрос показывается везде, где видно заявку: пока визы нет, срок в строке
- * прежний, и без тега площадка узнавала бы об отъезде техники в день отъезда. Отклонённый
- * запрос в списке не показывается — заявка живёт по заказанному сроку, и объяснение к этому
- * лежит в карточке.
- */
-export function EarlyEndTag({ earlyEnd }: { earlyEnd: VehicleRequestEarlyEndDto | null }) {
-  if (!earlyEnd || earlyEnd.status === 'rejected') return null;
-  if (earlyEnd.status === 'pending') {
-    return (
-      <Tooltip title={`Запросил ${earlyEnd.requestedByName}: ${earlyEnd.reason}`}>
-        <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-          досрочно до {formatDateOnly(earlyEnd.newDateTo)} · ждёт визы
-        </Tag>
-      </Tooltip>
-    );
-  }
-  return (
-    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-      срок сокращён с {formatDateOnly(earlyEnd.previousDateTo)}
-    </Typography.Text>
   );
 }

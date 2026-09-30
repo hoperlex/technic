@@ -134,7 +134,7 @@
 
 ## Вкладка «Заявки»
 
-Экран: `apps/web/src/pages/vehicle/VehicleRequestsTab.tsx` (панель — переменная `filters`).
+Экран: параметры и запрос — `apps/web/src/pages/vehicle/VehicleRequestsTab.tsx`; панель и мобильное описание — `apps/web/src/widgets/vehicle-request-feed/ui/feedFilters.tsx`.
 Сервер: `GET /vehicle-requests` в `apps/api/src/routes/vehicle-requests.ts`.
 
 | Фильтр               | Что сужает                         | Параметр                                    | Чем считает сервер                                     | Особенности                                                                                             |

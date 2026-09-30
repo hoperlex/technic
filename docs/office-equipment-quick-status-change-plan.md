@@ -12,7 +12,7 @@
 [0140](adr/0140-service-request-assign-in-card.md) (окна карточки живут внутри карточки),
 [0141](adr/0141-service-request-chat.md); эталон входа — [ADR 0021](adr/0021-permissions-model.md)
 и [0030](adr/0030-responsive-layout.md) (шит снизу вместо выпадающего меню на телефоне), как это
-сделано в «Заказе ТС» ([requestRowCells.tsx](../apps/web/src/pages/vehicle/requestRowCells.tsx),
+сделано в «Заказе ТС» ([orderStateCells.tsx](../apps/web/src/widgets/vehicle-request-feed/ui/orderStateCells.tsx),
 `StatusCell`) и в «Вывозе мусора» ([WasteRequestsPage.tsx](../apps/web/src/pages/waste/WasteRequestsPage.tsx),
 `WasteStatusCell`). Соседние планы модуля, с которыми план граничит:
 [office-equipment-access-profiles-plan.md](office-equipment-access-profiles-plan.md) (имена четырёх

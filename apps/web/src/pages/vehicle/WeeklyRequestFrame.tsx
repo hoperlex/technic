@@ -2,7 +2,8 @@ import { Button, Result, Space, Typography } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import type { WeeklyVehicleRequestDto } from '@technic/contracts';
 import { weeklyRequestErrorMessage as errorMessage } from '@entities/weekly-request';
-import { hasStatus, WeeklyStatusTag } from './weeklyShared';
+import { WeeklyStatusTag } from '@entities/weekly-request';
+import { hasStatus } from './weeklyShared';
 
 /**
  * Обрамление страницы недельной заявки: шапка с номером и статусом и экран не открывшейся заявки.

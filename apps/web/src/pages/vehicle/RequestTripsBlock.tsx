@@ -15,7 +15,7 @@ import { MAX_ROUTE_REQUESTS, type VehicleRequestTripDto } from '@technic/contrac
 import { FormGrid } from '@shared/ui';
 import { RequestTripFields } from './RequestTripFields';
 import { blankTrip, repeatTrip, type TripFormValue } from './requestTripsForm';
-import { tripsCountLabel } from './shared';
+import { tripsCountLabel } from '@entities/vehicle-request';
 
 /**
  * Список ездок в форме заявки на грузоперевозку (§4.1 плана `docs/route-trips-plan.md`, этап 6).

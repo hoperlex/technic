@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { App, Form, Select, type SelectProps, Tag, Typography } from 'antd';
+import { App, Form, Select, type SelectProps, Typography } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import {
@@ -9,13 +9,9 @@ import {
   pastSelectableWeeks,
   selectableWeeks,
   weekStartKey,
-  type WeeklyItemCounts,
   type WeeklyItemWarning,
   type WeeklyPreviousWeekDto,
   type WeeklyRequestItemDto,
-  type WeeklyRequestStatus,
-  weeklyRequestStatusColors,
-  weeklyRequestStatusLabels,
   weeklyWeekLabel,
 } from '@technic/contracts';
 import { weeklyRequestsApi } from '@entities/weekly-request';
@@ -108,27 +104,6 @@ function plural(n: number, one: string, few: string, many: string): string {
 }
 
 /**
- * Итог состава словами: «8 единиц: 5 продлений, 2 новых, 1 уезжает» (§5 шаг 3). Пустые виды строк
- * не перечисляются: «0 новых» отвечает на вопрос, которого никто не задавал, и удлиняет строку,
- * которую читают одним взглядом.
- */
-export function weeklyCountsText(counts: WeeklyItemCounts): string {
-  const total = counts.extend + counts.new + counts.leave;
-  if (total === 0) return 'Состав пуст';
-  const parts: string[] = [];
-  if (counts.extend > 0) {
-    parts.push(`${counts.extend} ${plural(counts.extend, 'продление', 'продления', 'продлений')}`);
-  }
-  if (counts.new > 0) {
-    parts.push(`${counts.new} ${plural(counts.new, 'новая', 'новых', 'новых')}`);
-  }
-  if (counts.leave > 0) {
-    parts.push(`${counts.leave} ${plural(counts.leave, 'уезжает', 'уезжают', 'уезжают')}`);
-  }
-  return `${total} ${plural(total, 'единица', 'единицы', 'единиц')}: ${parts.join(', ')}`;
-}
-
-/**
  * Отчёт по прошлой неделе одной строкой: «Из НЗ-15 (10–16 августа 2026): 6 позиций продлеваются,
  * 2 выбыли — ТС-341 — заказ закрыт фактом; ТС-352 — вывоз оформлен рейсом Р-12».
  *
@@ -152,14 +127,6 @@ export function weeklyPreviousText(previous: WeeklyPreviousWeekDto): string {
   return (
     `${from}: ${carried}, ${previous.dropped.length} ` +
     `${plural(previous.dropped.length, 'выбыла', 'выбыли', 'выбыли')} — ${dropped}`
-  );
-}
-
-export function WeeklyStatusTag({ status }: { status: WeeklyRequestStatus }) {
-  return (
-    <Tag color={weeklyRequestStatusColors[status]} style={{ marginInlineEnd: 0 }}>
-      {weeklyRequestStatusLabels[status]}
-    </Tag>
   );
 }
 

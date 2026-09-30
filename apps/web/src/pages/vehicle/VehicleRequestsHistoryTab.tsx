@@ -44,7 +44,7 @@ import { calendarDayCount, formatDate, formatMoney } from '@shared/lib';
 import { useAuth } from '@entities/session';
 import { formatDateTimeMaybe } from '@entities/request';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
-import { RequestAssignmentCell, useLessorOptions, useVehicleFilter } from './shared';
+import { VehicleRequestAssignmentCell, useLessorOptions, useVehicleFilter } from './shared';
 import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 
 /**
@@ -267,14 +267,14 @@ export function VehicleRequestsHistoryTab() {
       // аренду, а у собственной машины на этом месте так и написано. Ставки тут не нужны — в
       // журнале под них есть «Отработано» и «Стоимость», и это факт закрытия, а не назначения.
       //
-      // Ячейка та же, что в списке заявок (`RequestAssignmentCell`): колонка «Техника» на всех
+      // Ячейка та же, что в списке заявок (`VehicleRequestAssignmentCell`): колонка «Техника» на всех
       // вкладках одна, и высоту строки она обязана держать одинаково.
       key: 'lessorName',
       title: 'Техника',
       width: 210,
       sorter: true,
       render: (_v, r) => (
-        <RequestAssignmentCell
+        <VehicleRequestAssignmentCell
           assignment={r.assignment}
           detail={(a) => a.lessorName ?? 'Своя техника'}
         />

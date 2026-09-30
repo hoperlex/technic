@@ -8,27 +8,12 @@ import {
   type VehicleRouteDto,
 } from '@technic/contracts';
 import { formatDateOnly } from '@shared/lib';
-import { formatDateTimeMaybe } from '@entities/request';
+import { vehicleRequestTermLabel } from '@entities/vehicle-request';
 
 /**
- * Текст о заявке, собранный по её собственным данным: срок строкой и два перечня того, что заявка
- * потеряет — при возврате в «Новую» и при переоформлении в другой тип (ADR 0091).
- *
- * Отдельным файлом от самой вкладки: `VehicleRequestsTab` давно упёрся в бюджет длины
- * (`scripts/quality.mjs`), а эти три функции — чистые, о заявке, а не о её показе, и уезжают из
- * него, не разрывая ни одной ветки экрана. Срок едет с перечнями: переоформление называет его
- * первой же строкой, и разъедься они по файлам, одна и та же дата печаталась бы двумя способами.
+ * Destructive confirmation text built from the request itself. Date representation comes from the
+ * vehicle-request entity so confirmations and feed views cannot drift apart.
  */
-
-/** Колонка «Срок»: у спецтехники это период, у грузоперевозки — дата (и время, если задано). */
-export function termLabel(r: VehicleRequestDto): string {
-  if (r.requestType === 'special_equipment') {
-    return r.dateTo
-      ? `${formatDateOnly(r.dateFrom)} – ${formatDateOnly(r.dateTo)}`
-      : formatDateOnly(r.dateFrom);
-  }
-  return formatDateTimeMaybe(r.scheduledAt, r.scheduledTimeUnspecified);
-}
 
 /**
  * Что возврат в «Новую» сотрёт у этой заявки (`transitionResetsWork`) — строками, по её
@@ -76,7 +61,9 @@ export function rollbackErases(r: VehicleRequestDto, relocations: VehicleRouteDt
 export function retypeErases(r: VehicleRequestDto, dropsApproval: boolean): string[] {
   const items: string[] = [];
   if (r.requestType === 'special_equipment') {
-    items.push(`Срок работ (${termLabel(r)}) — у грузоперевозки вместо него момент подачи`);
+    items.push(
+      `Срок работ (${vehicleRequestTermLabel(r)}) — у грузоперевозки вместо него момент подачи`,
+    );
   } else {
     // Ездки (Р2 плана `docs/route-trips-plan.md`): адреса, количество и контакты лежат у них, а
     // переоформление сносит деталь грузоперевозки целиком — значит и все ездки разом.

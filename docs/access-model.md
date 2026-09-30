@@ -1024,7 +1024,7 @@ return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
 | Маршруты                | `apps/web/src/App.tsx`                                    | ветка разделов — циклом по `SHELL_SECTIONS`, каждый под `<RequireSection id={section.id} />`; `RequirePermission` остался подстраницам (ADR 0121) |
 | Редирект                | `apps/web/src/auth/ProtectedRoute.tsx`                    | отказ гейта → `/`, а стартовый раздел считает `startSection` по `startOrder`; разделов нет ни одного — `NoSectionsPage` вместо редиректа          |
 | Меню и нижняя навигация | `apps/web/src/components/AppLayout.tsx`                   | пункты — из `openShellSections({ role, canUse })`, тем же предикатом, что и гейты; каркасу остаются иконка и бейдж                                |
-| Кнопки и колонки        | `WasteRequestsPage.tsx`, `vehicle/VehicleRequestsTab.tsx` | `const canApprove = can('vehicleRequests.approve')` и т. п.                                                                                       |
+| Кнопки и колонки        | `WasteRequestsPage.tsx`, `vehicle/VehicleRequestsTab.tsx`, `widgets/vehicle-request-feed` | `const canApprove = can('vehicleRequests.approve')` и т. п.                                                                                       |
 
 **«Та же матрица» на портале больше не работает, и это не оптимизация, а необходимость** (ADR 0106,
 §10.1 плана). Пока набор прав задавала роль, портал выводил их сам: матрица лежит в общем пакете,

@@ -49,7 +49,7 @@ import { canOpenRoute, vehicleRouteLink } from '@entities/vehicle-route';
 import { PrintWaybillButton, waybillLink } from '@entities/waybill';
 import { PhoneLink, ResponsibleValue } from '@entities/user-account';
 import { formatDateTimeMaybe } from '@entities/request';
-import { tripsCountLabel } from './shared';
+import { tripsCountLabel } from '@entities/vehicle-request';
 import { useRouteModal } from '@features/route-modal';
 import { vehicleRequestCardFooter } from './VehicleRequestCardFooter';
 import { VehicleRequestDays } from './VehicleRequestDays';

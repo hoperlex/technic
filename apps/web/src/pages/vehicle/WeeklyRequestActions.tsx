@@ -1,6 +1,6 @@
 import { Button, Space, Typography } from 'antd';
 import type { WeeklyItemCounts } from '@technic/contracts';
-import { weeklyCountsText } from './weeklyShared';
+import { weeklyCountsText } from '@entities/weekly-request';
 
 /**
  * Панель действий недельной заявки — закреплена внизу страницы (§5 шаг 1): состав длинный, и итог
