@@ -145,6 +145,7 @@ export function useServiceRequestModals(): ServiceRequestModals {
   const [moveTarget, setMoveTarget] = useState<ServiceRequestDto | null>(null);
   const [prompt, setPrompt] = useState<ReasonPrompt | null>(null);
 
+  // cache-write: delegated — task.run is the API transition selected by the active reason modal.
   const reasonMutation = useMutation({
     mutationFn: (task: { run: () => Promise<unknown>; success: string }) => task.run(),
     onSuccess: (result, task) => {

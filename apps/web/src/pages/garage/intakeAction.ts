@@ -42,6 +42,7 @@ export function useIntakeAction<TVars>({
   const { message } = App.useApp();
   const qc = useQueryClient();
 
+  // cache-write: delegated — the caller supplies the concrete report-intake API command.
   return useMutation({
     mutationFn: run,
     onSuccess: () => {

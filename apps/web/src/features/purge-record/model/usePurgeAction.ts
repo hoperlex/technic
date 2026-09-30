@@ -41,6 +41,7 @@ export function usePurgeAction({ subject, purge, invalidate }: Options): PurgeAc
   const { can } = useAuth();
   const qc = useQueryClient();
 
+  // cache-write: delegated — the caller supplies both the purge command and affected keys.
   const mutation = useMutation({
     mutationFn: (id: string) => purge(id),
     onSuccess: () => {

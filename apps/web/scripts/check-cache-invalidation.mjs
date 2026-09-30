@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 /**
- * Что каждая мутация портала гасит в кэше — и две вещи, которые из этого следуют.
+ * Which cache roots every portal mutation refreshes, and the three rules derived from that map.
  *
- * ЗАЧЕМ. Сервер в одной транзакции меняет больше, чем экран, с которого пришёл запрос: возврат
- * заявки вывоза в «Новую» уносит талоны, правка техники освобождает прицепы, правка карточки
- * водителя переписывает его учётку, подтверждение талонов пересчитывает разбор. Гасится при этом
- * корень своего агрегата — и экран рядом продолжает показывать унесённое. Такую ошибку не ловит ни
- * тип, ни тест экрана: оба экрана по отдельности верны, неверно соседство. Инвентарь ниже делает
- * соседство видимым, а два правила — проверяемым.
+ * WHY. A server transaction often changes more than the screen that sent it: rolling a waste
+ * request back removes tickets, editing a vehicle releases trailers, editing a driver changes an
+ * account, and confirming tickets recalculates recognition. Invalidating only the initiating
+ * aggregate leaves a neighbouring screen stale. Neither types nor an isolated screen test catches
+ * that mismatch; this inventory makes the relationship visible and enforces three rules over it.
  *
- * ЧТО ПРОВЕРЯЕТСЯ. Правило `writes-nothing-dropped`: пишущая мутация не касается кэша вовсе.
- * Правило `home-root-missed`: мутация гасит чужой корень и не гасит корень слайса, чьей ручкой
- * пишет. Оба — только по мутациям, разобранным ПОЛНОСТЬЮ: обвинять код в том, чего не понял
- * разборщик, значит получить отключённую проверку. Подробнее — у самих правил.
+ * WHAT IS CHECKED. `writes-nothing-dropped` catches a writer that touches no cache.
+ * `home-root-missed` catches a writer that drops another root but misses the slice owning the API
+ * handle. `unknown-write` catches a mutation whose HTTP verb is unknown or whose writer arrives as
+ * a value without a local `cache-write: delegated — reason` marker. The first two rules require a
+ * fully resolved mutation; blaming application code for scanner uncertainty would get the check
+ * disabled. The third rule prevents that uncertainty from making the check green.
  *
  * ЧЕМ ОПРАВДАНО МОЛЧАНИЕ. Первая очередь была 28 мест, и ни одно не оказалось дефектом — это были
  * четыре разных вида законного молчания, и каждый пришлось назвать, иначе правило сняли бы целиком:
@@ -31,6 +32,12 @@
  *
  * Дефект в очереди всё-таки нашёлся, но не в ней: отладочная отправка письма заводит строку журнала
  * и не гасила его корень — рядом, соседней вкладкой того же раздела.
+ *
+ * A DELEGATED WRITE cannot be inferred from the `mutationFn` body either: a shared hook receives
+ * `run` or `purge`, while only its caller knows the concrete API handle. Such a site must carry a
+ * `cache-write: delegated — reason` marker. The marker still counts the mutation as a write, so the
+ * normal empty-invalidation rule continues to apply; it removes only the uncertainty about whether
+ * the function writes at all.
  *
  * ЧЕГО ПРОВЕРКА НЕ УМЕЕТ, и это главная часть шапки:
  *
@@ -54,9 +61,11 @@
  *     типов техники шесть). «Погаси хоть один свой корень» для них не значит ничего, и сказанное
  *     полем `homeAmbiguous` в карте честнее сработавшего наугад правила.
  *
- * ПОЧЕМУ `unresolved` ПЕЧАТАЕТСЯ ВСЕГДА. Такая проверка портится единственным способом — перестаёт
- * понимать код и оттого зеленеет. Счёт неразобранного в каждом прогоне — единственное, что отличает
- * «нечего сообщить» от «ничего не понял»: обвал разбора виден числом, а не отсутствием жалоб.
+ * WHY `unresolved` IS ALWAYS PRINTED. This check can decay by understanding less code and becoming
+ * greener. Every unresolved site gets a class (`unknown-write`, `cache-effect`, `ownership`,
+ * `api-inventory`, `scanner-limit`) in addition to its technical reason. Unknown writes fail the
+ * run; other limitations stay visible by count and class so a parsing collapse cannot be mistaken
+ * for “nothing to report”.
  *
  * ГДЕ ЖИВЁТ. Рядом с `lib/source-scan.mjs` и на его частях: разборщик, таблица локальных имён и, что
  * важнее всего, три набора, называющие ТОЧКИ ВХОДА В КЭШ. Второй список этих точек — та самая
@@ -360,7 +369,12 @@ function apiFetchVerb(node, localVerbs) {
         verb = localVerbs.get(name);
         return;
       }
-      if (name === 'apiFetch' || name === 'apiUpload') {
+      if (
+        name === 'apiFetch' ||
+        name === 'apiUpload' ||
+        name === 'apiDownload' ||
+        name === 'apiFetchBlob'
+      ) {
         verb = 'GET';
         const opts = n.arguments.find((a) => ts.isObjectLiteralExpression(unwrap(a)));
         if (opts)
@@ -625,6 +639,22 @@ function declaresNoCacheEffect(sf, node) {
   return /cache-invalidation:\s*none/.test(sf.text.slice(node.pos, node.end));
 }
 
+/**
+ * A generic mutation can receive its writer as a value (`run`, `purge`, `task.run`). The scanner
+ * cannot recover the API handle from that value, so the declaration must carry the fact locally.
+ * A reason is mandatory: unlike the older no-cache marker, this marker changes the safety verdict
+ * from unknown to known-delegated and must therefore be reviewable where the abstraction lives.
+ */
+function delegatedWriteReason(sf, ...nodes) {
+  for (const node of nodes) {
+    if (!node) continue;
+    const text = sf.text.slice(node.pos, node.end);
+    const match = text.match(/cache-write:\s*delegated\s*[—-]\s*([^\r\n*]+)/);
+    if (match?.[1]?.trim()) return match[1].trim();
+  }
+  return undefined;
+}
+
 function isCallbackName(name) {
   return /^on[A-Z]/.test(name);
 }
@@ -754,6 +784,7 @@ function readUseMutation(call, options, owner, ctx, mutationFnRanges) {
   const acc = emptyAcc();
   const handles = new Set();
   const handlers = [];
+  let delegatedReason;
 
   if (!options) {
     acc.why.add('useMutation-options-are-not-an-object-literal');
@@ -762,7 +793,10 @@ function readUseMutation(call, options, owner, ctx, mutationFnRanges) {
     if (fn) {
       mutationFnRanges.push([fn.pos, fn.end]);
       collectApiCalls(fn, ctx, handles);
-      if (handles.size === 0) acc.why.add('mutationFn-reaches-no-named-api-handle');
+      if (handles.size === 0) {
+        delegatedReason = delegatedWriteReason(ctx.sf, owner?.decl, call);
+        if (!delegatedReason) acc.why.add('mutationFn-reaches-no-named-api-handle');
+      }
     } else acc.why.add('mutation-without-a-mutationFn');
 
     for (const h of HANDLERS) {
@@ -800,6 +834,7 @@ function readUseMutation(call, options, owner, ctx, mutationFnRanges) {
 
   const { writes, reads, unknown } = classifyWrites(handles, ctx);
   unknown.forEach((h) => acc.why.add(`api-handle-of-an-unknown-verb:${h}`));
+  if (delegatedReason) writes.push('<delegated> WRITE');
 
   return {
     declaredNoop:
@@ -813,6 +848,9 @@ function readUseMutation(call, options, owner, ctx, mutationFnRanges) {
     handlers,
     writes,
     reads,
+    writeAnalysis: delegatedReason
+      ? { kind: 'delegated', reason: delegatedReason }
+      : { kind: unknown.length > 0 || handles.size === 0 ? 'unknown' : 'direct' },
     ...finish(acc),
   };
 }
@@ -950,6 +988,7 @@ function scanDirectWrites(ctx, mutationFnRanges) {
       handlers: ['<function body>'],
       writes,
       reads,
+      writeAnalysis: { kind: unknown.length > 0 ? 'unknown' : 'direct' },
       ...finish(acc),
     };
   });
@@ -1068,6 +1107,7 @@ function buildMap() {
     const home = new Set();
     const ambiguous = new Set();
     for (const write of m.writes) {
+      if (write === '<delegated> WRITE') continue;
       const handle = write.slice(0, write.indexOf(' '));
       const hit = api.byName.get(handle);
       if (!hit || hit.conflict) {
@@ -1104,7 +1144,11 @@ function buildMap() {
     for (const why of m.unresolved)
       unresolved.push({ file: m.file, form: `${m.name} (${m.kind}, line ${m.line})`, why });
 
-  unresolved.sort(
+  const classifiedUnresolved = unresolved.map((item) => ({
+    ...item,
+    class: classifyUnresolved(item.why),
+  }));
+  classifiedUnresolved.sort(
     (a, b) =>
       a.file.localeCompare(b.file) || a.why.localeCompare(b.why) || a.form.localeCompare(b.form),
   );
@@ -1112,7 +1156,7 @@ function buildMap() {
   return {
     roots: Object.fromEntries([...rootOwners.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
     mutations,
-    unresolved,
+    unresolved: classifiedUnresolved,
     totals: {
       mutations: mutations.length,
       byKind: countBy(mutations, (m) => m.kind),
@@ -1129,6 +1173,29 @@ function countBy(items, of) {
   const out = {};
   for (const item of items) out[of(item)] = (out[of(item)] ?? 0) + 1;
   return Object.fromEntries(Object.entries(out).sort((a, b) => a[0].localeCompare(b[0])));
+}
+
+function classifyUnresolved(why) {
+  if (
+    why === 'mutationFn-reaches-no-named-api-handle' ||
+    why === 'declared-hook-reaches-no-named-api-handle' ||
+    why === 'mutation-without-a-mutationFn' ||
+    why === 'useMutation-options-are-not-an-object-literal' ||
+    why.startsWith('api-handle-of-an-unknown-verb:')
+  )
+    return 'unknown-write';
+  if (
+    why.startsWith('call-of-a-value-this-walk-cannot-open:') ||
+    why.startsWith('handler-is-a-name-this-walk-cannot-open:') ||
+    why.startsWith('helper-name-declared-twice:') ||
+    why.startsWith('key-') ||
+    why.startsWith('unresolved-call-that-may-drop-the-cache:') ||
+    why.includes('key')
+  )
+    return 'cache-effect';
+  if (why.startsWith('write-handle-')) return 'ownership';
+  if (why.startsWith('api-spread-')) return 'api-inventory';
+  return 'scanner-limit';
 }
 
 /** Named functions of a file, so that a handler calling one of them by name can be followed. */
@@ -1150,7 +1217,7 @@ function registerHelpers(sf, ctx, helperNodes) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The two rules.
+// The three rules.
 // ---------------------------------------------------------------------------------------------
 
 /**
@@ -1211,6 +1278,26 @@ function ruleHomeRootMissed(map) {
     }));
 }
 
+/**
+ * RULE 3 — the scanner cannot prove whether a mutation writes.
+ *
+ * This is not ordinary parser debt. Rules 1 and 2 deliberately skip incomplete evidence, so an
+ * unknown writer would disable both exactly where they are needed. Generic hooks can state the
+ * missing fact next to their abstraction with `cache-write: delegated — reason`; an unknown API
+ * verb has no such escape hatch and must be taught to the API scanner.
+ */
+function ruleUnknownWrite(map) {
+  return map.mutations
+    .filter((m) => m.unresolved.some((why) => classifyUnresolved(why) === 'unknown-write'))
+    .map((m) => ({
+      rule: 'unknown-write',
+      at: `${m.file}:${m.line}`,
+      what: `${m.name}: разборщик не доказал запись (${m.unresolved
+        .filter((why) => classifyUnresolved(why) === 'unknown-write')
+        .join(', ')})`,
+    }));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Entry point.
 // ---------------------------------------------------------------------------------------------
@@ -1222,9 +1309,11 @@ const map = buildMap();
 // picture somebody is about to read.
 writeFileSync(MAP_FILE, `${JSON.stringify(map, null, 2)}\n`);
 
-const findings = [...ruleWritesNothingDropped(map), ...ruleHomeRootMissed(map)].sort(
-  (a, b) => a.rule.localeCompare(b.rule) || a.at.localeCompare(b.at),
-);
+const findings = [
+  ...ruleWritesNothingDropped(map),
+  ...ruleHomeRootMissed(map),
+  ...ruleUnknownWrite(map),
+].sort((a, b) => a.rule.localeCompare(b.rule) || a.at.localeCompare(b.at));
 
 const t = map.totals;
 console.log(
@@ -1241,6 +1330,12 @@ if (map.unresolved.length > 0) {
   );
   const byWhy = countBy(map.unresolved, (u) => u.why);
   for (const why of Object.keys(byWhy).sort()) console.log(`  · ${why}: ${byWhy[why]}`);
+  const byClass = countBy(map.unresolved, (u) => u.class);
+  console.log(
+    `Классы: ${Object.entries(byClass)
+      .map(([name, count]) => `${name}=${count}`)
+      .join(', ')}`,
+  );
 }
 
 // Inventory mode (step Ш0): take the picture, pass no verdict. Used to read the map without the

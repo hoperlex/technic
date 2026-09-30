@@ -178,7 +178,7 @@ export function WeeklyRequestPage() {
   };
 
   const saveMut = useMutation({
-    mutationFn: saveComposition,
+    mutationFn: saveComposition, // cache-write: delegated — calls the update API when dirty.
     onSuccess: () => {
       clearApplyError();
       message.success('Состав сохранён');

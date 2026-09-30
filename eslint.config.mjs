@@ -197,6 +197,10 @@ export default tseslint.config(
       // отчёты, но и ИЗОЛИРОВАННЫЕ КОПИИ ДЕРЕВА, которыми она проверяет партии, — линт, зашедший
       // туда, проверял бы репозиторий дважды и падал на файлах, которых нет ни в одном tsconfig.
       '.maintenance/**',
+      // Agent worktrees are full repository copies, not source owned by this checkout. Scanning
+      // them duplicates the project and applies this checkout's tsconfig to another commit.
+      '.claude/worktrees/**',
+
       // Фикстуры границ слоёв: заведомо неверные импорты там — материал теста, а не código
       // портала. Их проверяет apps/web/test/boundaries.test.ts своим конфигом.
       'apps/web/test/fixtures/**',

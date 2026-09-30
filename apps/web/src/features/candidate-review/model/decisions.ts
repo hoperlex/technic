@@ -80,6 +80,7 @@ export function useCandidateDecision<TVars>(
 ) {
   const { message } = App.useApp();
   const qc = useQueryClient();
+  // cache-write: delegated — the caller supplies a candidate-decision API command.
   return useMutation({
     mutationFn: run,
     onSuccess: (fresh) => {
