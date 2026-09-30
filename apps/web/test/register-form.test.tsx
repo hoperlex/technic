@@ -18,7 +18,7 @@ import {
   type NavigationLog,
   type SmartCaptchaService,
 } from './captcha';
-import { RegisterPage } from '../src/pages/RegisterPage';
+import { RegisterPage } from '../src/pages/auth';
 
 /**
  * Форма регистрации (ADR 0034, капча по ADR 0130). Проверяется то, ради чего её переделывали: ФИО

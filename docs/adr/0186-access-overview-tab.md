@@ -32,7 +32,7 @@
   [grantModel.ts](../../apps/web/src/pages/admin/grantModel.ts),
   [grantsApi.ts](../../apps/web/src/entities/grant/api/grantsApi.ts) и
   [keys.ts](../../apps/web/src/entities/grant/api/keys.ts) (ручки и ключи кэша);
-  подключение — [AdministrationPage.tsx](../../apps/web/src/pages/AdministrationPage.tsx); сервер —
+  подключение — [AdministrationPage.tsx](../../apps/web/src/pages/admin/AdministrationPage.tsx); сервер —
   [users.ts](../../apps/api/src/routes/users.ts) (`GET /users`: `permissions`, `grantCodes`,
   `addons` в `UserAccountDto`), [grants.ts](../../apps/api/src/routes/grants.ts) (каталог, карточка
   с реестром выдач, конструктор, предпросмотр правки),

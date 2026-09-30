@@ -4,10 +4,10 @@ import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { useAuth } from '@entities/session';
 import { PageTabs } from '@shared/ui';
 import { canSeeArchiveTab } from '@entities/request';
-import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
-import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';
-import { VehicleRequestsHistoryTab } from './vehicle/VehicleRequestsHistoryTab';
-import { VehicleRequestsArchiveTab } from './vehicle/VehicleRequestsArchiveTab';
+import { VehicleRequestsTab } from './VehicleRequestsTab';
+import { VehicleRequestsOnSiteTab } from './VehicleRequestsOnSiteTab';
+import { VehicleRequestsHistoryTab } from './VehicleRequestsHistoryTab';
+import { VehicleRequestsArchiveTab } from './VehicleRequestsArchiveTab';
 
 // Спецтехника, грузоперевозки и недельные заявки живут в одном списке («Заказ автотехники»): вид
 // документа — колонка и фильтр, а не отдельная вкладка. Старые ключи вкладок ведут на общий список.

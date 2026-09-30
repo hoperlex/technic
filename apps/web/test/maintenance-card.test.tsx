@@ -16,7 +16,7 @@ import { maintenanceRecord, maintenanceSummary } from './factories/maintenance';
 import { MOBILE_VIEWPORT } from './viewport';
 import { VehicleMaintenanceBlock } from '../src/features/vehicle-maintenance';
 import { VehiclesTab } from '../src/pages/directories/VehiclesTab';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Обслуживание техники на портале (план «Показания техники», Р11а—Р15, Р24, Р30).

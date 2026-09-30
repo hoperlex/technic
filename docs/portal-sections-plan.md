@@ -22,7 +22,7 @@
 
 Цепочка целиком:
 
-1. [LoginPage.tsx:19](../apps/web/src/pages/LoginPage.tsx#L19) — после входа портал идёт на
+1. [LoginPage.tsx:19](../apps/web/src/pages/auth/LoginPage.tsx#L19) — после входа портал идёт на
    жёстко зашитый `/waste`.
 2. `/waste` закрыт гейтом `RequirePermission('wasteRequests.read')`
    ([App.tsx:88](../apps/web/src/App.tsx#L88)) — гейт уводит в `homePath`.
@@ -33,8 +33,8 @@
    ADR 0085. Ни одна строка не сработала → `return '/change-password'`.
 4. Экран смены пароля лежит вне каркаса: ни меню, ни разделов, ни кнопки «назад» — из него
    выходят только сменой пароля или выходом из портала
-   ([ChangePasswordPage.tsx:86-90](../apps/web/src/pages/ChangePasswordPage.tsx#L86-L90)).
-5. Сменить пароль не помогает: [ChangePasswordPage.tsx:21](../apps/web/src/pages/ChangePasswordPage.tsx#L21)
+   ([ChangePasswordPage.tsx:86-90](../apps/web/src/pages/auth/ChangePasswordPage.tsx#L86-L90)).
+5. Сменить пароль не помогает: [ChangePasswordPage.tsx:21](../apps/web/src/pages/auth/ChangePasswordPage.tsx#L21)
    после успеха идёт на тот же `/waste` → тот же гейт → тот же экран. Круг замкнут.
 
 Перебор `ACCESS_PROFILES` в двух состояниях области даёт пять профилей, приземляющихся на смену
@@ -298,17 +298,17 @@ export function HomeRedirect() {
 наружу как «разделов нет», а не как «портал требует новый пароль», и вопрос заказчика придёт в
 правильную сторону.
 
-Файл — `apps/web/src/pages/NoSectionsPage.tsx`. Не `components/`: бюджет качества считает файлы в
+Файл — `apps/web/src/pages/no-sections/NoSectionsPage.tsx`. Не `components/`: бюджет качества считает файлы в
 легаси-каталогах (`quality-budget.json`, `legacyFiles.components`), и новый файл там — рост долга.
 
 ### 4.6 Точки входа и выход из формы пароля
 
 | Место                                                                         | Было                           | Стало                                                                             |
 | ----------------------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------- |
-| [LoginPage.tsx:19](../apps/web/src/pages/LoginPage.tsx#L19)                   | `navigate(from ?? '/waste')`   | `navigate(from ?? '/')`                                                           |
-| [ChangePasswordPage.tsx:21](../apps/web/src/pages/ChangePasswordPage.tsx#L21) | `navigate('/waste')`           | `navigate('/')`                                                                   |
+| [LoginPage.tsx:19](../apps/web/src/pages/auth/LoginPage.tsx#L19)                   | `navigate(from ?? '/waste')`   | `navigate(from ?? '/')`                                                           |
+| [ChangePasswordPage.tsx:21](../apps/web/src/pages/auth/ChangePasswordPage.tsx#L21) | `navigate('/waste')`           | `navigate('/')`                                                                   |
 | [App.tsx:149](../apps/web/src/App.tsx#L149) `path="*"`                        | `<HomeRedirect />` вне каркаса | `<Navigate to="/" replace />`                                                     |
-| [ChangePasswordPage.tsx:86](../apps/web/src/pages/ChangePasswordPage.tsx#L86) | только «Выйти»                 | при `mustChangePassword === false` — ещё и «Вернуться в портал» (`navigate('/')`) |
+| [ChangePasswordPage.tsx:86](../apps/web/src/pages/auth/ChangePasswordPage.tsx#L86) | только «Выйти»                 | при `mustChangePassword === false` — ещё и «Вернуться в портал» (`navigate('/')`) |
 | `ProtectedRoute` `mustChangePassword`                                         | `/change-password`             | без изменений — единственный законный редирект туда                               |
 
 Последние две строки — про **ловушку**, и она шире исходного бага. Форму открывают добровольно,

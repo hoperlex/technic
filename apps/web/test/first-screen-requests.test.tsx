@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { waitFor } from '@testing-library/react';
-import { WasteRequestsPage } from '../src/pages/WasteRequestsPage';
+import { WasteRequestsPage } from '../src/pages/waste';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser, shtabUser } from './factories/auth';

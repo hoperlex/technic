@@ -304,7 +304,7 @@
 
 ## Журнал «Путевые листы»
 
-Экран: `apps/web/src/pages/WaybillsPage.tsx`. Сервер: `GET /waybills` в
+Экран: `apps/web/src/pages/waybills/WaybillsPage.tsx`. Сервер: `GET /waybills` в
 `apps/api/src/routes/waybills.ts`.
 
 Фильтры недавно собраны в одну полосу над таблицей. До этого они были разделены надвое — период в

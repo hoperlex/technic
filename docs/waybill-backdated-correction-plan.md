@@ -27,7 +27,7 @@ preflight будущего состояния, DDL связи заявок, тр
 [`canCancelWaybill`](../packages/contracts/src/waybills.ts#L548) — `today <= periodTo ||
 issuedForDate`. Со следующего дня лист не аннулировать ни одной ролью
 ([`waybills.ts:682`](../apps/api/src/routes/waybills.ts#L682), кнопки в
-[`WaybillsPage.tsx:290`](../apps/web/src/pages/WaybillsPage.tsx#L290) и
+[`WaybillsPage.tsx:290`](../apps/web/src/pages/waybills/WaybillsPage.tsx#L290) и
 [`VehicleRouteModal.tsx:299`](../apps/web/src/pages/vehicle/VehicleRouteModal.tsx#L299)).
 Это прямой отказ [ADR 0052](adr/0052-route-followup.md), записанный в бэклоге словами
 «переписывать историю бланком строгой отчётности нельзя». Фича этот пункт отменяет — значит ADR

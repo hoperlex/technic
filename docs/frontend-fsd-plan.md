@@ -19,7 +19,7 @@
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Файлы-«монолиты»                              | 5 крупнейших — 5 560 строк (29 % кода): `WasteRequestsPage` 1588, `VehicleRequestsTab` 1364, `UsersTab` 921, `WasteTariffsTab` 871, `VehiclesTab` 816                                                                   |
 | Слои не разделены                             | `pages/` содержит формы, мутации, колонки, модалки, бизнес-правила; `components/` — вперемешку ui-kit и доменные блоки                                                                                                  |
-| Дублирование описания фильтров                | в каждом списке фильтры пишутся дважды: панель десктопа и `mobileFilters` (напр. [WasteRequestsPage.tsx](../apps/web/src/pages/WasteRequestsPage.tsx))                                                                  |
+| Дублирование описания фильтров                | в каждом списке фильтры пишутся дважды: панель десктопа и `mobileFilters` (напр. [WasteRequestsPage.tsx](../apps/web/src/pages/waste/WasteRequestsPage.tsx))                                                                  |
 | Копипаста справочных запросов                 | 22 запроса вида `pageSize: 500` в 12 файлах, часть — под разными ключами при одинаковом запросе                                                                                                                         |
 | Магические константы в нескольких копиях      | `FILE_MAX_SIZE`/`FILE_MAX_COUNT` — в трёх файлах (`WasteRequestsPage`, `vehicle/shared`, `WasteDoneModal`)                                                                                                              |
 | Инлайн-стили вместо токенов                   | ~280 вхождений `style={{`, ~500 строк `styles.css` без переменных                                                                                                                                                       |
@@ -32,7 +32,7 @@
 
 Три дефекта, найденные попутно:
 
-1. **`StatusCell` объявлен внутри компонента** ([WasteRequestsPage.tsx](../apps/web/src/pages/WasteRequestsPage.tsx)).
+1. **`StatusCell` объявлен внутри компонента** ([WasteRequestsPage.tsx](../apps/web/src/pages/waste/WasteRequestsPage.tsx)).
    На каждый рендер это новый тип компонента → React размонтирует и монтирует поддерево заново;
    открытый `ActionSheet` статуса на телефоне теряет состояние. Ловится правилом
    `react/no-unstable-nested-components` (`eslint-plugin-react`); `eslint-plugin-react-hooks` такие

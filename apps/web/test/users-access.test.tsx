@@ -17,7 +17,7 @@ import { selectOption } from './antd';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { AccessTab } from '../src/pages/admin/AccessTab';
-import { AdministrationPage } from '../src/pages/AdministrationPage';
+import { AdministrationPage } from '../src/pages/admin';
 import { UsersTab } from '../src/pages/admin/UsersTab';
 
 /**

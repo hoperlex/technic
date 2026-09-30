@@ -972,7 +972,7 @@ export async function applyWeeklyRequest(tx, params: {
 - `src/pages/vehicle/WeeklyRequestsTab.tsx` — список + `SummaryBar`;
 - `src/pages/vehicle/WeeklyRequestPage.tsx` — **страница** сборки и карточки с URL
   (`/vehicle-requests/weekly/:id`), sticky-панель действий, карточки на мобильном (Р, §5 шаг 1);
-- `src/pages/VehicleRequestsPage.tsx` — вкладка «Недельные заявки»;
+- `src/pages/vehicle/VehicleRequestsPage.tsx` — вкладка «Недельные заявки»;
 - `src/pages/vehicle/VehicleRequestsOnSiteTab.tsx` — кнопка «Заявка на неделю»;
 - `src/pages/vehicle/VehicleRequestViewModal.tsx` — «Создан по НЗ-12» и список продлений (Р16);
 - `src/pages/vehicle/VehicleAssignModal.tsx` — предзаполнение доставки из `weeklyOrigin` (Р11);

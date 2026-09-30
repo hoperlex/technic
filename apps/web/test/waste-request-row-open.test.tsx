@@ -5,7 +5,7 @@ import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
 import { objectDto, operator, wasteRequest, wasteSummary, wasteType } from './factories/waste';
-import { WasteRequestsPage } from '../src/pages/WasteRequestsPage';
+import { WasteRequestsPage } from '../src/pages/waste';
 
 /**
  * Строка списка заявок на вывоз: открытие карточки кликом и свёрнутый комментарий.

@@ -6,7 +6,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto, wasteRequest, wasteSummary } from './factories/waste';
-import { WasteRequestsPage } from '../src/pages/WasteRequestsPage';
+import { WasteRequestsPage } from '../src/pages/waste';
 
 /**
  * Завершение заявки на вывоз и вкладка «История» (ADR 0135).

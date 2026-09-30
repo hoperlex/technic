@@ -25,7 +25,7 @@
   [ServiceBulkModal.tsx](../../apps/web/src/pages/service/ServiceBulkModal.tsx), правки
   [DataTable.tsx](../../apps/web/src/shared/ui/DataTable.tsx),
   [RequestsTab.tsx](../../apps/web/src/pages/service/RequestsTab.tsx),
-  [WaybillsPage.tsx](../../apps/web/src/pages/WaybillsPage.tsx)
+  [WaybillsPage.tsx](../../apps/web/src/pages/waybills/WaybillsPage.tsx)
 - План работы — [office-equipment-bulk-actions-plan.md](../office-equipment-bulk-actions-plan.md):
   там продуктовая матрица операций, разбор развилок и порядок выката. Здесь — принятое и чего оно
   стоило

@@ -5,7 +5,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
-import { WaybillsPage } from '../src/pages/WaybillsPage';
+import { WaybillsPage } from '../src/pages/waybills';
 
 /**
  * Журнал учёта путевых листов: три бланка в одной таблице (миграция 0087).

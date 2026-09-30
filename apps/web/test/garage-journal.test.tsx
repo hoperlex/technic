@@ -16,7 +16,7 @@ import { authUser } from './factories/auth';
 import { list as listOf } from './factories/common';
 import { classification } from './factories/vehicle';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Гараж: вход в журнал показаний машины (ADR 0103, Р25, Р27) — со строки техники и со строки

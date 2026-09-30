@@ -93,38 +93,34 @@ import { usePlaceObjectScope } from '@entities/session';
 import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
 import { withSavedOption } from '@shared/lib';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '@entities/waste-request';
-import { OnSiteTab } from './waste/OnSiteTab';
-import { WasteArchiveTab } from './waste/WasteArchiveTab';
-import { WasteHistoryTab } from './waste/WasteHistoryTab';
+import { OnSiteTab } from './OnSiteTab';
+import { WasteArchiveTab } from './WasteArchiveTab';
+import { WasteHistoryTab } from './WasteHistoryTab';
 import {
   containerGroupKey,
   containerGroupOptions,
   findContainerGroup,
   parseContainerGroupKey,
   presentGroupsHint,
-} from './waste/containerGroups';
-import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
-import { wasteFiltersBar, wasteMobileFilters } from './waste/requestFilters';
+} from './containerGroups';
+import { wasteAmountLine, wastePricingHint } from './pricingHint';
+import { wasteFiltersBar, wasteMobileFilters } from './requestFilters';
 import {
   CommentCell,
   rollbackErases,
   SubjectCell,
   WasteStatusCell,
   weightFactLine,
-} from './waste/requestCells';
-import {
-  subjectFilterOptions,
-  subjectFilterPatch,
-  subjectFilterValue,
-} from './waste/subjectFilter';
+} from './requestCells';
+import { subjectFilterOptions, subjectFilterPatch, subjectFilterValue } from './subjectFilter';
 import {
   BlindCheckQueue,
   TicketCell,
   TicketRecognitionBanner,
 } from '@features/waste-ticket-review';
-import { WasteDoneModal } from './waste/WasteDoneModal';
-import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
-import { WasteStatsTab } from './waste/WasteStatsTab';
+import { WasteDoneModal } from './WasteDoneModal';
+import { WasteRequestViewModal } from './WasteRequestViewModal';
+import { WasteStatsTab } from './WasteStatsTab';
 import { MOSCOW_TZ } from '@shared/config';
 import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
 import { containerTypeOptionsQuery } from '@entities/container-type';

@@ -10,8 +10,8 @@ import { vehicleFeed, vehicleRequest, vehicleSummary } from './factories/vehicle
 import { wasteRequest } from './factories/waste';
 import { VehicleRoutesModal } from '../src/pages/vehicle/VehicleRoutesModal';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
-import { VehicleRequestsPage } from '../src/pages/VehicleRequestsPage';
-import { WaybillsPage } from '../src/pages/WaybillsPage';
+import { VehicleRequestsPage } from '../src/pages/vehicle';
+import { WaybillsPage } from '../src/pages/waybills';
 import { OnSiteTab } from '../src/pages/waste/OnSiteTab';
 
 /**

@@ -5,7 +5,7 @@
   `packages/contracts/src/waste-requests.ts`,
   `apps/api/src/services/waste-request-vehicles.ts`, `apps/api/src/routes/waste-requests.ts`,
   `apps/api/src/routes/files.ts`, `apps/api/src/services/request-files.ts`,
-  `apps/web/src/components/WasteVehiclesEditor.tsx`, `apps/web/src/pages/WasteRequestsPage.tsx`
+  `apps/web/src/components/WasteVehiclesEditor.tsx`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`
 
 ## Контекст
 

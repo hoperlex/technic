@@ -2,12 +2,12 @@ import { Tabs } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { UsersTab } from './admin/UsersTab';
-import { AccessTab } from './admin/AccessTab';
-import { MailingsTab } from './admin/MailingsTab';
-import { DirectoryTransferTab } from './admin/DirectoryTransferTab';
-import { ManualsTab } from './admin/ManualsTab';
-import { ExportsTab } from './admin/ExportsTab';
+import { UsersTab } from './UsersTab';
+import { AccessTab } from './AccessTab';
+import { MailingsTab } from './MailingsTab';
+import { DirectoryTransferTab } from './DirectoryTransferTab';
+import { ManualsTab } from './ManualsTab';
+import { ExportsTab } from './ExportsTab';
 
 export function AdministrationPage() {
   // Компактная полоса вкладок на телефоне — как в справочниках: на 360 px обычная съедает

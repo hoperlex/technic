@@ -20,7 +20,7 @@
   [vehicle-readings-stats.ts](../../apps/api/src/routes/vehicle-readings-stats.ts) (ручка
   `GET /admin-export`), [access-manifest.ts](../../apps/api/src/lib/access-manifest.ts); портал —
   [ReadingsExportTab.tsx](../../apps/web/src/pages/admin/ReadingsExportTab.tsx),
-  [AdministrationPage.tsx](../../apps/web/src/pages/AdministrationPage.tsx),
+  [AdministrationPage.tsx](../../apps/web/src/pages/admin/AdministrationPage.tsx),
   [vehicleReadingsApi.ts](../../apps/web/src/entities/vehicle-reading/api/vehicleReadingsApi.ts);
   тесты — `readings-admin-export.test.ts`, дополнены `xlsx.test.ts`, `access-conditions.test.ts`,
   `grants-contracts.test.ts`, `portal-sections.test.ts`, `readings-stats.db.test.ts`

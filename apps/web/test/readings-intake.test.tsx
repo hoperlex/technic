@@ -14,7 +14,7 @@ import type {
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList } from './factories/common';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 import { VehicleReadingsJournal } from '../src/pages/garage/VehicleReadingsJournal';
 
 /**

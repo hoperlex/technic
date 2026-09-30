@@ -26,7 +26,7 @@
   сервер — [access.ts](../../apps/api/src/lib/access.ts) (`waybillVisibilityWhere`),
   [routes/waybills.ts](../../apps/api/src/routes/waybills.ts) (шесть дверей),
   [routes/files.ts](../../apps/api/src/routes/files.ts) (вложение листа); портал —
-  [WaybillsPage.tsx](../../apps/web/src/pages/WaybillsPage.tsx),
+  [WaybillsPage.tsx](../../apps/web/src/pages/waybills/WaybillsPage.tsx),
   [waybills/filters.tsx](../../apps/web/src/pages/waybills/filters.tsx),
   [vehicle/shared.tsx](../../apps/web/src/pages/vehicle/shared.tsx) (`useDriverOptions(enabled)`);
   тесты — [waybill-scope.db.test.ts](../../apps/api/test/waybill-scope.db.test.ts),

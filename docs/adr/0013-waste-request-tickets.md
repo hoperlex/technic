@@ -5,7 +5,7 @@
   `packages/contracts/src/waste-requests.ts`, `apps/api/src/routes/waste-requests.ts`,
   `apps/web/src/pages/waste/WasteDoneModal.tsx`,
   `apps/web/src/pages/waste/WasteRequestViewModal.tsx`,
-  `apps/web/src/pages/WasteRequestsPage.tsx`
+  `apps/web/src/pages/waste/WasteRequestsPage.tsx`
 
 ## Контекст
 

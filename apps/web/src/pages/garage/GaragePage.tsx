@@ -6,11 +6,11 @@ import { useIsMobile } from '@shared/lib';
 import { garageKeys } from '@entities/garage';
 import { useAuth } from '@entities/session';
 import { PageTabs } from '@shared/ui';
-import { GarageVehiclesTab } from './garage/GarageVehiclesTab';
-import { GarageDriversTab } from './garage/GarageDriversTab';
-import { ReadingsTab } from './garage/ReadingsTab';
-import { AutoPartsTab } from './garage/AutoPartsTab';
-import { readingsSub } from './garage/readingsAddress';
+import { GarageVehiclesTab } from './GarageVehiclesTab';
+import { GarageDriversTab } from './GarageDriversTab';
+import { ReadingsTab } from './ReadingsTab';
+import { AutoPartsTab } from './AutoPartsTab';
+import { readingsSub } from './readingsAddress';
 
 /**
  * Гараж (ADR 0076): чем заняты собственная техника и водители в конкретный день.

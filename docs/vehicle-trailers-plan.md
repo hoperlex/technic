@@ -841,7 +841,7 @@ API и формы рейса.
 | `apps/api/src/lib/access-manifest.ts`                  |       | восемь строк маршрутов — [строка 444](../apps/api/src/lib/access-manifest.ts#L444)                           | ~8    |
 | `packages/contracts/src/index.ts`                      |       | экспорт — [строка 52](../packages/contracts/src/index.ts#L52)                                                | ~1    |
 | `apps/web/src/api/resources.ts`                        |       | `trailersApi`                                                                                                | ~12   |
-| `apps/web/src/pages/DirectoriesPage.tsx`               |       | вкладка «Прицепы»                                                                                            | ~2    |
+| `apps/web/src/pages/directories/DirectoriesPage.tsx`               |       | вкладка «Прицепы»                                                                                            | ~2    |
 
 Три последних правки сервера — по одной-восьми строк, но **обязательные**: без `app.ts` ручка не
 поднимется, без `index.ts` контракты не увидит портал, а без `access-manifest.ts` **упадёт

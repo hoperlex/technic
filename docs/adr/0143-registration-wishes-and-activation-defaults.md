@@ -22,7 +22,7 @@
   [ADR 0010](0010-counterparties.md) (учётка работает от лица контрагента),
   [ADR 0102](0102-driver-cabinet.md) (подсказка работника — образец «предлагаем, но не выбираем»),
   [ADR 0090](0090-internal-email-domains.md) (пометка внешней почты);
-  `packages/contracts/src/registration-request.ts`, `apps/web/src/pages/RegisterPage.tsx`,
+  `packages/contracts/src/registration-request.ts`, `apps/web/src/pages/auth/RegisterPage.tsx`,
   `apps/web/src/pages/admin/useActivationDefaults.tsx`,
   `apps/web/src/pages/admin/activationSuggestion.ts`,
   `apps/web/src/pages/admin/userGrantsModel.ts`, `apps/web/src/pages/admin/UserGrantsField.tsx`

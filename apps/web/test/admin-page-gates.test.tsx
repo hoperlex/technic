@@ -12,7 +12,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { AppLayout } from '../src/app/layout';
-import { AdministrationPage } from '../src/pages/AdministrationPage';
+import { AdministrationPage } from '../src/pages/admin';
 import { HomeRedirect, RequireSection } from '../src/app/routing/ProtectedRoute';
 
 /**

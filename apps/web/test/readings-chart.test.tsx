@@ -12,7 +12,7 @@ import { json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList } from './factories/common';
 import { maintenanceSummary } from './factories/maintenance';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Диаграмма помесячной динамики в карточке машины (план «Показания техники», Р17, Р28, §7).

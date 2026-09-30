@@ -53,27 +53,53 @@ describe('границы слоёв', () => {
   });
 });
 
-describe('классификация плоских composition-файлов', () => {
-  it('корневая страница классифицирована и компонует свой page-каталог', async () => {
-    await expectAllowed('pages/ShellPage.ts');
+describe('границы pages и widgets', () => {
+  it('page берёт widget через публичный вход', async () => {
+    await expectAllowed('pages/screen/ok-down.ts');
   });
 
-  it('прямой app-файл классифицирован и может отрисовать корневую страницу', async () => {
-    await expectAllowed('app/RootBoundary.ts');
+  it('page не импортирует соседний page-слайс', async () => {
+    expect(await lintFixture('pages/screen/bad-sibling.ts')).toContain('boundaries/dependencies');
   });
 
-  it('корневой entrypoint классифицирован и видит только заявленные точки композиции', async () => {
-    await expectAllowed('App.ts');
+  it('page не обходит публичный вход widget-слайса', async () => {
+    expect(await lintFixture('pages/screen/bad-deep.ts')).toContain('boundaries/dependencies');
   });
 
-  it('корневой entrypoint не получает общий доступ к внутренностям pages', async () => {
-    expect(await lintFixture('main.ts')).toContain('boundaries/dependencies');
-  });
-
-  it('вложенная страница не зависит от неразмеченного кода', async () => {
+  it('page не зависит от неразмеченного кода', async () => {
     expect(await lintFixture('pages/screen/bad-unknown.ts')).toContain(
       'boundaries/no-unknown-dependencies',
     );
+  });
+
+  it('widget берёт feature через публичный вход', async () => {
+    await expectAllowed('widgets/table/ok-down.ts');
+  });
+
+  it('widget не импортирует верхний слой pages', async () => {
+    expect(await lintFixture('widgets/table/bad-up.ts')).toContain('boundaries/dependencies');
+  });
+
+  it('widget не импортирует соседний widget-слайс', async () => {
+    expect(await lintFixture('widgets/table/bad-sibling.ts')).toContain('boundaries/dependencies');
+  });
+
+  it('widget не обходит публичный вход feature-слайса', async () => {
+    expect(await lintFixture('widgets/table/bad-deep.ts')).toContain('boundaries/dependencies');
+  });
+});
+
+describe('классификация composition-файлов приложения', () => {
+  it('app-слайс компонует page через публичный вход', async () => {
+    await expectAllowed('app/root/RootBoundary.ts');
+  });
+
+  it('корневой entrypoint видит публичные app/page входы', async () => {
+    await expectAllowed('App.ts');
+  });
+
+  it('корневой entrypoint не получает доступ к внутренностям pages', async () => {
+    expect(await lintFixture('main.ts')).toContain('boundaries/dependencies');
   });
 
   it('файл без element или file classification запрещён', async () => {

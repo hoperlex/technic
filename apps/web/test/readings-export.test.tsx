@@ -12,7 +12,7 @@ import { renderWithUser } from './render';
 import { emptyList } from './factories/common';
 import { authUser } from './factories/auth';
 import { selectOption } from './antd';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Выгрузки показаний: окно выбора книги (план «Показания техники», §8, Р18, Р31).

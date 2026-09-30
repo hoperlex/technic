@@ -9,7 +9,7 @@ import type {
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { emptyList } from './factories/common';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Сверка расхода с нормой в сводке гаража (план `docs/fuel-norms-plan.md`, §4.1).

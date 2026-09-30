@@ -19,7 +19,7 @@ import { emptyList } from './factories/common';
 import { objectDto } from './factories/waste';
 import { OfficeEquipmentConsumablesModal } from '../src/pages/directories/OfficeEquipmentConsumablesModal';
 import { OfficeEquipmentTab } from '../src/pages/directories/OfficeEquipmentTab';
-import { DirectoriesPage } from '../src/pages/DirectoriesPage';
+import { DirectoriesPage } from '../src/pages/directories';
 
 /**
  * Окно «Картриджи и тонеры» (план `docs/office-equipment-consumables-plan.md`, Р7, Р9, §6).

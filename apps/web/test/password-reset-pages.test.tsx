@@ -20,8 +20,8 @@ import {
   type NavigationLog,
   type SmartCaptchaService,
 } from './captcha';
-import { ForgotPasswordPage } from '../src/pages/ForgotPasswordPage';
-import { ResetPasswordPage } from '../src/pages/ResetPasswordPage';
+import { ForgotPasswordPage } from '../src/pages/auth';
+import { ResetPasswordPage } from '../src/pages/auth';
 
 /**
  * Восстановление доступа (ADR 0072): запрос ссылки и задание нового пароля по ней; капча на первой

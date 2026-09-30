@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
-import { HomeRedirect, RequireSection } from '../src/app/routing/ProtectedRoute';
+import { HomeRedirect, RequireSection } from '../src/app/routing';
 
 /**
  * Кабинет водителя (ADR 0102) — второй контур портала, и попадать в него должна одна роль.
@@ -127,15 +127,17 @@ describe('кабинет водителя открыт только роли dri
 });
 
 /**
- * Какая страница стоит на index кабинета — вопрос к `App.tsx`, а не к дереву маршрутов выше: там
- * маршруты собирает сам тест, и подменить в них страницу он может любой. Поэтому источник читается
- * с диска и проверяется буквально: разбирать `App` импортом значило бы поднять весь портал ради
- * двух строк, а `check-portal-routes.mjs` сторожит адреса ветки, но не то, чем они открываются.
+ * The route tree above is assembled by this test, so it cannot prove which components the real App
+ * renders. Reading both composition sources keeps the assertion cheap while checking that App uses
+ * the page slice's public entry and the slice retains the existing lazy driver-cabinet imports.
  *
- * Путь считается от файла теста, а не от рабочего каталога: прогон из корня репозитория его не
- * сломает.
+ * Paths are anchored to this test file, so root and package runs inspect the same sources.
  */
 const appSource = readFileSync(join(import.meta.dirname, '../src/App.tsx'), 'utf8');
+const driverPageEntrySource = readFileSync(
+  join(import.meta.dirname, '../src/pages/driver/index.ts'),
+  'utf8',
+);
 
 describe('кабинет открывается формой показаний', () => {
   it('index кабинета — DriverReadingsPage, задание — подстраница', () => {
@@ -144,10 +146,8 @@ describe('кабинет открывается формой показаний'
   });
 
   it('страница показаний грузится отдельным чанком, как и весь кабинет', () => {
-    // Кабинет — второй контур: его код не должен попадать в первый бандл диспетчера, и наоборот.
-    // Проверяется соседство `lazy` и импорта, а не точная запись: переносы строк тут ставит
-    // prettier, и требовать от него постоянства значило бы ловить его правки как поломку.
-    const lazyImport = appSource.slice(0, appSource.indexOf('export default'));
-    expect(lazyImport).toMatch(/lazy\([\s\S]{0,80}pages\/driver\/DriverReadingsPage/);
+    expect(appSource).toContain("from '@pages/driver'");
+    expect(appSource).not.toContain('pages/driver/DriverReadingsPage');
+    expect(driverPageEntrySource).toContain("import('./DriverReadingsPage')");
   });
 });

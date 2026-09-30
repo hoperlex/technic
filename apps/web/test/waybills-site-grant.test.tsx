@@ -6,7 +6,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
 import { objectDto } from './factories/waste';
-import { WaybillsPage } from '../src/pages/WaybillsPage';
+import { WaybillsPage } from '../src/pages/waybills';
 
 /**
  * Журнал путевых листов глазами площадки (ADR 0192): раздел открыт набором полномочия, а справочник

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import { VehicleRequestsPage } from '../src/pages/VehicleRequestsPage';
-import { WasteRequestsPage } from '../src/pages/WasteRequestsPage';
+import { VehicleRequestsPage } from '../src/pages/vehicle';
+import { WasteRequestsPage } from '../src/pages/waste';
 import { VehicleRequestsArchiveTab } from '../src/pages/vehicle/VehicleRequestsArchiveTab';
 import { WasteArchiveTab } from '../src/pages/waste/WasteArchiveTab';
 import { emptyList, list } from './factories/common';

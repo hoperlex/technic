@@ -31,7 +31,7 @@
   [ExportsTab.tsx](../../apps/web/src/pages/admin/ExportsTab.tsx) (реестр выгрузок),
   [AnalyticsExportTab.tsx](../../apps/web/src/pages/admin/AnalyticsExportTab.tsx) (панель
   параметров), [ReadingsExportTab.tsx](../../apps/web/src/pages/admin/ReadingsExportTab.tsx) (стала
-  первой панелью реестра), [AdministrationPage.tsx](../../apps/web/src/pages/AdministrationPage.tsx),
+  первой панелью реестра), [AdministrationPage.tsx](../../apps/web/src/pages/admin/AdministrationPage.tsx),
   [analyticsApi.ts](../../apps/web/src/entities/analytics/api/analyticsApi.ts); тесты —
   `analytics-facts-vehicle.db.test.ts`, `analytics-facts-waste-mech.db.test.ts`,
   `analytics-rollup.test.ts`, `analytics-summary.test.ts`, `analytics-export.test.ts`,

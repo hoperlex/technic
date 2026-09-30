@@ -5,7 +5,7 @@
   [ADR 0026](0026-waste-price-by-operator.md) (цена у каждого оператора своя),
   [ADR 0035](0035-waste-fact-by-volume.md) (факт вывоза объёмом)
 - Связано: `apps/api/src/services/waste-pricing.ts`, `apps/api/src/routes/waste-requests.ts`,
-  `apps/web/src/pages/waste/pricingHint.ts`, `apps/web/src/pages/WasteRequestsPage.tsx`,
+  `apps/web/src/pages/waste/pricingHint.ts`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
   `apps/web/src/pages/waste/WasteRequestViewModal.tsx`
 
 ## Контекст

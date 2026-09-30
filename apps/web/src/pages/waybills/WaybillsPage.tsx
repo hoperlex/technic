@@ -16,13 +16,14 @@ import { type PrintTarget, waybillKeys, WaybillPrintModal, waybillsApi } from '@
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { objectFilterOptionLabel, objectOptionsQuery } from '@entities/object';
+import { useDriverOptions } from '@entities/driver';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
+import { useOwnVehicleOptions } from '@entities/vehicle';
 import { DataTable, listScopeKey, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useRouteModal } from '@features/route-modal';
-import { useDriverOptions, useOwnVehicleOptions } from './vehicle/shared';
-import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './waybills/filters';
+import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './filters';
 // Подсказки метки «коррекция» и печати сокращённого листа — соседним файлом (Р12, Р13).
-import { useWaybillJournalColumns } from './waybills/columns';
+import { useWaybillJournalColumns } from './columns';
 import { useListParams } from '@shared/lib';
 import { waybillErrorMessage as errorMessage } from '@entities/waybill';
 

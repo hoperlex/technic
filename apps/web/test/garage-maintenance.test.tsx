@@ -13,7 +13,7 @@ import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { maintenanceSummary } from './factories/maintenance';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Гараж → «Техника»: колонка «ТО» и вход механика в сводку обслуживания (план «Показания

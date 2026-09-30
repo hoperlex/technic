@@ -9,7 +9,7 @@
   запрещают), [ADR 0021](0021-permissions-model.md) (право закрывает раздел),
   [ADR 0074](0074-entity-links-between-tabs.md) (переход по номеру в чужую вкладку),
   `packages/contracts/src/garage.ts`, `apps/api/src/services/garage.ts`,
-  `apps/api/src/routes/garage.ts`, `apps/web/src/pages/GaragePage.tsx`, `docs/access-model.md`
+  `apps/api/src/routes/garage.ts`, `apps/web/src/pages/garage/GaragePage.tsx`, `docs/access-model.md`
 - **Миграций нет**: модуль читающий и целиком производный — своих таблиц у него не появляется
 
 ## Контекст

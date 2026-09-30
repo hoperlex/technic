@@ -371,7 +371,7 @@ WHERE status = 'closed' AND closed_at < now() - ($1 || ' days')::interval;
   TanStack Query.
 
 **Администратору** — вкладка «Поддержка» в
-[AdministrationPage.tsx](../apps/web/src/pages/AdministrationPage.tsx) рядом с «Пользователями»:
+[AdministrationPage.tsx](../apps/web/src/pages/admin/AdministrationPage.tsx) рядом с «Пользователями»:
 список обращений, переписка, ответ и закрытие. Не дубль бота, а страховка: бот лежит, токен
 отозван, администратор не привязан — обращения всё равно разбираются.
 

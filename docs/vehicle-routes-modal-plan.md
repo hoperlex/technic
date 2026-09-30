@@ -306,7 +306,7 @@ vehicleRequestViewLink(can, id): string | null   // null без vehicleRequests.
 ([VehicleRoutesTab.tsx:130](../apps/web/src/pages/vehicle/VehicleRoutesTab.tsx#L130)): `vehicle-routes`,
 `vehicle-requests`, `waybills`, `garageKeys.root`. Правки `links.ts` в контрактах и `utils/links.ts`
 (`canSeeRoutesTab` → `canOpenRoute`). Редиректы старых адресов в
-[VehicleRequestsPage.tsx](../apps/web/src/pages/VehicleRequestsPage.tsx) рядом с существующим
+[VehicleRequestsPage.tsx](../apps/web/src/pages/vehicle/VehicleRequestsPage.tsx) рядом с существующим
 `?tab=weekly`.
 
 ### Этап 2. Список рейсов окном
@@ -331,7 +331,7 @@ vehicleRequestViewLink(can, id): string | null   // null без vehicleRequests.
 
 `readOnly` в `VehicleRequestViewModal` и `VehicleRequestDays` (§3.5), `vehicleRequestViewPath` в
 контрактах, `RequestViewById`; включение `openRequest` в составе рейса, задании листа, колонке «Заявки» списка
-рейсов, талонах журнала листов ([WaybillsPage.tsx:316](../apps/web/src/pages/WaybillsPage.tsx#L316)),
+рейсов, талонах журнала листов ([WaybillsPage.tsx:316](../apps/web/src/pages/waybills/WaybillsPage.tsx#L316)),
 гараже ([shared.tsx:35](../apps/web/src/pages/garage/shared.tsx#L35)). Ссылки **внутри самого списка
 заявок** не трогаем: там карточка открывается со всеми действиями, и подменять её читалкой — шаг
 назад.
@@ -339,7 +339,7 @@ vehicleRequestViewLink(can, id): string | null   // null без vehicleRequests.
 ### Этап 5. Журнал листов
 
 API по §3.6, колонка «Маршрут» в журнале, правка подсказки о выписке
-([WaybillsPage.tsx:509](../apps/web/src/pages/WaybillsPage.tsx#L509)).
+([WaybillsPage.tsx:509](../apps/web/src/pages/waybills/WaybillsPage.tsx#L509)).
 
 ### Этап 6. Снос вкладки, тесты, документы
 

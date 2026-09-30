@@ -7,7 +7,7 @@
   окне рассмотрения), [ADR 0010](0010-counterparties.md) (внешний исполнитель работает от лица
   контрагента)
 - Связано: `packages/contracts/src/email.ts`, `packages/contracts/src/registration-request.ts`,
-  `apps/web/src/pages/RegisterPage.tsx`, `apps/web/src/pages/admin/UsersTab.tsx`
+  `apps/web/src/pages/auth/RegisterPage.tsx`, `apps/web/src/pages/admin/UsersTab.tsx`
 - Миграций нет
 
 ## Контекст

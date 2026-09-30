@@ -7,8 +7,8 @@ import { renderWithUser } from './render';
 import { authUser, loginResponse } from './factories/auth';
 import { AppLayout } from '../src/app/layout';
 import { HomeRedirect, ProtectedRoute, RequireSection } from '../src/app/routing/ProtectedRoute';
-import { LoginPage } from '../src/pages/LoginPage';
-import { ChangePasswordPage } from '../src/pages/ChangePasswordPage';
+import { LoginPage } from '../src/pages/auth';
+import { ChangePasswordPage } from '../src/pages/auth';
 
 /**
  * Куда портал приземляет вошедшего (`docs/portal-sections-plan.md` §6).

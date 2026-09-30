@@ -9,7 +9,6 @@ import {
   vehicleOptionLabel,
 } from '@technic/contracts';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
-import { driverKeys, driversApi } from '@entities/driver';
 import { FileLinkList, filesApi } from '@entities/file';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import type {
@@ -48,31 +47,6 @@ export function useObjectOptions() {
   });
   return {
     options: (data?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` })),
-    loading: isFetching,
-  };
-}
-
-/**
- * Собственная техника для фильтров маршрутов и журнала листов.
- *
- * Только `own`: рейс ведётся и лист выписывается лишь на свою машину — арендную ведёт
- * арендодатель, и в этих двух списках её не бывает вовсе. Списанная и стоящая в ремонте из
- * фильтра не убираются: вчерашние рейсы и выданные листы никуда не делись, а фильтр, не находящий
- * собственной строки списка, читается как поломка.
- *
- * Подпись — `vehicleOptionLabel`, парой «госномер — марка/модель» (ADR 0098): машину выбирают
- * двумя приметами сразу, и ровно так она представлена в справочнике техники.
- */
-export function useOwnVehicleOptions() {
-  const { data, isFetching } = useQuery({
-    queryKey: vehicleKeys.ownOptions(),
-    queryFn: () =>
-      vehiclesApi.list({ page: 1, pageSize: 500, ownership: 'own', sortBy: 'createdAt' }),
-  });
-  return {
-    options: (data?.items ?? [])
-      .map((v) => ({ value: v.id, label: vehicleOptionLabel(v) }))
-      .sort((a, b) => a.label.localeCompare(b.label, 'ru')),
     loading: isFetching,
   };
 }
@@ -158,29 +132,6 @@ export function useLessorOptions() {
   });
   return {
     options: (data?.items ?? []).map((c) => ({ value: c.id, label: c.name })),
-    loading: isFetching,
-  };
-}
-
-/**
- * Водители для фильтров: весь действующий справочник, по алфавиту. Ни категория, ни полнота
- * документов здесь никого не убирают — это фильтр списка, а не подбор под машину (ADR 0064).
- *
- * `enabled` — для страниц, открытых тому, у кого `drivers.read` нет (ADR 0192: журнал путевых
- * листов площадке). Умолчание `true` оставляет прежних потребителей нетронутыми, а выключенный
- * запрос не уходит вовсе: карточки водителей — персональные данные (ADR 0037), и просить их «на
- * всякий случай», чтобы получить 403 и нарисовать пустой список, значит держать в журнале сервера
- * отказ на каждое открытие страницы.
- */
-export function useDriverOptions(enabled = true) {
-  const { data, isFetching } = useQuery({
-    queryKey: driverKeys.options(),
-    queryFn: () =>
-      driversApi.list({ page: 1, pageSize: 500, sortBy: 'fullName', sortOrder: 'asc' }),
-    enabled,
-  });
-  return {
-    options: (data?.items ?? []).map((d) => ({ value: d.id, label: d.fullName })),
     loading: isFetching,
   };
 }

@@ -12,7 +12,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Отбор среза дня по площадке и по бланку работы дня (план «Срезы дня», Р6–Р8, Р20).

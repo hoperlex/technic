@@ -42,7 +42,7 @@
 | Выдача картинки: `GET /auth/captcha`, лимит 20/мин, запись в манифесте                        | [auth.ts:225](../apps/api/src/routes/auth.ts#L225), [access-manifest.ts:144](../apps/api/src/lib/access-manifest.ts#L144)                                                                |            |
 | Контракты: `CaptchaChallenge`, `CAPTCHA_ANSWER_LENGTH`, пара `captchaToken` + `captchaAnswer` | [auth.ts:17](../packages/contracts/src/auth.ts#L17), [:41](../packages/contracts/src/auth.ts#L41), [:116](../packages/contracts/src/auth.ts#L116)                                        |            |
 | Поле: картинка, «другая картинка», ввод пяти цифр                                             | [CaptchaField.tsx](../apps/web/src/components/CaptchaField.tsx)                                                                                                                          | 121 строка |
-| Три формы-потребителя                                                                         | [RegisterPage](../apps/web/src/pages/RegisterPage.tsx), [ForgotPasswordPage](../apps/web/src/pages/ForgotPasswordPage.tsx), [VerifyEmailPage](../apps/web/src/pages/VerifyEmailPage.tsx) |            |
+| Три формы-потребителя                                                                         | [RegisterPage](../apps/web/src/pages/auth/RegisterPage.tsx), [ForgotPasswordPage](../apps/web/src/pages/auth/ForgotPasswordPage.tsx), [VerifyEmailPage](../apps/web/src/pages/auth/VerifyEmailPage.tsx) |            |
 | Тесты: свой набор + хелперы `issueCaptcha` в четырёх db-тестах + три веб-теста                | [captcha.test.ts](../apps/api/test/captcha.test.ts)                                                                                                                                      | 119 строк  |
 
 Проверка стоит в трёх ручках: `POST /auth/register`, `POST /auth/resend-verification`,
@@ -336,9 +336,9 @@ Prometheus это штатно, оговаривается в ADR. Пороги 
   `AuthProvider` не меняется: капча читает его статус, а не наоборот.
 - Три формы — условное правило и разбор ошибок без `captchaAnswer`.
 - Переходы «ко входу» на капча-страницах — полной навигацией вместо `Link`/`navigate`:
-  [RegisterPage:121](../apps/web/src/pages/RegisterPage.tsx#L121) и [:247](../apps/web/src/pages/RegisterPage.tsx#L247),
-  [ForgotPasswordPage:68](../apps/web/src/pages/ForgotPasswordPage.tsx#L68) и [:103](../apps/web/src/pages/ForgotPasswordPage.tsx#L103),
-  [VerifyEmailPage:113](../apps/web/src/pages/VerifyEmailPage.tsx#L113) и [:145](../apps/web/src/pages/VerifyEmailPage.tsx#L145) (§12).
+  [RegisterPage:121](../apps/web/src/pages/auth/RegisterPage.tsx#L121) и [:247](../apps/web/src/pages/auth/RegisterPage.tsx#L247),
+  [ForgotPasswordPage:68](../apps/web/src/pages/auth/ForgotPasswordPage.tsx#L68) и [:103](../apps/web/src/pages/auth/ForgotPasswordPage.tsx#L103),
+  [VerifyEmailPage:113](../apps/web/src/pages/auth/VerifyEmailPage.tsx#L113) и [:145](../apps/web/src/pages/auth/VerifyEmailPage.tsx#L145) (§12).
 - Гвард на капча-страницах: вошедшая вкладка виджет не грузит и уходит в портал полной навигацией
   (§12). Роуты публичные и сейчас никого не отсекают ([App.tsx:73](../apps/web/src/App.tsx#L73)).
 - Учесть при работе: страниц с капчей в проде фактически **две**. `/verify-email` не смонтирована,

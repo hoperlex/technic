@@ -242,7 +242,7 @@ early-end стоят до неё же и съедают повтор, пятое
 ([assignment-period.ts:1047](../apps/api/src/services/assignment-period.ts#L1047)).
 
 **Н6. Метка «коррекция» и фильтр журнала уже есть**
-([WaybillsPage.tsx:238](../apps/web/src/pages/WaybillsPage.tsx#L238),
+([WaybillsPage.tsx:238](../apps/web/src/pages/waybills/WaybillsPage.tsx#L238),
 [waybills.ts:622](../apps/api/src/routes/waybills.ts#L622)), считаются по `correction_id` и
 `cancel_correction_id`. **У фильтра две ветви**: `correction=false` требует, чтобы обе ссылки были
 пусты.

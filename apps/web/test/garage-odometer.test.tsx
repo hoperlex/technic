@@ -10,7 +10,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Гараж → «Техника»: колонка последнего одометра (план «Показания техники», Р16).

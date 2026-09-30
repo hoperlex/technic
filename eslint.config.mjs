@@ -19,15 +19,6 @@ const SHARED_TYPES = ['shared-config', 'shared-api', 'shared-lib', 'shared-ui'];
  * фикстурах).
  */
 const ENTITY_TYPES = ['entity-request', 'entity-request-kin', 'entities'];
-const PAGE_ROUTE_ENTRY_FILES = [
-  'routeModal.tsx',
-  'WeeklyRequestPage.tsx',
-  'ServiceRequestsPage.tsx',
-  'MechRequestsPage.tsx',
-  'DriverLayout.tsx',
-  'DriverPage.tsx',
-  'DriverReadingsPage.tsx',
-];
 const LAYER_GROUPS = [SHARED_TYPES, ENTITY_TYPES, ['features'], ['widgets'], ['pages'], ['app']];
 
 /**
@@ -66,8 +57,6 @@ const sharedElements = SHARED_TYPES.map((type) => ({
 }));
 
 const compositionFiles = [
-  { category: 'page-support', pattern: 'apps/web/src/pages/captchaPage.tsx', exclusive: true },
-  { category: 'page-shell', pattern: 'apps/web/src/pages/*.{ts,tsx}' },
   { category: 'app-root', pattern: 'apps/web/src/app/*.{ts,tsx}' },
   {
     category: 'app-root',
@@ -123,60 +112,26 @@ const entityKinPolicies = [
 ];
 
 /**
- * Root page files are composition shells for their existing page folders. Application roots may
- * render those shells, while the explicit route-entry list keeps App.tsx from reaching arbitrary
- * page internals. File categories close the classifier gap without reshaping page monoliths.
+ * Flat application roots compose slice entry points. Page files no longer need a file-category
+ * escape hatch: every route belongs to a regular `pages/*` element and is public only via index.ts.
  */
 const compositionPolicies = [
   {
-    from: { file: { categories: 'page-shell' } },
-    allow: { to: { element: { type: 'pages' } } },
-  },
-  {
-    from: { file: { categories: 'page-shell' } },
-    allow: { to: { file: { categories: 'page-support' } } },
-  },
-  {
-    from: { file: { categories: { anyOf: ['page-shell', 'page-support'] } } },
-    allow: {
-      to: {
-        element: {
-          types: { anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets'] },
-          fileInternalPath: 'index.ts',
-        },
-      },
-    },
-  },
-  {
-    from: { file: { categories: { anyOf: ['page-shell', 'page-support'] } } },
-    allow: { to: { element: { type: 'contracts' } } },
-  },
-  {
-    from: { element: { type: 'app' } },
-    allow: { to: { file: { categories: 'page-shell' } } },
-  },
-  {
     from: { file: { categories: 'app-root' } },
-    allow: { to: { file: { categories: { anyOf: ['page-shell', 'app-root'] } } } },
+    allow: { to: { file: { categories: 'app-root' } } },
   },
   {
     from: { file: { categories: 'app-root' } },
     allow: {
       to: {
         element: {
-          types: { anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets', 'app'] },
+          types: {
+            anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets', 'pages', 'app'],
+          },
           fileInternalPath: 'index.ts',
         },
       },
     },
-  },
-  {
-    from: { file: { categories: 'app-root' } },
-    allow: { to: { element: { type: 'pages', fileInternalPath: PAGE_ROUTE_ENTRY_FILES } } },
-  },
-  {
-    from: { file: { categories: 'app-root' } },
-    allow: { to: { element: { type: 'app', fileInternalPath: 'ProtectedRoute.tsx' } } },
   },
   {
     from: { file: { categories: 'app-root' } },
@@ -299,6 +254,14 @@ export default tseslint.config(
               group: ['@features/*/*'],
               message: 'Вход в слайс — только через @features/<слайс>, а не вглубь него.',
             },
+            {
+              group: ['@widgets/*/*'],
+              message: 'Вход в слайс — только через @widgets/<слайс>, а не вглубь него.',
+            },
+            {
+              group: ['@pages/*/*'],
+              message: 'Вход в слайс — только через @pages/<слайс>, а не вглубь него.',
+            },
           ],
         },
       ],
@@ -392,14 +355,15 @@ export default tseslint.config(
      * Element-only layers may depend only on classified elements. The dependency policy alone
      * skips unknown targets, so this rule prevents legacy code from leaking back into clean layers.
      *
-     * Composition layers use the any-axis rule below because their flat roots are classified as
-     * files, while these layers must always resolve imports to elements.
+     * Flat application roots use the any-axis rule below because they are classified as files,
+     * while these slice layers must always resolve imports to elements.
      */
     files: [
       'apps/web/src/shared/**/*.{ts,tsx}',
       'apps/web/src/entities/**/*.{ts,tsx}',
       'apps/web/src/features/**/*.{ts,tsx}',
       'apps/web/src/widgets/**/*.{ts,tsx}',
+      'apps/web/src/pages/**/*.{ts,tsx}',
     ],
     plugins: { boundaries },
     settings: {
@@ -415,14 +379,10 @@ export default tseslint.config(
   },
   {
     /*
-     * Page and app composition target both slice elements and explicitly classified flat files.
-     * Requiring either axis still rejects truly unknown targets, which have neither.
+     * App composition targets both slice elements and explicitly classified flat files. Requiring
+     * either axis still rejects truly unknown targets, which have neither.
      */
-    files: [
-      'apps/web/src/pages/**/*.{ts,tsx}',
-      'apps/web/src/app/**/*.{ts,tsx}',
-      'apps/web/src/*.{ts,tsx}',
-    ],
+    files: ['apps/web/src/app/**/*.{ts,tsx}', 'apps/web/src/*.{ts,tsx}'],
     plugins: { boundaries },
     settings: {
       'boundaries/elements': allElements,

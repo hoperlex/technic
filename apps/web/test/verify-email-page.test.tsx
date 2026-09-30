@@ -16,7 +16,7 @@ import {
   type NavigationLog,
   type SmartCaptchaService,
 } from './captcha';
-import { VerifyEmailPage } from '../src/pages/VerifyEmailPage';
+import { VerifyEmailPage } from '../src/pages/auth';
 
 /**
  * Подтверждение адреса по ссылке из письма (ADR 0072), капча на форме повторного письма — по

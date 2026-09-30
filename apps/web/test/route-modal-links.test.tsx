@@ -15,7 +15,7 @@ import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { EntityLink } from '../src/shared/ui';
 import { RouteRequestRow } from '../src/pages/vehicle/RouteRequestRow';
-import { WaybillsPage } from '../src/pages/WaybillsPage';
+import { WaybillsPage } from '../src/pages/waybills';
 import { GarageVehiclesTab } from '../src/pages/garage/GarageVehiclesTab';
 
 /**

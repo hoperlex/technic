@@ -170,7 +170,7 @@
 | --- | ---: | ---: |
 | `src/api/resources.ts` | 1433 | 762 |
 | `src/pages/vehicle/VehicleRequestsTab.tsx` | 2823 | 2032 |
-| `src/pages/WaybillsPage.tsx` | 591 | 425 |
+| `src/pages/waybills/WaybillsPage.tsx` | 591 | 425 |
 
 Из-за этого **8 файлов** сидят в бюджете, а линт про них молчит: `shared.tsx` (512),
 `WasteDoneModal.tsx` (463), `VehicleRequestDays.tsx` (459), `CounterpartiesTab.tsx` (439),

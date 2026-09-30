@@ -1,0 +1,1 @@
+export { WaybillsPage } from './WaybillsPage';

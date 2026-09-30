@@ -4,7 +4,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
-import { DirectoriesPage } from '../src/pages/DirectoriesPage';
+import { DirectoriesPage } from '../src/pages/directories';
 
 /**
  * Переключение вкладки справочников обновляет то, что покажет.

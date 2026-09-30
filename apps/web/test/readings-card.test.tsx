@@ -14,7 +14,7 @@ import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList } from './factories/common';
 import { maintenanceRecord, maintenanceSummary } from './factories/maintenance';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Карточка машины в сводке показаний (ADR 0103; план «Показания техники», §7, Р2, Р4, Р16, Р27).

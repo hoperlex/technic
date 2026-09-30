@@ -70,7 +70,7 @@
 ## 1. Что есть сегодня
 
 **Место и приём уже построены.** Вкладка «Выгрузки» собирается по праву
-([AdministrationPage.tsx:60](../apps/web/src/pages/AdministrationPage.tsx#L60)), книга уходит одной
+([AdministrationPage.tsx:60](../apps/web/src/pages/admin/AdministrationPage.tsx#L60)), книга уходит одной
 ручкой с `content-disposition`
 ([vehicle-readings-stats.ts](../apps/api/src/routes/vehicle-readings-stats.ts)), писатель умеет
 числа, даты, заливку строк, слитые ячейки, уровни группировки, скрытый лист и сводную таблицу с

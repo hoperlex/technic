@@ -20,9 +20,9 @@ import {
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
-import { driverKeys, driversApi } from '@entities/driver';
+import { driverKeys, driversApi, useDriverOptions } from '@entities/driver';
 import { useAuth } from '@entities/session';
-import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { useOwnVehicleOptions, vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
@@ -38,7 +38,6 @@ import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-rout
 import { vehicleRequestViewLink } from '@entities/vehicle-request';
 import { waybillLink } from '@entities/waybill';
 import { useRouteModal } from '@features/route-modal';
-import { useDriverOptions, useOwnVehicleOptions } from './shared';
 import { TrailerFields, trailerTripBody } from './TrailerFields';
 
 /**

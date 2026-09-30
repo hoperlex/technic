@@ -7,7 +7,6 @@
   "rawKeyFiles": 0,
   "antdDeprecated": 17,
   "maxLines": {
-    "src/pages/WasteRequestsPage.tsx": 1874,
     "src/pages/admin/UsersTab.tsx": 1367,
     "src/pages/directories/CounterpartiesTab.tsx": 439,
     "src/pages/directories/DriversTab.tsx": 882,
@@ -22,11 +21,12 @@
     "src/pages/vehicle/VehicleRequestsHistoryTab.tsx": 599,
     "src/pages/vehicle/VehicleRequestsTab.tsx": 2805,
     "src/pages/vehicle/VehicleRouteModal.tsx": 795,
-    "src/pages/vehicle/VehicleRoutesModal.tsx": 776,
+    "src/pages/vehicle/VehicleRoutesModal.tsx": 775,
     "src/pages/vehicle/WeeklyRequestPage.tsx": 430,
     "src/pages/vehicle/routeModal.tsx": 402,
     "src/pages/vehicle/weeklyComposition.ts": 410,
     "src/pages/waste/WasteDoneModal.tsx": 462,
-    "src/pages/waste/WasteRequestViewModal.tsx": 590
+    "src/pages/waste/WasteRequestViewModal.tsx": 590,
+    "src/pages/waste/WasteRequestsPage.tsx": 1870
   }
 }

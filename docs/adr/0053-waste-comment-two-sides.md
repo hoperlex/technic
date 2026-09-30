@@ -6,7 +6,7 @@
   контрагента), [ADR 0012](0012-waste-request-history.md) (история заявки)
 - Связано: миграция `0078_waste_request_operator_comment.sql`,
   `packages/contracts/src/waste-requests.ts`, `packages/contracts/src/permissions.ts`,
-  `apps/api/src/routes/waste-requests.ts`, `apps/web/src/pages/WasteRequestsPage.tsx`,
+  `apps/api/src/routes/waste-requests.ts`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
   `apps/web/src/pages/waste/WasteRequestViewModal.tsx`
 
 ## Контекст

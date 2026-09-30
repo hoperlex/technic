@@ -1,5 +1,4 @@
-import { rootBoundary } from './app/RootBoundary';
-import { shellPage } from './pages/ShellPage';
-import { screenPage } from './pages/screen/ScreenPage';
+import { rootBoundary } from '@app/root';
+import { screenPage } from '@pages/screen';
 
-export const app = [rootBoundary, shellPage, screenPage];
+export const app = [rootBoundary, screenPage];

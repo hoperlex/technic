@@ -14,7 +14,7 @@ import type {
 import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList } from './factories/common';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Гараж → «Показания» → «Приём» → разбор в карточке отчёта дня (ADR 0103, решения 3, 6, 10, 11;

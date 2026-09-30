@@ -182,7 +182,7 @@ await writeAudit({
 | Место                                                                            | Что знает сейчас                                      |
 | -------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | [App.tsx](../apps/web/src/App.tsx) — маршрут                                     | `users.manage`, `mailings.read`                       |
-| [AdministrationPage.tsx](../apps/web/src/pages/AdministrationPage.tsx) — вкладки | `users.manage`, `mailings.read`, `directories.export` |
+| [AdministrationPage.tsx](../apps/web/src/pages/admin/AdministrationPage.tsx) — вкладки | `users.manage`, `mailings.read`, `directories.export` |
 | [AppLayout.tsx](../apps/web/src/components/AppLayout.tsx) — пункт меню           | `users.manage`                                        |
 | [ProtectedRoute.tsx](../apps/web/src/auth/ProtectedRoute.tsx) — `homePath`       | `users.manage`                                        |
 
@@ -315,7 +315,7 @@ const commonKey = (r: RouteInfo) => `${r.method === 'HEAD' ? 'GET' : r.method} $
 - `apps/web/src/pages/admin/ManualsTab.tsx` — `PageTableLayout` + `DataTable` + `FormModal`
   (заголовок, описание, ссылка, порядок, активность), правка и удаление с подтверждением; образец —
   `ContainerTypesTab`. API — из `@entities/manual`, без реэкспорта в `resources.ts`.
-- `apps/web/src/pages/AdministrationPage.tsx` — вкладка «Руководства» под `can('manuals.manage')`.
+- `apps/web/src/pages/admin/AdministrationPage.tsx` — вкладка «Руководства» под `can('manuals.manage')`.
 - Три гейта переводятся на `ADMIN_PAGE_PERMISSIONS` (§3.6): маршрут в `App.tsx`, пункт меню в
   `AppLayout.tsx`, строка `homePath` в `ProtectedRoute.tsx`.
 

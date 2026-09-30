@@ -2,12 +2,12 @@
 
 - Статус: Принято
 - Домены: каркас-портала
-- Область: `apps/web/src/pages/WaybillsPage.tsx`, `apps/api/src/routes/waybills.ts`
+- Область: `apps/web/src/pages/waybills/WaybillsPage.tsx`, `apps/api/src/routes/waybills.ts`
 - Связано: [ADR 0030](0030-responsive-layout.md) (списки на телефоне: шит фильтров и сортировки),
   [ADR 0039](0039-user-multiple-objects.md) (область видимости роли фиксирует фильтр),
   [ADR 0040](0040-department-scope.md) (заказчик — объект либо отдел),
   [ADR 0037](0037-freight-transport-waybill.md) (журнал путевых листов),
-  [ADR 0050](0050-vehicle-routes.md) (маршруты), `apps/web/src/pages/WaybillsPage.tsx`,
+  [ADR 0050](0050-vehicle-routes.md) (маршруты), `apps/web/src/pages/waybills/WaybillsPage.tsx`,
   `apps/web/src/pages/vehicle/VehicleRoutesTab.tsx`, `apps/api/src/routes/waybills.ts`.
   Миграций не требует
 

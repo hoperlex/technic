@@ -21,7 +21,7 @@
   [access-manifest.ts](../../apps/api/src/lib/access-manifest.ts); портал —
   [AddTicketsBlock.tsx](../../apps/web/src/features/waste-ticket-attach/ui/AddTicketsBlock.tsx),
   [WasteRequestViewModal.tsx](../../apps/web/src/pages/waste/WasteRequestViewModal.tsx),
-  [WasteRequestsPage.tsx](../../apps/web/src/pages/WasteRequestsPage.tsx); тесты —
+  [WasteRequestsPage.tsx](../../apps/web/src/pages/waste/WasteRequestsPage.tsx); тесты —
   `waste-tickets-add.db.test.ts`, `waste-completion-contracts.test.ts`
 - Решение вырастает из: [ADR 0013](0013-waste-request-tickets.md) (талон как связь файла с
   заявкой), [ADR 0020](0020-waste-ticket-required.md) (талон обязателен при закрытии)

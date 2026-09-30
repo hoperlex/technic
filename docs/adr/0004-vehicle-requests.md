@@ -4,7 +4,7 @@
 - Основано на: [ADR 0003](0003-vehicle-types-directory.md) (классификатор ТС), модуль «Вывоз мусора»
 - Связано: `apps/api/drizzle/0012_vehicle_requests.sql`, `apps/api/src/routes/vehicle-requests.ts`,
   `apps/api/src/services/request-files.ts`, `packages/contracts/src/vehicle-requests.ts`,
-  `apps/web/src/pages/VehicleRequestsPage.tsx`
+  `apps/web/src/pages/vehicle/VehicleRequestsPage.tsx`
 - Карточка заявки и история событий — [ADR 0015](0015-vehicle-request-history.md)
 
 ## Контекст

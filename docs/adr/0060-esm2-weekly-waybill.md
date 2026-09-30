@@ -2,7 +2,7 @@
 
 - Статус: Принято
 - Домены: путевые-листы
-- Область: `packages/contracts/src/waybills.ts`, `apps/api/src/services/waybill-esm2.ts`, `apps/api/scripts/mark-waybill-templates.ts`, `apps/web/src/pages/WaybillsPage.tsx`
+- Область: `packages/contracts/src/waybills.ts`, `apps/api/src/services/waybill-esm2.ts`, `apps/api/scripts/mark-waybill-templates.ts`, `apps/web/src/pages/waybills/WaybillsPage.tsx`
 - Внимание: номер занят дважды — то же число носит [Окончательное удаление записей справочников](0060-directory-record-purge.md). Ссылаться на это решение голым номером нельзя, в ссылке обязан стоять путь к файлу; перенумерация отклонена (план `docs/docs-navigation-plan.md`, Р6)
 - Изменяет: [ADR 0037](0037-freight-transport-waybill.md) — п. 1 (область выписки: лист рождается
   и без рейса) и п. 11 (нумерация: серия перестала быть одной);
@@ -15,7 +15,7 @@
 - Связано: план [docs/waybill-esm2-plan.md](../waybill-esm2-plan.md), миграция `0087`,
   `packages/contracts/src/waybills.ts`, `apps/api/src/services/waybill-esm2.ts`,
   `apps/api/scripts/mark-waybill-templates.ts`, `apps/web/src/pages/vehicle/`,
-  `apps/web/src/pages/WaybillsPage.tsx`
+  `apps/web/src/pages/waybills/WaybillsPage.tsx`
 
 ## Контекст
 

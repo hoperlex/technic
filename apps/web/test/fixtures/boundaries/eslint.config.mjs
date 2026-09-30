@@ -22,7 +22,6 @@ const SHARED_TYPES = ['shared-config', 'shared-api', 'shared-lib', 'shared-ui'];
  * способ сопоставления, и с ним правило переставало запрещать импорт соседа (проверено).
  */
 const ENTITY_TYPES = ['entity-request', 'entity-request-kin', 'entities'];
-const PAGE_ROUTE_ENTRY_FILES = ['ScreenPage.ts'];
 const LAYER_GROUPS = [SHARED_TYPES, ENTITY_TYPES, ['features'], ['widgets'], ['pages'], ['app']];
 
 /** Слой видит всё, что ниже него, и только через публичный вход слайса. */
@@ -54,8 +53,6 @@ const entityKinPolicies = [
   },
 ];
 const compositionFiles = [
-  { category: 'page-support', pattern: 'pages/captchaPage.ts', exclusive: true },
-  { category: 'page-shell', pattern: 'pages/*.{ts,tsx}' },
   { category: 'app-root', pattern: 'app/*.{ts,tsx}' },
   {
     category: 'app-root',
@@ -65,46 +62,21 @@ const compositionFiles = [
 
 const compositionPolicies = [
   {
-    from: { file: { categories: 'page-shell' } },
-    allow: { to: { element: { type: 'pages' } } },
-  },
-  {
-    from: { file: { categories: 'page-shell' } },
-    allow: { to: { file: { categories: 'page-support' } } },
-  },
-  {
-    from: { file: { categories: { anyOf: ['page-shell', 'page-support'] } } },
-    allow: {
-      to: {
-        element: {
-          types: { anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets'] },
-          fileInternalPath: 'index.ts',
-        },
-      },
-    },
-  },
-  {
-    from: { element: { type: 'app' } },
-    allow: { to: { file: { categories: 'page-shell' } } },
-  },
-  {
     from: { file: { categories: 'app-root' } },
-    allow: { to: { file: { categories: { anyOf: ['page-shell', 'app-root'] } } } },
+    allow: { to: { file: { categories: 'app-root' } } },
   },
   {
     from: { file: { categories: 'app-root' } },
     allow: {
       to: {
         element: {
-          types: { anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets', 'app'] },
+          types: {
+            anyOf: [...SHARED_TYPES, ...ENTITY_TYPES, 'features', 'widgets', 'pages', 'app'],
+          },
           fileInternalPath: 'index.ts',
         },
       },
     },
-  },
-  {
-    from: { file: { categories: 'app-root' } },
-    allow: { to: { element: { type: 'pages', fileInternalPath: PAGE_ROUTE_ENTRY_FILES } } },
   },
 ];
 

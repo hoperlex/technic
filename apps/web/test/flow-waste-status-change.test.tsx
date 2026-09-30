@@ -5,7 +5,7 @@ import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
 import { objectDto, operator, wasteRequest, wasteSummary } from './factories/waste';
-import { WasteRequestsPage } from '../src/pages/WasteRequestsPage';
+import { WasteRequestsPage } from '../src/pages/waste';
 
 /**
  * Перевод заявки на вывоз мусора в работу.

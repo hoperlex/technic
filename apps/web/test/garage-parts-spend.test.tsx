@@ -14,7 +14,7 @@ import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { VehiclePartsSpendBlock } from '../src/features/vehicle-parts-spend';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Запчасти по машине: колонка «Запчасти, ₽» вкладки «Техника», окно «Запчасти машины» и блок

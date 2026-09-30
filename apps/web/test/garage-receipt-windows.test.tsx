@@ -9,7 +9,7 @@ import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Окна чека на автозапчасти: карточка `?receipt=` и форма «Принять чек» (план

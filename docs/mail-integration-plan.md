@@ -758,7 +758,7 @@ INTERNAL_API_TOKEN=
 
 - `apps/web/src/pages/admin/MailingsTab.tsx` — расписания, исключения, preview и история.
 - `apps/web/src/pages/admin/MailDebugPanel.tsx` — тип письма, дата, получатель-администратор (§5.4).
-- `apps/web/src/pages/AdministrationPage.tsx` — новая вкладка.
+- `apps/web/src/pages/admin/AdministrationPage.tsx` — новая вкладка.
 - `apps/web/src/App.tsx` — гвардия `/admin` по любому из прав страницы, а не только `users.manage`.
 - `apps/web/src/pages/directories/DriversTab.tsx` — email водителя.
 - `VerifyEmailPage.tsx`, `ForgotPasswordPage.tsx`, `ResetPasswordPage.tsx` и публичные маршруты.

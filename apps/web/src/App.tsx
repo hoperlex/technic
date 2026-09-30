@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactNode } from 'react';
+import { Suspense, type ReactNode } from 'react';
 import { Spin } from 'antd';
 import { Navigate, Route, Routes } from 'react-router';
 import {
@@ -8,44 +8,24 @@ import {
 } from '@technic/contracts';
 import { AppLayout } from './app/layout';
 import { AppUpdateBanner } from '@widgets/app-update-banner';
+import { HomeRedirect, ProtectedRoute, RequirePermission, RequireSection } from '@app/routing';
+import { AdministrationPage } from '@pages/admin';
 import {
-  HomeRedirect,
-  ProtectedRoute,
-  RequirePermission,
-  RequireSection,
-} from './app/routing/ProtectedRoute';
-import { WaybillsPage } from './pages/WaybillsPage';
-import { LoginPage } from './pages/LoginPage';
-import { RegisterPage } from './pages/RegisterPage';
-import { VerifyEmailPage } from './pages/VerifyEmailPage';
-import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
-import { ResetPasswordPage } from './pages/ResetPasswordPage';
-import { ChangePasswordPage } from './pages/ChangePasswordPage';
-import { WasteRequestsPage } from './pages/WasteRequestsPage';
-import { VehicleRequestsPage } from './pages/VehicleRequestsPage';
-import { RouteModalProvider } from './pages/vehicle/routeModal';
-import { WeeklyRequestPage } from './pages/vehicle/WeeklyRequestPage';
-import { GaragePage } from './pages/GaragePage';
-import { ServiceRequestsPage } from './pages/service/ServiceRequestsPage';
-import { MechRequestsPage } from './pages/mech/MechRequestsPage';
-import { DirectoriesPage } from './pages/DirectoriesPage';
-import { AdministrationPage } from './pages/AdministrationPage';
-
-/**
- * Кабинет водителя (ADR 0102) грузится отдельным чанком: у него свой каркас, свои экраны и своя
- * форма, а открывает его роль, которой основной портал недоступен вовсе. Тянуть этот код в первый
- * бандл диспетчера — платить весом за экран, который он никогда не увидит; и наоборот, водитель с
- * телефона не должен скачивать заявки, справочники и журнал листов ради четырёх полей.
- */
-const DriverLayout = lazy(() =>
-  import('./pages/driver/DriverLayout').then((m) => ({ default: m.DriverLayout })),
-);
-const DriverPage = lazy(() =>
-  import('./pages/driver/DriverPage').then((m) => ({ default: m.DriverPage })),
-);
-const DriverReadingsPage = lazy(() =>
-  import('./pages/driver/DriverReadingsPage').then((m) => ({ default: m.DriverReadingsPage })),
-);
+  ChangePasswordPage,
+  ForgotPasswordPage,
+  LoginPage,
+  RegisterPage,
+  ResetPasswordPage,
+  VerifyEmailPage,
+} from '@pages/auth';
+import { DirectoriesPage } from '@pages/directories';
+import { DriverLayout, DriverPage, DriverReadingsPage } from '@pages/driver';
+import { GaragePage } from '@pages/garage';
+import { MechRequestsPage } from '@pages/mech';
+import { ServiceRequestsPage } from '@pages/service';
+import { RouteModalProvider, VehicleRequestsPage, WeeklyRequestPage } from '@pages/vehicle';
+import { WasteRequestsPage } from '@pages/waste';
+import { WaybillsPage } from '@pages/waybills';
 
 /**
  * Чем открывается каждый раздел каркаса — и всё, что маршруты знают о разделах сами. Адреса, права

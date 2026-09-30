@@ -6,7 +6,7 @@
 - Связано: `packages/contracts/src/waste-requests.ts`,
   `apps/api/src/services/waste-request-vehicles.ts`, `apps/api/src/routes/waste-requests.ts`,
   `apps/web/src/components/WasteVehiclesEditor.tsx`,
-  `apps/web/src/pages/waste/WasteDoneModal.tsx`, `apps/web/src/pages/WasteRequestsPage.tsx`,
+  `apps/web/src/pages/waste/WasteDoneModal.tsx`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
   `apps/web/src/entities/waste-request/api/wasteRequestsApi.ts`
 
 ## Контекст

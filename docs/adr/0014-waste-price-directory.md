@@ -6,7 +6,7 @@
   `apps/api/src/routes/waste-types.ts`, `apps/web/src/entities/waste-tariff/api/wasteTariffsApi.ts`,
   `apps/web/src/entities/waste-type/api/wasteTypesApi.ts`,
   `apps/web/src/pages/directories/WasteTariffsTab.tsx`,
-  `apps/web/src/pages/directories/WasteTypesTab.tsx`, `apps/web/src/pages/DirectoriesPage.tsx`
+  `apps/web/src/pages/directories/WasteTypesTab.tsx`, `apps/web/src/pages/directories/DirectoriesPage.tsx`
 
 ## Контекст
 

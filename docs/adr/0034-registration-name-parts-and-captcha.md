@@ -12,7 +12,7 @@
   `packages/contracts/src/registration-request.ts`, `packages/contracts/src/person-name.ts`,
   `packages/contracts/src/password.ts`, `apps/api/src/auth/captcha.ts`,
   `apps/api/src/auth/captcha-image.ts`, `apps/web/src/components/PersonNameFields.tsx`,
-  `apps/web/src/components/CaptchaField.tsx`, `apps/web/src/pages/RegisterPage.tsx`,
+  `apps/web/src/components/CaptchaField.tsx`, `apps/web/src/pages/auth/RegisterPage.tsx`,
   [ADR 0008](0008-persons-and-qualifications.md) (физлица), [ADR 0021](0021-permissions-model.md)
   (матрица прав)
 

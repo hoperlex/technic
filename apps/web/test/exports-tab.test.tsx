@@ -7,7 +7,7 @@ import { authUser } from './factories/auth';
 import { list } from './factories/common';
 import { objectDto } from './factories/waste';
 import { openSelectOptions, selectOption } from './antd';
-import { AdministrationPage } from '../src/pages/AdministrationPage';
+import { AdministrationPage } from '../src/pages/admin';
 import { ExportsTab } from '../src/pages/admin/ExportsTab';
 
 /**

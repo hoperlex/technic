@@ -13,7 +13,7 @@ import type {
 import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList } from './factories/common';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Гараж → «Показания» → «Приём» → карточка отчёта дня (ADR 0103; план «Показания техники», §7,

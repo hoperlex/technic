@@ -18,7 +18,7 @@
   [ADR 0030](0030-responsive-layout.md) (телефон), [ADR 0021](0021-permissions-model.md) (матрица —
   не менялась), план [docs/vehicle-routes-modal-plan.md](../vehicle-routes-modal-plan.md);
   `packages/contracts/src/links.ts`, `apps/web/src/utils/links.ts`,
-  `apps/web/src/pages/vehicle/routeModal.tsx`, `apps/web/src/pages/VehicleRequestsPage.tsx`,
+  `apps/web/src/pages/vehicle/routeModal.tsx`, `apps/web/src/pages/vehicle/VehicleRequestsPage.tsx`,
   `apps/api/src/routes/waybills.ts`
 - Миграций не требует
 

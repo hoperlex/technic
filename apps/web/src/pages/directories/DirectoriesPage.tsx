@@ -2,19 +2,19 @@ import { Tabs } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { ObjectsTab } from './directories/ObjectsTab';
-import { DepartmentsTab } from './directories/DepartmentsTab';
-import { CounterpartiesTab } from './directories/CounterpartiesTab';
-import { WarehousesTab } from './directories/WarehousesTab';
-import { MechModelsTab } from './directories/MechModelsTab';
-import { ContainerTypesTab } from './directories/ContainerTypesTab';
-import { WasteTariffsTab } from './directories/WasteTariffsTab';
-import { VehicleTypesTab } from './directories/VehicleTypesTab';
-import { VehicleSpecsTab } from './directories/VehicleSpecsTab';
-import { VehiclesTab } from './directories/VehiclesTab';
-import { TrailersTab } from './directories/TrailersTab';
-import { OfficeEquipmentTab } from './directories/OfficeEquipmentTab';
-import { DriversTab } from './directories/DriversTab';
+import { ObjectsTab } from './ObjectsTab';
+import { DepartmentsTab } from './DepartmentsTab';
+import { CounterpartiesTab } from './CounterpartiesTab';
+import { WarehousesTab } from './WarehousesTab';
+import { MechModelsTab } from './MechModelsTab';
+import { ContainerTypesTab } from './ContainerTypesTab';
+import { WasteTariffsTab } from './WasteTariffsTab';
+import { VehicleTypesTab } from './VehicleTypesTab';
+import { VehicleSpecsTab } from './VehicleSpecsTab';
+import { VehiclesTab } from './VehiclesTab';
+import { TrailersTab } from './TrailersTab';
+import { OfficeEquipmentTab } from './OfficeEquipmentTab';
+import { DriversTab } from './DriversTab';
 
 export function DirectoriesPage() {
   // Вкладок восемь-девять: на телефоне они прокручиваются, и компактный размер оставляет им

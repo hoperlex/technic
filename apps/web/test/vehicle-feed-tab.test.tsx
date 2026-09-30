@@ -17,7 +17,7 @@ import {
 } from './factories/vehicle';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 import { PageTabs } from '../src/shared/ui';
-import { VehicleRequestsPage } from '../src/pages/VehicleRequestsPage';
+import { VehicleRequestsPage } from '../src/pages/vehicle';
 
 /**
  * Недельная заявка строкой общего списка «Заказ автотехники» (ADR 0085).

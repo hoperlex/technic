@@ -15,7 +15,7 @@ import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { maintenanceRecord, maintenanceSummary } from './factories/maintenance';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
-import { GaragePage } from '../src/pages/GaragePage';
+import { GaragePage } from '../src/pages/garage';
 
 /**
  * Гараж → «Техника»: переход из строки в карточку машины (план «Показания техники», §7, Р2, Р29).

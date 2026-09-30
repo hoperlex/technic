@@ -5,7 +5,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
-import { WaybillsPage } from '../src/pages/WaybillsPage';
+import { WaybillsPage } from '../src/pages/waybills';
 
 /**
  * Печать пачкой и запрет бумаги у аннулированного листа.

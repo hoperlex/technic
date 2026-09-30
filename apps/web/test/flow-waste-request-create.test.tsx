@@ -6,7 +6,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
 import { objectDto, operator, wasteRequest, wasteSummary, wasteType } from './factories/waste';
-import { WasteRequestsPage } from '../src/pages/WasteRequestsPage';
+import { WasteRequestsPage } from '../src/pages/waste';
 import { expectModalClosed } from './antd';
 
 /**
