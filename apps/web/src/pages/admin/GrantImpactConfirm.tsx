@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Space, Spin, Tag, Typography } from 'antd';
 import { roleLabels, type GrantImpactDto } from '@technic/contracts';
 import { ViewModal } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { grantErrorMessage as errorMessage } from '@entities/grant';
 import {
   impactSummaryText,
   impactViolationTexts,

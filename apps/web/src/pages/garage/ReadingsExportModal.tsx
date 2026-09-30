@@ -9,7 +9,7 @@ import {
 } from '@technic/contracts';
 import { vehicleReadingsApi } from '@entities/vehicle-reading';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { errorMessage } from '@shared/lib';
 
 /**
  * Выбор выгрузки показаний (план «Показания техники», §8, Р18).

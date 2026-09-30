@@ -18,7 +18,7 @@ import type {
 } from '@entities/vehicle-type';
 import { AutoSelect, ExpandableCell, type FilterDefinition } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { errorMessage } from '@shared/lib';
 import { objectsApi, objectKeys } from '@entities/object';
 
 export const FILE_MAX_COUNT = 20;

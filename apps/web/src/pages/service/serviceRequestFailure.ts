@@ -5,7 +5,7 @@ import {
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import type { FormBlockersApi } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 
 /** Тосты окна: то же, что отдаёт `App.useApp()`, — свой тип антом наружу не выведен. */
 type MessageApi = ReturnType<typeof App.useApp>['message'];

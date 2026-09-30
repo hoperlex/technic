@@ -10,7 +10,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import type { DayBatchFormValues } from './DayBatchFields';
 import { DayBatchReport } from './DayBatchReport';
 

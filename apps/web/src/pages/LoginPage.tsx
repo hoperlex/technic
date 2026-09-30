@@ -3,7 +3,7 @@ import { App, Button, Card, Form, Input, Typography } from 'antd';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { normalizeEmail } from '@technic/contracts';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../utils/format';
+import { sessionErrorMessage } from '@entities/session';
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -22,7 +22,7 @@ export function LoginPage() {
       // приводил их на гейт, а оттуда — на смену пароля.
       navigate(from ?? '/', { replace: true });
     } catch (e) {
-      message.error(errorMessage(e));
+      message.error(sessionErrorMessage(e));
     } finally {
       setLoading(false);
     }

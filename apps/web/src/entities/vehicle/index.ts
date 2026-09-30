@@ -20,3 +20,4 @@
  */
 export { vehicleModelsApi, vehiclesApi } from './api/vehiclesApi';
 export { vehicleKeys, vehicleModelKeys } from './api/keys';
+export { vehicleErrorMessage } from './model/errorMessage';

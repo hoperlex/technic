@@ -6,3 +6,4 @@ export { wasteTariffsApi } from './api/wasteTariffsApi';
 export type { WasteTariffTarget } from './api/wasteTariffsApi';
 export { wasteTariffKeys } from './api/keys';
 export { wasteTariffResolveQuery } from './api/queries';
+export { wasteTariffErrorMessage } from './model/errorMessage';

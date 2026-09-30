@@ -7,7 +7,7 @@ import { directoriesApi, directoryTransferKeys } from '@entities/directory-trans
 import { useAuth } from '@entities/session';
 import { DirectoryImportModal } from './DirectoryImportModal';
 import { useIsMobile } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { errorMessage } from '@shared/lib';
 
 /**
  * Обмен справочниками через файл Excel (ADR 0073).

@@ -10,7 +10,7 @@ import { PageTableLayout } from '@shared/ui';
 import { RowActionButton, actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { errorMessage } from '@shared/lib';
 
 /**
  * Ведение руководств пользователя (`docs/manuals-plan.md`): список ссылок на документы во внешнем

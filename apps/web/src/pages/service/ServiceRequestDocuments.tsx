@@ -28,7 +28,7 @@ import {
   serviceExecutorAssignment,
   serviceRequestCustomerFacts,
 } from './serviceRequestRow';
-import { errorMessage } from '../../utils/format';
+import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 
 /**
  * Основание денежного решения (Р5): его не снимает никто и никогда (Р6, замок сервера под

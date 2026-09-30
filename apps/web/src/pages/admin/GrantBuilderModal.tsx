@@ -5,7 +5,7 @@ import { grantCodeSchema, type GrantDto, type Permission, type Role } from '@tec
 import { grantKeys, grantsApi } from '@entities/grant';
 import { userAccountKeys } from '@entities/user-account';
 import { FormModal, useFormBlockers } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { grantErrorMessage as errorMessage } from '@entities/grant';
 import { GrantEffectPanel } from './GrantEffectPanel';
 import { GrantImpactConfirm } from './GrantImpactConfirm';
 import { GrantPermissionPicker } from './GrantPermissionPicker';

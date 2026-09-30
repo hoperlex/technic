@@ -19,7 +19,7 @@ import { PasswordField } from '@entities/user-account';
 import { PersonNameFields } from '@entities/user-account';
 import { PhoneField } from '@entities/user-account';
 import { errorFields } from '@shared/lib';
-import { errorMessage } from '../utils/format';
+import { sessionErrorMessage } from '@entities/session';
 import {
   captchaBlocksSubmit,
   CaptchaSubmitNote,
@@ -118,7 +118,7 @@ export function RegisterPage() {
        * независимо от поля и переживает сброс виджета.
        */
       const fields = errorFields(e);
-      message.error(fields?.captchaToken ?? errorMessage(e));
+      message.error(fields?.captchaToken ?? sessionErrorMessage(e));
     } finally {
       setLoading(false);
     }

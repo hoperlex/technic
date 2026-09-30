@@ -6,3 +6,4 @@
 export { containerTypesApi } from './api/containerTypesApi';
 export { containerTypeKeys } from './api/keys';
 export { containerTypeOptionsQuery } from './api/queries';
+export { containerTypeErrorMessage } from './model/errorMessage';

@@ -95,3 +95,4 @@ export {
   type OfficeEquipmentDeactivationIntent,
   type OfficeEquipmentDeactivationWarning,
 } from './model/deactivation';
+export { officeEquipmentErrorMessage } from './model/errorMessage';

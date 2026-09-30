@@ -116,7 +116,7 @@ import {
   withSavedClassification,
   useVehicleClassificationFilter,
 } from '@entities/vehicle-type';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { vehicleRequestDateRules } from '@entities/vehicle-request';
 
 import { FilesCell } from '@entities/file';

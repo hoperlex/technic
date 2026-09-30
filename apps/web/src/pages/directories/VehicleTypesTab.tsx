@@ -45,7 +45,7 @@ import { FormModal, PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { vehicleTypeErrorMessage as errorMessage } from '@entities/vehicle-type';
 import { VehicleTypeCardDrawer } from './VehicleTypeCardDrawer';
 import { VehicleTypeFormFields, type VtFormValues } from './VehicleTypeFormFields';
 

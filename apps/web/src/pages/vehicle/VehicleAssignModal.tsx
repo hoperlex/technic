@@ -58,7 +58,7 @@ import { formatDateOnly, formatMoney, useIsMobile } from '@shared/lib';
 import { useObjectScope } from '@entities/session';
 import { AddressField } from '@features/address-input';
 
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import {
   currentMachinistName,
   driverCategoryNote,

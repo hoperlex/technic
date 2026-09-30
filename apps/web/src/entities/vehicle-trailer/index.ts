@@ -9,3 +9,4 @@ export { trailerPickerQuery, trailerSlotsQuery } from './api/queries';
 export { unhitchedNotice } from './model/notices';
 /** Состав машины в её же карточке — показом, без правки: привязку ставят у прицепа (§4.2). */
 export { VehicleTrailersField } from './ui/VehicleTrailersField';
+export { vehicleTrailerErrorMessage } from './model/errorMessage';

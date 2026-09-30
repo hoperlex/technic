@@ -13,7 +13,7 @@ import { useAuth } from '@entities/session';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
 import { ReasonModal } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { VehicleEarlyEndApproveModal } from './VehicleEarlyEndApproveModal';
 import { reassignStaleReason } from './ReassignPreview';
 

@@ -8,7 +8,7 @@ import {
   type VehicleRouteDto,
 } from '@technic/contracts';
 import { formatDateOnly } from '@shared/lib';
-import { formatDateTimeMaybe } from '../../utils/format';
+import { formatDateTimeMaybe } from '@entities/request';
 
 /**
  * Текст о заявке, собранный по её собственным данным: срок строкой и два перечня того, что заявка

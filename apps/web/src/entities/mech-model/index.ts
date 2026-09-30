@@ -6,3 +6,4 @@
 export { mechModelsApi } from './api/mechModelsApi';
 export { mechModelKeys } from './api/keys';
 export { mechModelOptionsQuery } from './api/queries';
+export { mechModelErrorMessage } from './model/errorMessage';

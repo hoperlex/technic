@@ -10,3 +10,4 @@ export {
   departmentPlatformQuery,
   departmentRecordsQuery,
 } from './api/queries';
+export { departmentErrorMessage } from './model/errorMessage';

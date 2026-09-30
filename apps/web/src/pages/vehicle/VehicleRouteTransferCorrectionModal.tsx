@@ -13,7 +13,7 @@ import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { formatDateOnly } from '@shared/lib';
 
 /**

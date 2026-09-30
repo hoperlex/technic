@@ -19,7 +19,7 @@ import { FileLinkList, filesApi } from '@entities/file';
 import { wasteTariffResolveQuery } from '@entities/waste-tariff';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { formatMoney, useIsMobile } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
 
 /**
  * Закрытие заявки: факт предъявляется вместе со сменой статуса, а не после неё.

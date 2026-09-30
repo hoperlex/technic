@@ -28,7 +28,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { ViewModal } from '@shared/ui';
 import { TimeInput } from '@entities/request';
 import { UserAvatar } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { formatDateOnly } from '@shared/lib';
 
 /**

@@ -16,3 +16,4 @@
 export { grantKeys } from './api/keys';
 export { grantFormApi, grantsApi, userGrantsApi } from './api/grantsApi';
 export type { GrantCatalog } from './api/grantsApi';
+export { grantErrorMessage } from './model/errorMessage';

@@ -23,7 +23,7 @@ import {
   officeEquipmentTypeKeys,
   officeEquipmentTypesApi,
 } from '@entities/office-equipment';
-import { errorMessage } from '../../utils/format';
+import { officeEquipmentErrorMessage as errorMessage } from '@entities/office-equipment';
 
 /**
  * Ведение типов оргтехники — окном из вкладки справочника (Р34, приём ADR 0017).

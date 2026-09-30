@@ -36,3 +36,4 @@ export type {
   MailTestDriver,
   MailTestRecipient,
 } from './api/mailingsApi';
+export { mailingErrorMessage } from './model/errorMessage';

@@ -57,7 +57,7 @@ import { actionsColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { driverErrorMessage as errorMessage } from '@entities/driver';
 import { usePurgeAction } from '@features/purge-record';
 import {
   documentBadge,

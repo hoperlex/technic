@@ -3,7 +3,7 @@ import { App, Button, Card, Form, Input, Typography } from 'antd';
 import { useNavigate } from 'react-router';
 import { PASSWORD_MIN } from '@technic/contracts';
 import { authApi, useAuth } from '@entities/session';
-import { errorMessage } from '../utils/format';
+import { sessionErrorMessage } from '@entities/session';
 
 export function ChangePasswordPage() {
   const { user, setUser, logout } = useAuth();
@@ -21,7 +21,7 @@ export function ChangePasswordPage() {
       // `/waste` для роли без вывоза заканчивался этой же формой — круг замыкался.
       navigate('/', { replace: true });
     } catch (e) {
-      message.error(errorMessage(e));
+      message.error(sessionErrorMessage(e));
     } finally {
       setLoading(false);
     }

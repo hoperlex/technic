@@ -33,7 +33,7 @@ import { isApiError } from '@shared/api';
 import { formatDateTime } from '@shared/lib';
 import { moduleMailApi, moduleMailKeys } from '@entities/module-mail';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { moduleMailErrorMessage as errorMessage } from '@entities/module-mail';
 
 /**
  * Служебные адреса: на какой ящик уходит письмо по событию модуля (план

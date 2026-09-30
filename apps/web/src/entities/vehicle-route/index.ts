@@ -14,6 +14,7 @@
  */
 export { vehicleRouteKeys, vehicleTypesForTrailerKey } from './api/keys';
 export { vehicleRoutesApi } from './api/vehicleRoutesApi';
+export { vehicleRouteErrorMessage } from './model/errorMessage';
 export {
   emptyTrailerGraphs,
   foreignHitchWarning,

@@ -19,7 +19,7 @@ import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { CompletionConsequences, CompletionHandshakeFields } from './CompletionConsequences';
 import { CompletionFields, type CompletionFormValues } from './CompletionFields';
 import {

@@ -42,7 +42,7 @@ import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { formatDateOnly, useListParams, useOpenedRecord } from '@shared/lib';
 import { calendarDayCount, formatDate, formatMoney } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { formatDateTimeMaybe } from '../../utils/format';
+import { formatDateTimeMaybe } from '@entities/request';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { RequestAssignmentCell, useLessorOptions, useVehicleFilter } from './shared';
 import { useVehicleClassificationFilter } from '@entities/vehicle-type';

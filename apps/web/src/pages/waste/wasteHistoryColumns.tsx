@@ -13,7 +13,7 @@ import { type CardConfig } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { formatDate, formatMoney } from '@shared/lib';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
-import { formatDateTimeMaybe } from '../../utils/format';
+import { formatDateTimeMaybe } from '@entities/request';
 
 /**
  * Как выглядит строка журнала закрытых заявок вывоза (ADR 0135) — отдельным модулем от самой

@@ -81,7 +81,7 @@ import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { usePurgeAction } from '@features/purge-record';
 import { UserAvatar } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { userAccountErrorMessage as errorMessage } from '@entities/user-account';
 import { objectsApi, objectKeys } from '@entities/object';
 import { departmentKeys, departmentOptionsQuery } from '@entities/department';
 

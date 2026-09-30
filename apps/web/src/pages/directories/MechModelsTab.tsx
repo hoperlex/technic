@@ -17,7 +17,7 @@ import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { mechModelErrorMessage as errorMessage } from '@entities/mech-model';
 import { usePurgeAction } from '@features/purge-record';
 
 /** Что вкладка спрашивает сверх базовых параметров списка. */

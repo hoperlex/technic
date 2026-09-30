@@ -3,7 +3,7 @@ import { Alert, Button, Card, DatePicker, Space, Typography } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { vehicleReadingsApi } from '@entities/vehicle-reading';
-import { errorMessage } from '../../utils/format';
+import { errorMessage } from '@shared/lib';
 
 /**
  * Служебная выгрузка показаний автотранспорта (`docs/readings-admin-export-plan.md`, Р1).

@@ -10,7 +10,7 @@ import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { departmentErrorMessage as errorMessage } from '@entities/department';
 import { usePurgeAction } from '@features/purge-record';
 import { departmentsApi, departmentKeys } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';

@@ -14,7 +14,7 @@ import {
 import { directoriesApi } from '@entities/directory-transfer';
 import { ViewModal } from '@shared/ui';
 import { formatBytes } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { errorMessage } from '@shared/lib';
 
 /**
  * Загрузка правленого справочника файлом Excel (ADR 0073).

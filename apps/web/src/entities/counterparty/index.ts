@@ -9,3 +9,4 @@
  */
 export { counterpartiesApi } from './api/counterpartiesApi';
 export { counterpartyKeys } from './api/keys';
+export { counterpartyErrorMessage } from './model/errorMessage';

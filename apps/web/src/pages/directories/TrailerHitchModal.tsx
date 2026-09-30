@@ -15,7 +15,7 @@ import {
 } from '@entities/vehicle-trailer';
 import { AutoSelect, FormModal } from '@shared/ui';
 import { vehiclesApi } from '@entities/vehicle';
-import { errorMessage } from '../../utils/format';
+import { vehicleTrailerErrorMessage as errorMessage } from '@entities/vehicle-trailer';
 import { hitchedVehicleLabel } from './trailerGrid';
 
 /**

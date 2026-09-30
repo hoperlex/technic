@@ -5,7 +5,7 @@ import { authApi } from '@entities/session';
 import { CaptchaField } from '@entities/session';
 import { useCaptcha } from '@entities/session';
 import { errorFields } from '@shared/lib';
-import { errorMessage } from '../utils/format';
+import { sessionErrorMessage } from '@entities/session';
 import {
   captchaBlocksSubmit,
   CaptchaSubmitNote,
@@ -64,7 +64,7 @@ export function ForgotPasswordPage() {
        * независимо от поля и переживает сброс виджета.
        */
       const fields = errorFields(e);
-      message.error(fields?.captchaToken ?? errorMessage(e));
+      message.error(fields?.captchaToken ?? sessionErrorMessage(e));
       setCaptchaNonce((n) => n + 1);
       form.setFieldValue('captchaToken', '');
     } finally {

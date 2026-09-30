@@ -14,7 +14,7 @@ import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
 import { vehicleRequestsApi, type AssignmentCommandResultDto } from '@entities/vehicle-request';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { AssignmentHistoryPanel } from './AssignmentHistoryPanel';
 import { useMachinistDirectory } from './machinistDirectory';
 import { MachinistAnchorFields, MachinistPickFields } from './MachinistFields';

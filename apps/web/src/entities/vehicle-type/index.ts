@@ -50,3 +50,4 @@ export {
   type VehicleClassificationOption,
 } from './model/useVehicleClassifications';
 export { useVehicleClassificationFilter } from './ui/useVehicleClassificationFilter';
+export { vehicleTypeErrorMessage } from './model/errorMessage';

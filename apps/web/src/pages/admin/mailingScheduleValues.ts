@@ -6,7 +6,7 @@ import {
   type MailingType,
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
-import { errorMessage } from '../../utils/format';
+import { mailingErrorMessage as errorMessage } from '@entities/mailing';
 import type { AudienceFormValues } from './MailingAudienceFields';
 
 /**

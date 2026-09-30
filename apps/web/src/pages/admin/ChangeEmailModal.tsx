@@ -10,7 +10,7 @@ import {
 } from '@technic/contracts';
 import { usersApi } from '@entities/user-account';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { userAccountErrorMessage as errorMessage } from '@entities/user-account';
 
 interface Props {
   open: boolean;

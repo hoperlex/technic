@@ -18,7 +18,7 @@ import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { containerTypeErrorMessage as errorMessage } from '@entities/container-type';
 import { usePurgeAction } from '@features/purge-record';
 
 const kindOptions = CONTAINER_KINDS.map((k) => ({ value: k, label: containerKindLabels[k] }));

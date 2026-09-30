@@ -40,7 +40,7 @@ import {
 import { mailLogKeys } from '@entities/mail-log';
 import { useAuth } from '@entities/session';
 import { WindowFromField } from './MailingScheduleForm';
-import { errorMessage } from '../../utils/format';
+import { mailingErrorMessage as errorMessage } from '@entities/mailing';
 
 interface FormValues {
   kind: MailTestKind;

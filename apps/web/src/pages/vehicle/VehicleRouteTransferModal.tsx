@@ -19,7 +19,7 @@ import {
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 
 /**
  * Перенос заявки в другой рейс из её карточки (ADR 0052).

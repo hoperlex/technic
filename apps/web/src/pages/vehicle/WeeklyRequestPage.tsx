@@ -14,7 +14,7 @@ import { waybillKeys } from '@entities/waybill';
 import { useAuth } from '@entities/session';
 import { ReasonModal } from '@shared/ui';
 import { useVehicleClassifications } from '@entities/vehicle-type';
-import { errorMessage } from '../../utils/format';
+import { weeklyRequestErrorMessage as errorMessage } from '@entities/weekly-request';
 import { useWeeklyComposition } from './weeklyComposition';
 import { WeeklyRequestActions } from './WeeklyRequestActions';
 import { WeeklyRequestBanners } from './WeeklyRequestBanners';

@@ -9,7 +9,7 @@ import {
 } from '@technic/contracts';
 import { FormModal } from '@shared/ui';
 import { vehicleRoutesApi } from '@entities/vehicle-route';
-import { errorMessage } from '../../utils/format';
+import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { actionLabel, pointRoleInputOf } from './routeAssembly';
 
 /**

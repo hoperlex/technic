@@ -10,7 +10,7 @@ import { sortOptionsFrom } from '@shared/ui';
 import { textColumn } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { formatDate, useListParams } from '@shared/lib';
-import { formatDateTimeMaybe } from '../../utils/format';
+import { formatDateTimeMaybe } from '@entities/request';
 import { wasteRequestLink } from '@entities/waste-request';
 
 /**

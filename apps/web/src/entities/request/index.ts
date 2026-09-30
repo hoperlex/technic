@@ -10,6 +10,9 @@
  * read out of the contracts) and the two windows the corridor demands a reason for — cancelling a
  * request and rolling it back into «Новую».
  *
+ * It also owns the display rule for a date whose time was not agreed: `formatDateTimeMaybe` keeps
+ * the hour out instead of turning a missing time into a misleading midnight.
+ *
  * ONE DIRECTION ONLY, AND THE LINT HOLDS IT. `entities/waste-request` and
  * `entities/vehicle-request` may reach in here — the single permission granted between neighbours
  * of one layer (`eslint.config.mjs`) — and this slice may reach back at neither. The moment
@@ -31,6 +34,7 @@
  */
 export { TimeInput, optionalWorkTimeRule } from './ui/TimeInput';
 export { CancelReasonModal, RollbackReasonModal } from './ui/RequestReasonModals';
+export { formatDateTimeMaybe } from './model/formatDateTime';
 
 /*
  * Поля контакта ответственного. Маску номера получают пропом: слайс учёток, где маска живёт, здесь

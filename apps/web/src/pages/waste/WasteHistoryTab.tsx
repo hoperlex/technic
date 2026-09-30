@@ -23,7 +23,7 @@ import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { dayEnd, dayStart, formatMoney, useListParams, useOpenedRecord } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
 import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
 import { wasteHistoryCard, wasteHistoryColumns } from './wasteHistoryColumns';
 import { WasteRequestViewModal } from './WasteRequestViewModal';

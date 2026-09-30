@@ -22,7 +22,7 @@ import { reportServiceMail } from './serviceMailNotice';
 import { cancelErases, type ReasonPrompt } from './serviceRequestPrompts';
 import { serviceActionRow, serviceExecutorAssignment } from './serviceRequestRow';
 import { ReasonModal } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 
 /** Чем открывается каждое окно заявки: заявкой, а у двойных — ещё и стороной действия. */
 export interface ServiceRequestModals {

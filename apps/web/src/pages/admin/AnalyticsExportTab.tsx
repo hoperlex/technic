@@ -15,7 +15,7 @@ import {
 import { analyticsApi } from '@entities/analytics';
 import { objectOptionsQuery } from '@entities/object';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { errorMessage } from '@shared/lib';
 
 /**
  * Сводная аналитика по заказчикам (`docs/analytics-summary-export-plan.md`): работа заказа

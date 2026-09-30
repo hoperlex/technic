@@ -1,7 +1,7 @@
 import { Button, Result, Space, Typography } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import type { WeeklyVehicleRequestDto } from '@technic/contracts';
-import { errorMessage } from '../../utils/format';
+import { weeklyRequestErrorMessage as errorMessage } from '@entities/weekly-request';
 import { hasStatus, WeeklyStatusTag } from './weeklyShared';
 
 /**

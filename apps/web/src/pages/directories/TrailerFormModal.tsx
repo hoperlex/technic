@@ -8,7 +8,7 @@ import {
 } from '@technic/contracts';
 import { trailerKeys, vehicleTrailersApi } from '@entities/vehicle-trailer';
 import { FormGrid, FormModal } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { vehicleTrailerErrorMessage as errorMessage } from '@entities/vehicle-trailer';
 import { kindOptions, statusOptions } from './trailerGrid';
 
 /**

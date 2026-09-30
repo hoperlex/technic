@@ -6,3 +6,4 @@
 export { warehousesApi } from './api/warehousesApi';
 export { warehouseKeys } from './api/keys';
 export { warehouseOptionsQuery } from './api/queries';
+export { warehouseErrorMessage } from './model/errorMessage';

@@ -31,7 +31,7 @@ import { ResponsibleValue } from '@entities/user-account';
 
 import { formatDateTime, formatMoney, useScrollIntoViewWhen } from '@shared/lib';
 import { UserAvatar, ViewFields, ViewModal } from '@shared/ui';
-import { formatDateTimeMaybe } from '../../utils/format';
+import { formatDateTimeMaybe } from '@entities/request';
 
 /**
  * Карточка заявки: поля на чтение и история событий (ADR 0012). Открывается кнопкой в

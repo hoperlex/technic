@@ -28,7 +28,7 @@ import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { vehicleTypeErrorMessage as errorMessage } from '@entities/vehicle-type';
 import { usePurgeAction } from '@features/purge-record';
 
 // Справочник ТТХ (ADR 0016): характеристики, из значений которых складываются категории типов ТС.

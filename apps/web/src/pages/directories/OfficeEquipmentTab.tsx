@@ -27,7 +27,7 @@ import {
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { officeEquipmentErrorMessage as errorMessage } from '@entities/office-equipment';
 import {
   useOfficeEquipmentFilters,
   type OfficeEquipmentFilterParams,

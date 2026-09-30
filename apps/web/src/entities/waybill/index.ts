@@ -29,3 +29,4 @@ export {
  * положен.
  */
 export { waybillLink } from './model/links';
+export { waybillErrorMessage } from './model/errorMessage';

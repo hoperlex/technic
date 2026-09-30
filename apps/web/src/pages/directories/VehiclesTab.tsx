@@ -38,7 +38,7 @@ import { AutoSelect, DataTable, FormModal, PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import type { CardConfig } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { vehicleErrorMessage as errorMessage } from '@entities/vehicle';
 import { usePurgeAction } from '@features/purge-record';
 import { useVehicleFilters, type VehicleFilterParams } from './VehicleFilters';
 import { vehicleRegistryColumns } from './vehicleRegistryColumns';

@@ -48,7 +48,7 @@ import { vehicleRequestLink } from '@entities/vehicle-request';
 import { canOpenRoute, vehicleRouteLink } from '@entities/vehicle-route';
 import { PrintWaybillButton, waybillLink } from '@entities/waybill';
 import { PhoneLink, ResponsibleValue } from '@entities/user-account';
-import { formatDateTimeMaybe } from '../../utils/format';
+import { formatDateTimeMaybe } from '@entities/request';
 import { tripsCountLabel } from './shared';
 import { useRouteModal } from '@features/route-modal';
 import { vehicleRequestCardFooter } from './VehicleRequestCardFooter';

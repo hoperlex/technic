@@ -15,7 +15,7 @@ import {
 } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal, useFormBlockers } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 
 /** Поля окна: исход, обязательная при отмене причина и необязательное слово вдогонку. */
 interface Values {

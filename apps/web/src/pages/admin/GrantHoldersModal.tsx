@@ -12,7 +12,7 @@ import { ViewModal } from '@shared/ui';
 import { formatDateTime } from '@shared/lib';
 import { grantKeys, grantsApi, userGrantsApi } from '@entities/grant';
 import { userAccountKeys, usersApi } from '@entities/user-account';
-import { errorMessage } from '../../utils/format';
+import { grantErrorMessage as errorMessage } from '@entities/grant';
 import { GrantImpactConfirm } from './GrantImpactConfirm';
 import {
   isPendingRoleMigration,

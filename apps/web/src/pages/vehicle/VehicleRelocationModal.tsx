@@ -17,7 +17,7 @@ import { useObjectScope } from '@entities/session';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { AddressField } from '@features/address-input';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { BackdateReasonField } from './VehicleBackdateFields';
 
 /**

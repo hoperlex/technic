@@ -24,4 +24,5 @@ export type {
  * предикат архива, общий трём модулям заявок, — разбор у самого `model/links.ts`.
  */
 export { vehicleRequestDateRules } from './model/dateRules';
+export { vehicleRequestErrorMessage } from './model/errorMessage';
 export { vehicleRequestLink, vehicleRequestViewLink } from './model/links';

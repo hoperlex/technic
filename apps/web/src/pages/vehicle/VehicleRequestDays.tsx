@@ -14,7 +14,7 @@ import {
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { garageKeys } from '@entities/garage';
 import { formatDateOnly } from '@shared/lib';
 import { useRouteModal } from '@features/route-modal';

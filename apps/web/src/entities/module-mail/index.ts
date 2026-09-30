@@ -14,3 +14,4 @@
 export { moduleMailApi } from './api/moduleMailApi';
 export { moduleMailEventsApi } from './api/moduleMailEventsApi';
 export { moduleMailKeys, moduleMailEventKeys } from './api/keys';
+export { moduleMailErrorMessage } from './model/errorMessage';

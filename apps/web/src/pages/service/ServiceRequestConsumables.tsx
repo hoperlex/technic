@@ -13,7 +13,7 @@ import { consumableLabel, serviceRequestKeys, serviceRequestsApi } from '@entiti
 import { useAuth } from '@entities/session';
 import { AutoSelect, FormModal } from '@shared/ui';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
-import { errorMessage } from '../../utils/format';
+import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 
 /** Строка формы: позиция справочника и сколько её просят. Пустая строка — только что добавленная. */
 export interface ConsumableLineValue {

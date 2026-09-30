@@ -13,7 +13,7 @@ import {
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { calendarDaysLabel, formatDateOnly } from '@shared/lib';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
 import { reassignStaleReason } from './ReassignPreview';
 

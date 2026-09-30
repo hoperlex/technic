@@ -13,7 +13,7 @@ import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { warehouseErrorMessage as errorMessage } from '@entities/warehouse';
 import { warehousesApi, warehouseKeys } from '@entities/warehouse';
 
 /**

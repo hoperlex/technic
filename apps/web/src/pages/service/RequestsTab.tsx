@@ -16,7 +16,7 @@ import { MarkAllChatReadButton } from '@features/service-chat';
 import { DataTable, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 import { serviceRequestColumns, serviceGridView } from './serviceRequestGrid';
 import { serviceRequestCard } from './serviceRequestCard';
 import {

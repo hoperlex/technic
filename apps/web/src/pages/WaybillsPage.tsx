@@ -24,7 +24,7 @@ import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from '
 // Подсказки метки «коррекция» и печати сокращённого листа — соседним файлом (Р12, Р13).
 import { useWaybillJournalColumns } from './waybills/columns';
 import { useListParams } from '@shared/lib';
-import { errorMessage } from '../utils/format';
+import { waybillErrorMessage as errorMessage } from '@entities/waybill';
 
 /**
  * Журнал учёта путевых листов (ADR 0037).

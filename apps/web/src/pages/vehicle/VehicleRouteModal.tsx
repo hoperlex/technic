@@ -30,7 +30,7 @@ import { garageKeys } from '@entities/garage';
 import { useAuth } from '@entities/session';
 import { isApiError } from '@shared/api';
 import { AutoSelect, EntityLink, ViewModal } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { vehicleRequestViewLink } from '@entities/vehicle-request';
 import { assembleRoute, blockerMessage } from './routeAssembly';
 import { useRouteModal } from '@features/route-modal';

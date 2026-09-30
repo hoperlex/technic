@@ -3,7 +3,7 @@ import { App, Button, Card, Form, Result, Typography } from 'antd';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { authApi } from '@entities/session';
 import { PasswordField } from '@entities/user-account';
-import { errorMessage } from '../utils/format';
+import { sessionErrorMessage } from '@entities/session';
 
 interface FormValues {
   newPassword: string;
@@ -31,7 +31,7 @@ export function ResetPasswordPage() {
       await authApi.confirmPasswordReset({ token, newPassword: values.newPassword });
       setDone(true);
     } catch (e) {
-      message.error(errorMessage(e));
+      message.error(sessionErrorMessage(e));
     } finally {
       setLoading(false);
     }

@@ -13,7 +13,7 @@ import { useAuth } from '@entities/session';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { actionsColumn, DataTable, RowActionButton, textColumn } from '@shared/ui';
 import { formatDateTime } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { mailingErrorMessage as errorMessage } from '@entities/mailing';
 import { MailingScheduleForm } from './MailingScheduleForm';
 import { mailingRunColumns } from './mailingRunColumns';
 import { permissionLabel } from './grantModel';

@@ -24,7 +24,7 @@ import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { TrailerFields, trailerTripBody } from './TrailerFields';
 import { BackdateReasonField } from './VehicleBackdateFields';
 

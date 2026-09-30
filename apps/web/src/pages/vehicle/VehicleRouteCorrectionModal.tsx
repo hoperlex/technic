@@ -10,7 +10,7 @@ import { sameTrailerGraphs, vehicleRouteKeys, vehicleRoutesApi } from '@entities
 import { waybillKeys, waybillsApi } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
-import { errorMessage } from '../../utils/format';
+import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { RouteCorrectionConsequences } from './RouteCorrectionConsequences';
 import { useRouteCorrectionChoices } from './routeCorrectionChoices';
 import { TrailerFields, trailerTripBody } from './TrailerFields';

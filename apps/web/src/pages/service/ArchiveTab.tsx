@@ -24,7 +24,7 @@ import {
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '@shared/ui';
 import { usePurgeAction } from '@features/purge-record';
-import { errorMessage } from '../../utils/format';
+import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 import { ServiceRequestViewModal } from './ServiceRequestViewModal';
 
 /**

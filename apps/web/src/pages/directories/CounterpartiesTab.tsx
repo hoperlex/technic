@@ -27,7 +27,7 @@ import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { counterpartyErrorMessage as errorMessage } from '@entities/counterparty';
 import { usePurgeAction } from '@features/purge-record';
 import { objectsApi, objectKeys } from '@entities/object';
 import { vehicleKeys } from '@entities/vehicle';

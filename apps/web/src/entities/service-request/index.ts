@@ -52,3 +52,4 @@ export { ServiceCurrentPlaceTag } from './ui/ServiceCurrentPlaceTag';
 export { RepeatTag } from './ui/RepeatTag';
 export { ServiceStatusTag } from './ui/ServiceStatusTag';
 export { UrgentTag } from './ui/UrgentTag';
+export { serviceRequestErrorMessage } from './model/errorMessage';

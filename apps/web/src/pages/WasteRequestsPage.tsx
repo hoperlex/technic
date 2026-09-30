@@ -78,7 +78,7 @@ import { PageTabs, TabsExtra, useActiveTabKey } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
-import { TimeInput, optionalWorkTimeRule } from '@entities/request';
+import { TimeInput, formatDateTimeMaybe, optionalWorkTimeRule } from '@entities/request';
 import { formatDate, useIsMobile } from '@shared/lib';
 import { dayEnd, dayStart } from '@shared/lib';
 import { useListParams } from '@shared/lib';
@@ -90,7 +90,7 @@ import {
 } from '@features/ticket-audit';
 import { usePlaceObjectScope } from '@entities/session';
 
-import { errorMessage, formatDateTimeMaybe } from '../utils/format';
+import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
 import { withSavedOption } from '@shared/lib';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '@entities/waste-request';
 import { OnSiteTab } from './waste/OnSiteTab';

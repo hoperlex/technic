@@ -13,7 +13,7 @@ import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-reques
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { useAuth } from '@entities/session';
 import { newIdempotencyKey } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 import {
   clearServiceBulkRun,
   saveServiceBulkRun,

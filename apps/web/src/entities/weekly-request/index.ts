@@ -5,6 +5,7 @@
  */
 export { weeklyRequestKeys } from './api/keys';
 export { weeklyRequestsApi } from './api/weeklyRequestsApi';
+export { weeklyRequestErrorMessage } from './model/errorMessage';
 export type {
   WeeklyDecisionResultDto,
   WeeklyRequestHistoryEntryDto,

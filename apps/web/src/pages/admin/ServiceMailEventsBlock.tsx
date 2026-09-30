@@ -9,7 +9,7 @@ import { isApiError } from '@shared/api';
 import { formatDateTime } from '@shared/lib';
 import { moduleMailEventKeys, moduleMailEventsApi } from '@entities/module-mail';
 import { useAuth } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { moduleMailErrorMessage as errorMessage } from '@entities/module-mail';
 
 /**
  * Рубильники событий: уходит ли письмо по событию вообще (план

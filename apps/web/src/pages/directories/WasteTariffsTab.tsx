@@ -32,14 +32,14 @@ import {
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { containerTypeOptionsQuery } from '@entities/container-type';
 import { wasteTariffKeys, wasteTariffsApi } from '@entities/waste-tariff';
-import { wasteTypeKeys, wasteTypeOptionsQuery, wasteTypesApi } from '@entities/waste-type';
+import { wasteTypeErrorMessage, wasteTypeKeys, wasteTypeOptionsQuery, wasteTypesApi } from '@entities/waste-type';
 import { AutoSelect } from '@shared/ui';
 import { DataTable } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import type { FilterDefinition } from '@shared/ui';
 import { formatMoney, useIsMobile, useListParams } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { wasteTariffErrorMessage as errorMessage } from '@entities/waste-tariff';
 import { usePurgeAction } from '@features/purge-record';
 import {
   buildWasteTariffGrid,
@@ -322,7 +322,7 @@ export function WasteTariffsTab() {
       setTypeOpen(false);
     },
     onError: (e) => {
-      if (!typeBlockers.fromApi(e)) message.error(errorMessage(e));
+      if (!typeBlockers.fromApi(e)) message.error(wasteTypeErrorMessage(e));
     },
   });
 

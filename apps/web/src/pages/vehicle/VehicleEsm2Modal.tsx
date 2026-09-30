@@ -19,7 +19,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { waybillKeys } from '@entities/waybill';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { formatDateOnly, useIsMobile } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { BackdateReasonField } from './VehicleBackdateFields';
 import { ackRequiredDetails, confirmWaybillWarnings } from './waybillAckConfirm';
 

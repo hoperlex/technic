@@ -11,7 +11,7 @@ import { useServiceRequestModals } from './serviceRequestModals';
 import { serviceRequestMenuItems } from './serviceRequestMenu';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import { reportServiceMail } from './serviceMailNotice';
-import { errorMessage } from '../../utils/format';
+import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 
 /**
  * Чем действие заявки делается: мутации без окна, подтверждения и владение набором окон.

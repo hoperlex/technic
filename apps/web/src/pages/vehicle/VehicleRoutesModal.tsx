@@ -34,7 +34,7 @@ import { ViewModal } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { formatDateOnly, useIsMobile, useListParams } from '@shared/lib';
-import { errorMessage } from '../../utils/format';
+import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { vehicleRequestViewLink } from '@entities/vehicle-request';
 import { waybillLink } from '@entities/waybill';
 import { useRouteModal } from '@features/route-modal';

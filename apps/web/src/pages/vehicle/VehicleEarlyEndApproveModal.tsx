@@ -8,7 +8,7 @@ import type {
 } from '@technic/contracts';
 import { FormModal } from '@shared/ui';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
-import { errorMessage } from '../../utils/format';
+import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
 import { reassignStaleReason } from './ReassignPreview';
 import { formatDateOnly } from '@shared/lib';

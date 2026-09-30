@@ -22,7 +22,7 @@ import { weeklyRequestsApi } from '@entities/weekly-request';
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { useAuth, useObjectScope } from '@entities/session';
-import { errorMessage } from '../../utils/format';
+import { weeklyRequestErrorMessage as errorMessage } from '@entities/weekly-request';
 import { useObjectOptions } from './shared';
 
 /**

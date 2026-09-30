@@ -5,3 +5,4 @@
 export { wasteTypesApi } from './api/wasteTypesApi';
 export { wasteTypeKeys } from './api/keys';
 export { wasteTypeOptionsQuery } from './api/queries';
+export { wasteTypeErrorMessage } from './model/errorMessage';

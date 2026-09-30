@@ -43,3 +43,4 @@ export { PhoneField, PhoneLink } from './ui/PhoneField';
 export { PhoneInput } from './ui/PhoneInput';
 /** Показ контакта: имя и номер ссылкой. Рядом со ссылкой — причина в шапке самого файла. */
 export { ResponsibleValue } from './ui/ResponsibleValue';
+export { userAccountErrorMessage } from './model/errorMessage';
