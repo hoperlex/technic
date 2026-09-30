@@ -14,6 +14,7 @@ import { autoPartReceiptApi } from '@entities/auto-part-receipt';
 import { errorFields, formatMoney } from '@shared/lib';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { ReceiptLinesEditor } from './ReceiptLinesEditor';
+import { WAREHOUSE_DESTINATION_VALUE } from './receiptVehicleOptions';
 import { ReceiptScanField, type ScanFile } from './ReceiptScanField';
 import {
   hasLineErrors,
@@ -311,6 +312,19 @@ export function AutoPartReceiptFormModal({
             errors={lineErrors}
             disabled={busy}
             onChange={changeRow}
+            onAssignAll={(destination) => {
+              setRows((current) =>
+                current.map((row) => ({
+                  ...row,
+                  toWarehouse: destination === WAREHOUSE_DESTINATION_VALUE,
+                  vehicleId:
+                    destination === null || destination === WAREHOUSE_DESTINATION_VALUE
+                      ? null
+                      : destination,
+                })),
+              );
+              setLineErrors({});
+            }}
             onAdd={() => {
               setRows((prev) => [...prev, newReceiptLine()]);
               setLinesError(undefined);

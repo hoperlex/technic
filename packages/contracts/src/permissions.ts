@@ -516,19 +516,18 @@ export const PERMISSIONS = [
   'garage.read',
 
   /**
-   * Автозапчасти (план чеков, `docs/auto-part-receipts-plan.md`, Р4): чеки поставщиков — шапка,
-   * строки с отнесением на машину, сканы и пометка на удаление.
+   * Receipt-backed auto-part accounting (ADR 0216): supplier receipts, assignment of each line
+   * to a vehicle or warehouse, application documents, scans, and deletion marks.
    *
    * Предмет права переосмыслен, а не заведён заново. До заморозки (Р2, Р22) `autoParts.manage`
    * называло ведение складской номенклатуры, а рядом стояло `autoParts.stock` — движение остатка.
-   * Склад ушёл вместе со своим предметом: остатка портал больше не считает, ручек, которые его
-   * двигали, в коде нет, — и права, которое их охраняло, нет в словаре. «Ведение автозапчастей»
-   * осталось тем же словом с другим содержимым: ведут теперь чеки. При заморозке аудитория не
-   * изменилась ни на человека (`mechanic`, `chief_mechanic`), и ни одной выдачи полномочий
-   * не потребовалось. Решение `docs/adr/0217-manager-auto-part-receipts.md` позже добавило
-   * `manager`: временная роль уже принадлежит реальным
-   * сотрудникам, которым нужен расширенный рабочий доступ, поэтому право приходит самой ролью,
-   * а не поимённым набором.
+   * The retired ADR 0134 catalog and its manually edited balance remain frozen. ADR 0216 does
+   * not revive them: a new lot is a receipt line, and its balance is derived from immutable
+   * application documents. There is still no direct stock-balance action for a separate
+   * `autoParts.stock` permission to protect.
+   * ADR 0217 later added `manager`: the temporary role already belongs to actual employees who
+   * need expanded operational access, so the permission comes from the role instead of a named
+   * grant set. The warehouse extension does not narrow that audience.
    *
    * Отвергнуто было завести рядом `autoPartReceipts.manage`: в окне учётки остались бы два права,
    * из которых одно не открывает ни одной ручки, — а «право, которое ничего не даёт» портал
@@ -542,13 +541,14 @@ export const PERMISSIONS = [
    * числится несуществующее право, показывается администратору дающим больше, чем даёт.
    *
    * Права у модуля по-прежнему два, но граница между ними другая — не «реквизиты и движение», а
-   * «ведение и уничтожение»: `autoParts.manage` заводит чек, правит целиком, помечает на удаление
-   * и снимает пометку; `autoParts.delete` стирает его насовсем и не выдан ни одной роли (Р4а).
+   * «ведение и уничтожение»: `autoParts.manage` заводит чек, назначает его строки,
+   * оформляет применение со склада, правит до первого применения и ставит пометку; `autoParts.delete`
+   * стирает чек насовсем и не выдан ни одной роли (Р4а).
    * Деления внутри ведения нет вовсе, и условных прав у модуля не осталось ни одного: чек
    * правится целиком, а «только администратор» выражено самим правом, а не условием по эффекту
    * запроса.
    *
-   * Чтения среди них нет, и своего чтения у модуля не будет: список чеков, карточка и окно машины
+   * Чтения среди них нет: список чеков, склад, месячная форма, карточка и окно машины
    * открываются широким `garage.read` — ответить «чем платили за фильтр» должен всякий, кому
    * виден гараж. Зато оба права объявлены требующими `garage.read` (`PERMISSION_REQUIRES` в
    * `grants.ts`): право вести (и уничтожать) то, чего не видишь, — дыра, ради которой таблица

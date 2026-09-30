@@ -33,8 +33,9 @@ const ON_DATE = '2026-07-24';
 
 const SUMMARY: AutoPartReceiptsSummaryDto = {
   receiptsCount: 1,
-  total: 12300,
+  total: 12800,
   unassignedTotal: 300,
+  warehouseTotal: 500,
   deletionMarkedCount: 1,
 };
 
@@ -48,6 +49,7 @@ const RECEIPT: AutoPartReceiptDto = {
     {
       id: 'l-1',
       seq: 1,
+      destination: 'vehicle',
       vehicleId: 'v1',
       vehicleLabel: 'Е646СК799',
       article: '',
@@ -61,6 +63,7 @@ const RECEIPT: AutoPartReceiptDto = {
     {
       id: 'l-2',
       seq: 2,
+      destination: 'unassigned',
       vehicleId: null,
       vehicleLabel: '',
       article: '',
@@ -71,10 +74,25 @@ const RECEIPT: AutoPartReceiptDto = {
       unitPrice: 300,
       note: '',
     },
+    {
+      id: 'l-3',
+      seq: 3,
+      destination: 'warehouse',
+      vehicleId: null,
+      vehicleLabel: '',
+      article: 'W-1',
+      name: 'Фильтр в запас',
+      quantity: 1,
+      unit: 'шт',
+      amount: 500,
+      unitPrice: 500,
+      note: '',
+    },
   ],
   files: [{ id: 'f-1', filename: 'chek.pdf', contentType: 'application/pdf', size: 1024 }],
-  total: 12300,
+  total: 12800,
   unassignedTotal: 300,
+  warehouseTotal: 500,
   deletion: {
     requestedAt: '2026-07-20T09:00:00.000Z',
     requestedByName: 'Иванов И.И.',
@@ -121,7 +139,7 @@ function renderParts(route: string, role: 'mechanic' | 'manager' | 'admin' = 'me
 }
 
 describe('карточка чека', () => {
-  it('показывает реквизиты, строки, три итога и полосу пометки', async () => {
+  it('показывает реквизиты, строки, складский итог и полосу пометки', async () => {
     renderParts(`/garage?tab=parts&receipt=r-1&date=${ON_DATE}`);
 
     expect(await screen.findByText('Чек № 214')).toBeDefined();
@@ -129,8 +147,11 @@ describe('карточка чека', () => {
     expect(screen.getByText('ООО «Автодеталь»')).toBeDefined();
     expect(screen.getByText('Фильтр масляный')).toBeDefined();
     expect(screen.getByText('не отнесено')).toBeDefined();
-    expect(screen.getByText(/Всего по чеку: 12 300,00 ₽/)).toBeDefined();
+    const stockRow = screen.getByText('Фильтр в запас').closest('tr') as HTMLElement;
+    expect(within(stockRow).getByText('Склад')).toBeDefined();
+    expect(screen.getByText(/Всего по чеку: 12 800,00 ₽/)).toBeDefined();
     expect(screen.getByText(/По машинам: 12 000,00 ₽/)).toBeDefined();
+    expect(screen.getByText(/На склад: 500,00 ₽/)).toBeDefined();
     expect(screen.getByText(/Не отнесено: 300,00 ₽/)).toBeDefined();
     expect(screen.getByText(/Помечен к удалению 20.07.2026 — Иванов И.И./)).toBeDefined();
     expect(screen.getByText('«задвоили с чеком № 214»')).toBeDefined();
@@ -174,5 +195,20 @@ describe('окно «Принять чек»', () => {
     expect(within(modal).getByText('Укажите сумму')).toBeDefined();
     // Поля «итог с бумаги» в форме нет вовсе (Р11) — есть предпросмотр суммы строк.
     expect(within(modal).getByText(/Всего по чеку: 0,00 ₽/)).toBeDefined();
+  });
+
+  it('одним действием относит все строки на склад', async () => {
+    renderParts(`/garage?tab=parts&newReceipt=1&date=${ON_DATE}`);
+
+    await waitFor(() => expect(document.querySelector('.ant-modal')).not.toBeNull());
+    const modal = document.querySelector('.ant-modal') as HTMLElement;
+    const lineSelect = within(modal)
+      .getByLabelText('Техника строки')
+      .closest('.ant-select') as HTMLElement;
+    expect(within(lineSelect).queryByText('Склад')).toBeNull();
+
+    fireEvent.click(within(modal).getByText('Отнести все'));
+
+    await waitFor(() => expect(within(lineSelect).getByText('Склад')).toBeDefined());
   });
 });

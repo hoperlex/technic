@@ -9,7 +9,7 @@ import { PageTabs } from '@shared/ui';
 import { GarageVehiclesTab } from './garage/GarageVehiclesTab';
 import { GarageDriversTab } from './garage/GarageDriversTab';
 import { ReadingsTab } from './garage/ReadingsTab';
-import { AutoPartReceiptsTab } from './garage/AutoPartReceiptsTab';
+import { AutoPartsTab } from './garage/AutoPartsTab';
 import { readingsSub } from './garage/readingsAddress';
 
 /**
@@ -145,7 +145,7 @@ export function GaragePage() {
      * на эту машину» должен и диспетчер, и менеджер. Правами закрыты действия внутри
      * (`autoParts.manage` — ведение, `autoParts.delete` — удаление), а не сам список.
      */
-    { key: 'parts', label: 'Автозапчасти', children: <AutoPartReceiptsTab /> },
+    { key: 'parts', label: 'Автозапчасти', children: <AutoPartsTab /> },
   ];
 
   return (

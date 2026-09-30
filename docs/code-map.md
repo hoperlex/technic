@@ -102,10 +102,10 @@
 - Источник истины: [auto-part-receipts.ts](../packages/contracts/src/auto-part-receipts.ts)
 - Разделы портала: —
 - API-маршруты: [auto-part-receipts.ts](../apps/api/src/routes/auto-part-receipts.ts)
-- Остальной API: [auto-part-receipts.ts](../apps/api/src/services/auto-part-receipts.ts), [auto-part-receipts-read.ts](../apps/api/src/services/auto-part-receipts-read.ts)
-- Web: [auto-part-receipt](../apps/web/src/entities/auto-part-receipt)
+- Остальной API: [auto-part-receipts.ts](../apps/api/src/services/auto-part-receipts.ts), [auto-part-receipts-read.ts](../apps/api/src/services/auto-part-receipts-read.ts), [auto-part-applications-export.ts](../apps/api/src/services/auto-part-applications-export.ts)
+- Web: [auto-part-receipt](../apps/web/src/entities/auto-part-receipt), [garage](../apps/web/src/pages/garage)
 - Тесты: `auto-part-*.db.test.ts`
-- Решения: [ADR 0134](adr/0134-auto-parts.md), [ADR 0154](adr/0154-auto-part-receipts.md)
+- Решения: [ADR 0134](adr/0134-auto-parts.md), [ADR 0154](adr/0154-auto-part-receipts.md), [ADR 0216](adr/0216-auto-part-receipt-warehouse.md)
 
 ## Доступ: права, полномочия, область
 

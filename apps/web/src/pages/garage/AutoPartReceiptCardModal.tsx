@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, App, Button, Skeleton, Space, Table, Typography } from 'antd';
+import { Alert, App, Button, Skeleton, Space, Table, Tag, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { AutoPartReceiptDto, AutoPartReceiptLineDto } from '@technic/contracts';
@@ -44,7 +44,7 @@ const dash = <Typography.Text type="secondary">—</Typography.Text>;
  * про деньги: `3512.2 - 1240.1` даёт хвост, которого нет ни в одном из слагаемых.
  */
 function assignedTotal(receipt: AutoPartReceiptDto): number {
-  return Math.round((receipt.total - receipt.unassignedTotal) * 100) / 100;
+  return Math.round((receipt.total - receipt.unassignedTotal - receipt.warehouseTotal) * 100) / 100;
 }
 
 /** Полоса помеченного чека (Р12): просьба, её автор и дата — то, на что отвечает администратор. */
@@ -194,7 +194,9 @@ export function AutoPartReceiptCardModal({
       title: 'Техника',
       width: 220,
       render: (_v: unknown, line: AutoPartReceiptLineDto) =>
-        line.vehicleId ? (
+        line.destination === 'warehouse' ? (
+          <Tag color="gold">Склад</Tag>
+        ) : line.vehicleId ? (
           // Ссылка настоящая: её открывают средним щелчком соседней вкладкой, а обычный клик
           // открывает окно «Запчасти машины» поверх карточки (Р15).
           <EntityLink
@@ -320,6 +322,7 @@ export function AutoPartReceiptCardModal({
           <Space size={24} wrap style={{ justifyContent: 'flex-end', width: '100%' }}>
             <Typography.Text strong>Всего по чеку: {formatMoney(receipt.total)}</Typography.Text>
             <Typography.Text>По машинам: {formatMoney(assignedTotal(receipt))}</Typography.Text>
+            <Typography.Text>На склад: {formatMoney(receipt.warehouseTotal)}</Typography.Text>
             <Typography.Text type="secondary">
               Не отнесено: {formatMoney(receipt.unassignedTotal)}
             </Typography.Text>

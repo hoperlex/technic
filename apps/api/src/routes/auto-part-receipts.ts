@@ -2,8 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  autoPartApplicationExportQuerySchema,
   autoPartReceiptListQuerySchema,
   autoPartReceiptSummaryQuerySchema,
+  autoPartWarehouseListQuerySchema,
+  createAutoPartApplicationSchema,
   createReceiptSchema,
   moscowDateKeyOf,
   receiptDeletionMarkSchema,
@@ -12,9 +15,11 @@ import {
   uuidSchema,
   vehiclePartsSpendQuerySchema,
   vehiclePartsSpendSnapshotQuerySchema,
+  type AutoPartApplicationDto,
   type AutoPartReceiptDto,
   type AutoPartReceiptListItemDto,
   type AutoPartReceiptsSummaryDto,
+  type AutoPartWarehouseLotDto,
   type ListResult,
   type VehiclePartsSpendDto,
   type ReceiptRecognitionHealthDto,
@@ -24,6 +29,7 @@ import {
 import { requirePrincipal } from '../auth/plugin';
 import { err } from '../lib/errors';
 import {
+  createAutoPartApplication,
   createReceipt,
   clearReceiptDeletionMark,
   deleteReceipt,
@@ -37,11 +43,13 @@ import {
 } from '../services/auto-part-receipt-recognition';
 import {
   listReceipts,
+  listWarehouseLots,
   loadReceiptDto,
   loadReceiptsSummary,
   loadVehiclePartsSpend,
   loadVehiclePartsSnapshot,
 } from '../services/auto-part-receipts-read';
+import { buildAutoPartApplicationsExport } from '../services/auto-part-applications-export';
 import { db } from '../db/client';
 
 /**
@@ -59,9 +67,9 @@ import { db } from '../db/client';
  *   (`NON_GRANTABLE_PERMISSIONS`), и «только администратор» здесь выражено САМИМ ПРАВОМ, а не
  *   условием в манифесте.
  *
- * **Условных прав в модуле нет ни одного**, и это упрощение против замороженного склада: там право
- * зависело от эффекта запроса (двинул ли акт остаток), здесь ведение чеков не делится на
- * «реквизиты» и «движение» — чек не двигает ничего.
+ * Warehouse applications use the same `autoParts.manage` boundary as receipt destinations. This
+ * is still simpler than the frozen catalogue warehouse: there is no effect-dependent permission
+ * and no second stock-maintenance workflow.
  *
  * **Пометка стоит двумя ручками, а не полем в `PATCH`** (Р12, §2.3): правка чека её не трогает, а
  * поле внутри общей формы означало бы обратное — что пометку ставят и снимают заодно с
@@ -82,12 +90,17 @@ const receiptParams = z.object({ id: uuidSchema });
 const vehicleParams = z.object({ id: uuidSchema });
 /** `:fileId` — скан: чтение адресуется файлом, потому что чека в этот момент ещё нет (Р4). */
 const scanParams = z.object({ fileId: uuidSchema });
+/** `:lineId` addresses a warehouse lot, which is a receipt line rather than a catalog card. */
+const applicationLineParams = z.object({ lineId: uuidSchema });
 /**
  * `forced` — «распознать заново» при тех же версиях задания: проход мимо кэша. Необязателен и по
  * умолчанию ложь; `.strict()`, как все схемы ввода модуля, — лишнее поле означает непонятое
  * намерение, а не мелочь.
  */
-const recognizeBody = z.object({ forced: z.boolean().default(false) }).strict().optional();
+const recognizeBody = z
+  .object({ forced: z.boolean().default(false) })
+  .strict()
+  .optional();
 
 /**
  * День среза сумм по машинам (Р14): присланный либо сегодняшний московский — тем же приёмом, что
@@ -118,7 +131,7 @@ export default async function autoPartReceiptsRoutes(app: FastifyInstance): Prom
   );
 
   /**
-   * Сводка вкладки: чеков, сумма, «не отнесено» и «к удалению» (§8).
+   * Сводка вкладки: чеков, сумма, склад, «не отнесено» и «к удалению» (§8).
    *
    * Отбор у неё тот же, что у ленты, и параметров страницы нет вовсе: сводка отвечает про то, что
    * видно целиком, а не про текущую страницу. «Сумма», посчитанная по другому набору строк, чем
@@ -128,6 +141,44 @@ export default async function autoPartReceiptsRoutes(app: FastifyInstance): Prom
     '/summary',
     { ...read, schema: { querystring: autoPartReceiptSummaryQuerySchema } },
     async (req): Promise<AutoPartReceiptsSummaryDto> => loadReceiptsSummary(req.query),
+  );
+
+  /** Receipt-backed warehouse lots with balances derived from immutable application documents. */
+  r.get(
+    '/warehouse',
+    { ...read, schema: { querystring: autoPartWarehouseListQuerySchema } },
+    async (req): Promise<ListResult<AutoPartWarehouseLotDto>> => listWarehouseLots(req.query),
+  );
+
+  /** Monthly reporting form for the future combined garage workbook (ADR 0216). */
+  r.get(
+    '/warehouse/export',
+    { ...read, schema: { querystring: autoPartApplicationExportQuerySchema } },
+    async (req, reply) => {
+      const book = await buildAutoPartApplicationsExport(req.query);
+      return reply
+        .type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .header(
+          'content-disposition',
+          `attachment; filename*=UTF-8''${encodeURIComponent(book.filename)}`,
+        )
+        .send(Buffer.from(book.bytes));
+    },
+  );
+
+  /** Apply part or all of a warehouse lot to one owned vehicle with a reporting document. */
+  r.post(
+    '/warehouse/lines/:lineId/applications',
+    {
+      ...manage,
+      schema: { params: applicationLineParams, body: createAutoPartApplicationSchema },
+    },
+    async (req, reply): Promise<AutoPartApplicationDto> => {
+      const p = requirePrincipal(req);
+      const created = await createAutoPartApplication(req.params.lineId, req.body, p);
+      reply.code(201);
+      return created;
+    },
   );
 
   /**
@@ -221,13 +272,11 @@ export default async function autoPartReceiptsRoutes(app: FastifyInstance): Prom
    * Стоит ПЕРЕД `/:id` намеренно: иначе «recognition» попало бы в него параметром и ручка искала
    * бы чек с таким идентификатором.
    */
-  r.get(
-    '/recognition/health',
-    { ...manage },
-    async (): Promise<ReceiptRecognitionHealthDto> => loadReceiptRecognitionHealth(),
+  r.get('/recognition/health', { ...manage }, async (): Promise<ReceiptRecognitionHealthDto> =>
+    loadReceiptRecognitionHealth(),
   );
 
-  /** Карточка чека: шапка, строки, сканы, оба итога и пометка. */
+  /** Карточка чека: шапка, строки, сканы, все итоги и пометка. */
   r.get(
     '/:id',
     { ...read, schema: { params: receiptParams } },

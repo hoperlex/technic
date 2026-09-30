@@ -11165,9 +11165,9 @@ export const autoPartReceipts = pgTable(
 );
 
 /**
- * Строка чека — позиция, как она напечатана на бумаге (Р7): справочника здесь нет ни одного, и
- * ссылки на складскую позицию (`auto_parts`) тоже нет. Написание строк — забота человека, а не
- * нормализации: «Фильтр масляный MANN W914/2» из чека и карточка склада живут независимо.
+ * A receipt line keeps the wording printed on the source document; there is no normalized parts
+ * catalogue. A line assigned to `warehouse` is the stock lot itself, so no second inventory card
+ * can silently diverge from the receipt quantity or amount (ADR 0216).
  *
  * Хранится сумма строки, а цена за единицу считается делением и показывается справочно (Р9).
  * Обратный порядок — хранить цену и умножать — разошёлся бы с бумагой на копейку: в чеке напечатана
@@ -11188,12 +11188,17 @@ export const autoPartReceiptLines = pgTable(
      */
     seq: smallint('seq').notNull(),
     /**
-     * Машина, на которую отнесли покупку. NULL — законное «не отнесено» (Р8): общий инструмент,
-     * расходники гаража, позиция, которую механик не стал разбирать. Карточка показывает такие
-     * строки отдельным итогом, и сумма по машинам законно меньше суммы чека.
-     *
-     * `restrict`, как у всех учётных ссылок на технику: строка чека — документ, и машину из-под
-     * неё не убирают выводом из парка.
+     * A null vehicle is ambiguous without this value: `unassigned` still needs a decision, while
+     * `warehouse` is an accounted receipt lot. A compatibility trigger derives `vehicle` for old
+     * clients that only send `vehicle_id` during the migration-first deployment window.
+     */
+    destination: text('destination')
+      .$type<'unassigned' | 'warehouse' | 'vehicle'>()
+      .notNull()
+      .default('unassigned'),
+    /**
+     * Filled only for the `vehicle` destination. `restrict` preserves the accounting document
+     * when a vehicle later leaves the fleet; null is disambiguated by `destination`.
      */
     vehicleId: uuid('vehicle_id').references(() => vehicles.id, { onDelete: 'restrict' }),
     /**
@@ -11239,12 +11244,64 @@ export const autoPartReceiptLines = pgTable(
       sql`btrim(${t.unit}) <> ''`,
     ),
     amountNonNegative: check('auto_part_receipt_lines_amount_check', sql`${t.amount} >= 0`),
+    destinationValid: check(
+      'auto_part_receipt_lines_destination_check',
+      sql`(${t.destination} = 'vehicle' AND ${t.vehicleId} IS NOT NULL)
+          OR (${t.destination} IN ('unassigned', 'warehouse') AND ${t.vehicleId} IS NULL)`,
+    ),
     // Под суммы по машине («Запчасти, ₽» во вкладке техники, окно «Запчасти машины») и под сам
     // `restrict` при попытке вывести машину из парка. Частичный: неотнесённых строк много, и на
     // вопрос «что купили этой машине» они не отвечают.
     vehicleIdx: index('auto_part_receipt_lines_vehicle_idx')
       .on(t.vehicleId)
       .where(sql`${t.vehicleId} IS NOT NULL`),
+    warehouseIdx: index('auto_part_receipt_lines_warehouse_idx')
+      .on(t.createdAt, t.id)
+      .where(sql`${t.destination} = 'warehouse'`),
+  }),
+);
+
+/**
+ * Immutable application of a receipt-backed warehouse lot to a vehicle (ADR 0216).
+ *
+ * The amount is assigned by the server in integer kopecks. Keeping it on the document makes a
+ * monthly report reproducible even when a lot is consumed in several partial applications.
+ */
+export const autoPartApplications = pgTable(
+  'auto_part_applications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    receiptLineId: uuid('receipt_line_id')
+      .notNull()
+      .references(() => autoPartReceiptLines.id, { onDelete: 'restrict' }),
+    vehicleId: uuid('vehicle_id')
+      .notNull()
+      .references(() => vehicles.id, { onDelete: 'restrict' }),
+    appliedOn: date('applied_on', { mode: 'string' }).notNull(),
+    quantity: integer('quantity').notNull(),
+    amount: numeric('amount', { precision: 14, scale: 2 }).notNull(),
+    documentNumber: text('document_number').notNull(),
+    note: text('note').notNull().default(''),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    quantityPositive: check('auto_part_applications_quantity_check', sql`${t.quantity} > 0`),
+    amountNonNegative: check('auto_part_applications_amount_check', sql`${t.amount} >= 0`),
+    documentNumberNotBlank: check(
+      'auto_part_applications_document_number_check',
+      sql`btrim(${t.documentNumber}) <> ''`,
+    ),
+    lineIdx: index('auto_part_applications_line_idx').on(t.receiptLineId, t.createdAt, t.id),
+    vehicleDateIdx: index('auto_part_applications_vehicle_date_idx').on(
+      t.vehicleId,
+      t.appliedOn.desc(),
+      t.createdAt.desc(),
+      t.id.desc(),
+    ),
+    monthIdx: index('auto_part_applications_month_idx').on(t.appliedOn, t.createdAt, t.id),
   }),
 );
 
@@ -11277,6 +11334,7 @@ export const autoPartReceiptFiles = pgTable(
 export type AutoPartReceiptRow = typeof autoPartReceipts.$inferSelect;
 export type AutoPartReceiptLineRow = typeof autoPartReceiptLines.$inferSelect;
 export type AutoPartReceiptFileRow = typeof autoPartReceiptFiles.$inferSelect;
+export type AutoPartApplicationRow = typeof autoPartApplications.$inferSelect;
 
 /*
  * ── Распознавание чека (план `docs/auto-part-receipt-ocr-plan.md`) ─────────────────────────────

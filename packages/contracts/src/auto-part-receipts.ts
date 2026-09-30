@@ -11,9 +11,9 @@
  * 2. **Итог нигде не вводится** (Р11). Сумма чека — `Σ amount` строк, и считает её сервер. Поля
  *    «итог по бумаге» нет ни в одной схеме ввода — не «необязательного», а никакого: две суммы
  *    разошлись бы в первый же день, и дальше пришлось бы в каждом отчёте решать, какая правда.
- * 3. **Машина в строке необязательна** (Р8). Пусто — «не отнесено», законное состояние: общий
- *    инструмент, расходники гаража, позиция, которую механик не стал разбирать. Поэтому у чека два
- *    итога, а сумма по машинам законно меньше суммы чека.
+ * 3. A line destination is explicit: it can remain undecided, become a receipt-backed warehouse
+ *    lot, or be charged directly to one owned vehicle. A null vehicle therefore never has to
+ *    carry two different meanings by itself.
  * 4. **Удаление разведено на два действия и два права** (Р12). Держатель ведения ставит пометку с
  *    причиной, администратор удаляет или пометку снимает. Пометка ничего не прячет и ничего не
  *    пересчитывает — отсюда `deletion` в ответах и **версия у всех четырёх мутаций**.
@@ -66,6 +66,10 @@ export const RECEIPT_FUTURE_DATE_MESSAGE = 'Дата чека не может б
 export const RECEIPT_NO_FILES_MESSAGE = 'Прикрепите скан чека';
 export const RECEIPT_NO_LINES_MESSAGE = 'Добавьте хотя бы одну строку';
 
+/** Explicit line destination: undecided, a warehouse lot, or a direct vehicle expense. */
+export const AUTO_PART_RECEIPT_DESTINATIONS = ['unassigned', 'warehouse', 'vehicle'] as const;
+export type AutoPartReceiptDestination = (typeof AUTO_PART_RECEIPT_DESTINATIONS)[number];
+
 // ── Ответы ──
 
 /**
@@ -85,9 +89,9 @@ export interface AutoPartReceiptDeletionDto {
 /**
  * Строка чека (Р7—Р10).
  *
- * `vehicleId` пуст у «не отнесено» (Р8), и `vehicleLabel` тогда пуст тоже — пустой строкой, а не
- * `null`: портал здесь подпись **показывает**, а решает по `vehicleId`, и второе поле, по которому
- * можно решать, разъехалось бы с первым.
+ * `vehicleId` is filled only for the `vehicle` destination. Both `unassigned` and `warehouse`
+ * use null; `destination` distinguishes them. `vehicleLabel` is display-only and stays empty
+ * whenever there is no vehicle.
  *
  * Подпись приходит готовой намеренно: собери её портал из марки, модели и номера — правило
  * «как называется машина» жило бы в каждом экране заново, а окно чека и колонка гаража называли бы
@@ -97,6 +101,7 @@ export interface AutoPartReceiptLineDto {
   id: string;
   /** Порядок как в чеке; сервер проставляет `index + 1` (см. схемы ввода). */
   seq: number;
+  destination: AutoPartReceiptDestination;
   vehicleId: string | null;
   /** «Е646СК799» либо марка/тип (`vehicleLabel`); пусто — строка не отнесена к машине. */
   vehicleLabel: string;
@@ -133,9 +138,8 @@ export interface AutoPartReceiptLineDto {
 /**
  * Чек целиком: карточка, форма правки и ответ на сохранение (Р11, Р12, Р13).
  *
- * Два итога, а не один: `total` — вся бумага, `unassignedTotal` — та её часть, которую не отнесли
- * к машинам. Второе число не выводится из первого и не считается порталом по строкам: сумма по
- * машинам законно меньше суммы чека (Р8), и объяснять разницу должен ответ, а не читатель.
+ * The server returns three independent totals: the entire receipt, the still-undecided share,
+ * and the original value accepted into stock. The portal does not reconstruct them from rows.
  *
  * **Авторитетен серверный итог.** Форма считает свою цифру на глазах у вводящего, но это
  * предпросмотр: после сохранения карточка показывает пришедшую сумму, а не досчитанную.
@@ -156,8 +160,10 @@ export interface AutoPartReceiptDto {
   files: AttachedFileDto[];
   /** `Σ amount` строк — считает сервер (Р11); поля «итог по бумаге» нет вовсе. */
   total: number;
-  /** `Σ amount` строк без машины: «не отнесено — 1 240 ₽» в карточке (Р8). */
+  /** `Σ amount` only for lines whose destination is still `unassigned`. */
   unassignedTotal: number;
+  /** `Σ amount` строк, принятых на склад; это стоимость прихода, не текущего остатка. */
+  warehouseTotal: number;
   /** Пометка на удаление либо `null`. Цифры чека она не меняет — только называет просьбу (Р12). */
   deletion: AutoPartReceiptDeletionDto | null;
   /** Оптимистическая блокировка: версию спрашивают все четыре мутации (Р12). */
@@ -193,7 +199,7 @@ export interface AutoPartReceiptListItemDto {
 }
 
 /**
- * Сводка вкладки: четыре числа под фильтрами списка (§7, §8).
+ * Tab summary: five values calculated with the same filters as the receipt list.
  *
  * `deletionMarkedCount` — очередь администратора и его же уведомление: письма по пометке не
  * заводим (Р12 — разговор идёт внутри карточки), а увидеть очередь он обязан, не открывая каждый
@@ -203,7 +209,41 @@ export interface AutoPartReceiptsSummaryDto {
   receiptsCount: number;
   total: number;
   unassignedTotal: number;
+  warehouseTotal: number;
   deletionMarkedCount: number;
+}
+
+/** A warehouse lot is a receipt line with a balance derived from application documents. */
+export interface AutoPartWarehouseLotDto {
+  lineId: string;
+  receiptId: string;
+  purchasedOn: string;
+  sellerName: string;
+  receiptDocumentNumber: string;
+  article: string;
+  name: string;
+  unit: string;
+  quantity: number;
+  appliedQuantity: number;
+  remainingQuantity: number;
+  amount: number;
+  appliedAmount: number;
+  remainingAmount: number;
+}
+
+/** An immutable document applying warehouse stock to an owned vehicle. */
+export interface AutoPartApplicationDto {
+  id: string;
+  lineId: string;
+  vehicleId: string;
+  vehicleLabel: string;
+  appliedOn: string;
+  quantity: number;
+  amount: number;
+  documentNumber: string;
+  note: string;
+  createdAt: string;
+  createdByName: string;
 }
 
 /**
@@ -340,6 +380,8 @@ const quantitySchema = z
 export const receiptLineInputSchema = z
   .object({
     vehicleId: uuidSchema.nullable().default(null),
+    /** Mutually exclusive with `vehicleId`: one line cannot be both stock and direct expense. */
+    toWarehouse: z.boolean().default(false),
     /**
      * Артикул необязателен и по умолчанию пуст: графы артикула нет у доброй половины бумаг.
      * Сотня знаков — с запасом под составные коды продавцов («L1100x13 (6474EXL)»), и граница
@@ -356,7 +398,16 @@ export const receiptLineInputSchema = z
     amount: receiptAmountSchema,
     note: z.string().trim().max(500).default(''),
   })
-  .strict();
+  .strict()
+  .superRefine((line, ctx) => {
+    if (line.toWarehouse && line.vehicleId !== null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['vehicleId'],
+        message: 'Выберите одно назначение: склад или технику',
+      });
+    }
+  });
 export type ReceiptLineInput = z.infer<typeof receiptLineInputSchema>;
 
 /**
@@ -553,3 +604,39 @@ export const vehiclePartsSpendSnapshotQuerySchema = z
   .object({ to: dateOnlySchema.optional(), ids: vehicleIdsSchema })
   .strict();
 export type VehiclePartsSpendSnapshotQuery = z.infer<typeof vehiclePartsSpendSnapshotQuerySchema>;
+
+// ── Warehouse and application documents (ADR 0216) ──
+
+export const AUTO_PART_WAREHOUSE_SORT_FIELDS = ['purchasedOn', 'name'] as const;
+
+export const autoPartWarehouseListQuerySchema = baseListQuery(AUTO_PART_WAREHOUSE_SORT_FIELDS)
+  .extend({
+    search: z.string().trim().max(200).optional(),
+    /** Empty lots are hidden by default; false returns the complete receipt-lot journal. */
+    inStock: booleanFlagSchema.default(true),
+  })
+  .strict();
+export type AutoPartWarehouseListQuery = z.infer<typeof autoPartWarehouseListQuerySchema>;
+
+const applicationDateSchema = dateOnlySchema.refine(
+  (value) => value <= moscowDateKeyOf(new Date()),
+  'Дата применения не может быть в будущем',
+);
+
+export const createAutoPartApplicationSchema = z
+  .object({
+    vehicleId: uuidSchema,
+    appliedOn: applicationDateSchema,
+    quantity: quantitySchema,
+    documentNumber: z.string().trim().min(1, 'Укажите номер документа').max(100),
+    note: z.string().trim().max(1000).default(''),
+  })
+  .strict();
+export type CreateAutoPartApplicationInput = z.infer<typeof createAutoPartApplicationSchema>;
+export type CreateAutoPartApplicationBody = z.input<typeof createAutoPartApplicationSchema>;
+
+/** Calendar month of the application document's business date, `YYYY-MM`. */
+export const autoPartApplicationExportQuerySchema = z
+  .object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Укажите месяц в формате ГГГГ-ММ') })
+  .strict();
+export type AutoPartApplicationExportQuery = z.infer<typeof autoPartApplicationExportQuerySchema>;

@@ -1,6 +1,9 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
+  type AutoPartApplicationDto,
+  type AutoPartReceiptDestination,
   type AutoPartReceiptDto,
+  type CreateAutoPartApplicationInput,
   type CreateReceiptInput,
   type ReceiptDeletionMarkInput,
   type ReceiptLineInput,
@@ -8,10 +11,16 @@ import {
 } from '@technic/contracts';
 import type { Principal } from '../auth/principal';
 import { db } from '../db/client';
-import { autoPartReceiptFiles, autoPartReceiptLines, autoPartReceipts, files } from '../db/schema';
+import {
+  autoPartApplications,
+  autoPartReceiptFiles,
+  autoPartReceiptLines,
+  autoPartReceipts,
+  files,
+} from '../db/schema';
 import { writeAuditTx } from '../lib/audit';
 import { err } from '../lib/errors';
-import { loadReceiptDto, loadVehicleBriefs } from './auto-part-receipts-read';
+import { loadApplicationDto, loadReceiptDto, loadVehicleBriefs } from './auto-part-receipts-read';
 import { assertFilesAttachable, markFilesActive, scheduleFilesDeletion } from './request-files';
 
 /**
@@ -44,9 +53,9 @@ import { assertFilesAttachable, markFilesActive, scheduleFilesDeletion } from '.
  *    документа не остаётся ничего, кроме строки журнала, и потерянная запись означала бы бесследно
  *    исчезнувший чек.
  *
- * Чего здесь НЕТ и чего искать не надо: склада. Чек ничего не двигает и ни на что не ссылается,
- * второго права по эффекту у него нет вовсе (§7) — это и есть упрощение против замороженного
- * складского учёта.
+ * ADR 0216 adds receipt-backed warehouse lots here without reviving the frozen catalogue-based
+ * stock subsystem. Applications are immutable reporting documents, while remaining stock is
+ * derived from the source receipt line and those documents.
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -119,6 +128,11 @@ async function replaceLines(
       // Порядок как в чеке: его задаёт массив формы, а не присланное клиентом число (§6).
       seq: index + 1,
       vehicleId: line.vehicleId,
+      destination: (line.vehicleId !== null
+        ? 'vehicle'
+        : line.toWarehouse
+          ? 'warehouse'
+          : 'unassigned') as AutoPartReceiptDestination,
       article: line.article,
       name: line.name,
       quantity: line.quantity,
@@ -126,6 +140,28 @@ async function replaceLines(
       amount: amountToDb(line.amount),
       note: line.note,
     })),
+  );
+}
+
+/**
+ * A receipt with an application is an accounting source and can no longer have its lines
+ * recreated or removed. The FK is the final guard; this check gives the person an actionable
+ * conflict instead of a constraint name.
+ */
+async function assertNoApplications(tx: Tx, receiptId: string): Promise<void> {
+  const [application] = await tx
+    .select({ id: autoPartApplications.id })
+    .from(autoPartApplications)
+    .innerJoin(
+      autoPartReceiptLines,
+      eq(autoPartReceiptLines.id, autoPartApplications.receiptLineId),
+    )
+    .where(eq(autoPartReceiptLines.receiptId, receiptId))
+    .limit(1);
+  if (!application) return;
+  throw err.conflict(
+    'По строкам чека уже есть документы применения. Такой чек нельзя изменить или удалить',
+    { code: 'receipt_has_applications' },
   );
 }
 
@@ -304,6 +340,116 @@ export async function createReceipt(
 }
 
 /**
+ * Apply a warehouse lot to a vehicle and assign its exact share of the receipt amount.
+ *
+ * The receipt and line locks serialize this operation with full receipt replacement. Partial
+ * applications use the proportional amount; the final one receives the remaining kopecks so the
+ * sum of documents is always exactly the source line amount.
+ */
+export async function createAutoPartApplicationTx(
+  tx: Tx,
+  lineId: string,
+  input: CreateAutoPartApplicationInput,
+  actor: Principal,
+): Promise<AutoPartApplicationDto> {
+  const [line] = await tx
+    .select({
+      id: autoPartReceiptLines.id,
+      receiptId: autoPartReceiptLines.receiptId,
+      destination: autoPartReceiptLines.destination,
+      quantity: autoPartReceiptLines.quantity,
+      amount: autoPartReceiptLines.amount,
+      name: autoPartReceiptLines.name,
+      purchasedOn: autoPartReceipts.purchasedOn,
+    })
+    .from(autoPartReceiptLines)
+    .innerJoin(autoPartReceipts, eq(autoPartReceipts.id, autoPartReceiptLines.receiptId))
+    .where(eq(autoPartReceiptLines.id, lineId))
+    .for('update');
+  if (!line) throw err.notFound('Партия на складе не найдена');
+  if (line.destination !== 'warehouse') {
+    throw err.conflict('Строка чека не относится к складу', { code: 'line_not_in_warehouse' });
+  }
+  if (input.appliedOn < line.purchasedOn) {
+    throw err.badRequest('Дата применения не может быть раньше даты чека', {
+      appliedOn: 'Дата применения не может быть раньше даты чека',
+    });
+  }
+
+  const vehicle = (await loadVehicleBriefs(tx, [input.vehicleId])).get(input.vehicleId);
+  if (!vehicle) throw err.badRequest('Техника не найдена', { vehicleId: 'Техника не найдена' });
+  if (vehicle.ownership !== 'own') {
+    throw err.badRequest(`${vehicle.label} — арендная техника`, {
+      vehicleId: 'Выберите собственную технику',
+    });
+  }
+
+  const [used] = await tx
+    .select({
+      quantity: sql<string>`coalesce(sum(${autoPartApplications.quantity}), 0)::text`,
+      amount: sql<string>`coalesce(sum(${autoPartApplications.amount}), 0)::numeric(20,2)::text`,
+    })
+    .from(autoPartApplications)
+    .where(eq(autoPartApplications.receiptLineId, lineId));
+  const usedQuantity = Number(used!.quantity);
+  const remainingQuantity = line.quantity - usedQuantity;
+  if (input.quantity > remainingQuantity) {
+    throw err.conflict(
+      `На складе осталось ${remainingQuantity}; применить ${input.quantity} нельзя`,
+      { code: 'auto_part_application_shortage' },
+    );
+  }
+
+  const totalCents = Math.round(Number(line.amount) * 100);
+  const usedCents = Math.round(Number(used!.amount) * 100);
+  const remainingCents = totalCents - usedCents;
+  const proportionalCents = Math.round((totalCents * input.quantity) / line.quantity);
+  const amountCents =
+    input.quantity === remainingQuantity
+      ? remainingCents
+      : Math.min(remainingCents, proportionalCents);
+  const [created] = await tx
+    .insert(autoPartApplications)
+    .values({
+      receiptLineId: lineId,
+      vehicleId: input.vehicleId,
+      appliedOn: input.appliedOn,
+      quantity: input.quantity,
+      amount: (amountCents / 100).toFixed(2),
+      documentNumber: input.documentNumber,
+      note: input.note,
+      createdBy: actor.id,
+    })
+    .returning({ id: autoPartApplications.id });
+
+  await writeAuditTx(tx, {
+    actorUserId: actor.id,
+    action: 'autoPartApplication.create',
+    entityType: 'autoPartApplication',
+    entityId: created!.id,
+    metadata: {
+      receiptId: line.receiptId,
+      lineId,
+      vehicleId: input.vehicleId,
+      appliedOn: input.appliedOn,
+      documentNumber: input.documentNumber,
+      name: line.name,
+      quantity: input.quantity,
+      amount: (amountCents / 100).toFixed(2),
+    },
+  });
+  return loadApplicationDto(tx, created!.id);
+}
+
+export async function createAutoPartApplication(
+  lineId: string,
+  input: CreateAutoPartApplicationInput,
+  actor: Principal,
+): Promise<AutoPartApplicationDto> {
+  return db.transaction(async (tx) => createAutoPartApplicationTx(tx, lineId, input, actor));
+}
+
+/**
  * Правка целиком — с версией (Р12).
  *
  * Сверка версии условием того же `UPDATE`, что и правит: отдельным `SELECT` она стерегла бы
@@ -323,6 +469,7 @@ export async function updateReceipt(
 ): Promise<AutoPartReceiptDto> {
   return db.transaction(async (tx) => {
     const head = await lockReceipt(tx, id);
+    await assertNoApplications(tx, id);
     await assertOwnVehicles(tx, input.lines);
     const before = await totalsOf(tx, id);
 
@@ -486,6 +633,7 @@ export async function clearReceiptDeletionMark(
 export async function deleteReceipt(id: string, version: number, actor: Principal): Promise<void> {
   await db.transaction(async (tx) => {
     const head = await lockReceipt(tx, id);
+    await assertNoApplications(tx, id);
     // Реквизиты и итог читаются ДО удаления: после него взять их будет негде.
     const totals = await totalsOf(tx, id);
     const current = await tx

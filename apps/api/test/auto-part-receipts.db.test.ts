@@ -95,6 +95,7 @@ interface Ctx {
 
 let ctx: Ctx;
 let seq = 0;
+type Tx = Parameters<Parameters<typeof AppDb.transaction>[0]>[0];
 
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -297,6 +298,7 @@ async function headersOf(userId: string): Promise<Headers> {
 
 interface LineBody {
   vehicleId?: string | null;
+  toWarehouse?: boolean;
   article?: string;
   name?: string;
   quantity?: number;
@@ -385,6 +387,14 @@ function summary(headers: Headers, query = '') {
   return ctx.app.inject({
     method: 'GET',
     url: `/api/v1/auto-part-receipts/summary${query}`,
+    headers,
+  });
+}
+
+function warehouse(headers: Headers, query = '') {
+  return ctx.app.inject({
+    method: 'GET',
+    url: `/api/v1/auto-part-receipts/warehouse${query}`,
     headers,
   });
 }
@@ -481,6 +491,19 @@ async function auditOf(receiptId: string) {
       ),
     )
     .orderBy(ctx.schema.auditLog.createdAt);
+}
+
+/** Run accounting-document scenarios without leaving immutable rows in a reusable test database. */
+async function inRolledBackTx(body: (tx: Tx) => Promise<void>): Promise<void> {
+  class Rollback extends Error {}
+  try {
+    await ctx.db.transaction(async (tx) => {
+      await body(tx);
+      throw new Rollback('test scenario complete');
+    });
+  } catch (error) {
+    if (!(error instanceof Rollback)) throw error;
+  }
 }
 
 // ── Родители девяти прежних ветвей `file_is_linked` ──
@@ -823,6 +846,7 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
     expect(dto.total).toBe(2490.34);
     // Второе число не выводится из первого: сумма по машинам законно меньше суммы чека (Р8).
     expect(dto.unassignedTotal).toBe(240);
+    expect(dto.warehouseTotal).toBe(0);
     expect(dto.version).toBe(0);
     expect(dto.updatedByName).toBe('');
     expect(dto.deletion).toBeNull();
@@ -863,8 +887,171 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
       receiptsCount: 1,
       total: 2490.34,
       unassignedTotal: 240,
+      warehouseTotal: 0,
       deletionMarkedCount: 0,
     });
+  });
+
+  it('строка на склад отличается от неотнесённой и появляется партией с полным остатком', async () => {
+    const file = await newFile();
+    const dto = await createReceipt(
+      mech,
+      receiptBody({
+        documentNumber: `ЧЕК-СКЛАД-${RUN}`,
+        fileIds: [file.id],
+        lines: [
+          line({
+            toWarehouse: true,
+            article: `СКЛАД-${RUN}`,
+            name: 'Фильтр в запас',
+            quantity: 4,
+            amount: 1200,
+          }),
+        ],
+      }),
+    );
+    expect(dto.lines[0]).toMatchObject({
+      destination: 'warehouse',
+      vehicleId: null,
+    });
+    expect(dto.unassignedTotal).toBe(0);
+    expect(dto.warehouseTotal).toBe(1200);
+
+    const stock = await warehouse(reader, `?search=${encodeURIComponent(`СКЛАД-${RUN}`)}`);
+    expect(stock.statusCode, stock.body).toBe(200);
+    expect(stock.json().items).toEqual([
+      expect.objectContaining({
+        receiptId: dto.id,
+        lineId: dto.lines[0]!.id,
+        quantity: 4,
+        appliedQuantity: 0,
+        remainingQuantity: 4,
+        amount: 1200,
+        remainingAmount: 1200,
+      }),
+    ]);
+  });
+
+  it('применение списывает остаток, распределяет копейки и не даёт уйти в минус', async () => {
+    const file = await newFile();
+    const vehicle = await newOwnVehicle('warehouse-application');
+    const receipt = await createReceipt(
+      mech,
+      receiptBody({
+        documentNumber: `ЧЕК-ПРИМ-${RUN}`,
+        fileIds: [file.id],
+        lines: [line({ toWarehouse: true, name: 'Комплект', quantity: 3, amount: 100 })],
+      }),
+    );
+    const cheapReceipt = await createReceipt(
+      mech,
+      receiptBody({
+        documentNumber: `ЧЕК-КОПЕЙКИ-${RUN}`,
+        fileIds: [(await newFile()).id],
+        lines: [line({ toWarehouse: true, name: 'Мелкая партия', quantity: 4, amount: 0.02 })],
+      }),
+    );
+    const { createAutoPartApplicationTx } = await import('../src/services/auto-part-receipts');
+    const { loadPrincipal } = await import('../src/auth/principal');
+    const actor = await loadPrincipal(ctx.users.mech);
+    expect(actor).not.toBeNull();
+
+    await inRolledBackTx(async (tx) => {
+      await expect(
+        createAutoPartApplicationTx(
+          tx,
+          receipt.lines[0]!.id,
+          {
+            vehicleId: vehicle.id,
+            appliedOn: ago(1),
+            quantity: 1,
+            documentNumber: 'АКТ-ДО-ПРИХОДА',
+            note: '',
+          },
+          actor!,
+        ),
+      ).rejects.toThrow('Дата применения не может быть раньше даты чека');
+      const first = await createAutoPartApplicationTx(
+        tx,
+        receipt.lines[0]!.id,
+        {
+          vehicleId: vehicle.id,
+          appliedOn: TODAY,
+          quantity: 1,
+          documentNumber: 'АКТ-1',
+          note: '',
+        },
+        actor!,
+      );
+      const final = await createAutoPartApplicationTx(
+        tx,
+        receipt.lines[0]!.id,
+        {
+          vehicleId: vehicle.id,
+          appliedOn: TODAY,
+          quantity: 2,
+          documentNumber: 'АКТ-2',
+          note: '',
+        },
+        actor!,
+      );
+      expect([first.amount, final.amount]).toEqual([33.33, 66.67]);
+      const { buildAutoPartApplicationsExport } =
+        await import('../src/services/auto-part-applications-export');
+      const { readWorkbook } = await import('../src/lib/xlsx');
+      const report = await buildAutoPartApplicationsExport({ month: TODAY.slice(0, 7) }, tx);
+      const [sheet] = readWorkbook(report.bytes);
+      expect(sheet?.name).toBe('Применение со склада');
+      expect(sheet?.rows).toContainEqual(
+        expect.arrayContaining(['АКТ-1', vehicle.label, 'Комплект', '33.33']),
+      );
+      expect(sheet?.rows).toContainEqual(expect.arrayContaining(['Итого', '100']));
+
+      const kopecks: number[] = [];
+      for (let index = 1; index <= 4; index += 1) {
+        const application = await createAutoPartApplicationTx(
+          tx,
+          cheapReceipt.lines[0]!.id,
+          {
+            vehicleId: vehicle.id,
+            appliedOn: TODAY,
+            quantity: 1,
+            documentNumber: `АКТ-КОП-${index}`,
+            note: '',
+          },
+          actor!,
+        );
+        kopecks.push(application.amount);
+      }
+      expect(kopecks).toEqual([0.01, 0.01, 0, 0]);
+      expect(kopecks.reduce((sum, amount) => sum + amount, 0)).toBe(0.02);
+
+      await expect(
+        createAutoPartApplicationTx(
+          tx,
+          receipt.lines[0]!.id,
+          {
+            vehicleId: vehicle.id,
+            appliedOn: TODAY,
+            quantity: 1,
+            documentNumber: 'АКТ-3',
+            note: '',
+          },
+          actor!,
+        ),
+      ).rejects.toThrow('На складе осталось 0');
+    });
+
+    const stock = await warehouse(reader, `?search=${encodeURIComponent('Комплект')}`);
+    expect(stock.statusCode, stock.body).toBe(200);
+    expect(stock.json().items).toContainEqual(
+      expect.objectContaining({
+        lineId: receipt.lines[0]!.id,
+        appliedQuantity: 0,
+        remainingQuantity: 3,
+        remainingAmount: 100,
+      }),
+    );
   });
 
   it('чек целиком «не отнесён»: сумма по машинам законно ноль (Р8)', async () => {
@@ -1854,7 +2041,15 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
       documentTotal: 5660,
       linesTruncated: false,
       lines: [
-        { article: null, name: 'Гидрозамок', quantity: 2, quantityRaw: '2', unit: 'шт', amount: 5660, kind: 'part' },
+        {
+          article: null,
+          name: 'Гидрозамок',
+          quantity: 2,
+          quantityRaw: '2',
+          unit: 'шт',
+          amount: 5660,
+          kind: 'part',
+        },
       ],
     };
     const old = await newFile();
@@ -1891,7 +2086,11 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
 
   it('состояние подсистемы: терминальный отказ держится до успеха, порог — с гистерезисом', async () => {
     const health = () =>
-      ctx.app.inject({ method: 'GET', url: '/api/v1/auto-part-receipts/recognition/health', headers: mech });
+      ctx.app.inject({
+        method: 'GET',
+        url: '/api/v1/auto-part-receipts/recognition/health',
+        headers: mech,
+      });
 
     /*
      * Таблица попыток чистится ЦЕЛИКОМ, и это не небрежность к чужим строкам: ручка считает долю

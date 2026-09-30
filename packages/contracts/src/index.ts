@@ -132,11 +132,8 @@ export * from './garage';
 export * from './driver-cabinet';
 export * from './fuel-norms';
 export * from './vehicle-readings';
-/* Чеки на автозапчасти (`auto-part-receipts.ts`) — на месте склада, который они заменили (план
- * `docs/auto-part-receipts-plan.md`, Р1). Контракты склада уехали выпуском 2 «Заморозка» вместе с
- * его ручками (Р22): читателей у них не осталось — пол `CLIENT_CONTRACT` отрезал старые вкладки
- * ещё до выката. Наследства чек не принял никакого: он не ссылается ни на позицию склада, ни на её
- * потолок количества — своя граница объявлена своим числом. */
+/* Receipt-backed auto-part accounting (`auto-part-receipts.ts`, ADR 0216). The retired ADR 0134
+ * catalog stays frozen; warehouse lots are receipt lines and never reference its tables. */
 export * from './auto-part-receipts';
 /* Распознавание чека (`auto-part-receipt-recognition.ts`) — отдельным файлом от самого чека по той
  * же причине, по какой талоны отделены от заявки: предмет у него другой. Чек — это документ, а

@@ -41,6 +41,8 @@ export interface ReceiptLineRow {
   key: string;
   /** `null` — «не отнесено»: законное состояние строки, а не незаполненное поле (Р8). */
   vehicleId: string | null;
+  /** Explicit stock destination; false with a null vehicle means the line is still unassigned. */
+  toWarehouse: boolean;
   /** Артикул из своей графы счёта; пусто — графы не было, и это норма (Р2а плана распознавания). */
   article: string;
   name: string;
@@ -65,6 +67,7 @@ export function newReceiptLine(): ReceiptLineRow {
   return {
     key: nextKey('line'),
     vehicleId: null,
+    toWarehouse: false,
     article: '',
     name: '',
     quantity: 1,
@@ -79,6 +82,7 @@ export function receiptLinesFromDto(lines: readonly AutoPartReceiptLineDto[]): R
   return lines.map((line) => ({
     key: nextKey(`row-${line.id}`),
     vehicleId: line.vehicleId,
+    toWarehouse: line.destination === 'warehouse',
     article: line.article,
     name: line.name,
     quantity: line.quantity,
@@ -103,6 +107,7 @@ export function receiptLinesTotal(rows: readonly ReceiptLineRow[]): number {
 export function receiptLinesPayload(rows: readonly ReceiptLineRow[]): CreateReceiptBody['lines'] {
   return rows.map((row) => ({
     vehicleId: row.vehicleId,
+    toWarehouse: row.toWarehouse,
     article: row.article.trim(),
     name: row.name.trim(),
     // Пустое количество и пустая сумма сюда не доходят: их отбивает проверка ниже, до отправки.
@@ -238,6 +243,7 @@ export function receiptRowsFromDraft(draft: ReceiptDraft): {
     const row: ReceiptLineRow = {
       key: nextKey('ocr'),
       vehicleId: null,
+      toWarehouse: false,
       article: line.article,
       name: line.name,
       quantity: line.quantity,

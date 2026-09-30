@@ -19,6 +19,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import {
   vehicleLabel,
   type AttachedFileDto,
+  type AutoPartApplicationDto,
   type AutoPartReceiptDeletionDto,
   type AutoPartReceiptDto,
   type AutoPartReceiptLineDto,
@@ -26,6 +27,8 @@ import {
   type AutoPartReceiptListQuery,
   type AutoPartReceiptSummaryQuery,
   type AutoPartReceiptsSummaryDto,
+  type AutoPartWarehouseListQuery,
+  type AutoPartWarehouseLotDto,
   type ListResult,
   type VehiclePartsSpendDto,
   type VehiclePartsSpendQuery,
@@ -38,6 +41,7 @@ import {
   autoPartReceiptFiles,
   autoPartReceiptLines,
   autoPartReceipts,
+  autoPartApplications,
   files,
   users,
   vehicleCategories,
@@ -56,7 +60,7 @@ import { attachedFileView } from './file-view';
  * **Почему чтение отделено от ведения.** Читателей у раздела больше, чем писателей, и они разные:
  * лента и суммы открыты всякому, кому виден гараж (`garage.read`, Р5), а заводит и правит чеки
  * держатель `autoParts.manage`. Разведены они не ради размера файла, а ради одного правила: всё,
- * что здесь считается, считается ОДИНАКОВО для всех четырёх ответов — карточки, ленты, сводки и
+ * что здесь считается, считается ОДИНАКОВО для всех ответов — карточки, ленты, сводки, склада и
  * окна машины. Разойдись формула итога по обработчикам, «Сумма» над списком и итог в карточке
  * назвали бы разные числа, и спорить о том, какое из них правда, пришлось бы в каждом разговоре.
  *
@@ -293,6 +297,7 @@ async function loadLines(
       id: autoPartReceiptLines.id,
       receiptId: autoPartReceiptLines.receiptId,
       seq: autoPartReceiptLines.seq,
+      destination: autoPartReceiptLines.destination,
       vehicleId: autoPartReceiptLines.vehicleId,
       article: autoPartReceiptLines.article,
       name: autoPartReceiptLines.name,
@@ -315,6 +320,7 @@ async function loadLines(
     list.push({
       id: row.id,
       seq: row.seq,
+      destination: row.destination,
       vehicleId: row.vehicleId,
       // Пустая строка, а не `null`: подпись портал ПОКАЗЫВАЕТ, а решает по `vehicleId`, и второе
       // поле, по которому можно решать, разъехалось бы с первым (§6).
@@ -333,7 +339,7 @@ async function loadLines(
 }
 
 /**
- * Чек целиком: шапка, строки, сканы, оба итога и пометка (§6).
+ * Чек целиком: шапка, строки, сканы, все итоги и пометка (§6).
  *
  * Ответ один и тот же у карточки и у всех четырёх мутаций — правда о сохранённом чеке приходит
  * ответом сервера, а не досчитывается формой после сохранения.
@@ -361,7 +367,10 @@ function toReceiptDto(
     files: [...scans],
     total: sumAmounts(lines.map((line) => line.amount)),
     unassignedTotal: sumAmounts(
-      lines.filter((line) => line.vehicleId === null).map((line) => line.amount),
+      lines.filter((line) => line.destination === 'unassigned').map((line) => line.amount),
+    ),
+    warehouseTotal: sumAmounts(
+      lines.filter((line) => line.destination === 'warehouse').map((line) => line.amount),
     ),
     deletion: deletionOf(head),
     version: head.version,
@@ -577,7 +586,7 @@ export async function listReceipts(
 }
 
 /**
- * Сводка вкладки: четыре числа под фильтрами ленты (§7, §8).
+ * Сводка вкладки: пять чисел под фильтрами ленты (§7, §8).
  *
  * Считается по ТЕМ ЖЕ условиям, что и лента: сводка отвечает про то, что видно. Помеченные к
  * удалению в суммы входят наравне со всеми (Р12) — пометка это просьба, а не изъятие документа из
@@ -602,7 +611,9 @@ export async function loadReceiptsSummary(
     .select({
       total: sql<string>`coalesce(sum(${autoPartReceiptLines.amount}), 0)::numeric(20,2)::text`,
       unassignedTotal: sql<string>`coalesce(sum(${autoPartReceiptLines.amount}) FILTER (
-        WHERE ${autoPartReceiptLines.vehicleId} IS NULL), 0)::numeric(20,2)::text`,
+        WHERE ${autoPartReceiptLines.destination} = 'unassigned'), 0)::numeric(20,2)::text`,
+      warehouseTotal: sql<string>`coalesce(sum(${autoPartReceiptLines.amount}) FILTER (
+        WHERE ${autoPartReceiptLines.destination} = 'warehouse'), 0)::numeric(20,2)::text`,
     })
     .from(autoPartReceiptLines)
     .innerJoin(autoPartReceipts, eq(autoPartReceipts.id, autoPartReceiptLines.receiptId))
@@ -611,7 +622,129 @@ export async function loadReceiptsSummary(
     receiptsCount: Number(heads!.receiptsCount),
     total: money(sums!.total),
     unassignedTotal: money(sums!.unassignedTotal),
+    warehouseTotal: money(sums!.warehouseTotal),
     deletionMarkedCount: Number(heads!.deletionMarkedCount),
+  };
+}
+
+/** A single application after write, with the same ready vehicle label used by every receipt. */
+export async function loadApplicationDto(
+  reader: Reader,
+  id: string,
+): Promise<AutoPartApplicationDto> {
+  const [row] = await reader
+    .select({
+      id: autoPartApplications.id,
+      lineId: autoPartApplications.receiptLineId,
+      vehicleId: autoPartApplications.vehicleId,
+      appliedOn: autoPartApplications.appliedOn,
+      quantity: autoPartApplications.quantity,
+      amount: autoPartApplications.amount,
+      documentNumber: autoPartApplications.documentNumber,
+      note: autoPartApplications.note,
+      createdAt: autoPartApplications.createdAt,
+      createdByName: users.fullName,
+    })
+    .from(autoPartApplications)
+    .innerJoin(users, eq(users.id, autoPartApplications.createdBy))
+    .where(eq(autoPartApplications.id, id));
+  if (!row) throw err.notFound('Документ применения не найден');
+  const vehicle = (await loadVehicleBriefs(reader, [row.vehicleId])).get(row.vehicleId);
+  return {
+    id: row.id,
+    lineId: row.lineId,
+    vehicleId: row.vehicleId,
+    vehicleLabel: vehicle?.label ?? '',
+    appliedOn: row.appliedOn,
+    quantity: row.quantity,
+    amount: money(row.amount),
+    documentNumber: row.documentNumber,
+    note: row.note,
+    createdAt: row.createdAt.toISOString(),
+    createdByName: row.createdByName,
+  };
+}
+
+const appliedQuantityExpr = sql<string>`coalesce((
+  SELECT sum(a.quantity) FROM auto_part_applications a
+  WHERE a.receipt_line_id = ${autoPartReceiptLines.id}
+), 0)::text`;
+const appliedAmountExpr = sql<string>`coalesce((
+  SELECT sum(a.amount) FROM auto_part_applications a
+  WHERE a.receipt_line_id = ${autoPartReceiptLines.id}
+), 0)::numeric(20,2)::text`;
+
+/** Receipt-backed warehouse lots. Remaining quantity and amount are always derived from documents. */
+export async function listWarehouseLots(
+  q: AutoPartWarehouseListQuery,
+): Promise<ListResult<AutoPartWarehouseLotDto>> {
+  const search = q.search ? `%${q.search}%` : undefined;
+  const where = and(
+    eq(autoPartReceiptLines.destination, 'warehouse'),
+    q.inStock
+      ? sql`${autoPartReceiptLines.quantity} > (${appliedQuantityExpr})::integer`
+      : undefined,
+    search
+      ? or(
+          ilike(autoPartReceiptLines.name, search),
+          ilike(autoPartReceiptLines.article, search),
+          ilike(autoPartReceipts.documentNumber, search),
+          ilike(autoPartReceipts.sellerName, search),
+        )
+      : undefined,
+  );
+  const page = pageParams(q);
+  const sort =
+    q.sortBy === 'name'
+      ? q.sortOrder === 'asc'
+        ? asc(autoPartReceiptLines.name)
+        : desc(autoPartReceiptLines.name)
+      : q.sortOrder === 'asc'
+        ? asc(autoPartReceipts.purchasedOn)
+        : desc(autoPartReceipts.purchasedOn);
+  const rows = await db
+    .select({
+      lineId: autoPartReceiptLines.id,
+      receiptId: autoPartReceipts.id,
+      purchasedOn: autoPartReceipts.purchasedOn,
+      sellerName: autoPartReceipts.sellerName,
+      receiptDocumentNumber: autoPartReceipts.documentNumber,
+      article: autoPartReceiptLines.article,
+      name: autoPartReceiptLines.name,
+      unit: autoPartReceiptLines.unit,
+      quantity: autoPartReceiptLines.quantity,
+      appliedQuantity: appliedQuantityExpr,
+      amount: autoPartReceiptLines.amount,
+      appliedAmount: appliedAmountExpr,
+    })
+    .from(autoPartReceiptLines)
+    .innerJoin(autoPartReceipts, eq(autoPartReceipts.id, autoPartReceiptLines.receiptId))
+    .where(where)
+    .orderBy(sort, desc(autoPartReceiptLines.createdAt), desc(autoPartReceiptLines.id))
+    .limit(page.limit)
+    .offset(page.offset);
+  const [totalRow] = await db
+    .select({ c: count() })
+    .from(autoPartReceiptLines)
+    .innerJoin(autoPartReceipts, eq(autoPartReceipts.id, autoPartReceiptLines.receiptId))
+    .where(where);
+  return {
+    items: rows.map((row) => {
+      const amount = money(row.amount);
+      const appliedAmount = money(row.appliedAmount);
+      const appliedQuantity = Number(row.appliedQuantity);
+      return {
+        ...row,
+        amount,
+        appliedAmount,
+        appliedQuantity,
+        remainingQuantity: row.quantity - appliedQuantity,
+        remainingAmount: Math.round((amount - appliedAmount) * 100) / 100,
+      };
+    }),
+    total: Number(totalRow!.c),
+    page: page.page,
+    pageSize: page.pageSize,
   };
 }
 
@@ -636,21 +769,57 @@ export async function loadVehiclePartsSnapshot(
     .select({
       vehicleId: autoPartReceiptLines.vehicleId,
       total: sql<string>`coalesce(sum(${autoPartReceiptLines.amount}), 0)::numeric(20,2)::text`,
-      // Чеков, а не строк: две позиции одного чека на одну машину — это одна покупка.
-      receiptsCount: sql<string>`count(DISTINCT ${autoPartReceipts.id})`,
+      receiptIds: sql<string[]>`array_agg(DISTINCT ${autoPartReceipts.id})`,
       lastPurchasedOn: sql<string | null>`max(${autoPartReceipts.purchasedOn})`,
     })
     .from(autoPartReceiptLines)
     .innerJoin(autoPartReceipts, eq(autoPartReceipts.id, autoPartReceiptLines.receiptId))
     .where(and(inArray(autoPartReceiptLines.vehicleId, ids), lte(autoPartReceipts.purchasedOn, to)))
     .groupBy(autoPartReceiptLines.vehicleId);
+  const receiptIdsByVehicle = new Map<string, Set<string>>();
   for (const row of rows) {
     if (row.vehicleId === null) continue;
+    const receiptIds = new Set(row.receiptIds);
+    receiptIdsByVehicle.set(row.vehicleId, receiptIds);
     found.set(row.vehicleId, {
       vehicleId: row.vehicleId,
       total: money(row.total),
-      receiptsCount: Number(row.receiptsCount),
+      receiptsCount: receiptIds.size,
       lastPurchasedOn: row.lastPurchasedOn,
+    });
+  }
+
+  const applications = await db
+    .select({
+      vehicleId: autoPartApplications.vehicleId,
+      total: sql<string>`coalesce(sum(${autoPartApplications.amount}), 0)::numeric(20,2)::text`,
+      receiptIds: sql<string[]>`array_agg(DISTINCT ${autoPartReceiptLines.receiptId})`,
+      lastPurchasedOn: sql<string | null>`max(${autoPartApplications.appliedOn})`,
+    })
+    .from(autoPartApplications)
+    .innerJoin(
+      autoPartReceiptLines,
+      eq(autoPartReceiptLines.id, autoPartApplications.receiptLineId),
+    )
+    .where(
+      and(inArray(autoPartApplications.vehicleId, ids), lte(autoPartApplications.appliedOn, to)),
+    )
+    .groupBy(autoPartApplications.vehicleId);
+  for (const row of applications) {
+    const before = found.get(row.vehicleId);
+    const receiptIds = receiptIdsByVehicle.get(row.vehicleId) ?? new Set<string>();
+    for (const receiptId of row.receiptIds) receiptIds.add(receiptId);
+    receiptIdsByVehicle.set(row.vehicleId, receiptIds);
+    found.set(row.vehicleId, {
+      vehicleId: row.vehicleId,
+      total: Math.round(((before?.total ?? 0) + money(row.total)) * 100) / 100,
+      // One receipt can contribute both directly and through stock; count it only once.
+      receiptsCount: receiptIds.size,
+      lastPurchasedOn:
+        !before?.lastPurchasedOn ||
+        (row.lastPurchasedOn !== null && row.lastPurchasedOn > before.lastPurchasedOn)
+          ? row.lastPurchasedOn
+          : before.lastPurchasedOn,
     });
   }
   return found;
@@ -682,7 +851,7 @@ export async function loadVehiclePartsSpend(
 
   // Оба итога одним проходом: `FILTER` считает период, обычная сумма — всё время. Второй запрос
   // дал бы те же два числа, но снятые в разные моменты.
-  const [totals] = await db
+  const [directTotals] = await db
     .select({
       total: sql<string>`coalesce(sum(${autoPartReceiptLines.amount})
         FILTER (WHERE ${period ?? sql`true`}), 0)::numeric(20,2)::text`,
@@ -692,7 +861,20 @@ export async function loadVehiclePartsSpend(
     .innerJoin(autoPartReceipts, eq(autoPartReceipts.id, autoPartReceiptLines.receiptId))
     .where(mine);
 
-  const rows = await db
+  const applicationPeriod = and(
+    q.from ? gte(autoPartApplications.appliedOn, q.from) : undefined,
+    q.to ? lte(autoPartApplications.appliedOn, q.to) : undefined,
+  );
+  const [applicationTotals] = await db
+    .select({
+      total: sql<string>`coalesce(sum(${autoPartApplications.amount})
+        FILTER (WHERE ${applicationPeriod ?? sql`true`}), 0)::numeric(20,2)::text`,
+      totalAllTime: sql<string>`coalesce(sum(${autoPartApplications.amount}), 0)::numeric(20,2)::text`,
+    })
+    .from(autoPartApplications)
+    .where(eq(autoPartApplications.vehicleId, vehicleId));
+
+  const directRows = await db
     .select({
       receiptId: autoPartReceipts.id,
       purchasedOn: autoPartReceipts.purchasedOn,
@@ -719,7 +901,7 @@ export async function loadVehiclePartsSpend(
       asc(autoPartReceiptLines.seq),
     );
 
-  const items: VehiclePartsSpendRowDto[] = rows.map((row) => ({
+  const items: VehiclePartsSpendRowDto[] = directRows.map((row) => ({
     receiptId: row.receiptId,
     purchasedOn: row.purchasedOn,
     sellerName: row.sellerName,
@@ -732,11 +914,57 @@ export async function loadVehiclePartsSpend(
     amount: money(row.amount),
   }));
 
+  const applicationRows = await db
+    .select({
+      applicationId: autoPartApplications.id,
+      receiptId: autoPartReceipts.id,
+      appliedOn: autoPartApplications.appliedOn,
+      sellerName: autoPartReceipts.sellerName,
+      receiptDocumentNumber: autoPartReceipts.documentNumber,
+      applicationDocumentNumber: autoPartApplications.documentNumber,
+      createdAt: autoPartApplications.createdAt,
+      article: autoPartReceiptLines.article,
+      name: autoPartReceiptLines.name,
+      quantity: autoPartApplications.quantity,
+      unit: autoPartReceiptLines.unit,
+      amount: autoPartApplications.amount,
+    })
+    .from(autoPartApplications)
+    .innerJoin(
+      autoPartReceiptLines,
+      eq(autoPartReceiptLines.id, autoPartApplications.receiptLineId),
+    )
+    .innerJoin(autoPartReceipts, eq(autoPartReceipts.id, autoPartReceiptLines.receiptId))
+    .where(and(eq(autoPartApplications.vehicleId, vehicleId), applicationPeriod))
+    .orderBy(
+      desc(autoPartApplications.appliedOn),
+      desc(autoPartApplications.createdAt),
+      desc(autoPartApplications.id),
+    );
+  for (const row of applicationRows) {
+    items.push({
+      receiptId: row.receiptId,
+      purchasedOn: row.appliedOn,
+      sellerName: `Со склада · ${row.sellerName || `чек № ${row.receiptDocumentNumber}`}`,
+      documentNumber: row.applicationDocumentNumber,
+      lineId: row.applicationId,
+      article: row.article,
+      name: row.name,
+      quantity: row.quantity,
+      unit: row.unit,
+      amount: money(row.amount),
+    });
+  }
+  items.sort((a, b) => b.purchasedOn.localeCompare(a.purchasedOn));
+
   return {
     vehicleId,
     vehicleLabel: brief.label,
-    total: money(totals!.total),
-    totalAllTime: money(totals!.totalAllTime),
+    total: Math.round((money(directTotals!.total) + money(applicationTotals!.total)) * 100) / 100,
+    totalAllTime:
+      Math.round(
+        (money(directTotals!.totalAllTime) + money(applicationTotals!.totalAllTime)) * 100,
+      ) / 100,
     rows: items,
   };
 }

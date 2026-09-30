@@ -2068,23 +2068,22 @@ export const ACCESS_MANIFEST = {
   'GET /api/v1/analytics/summary': { kind: 'permissions', allOf: ['analytics.export'] },
   'GET /api/v1/analytics/export': { kind: 'permissions', allOf: ['analytics.export'] },
 
-  // ── Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, Р4а, Р5, Р12; §7) ──
+  // ── Auto-part receipts and receipt-backed warehouse (ADR 0216) ──
   //
-  // Все десять строк — простой вид `permissions`: условных прав в модуле нет ни одного, и это
-  // упрощение против склада выше. Там право зависело от ЭФФЕКТА запроса (двинул ли акт остаток),
-  // здесь ведение чеков не делится на «реквизиты» и «движение» — чек не двигает ничего.
+  // Read operations use the broad `garage.read` permission because receipts, warehouse balances,
+  // vehicle spending, and the monthly report are facets of the same garage accounting record.
+  // Creating an application document changes the derived warehouse balance, so it is protected by
+  // `autoParts.manage`; the balance itself is never edited directly.
   //
-  // Чтение — широкое `garage.read` (Р5): вопрос «сколько вложено в эту машину» задаёт всякий, кому
-  // виден гараж, персональных данных в чеке нет, а деньги портал этой же аудитории показывает
-  // давно. Отсюда и колонка «Запчасти, ₽» во вкладке «Техника» — без права на показания.
-  //
-  // Ведение — `autoParts.manage`: заведение, правка и обе ручки пометки. Удаление — своё право
-  // `autoParts.delete`, и «только администратор» выражено САМИМ ПРАВОМ, а не условием: право
-  // неназначаемо (`NON_GRANTABLE_PERMISSIONS`), в набор полномочия не собирается и достаётся
-  // администратору из `admin: [...PERMISSIONS]`. Оба права требуют `garage.read`
-  // (`PERMISSION_REQUIRES`): вести — и тем более уничтожать — то, чего не видишь, дыра.
+  // Permanent receipt deletion keeps the non-grantable `autoParts.delete` permission. Both write
+  // permissions require `garage.read`, so nobody can manage records hidden from them.
   'GET /api/v1/auto-part-receipts': { kind: 'permissions', allOf: ['garage.read'] },
   'GET /api/v1/auto-part-receipts/summary': { kind: 'permissions', allOf: ['garage.read'] },
+  'GET /api/v1/auto-part-receipts/warehouse': { kind: 'permissions', allOf: ['garage.read'] },
+  'GET /api/v1/auto-part-receipts/warehouse/export': {
+    kind: 'permissions',
+    allOf: ['garage.read'],
+  },
   'GET /api/v1/auto-part-receipts/vehicles/snapshot': {
     kind: 'permissions',
     allOf: ['garage.read'],
@@ -2093,9 +2092,11 @@ export const ACCESS_MANIFEST = {
   'GET /api/v1/auto-part-receipts/:id': { kind: 'permissions', allOf: ['garage.read'] },
   'POST /api/v1/auto-part-receipts': { kind: 'permissions', allOf: ['autoParts.manage'] },
   'PATCH /api/v1/auto-part-receipts/:id': { kind: 'permissions', allOf: ['autoParts.manage'] },
-  // Пометка на удаление и её снятие — под правом ВЕДЕНИЯ, а не удаления (Р12): держатель
-  // `autoParts.manage` просит, администратор отвечает. Пометка ничего не прячет и ничего не
-  // пересчитывает, поэтому третьего права ей не нужно.
+  'POST /api/v1/auto-part-receipts/warehouse/lines/:lineId/applications': {
+    kind: 'permissions',
+    allOf: ['autoParts.manage'],
+  },
+  // A deletion mark is a reversible management action; permanent deletion remains separate.
   'POST /api/v1/auto-part-receipts/:id/deletion-mark': {
     kind: 'permissions',
     allOf: ['autoParts.manage'],

@@ -320,10 +320,20 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { note: 'перебор доступа' },
   },
   'POST /api/v1/device-mail/rules': {
-    payload: { target: 'identity', keyKind: 'serial', matchKind: 'label', expression: 'machine id' },
+    payload: {
+      target: 'identity',
+      keyKind: 'serial',
+      matchKind: 'label',
+      expression: 'machine id',
+    },
   },
   'PATCH /api/v1/device-mail/rules/:id': {
-    payload: { target: 'identity', keyKind: 'serial', matchKind: 'label', expression: 'machine id' },
+    payload: {
+      target: 'identity',
+      keyKind: 'serial',
+      matchKind: 'label',
+      expression: 'machine id',
+    },
   },
   'POST /api/v1/device-mail/rules/preview': {
     payload: {
@@ -1403,6 +1413,18 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   // пришёл бы от неё, а не от права.
   'GET /api/v1/auto-part-receipts/vehicles/snapshot': {
     query: `to=${PAST_DATE}&ids=${RECORD_ID}`,
+  },
+  'GET /api/v1/auto-part-receipts/warehouse/export': {
+    query: `month=${PAST_DATE.slice(0, 7)}`,
+  },
+  'POST /api/v1/auto-part-receipts/warehouse/lines/:lineId/applications': {
+    params: { lineId: RECORD_ID },
+    payload: {
+      vehicleId: RECORD_ID,
+      appliedOn: PAST_DATE,
+      quantity: 1,
+      documentNumber: 'АКТ-1',
+    },
   },
 
   // ── Техническое обслуживание ──

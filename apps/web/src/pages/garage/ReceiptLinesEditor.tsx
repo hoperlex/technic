@@ -1,12 +1,14 @@
-import type { KeyboardEvent, ReactNode } from 'react';
-import { Button, Col, Input, InputNumber, Row, Select, Typography } from 'antd';
+import { useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Button, Col, Input, InputNumber, Row, Select, Space, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
-import { RECEIPT_MAX_AMOUNT, RECEIPT_MAX_QUANTITY, vehicleOptionLabel } from '@technic/contracts';
-import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { RECEIPT_MAX_AMOUNT, RECEIPT_MAX_QUANTITY } from '@technic/contracts';
 import { useIsMobile } from '@shared/lib';
 import type { ReceiptLineErrors, ReceiptLineRow } from './receiptLines';
+import {
+  UNASSIGNED_DESTINATION_VALUE,
+  useReceiptVehicleOptions,
+  WAREHOUSE_DESTINATION_VALUE,
+} from './receiptVehicleOptions';
 
 /**
  * Таблица строк в окне «Принять чек» (план `docs/auto-part-receipts-plan.md`, §8, Р7—Р10).
@@ -54,34 +56,6 @@ const MOBILE_SPAN = {
   remove: 4,
 } as const;
 
-/**
- * Перечень собственной техники для поля строки.
- *
- * Ключ и запрос — те же, что у отбора вкладки (`vehicleKeys.ownOptions()`): список один, и второй
- * запрос за ним означал бы вторую копию в кэше, переживающую переименование машины.
- *
- * Только `own`: строка чека ссылается на собственную машину, и это правило сервера (Р21), а не
- * подбора в форме, — прямой запрос к API прошёл бы мимо любого фильтра списка. Списанные и стоящие
- * в ремонте не убираются: чек законно выписан на машину, которую позже вывели из парка.
- */
-function useOwnVehicleOptions(): { options: { value: string; label: string }[]; loading: boolean } {
-  const { data, isFetching } = useQuery({
-    queryKey: vehicleKeys.ownOptions(),
-    queryFn: () =>
-      vehiclesApi.list({
-        page: 1,
-        pageSize: DICTIONARY_PAGE_SIZE,
-        ownership: 'own',
-        sortBy: 'createdAt',
-      }),
-  });
-  const options = (data?.items ?? [])
-    .map((v) => ({ value: v.id, label: vehicleOptionLabel(v) }))
-    // Порядок — по подписи: машину ищут глазами по госномеру, а не по дате заведения.
-    .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
-  return { options, loading: isFetching };
-}
-
 /** Причина отказа под ячейкой: то же место и тот же цвет, что у подстрочника `Form.Item`. */
 function CellError({ text }: { text?: string }) {
   if (!text) return null;
@@ -120,6 +94,7 @@ export interface ReceiptLinesEditorProps {
   /** Форма занята сохранением: поля гасятся, чтобы набранное не разъехалось с отправленным. */
   disabled?: boolean;
   onChange: (key: string, patch: Partial<ReceiptLineRow>) => void;
+  onAssignAll: (destination: string | null) => void;
   onAdd: () => void;
   onRemove: (key: string) => void;
 }
@@ -129,14 +104,44 @@ export function ReceiptLinesEditor({
   errors,
   disabled = false,
   onChange,
+  onAssignAll,
   onAdd,
   onRemove,
 }: ReceiptLinesEditorProps) {
   const isMobile = useIsMobile();
-  const { options, loading } = useOwnVehicleOptions();
+  const { options, loading } = useReceiptVehicleOptions();
+  const [bulkDestination, setBulkDestination] = useState<string>(WAREHOUSE_DESTINATION_VALUE);
+  const destinationOptions = [{ value: WAREHOUSE_DESTINATION_VALUE, label: 'Склад' }, ...options];
 
   return (
     <div>
+      {rows.length > 0 && (
+        <Space wrap style={{ marginBottom: 8 }}>
+          <Typography.Text>Все позиции:</Typography.Text>
+          <Select
+            value={bulkDestination}
+            loading={loading}
+            showSearch
+            optionFilterProp="label"
+            style={{ minWidth: 260 }}
+            options={[
+              { value: WAREHOUSE_DESTINATION_VALUE, label: 'Склад' },
+              { value: UNASSIGNED_DESTINATION_VALUE, label: 'Не отнесено' },
+              ...options,
+            ]}
+            onChange={setBulkDestination}
+            disabled={disabled}
+          />
+          <Button
+            onClick={() =>
+              onAssignAll(bulkDestination === UNASSIGNED_DESTINATION_VALUE ? null : bulkDestination)
+            }
+            disabled={disabled}
+          >
+            Отнести все
+          </Button>
+        </Space>
+      )}
       {!isMobile && rows.length > 0 && (
         <Row gutter={8} style={{ marginBottom: 4 }}>
           <HeaderCell span={SPAN.vehicle}>Техника</HeaderCell>
@@ -181,10 +186,15 @@ export function ReceiptLinesEditor({
                 aria-label="Техника строки"
                 disabled={disabled}
                 loading={loading}
-                options={options}
+                options={destinationOptions}
                 status={issue.vehicleId ? 'error' : undefined}
-                value={row.vehicleId ?? undefined}
-                onChange={(v: string | undefined) => onChange(row.key, { vehicleId: v ?? null })}
+                value={row.toWarehouse ? WAREHOUSE_DESTINATION_VALUE : (row.vehicleId ?? undefined)}
+                onChange={(value: string | undefined) =>
+                  onChange(row.key, {
+                    toWarehouse: value === WAREHOUSE_DESTINATION_VALUE,
+                    vehicleId: !value || value === WAREHOUSE_DESTINATION_VALUE ? null : value,
+                  })
+                }
               />
               <CellError text={issue.vehicleId} />
             </Col>

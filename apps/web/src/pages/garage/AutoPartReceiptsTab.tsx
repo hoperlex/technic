@@ -36,7 +36,7 @@ import { VehiclePartsSpendModal } from './VehiclePartsSpendModal';
  * 24 июля» к покупкам отношения не имеет. Ключ `?date=` вкладка не читает и не пишет — страница
  * гаража хранит его сама, чтобы возврат на «Технику» показал тот же день.
  *
- * **Отбор, порядок и страницы считает сервер**, и сводка считается тем же отбором: четыре числа
+ * **Отбор, порядок и страницы считает сервер**, и сводка считается тем же отбором: пять чисел
  * над таблицей относятся ровно к тому, что видно, — иначе «Сумма» над отфильтрованным списком
  * называла бы чужое число.
  *
@@ -110,6 +110,7 @@ export function AutoPartReceiptsTab() {
   const summaryItems = [
     { label: 'Чеков', value: summary?.receiptsCount ?? 0 },
     { label: 'Сумма', value: formatMoney(summary?.total ?? 0) },
+    { label: 'На склад', value: formatMoney(summary?.warehouseTotal ?? 0) },
     { label: 'Не отнесено', value: formatMoney(summary?.unassignedTotal ?? 0) },
     { label: 'К удалению', value: summary?.deletionMarkedCount ?? 0 },
   ];
@@ -190,7 +191,7 @@ export function AutoPartReceiptsTab() {
         pageSize={params.pageSize}
         sortBy={params.sortBy}
         sortOrder={params.sortOrder}
-        // Нажатие по строке открывает карточку чека — там строки, сканы, оба итога и действия.
+        // Нажатие по строке открывает карточку чека — там строки, сканы, все итоги и действия.
         onRowClick={openReceipt}
         onChange={onTableChange}
       />

@@ -465,17 +465,14 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
 
   'garage.read': { module: 'garage', action: 'read', label: 'Смотрит день гаража' },
   /*
-   * Подпись называет чеки, а не справочник (план чеков, Р4). До заморозки право вело складскую
-   * номенклатуру, и подпись «Ведёт справочник автозапчастей» была верна; склад ушёл, предметом
-   * права стали чеки поставщиков — а витрина отвечает на вопрос «что человек может» и в карточке
-   * доступа, и в отказе выдачи. Оставь её прежней — и администратор собирал бы полномочие по
-   * названию предмета, которого в портале больше нет. Соседняя подпись про остаток снята вместе с
-   * самим правом: `autoParts.stock` из словаря ушло.
+   * One permission covers the complete receipt-backed workflow: receipt entry, explicit stock
+   * destination, and application documents. The stock balance itself is derived and has no edit
+   * action, so reviving the retired `autoParts.stock` permission would describe no route.
    */
   'autoParts.manage': {
     module: 'garage',
     action: 'manage',
-    label: 'Ведёт чеки на автозапчасти',
+    label: 'Ведёт чеки и склад автозапчастей',
   },
   /*
    * Удаление, а не «ведение», и подпись обязана это показывать (план чеков, Р4а). Держатели

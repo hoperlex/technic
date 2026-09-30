@@ -1,7 +1,10 @@
 import type {
+  AutoPartApplicationDto,
   AutoPartReceiptDto,
   AutoPartReceiptListItemDto,
   AutoPartReceiptsSummaryDto,
+  AutoPartWarehouseLotDto,
+  CreateAutoPartApplicationBody,
   CreateReceiptBody,
   ReceiptDeletionMarkInput,
   ReceiptRecognitionHealthDto,
@@ -10,11 +13,11 @@ import type {
   VehiclePartsSpendDto,
   VehiclePartsSpendSnapshotDto,
 } from '@technic/contracts';
-import { apiFetch, type ListResult, type Query } from '@shared/api';
+import { apiDownload, apiFetch, type ListResult, type Query } from '@shared/api';
 
 /**
- * Клиент чеков на автозапчасти (план `docs/auto-part-receipts-plan.md`, §7): десять ручек одного
- * префикса — лента, сводка, карточка, четыре мутации и два ответа про машину.
+ * The auto-parts receipt API shares one prefix for receipt CRUD, warehouse lots, immutable
+ * applications, the monthly form, recognition and vehicle spending.
  *
  * Формы ответов сюда не переписываются: они описаны в `@technic/contracts` (§6), и сервер отдаёт
  * ровно их. Своего представления денег и своего расчёта итога здесь нет вовсе — `total` и
@@ -68,7 +71,21 @@ export const autoPartReceiptApi = {
    * отвечает про то, что видно, иначе «Сумма» над отфильтрованным списком называла бы чужое число.
    */
   summary: (query: Query) => apiFetch<AutoPartReceiptsSummaryDto>(`${BASE}/summary`, { query }),
-  /** Карточка: шапка, строки, сканы, оба итога и пометка. Строки приходят только ею (§6). */
+  /** Receipt lots explicitly accepted into stock, with balances derived from applications. */
+  warehouse: (query: Query) =>
+    apiFetch<ListResult<AutoPartWarehouseLotDto>>(`${BASE}/warehouse`, { query }),
+  /** Immutable reporting document that applies stock to one owned vehicle. */
+  applyFromWarehouse: (lineId: string, body: CreateAutoPartApplicationBody) =>
+    apiFetch<AutoPartApplicationDto>(`${BASE}/warehouse/lines/${lineId}/applications`, {
+      method: 'POST',
+      body,
+    }),
+  /** Calendar-month form ready to become a sheet in the combined garage workbook. */
+  exportWarehouse: (month: string) =>
+    apiDownload(`${BASE}/warehouse/export`, `Применение автозапчастей ${month}.xlsx`, {
+      query: { month },
+    }),
+  /** Карточка: шапка, строки, сканы, все итоги и пометка. Строки приходят только ею (§6). */
   get: (id: string) => apiFetch<AutoPartReceiptDto>(`${BASE}/${id}`),
   /** Завести чек целиком — шапка, строки и сканы одним телом (Р12): формы «по частям» у чека нет. */
   create: (body: CreateReceiptBody) => apiFetch<AutoPartReceiptDto>(BASE, { method: 'POST', body }),

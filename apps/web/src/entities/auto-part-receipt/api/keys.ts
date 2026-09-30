@@ -8,11 +8,12 @@ import { createQueryKeys, type Query } from '@shared/api';
  * ленту чеков, а заведённый чек — занятость машин на площадках. Ни то, ни другое не верно: числа
  * у этих ответов разные и устаревают они в разные моменты.
  *
- * Семейств пять, и разводить их обязательно — вопросы у них разные, а под общим ключом кто спросил
+ * Семейств шесть, и разводить их обязательно — вопросы у них разные, а под общим ключом кто спросил
  * вторым, тот и определил бы ответ обоим:
  *
  * - `list` — лента вкладки с её отбором, страницей и порядком;
- * - `summary` — четыре числа под фильтрами: тот же отбор, но без страниц и сортировки (§8);
+ * - `summary` — пять чисел под фильтрами: тот же отбор, но без страниц и сортировки (§8);
+ * - `warehouse` — складские партии и их остатки после документов применения;
  * - `detail` — карточка чека целиком: строки и сканы приходят только ею, в ленте их нет (§6);
  * - `snapshot` — суммы пакетом на видимую страницу «Техники» (Р14): целая страница гаража, а не
  *   одна машина, — под общим с окном ключом карточка машины затирала бы снимок страницы;
@@ -30,6 +31,8 @@ export const autoPartReceiptKeys = createQueryKeys('auto-part-receipts', {
   /** Сводка при любом отборе — префикс для гашения. */
   summaries: () => ['summary'],
   summary: (params: Query) => ['summary', params],
+  warehouseLists: () => ['warehouse'],
+  warehouseList: (params: Query) => ['warehouse', params],
   detail: (id: string) => ['detail', id],
   /** Снимок сумм при любом наборе машин и дне среза — префикс для гашения. */
   snapshots: () => ['snapshot'],
@@ -38,7 +41,7 @@ export const autoPartReceiptKeys = createQueryKeys('auto-part-receipts', {
   vehicleSpends: (vehicleId: string) => ['vehicle-spend', vehicleId],
   vehicleSpend: (vehicleId: string, params: Query) => ['vehicle-spend', vehicleId, params],
   /**
-   * Состояние чтения скана — шестое семейство, и ключ у него ФАЙЛОВЫЙ, а не чековый: в окне
+   * Состояние чтения скана — отдельное семейство, и ключ у него ФАЙЛОВЫЙ, а не чековый: в окне
    * «Принять чек» скан читают раньше, чем чек появляется, и чека в ключе может не быть вовсе
    * (план `docs/auto-part-receipt-ocr-plan.md`, Р4).
    */
@@ -90,6 +93,8 @@ export function autoPartReceiptInvalidation(
   if (change.kind === 'mark') return always;
   return [
     ...always,
+    // Receipt writes may add, replace, or remove warehouse lots.
+    autoPartReceiptKeys.warehouseLists(),
     // Колонка «Запчасти, ₽» вкладки «Техника»: она считается по тем же строкам (Р14).
     autoPartReceiptKeys.snapshots(),
     // Дубли в наборе законны — одну машину чек называет несколькими строками; гасить её дважды

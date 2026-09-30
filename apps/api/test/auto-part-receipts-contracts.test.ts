@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createAutoPartApplicationSchema,
   autoPartReceiptListQuerySchema,
   autoPartReceiptSummaryQuerySchema,
   createReceiptSchema,
@@ -96,6 +97,7 @@ describe('контракт заведения чека на автозапчас
       // «Не отнесено» — законное состояние (Р8), и требовать от формы явный `null` значило бы
       // описывать умолчание дважды.
       vehicleId: null,
+      toWarehouse: false,
       // Артикул пуст по той же причине, что и продавец: графы артикула нет у доброй половины
       // бумаг, и «не прислали» здесь ответ, а не пропуск (Р2а).
       article: '',
@@ -313,6 +315,16 @@ describe('контракт заведения чека на автозапчас
     ).toHaveLength(2);
   });
 
+  it('склад — явное назначение и не сочетается с машиной (ADR 0216)', () => {
+    const warehouse = createReceiptSchema.parse(receipt({ lines: [line({ toWarehouse: true })] }));
+    expect(warehouse.lines[0]).toMatchObject({ vehicleId: null, toWarehouse: true });
+    const conflict = receipt({
+      lines: [line({ vehicleId: VEHICLE_ID, toWarehouse: true })],
+    });
+    expect(createReceiptSchema.safeParse(conflict).success).toBe(false);
+    expect(paths(conflict, createReceiptSchema)).toContain('lines.0.vehicleId');
+  });
+
   it('артикул необязателен, пуст по умолчанию и с потолком в сотню знаков (Р2а)', () => {
     // Графы артикула нет у доброй половины бумаг — товарный чек из магазина её не печатает вовсе,
     // — поэтому «не прислали» здесь не пропуск, а ответ, и схема отвечает пустой строкой, а не
@@ -331,6 +343,26 @@ describe('контракт заведения чека на автозапчас
       createReceiptSchema.safeParse(receipt({ lines: [line({ article: 'A'.repeat(100) })] }))
         .success,
     ).toBe(true);
+  });
+});
+
+describe('контракт документа применения со склада', () => {
+  it('требует машину, дату, количество и номер документа', () => {
+    const parsed = createAutoPartApplicationSchema.parse({
+      vehicleId: VEHICLE_ID,
+      appliedOn: TODAY,
+      quantity: 2,
+      documentNumber: 'АКТ-1',
+    });
+    expect(parsed).toMatchObject({ quantity: 2, documentNumber: 'АКТ-1', note: '' });
+    expect(
+      createAutoPartApplicationSchema.safeParse({
+        vehicleId: VEHICLE_ID,
+        appliedOn: TODAY,
+        quantity: 0,
+        documentNumber: '',
+      }).success,
+    ).toBe(false);
   });
 });
 
