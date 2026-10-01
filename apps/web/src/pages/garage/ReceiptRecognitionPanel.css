@@ -1,0 +1,41 @@
+.receipt-recognition-progress {
+  display: grid;
+  gap: 4px;
+}
+
+.receipt-recognition-progress__track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+}
+
+.receipt-recognition-progress__track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.receipt-recognition-progress__indeterminate {
+  width: 35%;
+  animation: receipt-recognition-progress 1.5s ease-in-out infinite alternate;
+}
+
+.receipt-recognition-progress__hint {
+  font-size: 12px;
+}
+
+@keyframes receipt-recognition-progress {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(185%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .receipt-recognition-progress__indeterminate,
+  .receipt-recognition-progress .anticon-spin {
+    animation: none;
+  }
+}

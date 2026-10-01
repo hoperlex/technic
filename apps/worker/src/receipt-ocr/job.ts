@@ -13,22 +13,12 @@ import {
 import { PROMPT_VERSION } from './prompt';
 
 /**
- * Чтение скана чека на автозапчасти — задача `recognize_auto_part_receipt_file`
- * (план `docs/auto-part-receipt-ocr-plan.md`, Р4, Р7, Р12).
- *
- * НАСКОЛЬКО ЭТО ПРОЩЕ ТАЛОНОВ. У талона есть заявка: её статус, её файлы, её откат, — и оттого
- * каждая пишущая транзакция там начинается с `waste_requests FOR UPDATE`, а половина файла занята
- * сверками. Здесь владельца нет вовсе: работа висит на `file_id`, чек появится потом и, может
- * быть, не появится. Блокировать нечего, сериализовать нечего, откатывать нечего.
- *
- * Остаётся ровно то, что и должно: подготовить страницы, прочитать каждую (кэш → модель), записать
- * результат. Порядок шагов и их границы — те же, что у талонов, и по тем же причинам:
- *
- * - **растеризация вне транзакций**: скачивание из S3 и рендер PDF занимают секунды;
- * - **на страницу своя короткая транзакция** с advisory-замком по ключу кэша: два воркера на одном
- *   листе не оплачивают его дважды;
- * - **карантин проверяется первым**, раньше скачивания: файл под запретом не читается никем и
- *   никогда (ADR 0168).
+ * Recognition precedes receipt creation, so the job belongs to a file rather than a receipt.
+ * Downloading and rasterization happen outside transactions. Each cache key is protected by a
+ * transaction-scoped advisory lock through cache lookup, model call and attempt insertion: two
+ * workers must not pay twice for the same page, including through a transaction-pooling proxy.
+ * Database transaction timeouts must accommodate the model timeout, as in ticket recognition.
+ * Quarantine is checked before downloading because prohibited files must never reach the model.
  */
 
 export interface ReceiptJobDeps {
@@ -74,14 +64,6 @@ async function inTransaction<T>(pool: Pool, fn: (c: PoolClient) => Promise<T>): 
 }
 
 /**
- * Замок на ключ кэша: два воркера, взявшиеся за один лист, иначе оплатили бы его дважды.
- * `hashtext` даёт знаковое 32-битное — ровно то, что принимает `pg_advisory_xact_lock`.
- */
-function advisoryKey(cacheKey: string): string {
-  return `hashtext(${JSON.stringify(cacheKey)})`;
-}
-
-/**
  * Начало работы: файл жив, не в карантине, строка скана переведена в `pending`.
  *
  * Возвращает `null`, когда работать не над чем — файла нет или он под запретом. Это не сбой:
@@ -111,7 +93,7 @@ async function beginScan(deps: ReceiptJobDeps, fileId: string): Promise<ScanFile
   });
 }
 
-/** Отказ обработки файла целиком: «это не изображение и не PDF», сорванная растеризация. */
+/** Keep retryable preparation failures pending so the form continues polling the queued retry. */
 async function failScan(deps: ReceiptJobDeps, fileId: string, e: TicketFileError): Promise<void> {
   await deps.pool.query(
     `UPDATE auto_part_receipt_scans
@@ -119,7 +101,7 @@ async function failScan(deps: ReceiptJobDeps, fileId: string, e: TicketFileError
       WHERE file_id = $1`,
     [
       fileId,
-      e.errorClass === 'terminal' ? 'unsupported' : 'failed',
+      e.errorClass === 'terminal' ? 'unsupported' : 'pending',
       e.errorClass,
       e.errorScope,
       e.reason,
@@ -138,11 +120,9 @@ interface PageOutcome {
 }
 
 /**
- * Одна страница: кэш или модель, и в обоих случаях — запись в журнал попыток.
- *
- * Кэш выключается при варианте A (`RECEIPT_OCR_MODEL=proxy`, слаг выбирает оператор прокси) по той
- * же причине, что у талонов: за одной заглушкой в разное время стоит разная модель, и склеенные
- * под общим ключом ответы сделали бы метрику качества выдумкой.
+ * Resolve one page from cache or the model and materialize every paid attempt. Cache is disabled
+ * for variant A (`RECEIPT_OCR_MODEL=proxy`): the proxy may change the actual model behind that
+ * placeholder, so a shared cache key would make quality metrics fictitious.
  */
 async function recognizePage(
   deps: ReceiptJobDeps,
@@ -159,7 +139,9 @@ async function recognizePage(
   const cacheable = deps.model !== PROXY_CHOOSES_MODEL;
 
   return inTransaction(deps.pool, async (client) => {
-    await client.query(`SELECT pg_advisory_xact_lock(${advisoryKey(cacheKey)}::bigint)`);
+    // JSON quoting produces a SQL identifier, not a string value; the lock would fail before
+    // calling the model and leave no attempt for health to count. Bind the key as data instead.
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [cacheKey]);
 
     if (!opts.forced && cacheable) {
       const hit = await client.query<{ id: string }>(
@@ -317,8 +299,8 @@ export async function runReceiptRecognitionJob(
   } catch (e: unknown) {
     if (e instanceof TicketFileError) {
       await failScan(deps, payload.fileId, e);
-      // Временный отказ подготовки (кончилась память у рендера, сорвалось скачивание) стоит
-      // повторить — тогда исключение уходит наверх и попытку считает цикл воркера.
+      // The queue owns retry exhaustion. Keeping the scan pending until then prevents the form
+      // from stopping its poll before a later preparation attempt succeeds.
       if (e.errorClass === 'transient') throw e;
       return;
     }
@@ -337,6 +319,8 @@ export async function runReceiptRecognitionJob(
 
   const processed = outcomes.filter((o) => o.status === 'done').length;
   const failed = outcomes.find((o) => o.status === 'failed');
+  const retryAfterMs = outcomes.find((o) => o.retryAfterMs !== null)?.retryAfterMs ?? null;
+  const retrying = processed === 0 && (retryAfterMs !== null || failed?.errorClass === 'transient');
   await deps.pool.query(
     `UPDATE auto_part_receipt_scans
         SET status = $2, total_pages = $3, processed_pages = $4,
@@ -344,8 +328,9 @@ export async function runReceiptRecognitionJob(
       WHERE file_id = $1`,
     [
       payload.fileId,
-      // Any usable page makes the scan done: the form can be filled from partial recognition.
-      processed > 0 ? 'done' : 'failed',
+      // Partial results can fill the form. With no usable page, a live retry must remain pending:
+      // the form stops polling terminal statuses and would otherwise miss its eventual success.
+      processed > 0 ? 'done' : retrying ? 'pending' : 'failed',
       prepared.totalPages,
       processed,
       processed > 0 ? '' : (failed?.errorClass ?? ''),
@@ -359,12 +344,11 @@ export async function runReceiptRecognitionJob(
     'Чтение чека: готово',
   );
 
-  // Прокси назвал срок сам — переносим задачу ровно на него, а не на свой backoff.
-  const retry = outcomes.find((o) => o.retryAfterMs !== null);
-  if (processed === 0 && retry?.retryAfterMs) {
-    return { deferUntil: new Date(Date.now() + retry.retryAfterMs) };
+  // Honor the proxy's shared-queue deadline, including an immediate retry, instead of our backoff.
+  if (processed === 0 && retryAfterMs !== null) {
+    return { deferUntil: new Date(Date.now() + retryAfterMs) };
   }
-  // Временный отказ без названного срока — повод повторить задачу: считать попытку будет цикл.
+  // The queue applies backoff and marks the scan failed only after retry exhaustion.
   if (processed === 0 && failed?.errorClass === 'transient') {
     throw new Error(`Чтение чека не удалось: ${failed.error}`);
   }

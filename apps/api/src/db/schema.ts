@@ -11514,14 +11514,13 @@ export const autoPartReceiptRecognitionAttempts = pgTable(
       sql`${t.pageSha256} ~ '^[0-9a-f]{64}$'`,
     ),
     /**
-     * Кэш: одна успешная попытка на ключ. Условие `NOT forced` обязательно — без него ограничение
-     * не дало бы завести вторую успешную попытку при «распознать заново», и кнопка молча
-     * возвращала бы старый ответ. Неуспешных на тот же ключ бывает сколько угодно: запрет на них
-     * запер бы повтор после разрыва сети.
+     * Only reusable successes are unique: failures and forced runs must allow retries.
+     * The `proxy` placeholder can resolve to different models, so the worker bypasses its cache.
+     * It must also bypass uniqueness, or a second successful model call fails on insertion.
      */
     cacheUnique: uniqueIndex('auto_part_receipt_attempts_cache_unique')
       .on(t.pageSha256, t.engine, t.model, t.promptVersion, t.preprocessingVersion)
-      .where(sql`status = 'done' AND NOT forced`),
+      .where(sql`${t.status} = 'done' AND NOT ${t.forced} AND ${t.model} <> 'proxy'`),
     /** Последняя успешная по странице — ею отвечает ручка состояния, и по ней же считается расход. */
     pageCreatedIdx: index('auto_part_receipt_attempts_page_created_idx').on(
       t.pageSha256,

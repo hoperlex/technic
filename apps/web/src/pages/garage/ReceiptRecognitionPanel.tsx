@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { Alert, Button, Space, Typography } from 'antd';
+import { Alert, Button, Space, Typography, theme } from 'antd';
+import { LoadingOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ReceiptDraft,
@@ -8,25 +9,16 @@ import type {
 } from '@technic/contracts';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
 import { formatMoney } from '@shared/lib';
+import './ReceiptRecognitionPanel.css';
 
 /**
- * Чтение скана в окне «Принять чек» (план `docs/auto-part-receipt-ocr-plan.md`, §10).
- *
- * ПАНЕЛЬ НИЧЕГО НЕ СОХРАНЯЕТ. Она заполняет форму, и на этом её работа кончается: распознанное
- * живёт до нажатия «Сохранить», а сохранённый чек неотличим от набранного руками. Ни подтверждения
- * строк, ни статусов, ни очереди разбора у чека нет — сверять прочитанное не с чем, бумага сама
- * первоисточник.
- *
- * ВСЕ ЗАМЕЧАНИЯ ЖЁЛТЫЕ, и ни одно не мешает сохранить чек. Красного здесь нет вовсе: бумага бывает
- * с позициями, которых в портал не заносят, счёт бывает длиннее сотни строк, а скан — обрезанным.
- * Портал говорит, что видит, и оставляет решение человеку.
- *
- * ЗАЧЕМ ВООБЩЕ ПОКАЗЫВАТЬ ИТОГ С БУМАГИ, если поля итога у чека нет (Р11 плана чеков): именно он
- * ловит страницу, оставшуюся за кадром, и строку, которую модель пропустила (Р9). Число нигде не
- * сохраняется — оно живёт, пока открыта форма.
+ * Recognition only proposes form values; this panel never saves a receipt. Unlike waste
+ * tickets, receipts have no independent reference to reconcile against: the paper is the source.
+ * Warnings stay non-blocking because omitted lines or a cropped scan may be intentional.
+ * The paper's total is only a draft hint, but it can reveal a missing page or an overlooked row.
  */
 
-/** Пока модель читает, окно спрашивает состояние каждые две секунды: страница идёт секунды. */
+/** Polling should expose completed pages promptly without keeping idle forms busy. */
 const POLL_MS = 2000;
 
 function truncatedText(notes: ReceiptDraft['notes']): string | null {
@@ -40,10 +32,7 @@ function truncatedText(notes: ReceiptDraft['notes']): string | null {
 }
 
 /**
- * Сходится ли сумма подставленных строк с «Итого» на бумаге (Р9).
- *
- * Сравнение в копейках: у двоичной дроби «3 512,19 + 1 250,35» даёт хвост, и прямое сравнение
- * ругалось бы на каждом втором чеке.
+ * Compare integer kopecks; binary floating-point tails would otherwise flag matching totals.
  */
 function totalsText(notes: ReceiptDraft['notes']): string | null {
   if (notes.linesTotal === null) return null;
@@ -52,7 +41,7 @@ function totalsText(notes: ReceiptDraft['notes']): string | null {
   return `На бумаге «Итого» ${formatMoney(notes.linesTotal)}, в подставленных строках ${formatMoney(notes.draftTotal)} — проверьте, все ли позиции попали в кадр`;
 }
 
-/** НДС сверх таблицы — не ошибка, а другой способ его начислить: подпись должна это различать. */
+/** VAT added above the line total is a billing convention, not a recognition error. */
 function vatText(notes: ReceiptDraft['notes']): string | null {
   if (notes.linesTotal === null || notes.documentTotal === null) return null;
   return Math.round(notes.documentTotal * 100) > Math.round(notes.linesTotal * 100)
@@ -60,7 +49,6 @@ function vatText(notes: ReceiptDraft['notes']): string | null {
     : null;
 }
 
-/** Что сказать про саму подсистему, когда скан не прочитался (§11 плана). */
 function healthText(health: ReceiptRecognitionHealthDto): string {
   switch (health.state) {
     case 'disabled':
@@ -75,9 +63,9 @@ function healthText(health: ReceiptRecognitionHealthDto): string {
 }
 
 export interface ReceiptRecognitionPanelProps {
-  /** Скан, который читаем: последний добавленный в окне. `null` — сканов ещё нет. */
+  /** The most recently uploaded scan; null means the form has no scan yet. */
   fileId: string | null;
-  /** Есть ли в форме набранное: от этого зависит, спрашивать ли перед заменой строк. */
+  /** Existing input requires confirmation before recognition replaces the form's rows. */
   formFilled: boolean;
   onApply: (draft: ReceiptDraft) => void;
   disabled?: boolean;
@@ -89,13 +77,13 @@ export function ReceiptRecognitionPanel({
   onApply,
   disabled = false,
 }: ReceiptRecognitionPanelProps) {
+  const { token } = theme.useToken();
   const queryClient = useQueryClient();
   const state = useQuery({
     queryKey: autoPartReceiptKeys.recognition(fileId ?? 'none'),
     queryFn: () => autoPartReceiptApi.recognition(fileId!),
     enabled: !!fileId,
-    // Опрос живёт ровно столько, сколько идёт чтение: постоянный интервал держал бы запросы
-    // открытым окном часами.
+    // Stop polling after a result; an open form can otherwise keep fetching for hours.
     refetchInterval: (query) =>
       (query.state.data as ReceiptRecognitionStateDto | undefined)?.status === 'pending'
         ? POLL_MS
@@ -120,11 +108,8 @@ export function ReceiptRecognitionPanel({
   });
 
   /**
-   * Свежезагруженный скан читается сам, без нажатия.
-   *
-   * `startedFor` — не оптимизация, а защита от круга: ответ ручки меняет состояние запроса, эффект
-   * просыпается снова, и без метки «этот файл уже запускали» он ставил бы задачу на каждый ответ.
-   * Мутации в зависимостях НЕТ намеренно: её объект пересоздаётся на каждый рендер и вешает экран.
+   * Auto-start each new upload only once: the response updates this query and reruns the effect.
+   * The mutation object is intentionally excluded because its identity changes on every render.
    */
   const startedFor = useRef<string | null>(null);
   const status = state.data?.status;
@@ -134,7 +119,7 @@ export function ReceiptRecognitionPanel({
     if (startedFor.current === fileId) return;
     startedFor.current = fileId;
     recognize.mutate(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- см. комментарий выше про мутацию
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mutation identity is unstable; see above
   }, [fileId, status, disabled]);
 
   if (!fileId) return null;
@@ -142,34 +127,65 @@ export function ReceiptRecognitionPanel({
   const data = state.data;
   const draft = data?.draft ?? null;
   const reading = data?.status === 'pending' || recognize.isPending;
+  // A page has no measurable intermediate progress. Do not invent a timer-driven percentage
+  // or show the previous result's counters while a forced recognition request is being queued.
+  const totalPages = data?.status === 'pending' ? data.totalPages : 0;
+  const processedPages = data?.status === 'pending' ? data.processedPages : 0;
+  const hasProgress = totalPages > 0 && processedPages > 0;
+  const progressLabel = totalPages
+    ? `Успешно прочитано страниц: ${processedPages} из ${totalPages}`
+    : 'Файл ожидает очереди или подготавливается к распознаванию.';
 
   return (
     <Space orientation="vertical" size={8} style={{ width: '100%' }}>
       {reading && (
-        <Alert
-          type={data?.delayed ? 'warning' : 'info'}
-          showIcon
-          title={
-            data?.delayed
-              ? 'Распознавание задержалось — ждать дальше необязательно'
-              : 'Скан распознаётся — поля заполнятся сами'
-          }
-          description={
-            <Space orientation="vertical" size={4}>
-              <Typography.Text>
-                {data?.totalPages
-                  ? `Успешно прочитано страниц: ${data.processedPages} из ${data.totalPages}`
-                  : 'Файл ожидает очереди или подготавливается к распознаванию.'}
-              </Typography.Text>
-              <Typography.Text type="secondary">
-                Можно продолжить вручную или перезагрузить страницу: черновик и сканы восстановятся.
-              </Typography.Text>
-              {data?.delayed && health.data && health.data.state !== 'ok' && (
-                <Typography.Text type="secondary">{healthText(health.data)}</Typography.Text>
-              )}
-            </Space>
-          }
-        />
+        <div className="receipt-recognition-progress">
+          <Space size={8} align="start">
+            <LoadingOutlined
+              spin
+              aria-hidden="true"
+              style={{ color: data?.delayed ? token.colorWarning : token.colorPrimary }}
+            />
+            <Typography.Text role="status" type={data?.delayed ? 'warning' : undefined}>
+              {data?.delayed
+                ? 'Распознавание задержалось — ждать дальше необязательно'
+                : 'Распознаём чек…'}
+            </Typography.Text>
+          </Space>
+          <div
+            className="receipt-recognition-progress__track"
+            role="progressbar"
+            aria-busy="true"
+            aria-label="Распознавание чека"
+            aria-valuemin={0}
+            aria-valuemax={totalPages || undefined}
+            aria-valuenow={hasProgress ? processedPages : undefined}
+            aria-valuetext={progressLabel}
+            style={{ background: token.colorFillSecondary }}
+          >
+            <span
+              className={hasProgress ? undefined : 'receipt-recognition-progress__indeterminate'}
+              style={{
+                background: data?.delayed ? token.colorWarning : token.colorPrimary,
+                width: hasProgress ? `${(processedPages / totalPages) * 100}%` : undefined,
+              }}
+            />
+          </div>
+          <Typography.Text type="secondary" className="receipt-recognition-progress__hint">
+            {data?.delayed
+              ? progressLabel
+              : 'Подождите немного: ориентир — 20–30 секунд на страницу, иногда дольше.'}
+            {!data?.delayed && totalPages > 0 && ` ${progressLabel}`}
+          </Typography.Text>
+          <Typography.Text type="secondary" className="receipt-recognition-progress__hint">
+            Можно продолжить вручную или перезагрузить страницу: черновик и сканы восстановятся.
+          </Typography.Text>
+          {data?.delayed && health.data && health.data.state !== 'ok' && (
+            <Typography.Text type="secondary" className="receipt-recognition-progress__hint">
+              {healthText(health.data)}
+            </Typography.Text>
+          )}
+        </div>
       )}
 
       {data?.status === 'failed' && (
@@ -184,9 +200,8 @@ export function ReceiptRecognitionPanel({
                   ? `${data.message} Автоматического повтора не будет.`
                   : `${data.message} Можно попробовать ещё раз.`}
               </Typography.Text>
-              {/* Состояние подсистемы отличает «не прочитался этот скан» от «сервис не отвечает
-                  никому»: во втором случае жать «Ещё раз» бессмысленно, и человек должен это
-                  знать, а не выяснять нажатиями. */}
+              {/* A service-wide failure needs a different explanation from an unreadable scan;
+                  repeated manual retries cannot repair an unavailable subsystem. */}
               {health.data && health.data.state !== 'ok' && (
                 <Typography.Text type="secondary">{healthText(health.data)}</Typography.Text>
               )}
@@ -246,8 +261,7 @@ export function ReceiptRecognitionPanel({
                 type="primary"
                 disabled={disabled}
                 onClick={() => {
-                  // Набранное руками не затирается молча: спрашиваем ровно тогда, когда есть что
-                  // терять, и не спрашиваем, когда форма пуста.
+                  // Confirm only when applying the draft would overwrite existing user input.
                   if (
                     !formFilled ||
                     window.confirm(`Заменить набранное распознанным (${draft.lines.length} строк)?`)

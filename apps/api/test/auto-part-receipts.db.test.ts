@@ -146,6 +146,11 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   const people = sql`(SELECT id FROM persons WHERE comment = ${MARK})`;
   const mine = sql`(SELECT id FROM files WHERE object_key LIKE ${keyLike})`;
   await db.execute(sql`DELETE FROM jobs WHERE payload->>'objectKey' LIKE ${keyLike}`);
+  // Recognition jobs reference files only in JSON, so deleting a file does not cascade to them.
+  await db.execute(
+    sql`DELETE FROM jobs WHERE type = 'recognize_auto_part_receipt_file'
+         AND payload->>'fileId' IN (SELECT id::text FROM files WHERE object_key LIKE ${keyLike})`,
+  );
   await db.execute(sql`DELETE FROM waste_ticket_field_events WHERE file_id IN ${mine}`);
   // Попытки чтения не ссылаются ни на файл, ни на страницу (они принадлежат СОДЕРЖИМОМУ и служат
   // кэшем), поэтому каскад их не уносит — снимаются по хэшам своих страниц и ДО удаления файлов.
@@ -1938,7 +1943,7 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
     await ctx.db.execute(
       sql`INSERT INTO jobs (type, payload, status)
            VALUES ('recognize_auto_part_receipt_file',
-                   jsonb_build_object('fileId', ${file.id}), 'done')`,
+                   jsonb_build_object('fileId', ${file.id}::text), 'done')`,
     );
 
     const stranded = await recognition(mech, file.id);
@@ -1969,14 +1974,22 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
     await ctx.db.execute(
       sql`INSERT INTO jobs (type, payload, status, created_at, updated_at)
            VALUES ('recognize_auto_part_receipt_file',
-                   jsonb_build_object('fileId', ${file.id}), 'pending',
+                   jsonb_build_object('fileId', ${file.id}::text), 'pending',
                    now() - interval '16 minutes', now() - interval '16 minutes')`,
     );
 
-    const res = await recognition(mech, file.id);
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.json()).toMatchObject({ status: 'pending', delayed: true });
-    expect(res.json().queuedAt).not.toBeNull();
+    try {
+      const res = await recognition(mech, file.id);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ status: 'pending', delayed: true });
+      expect(res.json().queuedAt).not.toBeNull();
+    } finally {
+      // This deliberately stale job must not degrade the later global health baseline.
+      await ctx.db.execute(
+        sql`DELETE FROM jobs WHERE type = 'recognize_auto_part_receipt_file'
+             AND payload->>'fileId' = ${file.id}`,
+      );
+    }
   });
 
   it('чужой непривязанный скан не читается, даже держателем ведения чеков (Р5)', async () => {
