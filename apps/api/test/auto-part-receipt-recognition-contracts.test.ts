@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   mergeReceiptPages,
+  mergeReceiptDrafts,
   receiptDraftFrom,
   receiptRecognitionResponseSchema,
   type ReceiptRecognitionResponse,
@@ -65,7 +66,15 @@ describe('склейка страниц одного счёта (Р3)', () => {
         documentTotal: 83145,
         linesTruncated: true,
         lines: [
-          { article: null, name: 'Шланг', quantity: 10, quantityRaw: '10.00', unit: 'шт', amount: 3650, kind: 'part' },
+          {
+            article: null,
+            name: 'Шланг',
+            quantity: 10,
+            quantityRaw: '10.00',
+            unit: 'шт',
+            amount: 3650,
+            kind: 'part',
+          },
         ],
       }),
     ]);
@@ -81,6 +90,27 @@ describe('склейка страниц одного счёта (Р3)', () => {
 });
 
 describe('черновик формы: что подставляется, а что остаётся человеку', () => {
+  it('объединяет файлы: строки по порядку, шапку с начала, итог с конца', () => {
+    const first = receiptDraftFrom(page({ linesTotal: null, documentTotal: null }), TODAY);
+    const second = receiptDraftFrom(
+      page({
+        documentNumber: null,
+        sellerName: null,
+        purchasedOn: null,
+        purchasedOnRaw: null,
+        linesTotal: 9000,
+        documentTotal: 9000,
+        lines: [{ name: 'Фильтр', amount: 3340 }],
+      }),
+      TODAY,
+    );
+    const combined = mergeReceiptDrafts([first, second]);
+    expect(combined.lines.map((line) => line.name)).toEqual(['Гидрозамок опоры', 'Фильтр']);
+    expect(combined.header.documentNumber).toBe('1138');
+    expect(combined.notes.linesTotal).toBe(9000);
+    expect(combined.notes.draftTotal).toBe(9000);
+  });
+
   it('обычный счёт подставляется целиком, машина — никогда (Р2)', () => {
     const draft = receiptDraftFrom(page(), TODAY);
     expect(draft.header.documentNumber).toBe('1138');
@@ -152,7 +182,11 @@ describe('черновик формы: что подставляется, а ч�
 
   it('итог с бумаги приходит рядом с суммой подставленного — ею и сверяют полноту (Р9)', () => {
     const draft = receiptDraftFrom(
-      page({ linesTotal: 83145, documentTotal: 83145, lines: [{ name: 'Шланг', quantity: 1, amount: 3650 }] }),
+      page({
+        linesTotal: 83145,
+        documentTotal: 83145,
+        lines: [{ name: 'Шланг', quantity: 1, amount: 3650 }],
+      }),
       TODAY,
     );
     expect(draft.notes.linesTotal).toBe(83145);

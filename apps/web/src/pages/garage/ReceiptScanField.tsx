@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { App, Button, Form, Upload } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { RECEIPT_MAX_FILES, RECEIPT_NO_FILES_MESSAGE, type ReceiptDraft } from '@technic/contracts';
@@ -44,7 +44,11 @@ interface Props {
   disabled: boolean;
   /** Есть ли в форме набранное: от этого зависит, спрашивать ли перед заменой строк. */
   formFilled: boolean;
-  onApplyDraft: (draft: ReceiptDraft) => void;
+  lineCount: number;
+  appliedFileIds: readonly string[];
+  onApplyDraft: (draft: ReceiptDraft, fileIds: string[], mode: 'replace' | 'append') => void;
+  onResetApplied: () => void;
+  onUploadCountChange: (count: number) => void;
 }
 
 export function ReceiptScanField({
@@ -54,21 +58,46 @@ export function ReceiptScanField({
   onError,
   disabled,
   formFilled,
+  lineCount,
+  appliedFileIds,
   onApplyDraft,
+  onResetApplied,
+  onUploadCountChange,
 }: Props) {
   const { message } = App.useApp();
-  const [uploading, setUploading] = useState(false);
+  const [uploadCount, setUploadCount] = useState(0);
+  const pendingUploads = useRef(0);
+  const selectedOrder = useRef(new Map<string, number>());
+  const nextOrder = useRef(0);
 
   const upload = async (file: File) => {
-    setUploading(true);
+    // beforeUpload runs once per selected file; count in-flight files to enforce the shared cap.
+    if (files.length + pendingUploads.current >= RECEIPT_MAX_FILES) {
+      onError(`Не больше ${RECEIPT_MAX_FILES} сканов`);
+      return;
+    }
+    const order = nextOrder.current++;
+    pendingUploads.current += 1;
+    setUploadCount(pendingUploads.current);
+    onUploadCountChange(pendingUploads.current);
     try {
       const dto = await filesApi.upload(file);
-      onChange((prev) => [...prev, { ...dto, isNew: true }]);
+      selectedOrder.current.set(dto.id, order);
+      onChange((prev) => {
+        const next = [...prev, { ...dto, isNew: true }];
+        // Parallel uploads finish in network order, but OCR must follow the selected page order.
+        const position = (item: ScanFile) =>
+          selectedOrder.current.get(item.id) ??
+          -prev.length + prev.findIndex((f) => f.id === item.id);
+        return next.sort((a, b) => position(a) - position(b));
+      });
       onError(undefined);
     } catch (e) {
       message.error(errorMessage(e));
     } finally {
-      setUploading(false);
+      pendingUploads.current -= 1;
+      setUploadCount(pendingUploads.current);
+      onUploadCountChange(pendingUploads.current);
     }
   };
 
@@ -85,7 +114,7 @@ export function ReceiptScanField({
     if (file.isNew) void filesApi.remove(file.id).catch(() => undefined);
   };
 
-  const full = disabled || files.length >= RECEIPT_MAX_FILES;
+  const full = disabled || files.length + uploadCount >= RECEIPT_MAX_FILES;
 
   return (
     <Form.Item
@@ -103,7 +132,7 @@ export function ReceiptScanField({
           return false;
         }}
       >
-        <Button icon={<UploadOutlined />} loading={uploading} disabled={full}>
+        <Button icon={<UploadOutlined />} loading={uploadCount > 0} disabled={full}>
           Прикрепить скан
         </Button>
       </Upload>
@@ -112,14 +141,17 @@ export function ReceiptScanField({
           <FileLinkList files={files} onRemove={removeFile} />
         </div>
       )}
-      {/* Чтение скана моделью (план `docs/auto-part-receipt-ocr-plan.md`): читается ПОСЛЕДНИЙ
-          добавленный — тот, который человек только что положил и на который смотрит. */}
+      {/* A receipt can span several files. OCR keeps their attachment order and offers one draft. */}
       <div style={{ marginTop: 8 }}>
         <ReceiptRecognitionPanel
-          fileId={files.at(-1)?.id ?? null}
+          files={files}
+          uploadCount={uploadCount}
+          appliedFileIds={appliedFileIds}
+          lineCount={lineCount}
           formFilled={formFilled}
           disabled={disabled}
           onApply={onApplyDraft}
+          onResetApplied={onResetApplied}
         />
       </div>
     </Form.Item>
