@@ -23,27 +23,18 @@ import {
   DEFAULT_COMMUNICATION_KIND,
   formatMoscowDateTime,
   formatWeeklyRequestNumber,
-  isRouteEditable,
   routeRequestCapacity,
   VEHICLE_OWNERSHIPS,
   requestCustomerName,
   vehicleClassificationLabel,
-  type VehicleDto,
   type VehicleOwnership,
   vehicleOwnershipLabels,
   type VehicleRequestDto,
   type VehicleRequestStatusPreviewDto,
-  vehicleSubstitutionGroup,
-  vehicleSubstitutionGroupLabels,
-  vehicleSubstitutionOf,
   canCorrectWaybill,
   weekStartKey,
   moscowDateKeyOf,
   WAYBILL_CORRECTION_CONFIRM,
-  vehicleSubstitutionRank,
-  vehicleSubstitutionWarning,
-  waybillFormLabels,
-  waybillRequirement,
 } from '@technic/contracts';
 import { driverKeys, driversApi } from '@entities/driver';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
@@ -59,26 +50,39 @@ import { AddressField } from '@features/address-input';
 
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import {
+  ASSIGNMENT_LIST_PARAMS,
+  type AssignCommand,
+  assignCommandBody,
+  type AssignFormValues,
+  assignScheduleOf,
+  assignmentBlockers,
+  assignmentDriverLookup,
+  assignmentFleetByOwnership,
+  assignmentLessorOptions,
+  assignmentRouteModel,
+  assignmentRouteOptions,
+  assignmentSubstitutionWarning,
+  assignmentVehicleOptions,
+  assignmentVehicleValues,
+  canBatchAssignmentDays,
+  canOfferAssignmentDelivery,
   currentMachinistName,
+  type DayBatchFormValues,
   driverCategoryNote,
   driverGapsNote,
   driverOption,
+  emptyAssignmentVehicleText,
   joinedRouteDriverExtra,
   joinedRouteDriverNote,
   machinistFieldExtra,
   machinistFieldMode,
   machinistOption,
-  plannedEsm2Weeks,
-} from './assignDriverHints';
-import { emptyVehicleListText, vehicleOptionLabel } from './assignVehicleHints';
-import {
-  type AssignCommand,
-  assignCommandBody,
-  type AssignFormValues,
-  assignScheduleOf,
+  mergeAssignmentFleet,
   NEW_ROUTE,
-} from './assignCommand';
-import { DayBatchFields, type DayBatchFormValues } from './DayBatchFields';
+  orderedVehiclePosition,
+  plannedEsm2Weeks,
+} from '@features/vehicle-assignment';
+import { DayBatchFields } from './DayBatchFields';
 import { useDayBatch } from './useDayBatch';
 import { RollbackPreview } from './RollbackPreview';
 import { inheritedTrailerGraphs, vehicleRouteKeys } from '@entities/vehicle-route';
@@ -203,43 +207,22 @@ export function VehicleAssignModal({
   // неполнота названа под полем прямо.
   const vehicleKindId = request?.vehicleKindId ?? null;
   /** Заказанная позиция — левая сторона всех сравнений в этом окне. */
-  const ordered = useMemo(
-    () =>
-      request
-        ? {
-            vehicleKindId: request.vehicleKindId,
-            vehicleTypeId: request.vehicleTypeId,
-            vehicleCategoryId: request.vehicleCategoryId,
-            categorySpecs: request.vehicleCategorySpecs,
-          }
-        : null,
-    [request],
-  );
-  const listParams = {
-    status: 'active',
-    page: 1,
-    pageSize: 500,
-    sortBy: 'lessorName',
-    sortOrder: 'asc',
-  } as const;
+  const ordered = useMemo(() => orderedVehiclePosition(request), [request]);
   const ofKind = useQuery({
     queryKey: vehicleKeys.forAssignment(vehicleKindId),
-    queryFn: () => vehiclesApi.list({ ...listParams, vehicleKindId: vehicleKindId! }),
+    queryFn: () => vehiclesApi.list({ ...ASSIGNMENT_LIST_PARAMS, vehicleKindId: vehicleKindId! }),
     enabled: !!vehicleKindId,
   });
   const wholeFleet = useQuery({
     queryKey: vehicleKeys.forAssignmentWholeFleet(),
-    queryFn: () => vehiclesApi.list(listParams),
+    queryFn: () => vehiclesApi.list(ASSIGNMENT_LIST_PARAMS),
     enabled: !!request,
   });
   const isFetching = ofKind.isFetching || wholeFleet.isFetching;
-  const vehicles = useMemo(() => {
-    const byId = new Map<string, VehicleDto>();
-    for (const v of [...(ofKind.data?.items ?? []), ...(wholeFleet.data?.items ?? [])]) {
-      byId.set(v.id, v);
-    }
-    return [...byId.values()];
-  }, [ofKind.data, wholeFleet.data]);
+  const vehicles = useMemo(
+    () => mergeAssignmentFleet(ofKind.data?.items ?? [], wholeFleet.data?.items ?? []),
+    [ofKind.data, wholeFleet.data],
+  );
   /**
    * Сколько машин чужих видов в страницу не поместилось. Молчать об этом нельзя: поиск в поле
    * ищет по загруженным строкам, и ненайденная машина выглядела бы отсутствующей в парке.
@@ -248,13 +231,7 @@ export function VehicleAssignModal({
     0,
     (wholeFleet.data?.total ?? 0) - (wholeFleet.data?.items.length ?? 0),
   );
-  const byOwnership = useMemo(
-    () => ({
-      own: vehicles.filter((v) => v.ownership === 'own'),
-      rental: vehicles.filter((v) => v.ownership === 'rental'),
-    }),
-    [vehicles],
-  );
+  const byOwnership = useMemo(() => assignmentFleetByOwnership(vehicles), [vehicles]);
 
   // Окно переиспользуется под разные заявки, поэтому поля сбрасываются при смене цели, а не при
   // размонтировании. Уже назначенная машина (повторный перевод в работу после отката) открывает
@@ -487,15 +464,10 @@ export function VehicleAssignModal({
   const isLinear = request?.requestType === 'special_equipment' && request.isLinear;
 
   /** Арендодатели — только те, у кого есть техника этого вида: пустой пункт выбирать незачем. */
-  const lessorOptions = useMemo(() => {
-    const byId = new Map<string, string>();
-    for (const v of byOwnership.rental) {
-      if (v.lessorId) byId.set(v.lessorId, v.lessorName ?? '—');
-    }
-    return [...byId]
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
-  }, [byOwnership.rental]);
+  const lessorOptions = useMemo(
+    () => assignmentLessorOptions(byOwnership.rental),
+    [byOwnership.rental],
+  );
 
   /**
    * Список техники группами: заказанный тип → крупнее → другие типы вида → меньше заказанного →
@@ -506,33 +478,10 @@ export function VehicleAssignModal({
    * Переключателя «показать другие виды» нет — лишнее состояние формы там, где хватает порядка
    * строк, а поиск по строке идёт по всем группам сразу.
    */
-  const vehicleOptions = useMemo(() => {
-    if (!ordered) return [];
-    const list =
-      ownership === 'own'
-        ? byOwnership.own
-        : byOwnership.rental.filter((v) => !lessorId || v.lessorId === lessorId);
-    const groups = new Map<
-      number,
-      { label: string; options: { value: string; label: string }[] }
-    >();
-    for (const v of list) {
-      const substitution = vehicleSubstitutionOf(ordered, v);
-      const rank = vehicleSubstitutionRank(substitution);
-      const group = groups.get(rank) ?? {
-        label: vehicleSubstitutionGroupLabels[vehicleSubstitutionGroup(substitution)],
-        options: [],
-      };
-      group.options.push({ value: v.id, label: vehicleOptionLabel(v, substitution) });
-      groups.set(rank, group);
-    }
-    return [...groups.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([, group]) => ({
-        ...group,
-        options: group.options.sort((a, b) => a.label.localeCompare(b.label, 'ru')),
-      }));
-  }, [ownership, lessorId, byOwnership, ordered]);
+  const vehicleOptions = useMemo(
+    () => assignmentVehicleOptions({ fleet: byOwnership, ownership, lessorId, ordered }),
+    [ownership, lessorId, byOwnership, ordered],
+  );
 
   const selected = vehicles.find((v) => v.id === vehicleId) ?? null;
   const isRental = ownership === 'rental';
@@ -552,15 +501,11 @@ export function VehicleAssignModal({
    * работу». Уровень зависит от направления: техника меньше заказанной — жёлтое предупреждение,
    * крупнее или «сравнить нечем» — нейтральная справка.
    */
-  const substitution =
-    ordered && selected
-      ? vehicleSubstitutionWarning({
-          substitution: vehicleSubstitutionOf(ordered, selected),
-          orderedLabel,
-          actualTypeName: selected.typeName,
-          actualCategoryName: selected.categoryName,
-        })
-      : null;
+  const substitution = assignmentSubstitutionWarning({
+    ordered,
+    actual: selected,
+    orderedLabel,
+  });
 
   // ── Маршрут (рейс машины на дату) ──
   // Перевод в работу не выписывает документ: он кладёт заявку в рейс — в готовый рейс этой машины
@@ -586,8 +531,7 @@ export function VehicleAssignModal({
    */
   const deliveryEnabled = Form.useWatch('deliveryEnabled', form) ?? false;
   const deliveryDate = Form.useWatch('deliveryDate', form);
-  const canOfferDelivery =
-    !reassign && request?.requestType === 'special_equipment' && !isRental && !isLinear;
+  const canOfferDelivery = canOfferAssignmentDelivery({ request, reassign, ownership });
   const wantsDelivery = canOfferDelivery && deliveryEnabled;
 
   /**
@@ -695,37 +639,22 @@ export function VehicleAssignModal({
    */
   // Бланк известен всегда, когда машина выбрана: у типа он обязателен. Пустым он остаётся у
   // заказанного типа, который листа не знает вовсе, — тогда и спрашивать правило не о чем.
-  const formCode = selected?.waybillFormCode ?? prefill?.formCode ?? null;
-  const requirement =
-    request && isFreight && prefill && formCode
-      ? waybillRequirement({
-          requestType: request.requestType,
-          ownership: selected?.ownership ?? ownership,
-          formCode,
-        })
-      : { formCode: null, reason: null };
-  const needsRoute = !!requirement.formCode;
-
-  /**
-   * Машина другого типа печатает другой бланк. Называется отдельной строкой: смена документа —
-   * не мелочь оформления, у формы № 3 нет ни талонов заказчиков, ни граф прицепа, и диспетчер
-   * должен узнать об этом до нажатия, а не при выписке листа.
-   */
-  const formChange =
-    isFreight && selected && prefill?.formCode && requirement.formCode !== prefill.formCode
-      ? `Лист выпишется по бланку ${waybillFormLabels[requirement.formCode!]} — по типу выбранной машины, а не заказанного`
-      : null;
+  const routeModel = assignmentRouteModel({
+    request,
+    isFreight: !!isFreight,
+    ownership,
+    selected,
+    prefillReady: !!prefill,
+    prefillFormCode: prefill?.formCode,
+  });
+  const { formChange, formCode, needsRoute } = routeModel;
 
   /**
    * Рейсы, куда заявку можно положить: со свободной строкой задания и не замороженные выписанным
    * листом. Заморозка проверяется тем же правилом, что и на сервере, — иначе список предлагал бы
    * рейсы, которые он отклонит.
    */
-  const routeOptions = (prefill?.routes ?? []).filter(
-    (r) =>
-      r.requests.length < routeRequestCapacity(r.formCode) &&
-      isRouteEditable(r.waybill?.status ?? null),
-  );
+  const routeOptions = assignmentRouteOptions(prefill?.routes ?? []);
   /**
    * Выбран готовый рейс: реквизиты выезда в нём уже свои, и переспрашивать их незачем — а вот
    * водителя окно спрашивает и здесь (ADR 0048). Поле там необязательное: рейс уже едет, и
@@ -753,31 +682,31 @@ export function VehicleAssignModal({
    * напечатается в его листе. Совпадают они почти всегда (рейсы подсказываются на эту же дату),
    * но «почти» здесь стоило бы просроченного документа в бланке.
    */
-  const driverDate = needsRoute
-    ? (joinedRoute?.routeDate ?? tripDate)
-    : wantsDelivery
-      ? deliveryDate?.format('YYYY-MM-DD')
-      : undefined;
-  /**
-   * Прицеп, которым меряется требуемая категория. У нового рейса его называют здесь же галочкой, у
-   * готового он свой: спросить список по галочке формы значило бы мерить чужой рейс графой,
-   * которой в нём нет, — и водитель без «E» выглядел бы годным для сцепки.
-   */
-  const driverTrailer = joinedRoute ? joinedRoute.withTrailer : withTrailer;
-  /**
-   * Водителя спрашивают обе ветки маршрута (ADR 0048) — и новая, и готовая, — плюс перегон.
-   * Раньше готовая была исключена, и список не грузился вовсе: менять там было нечего.
-   */
-  const driversNeeded = needsRoute || wantsDelivery;
+  const driverLookup = assignmentDriverLookup({
+    needsRoute,
+    joinedRoute,
+    tripDate,
+    wantsDelivery,
+    deliveryDate,
+    withTrailer,
+  });
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: driverKeys.available({ vehicleId, on: driverDate, withTrailer: driverTrailer }),
+    queryKey: driverKeys.available({
+      vehicleId,
+      on: driverLookup.on,
+      withTrailer: driverLookup.withTrailer,
+    }),
     queryFn: () =>
-      driversApi.available({ vehicleId: vehicleId!, on: driverDate!, withTrailer: driverTrailer }),
-    enabled: driversNeeded && !!vehicleId && !!driverDate,
+      driversApi.available({
+        vehicleId: vehicleId!,
+        on: driverLookup.on!,
+        withTrailer: driverLookup.withTrailer,
+      }),
+    enabled: driverLookup.needed && !!vehicleId && !!driverLookup.on,
   });
   const driverOptions = (selection?.drivers ?? []).map(driverOption);
 
-  /** Спрашивается ли машинист ЭСМ-2 и обязателен ли он — обе ветки в `assignDriverHints`. */
+  /** Whether ESM-2 needs a machinist and whether the current command requires one. */
   const { needsMachinist, machinistRequired } = machinistFieldMode({
     requestType: request?.requestType,
     isRental,
@@ -810,8 +739,12 @@ export function VehicleAssignModal({
    * Признак линейности в условие не входит намеренно (ADR 0207 решение 1): 4-П за день просят и у
    * машины, которая неделю стоит на площадке.
    */
-  const canBatchDays =
-    !reassign && !rollbackToWork && request?.requestType === 'special_equipment' && !isRental;
+  const canBatchDays = canBatchAssignmentDays({
+    request,
+    reassign,
+    rollbackToWork,
+    ownership,
+  });
   const dayBatchEnabled = (Form.useWatch('dayBatchEnabled', form) ?? false) && canBatchDays;
 
   /**
@@ -826,7 +759,7 @@ export function VehicleAssignModal({
   // Что не так с выбранным водителем — двумя отдельными предупреждениями (ADR 0055, ADR 0064).
   const selectedDriver = selection?.drivers.find((d) => d.personId === driverPersonId);
   const driverCategoryMismatch = driverCategoryNote(selection, selectedDriver);
-  const driverGaps = driverGapsNote(selectedDriver, requirement.formCode);
+  const driverGaps = driverGapsNote(selectedDriver, formCode);
   /** Тот же вопрос про водителя перегона: лист по нему — всегда 4-П (миграция 0082). */
   const deliveryDriverId = Form.useWatch('deliveryDriverId', form);
   const deliveryDriver = selection?.drivers.find((d) => d.personId === deliveryDriverId);
@@ -938,15 +871,7 @@ export function VehicleAssignModal({
   };
 
   /** Машина и её ставки из справочника: у собственной их нет — поля остаются пустыми. */
-  const vehicleValues = (id: string) => {
-    const v = vehicles.find((x) => x.id === id);
-    return {
-      vehicleId: id,
-      pricePerHour: v?.pricePerHour ?? null,
-      pricePerShift: v?.pricePerShift ?? null,
-      shiftHours: v?.shiftHours ?? null,
-    };
-  };
+  const vehicleValues = (id: string) => assignmentVehicleValues(vehicles, id);
 
   /**
    * Выбор машины подставляет её ставки и её сегодняшний рейс: так диспетчер и работает, собирая
@@ -978,42 +903,18 @@ export function VehicleAssignModal({
     const schedule = reassign ? null : assignScheduleOf(request, v);
     // Правила, которые проверяет и сервер. Каждое названо своим полем, а не тостом поверх формы:
     // порядок причин здесь — порядок полей в окне, и к первой из них уедет экран (ADR 0094).
-    const blocked = blockers.raise({
-      [request?.requestType === 'special_equipment' ? 'dateFrom' : 'scheduledDate']:
-        !reassign && !schedule && 'Укажите фактическую дату',
-      // Машинист обязателен там, где выписываются недельные листы ЭСМ-2: без него бланк
-      // недействителен. Тем же правилом отвечает сервер — он же видит, чья это машина. У линейной
-      // заявки листов в этот момент не рождается, и требования нет (ADR 0100 решение 5).
-      machinistId:
-        machinistRequired &&
-        !v.machinistId &&
-        'Выберите машиниста — на него выписываются путевые листы ЭСМ-2',
-      vehicleId: !v.vehicleId && 'Выберите технику',
-      // Аренда — это счёт от контрагента: без ставки заявка в работе означала бы, что цену
-      // выяснят потом.
-      pricePerHour:
-        isRental &&
-        v.pricePerHour == null &&
-        v.pricePerShift == null &&
-        'Укажите стоимость аренды — за час или за смену',
-      // Перегон едет откуда-то куда-то и кем-то: пустые графы — это лист, по которому нельзя
-      // ехать. Каждая графа отвечает за себя: «заполните перегон» не говорит, чего не хватает.
-      deliveryDate: wantsDelivery && !v.deliveryDate && 'Укажите дату перегона',
-      deliveryDriverId: wantsDelivery && !v.deliveryDriverId && 'Выберите водителя перегона',
-      deliveryFrom: wantsDelivery && !v.deliveryFrom?.trim() && 'Укажите, откуда идёт техника',
-      deliveryTo: wantsDelivery && !v.deliveryTo?.trim() && 'Укажите, куда идёт техника',
-      // Задним числом операция проходит только с объяснением: оно остаётся в журнале коррекций и
-      // печатается в обоих листах (ADR 0101, Р35). Тем же правилом отвечает сервер — 422.
-      correctionReason:
-        correctionEnabled && !v.correctionReason?.trim() && 'Укажите причину коррекции',
-      // Водитель обязателен ровно там, где выписывается лист: у аренды он чужой, и портал его
-      // не ведёт.
-      driverPersonId:
-        needsRoute &&
-        v.routeId === NEW_ROUTE &&
-        !v.driverPersonId &&
-        'Выберите водителя — на рейс выписывается путевой лист',
-    });
+    const blocked = blockers.raise(
+      assignmentBlockers(v, {
+        requestType: request?.requestType,
+        reassign,
+        schedule,
+        machinistRequired,
+        isRental,
+        wantsDelivery,
+        correctionEnabled,
+        needsRoute,
+      }),
+    );
     if (blocked || !v.vehicleId) return;
     const payload = assignCommandBody(v, {
       schedule,
@@ -1060,7 +961,7 @@ export function VehicleAssignModal({
     void Promise.resolve(onSubmit(payload)).catch(() => {});
   };
 
-  const emptyText = emptyVehicleListText({ isFetching, ownership, lessorId });
+  const emptyText = emptyAssignmentVehicleText({ isFetching, ownership, lessorId });
 
   /** Второй шаг — какой бы он ни был: дальше окно говорит не про подбор, а про цену действия. */
   const secondStep = !!step || consequences.shown;
@@ -1659,14 +1560,14 @@ export function VehicleAssignModal({
               быть бланка. Показывается текстом — исчезнувший блок «Маршрут» читался бы как
               поломка. У заказа техники на объект ни блока, ни текста: рейса в этом процессе не
               существует, и объяснять нечего (ADR 0041). */}
-              {selected && !needsRoute && requirement.reason && (
+              {selected && !needsRoute && routeModel.reason && (
                 <FormGrid.Full>
                   <Alert
                     type="info"
                     showIcon
                     style={{ marginTop: 16 }}
                     title="Маршрут не ведётся"
-                    description={requirement.reason}
+                    description={routeModel.reason}
                   />
                 </FormGrid.Full>
               )}

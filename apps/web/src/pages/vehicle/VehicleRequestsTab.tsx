@@ -16,8 +16,7 @@ import {
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { useAuth } from '@entities/session';
-import { vehicleRequestKeys } from '@entities/vehicle-request';
-import { vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { canOpenRoute, vehicleRouteKeys, vehicleRouteLink } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { useActiveTabKey } from '@shared/ui';
@@ -26,11 +25,8 @@ import { garageKeys } from '@entities/garage';
 import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
-
 import { VehicleAssignModal } from './VehicleAssignModal';
-import { reassignStaleReason } from './ReassignPreview';
-import { recheckReasonOf } from './assignmentWarnings';
-import { type AssignCommand, reassignRequestBody } from './assignCommand';
+import * as assignmentModel from '@features/vehicle-assignment';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndApproveModal } from './VehicleEarlyEndApproveModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
@@ -193,7 +189,8 @@ export function VehicleRequestsTab() {
     renderPeriodModal: (props) => <VehiclePeriodModal {...props} />,
   });
   const lifecycle = useVehicleRequestLifecycle({
-    staleReasonOf: (error) => reassignStaleReason(error) ?? recheckReasonOf(error),
+    staleReasonOf: (error) =>
+      assignmentModel.reassignStaleReason(error) ?? assignmentModel.recheckReasonOf(error),
     renderCompleteModal: (props) => <VehicleCompleteModal {...props} />,
     renderEarlyEndApproveModal: (props) => <VehicleEarlyEndApproveModal {...props} />,
     renderEarlyEndModal: (props) => <VehicleEarlyEndModal {...props} />,
@@ -220,8 +217,11 @@ export function VehicleRequestsTab() {
 
   const reassignMut = useMutation({
     // The window's command as it is — handshakes included; the body is assembled next to it.
-    mutationFn: (v: { id: string; version: number; command: AssignCommand }) =>
-      vehicleRequestsApi.changeAssignment(v.id, reassignRequestBody(v.command, v.version)),
+    mutationFn: (v: { id: string; version: number; command: assignmentModel.AssignCommand }) =>
+      vehicleRequestsApi.changeAssignment(
+        v.id,
+        assignmentModel.reassignRequestBody(v.command, v.version),
+      ),
     onSuccess: (_updated, v) => {
       message.success(
         v.command.correction ? 'Назначение исправлено задним числом' : 'Техника изменена',
@@ -240,7 +240,7 @@ export function VehicleRequestsTab() {
      * вторым голосом о том же — и увёл бы глаз от экрана, на который человеку и надо смотреть.
      */
     onError: (e) => {
-      if (reassignStaleReason(e) ?? recheckReasonOf(e)) return;
+      if (assignmentModel.reassignStaleReason(e) ?? assignmentModel.recheckReasonOf(e)) return;
       message.error(errorMessage(e));
     },
   });

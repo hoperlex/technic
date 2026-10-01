@@ -25,7 +25,8 @@ import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '@entities/session';
 import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
-import { TrailerFields, trailerTripBody } from './TrailerFields';
+import { trailerTripBody } from '@entities/vehicle-route';
+import { TrailerFields } from './TrailerFields';
 import { BackdateReasonField } from '@widgets/vehicle-request-editor';
 
 /**

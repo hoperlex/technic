@@ -10,7 +10,7 @@ import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { waybillKeys, WarnedSheetsConfirm } from '@entities/waybill';
 import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entities/vehicle-request';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
-import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
+import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from '@features/vehicle-assignment';
 import { cancelGroupLine } from './cancelGroups';
 
 /**
@@ -36,7 +36,7 @@ import { cancelGroupLine } from './cancelGroups';
  *
  * Plus a signature per issued sheet with warnings (B4): in `history` read mode this door issues the
  * blanks itself and refuses an unsigned warned sheet with 409, so the window shows every warned
- * sheet and sends the signatures only after an explicit tick (`assignmentWarnings.ts`).
+ * sheet and sends the signatures only after an explicit tick (`@features/vehicle-assignment`).
  */
 
 interface Props {

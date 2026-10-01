@@ -9,6 +9,7 @@
   [ADR 0041](0041-waybill-freight-only-and-printing.md) (лист только на грузоперевозку),
   [ADR 0029](0029-vehicle-request-completion.md) (факт выполнения заявки),
   `packages/contracts/src/persons.ts`, `apps/api/src/services/drivers.ts`,
+  `apps/web/src/features/vehicle-assignment/model/people.ts`,
   `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`,
   `apps/web/src/pages/vehicle/VehicleRoutesTab.tsx`. Миграций не требует
 

@@ -1,100 +1,21 @@
 import { Alert, Space, Typography } from 'antd';
 import { type AssignmentPreviewDto, workedAmountLabel } from '@technic/contracts';
-import { isApiError } from '@shared/api';
 import { formatDateOnly } from '@shared/lib';
 import { listStyle, totalOf } from './consequencesList';
 
 /**
- * Цена смены техники, прочитанная человеком **до** нажатия (волна 4a плана
- * `docs/assignment-periods-plan.md`, §7): какие номера ЭСМ-2 сгорят и какие выпишутся, какие
- * подписи объекта слетят, каких дней не хватает машинисту.
+ * Render the server-owned cost of a vehicle change before confirmation: replaced ESM-2 sheets,
+ * cleared site approvals, locked work days, and missing machinist anchors.
  *
- * Отдельным файлом от `VehicleAssignModal`, по той же границе, что и `RollbackPreview`: там форма —
- * поля, правила и отправка, — а здесь перечень последствий, который к вводу не относится вовсе и
- * растёт от каждой новой двери заднего числа.
- *
- * Считать здесь нечего: всё приходит готовым от сервера
- * (`POST /vehicle-requests/:id/assignment/preview`) и посчитано тем же расчётом, который потом
- * отработает (`planReassignCommand`). Второй расчёт в портале разошёлся бы с первым — и окно
- * обещало бы не то, что произойдёт.
- *
- * Чего здесь нет и почему. `requiredVehicleResolution` у этой двери пуст всегда: расхождение хвоста
- * запирает расширение срока, а смена техники новых дней не открывает.
- *
- * Warned sheets (`issues`) are not drawn here either, though the server computes them: they need a
- * confirmation, and the tick with its form lives in `reassignConsequences.tsx`, next to the command
- * that carries the signatures.
+ * This component deliberately performs no parallel calculation. The same server plan is displayed
+ * here and executed by the command; pure decisions about silent, blocked, or stale previews live in
+ * `@features/vehicle-assignment`. Per-sheet warning confirmations stay beside the command in
+ * `reassignConsequences.tsx`.
  */
-
-/** 409, на котором окно не ругается, а переспрашивает: последствия успели измениться (Р32, И5). */
-export const ASSIGNMENT_PREVIEW_STALE = 'assignment_preview_stale';
-/**
- * 409 клиенту без отпечатка — после переключения чтения (И5). Портал волны 4a отпечаток шлёт
- * всегда, кроме одного случая: сервер оказался старее и ручки предпросмотра у него нет вовсе. Тогда
- * этот отказ и приходит — и лечится он тем же, чем устаревший отпечаток: посмотреть последствия.
- */
-export const ASSIGNMENT_CLIENT_UPGRADE = 'client_upgrade_required';
-
-/**
- * Отказ, после которого окно возвращает человека к последствиям, — и слова, которыми объясняет
- * возврат. `null` — отказ чужой, и показывать его окну нечем: о нём скажет тот, кто отправлял.
- *
- * Разбор по коду, а не по статусу: 409 у этой ручки бывает и конфликтом версии заявки, а он лечится
- * не пересмотром последствий, а перезагрузкой списка.
- */
-export function reassignStaleReason(e: unknown): string | null {
-  if (!isApiError(e)) return null;
-  if (e.code === ASSIGNMENT_PREVIEW_STALE) {
-    return 'Последствия изменились с того момента, как вы их смотрели, — вот что произойдёт теперь. Прочитайте и подтвердите заново.';
-  }
-  /*
-   * Здесь сверяется и статус, хотя соседняя ветка обходится кодом. Тот же литерал носит теперь
-   * отказ гейта версии клиента (ADR 0146, решение 7) — но со статусом 426 и с другим разговором:
-   * там лечит перезагрузка страницы, а не просмотр последствий. Приняв его за свой, окно
-   * подсунуло бы человеку предпросмотр вместо требования обновиться.
-   */
-  if (e.status === 409 && e.code === ASSIGNMENT_CLIENT_UPGRADE) {
-    return 'Смена техники теперь идёт через просмотр последствий — вот они. Прочитайте и подтвердите.';
-  }
-  return null;
-}
-
-/**
- * Говорить не о чем: бумага не тронется, подписи останутся, пробелов нет и в журнал ничего не
- * попадёт. Такую смену окно отправляет сразу, вторым экраном не задерживая, — «ничего не произойдёт,
- * нажмите ещё раз» приучает нажимать не читая, и тогда экран перестаёт работать в тот единственный
- * раз, когда сказать ему есть что.
- *
- * Отпечаток при этом всё равно уезжает с командой: предпросмотр состоялся, просто человека им не
- * беспокоили.
- */
-export function reassignPreviewIsSilent(preview: AssignmentPreviewDto): boolean {
-  return (
-    preview.plan.cancel.length === 0 &&
-    preview.plan.issue.length === 0 &&
-    preview.requiredUnlocks.length === 0 &&
-    preview.blockedShiftDays.length === 0 &&
-    preview.clearedShiftDays.length === 0 &&
-    preview.requiredAnchors.length === 0 &&
-    preview.operationRequirement === null
-  );
-}
-
-/**
- * Команды не будет: часы этих дней подписаны объектом, и подмена машины переписала бы задним
- * числом то, под чем стоит подпись. Тем же условием отвечает сервер (422 `Есть согласованные
- * смены`), поэтому кнопка гасится — вести человека в отказ окно не должно.
- */
-export function reassignPreviewBlocked(preview: AssignmentPreviewDto): boolean {
-  return preview.blockedShiftDays.length > 0;
-}
 
 interface Props {
   preview: AssignmentPreviewDto;
-  /**
-   * Почему окно вернулось к последствиям само: сервер ответил, что показанное устарело. `null` —
-   * человек пришёл сюда обычным порядком, нажав «Сменить технику».
-   */
+  /** Why the dialog returned after the server rejected a stale preview. */
   staleReason?: string | null;
 }
 

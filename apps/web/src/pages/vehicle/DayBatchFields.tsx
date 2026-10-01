@@ -1,10 +1,15 @@
 import { useEffect } from 'react';
 import { Alert, Checkbox, Form, Input, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import { DAY_BATCH_LIMIT, dayBatchPortionMessage, shiftDaysOf } from '@technic/contracts';
 import { driverKeys, driversApi } from '@entities/driver';
 import { AutoSelect, FormGrid } from '@shared/ui';
-import { driverOption } from './assignDriverHints';
+import {
+  dayBatchModel,
+  driverOption,
+  type DayBatchFormValues,
+  type DayBatchMachinist,
+  type DayBatchTerm,
+} from '@features/vehicle-assignment';
 import { formatDateOnly } from '@shared/lib';
 
 /**
@@ -41,23 +46,13 @@ const driversKey = (vehicleId: string | undefined, date: string) =>
  * функция (`dayBatchBody`), и второе имя того же поля разошлось бы с ней молча — форма отправляла
  * бы выбранного водителя в никуда.
  */
-export interface DayBatchFormValues {
-  /** Галочка окна принятия в работу; у окна самой пачки её нет — там она и есть всё окно. */
-  dayBatchEnabled?: boolean;
-  /** Выписывать ли листы или только расставить дни по рейсам (спрашивается в окне пачки). */
-  dayBatchIssue?: boolean;
-  dayBatchDriverId?: string;
-  /** Причина заднего числа — одна на всю пачку, а не на каждый прошедший день. */
-  dayBatchReason?: string;
-}
-
 interface Props {
   /**
    * Срок, по которому пойдёт пачка, — в том виде, в каком он уедет на сервер. У окна принятия в
    * работу это **фактический** срок из формы, а не заказанный: его правят тут же, и считать дни
    * по заказанному значило бы обещать бумагу не на те числа.
    */
-  term: { dateFrom: string; dateTo: string | null };
+  term: DayBatchTerm;
   /**
    * День среза: им решается, есть ли в сроке прошедшие дни, а значит — спрашивать ли причину
    * (ADR 0101 п. 4). У таблицы дней его считает сервер (`onDate`), у окна принятия в работу взять
@@ -72,7 +67,7 @@ interface Props {
    * Машинист заявки: умолчание поля (ADR 0207 решение 6) и та сторона, с которой сверяется выбор.
    * `null` — портал его не знает: подставлять некого, и расхождение называть не с чем.
    */
-  machinist: { personId?: string; name?: string | null } | null;
+  machinist: DayBatchMachinist | null;
   /** Спрашивается ли блок сейчас: в окне принятия в работу — по галочке, в окне пачки — всегда. */
   enabled: boolean;
   /**
@@ -94,23 +89,6 @@ export function DayBatchFields({
   const form = Form.useFormInstance<DayBatchFormValues>();
   const driverId = Form.useWatch('dayBatchDriverId', form);
 
-  const days = shiftDaysOf(term);
-  /**
-   * Срок длиннее порции — не запрет, а обещание остатка (ADR 0207 решение 11): пачка возьмёт
-   * первые `DAY_BATCH_LIMIT` нераспланированных дней, остальные доберёт повторное нажатие. Гасить
-   * здесь нечего: отказ всему сроку отрезал бы от кнопки квартальный заказ — тот самый случай,
-   * ради которого её и просили.
-   *
-   * Число остатка портал называет верхней оценкой: сколько дней уже стоит в рейсах, он отсюда не
-   * знает — их пачка пропустит, а места в порции они не займут. Точный остаток приходит с ответом
-   * (`remaining`) и повторяется в отчёте теми же словами.
-   */
-  const portionHint = days.length > DAY_BATCH_LIMIT ? dayBatchPortionMessage(days.length) : null;
-  /** Прошедшие дни срока: ради них и спрашивается причина — одна на пачку, а не на каждый день. */
-  const pastDays = days.filter((d) => d < onDate);
-
-  const machinistId = machinist?.personId;
-
   /**
    * Водители — тем же запросом и тем же отбором, что у подённого окна: день заказа печатается
    * обычным 4-П, и графы удостоверения с СНИЛСом в нём те же. Дата отбора — первый день срока:
@@ -131,40 +109,22 @@ export function DayBatchFields({
    * машину на первый день срока, и человек, чья специализация водителя в этот день не действовала
    * либо чья карточка снята, в него не попадает вовсе.
    */
-  const machinistListed = !!machinistId && options.some((o) => o.value === machinistId);
+  const model = dayBatchModel({
+    term,
+    onDate,
+    machinist,
+    driverOptions: options,
+    driverSelectionReady: !!selection,
+    driverId,
+  });
 
-  /**
-   * Умолчание водителя — машинист заявки, и только в пустое поле. Портал подставляет человека
-   * ровно здесь и ровно потому, что ADR 0207 решение 6 назвало эту уступку вслух: без водителя
-   * лист не выписывается, а пятьдесят пустых полей — это не пачка. Переписывать уже выбранное имя
-   * подстановка не вправе: выбор человека всегда старше подсказки портала.
-   *
-   * Подставляется только тот, кого список называет. Подстановка вслепую давала бы поле с голым
-   * идентификатором вместо фамилии — показать человека, которого отбор не вернул, окну нечем, — а
-   * снятая карточка машиниста роняла бы всю пачку первым же днём («Водитель не найден»): пачка
-   * спрашивает человека один раз на весь период, и ошибка в нём стоит не одного дня, а всех.
-   */
+  // ADR 0207 explicitly allows one autofill here: the request machinist is the batch driver only
+  // when the date-specific selection still contains that person. A manual choice always wins.
   useEffect(() => {
-    if (!enabled || !machinistId || !machinistListed) return;
+    if (!enabled || !model.defaultDriverId) return;
     if (form.getFieldValue('dayBatchDriverId')) return;
-    form.setFieldsValue({ dayBatchDriverId: machinistId });
-  }, [enabled, machinistId, machinistListed, form]);
-
-  /**
-   * Что сказано про машиниста заявки — одной строкой, потому что случай всегда один из двух.
-   *
-   * Машиниста в отборе нет — пустое поле обязано объясниться: без объяснения оно читается как
-   * «портал никого не знает», и диспетчер ищет причину в справочнике вместо даты отбора.
-   * Машинист есть, но поехал другой — расхождение окно называет вслух (ADR 0207 решение 6) и не
-   * запрещает: подменный водитель на субботу законен. Обе новости сразу — это одна и та же новость
-   * дважды, и вторая из них уже ничего не добавляет.
-   */
-  const machinistNote =
-    selection && machinist?.name && machinistId && !machinistListed
-      ? `Машинист заявки (${machinist.name}) в отборе водителей на ${formatDateOnly(term.dateFrom)} не значится — выберите, кто поедет`
-      : machinist?.name && machinistId && driverId && driverId !== machinistId
-        ? `Листы уйдут не на машиниста заявки (${machinist.name}), а на выбранного здесь человека`
-        : null;
+    form.setFieldsValue({ dayBatchDriverId: model.defaultDriverId });
+  }, [enabled, model.defaultDriverId, form]);
 
   return (
     <>
@@ -176,8 +136,8 @@ export function DayBatchFields({
           <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
             {/* Хвост про пропуски один на оба случая: пропускает пачка одинаково и когда срок
               влез в порцию целиком, и когда идёт частями. */}
-            {portionHint ??
-              `Каждый день срока (${days.length} дн.) встанет в рейс назначенной машины, и по рейсу выпишется путевой лист.`}{' '}
+            {model.portionHint ??
+              `Каждый день срока (${model.days.length} дн.) встанет в рейс назначенной машины, и по рейсу выпишется путевой лист.`}{' '}
             Дни, которые уже заняты своим рейсом или закрыты бумагой, пачка пропустит и назовёт в
             отчёте.
           </Typography.Paragraph>
@@ -185,9 +145,9 @@ export function DayBatchFields({
       ) : (
         // У окна самой пачки галочки нет, а порцию назвать всё равно надо: без этого диспетчер
         // узнал бы о недобранном хвосте срока только из отчёта.
-        portionHint && (
+        model.portionHint && (
           <FormGrid.Full>
-            <Alert type="info" showIcon title={portionHint} />
+            <Alert type="info" showIcon title={model.portionHint} />
           </FormGrid.Full>
         )
       )}
@@ -218,16 +178,16 @@ export function DayBatchFields({
             </Form.Item>
           </FormGrid.Full>
 
-          {machinistNote && (
+          {model.machinistNote && (
             <FormGrid.Full>
-              <Alert type="info" showIcon title={machinistNote} />
+              <Alert type="info" showIcon title={model.machinistNote} />
             </FormGrid.Full>
           )}
 
           {/* Past days go as one corrections-journal operation (ADR 0207 §9), so the reason is one:
             it explains the decision to paper the past period, not each day separately. The same
             reason is printed on every such waybill. */}
-          {pastDays.length > 0 && (
+          {model.pastDays.length > 0 && (
             <FormGrid.Full>
               <Form.Item
                 name="dayBatchReason"
@@ -237,7 +197,7 @@ export function DayBatchFields({
                 // because `useDayBatch` trims the reason and drops it when empty — a reason of
                 // spaces would pass a bare `required` and reach the server as no reason at all.
                 rules={[{ required: true, whitespace: true, message: 'Укажите причину' }]}
-                extra={`В сроке ${pastDays.length} дн. до ${formatDateOnly(onDate)}: они пройдут одной операцией журнала коррекций — с вашим именем и этой причиной в каждом листе`}
+                extra={`В сроке ${model.pastDays.length} дн. до ${formatDateOnly(onDate)}: они пройдут одной операцией журнала коррекций — с вашим именем и этой причиной в каждом листе`}
               >
                 <Input.TextArea
                   rows={2}

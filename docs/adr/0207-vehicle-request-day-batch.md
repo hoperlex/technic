@@ -9,6 +9,7 @@
   `apps/api/src/services/vehicle-request-days.ts`,
   `apps/api/src/services/readings-aggregate.ts`,
   `apps/api/src/services/mailings/digest-waybills.ts`,
+  `apps/web/src/features/vehicle-assignment/model/dayBatch.ts`,
   `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`,
   `apps/web/src/pages/vehicle/DayBatchFields.tsx`,
   `apps/web/src/pages/vehicle/VehicleDayBatchModal.tsx`,

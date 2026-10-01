@@ -28,8 +28,10 @@ import {
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { formatDateOnly } from '@shared/lib';
-import { TrailerFields, trailerTripBody } from './TrailerFields';
+import { trailerTripBody } from '@entities/vehicle-route';
+import { TrailerFields } from './TrailerFields';
 import { BackdateReasonField } from '@widgets/vehicle-request-editor';
+import { NEW_ROUTE } from '@features/vehicle-assignment';
 
 /**
  * Поставить день заказа техники на объект в рейс (ADR 0100 решение 8, изменённое ADR 0207 §1:
@@ -47,9 +49,6 @@ import { BackdateReasonField } from '@widgets/vehicle-request-editor';
  * Своим файлом, а не блоком таблицы дней: окно с формой, тремя запросами и мутацией —
  * самостоятельная вещь, как и соседняя выписка ЭСМ-2 по требованию.
  */
-
-/** Выбор «завести новый маршрут»: значением поля, как и в форме перевода в работу. */
-const NEW_ROUTE = 'new';
 
 interface Props {
   /**

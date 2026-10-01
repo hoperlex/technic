@@ -22,7 +22,7 @@ import { WaybillWarningList } from '@entities/waybill';
  * The assignment doors (history repair, period) answer the same 409 code with a different body: a
  * per-sheet `issues` list instead of one fingerprint, because one command there issues several
  * blanks. `ackRequiredDetails` returns `null` for that body on purpose — those doors read it through
- * `assignmentWarnings.ts`, and only the warning list itself (`@entities/waybill`) is shared.
+ * `@features/vehicle-assignment`, and only the warning list itself (`@entities/waybill`) is shared.
  */
 
 /** Что окно читает из отказа: общая часть обоих тел — прочитанный набор и его отпечаток. */

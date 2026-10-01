@@ -2,7 +2,7 @@ import { Alert, Button, DatePicker, Form, Radio, Space, Typography } from 'antd'
 import type { AssignmentChangeDto, DriverDto, RepairPreviewDto } from '@technic/contracts';
 import { AutoSelect } from '@shared/ui';
 import dayjs from 'dayjs';
-import { machinistOption } from './assignDriverHints';
+import { machinistOption } from '@features/vehicle-assignment';
 import {
   assignmentSegments,
   type AssignmentSegment,

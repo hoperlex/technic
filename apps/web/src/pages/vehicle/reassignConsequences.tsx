@@ -6,14 +6,16 @@ import { isApiError } from '@shared/api';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { WarnedSheetsConfirm } from '@entities/waybill';
-import type { AssignCommand } from './assignCommand';
-import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
 import {
-  ReassignPreview,
+  acknowledgementsOf,
+  type AssignCommand,
   reassignPreviewBlocked,
   reassignPreviewIsSilent,
   reassignStaleReason,
-} from './ReassignPreview';
+  recheckReasonOf,
+  warnedSheetsOf,
+} from '@features/vehicle-assignment';
+import { ReassignPreview } from './ReassignPreview';
 
 /**
  * The consequences step of a vehicle change (wave 4a of `docs/assignment-periods-plan.md`, §7) —

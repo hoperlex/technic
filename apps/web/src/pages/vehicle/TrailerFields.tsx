@@ -226,38 +226,3 @@ export function TrailerFields({
     </>
   );
 }
-
-/**
- * Графы прицепа из формы — в тело рейса, теми же правилами во всех окнах.
- *
- * Реквизиты прицепа уходят только вместе с самим прицепом: без него сервер их не примет
- * («реквизиты прицепа без прицепа в рейсе не печатаются»), а у рейса они могли остаться с прошлого
- * раза — снятый прицеп забирает их с собой.
- *
- * Второй прицеп уходит наравне с первым. До выноса окно назначения его спрашивало (после
- * наследования от прошлого рейса) и **теряло на отправке**: ключей в теле было два, и рейс уезжал
- * с половиной состава, не сказав об этом ни слова. Ровно этой ошибке здесь больше негде взяться —
- * тело собирается одним местом на все окна.
- */
-export function trailerTripBody(v: {
-  withTrailer?: boolean;
-  trailer1Model?: string;
-  trailer1RegNumber?: string;
-  trailer2Model?: string;
-  trailer2RegNumber?: string;
-}): {
-  withTrailer: boolean;
-  trailer1Model: string;
-  trailer1RegNumber: string;
-  trailer2Model: string;
-  trailer2RegNumber: string;
-} {
-  const withTrailer = v.withTrailer ?? false;
-  return {
-    withTrailer,
-    trailer1Model: withTrailer ? (v.trailer1Model ?? '') : '',
-    trailer1RegNumber: withTrailer ? (v.trailer1RegNumber ?? '') : '',
-    trailer2Model: withTrailer ? (v.trailer2Model ?? '') : '',
-    trailer2RegNumber: withTrailer ? (v.trailer2RegNumber ?? '') : '',
-  };
-}

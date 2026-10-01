@@ -13,7 +13,8 @@ import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { RouteCorrectionConsequences } from './RouteCorrectionConsequences';
 import { useRouteCorrectionChoices } from './routeCorrectionChoices';
-import { TrailerFields, trailerTripBody } from './TrailerFields';
+import { trailerTripBody } from '@entities/vehicle-route';
+import { TrailerFields } from './TrailerFields';
 
 /**
  * Исправление исполнения рейса задним числом (ADR 0101, Р2).

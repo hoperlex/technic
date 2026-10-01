@@ -15,7 +15,7 @@ import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { waybillKeys, WarnedSheetsConfirm } from '@entities/waybill';
 import { vehicleRequestsApi, type AssignmentCommandResultDto } from '@entities/vehicle-request';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
-import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
+import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from '@features/vehicle-assignment';
 import { AssignmentHistoryPanel } from './AssignmentHistoryPanel';
 import { useMachinistDirectory } from './machinistDirectory';
 import { MachinistAnchorFields, MachinistPickFields } from './MachinistFields';

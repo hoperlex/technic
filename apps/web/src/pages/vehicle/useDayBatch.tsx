@@ -1,17 +1,13 @@
 import { useState, type ReactNode } from 'react';
 import { App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type {
-  DayBatchApplyBody,
-  VehicleRequestDayBatchResultDto,
-  VehicleRequestDaysDto,
-} from '@technic/contracts';
+import type { VehicleRequestDayBatchResultDto, VehicleRequestDaysDto } from '@technic/contracts';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
-import type { DayBatchFormValues } from './DayBatchFields';
+import { dayBatchBody, type DayBatchFormValues } from '@features/vehicle-assignment';
 import { DayBatchReport } from './DayBatchReport';
 
 /**
@@ -29,31 +25,6 @@ import { DayBatchReport } from './DayBatchReport';
  * моменту уже в работе, откатывать её нельзя, и человек обязан узнать, что бумага не выписалась, а
  * заявка взята.
  */
-
-/**
- * Тело пачки. Собирается ровно в одном месте: второй сборщик разошёлся бы с первым на первом же
- * новом поле — и одно из двух окон начало бы отправлять не то, что показывает.
- */
-export function dayBatchBody(v: DayBatchFormValues, operationId: string): DayBatchApplyBody {
-  return {
-    driverPersonId: v.dayBatchDriverId!,
-    /*
-     * Поля не спрашивали — значит листы нужны. Так устроено окно принятия в работу: там галочка
-     * называется «выписать 4-П на весь период», и разделение «сначала рейсы, бумага потом» ей
-     * противоречит. Спрашивает о нём только окно пачки, где добирают пропущенное.
-     */
-    issueWaybills: v.dayBatchIssue ?? true,
-    // Пустая причина уходит отсутствием ключа, а не пустой строкой: «объяснения не давали» и
-    // «объяснение пустое» — разные вещи, и схема двери принимает только первое.
-    ...(v.dayBatchReason?.trim() ? { reason: v.dayBatchReason.trim() } : {}),
-    /*
-     * Ключ повтора — свой на каждое нажатие (ADR 0207 решение 11). Он не про «нажали дважды»: по
-     * нему сервер узнаёт свой же оборванный запрос и не выписывает вторую стопку бланков на те же
-     * дни. Остаток, добираемый повторным нажатием, — это другая операция, и ключ у неё другой.
-     */
-    operationId,
-  };
-}
 
 interface Options {
   /**

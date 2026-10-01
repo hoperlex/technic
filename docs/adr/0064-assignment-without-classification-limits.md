@@ -14,6 +14,7 @@
   позицию классификатора), [ADR 0052](0052-route-followup.md) (подсказка рейсов),
   `packages/contracts/src/vehicles.ts`, `packages/contracts/src/persons.ts`,
   `apps/api/src/services/drivers.ts`, `apps/api/src/services/waybill-issue.ts`,
+  `apps/web/src/features/vehicle-assignment`,
   `apps/api/src/routes/vehicle-requests.ts`, `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`,
   `apps/web/src/pages/vehicle/VehicleRouteModal.tsx`. Миграций не требует
 

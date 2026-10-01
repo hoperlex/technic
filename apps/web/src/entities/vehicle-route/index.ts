@@ -43,3 +43,4 @@ export {
  * общим с условием, по которому окно открывается адресом.
  */
 export { canOpenRoute, vehicleRouteLink } from './model/links';
+export { trailerTripBody, type TrailerTripInput } from './model/trailerTrip';
