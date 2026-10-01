@@ -4,17 +4,14 @@ import { Link } from 'react-router';
 import type { VehicleRequestDto } from '@technic/contracts';
 
 /**
- * Кнопки футера карточки заявки на технику — правка, копия, дверь в список и «Закрыть».
+ * Vehicle request card footer actions: edit, copy, open in the list, and close.
  *
- * Отдельным файлом от самой карточки по той же причине, по какой из неё уже уехали перечни
- * (`requestRowText`): `VehicleRequestViewModal` стоит в бюджете длины (`scripts/quality.mjs`), и
- * рост её файла запрещён ратчетом. Футер уезжает целиком, а не наполовину: это законченный
- * вопрос — «что человек может сделать, дочитав карточку», — и разорванный по двум файлам он
- * отвечался бы в обоих.
+ * This stays separate for the same reason the lifecycle descriptions moved out of the modal:
+ * `VehicleRequestViewModal` is covered by the max-lines ratchet. Moving the whole footer keeps
+ * the answer to "what can the user do after reading the card?" in one place.
  *
- * Массивом, а не компонентом: `ViewModal` принимает `footer` списком узлов и раскладывает их сам
- * (на телефоне — поровну по ширине, `.sheet-footer`). Компонент-обёртка добавил бы между ними
- * лишний узел и сломал бы ровно эту раскладку.
+ * Return an array because `ViewModal` accepts footer nodes and lays them out itself. A wrapper
+ * component would add an extra DOM node and break the equal-width mobile footer layout.
  */
 export function vehicleRequestCardFooter({
   request,

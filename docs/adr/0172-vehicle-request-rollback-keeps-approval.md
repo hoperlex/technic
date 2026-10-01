@@ -8,7 +8,7 @@
   контракты — [enums.ts](../../packages/contracts/src/enums.ts) (`transitionResetsWork`,
   `requestStatusRollbacks` — описания),
   [permissions.ts](../../packages/contracts/src/permissions.ts) (строка диспетчера);
-  портал — [requestRowText.ts](../../apps/web/src/pages/vehicle/requestRowText.ts)
+  портал — [rollbackErases.ts](../../apps/web/src/features/vehicle-request-lifecycle/model/rollbackErases.ts)
   (`rollbackErases`), [CancelReasonModal.tsx](../../apps/web/src/components/CancelReasonModal.tsx);
   тесты — [vehicle-request-rollback.db.test.ts](../../apps/api/test/vehicle-request-rollback.db.test.ts),
   [flow-vehicle-rollback.test.tsx](../../apps/web/test/flow-vehicle-rollback.test.tsx)

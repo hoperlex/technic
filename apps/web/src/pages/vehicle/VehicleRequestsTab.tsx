@@ -1,27 +1,15 @@
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
-import { App, Button, Space } from 'antd';
+import { App } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  type AssignVehicleBody,
-  type ConfirmScheduleBody,
   canCorrectAssignment,
   canReassignVehicle,
-  canRequestEarlyEnd,
-  type CompleteVehicleRequestInput,
   esm2Mode,
   type FeedKind,
   feedKindLabels,
-  minRequestDateKey,
-  isPlaceScopedRole,
   parseFeedNumberSearch,
-  type RequestStatus,
-  ROLLBACK_WAYBILL_MESSAGE,
   type SpecialEquipmentRequestDto,
-  statusChangeRequiresReason,
-  transitionRequiresAssignment,
-  transitionRequiresCompletion,
-  transitionResetsWork,
   type VehicleRequestDto,
   allowedVehicleRequestTypes,
   vehicleRequestTypeLabels,
@@ -32,7 +20,6 @@ import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { canOpenRoute, vehicleRouteKeys, vehicleRouteLink } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
-import { CancelReasonModal, RollbackReasonModal } from '@entities/request';
 import { useActiveTabKey } from '@shared/ui';
 import { useRequestCustomerDefaults, useRequestCustomerFilter } from '@features/request-customer';
 import { garageKeys } from '@entities/garage';
@@ -45,6 +32,7 @@ import { reassignStaleReason } from './ReassignPreview';
 import { recheckReasonOf } from './assignmentWarnings';
 import { type AssignCommand, reassignRequestBody } from './assignCommand';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
+import { VehicleEarlyEndApproveModal } from './VehicleEarlyEndApproveModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleEsm2Modal } from './VehicleEsm2Modal';
 import { VehicleMachinistModal } from './VehicleMachinistModal';
@@ -53,15 +41,14 @@ import { VehiclePeriodModal } from './VehiclePeriodModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useRouteModal } from '@features/route-modal';
-import { rollbackErases } from './requestRowText';
 import { useVehicleFilter } from './shared';
-import { useEarlyEnd } from './earlyEndActions';
 import { useWeeklyRequestCreate, weekSelectOptions, weeklyRequestPath } from './weeklyShared';
 import { useVehicleRequestEditor, VehicleRelocationModal } from '@widgets/vehicle-request-editor';
+import { useVehicleRequestLifecycle } from '@widgets/vehicle-request-lifecycle';
 import { VehicleRequestFeed } from '@widgets/vehicle-request-feed';
 
 export function VehicleRequestsTab() {
-  const { message, modal } = App.useApp();
+  const { message } = App.useApp();
   const { user, can } = useAuth();
   const qc = useQueryClient();
   // Настоящий переход остался один — недельная заявка: у неё своя страница с адресом, потому что
@@ -78,11 +65,7 @@ export function VehicleRequestsTab() {
     value: t,
     label: vehicleRequestTypeLabels[t],
   }));
-  const canEdit = can('vehicleRequests.update');
-  const canDelete = can('vehicleRequests.delete');
   const canCreate = can('vehicleRequests.create');
-  const canApprove = can('vehicleRequests.approve');
-  const canRestore = can('archive.restore');
   /** Ведение хода заявки: перевод в работу и, тем же правом, смена назначенной машины (ADR 0048). */
   const canChangeStatus = can('vehicleRequests.status');
   /**
@@ -209,31 +192,12 @@ export function VehicleRequestsTab() {
     openRoute,
     renderPeriodModal: (props) => <VehiclePeriodModal {...props} />,
   });
-
-  // Отмена заявки требует причины — она вводится в отдельном окне.
-  const [cancelTarget, setCancelTarget] = useState<VehicleRequestDto | null>(null);
-  /**
-   * Заявка, которую возвращают из работы в «Новую» (`transitionResetsWork`). Отдельно от отмены:
-   * окно причины у них общее, но перечень стираемого — свой, и по нему видно, что именно потеряет
-   * эта заявка. Смешай их в одном состоянии — окно не знало бы, что показывать.
-   */
-  const [rollbackTarget, setRollbackTarget] = useState<VehicleRequestDto | null>(null);
-  /**
-   * Перегоны заявки, которую возвращают в «Новую» (миграция 0082): они едут ради этой заявки и на
-   * назначенной ей машине, поэтому возврат стирает их вместе с назначением. Спрашиваются, только
-   * пока открыто окно, и только у заказа техники на объект — у грузоперевозки перегонов не бывает,
-   * а лишний запрос на каждую строку списка ради окна, которое откроют раз в месяц, ни к чему.
-   * Ключ тот же, что у карточки заявки: открытая перед этим карточка отдаёт ответ из кэша.
-   */
-  const { data: rollbackRelocations } = useQuery({
-    queryKey: vehicleRequestKeys.relocations(rollbackTarget?.id),
-    queryFn: () => vehicleRequestsApi.relocations(rollbackTarget!.id),
-    enabled: !!rollbackTarget && rollbackTarget.requestType === 'special_equipment',
+  const lifecycle = useVehicleRequestLifecycle({
+    staleReasonOf: (error) => reassignStaleReason(error) ?? recheckReasonOf(error),
+    renderCompleteModal: (props) => <VehicleCompleteModal {...props} />,
+    renderEarlyEndApproveModal: (props) => <VehicleEarlyEndApproveModal {...props} />,
+    renderEarlyEndModal: (props) => <VehicleEarlyEndModal {...props} />,
   });
-  // Перевод в работу — выбор техники и ставок (ADR 0027): назначение уходит вместе со статусом.
-  const [assignTarget, setAssignTarget] = useState<VehicleRequestDto | null>(null);
-  // Выполнение — отработанное время и стоимость (ADR 0029): факт тоже уходит со статусом.
-  const [completeTarget, setCompleteTarget] = useState<VehicleRequestDto | null>(null);
   // Смена машины у работающей заявки (ADR 0048) — своим запросом: статус при ней не меняется.
   const [reassignTarget, setReassignTarget] = useState<VehicleRequestDto | null>(null);
   /**
@@ -280,123 +244,6 @@ export function VehicleRequestsTab() {
       message.error(errorMessage(e));
     },
   });
-
-  const statusMut = useMutation({
-    mutationFn: (v: {
-      id: string;
-      status: RequestStatus;
-      version: number;
-      comment?: string;
-      assignment?: AssignVehicleBody;
-      /** Фактический срок, уточнённый при переводе в работу: заказывали на одно время, вышли на другое. */
-      schedule?: ConfirmScheduleBody;
-      completion?: CompleteVehicleRequestInput;
-      /**
-       * Отпечаток последствий, показанных вторым шагом окна назначения (§5.4 плана). Приходит
-       * только с отката «Выполнена» → «В работе»: на нём портал обещал точный результат сверки
-       * ЭСМ-2, и сервер сверяет, что обещанное ещё верно.
-       */
-      previewFingerprint?: string;
-    }) =>
-      vehicleRequestsApi.changeStatus(v.id, v.status, v.version, {
-        comment: v.comment,
-        assignment: v.assignment,
-        schedule: v.schedule,
-        completion: v.completion,
-        previewFingerprint: v.previewFingerprint,
-      }),
-    onSuccess: () => {
-      message.success('Статус изменён');
-      setCancelTarget(null);
-      setRollbackTarget(null);
-      setAssignTarget(null);
-      setCompleteTarget(null);
-      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
-      // Возврат в «Новую» снимает машину, а с ней уходят из рейсов и сама заявка, и её перегоны:
-      // списки маршрутов после такого перехода уже не те. Инвалидация общая на все переходы —
-      // рейсов касается и закрытие заявки, и её отмена.
-      void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
-      // Перевод в работу выписывает путевой лист, а закрытие и отмена его переписывают (ADR 0037):
-      // журнал листов после смены статуса показывает не то, что в базе.
-      void qc.invalidateQueries({ queryKey: waybillKeys.root });
-      void qc.invalidateQueries({ queryKey: garageKeys.root });
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  const requestStatusChange = (r: VehicleRequestDto, status: RequestStatus) => {
-    // Возврат из работы в «Новую» стирает всё, что заявка нажила в работе (`transitionResetsWork`),
-    // и спрашивает причину тем же окном, что отмена, — но со своим перечнем стираемого: человек
-    // должен увидеть, чего лишится эта заявка, до нажатия, а не после.
-    if (transitionResetsWork(r.status, status)) {
-      setRollbackTarget(r);
-      return;
-    }
-    if (statusChangeRequiresReason(status, r.status)) {
-      setCancelTarget(r);
-      return;
-    }
-    // «В работе» без машины не бывает: заявку берут конкретной единицей и по конкретной ставке.
-    if (transitionRequiresAssignment(status)) {
-      setAssignTarget(r);
-      return;
-    }
-    /*
-     * Закрытие спрашивает факт. У грузоперевозки — только там, где есть чем считать: у заявки,
-     * взятой в работу до ADR 0027, машины и ставки нет; так же решает и сервер. У заказа техники на
-     * объект окно открывается **всегда** (ADR 0178): закрывает его своя дверь, а она факт требует
-     * без оговорок — статусной ручки, закрывавшей такую заявку с прочерком в сумме, больше нет.
-     * Заказ без назначенной техники идёт этим же окном: сумму в нём проставляют руками.
-     */
-    if (
-      transitionRequiresCompletion(status) &&
-      (r.requestType === 'special_equipment' || r.assignment)
-    ) {
-      setCompleteTarget(r);
-      return;
-    }
-    statusMut.mutate({ id: r.id, status, version: r.version });
-  };
-
-  const approvalMut = useMutation({
-    mutationFn: (v: { id: string; approved: boolean; version: number }) =>
-      vehicleRequestsApi.setApproval(v.id, v.approved, v.version),
-    onSuccess: (_res, v) => {
-      message.success(v.approved ? 'Заявка завизирована' : 'Виза снята');
-      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  /** Снятие визы спрашиваем: заявка после этого перестаёт годиться в работу. */
-  const requestApprovalChange = (r: VehicleRequestDto, approved: boolean) => {
-    if (approved) {
-      approvalMut.mutate({ id: r.id, approved, version: r.version });
-      return;
-    }
-    modal.confirm({
-      title: `Снять визу с заявки ${r.displayNumber}?`,
-      content: 'Пока визы нет, заявку нельзя взять в работу.',
-      okText: 'Снять визу',
-      okButtonProps: { danger: true },
-      cancelText: 'Отмена',
-      onOk: () => approvalMut.mutateAsync({ id: r.id, approved: false, version: r.version }),
-    });
-  };
-
-  // Досрочное завершение (ADR 0044): запрос сокращения срока, решение по нему и отзыв. Действия
-  // общие со срезом «На объекте» — там их и вызывают чаще, — поэтому живут одним хуком.
-  const earlyEnd = useEarlyEnd();
-  /** «Сегодня» по Москве: тем же днём применимость считает сервер (`earlyEndBlocker`). */
-  const today = minRequestDateKey();
-  /** Предикаты-сужения: досрочно завершают только заказ спецтехники, и окно ждёт именно его. */
-  const earlyEndAllowed = (r: VehicleRequestDto): r is SpecialEquipmentRequestDto =>
-    canEdit &&
-    r.requestType === 'special_equipment' &&
-    canRequestEarlyEnd(r, today) &&
-    r.earlyEnd?.status !== 'pending';
-  const decidableEarlyEnd = (r: VehicleRequestDto): r is SpecialEquipmentRequestDto =>
-    canApprove && r.requestType === 'special_equipment' && r.earlyEnd?.status === 'pending';
 
   /**
    * Сменить назначенную машину (ADR 0048). Право — то же, которым заявку берут в работу: подбор
@@ -452,43 +299,6 @@ export function VehicleRequestsTab() {
     !!r.assignment &&
     !r.isLinear &&
     (r.assignment?.ownership ?? 'own') === 'own';
-
-  const removeMut = useMutation({
-    mutationFn: (id: string) => vehicleRequestsApi.remove(id),
-    onSuccess: (res) => {
-      message.success(res.mode === 'hard' ? 'Удалено' : 'Перемещено в архив');
-      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  const restoreMut = useMutation({
-    mutationFn: (id: string) => vehicleRequestsApi.restore(id),
-    onSuccess: () => {
-      message.success('Восстановлено');
-      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  // Заказчик правит заявку, пока она «Новая» (ADR 0040 п. 5) — правило обеих осей, и предикат тот
-  // же, каким его спрашивает сервер: одна объектная ось давала бы отделу кнопку с отказом.
-  const canModify = (r: VehicleRequestDto) =>
-    !r.deletedAt &&
-    (canEdit || canDelete) &&
-    (!isPlaceScopedRole(user?.role) || r.status === 'new');
-
-  const confirmDelete = (r: VehicleRequestDto) =>
-    modal.confirm({
-      title:
-        r.status === 'new'
-          ? `Удалить заявку ${r.displayNumber} безвозвратно?`
-          : `Переместить заявку ${r.displayNumber} в архив?`,
-      okText: r.status === 'new' ? 'Удалить' : 'В архив',
-      okButtonProps: { danger: true },
-      cancelText: 'Отмена',
-      onOk: () => removeMut.mutateAsync(r.id),
-    });
 
   /** Открыть неделю: у недельной строки это единственное действие и оно же клик по строке. */
   const openWeekly = (weekly: WeeklyVehicleRequestDto) =>
@@ -554,29 +364,26 @@ export function VehicleRequestsTab() {
       total={data?.total ?? 0}
       loading={isFetching}
       rights={{
-        canApprove,
+        canApprove: lifecycle.rights.canApprove,
         canCreate,
         canCreateWeekly,
-        canDelete,
-        canEdit,
-        canRestore,
+        canDelete: lifecycle.rights.canDelete,
+        canEdit: lifecycle.rights.canEdit,
+        canRestore: lifecycle.rights.canRestore,
         showRoutes,
       }}
-      pending={{
-        approvalRequestId: approvalMut.isPending ? approvalMut.variables?.id : undefined,
-        statusRequestId: statusMut.isPending ? statusMut.variables?.id : undefined,
-      }}
+      pending={lifecycle.pending}
       actions={{
-        approveEarlyEnd: earlyEnd.approve,
+        approveEarlyEnd: lifecycle.actions.approveEarlyEnd,
         canChangeMachinist: machinistChangeAllowed,
-        canDecideEarlyEnd: decidableEarlyEnd,
-        canModify,
+        canDecideEarlyEnd: lifecycle.actions.canDecideEarlyEnd,
+        canModify: lifecycle.actions.canModify,
         canReassign: reassignAllowed,
         canRepairHistory: historyRepairAllowed,
-        canRequestEarlyEnd: earlyEndAllowed,
-        changeApproval: requestApprovalChange,
+        canRequestEarlyEnd: lifecycle.actions.canRequestEarlyEnd,
+        changeApproval: lifecycle.actions.changeApproval,
         changeMachinist: setMachinistTarget,
-        changeStatus: requestStatusChange,
+        changeStatus: lifecycle.actions.changeStatus,
         create: requestEditor.openCreate,
         createWeekly: weeklyCreate.open,
         edit: requestEditor.openEdit,
@@ -585,11 +392,11 @@ export function VehicleRequestsTab() {
         openRoutes: () => openRoutesList(),
         openWeekly,
         reassign: setReassignTarget,
-        rejectEarlyEnd: earlyEnd.reject,
-        remove: confirmDelete,
+        rejectEarlyEnd: lifecycle.actions.rejectEarlyEnd,
+        remove: lifecycle.actions.remove,
         repairHistory: setRepairTarget,
-        requestEarlyEnd: earlyEnd.open,
-        restore: (request) => restoreMut.mutate(request.id),
+        requestEarlyEnd: lifecycle.actions.requestEarlyEnd,
+        restore: lifecycle.actions.restore,
         routeLink: (routeId) => vehicleRouteLink(can, routeId),
       }}
       filters={{
@@ -635,36 +442,9 @@ export function VehicleRequestsTab() {
       <VehicleRequestViewModal
         request={viewed}
         onClose={closeView}
-        // Решение по досрочному завершению принимают, прочитав причину, — а она в карточке.
-        // Решённый запрос кнопок не получает: согласованный уже сократил срок, отклонённый
-        // объясняет, почему этого не случилось.
-        earlyEndActions={(r) => {
-          if (r.requestType !== 'special_equipment' || r.earlyEnd?.status !== 'pending') {
-            return null;
-          }
-          return (
-            <Space size={8} wrap>
-              {canApprove && (
-                <>
-                  <Button size="small" type="primary" onClick={() => earlyEnd.approve(r)}>
-                    Согласовать
-                  </Button>
-                  <Button size="small" danger onClick={() => earlyEnd.reject(r)}>
-                    Отклонить
-                  </Button>
-                </>
-              )}
-              {/* Отзывает тот, кто мог и подать: отбой приходит и диспетчеру, и площадке. */}
-              {canEdit && (
-                <Button size="small" onClick={() => earlyEnd.withdraw(r)}>
-                  Отозвать запрос
-                </Button>
-              )}
-            </Space>
-          );
-        }}
+        earlyEndActions={lifecycle.earlyEndActions}
         onEdit={
-          viewed && canModify(viewed)
+          viewed && lifecycle.actions.canModify(viewed)
             ? (r) => {
                 closeView();
                 requestEditor.openEdit(r);
@@ -775,26 +555,10 @@ export function VehicleRequestsTab() {
           запросом, что и смена статуса, — заявка не бывает «в работе» ни на чём и не бывает
           взятой на одно время с путевым листом на другое. */}
       <VehicleAssignModal
-        request={assignTarget}
-        confirmLoading={statusMut.isPending}
-        onCancel={() => setAssignTarget(null)}
-        onSubmit={({ assignment, schedule, previewFingerprint }) =>
-          // `mutateAsync`, а не `mutate`: вслед за переводом окно вторым запросом зовёт пачку
-          // 4-П (ADR 0207), а дни планируются только у заявки, уже взятой в работу.
-          assignTarget
-            ? statusMut.mutateAsync({
-                id: assignTarget.id,
-                status: 'confirmed',
-                version: assignTarget.version,
-                assignment,
-                // Срок при переводе в работу окно спрашивает всегда — `null` сюда не приходит.
-                schedule: schedule ?? undefined,
-                // Приходит только с отката «Выполнена» → «В работе»: на прочих переходах окно
-                // предпросмотра не зовёт и обещать серверу нечего.
-                previewFingerprint,
-              })
-            : undefined
-        }
+        request={lifecycle.assignment.target}
+        confirmLoading={lifecycle.assignment.pending}
+        onCancel={lifecycle.assignment.close}
+        onSubmit={lifecycle.assignment.submit}
       />
 
       {/* Смена техники у заявки в работе (ADR 0048): то же окно подбора, но без фактического
@@ -843,87 +607,7 @@ export function VehicleRequestsTab() {
         }}
       />
 
-      {/* Отказ по запросу досрочного завершения: причина спрашивается окном хука. */}
-      {earlyEnd.node}
-
-      {/* Виза по чужому запросу: своё окно со своим предпросмотром (ADR 0178, Р19) — она
-        применяет сокращение, и последствия обязана показать до нажатия. */}
-      {earlyEnd.approveNode}
-
-      {/* Досрочное завершение — то же окно, что и на вкладке «На объекте» (ADR 0044). */}
-      <VehicleEarlyEndModal
-        request={earlyEnd.target}
-        onDate={today}
-        approvesOwn={earlyEnd.approvesOwn}
-        confirmLoading={earlyEnd.pending}
-        onCancel={earlyEnd.close}
-        onSubmit={earlyEnd.submit}
-      />
-
-      {/* Выполнение: отработанное время и стоимость (ADR 0029), а у заказа техники на объект — ещё
-        и фактическая дата окончания работ (ADR 0178). Заказ техники окно закрывает своей дверью и
-        своим предпросмотром — статусная ручка «Выполнена» у него отвечает отказом; `onSubmit` тут
-        остался ровно для грузоперевозки, которая закрывается прежним путём. */}
-      <VehicleCompleteModal
-        request={completeTarget}
-        onDate={today}
-        confirmLoading={statusMut.isPending}
-        onCancel={() => setCompleteTarget(null)}
-        onCompleted={() => setCompleteTarget(null)}
-        onSubmit={({ completion, comment }) =>
-          completeTarget &&
-          statusMut.mutate({
-            id: completeTarget.id,
-            status: 'done',
-            version: completeTarget.version,
-            comment,
-            completion,
-          })
-        }
-      />
-
-      <CancelReasonModal
-        open={!!cancelTarget}
-        subject={cancelTarget ? `№ ${cancelTarget.displayNumber}` : ''}
-        confirmLoading={statusMut.isPending}
-        onCancel={() => setCancelTarget(null)}
-        onSubmit={(reason) =>
-          cancelTarget &&
-          statusMut.mutate({
-            id: cancelTarget.id,
-            status: 'cancelled',
-            version: cancelTarget.version,
-            comment: reason,
-          })
-        }
-      />
-
-      {/* Возврат в «Новую»: причина обязательна наравне с причиной отмены, а над полем — перечень
-        того, что заявка потеряет. Выписанный по ней путевой лист возврат не пропустит
-        (`ROLLBACK_WAYBILL_MESSAGE`): работу заявки, попавшей в выданный бланк, стирать нельзя —
-        об этом сказано здесь же, до набранной впустую причины. */}
-      <RollbackReasonModal
-        open={!!rollbackTarget}
-        subject={rollbackTarget ? `№ ${rollbackTarget.displayNumber}` : ''}
-        erases={rollbackTarget ? rollbackErases(rollbackTarget, rollbackRelocations ?? []) : []}
-        // Признак самой заявки, а не её рейса (ADR 0207). У заказа техники на объект своего рейса
-        // не бывает вовсе — бумага висит на рейсах дней и перегонов, — и `route.hasWaybill`
-        // отвечал «листа нет» всегда: окно открывалось, человек набирал причину и упирался в 409.
-        // Перегоны отдельной строкой больше не считаются: поле учитывает и их
-        // (`activeWaybillOfRequest`), а вторая проверка была бы копией серверного правила.
-        blocker={rollbackTarget?.hasActiveWaybill ? ROLLBACK_WAYBILL_MESSAGE : null}
-        confirmLoading={statusMut.isPending}
-        onCancel={() => setRollbackTarget(null)}
-        onSubmit={(reason) =>
-          rollbackTarget &&
-          statusMut.mutate({
-            id: rollbackTarget.id,
-            status: 'new',
-            version: rollbackTarget.version,
-            comment: reason,
-          })
-        }
-      />
+      {lifecycle.node}
 
       {/* Окно «Заявка на неделю»: спрашивает площадку и неделю, а дальше уводит на страницу
           сборки — состав в модалку не помещается (ADR 0085 §5). */}
