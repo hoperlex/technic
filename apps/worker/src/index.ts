@@ -443,6 +443,22 @@ async function recognizeWasteTicketFile(job: JobRow): Promise<TicketJobResult> {
  */
 const receiptRate = new RateLimiter(readReceiptOcrConfig().maxPerMinute);
 
+async function markReceiptScanFailed(
+  job: Pick<JobRow, 'type' | 'payload'>,
+  error: string,
+): Promise<void> {
+  if (job.type !== JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE) return;
+  const fileId = String(job.payload.fileId ?? '');
+  if (!fileId) return;
+  await pool.query(
+    `UPDATE auto_part_receipt_scans
+        SET status = 'failed', error_class = 'terminal', error_scope = 'subsystem',
+            error = $2, updated_at = now()
+      WHERE file_id = $1 AND status = 'pending'`,
+    [fileId, error],
+  );
+}
+
 /**
  * Чтение скана чека. Порядок шагов и все проверки живут в `receipt-ocr/job.ts` — здесь только
  * сборка зависимостей и признак «модуль выключен».
@@ -451,9 +467,14 @@ const receiptRate = new RateLimiter(readReceiptOcrConfig().maxPerMinute);
  * было включено, — это состояние конфигурации, а не сбой задачи.
  */
 async function recognizeAutoPartReceiptFile(job: JobRow): Promise<ReceiptJobResult> {
+  const fileId = String(job.payload.fileId ?? '');
+  if (!fileId) throw new Error('Задача чтения чека без fileId');
+
   const cfg = readReceiptOcrConfig();
   if (!cfg.enabled) {
-    logger.info({ jobId: job.id }, 'Чтение чеков выключено: задача пропущена');
+    const message = 'Распознавание чеков выключено на воркере. Заполните чек вручную.';
+    await markReceiptScanFailed(job, message);
+    logger.info({ jobId: job.id }, 'Чтение чеков выключено: задача завершена отказом');
     return;
   }
   // Квота проверяется ДО скачивания файла и до всякой транзакции: ждать внутри неё значило бы
@@ -463,8 +484,6 @@ async function recognizeAutoPartReceiptFile(job: JobRow): Promise<ReceiptJobResu
     logger.info({ jobId: job.id, deferUntil }, 'Потолок обращений исчерпан: чтение чека отложено');
     return { deferUntil };
   }
-  const fileId = String(job.payload.fileId ?? '');
-  if (!fileId) throw new Error('Задача чтения чека без fileId');
 
   return runReceiptRecognitionJob(
     {
@@ -612,8 +631,10 @@ async function reclaimExpiredSafely(): Promise<void> {
       'Задачи с истёкшей арендой возвращены в очередь',
     );
     for (const job of dead) {
-      await markMailFailed(job, 'Аренда задачи истекла, попытки исчерпаны');
+      const error = 'Аренда задачи истекла, попытки исчерпаны';
+      await markMailFailed(job, error);
       await markTicketReviewStale(job);
+      await markReceiptScanFailed(job, error);
       logger.error(
         { jobId: job.id, type: job.type, attempts: job.attempts },
         'Задача переведена в dead: аренда истекала столько раз, сколько было попыток',
@@ -703,10 +724,9 @@ async function processJobs(): Promise<number> {
             continue;
           }
           await markMailFailed(job, message);
-          // Только после `killJob`, признавшего задачу нашей. Не признай он — задача не умерла:
-          // её отобрала очередь, и файл прямо сейчас читает второй воркер. Пометка оттуда была бы
-          // о чужой работе, которая ещё идёт, и заставляла бы реестр пересчитывать заявку впустую.
+          // Only mutate domain state after killJob confirms that this worker still owns the job.
           await markTicketReviewStale(job);
+          await markReceiptScanFailed(job, message);
           logger.error({ jobId: job.id, type: job.type }, `Задача переведена в dead: ${message}`);
         } else {
           const next = new Date(Date.now() + backoffMs(attempts));

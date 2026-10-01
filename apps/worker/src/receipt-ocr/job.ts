@@ -236,6 +236,53 @@ async function recognizePage(
   });
 }
 
+async function setPreparedPageCount(
+  deps: ReceiptJobDeps,
+  fileId: string,
+  totalPages: number,
+): Promise<void> {
+  await deps.pool.query(
+    `UPDATE auto_part_receipt_scans
+        SET total_pages = $2, processed_pages = 0, updated_at = now()
+      WHERE file_id = $1 AND status = 'pending'`,
+    [fileId, totalPages],
+  );
+}
+
+async function recordPageProgress(
+  deps: ReceiptJobDeps,
+  fileId: string,
+  outcome: PageOutcome,
+  processedPages: number,
+): Promise<void> {
+  await inTransaction(deps.pool, async (client) => {
+    await client.query(
+      `INSERT INTO auto_part_receipt_scan_pages
+         (file_id, page_no, page_sha256, status, error_class, error_scope, error)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (file_id, page_no) DO UPDATE
+          SET page_sha256 = EXCLUDED.page_sha256, status = EXCLUDED.status,
+              error_class = EXCLUDED.error_class, error_scope = EXCLUDED.error_scope,
+              error = EXCLUDED.error, updated_at = now()`,
+      [
+        fileId,
+        outcome.pageNo,
+        outcome.sha256,
+        outcome.status,
+        outcome.errorClass,
+        outcome.errorScope,
+        outcome.error,
+      ],
+    );
+    await client.query(
+      `UPDATE auto_part_receipt_scans
+          SET processed_pages = $2, updated_at = now()
+        WHERE file_id = $1 AND status = 'pending'`,
+      [fileId, processedPages],
+    );
+  });
+}
+
 async function downloadObject(deps: ReceiptJobDeps, objectKey: string): Promise<Buffer> {
   const res = await deps.s3.send(new GetObjectCommand({ Bucket: deps.bucket, Key: objectKey }));
   const body = res.Body as { transformToByteArray?: () => Promise<Uint8Array> } | undefined;
@@ -278,52 +325,34 @@ export async function runReceiptRecognitionJob(
     throw e;
   }
 
+  await setPreparedPageCount(deps, payload.fileId, prepared.totalPages);
+
   const outcomes: PageOutcome[] = [];
   for (const page of prepared.pages) {
-    outcomes.push(await recognizePage(deps, page, { forced: !!payload.forced, jobId }));
+    const outcome = await recognizePage(deps, page, { forced: !!payload.forced, jobId });
+    outcomes.push(outcome);
+    const processedPages = outcomes.filter((item) => item.status === 'done').length;
+    await recordPageProgress(deps, payload.fileId, outcome, processedPages);
   }
 
   const processed = outcomes.filter((o) => o.status === 'done').length;
   const failed = outcomes.find((o) => o.status === 'failed');
-  await inTransaction(deps.pool, async (client) => {
-    for (const outcome of outcomes) {
-      await client.query(
-        `INSERT INTO auto_part_receipt_scan_pages
-           (file_id, page_no, page_sha256, status, error_class, error_scope, error)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (file_id, page_no) DO UPDATE
-            SET page_sha256 = EXCLUDED.page_sha256, status = EXCLUDED.status,
-                error_class = EXCLUDED.error_class, error_scope = EXCLUDED.error_scope,
-                error = EXCLUDED.error, updated_at = now()`,
-        [
-          payload.fileId,
-          outcome.pageNo,
-          outcome.sha256,
-          outcome.status,
-          outcome.errorClass,
-          outcome.errorScope,
-          outcome.error,
-        ],
-      );
-    }
-    await client.query(
-      `UPDATE auto_part_receipt_scans
-          SET status = $2, total_pages = $3, processed_pages = $4,
-              error_class = $5, error_scope = $6, error = $7, updated_at = now()
-        WHERE file_id = $1`,
-      [
-        payload.fileId,
-        // Хоть одна прочитанная страница — это `done`: форму уже есть чем заполнить, а про
-        // непрочитанные окно скажет отдельно. `failed` остаётся для случая, когда не вышло ничего.
-        processed > 0 ? 'done' : 'failed',
-        prepared.totalPages,
-        processed,
-        processed > 0 ? '' : (failed?.errorClass ?? ''),
-        processed > 0 ? '' : (failed?.errorScope ?? ''),
-        processed > 0 ? '' : (failed?.error ?? ''),
-      ],
-    );
-  });
+  await deps.pool.query(
+    `UPDATE auto_part_receipt_scans
+        SET status = $2, total_pages = $3, processed_pages = $4,
+            error_class = $5, error_scope = $6, error = $7, updated_at = now()
+      WHERE file_id = $1`,
+    [
+      payload.fileId,
+      // Any usable page makes the scan done: the form can be filled from partial recognition.
+      processed > 0 ? 'done' : 'failed',
+      prepared.totalPages,
+      processed,
+      processed > 0 ? '' : (failed?.errorClass ?? ''),
+      processed > 0 ? '' : (failed?.errorScope ?? ''),
+      processed > 0 ? '' : (failed?.error ?? ''),
+    ],
+  );
 
   deps.log(
     { fileId: payload.fileId, jobId, pages: prepared.pages.length, processed },

@@ -10,6 +10,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { GaragePage } from '../src/pages/garage';
+import { saveReceiptCreateDraft } from '../src/pages/garage/receiptCreateDraftStorage';
 
 /**
  * Окна чека на автозапчасти: карточка `?receipt=` и форма «Принять чек» (план
@@ -130,6 +131,20 @@ function renderParts(route: string, role: 'mechanic' | 'manager' | 'admin' = 'me
     'GET /auto-part-receipts': () => json({ items: [], total: 0, page: 1, pageSize: 50 }),
     'GET /auto-part-receipts/summary': () => json(SUMMARY),
     'GET /auto-part-receipts/r-1': () => json(RECEIPT),
+    'GET /auto-part-receipts/scans/f-draft/recognition': () =>
+      json({
+        fileId: 'f-draft',
+        status: 'unsupported',
+        queuedAt: null,
+        delayed: false,
+        totalPages: 0,
+        processedPages: 0,
+        draft: null,
+        errorClass: 'terminal',
+        errorScope: 'item',
+        message: 'Тестовый файл',
+        duplicate: null,
+      }),
   });
   renderWithUser(<GaragePage />, {
     user: authUser({ role }),
@@ -172,6 +187,46 @@ describe('карточка чека', () => {
 });
 
 describe('окно «Принять чек»', () => {
+  it('после reload восстанавливает скан, реквизиты и строки нового чека', async () => {
+    saveReceiptCreateDraft('user-1', {
+      values: {
+        purchasedOn: '2026-09-15',
+        documentNumber: 'DRAFT-42',
+        sellerName: 'Черновик Поставщик',
+        note: 'пережил перезагрузку',
+      },
+      files: [
+        {
+          id: 'f-draft',
+          filename: 'draft.pdf',
+          contentType: 'application/pdf',
+          size: 2048,
+          isNew: true,
+        },
+      ],
+      rows: [
+        {
+          key: 'draft-line-1',
+          vehicleId: null,
+          toWarehouse: false,
+          article: 'A-42',
+          name: 'Фильтр из черновика',
+          quantity: 2,
+          unit: 'шт',
+          amount: 3200,
+          note: '',
+        },
+      ],
+    });
+
+    renderParts(`/garage?tab=parts&newReceipt=1&date=${ON_DATE}`);
+
+    expect(await screen.findByDisplayValue('DRAFT-42')).toBeDefined();
+    expect(screen.getByDisplayValue('Черновик Поставщик')).toBeDefined();
+    expect(screen.getByDisplayValue('Фильтр из черновика')).toBeDefined();
+    expect(screen.getByText('draft.pdf')).toBeDefined();
+  });
+
   it('менеджер открывает форму по праву роли', async () => {
     renderParts(`/garage?tab=parts&date=${ON_DATE}`, 'manager');
 

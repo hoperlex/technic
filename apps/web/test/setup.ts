@@ -112,4 +112,5 @@ afterEach(() => {
    * их оставил.
    */
   localStorage.clear();
+  sessionStorage.clear();
 });

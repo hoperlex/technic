@@ -70,11 +70,15 @@ describe('задание чека', () => {
     expect(schema.properties.lines.items.maxItems ?? 0).toBe(0);
   });
 
-  it('потолок строк в ответе вдвое больше потолка чека: 120 позиций надо УВИДЕТЬ', () => {
-    const lines = (RESPONSE_JSON_SCHEMA.schema as { properties: { lines: { maxItems: number } } })
+  it('предел строк проверяет контракт, а не несовместимая с провайдером JSON Schema', () => {
+    const lines = (RESPONSE_JSON_SCHEMA.schema as { properties: { lines: { maxItems?: number } } })
       .properties.lines;
-    expect(lines.maxItems).toBe(MAX_RECOGNIZED_RECEIPT_LINES);
+    // Google AI Studio rejects the full receipt schema with maxItems=200 as INVALID_ARGUMENT.
+    // The local contract still rejects an oversized model response before it reaches the form.
+    expect(lines.maxItems).toBeUndefined();
     expect(MAX_RECOGNIZED_RECEIPT_LINES).toBeGreaterThan(100);
+    const oversized = Array.from({ length: MAX_RECOGNIZED_RECEIPT_LINES + 1 }, () => ({}));
+    expect(receiptRecognitionResponseSchema.safeParse({ lines: oversized }).success).toBe(false);
   });
 
   it('проверку ответа держит само задание: битый JSON — неуспешная попытка', () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { App, DatePicker, Form, Input, Typography } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation } from '@tanstack/react-query';
@@ -11,11 +11,17 @@ import {
   type ReceiptDraft,
 } from '@technic/contracts';
 import { autoPartReceiptApi } from '@entities/auto-part-receipt';
+import { useAuth } from '@entities/session';
 import { errorFields, formatMoney } from '@shared/lib';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { ReceiptLinesEditor } from './ReceiptLinesEditor';
 import { WAREHOUSE_DESTINATION_VALUE } from './receiptVehicleOptions';
 import { ReceiptScanField, type ScanFile } from './ReceiptScanField';
+import {
+  clearReceiptCreateDraft,
+  loadReceiptCreateDraft,
+  saveReceiptCreateDraft,
+} from './receiptCreateDraftStorage';
 import {
   hasLineErrors,
   newReceiptLine,
@@ -76,6 +82,8 @@ export function AutoPartReceiptFormModal({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
   const invalidate = useReceiptInvalidation();
   /** Сегодня по МСК — тем же днём границу считает сервер (Р13), а не часами браузера. */
   const today = moscowDateKeyOf(new Date());
@@ -83,6 +91,7 @@ export function AutoPartReceiptFormModal({
   const blockers = useFormBlockers(form);
 
   const [files, setFiles] = useState<ScanFile[]>([]);
+  const [draftReady, setDraftReady] = useState(false);
   const [filesError, setFilesError] = useState<string | undefined>();
   const [rows, setRows] = useState<ReceiptLineRow[]>([]);
   const [linesError, setLinesError] = useState<string | undefined>();
@@ -90,25 +99,59 @@ export function AutoPartReceiptFormModal({
 
   useEffect(() => {
     if (!open) return;
+    setDraftReady(false);
     form.resetFields();
-    form.setFieldsValue(
-      receipt
-        ? {
-            purchasedOn: dayjs(receipt.purchasedOn),
-            documentNumber: receipt.documentNumber,
-            sellerName: receipt.sellerName,
-            note: receipt.note,
-          }
-        : // День по МСК, а не по часам браузера: чек, заводимый в 00:30 МСК, иначе встречал бы
-          // отказ «дата в будущем» на ровном месте.
-          { purchasedOn: dayjs(today) },
-    );
-    setFiles((receipt?.files ?? []).map((file) => ({ ...file })));
-    setRows(receipt ? receiptLinesFromDto(receipt.lines) : [newReceiptLine()]);
+    const restored = !receipt && userId ? loadReceiptCreateDraft(userId) : null;
+
+    if (receipt) {
+      form.setFieldsValue({
+        purchasedOn: dayjs(receipt.purchasedOn),
+        documentNumber: receipt.documentNumber,
+        sellerName: receipt.sellerName,
+        note: receipt.note,
+      });
+      setFiles(receipt.files.map((file) => ({ ...file })));
+      setRows(receiptLinesFromDto(receipt.lines));
+    } else if (restored) {
+      form.setFieldsValue({
+        purchasedOn: dayjs(restored.values.purchasedOn),
+        documentNumber: restored.values.documentNumber,
+        sellerName: restored.values.sellerName,
+        note: restored.values.note,
+      });
+      setFiles(restored.files.map((file) => ({ ...file })));
+      setRows(restored.rows.map((row) => ({ ...row })));
+    } else {
+      // The Moscow day is the same boundary the API validates around midnight.
+      form.setFieldsValue({ purchasedOn: dayjs(today) });
+      setFiles([]);
+      setRows([newReceiptLine()]);
+    }
+
     setFilesError(undefined);
     setLinesError(undefined);
     setLineErrors({});
-  }, [open, receipt, today, form]);
+    setDraftReady(true);
+  }, [open, receipt, today, form, userId]);
+
+  const persistCreateDraft = useCallback(() => {
+    if (!open || receipt || !draftReady || !userId) return;
+    const values = form.getFieldsValue();
+    saveReceiptCreateDraft(userId, {
+      values: {
+        purchasedOn: values.purchasedOn?.format(DATE) ?? today,
+        documentNumber: values.documentNumber ?? '',
+        sellerName: values.sellerName ?? '',
+        note: values.note ?? '',
+      },
+      files,
+      rows,
+    });
+  }, [draftReady, files, form, open, receipt, rows, today, userId]);
+
+  useEffect(() => {
+    persistCreateDraft();
+  }, [persistCreateDraft]);
 
   const changeRow = (key: string, patch: Partial<ReceiptLineRow>) => {
     setRows((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row)));
@@ -132,6 +175,7 @@ export function AutoPartReceiptFormModal({
       return autoPartReceiptApi.update(receipt.id, { ...body, version: receipt.version });
     },
     onSuccess: (saved) => {
+      if (!receipt && userId) clearReceiptCreateDraft(userId);
       message.success(receipt ? 'Чек изменён' : 'Чек принят');
       /*
        * Машины считаются по двум наборам сразу — бывшему и записанному (Р18): та, у которой строку
@@ -223,11 +267,16 @@ export function AutoPartReceiptFormModal({
   const total = receiptLinesTotal(rows);
   const busy = save.isPending;
 
+  const cancel = () => {
+    if (!receipt && userId) clearReceiptCreateDraft(userId);
+    onClose();
+  };
+
   return (
     <FormModal
       title={receipt ? `Правка чека № ${receipt.documentNumber}` : 'Принять чек'}
       open={open}
-      onCancel={onClose}
+      onCancel={cancel}
       onSubmit={() => form.submit()}
       confirmLoading={busy}
       width={960}
@@ -236,6 +285,7 @@ export function AutoPartReceiptFormModal({
         form={form}
         layout="vertical"
         onFinish={submit}
+        onValuesChange={persistCreateDraft}
         {...blockers.formProps}
         // Своё поверх общего: прокрутку к первому блокеру делает хук, а скан и строки живут вне
         // формы, и пометить их некому, кроме этой строки.

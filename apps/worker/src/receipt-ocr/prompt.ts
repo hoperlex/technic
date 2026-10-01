@@ -1,4 +1,4 @@
-import { MAX_RECOGNIZED_RECEIPT_LINES, RECEIPT_LINE_KINDS } from '@technic/contracts';
+import { RECEIPT_LINE_KINDS } from '@technic/contracts';
 
 /**
  * Задание модели для чеков на автозапчасти: промпт и схема ответа
@@ -24,10 +24,12 @@ import { MAX_RECOGNIZED_RECEIPT_LINES, RECEIPT_LINE_KINDS } from '@technic/contr
  */
 
 /**
- * Версия промпта — часть ключа кэша попыток. Меняется при любой правке текста ниже, схемы ответа и
- * порядка частей запроса: всё это вместе и есть задание. Версия 1 — первая, в бою не бывала.
+ * The prompt version is part of the attempt cache key and covers prompt text, response schema,
+ * and request-part ordering. Version 2 removes `maxItems` from the provider schema: Google AI
+ * Studio rejects the otherwise valid complex schema with a 200-item limit as `INVALID_ARGUMENT`,
+ * while the response contract still enforces the actual limit after generation.
  */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 export const SYSTEM_PROMPT = `Ты читаешь сканы счетов на оплату и товарных чеков на автозапчасти и возвращаешь только JSON.
 
@@ -145,7 +147,8 @@ export const RESPONSE_JSON_SCHEMA: Record<string, unknown> = {
       linesTruncated: { type: 'boolean' },
       lines: {
         type: 'array',
-        maxItems: MAX_RECOGNIZED_RECEIPT_LINES,
+        // The provider rejects this otherwise valid schema when maxItems is 200. The Zod
+        // response contract remains the authoritative 200-line guard after generation.
         items: {
           type: 'object',
           additionalProperties: false,

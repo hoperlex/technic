@@ -103,13 +103,13 @@ export function ReceiptRecognitionPanel({
   });
 
   /**
-   * Состояние подсистемы спрашивается ТОЛЬКО после неудачи: отказ на одном скане и нездоровье
-   * сервиса — разные вещи, и объяснять первое вторым имеет смысл лишь тогда, когда второе есть.
+   * Health is relevant after a failure and while one live job has exceeded the UX threshold.
+   * A normal in-flight scan does not need another polling stream.
    */
   const health = useQuery({
     queryKey: autoPartReceiptKeys.recognitionHealth(),
     queryFn: () => autoPartReceiptApi.recognitionHealth(),
-    enabled: state.data?.status === 'failed',
+    enabled: state.data?.status === 'failed' || state.data?.delayed === true,
   });
 
   const recognize = useMutation({
@@ -147,10 +147,28 @@ export function ReceiptRecognitionPanel({
     <Space orientation="vertical" size={8} style={{ width: '100%' }}>
       {reading && (
         <Alert
-          type="info"
+          type={data?.delayed ? 'warning' : 'info'}
           showIcon
-          title="Скан распознаётся — поля заполнятся сами"
-          description="Окно можно заполнять и руками: распознанное ничего не затрёт без вашего согласия."
+          title={
+            data?.delayed
+              ? 'Распознавание задержалось — ждать дальше необязательно'
+              : 'Скан распознаётся — поля заполнятся сами'
+          }
+          description={
+            <Space orientation="vertical" size={4}>
+              <Typography.Text>
+                {data?.totalPages
+                  ? `Успешно прочитано страниц: ${data.processedPages} из ${data.totalPages}`
+                  : 'Файл ожидает очереди или подготавливается к распознаванию.'}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                Можно продолжить вручную или перезагрузить страницу: черновик и сканы восстановятся.
+              </Typography.Text>
+              {data?.delayed && health.data && health.data.state !== 'ok' && (
+                <Typography.Text type="secondary">{healthText(health.data)}</Typography.Text>
+              )}
+            </Space>
+          }
         />
       )}
 

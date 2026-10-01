@@ -1929,6 +1929,56 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
     expect((queued.rows[0] as { n: number }).n).toBe(1);
   });
 
+  it('pending без живой задачи становится явным отказом и допускает новый запуск', async () => {
+    const file = await newFile();
+    await ctx.db.execute(
+      sql`INSERT INTO auto_part_receipt_scans (file_id, status)
+           VALUES (${file.id}, 'pending')`,
+    );
+    await ctx.db.execute(
+      sql`INSERT INTO jobs (type, payload, status)
+           VALUES ('recognize_auto_part_receipt_file',
+                   jsonb_build_object('fileId', ${file.id}), 'done')`,
+    );
+
+    const stranded = await recognition(mech, file.id);
+    expect(stranded.statusCode, stranded.body).toBe(200);
+    expect(stranded.json()).toMatchObject({
+      status: 'failed',
+      delayed: false,
+      errorClass: 'terminal',
+      errorScope: 'subsystem',
+    });
+
+    const restarted = await recognize(mech, file.id);
+    expect(restarted.statusCode, restarted.body).toBe(200);
+    expect(restarted.json()).toMatchObject({ status: 'pending', delayed: false });
+    const queued = await ctx.db.execute(
+      sql`SELECT count(*)::int AS n FROM jobs
+           WHERE type = 'recognize_auto_part_receipt_file' AND payload->>'fileId' = ${file.id}`,
+    );
+    expect((queued.rows[0] as { n: number }).n).toBe(2);
+  });
+
+  it('живая задача старше пятнадцати минут помечается задержанной', async () => {
+    const file = await newFile();
+    await ctx.db.execute(
+      sql`INSERT INTO auto_part_receipt_scans (file_id, status)
+           VALUES (${file.id}, 'pending')`,
+    );
+    await ctx.db.execute(
+      sql`INSERT INTO jobs (type, payload, status, created_at, updated_at)
+           VALUES ('recognize_auto_part_receipt_file',
+                   jsonb_build_object('fileId', ${file.id}), 'pending',
+                   now() - interval '16 minutes', now() - interval '16 minutes')`,
+    );
+
+    const res = await recognition(mech, file.id);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ status: 'pending', delayed: true });
+    expect(res.json().queuedAt).not.toBeNull();
+  });
+
   it('чужой непривязанный скан не читается, даже держателем ведения чеков (Р5)', async () => {
     // До сохранения формы файл ничей, кроме автора: это то же правило, по которому он его видит.
     const strangers = await newFile(ctx.users.admin);

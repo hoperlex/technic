@@ -336,6 +336,10 @@ export interface ReceiptDuplicateScanDto {
 export interface ReceiptRecognitionStateDto {
   fileId: string;
   status: ReceiptRecognitionStatus;
+  /** When the current queue attempt was created; null before recognition was requested. */
+  queuedAt: string | null;
+  /** True when a live queue job has not produced a terminal result for fifteen minutes. */
+  delayed: boolean;
   /** Страниц в файле и сколько из них разобрано: «в файле 6 страниц, обработано 5 (лимит)». */
   totalPages: number;
   processedPages: number;
@@ -347,7 +351,6 @@ export interface ReceiptRecognitionStateDto {
   message: string;
   duplicate: ReceiptDuplicateScanDto | null;
 }
-
 
 /**
  * Состояние подсистемы чтения (§11 плана, по образцу баннера талонов).

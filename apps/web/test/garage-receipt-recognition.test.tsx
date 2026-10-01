@@ -20,6 +20,8 @@ function state(over: Partial<ReceiptRecognitionStateDto> = {}): ReceiptRecogniti
   return {
     fileId: FILE,
     status: 'idle',
+    queuedAt: null,
+    delayed: false,
     totalPages: 0,
     processedPages: 0,
     draft: null,
@@ -86,6 +88,35 @@ describe('панель чтения скана', () => {
     await waitFor(() =>
       expect(http.countOf('POST /auto-part-receipts/scans/f-1/recognize')).toBe(1),
     );
+  });
+
+  it('после пятнадцати минут показывает задержку, прогресс и безопасный reload', async () => {
+    renderPanel({
+      'GET /auto-part-receipts/scans/f-1/recognition': () =>
+        json(
+          state({
+            status: 'pending',
+            queuedAt: '2026-09-30T10:00:00.000Z',
+            delayed: true,
+            totalPages: 3,
+            processedPages: 1,
+          }),
+        ),
+      'GET /auto-part-receipts/recognition/health': () =>
+        json({
+          state: 'degraded',
+          since: '2026-09-30T10:00:00.000Z',
+          code: '',
+          attempts: 5,
+          failed: 4,
+          waiting: 1,
+        }),
+    });
+
+    expect(await screen.findByText(/Распознавание задержалось/)).toBeDefined();
+    expect(screen.getByText(/Успешно прочитано страниц: 1 из 3/)).toBeDefined();
+    expect(screen.getByText(/черновик и сканы восстановятся/)).toBeDefined();
+    expect(await screen.findByText(/Сервис распознавания сейчас недоступен/)).toBeDefined();
   });
 
   it('прочитанное не подставляется само: форму заполняет нажатие', async () => {

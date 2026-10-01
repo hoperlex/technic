@@ -18,6 +18,7 @@ import {
   autoPartReceipts,
   autoPartReceiptScans,
   files,
+  jobs,
 } from '../db/schema';
 import { config } from '../config';
 import { err } from '../lib/errors';
@@ -99,34 +100,57 @@ export async function requestReceiptRecognition(
     throw err.badRequest('Распознавание чеков сейчас выключено');
   }
 
-  const [scan] = await db
-    .select({ status: autoPartReceiptScans.status })
-    .from(autoPartReceiptScans)
-    .where(eq(autoPartReceiptScans.fileId, fileId))
-    .limit(1);
+  await db.transaction(async (tx) => {
+    // The file row is the stable lock even before a scan row exists, so concurrent clicks cannot
+    // create two paid jobs for the same file.
+    await tx.select({ id: files.id }).from(files).where(eq(files.id, fileId)).for('update');
 
-  const alreadyRunning = scan?.status === 'pending';
-  if (!alreadyRunning) {
-    await db
-      .insert(autoPartReceiptScans)
-      .values({ fileId, status: 'pending', requestedBy: p.id })
-      .onConflictDoUpdate({
-        target: autoPartReceiptScans.fileId,
-        set: {
-          status: 'pending',
-          errorClass: '',
-          errorScope: '',
-          error: '',
-          processedPages: 0,
-          requestedBy: p.id,
-          updatedAt: new Date(),
-        },
-      });
-    await enqueueJob(JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE, {
-      fileId,
-      forced: opts.forced === true,
-    });
-  }
+    const [scan] = await tx
+      .select({ status: autoPartReceiptScans.status })
+      .from(autoPartReceiptScans)
+      .where(eq(autoPartReceiptScans.fileId, fileId))
+      .limit(1);
+
+    let alreadyRunning = false;
+    if (scan?.status === 'pending') {
+      const [latest] = await tx
+        .select({ status: jobs.status })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.type, JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE),
+            eq(sql<string>`${jobs.payload} ->> 'fileId'`, fileId),
+          ),
+        )
+        .orderBy(desc(jobs.createdAt))
+        .limit(1);
+      alreadyRunning = latest?.status === 'pending' || latest?.status === 'running';
+    }
+
+    if (!alreadyRunning) {
+      await tx
+        .insert(autoPartReceiptScans)
+        .values({ fileId, status: 'pending', requestedBy: p.id })
+        .onConflictDoUpdate({
+          target: autoPartReceiptScans.fileId,
+          set: {
+            status: 'pending',
+            errorClass: '',
+            errorScope: '',
+            error: '',
+            totalPages: 0,
+            processedPages: 0,
+            requestedBy: p.id,
+            updatedAt: new Date(),
+          },
+        });
+      await enqueueJob(
+        JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE,
+        { fileId, forced: opts.forced === true },
+        { tx },
+      );
+    }
+  });
   return loadReceiptRecognitionState(fileId, p);
 }
 
@@ -191,6 +215,8 @@ export async function loadReceiptRecognitionState(
   const empty: ReceiptRecognitionStateDto = {
     fileId,
     status: 'idle',
+    queuedAt: null,
+    delayed: false,
     totalPages: 0,
     processedPages: 0,
     draft: null,
@@ -201,14 +227,76 @@ export async function loadReceiptRecognitionState(
   };
   if (!scan) return empty;
 
+  const [latestJob] = await db
+    .select({
+      status: jobs.status,
+      createdAt: jobs.createdAt,
+    })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE),
+        eq(sql<string>`${jobs.payload} ->> 'fileId'`, fileId),
+      ),
+    )
+    .orderBy(desc(jobs.createdAt))
+    .limit(1);
+
+  const queuedAt = latestJob?.createdAt.toISOString() ?? null;
+  const liveJob = latestJob?.status === 'pending' || latestJob?.status === 'running';
+  let status = scan.status as ReceiptRecognitionStatus;
+  let errorClass = scan.errorClass;
+  let errorScope = scan.errorScope;
+  let message = scan.error;
+
+  // A pending scan without a live queue job can never change again. Reconcile it on read so
+  // records stranded by an older worker release become retryable immediately after deployment.
+  if (status === 'pending' && !liveJob) {
+    const terminalMessage =
+      latestJob?.status === 'done'
+        ? 'Задача распознавания завершилась без результата. Запустите распознавание ещё раз.'
+        : 'Задача распознавания остановилась и больше не будет повторена. Запустите её ещё раз.';
+    const [reconciled] = await db
+      .update(autoPartReceiptScans)
+      .set({
+        status: 'failed',
+        errorClass: 'terminal',
+        errorScope: 'subsystem',
+        error: terminalMessage,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(autoPartReceiptScans.fileId, fileId),
+          eq(autoPartReceiptScans.status, 'pending'),
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${jobs}
+             WHERE ${jobs.type} = ${JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE}
+               AND ${jobs.payload} ->> 'fileId' = ${fileId}
+               AND ${jobs.status} IN ('pending', 'running')
+          )`,
+        ),
+      )
+      .returning({ fileId: autoPartReceiptScans.fileId });
+    if (reconciled) {
+      status = 'failed';
+      errorClass = 'terminal';
+      errorScope = 'subsystem';
+      message = terminalMessage;
+    }
+  }
+
+  const delayed =
+    status === 'pending' &&
+    liveJob &&
+    latestJob !== undefined &&
+    Date.now() - latestJob.createdAt.getTime() >= 15 * 60_000;
+
   const pages = await db
     .select({ pageSha256: autoPartReceiptScanPages.pageSha256 })
     .from(autoPartReceiptScanPages)
     .where(
-      and(
-        eq(autoPartReceiptScanPages.fileId, fileId),
-        eq(autoPartReceiptScanPages.status, 'done'),
-      ),
+      and(eq(autoPartReceiptScanPages.fileId, fileId), eq(autoPartReceiptScanPages.status, 'done')),
     )
     .orderBy(autoPartReceiptScanPages.pageNo);
 
@@ -217,13 +305,15 @@ export async function loadReceiptRecognitionState(
 
   return {
     fileId,
-    status: scan.status as ReceiptRecognitionStatus,
+    status,
+    queuedAt,
+    delayed,
     totalPages: scan.totalPages,
     processedPages: scan.processedPages,
     draft,
-    errorClass: scan.errorClass === '' ? null : scan.errorClass,
-    errorScope: scan.errorScope === '' ? null : scan.errorScope,
-    message: scan.error,
+    errorClass: errorClass === '' ? null : errorClass,
+    errorScope: errorScope === '' ? null : errorScope,
+    message,
     duplicate: await findDuplicateReceipt(fileId, shas, p),
   };
 }
@@ -265,7 +355,6 @@ async function draftOf(shas: string[]): Promise<ReceiptRecognitionStateDto['draf
   if (parsed.length === 0) return null;
   return receiptDraftFrom(mergeReceiptPages(parsed), moscowDateKeyOf(new Date()));
 }
-
 
 /**
  * Состояние подсистемы чтения (§11 плана) — тем же правилом, что баннер талонов, и по тем же
