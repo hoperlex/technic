@@ -65,7 +65,7 @@
 
 | Файл                                                                                 | Блокеров | Форма есть?     |
 | ------------------------------------------------------------------------------------ | -------- | --------------- |
-| [VehicleAssignModal](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L770)      | 6        | да              |
+| [VehicleAssignModal](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx) | 6        | да              |
 | [WasteDoneModal](../apps/web/src/pages/waste/WasteDoneModal.tsx#L193)                | 3        | да              |
 | [VehicleCompleteModal](../apps/web/src/pages/vehicle/VehicleCompleteModal.tsx#L172)  | 2        | да              |
 | [VehicleEarlyEndModal](../apps/web/src/pages/vehicle/VehicleEarlyEndModal.tsx#L103)  | 1        | да              |

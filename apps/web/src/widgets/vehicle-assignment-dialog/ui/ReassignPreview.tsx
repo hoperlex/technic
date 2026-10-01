@@ -1,7 +1,10 @@
 import { Alert, Space, Typography } from 'antd';
 import { type AssignmentPreviewDto, workedAmountLabel } from '@technic/contracts';
 import { formatDateOnly } from '@shared/lib';
-import { listStyle, totalOf } from './consequencesList';
+import {
+  consequencesListStyle as listStyle,
+  consequencesTotalOf as totalOf,
+} from '@entities/vehicle-request';
 
 /**
  * Render the server-owned cost of a vehicle change before confirmation: replaced ESM-2 sheets,

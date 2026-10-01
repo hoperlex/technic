@@ -14,7 +14,7 @@ import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-rout
 import { RouteCorrectionConsequences } from './RouteCorrectionConsequences';
 import { useRouteCorrectionChoices } from './routeCorrectionChoices';
 import { trailerTripBody } from '@entities/vehicle-route';
-import { TrailerFields } from './TrailerFields';
+import { TrailerFields } from '@features/vehicle-route-trailer';
 
 /**
  * Исправление исполнения рейса задним числом (ADR 0101, Р2).

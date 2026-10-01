@@ -25,7 +25,7 @@ import { garageKeys } from '@entities/garage';
 import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
-import { VehicleAssignModal } from './VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 import * as assignmentModel from '@features/vehicle-assignment';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndApproveModal } from './VehicleEarlyEndApproveModal';

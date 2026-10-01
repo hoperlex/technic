@@ -6,7 +6,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
 import { FormGrid } from '../src/shared/ui';
-import { TrailerFields } from '../src/pages/vehicle/TrailerFields';
+import { TrailerFields } from '@features/vehicle-route-trailer';
 
 const trailer = (over: Partial<VehicleTrailerDto>): VehicleTrailerDto =>
   ({

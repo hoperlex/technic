@@ -89,7 +89,8 @@ export const CLIENT_CONTRACT_HEADER = 'X-Client-Contract';
 
 /**
  * Код отказа гейта. Тот же литерал носит 409 предпросмотра смены техники
- * (`pages/vehicle/ReassignPreview.tsx`), поэтому разбирается ПАРА «статус + код», а не код
+ * (`widgets/vehicle-assignment-dialog/ui/ReassignPreview.tsx`), поэтому разбирается ПАРА
+ * «статус + код», а не код
  * в одиночку: разговор у этих двух отказов разный.
  */
 export const CLIENT_UPGRADE_REQUIRED = 'client_upgrade_required';

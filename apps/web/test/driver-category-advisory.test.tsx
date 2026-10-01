@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type { DriverOptionDto, FreightTransportRequestDto, VehicleDto } from '@technic/contracts';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 import { openSelectOptions } from './antd';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';

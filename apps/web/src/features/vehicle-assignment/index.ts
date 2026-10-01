@@ -59,3 +59,4 @@ export {
   recheckReasonOf,
   warnedSheetsOf,
 } from './model/warnings';
+export { RollbackPreview } from './ui/RollbackPreview';

@@ -49,11 +49,11 @@
 ([vehicle-requests.ts:2280–2289](../apps/api/src/routes/vehicle-requests.ts#L2280-L2289)) без машины
 отбирает рейсы дня условием `vehicles.vehicle_type_id = заказанный тип`. По этому же ответу живут
 оба портальных входа — форма перевода в работу
-([VehicleAssignModal.tsx:331](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L331)) и перенос
+([VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx)) и перенос
 заявки между рейсами ([VehicleRouteTransferModal.tsx:47](../apps/web/src/pages/vehicle/VehicleRouteTransferModal.tsx#L47)).
 Отсюда «автоподбор не отдаёт подходящие маршруты»: рейс крупной машины в списке не появляется вовсе.
 
-**Окно назначения грузит технику одного типа** ([VehicleAssignModal.tsx:172–184](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L172-L184)).
+**Окно назначения грузит технику одного типа** ([VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx)).
 
 **Обойти нечем — ровно как в ADR 0045.** Сменить заказанный тип у заявки с машиной запрещено
 (422 «На заявку назначена техника», [vehicle-requests.ts:2058](../apps/api/src/routes/vehicle-requests.ts#L2058)),
@@ -255,7 +255,7 @@ export function vehicleSubstitutionWarning(input: {
 
 | Файл                                                                                         | Правка                                                                                                                                          |
 | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| [VehicleAssignModal.tsx](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx)               | запрос техники по виду; группы «Заказанный тип / Крупнее / Другие типы»; пометки и предупреждение по Р4; бланк — от выбранной машины (Р8)       |
+| [VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx) | запрос техники по виду; группы «Заказанный тип / Крупнее / Другие типы»; пометки и предупреждение по Р4; бланк — от выбранной машины (Р8)       |
 | [VehicleRouteTransferModal.tsx](../apps/web/src/pages/vehicle/VehicleRouteTransferModal.tsx) | рейсы по виду с пометкой типа и отношения; предупреждение о смене типа рядом с нынешним «поедет машиной выбранного рейса»                       |
 | [VehicleRouteModal.tsx](../apps/web/src/pages/vehicle/VehicleRouteModal.tsx)                 | кандидаты в рейс — заявки дня **любого типа своего вида** (сегодня отбор молча повторяет серверное равенство); в строке — заказанный тип заявки |
 | [VehicleRequestViewModal.tsx](../apps/web/src/pages/vehicle/VehicleRequestViewModal.tsx)     | в блоке «Техника» — тип машины, когда он отличается от заказанного                                                                              |

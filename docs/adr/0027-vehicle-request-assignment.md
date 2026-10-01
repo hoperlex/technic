@@ -7,7 +7,7 @@
   [ADR 0011](0011-waste-request-vehicles.md) (факт вывоза мусора — соседний приём),
   `packages/contracts/src/vehicle-requests.ts`, `apps/api/src/routes/vehicle-requests.ts`,
   `apps/web/src/features/vehicle-assignment`,
-  `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`, миграция `0051`
+  `apps/web/src/widgets/vehicle-assignment-dialog`, миграция `0051`
 
 ## Контекст
 

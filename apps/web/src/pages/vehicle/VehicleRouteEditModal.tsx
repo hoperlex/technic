@@ -26,7 +26,7 @@ import { useIsMobile } from '@shared/lib';
 import { useAuth } from '@entities/session';
 import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { trailerTripBody } from '@entities/vehicle-route';
-import { TrailerFields } from './TrailerFields';
+import { TrailerFields } from '@features/vehicle-route-trailer';
 import { BackdateReasonField } from '@widgets/vehicle-request-editor';
 
 /**

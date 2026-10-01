@@ -6,7 +6,7 @@ import {
   type FreightTransportRequestDto,
   type VehicleDto,
 } from '@technic/contracts';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 import { VehicleRouteModal } from '../src/pages/vehicle/VehicleRouteModal';
 import { openSelectOptions } from './antd';
 import { json, mockHttp } from './http';

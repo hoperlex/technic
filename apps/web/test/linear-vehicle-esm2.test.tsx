@@ -6,7 +6,7 @@ import { renderWithUser } from './render';
 import { selectOption, typeDate } from './antd';
 import { list } from './factories/common';
 import { machinist, vehicleRequest } from './factories/vehicle';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 import { VehicleEsm2Modal } from '../src/pages/vehicle/VehicleEsm2Modal';
 
 /**

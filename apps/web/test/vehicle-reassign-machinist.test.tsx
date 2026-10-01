@@ -7,7 +7,7 @@ import { renderWithUser } from './render';
 import { selectOption } from './antd';
 import { list } from './factories/common';
 import { assignmentPreview, machinist, vehicleRequest } from './factories/vehicle';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 
 /**
  * Машинист при смене назначенной техники (ADR 0048) — и то, что портал его не подставляет

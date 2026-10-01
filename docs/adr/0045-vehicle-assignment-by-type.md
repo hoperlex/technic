@@ -9,7 +9,7 @@
   [ADR 0015](0015-vehicle-request-history.md) (история заявки),
   `packages/contracts/src/vehicles.ts`, `apps/api/src/routes/vehicle-requests.ts`,
   `apps/api/src/services/vehicle-request-diff.ts`,
-  `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`
+  `apps/web/src/widgets/vehicle-assignment-dialog`
 
 ## Контекст
 

@@ -29,7 +29,7 @@ import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { formatDateOnly } from '@shared/lib';
 import { trailerTripBody } from '@entities/vehicle-route';
-import { TrailerFields } from './TrailerFields';
+import { TrailerFields } from '@features/vehicle-route-trailer';
 import { BackdateReasonField } from '@widgets/vehicle-request-editor';
 import { NEW_ROUTE } from '@features/vehicle-assignment';
 

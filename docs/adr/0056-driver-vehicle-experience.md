@@ -10,7 +10,7 @@
   [ADR 0029](0029-vehicle-request-completion.md) (факт выполнения заявки),
   `packages/contracts/src/persons.ts`, `apps/api/src/services/drivers.ts`,
   `apps/web/src/features/vehicle-assignment/model/people.ts`,
-  `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`,
+  `apps/web/src/widgets/vehicle-assignment-dialog`,
   `apps/web/src/pages/vehicle/VehicleRoutesTab.tsx`. Миграций не требует
 
 ## Контекст

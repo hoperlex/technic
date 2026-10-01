@@ -2,7 +2,10 @@ import { Alert, Checkbox, Form, Input, Space, Typography } from 'antd';
 import { type CompletionPreviewDto, workedAmountLabel } from '@technic/contracts';
 import { cancelGroupLine } from './cancelGroups';
 import { formatDateOnly } from '@shared/lib';
-import { listStyle, totalOf } from './consequencesList';
+import {
+  consequencesListStyle as listStyle,
+  consequencesTotalOf as totalOf,
+} from '@entities/vehicle-request';
 
 /**
  * Цена закрытия заказа фактической датой, прочитанная человеком **до** нажатия (ADR 0178, план

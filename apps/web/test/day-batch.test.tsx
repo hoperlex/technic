@@ -23,7 +23,7 @@ import {
   ownAssignment,
   vehicleRequest,
 } from './factories/vehicle';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 
 /**
  * The "4-П for the whole term" batch (ADR 0207) from the "take into work" window: a second request

@@ -228,7 +228,7 @@
 
 ## 7. Портал (`apps/web`)
 
-- [`VehicleAssignModal.tsx`](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx): блок «Доставка на
+- [`VehicleAssignModal.tsx`](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx): блок «Доставка на
   объект» для заявок спецтехники (чекбокс, дата, водитель, откуда/куда, реквизиты рейса); у легковых
   — прежний блок «Маршрут» без полей прицепа.
 - Карточка заявки спецтехники: действие «Путевой лист на вывоз».

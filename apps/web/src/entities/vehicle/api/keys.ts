@@ -76,7 +76,7 @@ export const vehicleKeys = createQueryKeys('vehicles', {
   ownOptions: () => ['own-options'],
   /**
    * Заказанный вид целиком — первая из двух страниц окна назначения. Почему страниц две, сказано
-   * у самих запросов (`apps/web/src/pages/vehicle/VehicleAssignModal.tsx`): в 500 строк парк не
+   * у самих запросов (`widgets/vehicle-assignment-dialog`): в 500 строк парк не
    * помещается, и обрезалось бы как раз заказанное.
    *
    * Вид в ключе обязателен: по нему сервер и отбирает, а ключ, о виде не знающий, отдал бы окну

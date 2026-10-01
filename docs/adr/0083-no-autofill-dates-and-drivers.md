@@ -2,14 +2,14 @@
 
 - Статус: Принято
 - Домены: заказ-тс
-- Область: `apps/web/src/shared/ui/AutoSelect.tsx`, `apps/web/src/features/vehicle-assignment`, `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`, `apps/web/src/widgets/vehicle-request-editor/ui/VehicleRelocationModal.tsx`
+- Область: `apps/web/src/shared/ui/AutoSelect.tsx`, `apps/web/src/features/vehicle-assignment`, `apps/web/src/widgets/vehicle-assignment-dialog`, `apps/web/src/widgets/vehicle-request-editor/ui/VehicleRelocationModal.tsx`
 - Связано: [ADR 0052](0052-route-followup.md) (перевод в работу спрашивает рейс),
   [ADR 0064](0064-assignment-without-classification-limits.md) (список водителей помечает, а не
   сужает), [ADR 0055](0055-driver-documents-over-categories.md) (категория прав — справочно),
   [ADR 0057](0057-waybill-forms-and-relocation.md) (перегон техники),
   [ADR 0082](0082-route-edit-and-date-move.md) (правка рейса),
   `apps/web/src/shared/ui/AutoSelect.tsx`, `apps/web/src/features/vehicle-assignment`,
-  `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`,
+  `apps/web/src/widgets/vehicle-assignment-dialog`,
   `apps/web/src/widgets/vehicle-request-editor/ui/VehicleRelocationModal.tsx`,
   `apps/web/src/pages/vehicle/VehicleRoutesTab.tsx`. Миграций не требует
 

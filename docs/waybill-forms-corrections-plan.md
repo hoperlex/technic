@@ -74,7 +74,7 @@
   [0025](../apps/api/drizzle/0025_counterparties_seed.sql) без реквизитов.
 - **Вид сообщения** — свободная строка (`z.string().max(50)`,
   [vehicle-routes.ts:138](../packages/contracts/src/vehicle-routes.ts#L138)), в UI обычный `Input`
-  в трёх окнах: [VehicleAssignModal.tsx:1772](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L1772),
+  в трёх окнах: [VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx),
   [VehicleRouteEditModal.tsx:353](../apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx#L353),
   [VehicleRouteCorrectionModal.tsx:327](../apps/web/src/pages/vehicle/VehicleRouteCorrectionModal.tsx#L327).
   Перегон подставляет «городское» кодом ([VehicleRelocationModal.tsx](../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRelocationModal.tsx)).
@@ -312,7 +312,7 @@ Arial 8 по центру, тем же, чем `{{driver_fio}}` в шапке (`
 - В трёх окнах `Input` заменяется на `Select` из этого списка — с `rules: [{ required: true }]`,
   **без** `allowClear` и без пункта «не выбрано»: очистить графу в окне нельзя, значение выбирается
   только из трёх:
-  [VehicleAssignModal.tsx:1772](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L1772),
+  [VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx),
   [VehicleRouteEditModal.tsx:353](../apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx#L353),
   [VehicleRouteCorrectionModal.tsx:327](../apps/web/src/pages/vehicle/VehicleRouteCorrectionModal.tsx#L327).
 - «Пригородное» стоит выбранным при открытии окна — и при заведении рейса, и при наследовании

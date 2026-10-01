@@ -38,7 +38,7 @@ import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-rout
 import { vehicleRequestViewLink } from '@entities/vehicle-request';
 import { waybillLink } from '@entities/waybill';
 import { useRouteModal } from '@features/route-modal';
-import { TrailerFields } from './TrailerFields';
+import { TrailerFields } from '@features/vehicle-route-trailer';
 
 /**
  * Список рейсов — окном поверх той страницы, где о рейсах спросили

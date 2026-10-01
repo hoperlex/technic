@@ -8,7 +8,7 @@ import {
   type TrailerGraphs,
 } from '@entities/vehicle-route';
 import { TrailerSlot } from './TrailerSlot';
-import { useTrailerGraphs } from './useTrailerGraphs';
+import { useTrailerGraphs } from '../model/useTrailerGraphs';
 
 /**
  * Графы прицепа в форме рейса: галочка «с прицепом», две пары «марка / госномер» под ней и подпись

@@ -8,7 +8,7 @@ import { waybillKeys } from '@entities/waybill';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { dayBatchBody, type DayBatchFormValues } from '@features/vehicle-assignment';
-import { DayBatchReport } from './DayBatchReport';
+import { DayBatchReport } from '../ui/DayBatchReport';
 
 /**
  * Разговор с дверью пачки «4-П на весь период» (ADR 0207): тело, гашение кэша и отчёт, который

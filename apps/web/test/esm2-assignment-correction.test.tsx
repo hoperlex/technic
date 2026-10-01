@@ -7,7 +7,7 @@ import { renderWithUser } from './render';
 import { list } from './factories/common';
 import { authUser } from './factories/auth';
 import { assignmentPreview, machinist, vehicleRequest } from './factories/vehicle';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 
 /**
  * Коррекция назначения задним числом в окне смены техники (ADR 0101, Р8).

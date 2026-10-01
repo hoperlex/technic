@@ -30,3 +30,7 @@ export { vehicleRequestTermLabel } from './model/termLabel';
 export { requestContacts, tripsCountLabel } from './model/requestContacts';
 export type { RequestContact } from './model/requestContacts';
 export { VehicleRequestAssignmentCell, VehicleRequestEarlyEndTag } from './ui/requestCells';
+export {
+  listStyle as consequencesListStyle,
+  totalOf as consequencesTotalOf,
+} from './ui/consequencesList';

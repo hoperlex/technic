@@ -15,7 +15,7 @@ import {
   recheckReasonOf,
   warnedSheetsOf,
 } from '@features/vehicle-assignment';
-import { ReassignPreview } from './ReassignPreview';
+import { ReassignPreview } from '../ui/ReassignPreview';
 
 /**
  * The consequences step of a vehicle change (wave 4a of `docs/assignment-periods-plan.md`, §7) —

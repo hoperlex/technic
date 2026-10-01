@@ -3239,7 +3239,7 @@ Runbook описывает это дословно: обещание восст�
    смена режима.
 4a. **Портал переводится на дверь `/period`** и на новые рукопожатия — **до** cutover (И5); старые
    вызовы широкого маршрута с датами должны исчезнуть по метрике. Сюда же — **адаптация
-   существующего окна назначения** ([VehicleAssignModal.tsx](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L143)
+   существующего окна назначения** ([VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx)
    и три соседних окна): двухфазный предпросмотр, `previewFingerprint`, экраны разблокировок,
    подтверждение снимаемых часов. Без неё этап 5 сделал бы **обычную смену машины
    неработоспособной**: сервер требует отпечаток от любой непустой команды, а окно сегодня передаёт
@@ -5822,7 +5822,7 @@ SHARE` проходит, `update … set lock_tick` ловит `42501` от тр
 **Ц5. Рукопожатие включалось на сервере раньше, чем появлялось у клиента.** `PATCH /assignment`
 требует `previewFingerprint` от любой непустой команды с этапа 5, а окна портала стояли на этапе 6 —
 между ними **обычная смена машины перестала бы работать**. Сегодняшнее окно передаёт отпечаток
-только для отката статуса ([VehicleAssignModal.tsx:143](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L143)).
+только для отката статуса ([VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx)).
 Адаптация четырёх существующих окон перенесена в **4a** и объявлена условием входа в этап 5; этап 6
 остался за новыми дверями. Оценки: 4a 3–4 → 6–8 дней, этап 6 9–13 → 7–10.
 
@@ -6096,7 +6096,7 @@ runbook, память проекта).
 | **4b.2** | 4 | параметризация по режиму, по четыре-пять файлов на агента | файлы разные — самая широкая волна плана |
 | **4b.3** | 1 | механический коммит остальных | — |
 | **4a.1** | 1 | клиент двери `/period`, общий хук рукопожатия, экраны разблокировок | общий код всех окон |
-| **4a.2** | 4 | по окну на агента: [назначение](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx), [перебазировка](../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRelocationModal.tsx), [коррекция маршрута](../apps/web/src/pages/vehicle/VehicleRouteCorrectionModal.tsx), [правка маршрута](../apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx) | четыре разных файла |
+| **4a.2** | 4 | по окну на агента: [назначение](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx), [перебазировка](../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRelocationModal.tsx), [коррекция маршрута](../apps/web/src/pages/vehicle/VehicleRouteCorrectionModal.tsx), [правка маршрута](../apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx) | четыре разных файла |
 | **4a.3** | 1 | метрика старых вызовов и ожидание их исчезновения | — |
 | **5.1** | 4 | четыре читателя истории: `/driver`, `requestVehicleWhere` (4 места), `dayVehicle`, занятость гаража | разные файлы, один чеклист |
 | **5.2** | 1 | боевые Р6 и Р18: два множества смен, подписи, часы | `vehicle-requests.ts` |

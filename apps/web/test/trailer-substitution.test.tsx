@@ -19,7 +19,7 @@ import { list } from './factories/common';
 import { vehicleRouteKeys, vehicleTypesForTrailerKey } from '@entities/vehicle-route';
 import { VehicleRouteEditModal } from '../src/pages/vehicle/VehicleRouteEditModal';
 import { VehicleRouteCorrectionModal } from '../src/pages/vehicle/VehicleRouteCorrectionModal';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 import { VehicleRoutesModal } from '../src/pages/vehicle/VehicleRoutesModal';
 
 /**

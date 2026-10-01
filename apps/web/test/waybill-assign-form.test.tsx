@@ -14,7 +14,7 @@ import { renderWithUser } from './render';
 import { dateInput, selectOption, typeDate } from './antd';
 import { list } from './factories/common';
 import { machinist, vehicleRequest } from './factories/vehicle';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 
 /**
  * Форма перевода заявки в работу кладёт её в рейс (маршруты): здесь проверяется, что она
