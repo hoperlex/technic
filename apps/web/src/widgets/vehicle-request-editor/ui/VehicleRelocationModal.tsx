@@ -21,22 +21,19 @@ import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-re
 import { BackdateReasonField } from './VehicleBackdateFields';
 
 /**
- * Перегон техники по заявке: доставка на объект или вывоз с него (миграция 0082).
+ * Equipment relocation for a request: delivery to or pickup from the site (migration 0082).
  *
- * Спецтехника доезжает до площадки по городу своим ходом, и на эту поездку выписывается 4-П.
- * Заводится он по желанию: ту же машину могут привезти тралом, и тогда листа не бывает вовсе —
- * способ доставки портал не ведёт и спрашивать его не должен.
+ * A self-driven city trip can receive a 4-P waybill. It remains optional because equipment may
+ * arrive on a carrier, and the portal does not model transport method.
  *
- * Доставку предлагает и форма перевода в работу, а вывоз бывает только здесь: в момент, когда
- * заявку берут в работу, дату вывоза ещё не знают — она выясняется к концу работ, в том числе
- * досрочному (ADR 0044). Сам лист выписывается не тут, а в карточке рейса: документ рождается
- * там же, где и у грузоперевозки, и второй схемы его рождения быть не должно.
+ * Delivery is also offered during confirmation, while pickup is planned only when the work end is
+ * known (ADR 0044). Waybill issuance stays in the route card so all routes use one document flow.
  */
 
 interface Props {
-  /** null — окно закрыто. Заявка должна быть в работе и с назначенной машиной. */
+  /** `null` closes the dialog; an open request must be confirmed and assigned. */
   request: VehicleRequestDto | null;
-  /** Что заводим: доставку на объект или вывоз с него. */
+  /** Relocation purpose: delivery to or pickup from the site. */
   purpose: 'delivery' | 'pickup';
   onClose: () => void;
   onDone: (route: VehicleRouteDto) => void;
@@ -47,7 +44,7 @@ interface FormValues {
   driverPersonId?: string;
   moveFrom?: string;
   moveTo?: string;
-  /** Причина заднего числа — спрашивается только у прошедшей даты перегона (ADR 0101 п. 4). */
+  /** Backdate reason, required only for a past relocation date (ADR 0101). */
   reason?: string;
 }
 
@@ -62,17 +59,16 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
       ? request.objectAddress || request.objectName || ''
       : '';
 
-  /** Первыми в списке мест — площадка заявки и площадки учётки (ADR 0069). */
+  /** Suggest the request site and account-scoped sites first (ADR 0069). */
   const { ownObjectIds } = useObjectScope();
   const suggestObjectIds = [request?.objectId, ...ownObjectIds].filter((id): id is string => !!id);
 
   /*
-   * Подставляется место, а не дата: доставку везут на площадку заявки, вывоз — с неё, и другого
-   * конца у перегона не бывает. Правится и это: техника уходит не обязательно на базу.
+   * Pre-fill the request site as destination for delivery and origin for pickup. The opposite end
+   * remains editable because equipment does not always return to the base.
    *
-   * День перегона спрашивается пустым полем. Начало и конец срока работ — не он: технику
-   * привозят накануне, а забирают через день-другой после закрытия, и подставленная граница
-   * срока молча уезжала бы в путевой лист датой выезда.
+   * Do not infer the route date from the work term: delivery may happen earlier and pickup later,
+   * and a guessed boundary would silently become the waybill departure date.
    */
   useEffect(() => {
     if (!request) return;
@@ -90,15 +86,12 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
   const on = routeDate?.format('YYYY-MM-DD');
 
   /*
-   * Перегон прошедшим днём (ADR 0101 п. 4, дыра 1 плана). Дата у перегона задним числом бывает
-   * штатно — технику увезли в пятницу, а в портал это вносят в понедельник, — но с ADR 0101 такой
-   * рейс заводится только с правом и объяснением: правило у обеих дверей к прошлому одно, и та,
-   * что со стороны маршрутов, спрашивает причину уже давно.
+   * Past relocation dates are legitimate operationally, but ADR 0101 requires both permission and
+   * an explanation, matching route-side creation.
    */
   const past = !!on && on < moscowDateKeyOf(new Date());
 
-  // Тот же отбор, что проверит сервер при выписке листа: у кого полный комплект документов на
-  // день перегона. Дата именно перегона, а не начала работ: удостоверение может истечь между ними.
+  // Match waybill issuance: driver documents must be valid on the relocation date, not work start.
   const { data: selection, isFetching: driversLoading } = useQuery({
     queryKey: driverKeys.available({ vehicleId, on, withTrailer: false }),
     queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: on! }),
@@ -119,12 +112,10 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
         driverPersonId: v.driverPersonId,
         moveFrom: v.moveFrom!.trim(),
         moveTo: v.moveTo!.trim(),
-        // Перегон по городу: вид сообщения печатается в шапке бланка, и от рейса к рейсу он тот
-        // же. Значением из общего набора, а не своим литералом: окно про графу не спрашивает
-        // вовсе, и разойдись подстановка со списком трёх слов — узнали бы об этом с бумаги.
+        // Use the shared constant because communication kind is printed on the form but is not a
+        // user choice for city relocations.
         trip: { communicationKind: RELOCATION_COMMUNICATION_KIND },
-        // Причина уходит только у прошедшей даты: у сегодняшней и завтрашней сервер её не спросит,
-        // а поле «причина» у обычного перегона читалось бы как обязательное.
+        // Send a reason only for past dates, matching the server guard and visible form fields.
         ...(past ? { reason: v.reason } : {}),
       }),
     onSuccess: async (route) => {
@@ -166,10 +157,8 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
             <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} inputReadOnly={isMobile} />
           </Form.Item>
 
-          {/* Водитель необязателен: рейс планируют заранее, человека ставят утром — так же, как
-            у грузового маршрута. Без него лист не выпишется, и об этом скажет карточка рейса.
-            Сам собой в поле он не встаёт даже единственным в справочнике: за руль сажает
-            диспетчер. */}
+          {/* Driver assignment is optional while planning, but waybill issuance will require it.
+              Never auto-select the sole candidate because dispatch must make that decision. */}
           <Form.Item
             name="driverPersonId"
             label="Водитель"
@@ -193,8 +182,8 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
             />
           </Form.Item>
 
-          {/* Адрес перегона (ADR 0069): подсказки DaData либо выбор площадки из справочника.
-            Верификации не требуется — база, стоянка и ремонтный бокс адресами не описываются. */}
+          {/* Relocation places use suggestions or known sites (ADR 0069), without strict
+              verification because bases, parking lots, and repair bays may not have postal addresses. */}
           <AddressField
             name="moveFrom"
             label="Откуда"
@@ -214,9 +203,8 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
             placeholder="Объект, адрес площадки"
           />
 
-          {/* Прошедшая дата — под правом и с причиной (ADR 0101 п. 4). Строки в журнале коррекций
-            у перегона нет: рейс номера строгой отчётности не расходует, и объяснение уходит в
-            аудит заведения. Причину у бумаги спросит выписка листа по этому рейсу. */}
+          {/* A past date requires permission and a reason (ADR 0101). Route creation records the
+              explanation in its audit trail; later waybill issuance guards its own backdating. */}
           {past && (
             <FormGrid.Full>
               <BackdateReasonField

@@ -3,6 +3,7 @@ import { Alert, App, Checkbox, Form, Input, Skeleton, Space, Typography } from '
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PeriodPreviewDto, SpecialEquipmentRequestDto } from '@technic/contracts';
 import { FormModal } from '@shared/ui';
+import type { VehiclePeriodCommand } from '@features/vehicle-request-editor';
 import { calendarDaysLabel, formatDateOnly } from '@shared/lib';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
@@ -37,12 +38,6 @@ import { cancelGroupLine } from './cancelGroups';
  * blanks itself and refuses an unsigned warned sheet with 409, so the window shows every warned
  * sheet and sends the signatures only after an explicit tick (`assignmentWarnings.ts`).
  */
-
-/** Семантическая половина команды: пропущенное поле — «не трогали», `null` у `dateTo` — «сняли». */
-export interface VehiclePeriodCommand {
-  dateFrom?: string;
-  dateTo?: string | null;
-}
 
 interface Props {
   /** `null` — окно закрыто. Только заказ спецтехники: у грузоперевозки срока работ нет. */

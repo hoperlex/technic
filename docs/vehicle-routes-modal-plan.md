@@ -321,7 +321,7 @@ vehicleRequestViewLink(can, id): string | null   // null без vehicleRequests.
 предупреждение о расхождении дат ([:933](../apps/web/src/pages/vehicle/VehicleRequestsTab.tsx#L933)),
 карточка заявки ([:757](../apps/web/src/pages/vehicle/VehicleRequestViewModal.tsx#L757)) и перегоны
 ([:870](../apps/web/src/pages/vehicle/VehicleRequestViewModal.tsx#L870),
-[RequestRelocationsField.tsx:104](../apps/web/src/pages/vehicle/RequestRelocationsField.tsx#L104)), дни
+[RequestRelocationsField.tsx](../apps/web/src/widgets/vehicle-request-editor/ui/RequestRelocationsField.tsx)), дни
 линейного заказа ([VehicleRequestDays.tsx:186](../apps/web/src/pages/vehicle/VehicleRequestDays.tsx#L186)),
 гараж ([shared.tsx:57](../apps/web/src/pages/garage/shared.tsx#L57)). Телефон — по §3.4.2–3.4.4.
 Кнопки «Все маршруты»: футер карточки рейса, заголовок окна правки, тулбар «Заказ автотехники»,

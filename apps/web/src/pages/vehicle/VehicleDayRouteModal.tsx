@@ -29,7 +29,7 @@ import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { formatDateOnly } from '@shared/lib';
 import { TrailerFields, trailerTripBody } from './TrailerFields';
-import { BackdateReasonField } from './VehicleBackdateFields';
+import { BackdateReasonField } from '@widgets/vehicle-request-editor';
 
 /**
  * Поставить день заказа техники на объект в рейс (ADR 0100 решение 8, изменённое ADR 0207 §1:

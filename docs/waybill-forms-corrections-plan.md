@@ -77,7 +77,7 @@
   в трёх окнах: [VehicleAssignModal.tsx:1772](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L1772),
   [VehicleRouteEditModal.tsx:353](../apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx#L353),
   [VehicleRouteCorrectionModal.tsx:327](../apps/web/src/pages/vehicle/VehicleRouteCorrectionModal.tsx#L327).
-  Перегон подставляет «городское» кодом ([VehicleRelocationModal.tsx:122](../apps/web/src/pages/vehicle/VehicleRelocationModal.tsx#L122)).
+  Перегон подставляет «городское» кодом ([VehicleRelocationModal.tsx](../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRelocationModal.tsx)).
 
 ## 3. Разрез правок: где живёт каждая
 

@@ -16,7 +16,7 @@ import {
   vehicleSummary,
 } from './factories/vehicle';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
-import { VehicleRelocationModal } from '../src/pages/vehicle/VehicleRelocationModal';
+import { VehicleRelocationModal } from '../src/widgets/vehicle-request-editor';
 import { ObjectsTab } from '../src/pages/directories/ObjectsTab';
 
 /**

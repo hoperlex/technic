@@ -28,11 +28,13 @@
   не бывает), [ADR 0152](0152-mechanization-module.md) («Дублировать» у соседнего модуля отвечает
   на другой вопрос), [ADR 0029](0029-vehicle-request-completion.md) (журнал закрытых заказов)
 - Область: портал — новый
-  [copyNotice.tsx](../../apps/web/src/pages/vehicle/copyNotice.tsx) (надпись над формой копии);
-  правки [requestFormValues.ts](../../apps/web/src/pages/vehicle/requestFormValues.ts)
+  [copyNotice.tsx](../../apps/web/src/features/vehicle-request-editor/ui/copyNotice.tsx) (надпись над формой копии);
+  правки [requestFormValues.ts](../../apps/web/src/features/vehicle-request-editor/model/requestFormValues.ts)
   (`copyTermPlan`, `copyScheduledPlan`, `copyFormValues`),
-  [VehicleRequestsTab.tsx](../../apps/web/src/pages/vehicle/VehicleRequestsTab.tsx) (`canCopy`,
-  заголовок формы и надпись),
+  [useVehicleRequestEditorState.ts](../../apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState.ts)
+  (`canCopy`) и
+  [VehicleRequestEditorDialog.tsx](../../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRequestEditorDialog.tsx)
+  (заголовок формы и надпись),
   [VehicleRequestCardFooter.tsx](../../apps/web/src/pages/vehicle/VehicleRequestCardFooter.tsx)
   (надпись кнопки); тесты —
   [vehicle-request-copy.test.tsx](../../apps/web/test/vehicle-request-copy.test.tsx) и фабрика

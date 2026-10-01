@@ -1,82 +1,44 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
-import { Alert, App, Button, DatePicker, Form, Input, Space, Typography } from 'antd';
+import { App, Button, Space } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AssignVehicleBody,
   type ConfirmScheduleBody,
   canCorrectAssignment,
-  canOrderVehicleRequestType,
   canReassignVehicle,
   canRequestEarlyEnd,
-  canShortenWorkPeriodByEdit,
   type CompleteVehicleRequestInput,
-  // Ключ заказчика собирают контракты (план Р2): своего представления о формате в портале нет.
-  costTargetKeyOf,
-  costTargetOf,
   esm2Mode,
   type FeedKind,
   feedKindLabels,
   minRequestDateKey,
-  isCargoAmountRequired,
-  CARGO_AMOUNT_MESSAGE,
   isPlaceScopedRole,
-  isVehicleKindAllowedForRequest,
-  moscowDateKeyOf,
-  // Какую дату двигает правка и уходит ли она в прошлое (ADR 0101, §4) — тем же контрактом, каким
-  // это решает сервер: форма спрашивает причину ровно там, где её спросит ручка.
-  movedRequestDateKey,
-  type RequestCalendar,
-  normalizeTimeInput,
   parseFeedNumberSearch,
-  parseVehicleClassificationKey,
-  REQUEST_CUSTOMER_LOCKED_MESSAGE,
   type RequestStatus,
-  requestTypeChangeBlocker,
   ROLLBACK_WAYBILL_MESSAGE,
-  routeDateMismatch,
   type SpecialEquipmentRequestDto,
   statusChangeRequiresReason,
   transitionRequiresAssignment,
   transitionRequiresCompletion,
   transitionResetsWork,
   type VehicleRequestDto,
-  type VehicleRequestType,
   allowedVehicleRequestTypes,
   vehicleRequestTypeLabels,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { useAuth } from '@entities/session';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
-import { vehicleRequestsApi, type VehicleRequestPeriodResultDto } from '@entities/vehicle-request';
+import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { canOpenRoute, vehicleRouteKeys, vehicleRouteLink } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
-import { AutoSelect } from '@shared/ui';
-import { PhoneInput } from '@entities/user-account';
-import { CancelReasonModal, ResponsibleFields, RollbackReasonModal } from '@entities/request';
-import { FormGrid, FormModal, useActiveTabKey } from '@shared/ui';
-import { TimeInput, optionalWorkTimeRule } from '@entities/request';
-import { departmentPlatformQuery } from '@entities/department';
-// Подбор «Объект/отдел» — общий модуль (план `docs/department-requests-plan.md`, §9 п. 1): то же
-// поле спрашивает и заявка на обслуживание оргтехники.
-import {
-  RequestCustomerSelect,
-  useRequestCustomerDefaults,
-  useRequestCustomerFilter,
-  useRequestCustomerOptions,
-} from '@features/request-customer';
+import { CancelReasonModal, RollbackReasonModal } from '@entities/request';
+import { useActiveTabKey } from '@shared/ui';
+import { useRequestCustomerDefaults, useRequestCustomerFilter } from '@features/request-customer';
 import { garageKeys } from '@entities/garage';
-import { useIsMobile, useListParams, useOpenedRecord, withSavedOption } from '@shared/lib';
-import { calendarDaysLabel } from '@shared/lib';
-import {
-  classificationKeyOf,
-  useVehicleClassifications,
-  withSavedClassification,
-  useVehicleClassificationFilter,
-} from '@entities/vehicle-type';
+import { useListParams, useOpenedRecord } from '@shared/lib';
+import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
-import { vehicleRequestDateRules } from '@entities/vehicle-request';
 
 import { VehicleAssignModal } from './VehicleAssignModal';
 import { reassignStaleReason } from './ReassignPreview';
@@ -87,89 +49,27 @@ import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleEsm2Modal } from './VehicleEsm2Modal';
 import { VehicleMachinistModal } from './VehicleMachinistModal';
 import { VehicleRepairModal } from './VehicleRepairModal';
-import { VehiclePeriodModal, type VehiclePeriodCommand } from './VehiclePeriodModal';
+import { VehiclePeriodModal } from './VehiclePeriodModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
-import { VehicleRelocationModal } from './VehicleRelocationModal';
-import { RequestRelocationsField } from './RequestRelocationsField';
-import { VehicleBackdateFields } from './VehicleBackdateFields';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useRouteModal } from '@features/route-modal';
-import { usePlaceObjectScope } from '@entities/session';
-import { MOSCOW_TZ } from '@shared/config';
-import { RequestTripsBlock } from './RequestTripsBlock';
-import { blankTrip, editTripBody, newTripBody, type TripFormValue } from './requestTripsForm';
-import { rollbackErases, retypeErases } from './requestRowText';
-import {
-  copyFormValues,
-  type CopySource,
-  editFormValues,
-  type FormValues,
-  tripsNeedExpanding,
-} from './requestFormValues';
-import { copyNotice } from './copyNotice';
-import {
-  FileEditor,
-  VehicleClassificationSelect,
-  useFileEditor,
-  useVehicleFilter,
-  type EditorFile,
-} from './shared';
+import { rollbackErases } from './requestRowText';
+import { useVehicleFilter } from './shared';
 import { useEarlyEnd } from './earlyEndActions';
 import { useWeeklyRequestCreate, weekSelectOptions, weeklyRequestPath } from './weeklyShared';
+import { useVehicleRequestEditor, VehicleRelocationModal } from '@widgets/vehicle-request-editor';
 import { VehicleRequestFeed } from '@widgets/vehicle-request-feed';
-
-/**
- * Вход сохранения формы: значения плюс уже проведённая правка срока (волна 4a плана
- * `docs/assignment-periods-plan.md`).
- *
- * `period` приходит там, где срок ушёл своей дверью, и несёт две вещи, которых у формы больше нет:
- * **свежую версию** заявки (дверь её подняла — старая ответила бы 409) и признак того, что
- * календарь этой правкой уже сдвинут, а значит второй записи в журнал коррекций не положено.
- */
-interface SaveInput {
-  v: FormValues;
-  period?: VehicleRequestPeriodResultDto;
-}
-
-/**
- * Комментарий — единственное место, где автор объясняет суть заказа, и объясняет он разное:
- * у грузоперевозки диспетчеру нужно знать груз (от него зависит машина и погрузка), у техники
- * на объект — какие работы её ждут. Поэтому заголовок уточняется типом заявки, а пример
- * заполнения стоит в самом поле: без него комментарий приходит пустым или бесполезным
- * («срочно»), и детали всё равно выясняются звонком.
- */
-const COMMENT_HINTS: Record<VehicleRequestType, { label: string; placeholder: string }> = {
-  special_equipment: {
-    label: 'Комментарий (планируемые задачи)',
-    placeholder:
-      'Например: разработка котлована под фундамент, погрузка грунта в самосвалы; заезд с ул. Ленина, работы с 08:00',
-  },
-  freight_transport: {
-    label: 'Комментарий (опишите груз)',
-    placeholder:
-      'Например: плиты перекрытия ПК 60-15, 12 шт, 14 т; погрузка краном поставщика, на объекте нужен манипулятор',
-  },
-};
-
-const SPECIAL_FIELDS = ['dateFrom', 'dateTo', 'responsibleName', 'responsiblePhone'] as const;
-// Адреса, груз и контакты лежат внутри `trips` (Р2), поэтому сбрасываются вместе со списком одним
-// именем: перечислять поля ездок здесь пришлось бы с номерами строк, которых форма заранее не
-// знает.
-const FREIGHT_FIELDS = ['scheduledDate', 'scheduledTime', 'trips'] as const;
 
 export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
   const { user, can } = useAuth();
   const qc = useQueryClient();
-  const isMobile = useIsMobile();
   // Настоящий переход остался один — недельная заявка: у неё своя страница с адресом, потому что
   // состав в неё правят построчно, и в окно такая работа не помещается (`openWeekly`).
   const navigate = useNavigate();
   // Рейс и список рейсов — окнами поверх этого списка (ADR 0120). Вкладки «Маршруты» больше нет, и
   // вопрос «а где эта заявка едет» перестал стоить ухода с экрана вместе с фильтрами и страницей.
   const { openRoute, openRoutesList } = useRouteModal();
-  // Площадочная ось (ADR 0201): свои объекты у объектной роли, закреплённые — у роли отдела.
-  const { ownObjectIds: ownPlaceObjectIds } = usePlaceObjectScope();
   // Умолчания фильтра «Заказчик» — общим правилом обеих осей (ADR 0201): предрешённый заказчик
   // учётки, и ничего, когда осей у неё две. Состав подбора считает `useRequestCustomerOptions`.
   const customerDefaults = useRequestCustomerDefaults();
@@ -282,14 +182,6 @@ export function VehicleRequestsTab() {
     queryKey: vehicleRequestKeys.summary(summaryQuery),
     queryFn: () => vehicleRequestsApi.summary(summaryQuery),
   });
-  const { byKey: classificationByKey, groups, loading: typesLoading } = useVehicleClassifications();
-
-  const [open, setOpen] = useState(false);
-  const [record, setRecord] = useState<VehicleRequestDto | null>(null);
-  // Заявка, с которой сняли копию, и замороженный календарь (`CopySource` — там и причина
-  // заморозки). Отдельно от `record`: тот отвечает, правку мы сохраняем или заведение.
-
-  const [copy, setCopy] = useState<CopySource | null>(null);
   /** Открытая карточка заявки: поля только на чтение и история событий (ADR 0015). */
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
 
@@ -313,666 +205,10 @@ export function VehicleRequestsTab() {
     setViewRecord(null);
     opened.clear();
   };
-  const [form] = Form.useForm<FormValues>();
-  const editor = useFileEditor();
-
-  // Тип заявки выбирают в форме первым — от него зависят и поля, и список типов ТС, и состав
-  // подбора заказчика: спецтехника выходит на площадку, и отделов в ней нет вовсе (Р4).
-  const watchRequestType = Form.useWatch('requestType', form);
-  const isSpecial = watchRequestType === 'special_equipment';
-
-  /**
-   * Заказчик правимой заявки (К7): ссылка и подпись — из самой записи, а не из действующего
-   * справочника. Объект закрыли, отдел расформировали, а заявка на них заведена; поле
-   * обязательное, и без сохранённого варианта правка начиналась бы с пустого заказчика. Разбирать
-   * пару колонок нечем и незачем: заполнена ровно одна её половина (CHECK), и готовый объект
-   * затрат приходит в DTO — тем же `costTargetOf`, каким его считает сервер.
-   *
-   * Только при открытом окне: закрытое держит запись прошлой правки, и её вариант, добавленный к
-   * списку, сбил бы счёт «вариант один», по которому заведение подставляет заказчика (Р3а).
-   * Отменённый типом род (отдел у спецтехники, ADR 0091) отсеивает сам подбор — правило про состав
-   * поля живёт там же, где состав, и форме его не повторять (Р4, К8).
-   */
-  const savedTarget = open && record ? costTargetOf(record) : null;
-  const savedCustomer = savedTarget
-    ? { target: savedTarget, label: `${savedTarget.code} — ${savedTarget.name}` }
-    : null;
-  /**
-   * Заказчик формы: группы, запертость, единственный вариант и сохранённое значение — одним
-   * ответом (план Р3). Разложенные по местам, они разъезжались бы: запертость считается по обеим
-   * группам сразу, а сохранённое значение обязано попадать в свою.
-   */
-  const customer = useRequestCustomerOptions({
-    // Спецтехника отделов не знает (Р4): группы «Отделы» при ней нет вовсе, а стоящее в поле
-    // подразделение убирает сама форма (К8). Объекты при ней — по площадочной оси (ADR 0201):
-    // роли отдела предлагаются её площадки, те самые, на которые сервер заказ и примет.
-    objects: isSpecial ? 'place' : 'scope',
-    departments: isSpecial ? 'none' : 'scope',
-    saved: savedCustomer,
+  const requestEditor = useVehicleRequestEditor({
+    openRoute,
+    renderPeriodModal: (props) => <VehiclePeriodModal {...props} />,
   });
-  // Заказчика меняют только у «Новой» (Р7): у взятой в работу объект затрат уже ушёл снимком в
-  // строки задания путевого листа, и перенос заявки разошёлся бы с выписанной бумагой.
-  // Ограничение серверное (422), поле лишь показывает его заранее и говорит почему.
-  const customerLocked = !!record && record.status !== 'new';
-
-  /**
-   * Что предложить первой строкой в списке мест (ADR 0069): площадку заявки, затем ВСЕ площадки
-   * отдела-заказчика (ADR 0144), затем площадки учётки; пара берётся из формы — заказчика меняют,
-   * не закрывая её, а своей площадки у отдела в ней нет, её даёт карта отделов. Набор идёт целиком:
-   * «главной» площадки в нём нет, порядок задан кодом объекта, и одна оставленная скрыла бы прочие.
-   * Доступа это не расширяет — подсказка про адрес, а не про область: состав списка даёт справочник
-   * объектов, первые строки лишь меняют порядок, а записи без адреса не пускает сам компонент поля.
-   */
-  const formCustomer = customer.customerPairOf(Form.useWatch('customerKey', form));
-  const { data: departmentPlatforms } = useQuery(departmentPlatformQuery());
-  const suggestObjectIds = useMemo(() => {
-    const departmentObjectIds = formCustomer.departmentId
-      ? (departmentPlatforms?.get(formCustomer.departmentId) ?? [])
-      : [];
-    // Площадки учётки, а не прямые объекты (ADR 0201): у роли отдела вторых нет вовсе.
-    const ids = [formCustomer.objectId, ...departmentObjectIds, ...ownPlaceObjectIds];
-    return [...new Set(ids.filter((id): id is string => !!id))];
-  }, [formCustomer.objectId, formCustomer.departmentId, departmentPlatforms, ownPlaceObjectIds]);
-
-  /**
-   * Тип правимой заявки остаётся в списке, даже если роли он недоступен (ADR 0040): подписать
-   * значение вне списка `AutoSelect` нечем — показался бы код.
-   */
-  const formRequestTypeOptions = withSavedOption(requestTypeOptions, {
-    id: record?.requestType,
-    name: record ? vehicleRequestTypeLabels[record.requestType] : null,
-  });
-
-  /**
-   * Можно ли переоформить правимую заявку в другой тип (ADR 0091) — и если нет, то почему.
-   * Правило и текст берутся из контрактов: сервер отвечает ими же, и разойдись они, поле
-   * предлагало бы выбор, который потом отклоняют.
-   *
-   * Вид заказанной техники берётся из справочника классификации по позиции самой заявки. Позиции
-   * может там не оказаться — её выключили или заявка старше категорий, — и тогда смена типа
-   * закрыта: сервер такую позицию всё равно не примет (`resolveClassification`).
-   */
-  const recordKindCode = record
-    ? (classificationByKey.get(classificationKeyOf(record))?.kindCode ?? null)
-    : null;
-  const otherRequestType: VehicleRequestType | null = record
-    ? record.requestType === 'special_equipment'
-      ? 'freight_transport'
-      : 'special_equipment'
-    : null;
-  /** Причина, по которой тип заперт; `null` — менять можно, `undefined` — заявка новая. */
-  const retypeBlocker =
-    record && otherRequestType
-      ? requestTypeChangeBlocker(record, recordKindCode, otherRequestType)
-      : undefined;
-  // Второй тип должен быть и доступен роли: отдел спецтехнику не заказывает вовсе (ADR 0040).
-  const canRetype =
-    retypeBlocker === null &&
-    !!otherRequestType &&
-    canOrderVehicleRequestType(user, otherRequestType);
-
-  /**
-   * Ездки правимой заявки (Р1, Р2 плана `docs/route-trips-plan.md`); `null` — правится заказ
-   * техники на объект либо заводится новая заявка.
-   *
-   * Отсюда список ездок узнаёт прежнее состояние каждой своей строки: номер («ТС-40/2», Р13а) и
-   * послабления Р2а — непроверенный адрес и пустой контакт правку не блокируют, пока их не меняют.
-   * Строка без пары среди сохранённых — новая, и жёсткая модель действует на неё целиком.
-   */
-  const recordTrips = record?.requestType === 'freight_transport' ? record.trips : null;
-
-  /**
-   * Разворачивать ли ездки списком (§4.1). Заявка с одной ездкой выглядит и заполняется ровно как
-   * сегодня, поэтому по умолчанию флаг снят; поднимает его либо сама форма при открытии окна, либо
-   * кнопка «+ ездка».
-   *
-   * Состоянием вкладки, а не списка: открытие другой заявки обязано его пересчитать, а вложенный
-   * компонент о смене правимой записи не знает.
-   */
-  const [tripsExpanded, setTripsExpanded] = useState(false);
-
-  const isFreight = watchRequestType === 'freight_transport';
-  const commentHint = watchRequestType ? COMMENT_HINTS[watchRequestType] : null;
-
-  /**
-   * Нужен ли груз. У легковой машины (форма № 3) его не бывает: она возит людей, и требовать
-   * «объём или массу» значило бы заставлять заявителя выдумывать число. Правило то же, которым
-   * отвечает сервер, — и спрашивает оно бланк заказанного типа, а не его код.
-   */
-  const watchClassificationKey = Form.useWatch('classificationKey', form);
-  const cargoRequired = isCargoAmountRequired(
-    (watchClassificationKey
-      ? classificationByKey.get(watchClassificationKey)?.waybillFormCode
-      : null) ?? null,
-  );
-
-  // Подсказка о длине периода работы техники: пустая дата окончания — однодневный срок
-  // (так же его понимает сервер). Та же подсказка стоит в карточке заявки.
-  const watchDateFrom = Form.useWatch('dateFrom', form);
-  const watchDateTo = Form.useWatch('dateTo', form);
-  const periodHint = watchDateFrom
-    ? calendarDaysLabel(watchDateFrom.format('YYYY-MM-DD'), watchDateTo?.format('YYYY-MM-DD'))
-    : null;
-
-  // Ограничение дат заявки на технику (ADR 0104): ближайший доступный день зависит от того, кто
-  // её заводит, и в форме он тот же, что на сервере, — подробности при самом правиле.
-  const { minDate, disabledDate: minDateRule, leadTimeHint } = vehicleRequestDateRules(user);
-
-  /*
-   * Задним числом (ADR 0101, Р6 и Р15): уходит ли выбранная дата в прошлое и по какой именно
-   * границе. Считает контракт (`movedRequestDateKey`) — тот же, которым сервер решает, спрашивать
-   * ли право: разойдись они, форма либо требовала бы причину там, где ручка её не ждёт, либо
-   * молча отправляла бы правку, на которую придёт 403.
-   *
-   * У правки эффективная дата — самая ранняя из **сдвинутых** границ, а не просто «дата заявки»:
-   * у вчерашней заявки правят и телефон, и комментарий, и это не коррекция.
-   */
-  const watchScheduledDate = Form.useWatch('scheduledDate', form);
-  const formCalendar: RequestCalendar = isSpecial
-    ? {
-        dateFrom: watchDateFrom?.format('YYYY-MM-DD'),
-        dateTo: watchDateTo ? watchDateTo.format('YYYY-MM-DD') : null,
-      }
-    : { scheduledDay: watchScheduledDate?.format('YYYY-MM-DD') };
-  // Переоформление в другой тип (ADR 0091) идёт своей ручкой, и границы дат у неё нет вовсе:
-  // заявку, заведённую вчера, переоформляют сегодня, и требовать за это право на коррекцию
-  // значило бы менять заказ ради смены его вида. Сравнивать календари разных типов тем более не о
-  // чем — у них разные поля.
-  const retyping = !!record && record.requestType !== watchRequestType;
-  const recordCalendar: RequestCalendar | null =
-    !record || retyping
-      ? null
-      : record.requestType === 'freight_transport'
-        ? { scheduledDay: moscowDateKeyOf(new Date(record.scheduledAt)) }
-        : { dateFrom: record.dateFrom, dateTo: record.dateTo };
-  const effectiveDateKey = recordCalendar
-    ? movedRequestDateKey(recordCalendar, formCalendar)
-    : (formCalendar.dateFrom ?? formCalendar.scheduledDay ?? null);
-  // Прошлое считается по МСК — тем же поясом, что на сервере: у диспетчера восточнее Москвы своё
-  // «сегодня», и по нему граница разошлась бы с ответом ручки.
-  const backdated =
-    !retyping && !!effectiveDateKey && effectiveDateKey < moscowDateKeyOf(new Date());
-
-  // Срок работающей заявки правкой только продлевают: сокращение идёт досрочным завершением с
-  // визой (ADR 0044), и сервер прямую правку отклоняет.
-  const dateToLocked =
-    !!record &&
-    record.requestType === 'special_equipment' &&
-    !canShortenWorkPeriodByEdit(record.status);
-  const currentLastDay =
-    record?.requestType === 'special_equipment' ? record.dateTo || record.dateFrom : null;
-  const isBeforeCurrentDateTo = (d: Dayjs) =>
-    !!currentLastDay && d.format('YYYY-MM-DD') < currentLastDay;
-
-  /**
-   * Правятся ли у этой заявки перегоны 4-П (миграция 0082): доставка техники на площадку и вывоз
-   * с неё. Условия те же, что проверит сервер, — заказ техники на объект, взятый в работу
-   * собственной машиной: перегон едет назначенной единицей, а на арендную лист выписывает
-   * арендодатель. У новой заявки блока нет вовсе — машины ещё не выбрали.
-   */
-  const relocationsEditable =
-    !!record &&
-    record.requestType === 'special_equipment' &&
-    record.status === 'confirmed' &&
-    record.assignment?.ownership === 'own' &&
-    canChangeStatus;
-
-  // Заказ техники на объект допускает технику любого вида, грузоперевозка — только грузовую.
-  // Позиция правимой заявки могла выйти из справочника (её выключили) или не существовать вовсе
-  // (заявка старше категорий) — её добавляем отдельной заблокированной строкой, иначе поле
-  // выглядит пустым и непонятно, что вообще заказывали.
-  const typeGroups = watchRequestType
-    ? withSavedClassification(
-        groups.filter((g) => isVehicleKindAllowedForRequest(watchRequestType, g.kindCode)),
-        record
-          ? {
-              vehicleTypeId: record.vehicleTypeId,
-              vehicleCategoryId: record.vehicleCategoryId,
-              typeName: record.vehicleTypeName,
-              categoryName: record.vehicleCategoryName,
-            }
-          : null,
-      )
-    : [];
-
-  /**
-   * Смена типа заявки: поля чужого типа очищаем, своей дате подставляем сегодня — раньше
-   * нельзя; выбранную технику сбрасываем, если новому типу заявки её вид не подходит.
-   *
-   * Что можно — переносим, а не спрашиваем заново (ADR 0091). Однозначны две вещи: день (заказанная
-   * подача становится первым днём работ и наоборот) и контакт на месте — техника на объект едет к
-   * тому, кто её встретит, а в рейсе этот же человек стоит на разгрузке. Адреса, груз и срок
-   * окончания не переносятся: у другого типа их либо нет, либо они означают другое.
-   */
-  const handleRequestTypeChange = (next: VehicleRequestType) => {
-    const key: string | undefined = form.getFieldValue('classificationKey');
-    const kindCode = key ? classificationByKey.get(key)?.kindCode : undefined;
-    if (kindCode && !isVehicleKindAllowedForRequest(next, kindCode)) {
-      form.resetFields(['classificationKey']);
-    }
-    // Контакт на разгрузке живёт у **первой** ездки (Р2): она же станет одна на весь заказ, если
-    // заявку переоформят в технику на объект, — у остальных ездок свои концы и свои люди.
-    const trips: TripFormValue[] | undefined = form.getFieldValue('trips');
-    if (next === 'special_equipment') {
-      // Спецтехника выходит на площадку, и отдела в такой заявке нет вовсе (Р4): стоящее в поле
-      // подразделение убирает форма, а не подбор (К8) — иначе поле показывало бы пустоту, а
-      // заявка ушла бы с прежним заказчиком.
-      if (customer.customerPairOf(form.getFieldValue('customerKey')).departmentId) {
-        form.resetFields(['customerKey']);
-      }
-      const scheduledDate: Dayjs | undefined = form.getFieldValue('scheduledDate');
-      const name = trips?.[0]?.toResponsibleName;
-      const phone = trips?.[0]?.toResponsiblePhone;
-      // Ездки целиком лежат в тех же `FREIGHT_FIELDS` и сбрасываются вместе с подачей: у заказа
-      // техники на объект их не бывает вовсе.
-      form.resetFields([...FREIGHT_FIELDS]);
-      form.setFieldsValue({
-        dateFrom: form.getFieldValue('dateFrom') ?? scheduledDate ?? minDate,
-        responsibleName: form.getFieldValue('responsibleName') || name,
-        responsiblePhone: form.getFieldValue('responsiblePhone') || phone,
-      });
-    } else {
-      const dateFrom: Dayjs | undefined = form.getFieldValue('dateFrom');
-      const name: string | undefined = form.getFieldValue('responsibleName');
-      const phone: string | undefined = form.getFieldValue('responsiblePhone');
-      form.resetFields([...SPECIAL_FIELDS]);
-      // Ездок не бывает ноль: у грузоперевозки без ездки не сказано, что везти и куда. Пустой
-      // список случается, когда заказ на объект переоформляют в грузоперевозку, — тогда заводится
-      // первая строка, и контакт встречающего становится контактом на разгрузке.
-      const [first = blankTrip(), ...rest] = trips ?? [];
-      form.setFieldsValue({
-        scheduledDate: form.getFieldValue('scheduledDate') ?? dateFrom ?? minDate,
-        trips: [
-          {
-            ...first,
-            toResponsibleName: first.toResponsibleName || name,
-            toResponsiblePhone: first.toResponsiblePhone || phone,
-          },
-          ...rest,
-        ],
-      });
-    }
-  };
-
-  /*
-   * Ключ операции задним числом (ADR 0101, Р31) — один на открытое окно, а не на нажатие.
-   *
-   * Именно так он и работает: связь оборвалась, ответа нет, человек жмёт «Сохранить» ещё раз — и
-   * сервер по тому же ключу возвращает прежний результат вместо второй заявки и второго сгоревшего
-   * номера. Новый uuid на каждое нажатие сделал бы ключ бесполезным ровно в том случае, ради
-   * которого он заведён.
-   *
-   * Неудачная попытка ключ не жжёт: строка операции пишется той же транзакцией, что и сама правка,
-   * и откатывается вместе с ней, — поэтому «поправил причину и сохранил снова» проходит обычным
-   * порядком, а не упирается в «ключ занят другой командой».
-   */
-  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
-
-  /**
-   * Правка срока, ждущая своей двери: заявка, каким срок станет и значения формы, которые
-   * досохранятся следом (волна 4a плана `docs/assignment-periods-plan.md`).
-   *
-   * Состоянием, а не флагом внутри мутации: между «нажал Сохранить» и «подтвердил последствия»
-   * стоит окно, и значения формы обязаны пережить его — форма к этому моменту уже отработала свои
-   * правила, и спрашивать их заново было бы вторым прогоном тех же полей.
-   */
-  const [periodSave, setPeriodSave] = useState<{
-    request: SpecialEquipmentRequestDto;
-    command: VehiclePeriodCommand;
-    values: FormValues;
-  } | null>(null);
-
-  const openCreate = () => {
-    setRecord(null);
-    setCopy(null);
-    form.resetFields();
-    setOperationId(crypto.randomUUID());
-    // Штаб заводит заявку только на свой объект, сотрудник отдела — только от своего отдела:
-    // заказчик подставляется, когда вариант у учётки один, и поле при этом заперто. Ставит его
-    // форма, а не поле: заблокированное `AutoSelect` не заполняет намеренно (Р3а, К6).
-    if (customer.soleCustomerKey) {
-      form.setFieldsValue({ customerKey: customer.soleCustomerKey } as Partial<FormValues>);
-    }
-    // Отделу доступен один тип заявки — подставляем его, чтобы поле не спрашивало о выборе,
-    // которого нет.
-    if (requestTypeOptions.length === 1) {
-      form.setFieldsValue({ requestType: requestTypeOptions[0]!.value } as Partial<FormValues>);
-    }
-    // Новая заявка начинается с одной ездки и выглядит ровно как заявка до плана (Р24, §4.1):
-    // список разворачивается только по «+ ездка».
-    form.setFieldsValue({ trips: [blankTrip()] } as Partial<FormValues>);
-    setTripsExpanded(false);
-    editor.reset([]);
-    setOpen(true);
-  };
-
-  const openEdit = (r: VehicleRequestDto) => {
-    setRecord(r);
-    setCopy(null);
-    form.resetFields();
-    setOperationId(crypto.randomUUID());
-    setTripsExpanded(tripsNeedExpanding(r));
-    form.setFieldsValue(editFormValues(r));
-    editor.reset(
-      r.files.map((f): EditorFile => ({
-        id: f.id,
-        filename: f.filename,
-        contentType: f.contentType,
-        size: f.size,
-        isNew: false,
-      })),
-    );
-    setOpen(true);
-  };
-
-  /**
-   * Копия заявки (ADR 0173): та же форма, но заведением, а не правкой, — `record` остаётся пустым,
-   * и сохранение уйдёт в `create`. Что именно переносится и что нет, решает `copyFormValues`.
-   *
-   * Вложения не переносятся (`editor.reset([])`): файл живёт не более чем у одной заявки.
-   */
-  const openCopy = (r: VehicleRequestDto) => {
-    const today = moscowDateKeyOf(new Date());
-    setRecord(null);
-    setCopy({ source: r, minDate, today });
-    form.resetFields();
-    setOperationId(crypto.randomUUID());
-    setTripsExpanded(tripsNeedExpanding(r));
-    // Заказчик спрашивается тем же вопросом, каким форма собирает тело (К8): значение вне подбора
-    // уходит пустой парой, и подставлять его — значит показывать заказчика, которого сервер не
-    // примет. Пара считается один раз: два вызова отвечали бы на один вопрос дважды.
-    const pair = customer.customerPairOf(costTargetKeyOf(r));
-    form.setFieldsValue(
-      copyFormValues(r, {
-        minDate,
-        today,
-        hasClassification: classificationByKey.has(classificationKeyOf(r)),
-        hasCustomer: !!pair.objectId || !!pair.departmentId,
-      }),
-    );
-    editor.reset([]);
-    setOpen(true);
-  };
-
-  const saveMut = useMutation({
-    mutationFn: ({ v, period }: SaveInput) => {
-      // Выбрана одна позиция классификатора (ADR 0028) — в API она уходит парой «тип +
-      // категория»: категория пуста у типа, у которого её и не бывает.
-      const picked = parseVehicleClassificationKey(v.classificationKey)!;
-      /*
-       * Задним числом (ADR 0101): причина и ключ операции едут только тогда, когда операция
-       * действительно уходит в прошлое. Слать их всегда нельзя — сервер завёл бы запись коррекции
-       * на обычную дневную работу, и журнал правок бланков наполнился бы заявками на завтра.
-       *
-       * Срок, уже проведённый своей дверью, календарь этой правки больше не двигает: даты в теле
-       * совпадают с теми, что лежат в заявке, и причина здесь означала бы вторую запись журнала
-       * коррекций за одну и ту же правку — объяснение человек дал двери срока.
-       */
-      const backdate =
-        backdated && !period ? { backdateReason: v.backdateReason?.trim(), operationId } : {};
-      /*
-       * Заказчик — парой колонок из выбранной опции (Р2, Р2а): род и идентификатор лежат в ней
-       * данными, и разбирать строку на каждом сохранении незачем.
-       *
-       * Значение, которого поле не предлагает, отдаётся пустой парой (К8) — это защита, а не
-       * потеря: так наружу не уходит отдел, оставшийся в форме от переоформления в спецтехнику.
-       */
-      const pair = customer.customerPairOf(v.customerKey);
-      const common = {
-        vehicleTypeId: picked.vehicleTypeId,
-        vehicleCategoryId: picked.vehicleCategoryId,
-        comment: v.comment ?? '',
-        ...backdate,
-      };
-      // Смена типа у заведённой заявки — не правка, а переоформление (ADR 0091): у него своя
-      // ручка, потому что деталь прежнего типа снимается целиком, а новая приходит полным составом.
-      const retyping = !!record && record.requestType !== v.requestType;
-      const edit = record
-        ? {
-            // Версия — та, что вернула дверь срока, если она отработала перед этим: заявку она
-            // изменила, и прежняя версия ответила бы 409 на правку, которую человек уже начал.
-            version: period?.version ?? record.version,
-            addFileIds: editor.newFileIds(),
-            removeFileIds: editor.removedIds,
-          }
-        : null;
-
-      if (v.requestType === 'special_equipment') {
-        // Спецтехнику заказывает только объект: она выходит на площадку, и отдела в такой заявке
-        // нет вовсе (ADR 0040) — роль отдела до этой ветки не доходит, ей закрыт сам тип.
-        const base = {
-          requestType: 'special_equipment' as const,
-          objectId: pair.objectId!,
-          ...common,
-          dateFrom: v.dateFrom!.format('YYYY-MM-DD'),
-          dateTo: v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null,
-          responsibleName: v.responsibleName!,
-          responsiblePhone: v.responsiblePhone!,
-        };
-        if (!record || !edit)
-          return vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
-        return retyping
-          ? vehicleRequestsApi.changeRequestType(record.id, { ...base, ...edit })
-          : vehicleRequestsApi.update(record.id, { ...base, ...edit });
-      }
-
-      // Заказчик грузоперевозки — объект либо отдел, ровно один (ADR 0040): присылать обе оси
-      // сервер не даст, и половина пары выбирается по роду выбранного, а не по оси того, кто правит.
-      const customerBody = pair.departmentId
-        ? { departmentId: pair.departmentId }
-        : { objectId: pair.objectId! };
-
-      // Время не задано → полночь МСК + признак: заявка «на дату», без конкретного часа.
-      const time = normalizeTimeInput(v.scheduledTime ?? '');
-      const scheduledAt = dayjs
-        .tz(`${v.scheduledDate!.format('YYYY-MM-DD')} ${time ?? '00:00'}`, MOSCOW_TZ)
-        .format('YYYY-MM-DDTHH:mm:ssZ');
-      const base = {
-        requestType: 'freight_transport' as const,
-        ...customerBody,
-        ...common,
-        scheduledAt,
-        scheduledTimeUnspecified: time === undefined,
-      };
-
-      /*
-       * Ездки из списка формы (Р1, Р2): адреса, груз и контакты уехали с заявки на них, и форма
-       * отправляет их полным составом.
-       *
-       * День заявки передаётся сборке отдельно: своё время ездки (Р3) форма спрашивает часами, а
-       * момент собирается из них и дня подачи — иначе первая же правка подачи оставила бы ездки во
-       * вчерашнем дне, и сервер ответил бы 422 на поле, которого никто не трогал (Р18).
-       */
-      const requestDay = v.scheduledDate!.format('YYYY-MM-DD');
-      const formTrips = v.trips ?? [];
-
-      /*
-       * Заведение и переоформление — жёсткая модель целиком (ADR 0006): каждая ездка новая, её
-       * адрес приходит парой со своими метаданными и обязан быть верифицирован. У переоформления
-       * деталь нового типа заводится с нуля (ADR 0091), и `id` там не бывает по существу — ездок у
-       * заказа техники на объект не было вовсе.
-       */
-      const created = formTrips.map((t) => newTripBody(t, requestDay));
-      if (!record || !edit)
-        return vehicleRequestsApi.create({ ...base, trips: created, fileIds: editor.newFileIds() });
-      if (retyping)
-        return vehicleRequestsApi.changeRequestType(record.id, {
-          ...base,
-          trips: created,
-          ...edit,
-        });
-      /*
-       * Правка — полным списком (§7): строка с `id` перезаписывает существующую ездку, строка без
-       * него заводит новую, а ездка, которой в списке не оказалось, мягко удаляется (Р13а). Номер
-       * при этом не переиспользуется: следующая получит следующий свободный, и «ТС-40/2» из
-       * выданного листа навсегда останется той ездкой, что напечатана.
-       *
-       * Послабления Р2а держит сама сборка (`editTripBody`): метаданные адреса уходят как есть,
-       * вплоть до `null`, а верификацию сервер потребует ровно за изменившееся поле.
-       */
-      return vehicleRequestsApi.update(record.id, {
-        ...base,
-        trips: formTrips.map((t) => editTripBody(t, requestDay)),
-        ...edit,
-      });
-    },
-    onSuccess: (saved) => {
-      message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
-      // Изменившийся срок работ сводит ЭСМ-2 заново (`afterWorkPeriodChanged`), как и досрочное
-      // завершение: правка заявки переписывает уже выписанные листы.
-      void qc.invalidateQueries({ queryKey: waybillKeys.root });
-      // Правка заявки поднимает версию её рейса (Р18): адреса, контакты, количество и состав ездок
-      // попадают в документ, и карточка маршрута обязана перечитаться. Иначе открытый рейс
-      // остаётся с прежней версией, и следующее действие из него получает 409 — данные сервер
-      // защитит, но экран до обновления недостоверен.
-      void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
-      void qc.invalidateQueries({ queryKey: garageKeys.root });
-      setOpen(false);
-      warnRouteDateMismatch(saved);
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  /**
-   * Заявку подвинули по дате, а она лежит в рейсе прежнего дня.
-   *
-   * Портал такую правку не запрещает: заявку и рейс правят разные люди в разное время, и
-   * запрещать значило бы требовать чинить рейс до того, как узнал о расхождении. Но и молчать
-   * нельзя — рейс останется на прежнем дне, а лист напечатает задание, которого в этот день уже
-   * нет. Поэтому окно называет расхождение и ведёт туда, где оно чинится: в карточку маршрута,
-   * где день рейса переносится вместе с заявками.
-   */
-  const warnRouteDateMismatch = (saved: VehicleRequestDto) => {
-    if (saved.requestType !== 'freight_transport' || !saved.route) return;
-    // Рейс — в локальную константу: дальше он спрашивается из замыкания кнопки, где сужение по
-    // `saved.route` уже не действует.
-    const route = saved.route;
-    const routeLink = vehicleRouteLink(can, route.id);
-    const mismatch = routeDateMismatch(
-      { tripDate: moscowDateKeyOf(new Date(saved.scheduledAt)) },
-      { displayNumber: route.displayNumber, routeDate: route.routeDate },
-    );
-    if (!mismatch) return;
-    modal.warning({
-      title: 'Дата заявки разошлась с днём маршрута',
-      content: mismatch,
-      okText: 'Понятно',
-      // Кнопка перехода — там же, где объяснение: иначе человек закроет окно и пойдёт искать
-      // маршрут руками, а половина расхождений так и останется незамеченной. Рейс открывается
-      // окном поверх списка (ADR 0120): расхождение находят сразу после правки заявки, и увести
-      // человека со списка значило бы отобрать у него ту самую заявку, которую он только что
-      // правил, — вместе с фильтрами и страницей, на которой она нашлась.
-      ...(routeLink
-        ? {
-            cancelText: `Открыть маршрут ${route.displayNumber}`,
-            okCancel: true,
-            onCancel: () => openRoute(route.id),
-          }
-        : {}),
-    });
-  };
-
-  /**
-   * Идёт ли эта правка срока через свою дверь — и каким срок станет (Ж4, З5, И5).
-   *
-   * `null` — двери здесь нет, и срок уходит прежним, широким маршрутом. Так бывает в четырёх
-   * случаях, и каждый из них не «пока не сделали», а свойство самой правки:
-   *
-   * - **срок не менялся**: дверь пустую команду и не примет — она подняла бы версию заявки и
-   *   оставила бы в журнале строку без предмета;
-   * - **не заказ техники на объект**: у грузоперевозки срока работ нет вовсе;
-   * - **заявка «Новая»**: ни техники, ни бумаги, ни истории — предпросмотру нечего показать, а
-   *   гасить нечего. До cutover её срок ведёт широкий маршрут, и это законный путь (И5);
-   * - **нет права читать бумагу**: последствия показывает предпросмотр, а он живёт на
-   *   `waybills.read`; роль без него упёрлась бы в 403 посреди сохранения.
-   */
-  const periodDoorCommand = (v: FormValues): VehiclePeriodCommand | null => {
-    if (!record || record.requestType !== 'special_equipment') return null;
-    if (v.requestType !== 'special_equipment') return null;
-    if (record.status === 'new' || !can('waybills.read')) return null;
-    const dateFrom = v.dateFrom!.format('YYYY-MM-DD');
-    const dateTo = v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null;
-    if (dateFrom === record.dateFrom && dateTo === record.dateTo) return null;
-    return { dateFrom, dateTo };
-  };
-
-  /**
-   * Переоформление спрашиваем, обычное сохранение — нет. Заявка при смене типа не просто меняет
-   * значения: поля прежнего типа исчезают вместе с деталью, и виза, если её ставил не тот, кто
-   * правит, уходит следом. Перечень — по самой заявке (`retypeErases`), а не общими словами:
-   * человек должен увидеть, что именно перестанет существовать, до нажатия, а не в истории после.
-   */
-  const submit = (v: FormValues) => {
-    if (!record || record.requestType === v.requestType) {
-      /*
-       * Правка срока — своя дверь (план `docs/assignment-periods-plan.md`, волна 4a; Ж4, З5, Д2).
-       * Сохранение при этом распадается на две команды: у срока свои последствия и свои
-       * рукопожатия, и «продлить и заодно поправить комментарий» одним телом не бывает. Сначала
-       * срок — он показывает цену и берёт подтверждения, — потом остальное с версией, которую он
-       * вернул.
-       */
-      const command = periodDoorCommand(v);
-      if (command && record?.requestType === 'special_equipment') {
-        setPeriodSave({ request: record, command, values: v });
-        return;
-      }
-      saveMut.mutate({ v });
-      return;
-    }
-    // Право визы у себя же заявку не отбирает (ADR 0025): визирующий подтверждает переоформление
-    // самим фактом правки — тем же правилом отвечает сервер.
-    const erased = retypeErases(record, !!record.approvedAt && !canApprove);
-    modal.confirm({
-      title: `Переоформить заявку ${record.displayNumber} в «${vehicleRequestTypeLabels[v.requestType]}»?`,
-      content: (
-        <>
-          <div>У заявки не станет:</div>
-          <ul style={{ margin: '4px 0 8px', paddingLeft: 20 }}>
-            {erased.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-          <Typography.Text type="secondary">
-            Номер, вложения и история остаются за заявкой.
-          </Typography.Text>
-        </>
-      ),
-      okText: 'Переоформить',
-      okButtonProps: { danger: true },
-      cancelText: 'Отмена',
-      onOk: () => saveMut.mutateAsync({ v }),
-    });
-  };
-
-  /** Доваливаем правила, которые зависят от типа заявки и не выражаются rules-ами полей. */
-  const onFinish = (v: FormValues) => {
-    if (v.requestType === 'special_equipment') {
-      submit(v);
-      return;
-    }
-    /*
-     * Количество спрашивается у **каждой** ездки, а не у заявки: везут они разное, и «6 ездок, у
-     * одной не указан объём» — законное состояние формы, которое сервер отклонит с указанием
-     * строки (`assertCargoAmount`). Отказ называет строку теми же словами, что и карточка списка:
-     * номера у новой ездки ещё нет, обещать его нельзя (Р13а).
-     */
-    const emptyCargo = cargoRequired
-      ? (v.trips ?? []).findIndex((t) => t.volumeM3 == null && t.weightTons == null)
-      : -1;
-    if (emptyCargo >= 0) {
-      const trips = v.trips ?? [];
-      message.error(
-        trips.length > 1
-          ? `Строка ${emptyCargo + 1}: ${CARGO_AMOUNT_MESSAGE}`
-          : CARGO_AMOUNT_MESSAGE,
-      );
-      return;
-    }
-    // Жёсткая модель адресов (ADR 0006) сюда не доходит: её проверяет правило самого поля, и
-    // невыбранный адрес останавливает отправку с ошибкой на своём поле, а не общим сообщением.
-    submit(v);
-  };
 
   // Отмена заявки требует причины — она вводится в отдельном окне.
   const [cancelTarget, setCancelTarget] = useState<VehicleRequestDto | null>(null);
@@ -1242,16 +478,6 @@ export function VehicleRequestsTab() {
     (canEdit || canDelete) &&
     (!isPlaceScopedRole(user?.role) || r.status === 'new');
 
-  /**
-   * Снять с заявки копию (ADR 0173) — с любой, кроме архивной: статуса источника действие не
-   * спрашивает вовсе (ADR 0206). Повторяют не состояние записи, а сам заказ — тот же тип, тот же
-   * объект, тот же состав, — и сервер о статусе тоже не спросит: копия уходит обычным заведением.
-   * Ворота у неё те же, что у «Новой заявки»: право заводить и коридор типов учётки — отделу
-   * открыта одна грузоперевозка, и копия заказа спецтехники ушла бы к отказу сервера.
-   */
-  const canCopy = (r: VehicleRequestDto) =>
-    !r.deletedAt && canCreate && requestTypeOptions.some((o) => o.value === r.requestType);
-
   const confirmDelete = (r: VehicleRequestDto) =>
     modal.confirm({
       title:
@@ -1351,9 +577,9 @@ export function VehicleRequestsTab() {
         changeApproval: requestApprovalChange,
         changeMachinist: setMachinistTarget,
         changeStatus: requestStatusChange,
-        create: openCreate,
+        create: requestEditor.openCreate,
         createWeekly: weeklyCreate.open,
-        edit: openEdit,
+        edit: requestEditor.openEdit,
         openOrder: setViewRecord,
         openRoute,
         openRoutes: () => openRoutesList(),
@@ -1402,221 +628,7 @@ export function VehicleRequestsTab() {
         weeklyPending: data?.weeklyPendingCount ?? 0,
       }}
     >
-      <FormModal
-        title={
-          record
-            ? `Заявка ${record.displayNumber}`
-            : copy
-              ? `Новая заявка на автотехнику — по образцу ${copy.source.displayNumber}`
-              : 'Новая заявка на автотехнику'
-        }
-        open={open}
-        onCancel={() => setOpen(false)}
-        onSubmit={() => form.submit()}
-        confirmLoading={saveMut.isPending}
-        width={880}
-      >
-        {/* Поля парами (FormGrid): в одну колонку форма заявки не помещается в экран и половину
-            полей прячет под прокрутку. На телефоне колонка одна, порядок полей тот же. */}
-        {/* Копия (ADR 0173, ADR 0206) объявляется прямо в форме: «по образцу» в заголовке, а не
-          «копия», потому что у выполненной заявки копия обещала бы наследование состояния,
-          которого в новой не будет; надпись под ним — что остаётся у источника и какой срок. */}
-        {copy && !record && (
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 16 }}
-            description={copyNotice(copy.source, copy.minDate, copy.today)}
-          />
-        )}
-        <Form form={form} layout="vertical" onFinish={onFinish}>
-          <FormGrid>
-            {/* Заказчик заявки (ADR 0040, план Р2): площадки и подразделения одним подбором — по
-              видимости учётки, а не по её оси в отдельности. Два поля рядом означали бы, что одно
-              из них пустое и непонятно почему; заказчик у заявки ровно один. */}
-            <Form.Item
-              name="customerKey"
-              label="Объект/отдел"
-              // Заказчика меняют только у «Новой» (Р7): у взятой в работу объект затрат уже ушёл
-              // снимком в задание путевого листа, и сервер отвечает на такую правку 422. Текст —
-              // его же, чтобы поле и отказ говорили одно.
-              extra={customerLocked ? REQUEST_CUSTOMER_LOCKED_MESSAGE : undefined}
-              rules={[{ required: true, message: 'Выберите объект или отдел' }]}
-            >
-              <RequestCustomerSelect
-                options={customer.options}
-                loading={customer.loading}
-                disabled={customerLocked || customer.disabled}
-              />
-            </Form.Item>
-            {/* Тип заведённой заявки меняется переоформлением (ADR 0091) — там, где заказанная
-              позиция годится обоим типам. Где не годится, поле заперто и говорит почему. */}
-            <Form.Item
-              name="requestType"
-              label="Тип заявки"
-              tooltip="Заказ техники на объект — техника любого вида; грузоперевозка — только грузовая"
-              extra={record ? (retypeBlocker ?? 'Смена типа переоформит заявку') : undefined}
-              rules={[{ required: true, message: 'Выберите тип заявки' }]}
-            >
-              <AutoSelect
-                options={formRequestTypeOptions}
-                placeholder="Выберите тип заявки"
-                // Заперто, когда переоформлять нельзя, и когда роли доступен один тип: выбор,
-                // которого нет, поле обещать не должно.
-                disabled={(!!record && !canRetype) || requestTypeOptions.length === 1}
-                onChange={handleRequestTypeChange}
-              />
-            </Form.Item>
-            {/* Позиция классификатора — во всю ширину: подписи вроде «Автокраны, г/п 130 т» в
-              половине окна обрезаются там, где начинается отличие одной от другой. */}
-            <FormGrid.Full>
-              <VehicleClassificationSelect
-                groups={typeGroups}
-                loading={typesLoading}
-                disabled={!watchRequestType}
-                placeholder={
-                  watchRequestType ? 'Выберите тип или категорию' : 'Сначала выберите тип заявки'
-                }
-              />
-            </FormGrid.Full>
-
-            {/* Техника на объект: период работы. Ближайший доступный день зависит от того, кто
-              заводит заявку (ADR 0104): заявителю — завтра, а после 15:00 послезавтра; тому, кто
-              ведёт заказы, — сегодня по МСК. */}
-            {isSpecial && (
-              // Даты — соседними ячейками сетки: пара «начало — окончание» читается вместе.
-              <>
-                <Form.Item
-                  name="dateFrom"
-                  label="Дата начала"
-                  tooltip={leadTimeHint}
-                  rules={[{ required: true, message: 'Укажите дату начала' }]}
-                >
-                  <DatePicker
-                    format="DD.MM.YYYY"
-                    style={{ width: '100%' }}
-                    inputReadOnly={isMobile}
-                    disabledDate={minDateRule}
-                  />
-                </Form.Item>
-                <Form.Item
-                  name="dateTo"
-                  label="Дата окончания"
-                  // Число дней (столько техника занята на объекте) — подписью под полем: в сетке из
-                  // двух колонок отдельной колонки под него уже нет. У работающей заявки здесь же
-                  // сказано, чем сокращают срок: правкой его сократить нельзя (ADR 0044).
-                  extra={
-                    dateToLocked
-                      ? 'Срок работающей техники сокращают досрочным завершением — с визой'
-                      : periodHint
-                  }
-                >
-                  <DatePicker
-                    format="DD.MM.YYYY"
-                    style={{ width: '100%' }}
-                    inputReadOnly={isMobile}
-                    // Продление правкой остаётся, сокращение — нет: то же правило проверяет
-                    // сервер, и предлагать дату, которую он отклонит, портал не должен.
-                    disabledDate={dateToLocked ? isBeforeCurrentDateTo : minDateRule}
-                  />
-                </Form.Item>
-                {/* Задним числом (ADR 0101): причина и цена правки — сразу под датами, которые её
-                  вызвали, а не в конце формы. Блока нет вовсе, пока срок не уходит в прошлое. */}
-                {backdated && effectiveDateKey && (
-                  <FormGrid.Full>
-                    <VehicleBackdateFields
-                      record={record}
-                      next={formCalendar}
-                      effectiveDate={effectiveDateKey}
-                    />
-                  </FormGrid.Full>
-                )}
-                {/* Кто встречает технику на объекте: без контакта заезд и место работ выясняются
-                  звонками через диспетчера уже на воротах. */}
-                <FormGrid.Full>
-                  <ResponsibleFields
-                    nameField="responsibleName"
-                    phoneField="responsiblePhone"
-                    nameLabel="Ответственный на объекте"
-                    phoneLabel="Контактный телефон"
-                    phoneInput={PhoneInput}
-                  />
-                </FormGrid.Full>
-
-                {/* Перегоны 4-П работающей заявки: доставка на площадку и вывоз с неё. Правятся
-                  здесь, потому что здесь их и вспоминают — открыв заявку, по которой технику
-                  повезли не так, как собирались. У новой заявки блока нет: перегон едет на
-                  назначенной машине, а её ещё не выбрали. */}
-                {relocationsEditable && (
-                  <FormGrid.Full>
-                    <Form.Item label="Перегон техники (4-П)">
-                      <RequestRelocationsField request={record!} />
-                    </Form.Item>
-                  </FormGrid.Full>
-                )}
-              </>
-            )}
-
-            {/* Грузоперевозка: дата/время, объём или масса, адреса. */}
-            {isFreight && (
-              <>
-                <Form.Item
-                  name="scheduledDate"
-                  label="Дата подачи"
-                  tooltip={leadTimeHint}
-                  rules={[{ required: true, message: 'Укажите дату' }]}
-                >
-                  <DatePicker
-                    format="DD.MM.YYYY"
-                    style={{ width: '100%' }}
-                    inputReadOnly={isMobile}
-                    disabledDate={minDateRule}
-                  />
-                </Form.Item>
-                <Form.Item
-                  name="scheduledTime"
-                  label="Время (МСК)"
-                  tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
-                  rules={[optionalWorkTimeRule]}
-                >
-                  <TimeInput />
-                </Form.Item>
-                {/* Задним числом (ADR 0101) — тем же блоком, что и у заказа на объект: правило на
-                  оба типа заявки одно, разная у них только дата, по которой оно считается. */}
-                {backdated && effectiveDateKey && (
-                  <FormGrid.Full>
-                    <VehicleBackdateFields
-                      record={record}
-                      next={formCalendar}
-                      effectiveDate={effectiveDateKey}
-                    />
-                  </FormGrid.Full>
-                )}
-                {/* Ездки заявки (§4.1): груз, адреса и контакты обоих концов. С одной ездкой блок
-                  выглядит и заполняется ровно как форма до плана — те же поля в тех же ячейках
-                  сетки; списком с «+ ездка» и «повторить N раз» он разворачивается по нажатию. */}
-                <RequestTripsBlock
-                  savedTrips={recordTrips}
-                  expanded={tripsExpanded}
-                  onExpand={() => setTripsExpanded(true)}
-                  suggestObjectIds={suggestObjectIds}
-                  cargoRequired={cargoRequired}
-                />
-              </>
-            )}
-
-            {/* Заголовок и пример заполнения зависят от типа заявки (COMMENT_HINTS). */}
-            <FormGrid.Full>
-              <Form.Item name="comment" label={commentHint?.label ?? 'Комментарий'}>
-                <Input.TextArea rows={3} maxLength={2000} placeholder={commentHint?.placeholder} />
-              </Form.Item>
-              <Form.Item label="Файлы">
-                <FileEditor editor={editor} />
-              </Form.Item>
-            </FormGrid.Full>
-          </FormGrid>
-        </Form>
-      </FormModal>
+      {requestEditor.node}
 
       {/* Карточка заявки: поля только на чтение плюс история событий. Правка — той же формой,
           что и из таблицы, и только если она этой роли доступна. */}
@@ -1655,15 +667,15 @@ export function VehicleRequestsTab() {
           viewed && canModify(viewed)
             ? (r) => {
                 closeView();
-                openEdit(r);
+                requestEditor.openEdit(r);
               }
             : undefined
         }
         onCopy={
-          viewed && canCopy(viewed)
+          viewed && requestEditor.canCopy(viewed)
             ? (r) => {
                 closeView();
-                openCopy(r);
+                requestEditor.openCopy(r);
               }
             : undefined
         }
@@ -1741,26 +753,6 @@ export function VehicleRequestsTab() {
         request={esm2Target}
         onClose={() => setEsm2Target(null)}
         onDone={() => setEsm2Target(null)}
-      />
-
-      {/* Правка срока — своя дверь (волна 4a плана `docs/assignment-periods-plan.md`): окно
-        показывает, что сгорит и что выпишется, какие решения о технике погасит сокращение, и
-        берёт подтверждения, которых у широкого маршрута нет. Причина, набранная в форме за задний
-        ход, переезжает сюда: человек объясняет одну правку, а не каждую ручку, через которую она
-        проходит. */}
-      <VehiclePeriodModal
-        request={periodSave?.request ?? null}
-        command={periodSave?.command ?? null}
-        reason={periodSave?.values.backdateReason}
-        operationId={operationId}
-        onCancel={() => setPeriodSave(null)}
-        onApplied={(result) => {
-          const pending = periodSave;
-          setPeriodSave(null);
-          // Остальное тело — второй командой: у неё своя дверь и своя версия. Даты в нём те же,
-          // что дверь уже записала, — широкий маршрут их и не тронет.
-          if (pending) saveMut.mutate({ v: pending.values, period: result });
-        }}
       />
 
       {/* Доставка техники на объект и вывоз с него: рейс перемещения, по которому выписывается

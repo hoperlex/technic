@@ -32,7 +32,7 @@
   `useWasteObjectScope`),
   [useRequestCustomerOptions.ts](../../apps/web/src/features/request-customer/model/useRequestCustomerOptions.ts)
   (режим `objects: 'place'`),
-  [VehicleRequestsTab.tsx](../../apps/web/src/pages/vehicle/VehicleRequestsTab.tsx),
+  [useVehicleRequestEditorState.ts](../../apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState.ts),
   [VehicleRequestsOnSiteTab.tsx](../../apps/web/src/pages/vehicle/VehicleRequestsOnSiteTab.tsx);
   тесты — [access-scope.test.ts](../../apps/api/test/access-scope.test.ts),
   [vehicle-request-customer.db.test.ts](../../apps/api/test/vehicle-request-customer.db.test.ts),

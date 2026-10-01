@@ -12,7 +12,8 @@
   [ADR 0085](0085-weekly-vehicle-request.md) (недельная заявка порождает заказы)
 - Связано: `packages/contracts/src/vehicle-requests.ts`,
   `apps/api/src/routes/vehicle-requests.ts`, `apps/api/src/services/vehicle-request-diff.ts`,
-  `apps/web/src/pages/vehicle/VehicleRequestsTab.tsx`
+  `apps/web/src/features/vehicle-request-editor/model/retypeErases.ts`,
+  `apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestEditorSave.tsx`
 - Миграций нет: схема БД не менялась
 
 ## Контекст

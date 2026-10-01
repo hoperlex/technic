@@ -5,7 +5,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { vehicleRequest } from './factories/vehicle';
-import { RequestRelocationsField } from '../src/pages/vehicle/RequestRelocationsField';
+import { RequestRelocationsField } from '../src/widgets/vehicle-request-editor';
 
 /**
  * Перегоны 4-П в правке заявки на площадке: доставка техники на объект и вывоз с него.

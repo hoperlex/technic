@@ -26,7 +26,7 @@ import { useIsMobile } from '@shared/lib';
 import { useAuth } from '@entities/session';
 import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { TrailerFields, trailerTripBody } from './TrailerFields';
-import { BackdateReasonField } from './VehicleBackdateFields';
+import { BackdateReasonField } from '@widgets/vehicle-request-editor';
 
 /**
  * Правка рейса: день, водитель, реквизиты выезда, комментарий, а у перегона — «откуда — куда».

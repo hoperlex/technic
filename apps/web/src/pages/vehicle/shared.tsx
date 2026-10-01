@@ -1,32 +1,13 @@
-import { useState, type ReactNode } from 'react';
-import { App, Button, Form, Select, Typography, Upload } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import type { ReactNode } from 'react';
+import { Select } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { vehicleOptionLabel } from '@technic/contracts';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
-import { FileLinkList, filesApi } from '@entities/file';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
-import type {
-  VehicleClassificationGroup,
-  VehicleClassificationOption,
-} from '@entities/vehicle-type';
-import { AutoSelect, type FilterDefinition } from '@shared/ui';
-import { errorMessage } from '@shared/lib';
+import type { FilterDefinition } from '@shared/ui';
 import { objectsApi, objectKeys } from '@entities/object';
 
 export { VehicleRequestAssignmentCell } from '@entities/vehicle-request';
-
-export const FILE_MAX_COUNT = 20;
-export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
-
-export interface EditorFile {
-  id: string;
-  filename: string;
-  /** Нужен ссылке в списке: фото и PDF открываются окном просмотра, остальное скачивается. */
-  contentType: string;
-  size: number;
-  isNew: boolean;
-}
 
 /** Опции активных объектов для Select (грузятся разом, pageSize=500). */
 export function useObjectOptions() {
@@ -130,133 +111,4 @@ export function useLessorOptions() {
     options: (data?.items ?? []).map((c) => ({ value: c.id, label: c.name })),
     loading: isFetching,
   };
-}
-
-/** Редактор прикреплённых файлов (загрузка в S3 + список add/remove). */
-export function useFileEditor() {
-  const { message } = App.useApp();
-  const [files, setFiles] = useState<EditorFile[]>([]);
-  const [removedIds, setRemovedIds] = useState<string[]>([]);
-  const [uploading, setUploading] = useState(false);
-
-  const reset = (initial: EditorFile[] = []) => {
-    setFiles(initial);
-    setRemovedIds([]);
-  };
-  const upload = async (file: File) => {
-    if (files.length >= FILE_MAX_COUNT) {
-      message.error(`Не более ${FILE_MAX_COUNT} файлов`);
-      return;
-    }
-    if (file.size > FILE_MAX_SIZE) {
-      message.error('Файл больше 50 МБ');
-      return;
-    }
-    setUploading(true);
-    try {
-      const dto = await filesApi.upload(file);
-      setFiles((p) => [
-        ...p,
-        {
-          id: dto.id,
-          filename: dto.filename,
-          contentType: dto.contentType,
-          size: dto.size,
-          isNew: true,
-        },
-      ]);
-    } catch (e) {
-      message.error(errorMessage(e));
-    } finally {
-      setUploading(false);
-    }
-  };
-  const remove = (id: string) => {
-    const f = files.find((x) => x.id === id);
-    setFiles((p) => p.filter((x) => x.id !== id));
-    if (!f) return;
-    if (f.isNew) void filesApi.remove(id).catch(() => undefined);
-    else setRemovedIds((p) => [...p, id]);
-  };
-  const newFileIds = () => files.filter((f) => f.isNew).map((f) => f.id);
-
-  return { files, removedIds, uploading, reset, upload, remove, newFileIds };
-}
-
-export function FileEditor({ editor }: { editor: ReturnType<typeof useFileEditor> }) {
-  return (
-    <div>
-      <Upload
-        multiple
-        showUploadList={false}
-        beforeUpload={(f) => {
-          void editor.upload(f);
-          return false;
-        }}
-      >
-        <Button icon={<UploadOutlined />} loading={editor.uploading}>
-          Прикрепить файлы
-        </Button>
-      </Upload>
-      <div style={{ marginTop: 8 }}>
-        <FileLinkList
-          files={editor.files}
-          emptyText="Нет файлов"
-          onRemove={(f) => editor.remove(f.id)}
-        />
-      </div>
-    </div>
-  );
-}
-
-/**
- * Выбор заказываемой техники (ADR 0028): одна позиция классификатора — категория типа
- * («Автокраны, г/п 130 т») либо сам тип, если ТТХ у него нет («Ямобур»). Список сгруппирован по
- * виду ТС и сужен типом заявки, поэтому до его выбора поле недоступно. В форме лежит ключ
- * позиции, в API уходит пара «тип + категория».
- *
- * Справа от наименования — порядок цены позиции: средняя ставка её техники. Приписка живёт только
- * в раскрытом списке (`optionRender`): поиск идёт по наименованию, и выбранная позиция называется
- * им же — цена в свёрнутом поле читалась бы как согласованная ставка, а она справочная.
- */
-export function VehicleClassificationSelect({
-  groups,
-  loading,
-  disabled,
-  placeholder = 'Выберите тип или категорию',
-}: {
-  groups: VehicleClassificationGroup[];
-  loading: boolean;
-  disabled?: boolean;
-  placeholder?: string;
-}) {
-  return (
-    <Form.Item
-      name="classificationKey"
-      label="Тип/категория ТС"
-      tooltip="У типа с характеристиками выбирают категорию — «Автокран, г/п 130 т»; тип без характеристик выбирается целиком. Список сужен типом заявки: грузоперевозку выполняет только грузовая техника"
-      rules={[{ required: true, message: 'Выберите тип или категорию' }]}
-    >
-      <AutoSelect
-        options={groups}
-        showSearch
-        optionFilterProp="label"
-        loading={loading}
-        disabled={disabled}
-        placeholder={placeholder}
-        optionRender={(option) => {
-          const hint = (option.data as VehicleClassificationOption).priceHint;
-          if (!hint) return option.label;
-          return (
-            <div className="option-row">
-              <span className="option-row__label">{option.label}</span>
-              <Typography.Text type="secondary" className="option-row__hint">
-                {hint}
-              </Typography.Text>
-            </div>
-          );
-        }}
-      />
-    </Form.Item>
-  );
 }

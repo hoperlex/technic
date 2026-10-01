@@ -21,31 +21,24 @@ import { formatDateOnly } from '@shared/lib';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
 
 /**
- * Перегоны заявки в её же форме правки: доставка техники на площадку и вывоз с неё (миграция 0082).
+ * Request relocations shown inside the editor: delivery to and pickup from the site (migration 0082).
  *
- * Раньше их заводили только в двух местах — при переводе в работу (доставку) и из карточки заявки
- * (вывоз), — а убрать ошибочно заведённый было нельзя вовсе: приходилось идти во вкладку маршрутов
- * и удалять рейс оттуда, зная его номер. Между тем правят их как раз тогда, когда открывают саму
- * заявку: технику решили везти тралом, дату сдвинули, вывоз завели не на ту заявку.
+ * Relocations are maintained here because corrections are usually discovered while editing the
+ * request, and the retired route tab should not be required to find an incorrectly created trip.
  *
- * Их ровно два и по одному на назначение — так держит сервер (`createRelocationRoute`), и здесь
- * предлагается только то, чего ещё нет. Ноль — нормальное состояние: способ доставки портал не
- * ведёт, и техника может приехать тралом, без всякого путевого листа.
+ * `createRelocationRoute` permits at most one route per purpose. Zero remains valid because portal
+ * data does not model whether the equipment arrived on a carrier.
  *
- * Действия применяются сразу, а не по «Сохранить»: перегон — это отдельный рейс, а не поле заявки.
- * Форма об этом и говорит: иначе человек ждал бы, что закрытие окна без сохранения его отменит.
+ * Actions apply immediately because a relocation is a separate route, not a draft request field.
  *
- * Номер перегона — ссылка на карточку рейса окном (ADR 0120, план `docs/vehicle-routes-modal-plan.md`
- * §1, этап 3). Текстом он оставался ровно потому, о чём говорит абзац выше: попасть в перегон
- * можно было только через вкладку маршрутов, зная номер, — то есть уйдя из формы, которую сейчас
- * правят. Вкладки больше нет, рейс открывается поверх формы, и лист по перегону выписывают там же,
- * не разбирая правку заявки.
+ * The display number opens the route modal (ADR 0120) so route details and forms can be handled
+ * without abandoning the request edit.
  */
 
 const PURPOSES = ['delivery', 'pickup'] as const;
 
 interface Props {
-  /** Заявка в работе с назначенной собственной техникой; иначе блок не показывается. */
+  /** Confirmed request with assigned company equipment; callers hide the block otherwise. */
   request: VehicleRequestDto;
 }
 
@@ -56,7 +49,7 @@ export function RequestRelocationsField({ request }: Props) {
   const qc = useQueryClient();
   const [adding, setAdding] = useState<(typeof PURPOSES)[number] | null>(null);
 
-  // Ключ тот же, что у карточки заявки: открытая перед этим карточка отдаёт ответ из кэша.
+  // Share the request-card query key so an already loaded relocation list is reused.
   const { data: relocations, isFetching } = useQuery({
     queryKey: vehicleRequestKeys.relocations(request.id),
     queryFn: () => vehicleRequestsApi.relocations(request.id),
@@ -105,19 +98,16 @@ export function RequestRelocationsField({ request }: Props) {
       )}
 
       {existing.map((route) => {
-        // Лист по рейсу выписывался — рейс остаётся в журнале строгой отчётности навсегда, даже
-        // аннулированный (сервер отвечает тем же отказом). Тогда убирать нечего: чинят такое
-        // аннулированием листа и правкой самого рейса в карточке маршрута.
+        // Any issued waybill keeps the route in the strict-reporting journal permanently. Such a
+        // route must be corrected through waybill cancellation and the route card.
         const documented = !!route.waybill;
         return (
           <Space key={route.id} size={8} wrap>
             <Tag color={route.purpose === 'delivery' ? 'blue' : 'gold'}>
               {routePurposeShortLabels[route.purpose]}
             </Tag>
-            {/* Ссылка и кнопка удаления — соседи по строке, а не вложены друг в друга: `EntityLink`
-              гасит только собственный переход (`preventDefault` на левом клике без модификаторов),
-              всплытие оставляет как есть, и до `confirmRemove` его клик не доходит — как и клик по
-              кнопке до ссылки. Без права на рейсы номер останется прежним текстом. */}
+            {/* Keep the route link and delete button as siblings so their independent click
+                handling cannot trigger the other action. Without route access, the number remains text. */}
             <EntityLink
               to={vehicleRouteLink(can, route.id)}
               title="Открыть маршрут"

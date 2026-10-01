@@ -9,7 +9,7 @@
   [ADR 0094](0094-form-blockers.md) (одна функция объясняет запрет и в форме, и в отказе API),
   `packages/contracts/src/vehicle-requests.ts`, `packages/contracts/src/time.ts`,
   `apps/api/src/routes/vehicle-requests.ts`, `apps/web/src/utils/date.ts`,
-  `apps/web/src/pages/vehicle/VehicleRequestsTab.tsx`
+  `apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState.ts`
 - Миграция: не потребовалась — правило считается от «сейчас» и прав субъекта, в схеме базы его
   ничто не хранит
 

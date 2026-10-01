@@ -10,15 +10,18 @@
   у заказа, который уже идёт, копии предлагается его остаток, а границу веток держит
   сегодняшний московский день, а не первый доступный
 - Область: портал — новые
-  [requestFormValues.ts](../../apps/web/src/pages/vehicle/requestFormValues.ts) (тип значений формы
+  [requestFormValues.ts](../../apps/web/src/features/vehicle-request-editor/model/requestFormValues.ts) (тип значений формы
   и две подстановки — правкой и копией) и
   [VehicleRequestCardFooter.tsx](../../apps/web/src/pages/vehicle/VehicleRequestCardFooter.tsx)
   (кнопки футера карточки), правки
   [VehicleRequestViewModal.tsx](../../apps/web/src/pages/vehicle/VehicleRequestViewModal.tsx)
   (действие `onCopy`),
-  [VehicleRequestsTab.tsx](../../apps/web/src/pages/vehicle/VehicleRequestsTab.tsx) (`openCopy`,
-  гейт, заголовок и предупреждение формы),
-  [requestTripsForm.ts](../../apps/web/src/pages/vehicle/requestTripsForm.ts) (`copyTrip`);
+  [useVehicleRequestEditorState.ts](../../apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState.ts)
+  (`openCopy` и гейт),
+  [VehicleRequestEditorDialog.tsx](../../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRequestEditorDialog.tsx)
+  (заголовок и предупреждение формы),
+  [requestTripsForm.ts](../../apps/web/src/features/vehicle-request-editor/model/requestTripsForm.ts)
+  (`copyTrip`);
   тесты — [vehicle-request-copy.test.tsx](../../apps/web/test/vehicle-request-copy.test.tsx),
   правка фабрики [vehicle.ts](../../apps/web/test/factories/vehicle.ts)
 - Связано: [ADR 0004](0004-vehicle-requests.md) (заявки на технику),
