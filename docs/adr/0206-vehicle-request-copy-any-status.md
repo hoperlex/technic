@@ -35,7 +35,7 @@
   (`canCopy`) и
   [VehicleRequestEditorDialog.tsx](../../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRequestEditorDialog.tsx)
   (заголовок формы и надпись),
-  [VehicleRequestCardFooter.tsx](../../apps/web/src/pages/vehicle/VehicleRequestCardFooter.tsx)
+  [vehicleRequestCardFooter.tsx](../../apps/web/src/widgets/vehicle-request-view/ui/vehicleRequestCardFooter.tsx)
   (надпись кнопки); тесты —
   [vehicle-request-copy.test.tsx](../../apps/web/test/vehicle-request-copy.test.tsx) и фабрика
   [factories/vehicle.ts](../../apps/web/test/factories/vehicle.ts) (заявка в работе с назначением

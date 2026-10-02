@@ -17,7 +17,8 @@
   [ADR 0100](0100-linear-vehicle-days.md) (дни линейного заказа),
   [ADR 0030](0030-responsive-layout.md) (телефон), [ADR 0021](0021-permissions-model.md) (матрица —
   не менялась), план [docs/vehicle-routes-modal-plan.md](../vehicle-routes-modal-plan.md);
-  `packages/contracts/src/links.ts`, `apps/web/src/utils/links.ts`,
+  `packages/contracts/src/links.ts`, `apps/web/src/entities/vehicle-route/model/links.ts`,
+  `apps/web/src/features/route-modal`, `apps/web/src/widgets/route-modal-host`,
   `apps/web/src/pages/vehicle/routeModal.tsx`, `apps/web/src/pages/vehicle/VehicleRequestsPage.tsx`,
   `apps/api/src/routes/waybills.ts`
 - Миграций не требует

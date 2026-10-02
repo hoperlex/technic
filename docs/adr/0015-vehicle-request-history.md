@@ -9,8 +9,8 @@
   `apps/api/src/services/vehicle-request-history.ts`,
   `apps/api/src/services/vehicle-request-diff.ts`,
   `apps/api/src/routes/vehicle-requests.ts`,
-  `apps/web/src/components/RequestHistory.tsx`,
-  `apps/web/src/pages/vehicle/VehicleRequestViewModal.tsx`
+  `apps/web/src/entities/request-history`,
+  `apps/web/src/widgets/vehicle-request-view`
 
 ## Контекст
 

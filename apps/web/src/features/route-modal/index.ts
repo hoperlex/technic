@@ -1,12 +1,3 @@
-/**
- * Доступ к окнам рейса, списка рейсов и заявки (ADR 0120) — контракт и хук, и только они.
- *
- * Отделены от провайдера намеренно. Провайдер (`pages/vehicle/routeModal.tsx`) рисует четыре окна
- * слоя `pages` и потому обязан остаться там; а спрашивают его с этажей ниже и из соседних слайсов
- * того же слоя — гараж, журнал листов, вкладка заявок. Пока хук лежал рядом с провайдером,
- * `pages/garage` тянул `pages/vehicle`, то есть слайс соседа по слою, и линт границ был красным.
- *
- * Слой `features`, а не `shared`: это сценарий портала со своим словарём (рейс, заявка, правка
- * реквизитов), а не деталь фундамента.
- */
+/** Public contract and URL state for route, route-list and request windows (ADR 0120). */
 export { RouteModalContext, useRouteModal, type RouteModalApi } from './model/context';
+export { useRouteModalState, type RouteModalState } from './model/useRouteModalState';

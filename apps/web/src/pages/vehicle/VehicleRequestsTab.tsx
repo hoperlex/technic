@@ -37,7 +37,7 @@ import { VehiclePeriodModal } from './VehiclePeriodModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useRouteModal } from '@features/route-modal';
-import { useVehicleFilter } from './shared';
+import { useVehicleFilter } from '@features/vehicle-request-filters';
 import { useWeeklyRequestCreate, weekSelectOptions, weeklyRequestPath } from './weeklyShared';
 import { useVehicleRequestEditor, VehicleRelocationModal } from '@widgets/vehicle-request-editor';
 import { useVehicleRequestLifecycle } from '@widgets/vehicle-request-lifecycle';

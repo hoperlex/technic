@@ -29,8 +29,8 @@
   [vehicle-request-days.ts](../../apps/api/src/services/vehicle-request-days.ts) (часы и подпись
   линейного дня берутся отсюда); портал —
   [VehicleShiftsModal.tsx](../../apps/web/src/pages/vehicle/VehicleShiftsModal.tsx) (ведение),
-  [VehicleShiftsView.tsx](../../apps/web/src/pages/vehicle/VehicleShiftsView.tsx) (чтение),
-  [VehicleRequestViewModal.tsx](../../apps/web/src/pages/vehicle/VehicleRequestViewModal.tsx)
+  [VehicleShiftsView.tsx](../../apps/web/src/widgets/vehicle-request-view/ui/VehicleShiftsView.tsx) (чтение),
+  [VehicleRequestViewModal.tsx](../../apps/web/src/widgets/vehicle-request-view/ui/VehicleRequestViewModal.tsx)
   (вкладка «Смены»),
   [VehicleRequestsOnSiteTab.tsx](../../apps/web/src/pages/vehicle/VehicleRequestsOnSiteTab.tsx) и
   [onSiteCells.tsx](../../apps/web/src/pages/vehicle/onSiteCells.tsx) (столбец и тег),
