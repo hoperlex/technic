@@ -7,20 +7,10 @@ import {
   Input,
   InputNumber,
   Select,
-  Space,
-  Tag,
-  Tooltip,
   Typography,
   Upload,
 } from 'antd';
-import {
-  DeleteOutlined,
-  EditOutlined,
-  EyeOutlined,
-  PlusOutlined,
-  ReloadOutlined,
-  UploadOutlined,
-} from '@ant-design/icons';
+import { UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -29,19 +19,14 @@ import {
   REQUEST_TYPES,
   type RequestStatus,
   type RequestType,
-  requestStatusLabels,
   statusChangeRequiresReason,
   transitionResetsWork,
-  requestTypeColors,
   requestTypeLabels,
-  parseWasteRequestNumberSearch,
   roleScopeAxis,
   normalizeTimeInput,
   type CompleteWasteRequestInput,
   actsForCounterparty,
   checkContainerOwner,
-  type ContainerKind,
-  containerOwnerMismatch,
   FOREIGN_CONTAINER_SPLIT_MESSAGE,
   isPlaceScopedRole,
   isPricedRequestType,
@@ -53,12 +38,16 @@ import {
   type WasteRequestDto,
   wasteOperatorCommentEditable,
   wasteTicketsAttachable,
-  wasteRequestCommentLines,
-  wasteSubjectLabel,
 } from '@technic/contracts';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
-import { FileLinkList, filesApi, FilesCell } from '@entities/file';
+import { FileLinkList, filesApi } from '@entities/file';
 import {
+  isBeforeMinRequestDate,
+  isPastDate,
+  minRequestDate,
+  wastePricingHint,
+  wasteRollbackErases,
+  wasteRequestErrorMessage as errorMessage,
   wasteRequestKeys,
   wasteRequestsApi,
   type WasteRequestPayload,
@@ -69,30 +58,16 @@ import { wasteTicketKeys } from '@entities/waste-ticket';
 import { AutoSelect } from '@shared/ui';
 import { PhoneInput } from '@entities/user-account';
 import { CancelReasonModal, ResponsibleFields, RollbackReasonModal } from '@entities/request';
-import { DataTable, type CardConfig } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
-import { PageTableLayout } from '@shared/ui';
-import { sortOptionsFrom } from '@shared/ui';
-import { PageTabs, TabsExtra, useActiveTabKey } from '@shared/ui';
-import { SummaryBar } from '@shared/ui';
-import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
-import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
-import { TimeInput, formatDateTimeMaybe, optionalWorkTimeRule } from '@entities/request';
-import { formatDate, useIsMobile } from '@shared/lib';
-import { dayEnd, dayStart } from '@shared/lib';
-import { useListParams } from '@shared/lib';
+import { PageTabs, useActiveTabKey } from '@shared/ui';
+import { TimeInput, optionalWorkTimeRule } from '@entities/request';
+import { useIsMobile } from '@shared/lib';
 import { useOpenedRecord } from '@shared/lib';
-import {
-  TicketAuditButton,
-  TicketAuditModal,
-  useTicketAuditMobileAction,
-} from '@features/ticket-audit';
+import { TicketAuditModal } from '@features/ticket-audit';
 import { usePlaceObjectScope } from '@entities/session';
-
-import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
 import { withSavedOption } from '@shared/lib';
-import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '@entities/waste-request';
+import { WasteRequestFeed } from '@widgets/waste-request-feed';
 import { OnSiteTab } from './OnSiteTab';
 import { WasteArchiveTab } from './WasteArchiveTab';
 import { WasteHistoryTab } from './WasteHistoryTab';
@@ -103,21 +78,7 @@ import {
   parseContainerGroupKey,
   presentGroupsHint,
 } from './containerGroups';
-import { wasteAmountLine, wastePricingHint } from './pricingHint';
-import { wasteFiltersBar, wasteMobileFilters } from './requestFilters';
-import {
-  CommentCell,
-  rollbackErases,
-  SubjectCell,
-  WasteStatusCell,
-  weightFactLine,
-} from './requestCells';
-import { subjectFilterOptions, subjectFilterPatch, subjectFilterValue } from './subjectFilter';
-import {
-  BlindCheckQueue,
-  TicketCell,
-  TicketRecognitionBanner,
-} from '@features/waste-ticket-review';
+import { BlindCheckQueue } from '@features/waste-ticket-review';
 import { WasteDoneModal } from './WasteDoneModal';
 import { WasteRequestViewModal } from './WasteRequestViewModal';
 import { WasteStatsTab } from './WasteStatsTab';
@@ -164,21 +125,6 @@ interface RequestFormValues {
   comment?: string;
 }
 
-/**
- * Комментарий заявки двумя подписанными строками: площадка и исполнитель (ADR 0053).
- *
- * В строке списка (`collapsible`) сворачивается ячейкой целиком — тем же `ExpandableCell`, что
- * держит комментарий и контакты в списке заказов техники: текст переносится по ширине колонки,
- * свёрнутая ячейка показывает две строки (столько же занимают соседние колонки), остальное
- * открывает нажатие. До этого каждая строка обрезалась своим многоточием, и обрезка приходилась
- * ровно на то место, где у заявки начинается суть, — прочесть комментарий целиком можно было
- * только подсказкой наведения или открыв карточку.
- *
- * Свёрнутой ячейке случается отрезать вторую сторону вместе с подписью: многословной площадке
- * хватает и двух строк. Это принято сознательно — сторона возвращается тем же нажатием, не
- * открытием карточки, — а обратное, пустить обе стороны в высоту, растянуло бы каждую строку
- * списка под самую многословную заявку.
- */
 const TABS = ['requests', 'on-site', 'history', 'blind-check', 'archive', 'stats'] as const;
 
 export function WasteRequestsPage() {
@@ -274,76 +220,10 @@ function RequestsTab() {
   // но сужен до своих (ADR 0039), а «все» означает все свои: остального сервер не отдаёт.
   const ownObjectId = soleObjectId ?? '';
 
-  // Фильтры живут в панели над таблицей, а не в выпадашках столбцов: в заголовке их не видно,
-  // а половина из них (объект, оператор) — списки справочников, которым там тесно.
-  const { params, setParams, setSort, onTableChange } = useListParams<{
-    status?: string;
-    requestType?: string;
-    objectId?: string;
-    containerTypeId?: string;
-    /** Весь вид разом: «все контейнеры» или «все самосвалы». */
-    containerKind?: ContainerKind;
-    operatorCounterpartyId?: string;
-    num?: number;
-    /** Границы периода подачи — датами `YYYY-MM-DD`; моментами они становятся в запросе. */
-    deliveryFrom?: string;
-    deliveryTo?: string;
-    /** Реестр разбора талонов (ADR 0114, Р24): `pending` — «требуют разбора». */
-    ticketReview?: string;
-  }>({ objectId: ownObjectId || undefined }, { searchKeys: ['comment'] });
-
-  /** Смена любого фильтра возвращает список на первую страницу. */
-  const applyFilter = (patch: Partial<typeof params>) =>
-    setParams((p) => ({ ...p, ...patch, page: 1 }));
-
   // Разбор талонов — отдельное право (ADR 0114, Р25): без него нет ни колонки-значка, ни фильтра.
   // Сервер отвечает так же: параметр `ticketReview` без права отклоняется, а не игнорируется.
   const canReviewTickets = can('wasteRequests.ticketReview');
   const canAuditTickets = can('wasteRequests.ticketAudit');
-  const auditAction = useTicketAuditMobileAction(canAuditTickets);
-
-  const [objectFilter, setObjectFilter] = useState(ownObjectId);
-  const [numInput, setNumInput] = useState('');
-  const applyObjectFilter = (v: string) => {
-    setObjectFilter(v);
-    applyFilter({ objectId: v || undefined });
-  };
-  const applyNumFilter = (raw: string) => {
-    setNumInput(raw);
-    applyFilter({ num: parseWasteRequestNumberSearch(raw) });
-  };
-
-  /**
-   * Параметры запроса — те же фильтры, но период разложен на моменты: в поле его выбирают днями,
-   * а `deliveryAt` хранится со временем. Ключ кэша считается по ним же — иначе два разных периода
-   * с одинаковыми датами делили бы одну запись кэша.
-   */
-  const listQuery = {
-    ...params,
-    deliveryFrom: dayStart(params.deliveryFrom),
-    deliveryTo: dayEnd(params.deliveryTo),
-  };
-  const { data, isFetching } = useQuery({
-    queryKey: wasteRequestKeys.list(listQuery),
-    queryFn: () => wasteRequestsApi.list(listQuery),
-  });
-
-  // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ сидит под тем же
-  // корнем, что и список, — значит счётчики обновляются теми же инвалидациями.
-  const { data: summary } = useQuery({
-    queryKey: wasteRequestKeys.summary(params.objectId),
-    queryFn: () => wasteRequestsApi.summary({ objectId: params.objectId }),
-  });
-  // Оператор заявки не обрабатывает — он их выполняет (ADR 0010): «Новых» у него не бывает,
-  // они появляются в его списке уже переведёнными в работу.
-  const summaryItems = [
-    ...(isOperator ? [] : [{ label: 'Не обработанных', value: summary?.new ?? 0 }]),
-    { label: requestStatusLabels.confirmed, value: summary?.confirmed ?? 0 },
-    // «Выполнена» — очередь на завершение (ADR 0135): вывезли, но бумагу ещё разбирают. Цифра
-    // нужна именно здесь: во вкладке «История» такой заявки нет, и без неё не видно, сколько
-    // закрытий ждёт разбора.
-    { label: requestStatusLabels.done, value: summary?.done ?? 0 },
-  ];
 
   // isLoading у списков нужен полям формы: обязательное поле с единственным вариантом
   // заполняет себя само, и подставлять по недогруженному списку нельзя.
@@ -385,12 +265,6 @@ function RequestsTab() {
   const truckTypes = allTypes.filter((t) => t.type === 'truck');
   const truckTypeOptions = truckTypes.map((t) => ({ value: t.id, label: t.name }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
-  // Фильтр по столбцу «Контейнер / машина»: варианты собирает `subjectFilter` — там же и разбор
-  // выбранного обратно в параметры. Самосвал в фильтре находит только заявки вывоза, заведённые
-  // до ADR 0022: у новых техники в предмете нет.
-  const subjectOptions = subjectFilterOptions({ cont: contTypeOptions, truck: truckTypeOptions });
-  const subjectValue = subjectFilterValue(params);
-  const applySubjectFilter = (v: string | undefined) => applyFilter(subjectFilterPatch(v));
 
   // Типы мусора — только для вывоза (ADR 0019). Спрашиваются
   // только типы с действующей ценой (ADR 0017): выбор типа без тарифа кончался бы отказом
@@ -1023,385 +897,42 @@ function RequestsTab() {
       onOk: () => removeMut.mutateAsync(r.id),
     });
 
-  // Ключ колонки — он же поле сортировки на сервере (WASTE_REQUEST_SORT_FIELDS).
-  const columns = [
-    {
-      key: 'num',
-      title: '№',
-      dataIndex: 'num',
-      width: 90,
-      sorter: true,
-      // Номер — только идентификатор заявки; карточка открывается кнопкой в «Действиях».
-      render: (_v: unknown, r: WasteRequestDto) => (
-        <span style={{ whiteSpace: 'nowrap' }}>{r.displayNumber}</span>
-      ),
-    },
-    // Ширина задана всем колонкам: при scroll.x='max-content' колонка без ширины тянется по
-    // содержимому, и один длинный комментарий возвращал бы горизонтальный скролл всей таблице.
-    textColumn<WasteRequestDto>({
-      key: 'objectName',
-      title: 'Объект',
-      dataIndex: 'objectName',
-      searchable: false,
-      width: OBJECT_COLUMN_WIDTH,
-      render: (_v, r) => <ObjectCell name={r.objectName} address={r.objectAddress} />,
-    }),
-    {
-      key: 'containerTypeName',
-      title: 'Контейнер / машина',
-      dataIndex: 'containerTypeName',
-      width: 230,
-      sorter: true,
-      // Стоимость — второй строкой к предмету заявки: своей колонки она стоила дороже, чем
-      // помогала, а цена за м³ рядом с суммой объясняет, почему одинаковый объём стоит по-разному.
-      // У металлолома денег нет вовсе (ADR 0067), и вторую строку занимает сданный вес: предмета
-      // у такой заявки нет, и без него строка списка не отвечала бы, чем она кончилась.
-      render: (_v: unknown, r: WasteRequestDto) => {
-        const amountLine = wasteAmountLine(r);
-        const weightLine = weightFactLine(r);
-        return (
-          <div style={{ lineHeight: 1.35 }}>
-            <div>
-              <SubjectCell r={r} />
-            </div>
-            {amountLine && (
-              <Typography.Text type={amountLine.tone} style={{ fontSize: 12 }}>
-                {amountLine.text}
-              </Typography.Text>
-            )}
-            {weightLine && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {weightLine}
-              </Typography.Text>
-            )}
-          </div>
-        );
-      },
-    },
-    {
-      key: 'wasteTypeName',
-      title: 'Тип мусора',
-      dataIndex: 'wasteTypeName',
-      width: 150,
-      sorter: true,
-      render: (_v: unknown, r: WasteRequestDto) => r.wasteTypeName ?? '—',
-    },
-    // Разбор талонов (ADR 0114, Р24) — рядом с предметом заявки, а не в конце строки: его читают
-    // вместе с объёмом, к которому он и относится. Колонки нет вовсе без права разбора.
-    ...(canReviewTickets
-      ? [
-          {
-            key: 'ticketBadge',
-            title: 'Талоны',
-            dataIndex: 'ticketBadge',
-            width: 90,
-            render: (_v: unknown, r: WasteRequestDto) => (
-              <TicketCell request={r} onReview={openTicketReview} />
-            ),
-          },
-        ]
-      : []),
-    badgeColumn<WasteRequestDto>({
-      key: 'requestType',
-      title: 'Тип заявки',
-      dataIndex: 'requestType',
-      labels: requestTypeLabels,
-      colors: requestTypeColors,
-      // Названия типов развёрнутые («Замена полного контейнера на пустой»); тег переносится
-      // на вторую строку — на одну строку такая колонка забирала бы пол-экрана.
-      width: 160,
-      multiline: true,
-    }),
-    {
-      key: 'createdAt',
-      title: (
-        <div style={{ lineHeight: 1.2 }}>
-          <div>Дата созд.</div>
-          <div>Доставки</div>
-        </div>
-      ),
-      dataIndex: 'createdAt',
-      width: 130,
-      sorter: true,
-      render: (_v: unknown, r: WasteRequestDto) => (
-        <div style={{ lineHeight: 1.35, whiteSpace: 'nowrap' }}>
-          <div>{formatDate(r.createdAt)}</div>
-          <Typography.Text style={{ color: '#1677ff' }}>
-            {formatDateTimeMaybe(r.deliveryAt, r.deliveryTimeUnspecified)}
-          </Typography.Text>
-        </div>
-      ),
-    },
-    // Оператор вывоза видит только свои заявки (ADR 0010) — колонка повторяла бы ему одно и то
-    // же значение во всех строках.
-    ...(isOperator
-      ? []
-      : [
-          {
-            key: 'operatorName',
-            title: 'Оператор',
-            dataIndex: 'operatorName',
-            width: 170,
-            sorter: true,
-            render: (_v: unknown, r: WasteRequestDto) => r.operatorName ?? '—',
-          },
-        ]),
-    {
-      key: 'status',
-      title: 'Статус',
-      dataIndex: 'status',
-      width: 160,
-      sorter: true,
-      render: (_v: unknown, r: WasteRequestDto) => (
-        <WasteStatusCell
-          request={r}
-          pending={statusMut.isPending && statusMut.variables?.id === r.id}
-          onChange={requestStatusChange}
-        />
-      ),
-    },
-    // Сортировка колонки — по строке площадки (ключ у колонки один): порядок склейки двух
-    // текстов ничего не значит. Поиск при этом идёт по обеим строкам — сервером (ADR 0053).
-    textColumn<WasteRequestDto>({
-      key: 'comment',
-      title: 'Комментарий',
-      dataIndex: 'comment',
-      // Шире прочих текстовых колонок и настолько же, насколько комментарий в списке заказов
-      // техники: свёрнутых строк всего две, и на узкой колонке в них не помещается ничего, кроме
-      // подписей сторон.
-      width: 260,
-      render: (_v, r) => <CommentCell r={r} collapsible />,
-    }),
-    {
-      key: 'files',
-      title: 'Файлы',
-      dataIndex: 'files',
-      width: 80,
-      render: (_v: unknown, r: WasteRequestDto) => <FilesCell files={r.files} />,
-    },
-    actionsColumn<WasteRequestDto>((r) => {
-      // Карточка открывается и у архивной заявки: понять, что и почему в ней было, можно
-      // только там — в строке таблицы ни автора, ни истории нет.
-      const view = (
-        <Tooltip title="Открыть карточку">
-          <Button
-            size="small"
-            icon={<EyeOutlined />}
-            aria-label="Открыть карточку"
-            onClick={() => setViewRecord(r)}
-          />
-        </Tooltip>
-      );
-      if (r.deletedAt) {
-        return (
-          <Space size={4}>
-            {view}
-            {canRestore ? (
-              <Tooltip title="Восстановить">
-                <Button
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  onClick={() => restoreMut.mutate(r.id)}
-                />
-              </Tooltip>
-            ) : (
-              <Tag style={{ marginInlineEnd: 0 }}>в архиве</Tag>
-            )}
-          </Space>
-        );
-      }
-      // Роли, которая заявки не ведёт вовсе (наблюдатель, оператор), кнопки не показываются:
-      // «выключено» читается как «сейчас нельзя», а нельзя ей всегда.
-      if (!canEdit && !canDelete) return view;
-      const allowed = canModify(r);
-      return (
-        <Space size={4}>
-          {view}
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            disabled={!allowed}
-            onClick={() => openEdit(r)}
-          />
-          <Button
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            disabled={!allowed}
-            onClick={() => confirmDelete(r)}
-          />
-        </Space>
-      );
-    }, 120),
-  ];
-
-  const filterOptions = {
-    values: params,
-    onChange: applyFilter,
-    objects: {
-      options: objectFilterOptions,
-      loading: objectsLoading,
-      value: objectFilter,
-      disabled: objectFieldDisabled,
-      onChange: applyObjectFilter,
-    },
-    subject: { options: subjectOptions, value: subjectValue, onChange: applySubjectFilter },
-    operators: canAssignOperator ? { options: operatorOptions, loading: operatorsLoading } : null,
-    num: { text: numInput, onChange: applyNumFilter },
-    ticketReview: canReviewTickets,
-  };
-  const filters = wasteFiltersBar(filterOptions);
-  const mobileFilters = wasteMobileFilters(filterOptions);
-
-  /**
-   * Строка списка на телефоне (ADR 0030). Читают её сверху вниз: что за заявка и в каком она
-   * статусе, на каком объекте, что и почём вывозим, когда и кем. Действия — списком с подписями:
-   * иконки с подсказками на касании молчат.
-   */
-  const card: CardConfig<WasteRequestDto> = {
-    title: (r) => `№ ${r.displayNumber}`,
-    badge: (r) => (
-      <WasteStatusCell
-        request={r}
-        pending={statusMut.isPending && statusMut.variables?.id === r.id}
-        onChange={requestStatusChange}
-      />
-    ),
-    primary: (r) => r.objectName,
-    lines: [
-      (r) => requestTypeLabels[r.requestType],
-      // Предмет заявки строкой; у металлолома его нет вовсе (ADR 0067), и «—» здесь не строка
-      // карточки, а её отсутствие: пустые строки карточка отсеивает сама.
-      (r) => {
-        const subject = [wasteSubjectLabel(r), r.wasteTypeName].filter(Boolean).join(' · ');
-        return subject === '—' ? null : subject;
-      },
-      // Чужой контейнер — своей строкой: тега рядом с предметом на телефоне не видно, а знать
-      // о расхождении тому, кто смотрит заявку с площадки, нужнее всего (ADR 0054).
-      (r) =>
-        containerOwnerMismatch(r) ? `Контейнер установил «${r.containerOwnerName ?? '—'}»` : null,
-      (r) => {
-        // Незаданный тариф на телефоне называется тем же текстом, что и в таблице (ADR 0046):
-        // цветом строки карточка не располагает, но молчать о непосчитанной сумме нельзя.
-        const amountLine = wasteAmountLine(r);
-        return amountLine?.text ?? weightFactLine(r);
-      },
-      (r) => `Доставка: ${formatDateTimeMaybe(r.deliveryAt, r.deliveryTimeUnspecified)}`,
-      // Оператору исполнителя не показываем: в его списке все заявки и так его (ADR 0010).
-      (r) => (isOperator ? null : r.operatorName ? `Оператор: ${r.operatorName}` : null),
-      // На десктопе причина отмены живёт подсказкой на теге статуса; на телефоне подсказок нет.
-      (r) => (r.cancelReason ? `Причина отмены: ${r.cancelReason}` : null),
-      // Комментарий — обеими сторонами (ADR 0053), но без обрезки: в карточке места хватает.
-      // Пустой возвращается null, а не пустой компонент: пустые строки карточка отсеивает сама.
-      (r) => (wasteRequestCommentLines(r).length > 0 ? <CommentCell r={r} /> : null),
-      (r) => (r.files.length > 0 ? <FilesCell files={r.files} /> : null),
-      (r) => (r.deletedAt ? <Tag>в архиве</Tag> : null),
-    ],
-    onOpen: (r) => setViewRecord(r),
-    actions: (r) => {
-      const view = {
-        key: 'view',
-        label: 'Открыть карточку',
-        icon: <EyeOutlined />,
-        onClick: () => setViewRecord(r),
-      };
-      if (r.deletedAt) {
-        return canRestore
-          ? [
-              view,
-              {
-                key: 'restore',
-                label: 'Восстановить',
-                icon: <ReloadOutlined />,
-                onClick: () => restoreMut.mutate(r.id),
-              },
-            ]
-          : [view];
-      }
-      if (!canEdit && !canDelete) return [view];
-      const allowed = canModify(r);
-      return [
-        view,
-        {
-          key: 'edit',
-          label: 'Редактировать',
-          icon: <EditOutlined />,
-          disabled: !allowed,
-          onClick: () => openEdit(r),
-        },
-        {
-          key: 'delete',
-          label: r.status === 'new' ? 'Удалить' : 'Переместить в архив',
-          icon: <DeleteOutlined />,
-          danger: true,
-          disabled: !allowed,
-          onClick: () => confirmDelete(r),
-        },
-      ];
-    },
-  };
-
   return (
-    <PageTableLayout
-      filters={filters}
-      extra={
-        <Space size={8}>
-          {/* Вход в аудит распознавания: на телефоне панель отдана фильтрам, и второй круглой
-              кнопки рядом с «Создать заявку» там не заводится — окно открывается ссылкой. */}
-          <TicketAuditButton allowed={canAuditTickets} />
-          {canCreate ? (
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              Создать заявку
-            </Button>
-          ) : null}
-        </Space>
-      }
-      mobile={{
-        filters: mobileFilters,
-        sort: {
-          // Подписи там, где заголовок колонки — разметка в две строки.
-          options: sortOptionsFrom(columns, { createdAt: 'Дата создания', num: 'Номер заявки' }),
-          sortBy: params.sortBy,
-          sortOrder: params.sortOrder,
-          onChange: setSort,
-        },
-        primaryAction: canCreate
-          ? { label: 'Создать заявку', icon: <PlusOutlined />, onClick: openCreate }
-          : undefined,
-        // Вход в аудит на телефоне: круглая кнопка списка занята созданием заявки, и без этой
-        // строки держатель права открывал бы окно только присланной ссылкой.
-        secondaryActions: auditAction ? [auditAction] : undefined,
+    <WasteRequestFeed
+      actions={{
+        canModify,
+        changeStatus: requestStatusChange,
+        create: openCreate,
+        edit: openEdit,
+        open: setViewRecord,
+        openTicketReview,
+        remove: confirmDelete,
+        restore: (request) => restoreMut.mutate(request.id),
+      }}
+      pending={{
+        statusRequestId:
+          statusMut.isPending && statusMut.variables ? statusMut.variables.id : undefined,
+      }}
+      rights={{
+        canAuditTickets,
+        canCreate,
+        canDelete,
+        canEdit,
+        canRestore,
+        canReviewTickets,
+        isOperator,
+      }}
+      sources={{
+        initialObjectId: ownObjectId,
+        objectFilterDisabled: objectFieldDisabled,
+        objectOptions: objectFilterOptions,
+        objectsLoading,
+        subjectTypes: { cont: contTypeOptions, truck: truckTypeOptions },
+        operators: canAssignOperator
+          ? { options: operatorOptions, loading: operatorsLoading }
+          : null,
       }}
     >
-      {/* Сводка — на уровне вкладок, над фильтрами и кнопкой: она относится ко всему списку,
-          а не к панели инструментов, и там не отнимает высоту у таблицы. */}
-      <TabsExtra tabKey="requests">
-        <SummaryBar title="Заявок" items={summaryItems} />
-      </TabsExtra>
-
-      {/* Баннер недоступности распознавания — и здесь, а не только в карточке (Р29): тот, кто
-          ведёт реестр, замечаний ждёт именно в списке, и молчащий сервис выглядит отсюда как
-          спокойный день. Спрашивается по тому же праву, что и разбор. */}
-      {canReviewTickets && <TicketRecognitionBanner enabled />}
-
-      <DataTable<WasteRequestDto>
-        columns={columns}
-        card={card}
-        // Карточку открывает клик по строке — тем же движением, что и касание карточки на телефоне
-        // (`card.onOpen`), и так же, как в архиве заявок и в списке заказов техники. Кнопка
-        // «Открыть карточку» в «Действиях» остаётся: клавиатурой до строки не добраться, а ячейки
-        // с активным содержимым клик строке не отдают (`opensRow`).
-        onRowClick={(r) => setViewRecord(r)}
-        data={data?.items ?? []}
-        total={data?.total ?? 0}
-        loading={isFetching}
-        page={params.page}
-        pageSize={params.pageSize}
-        sortBy={params.sortBy}
-        sortOrder={params.sortOrder}
-        onChange={onTableChange}
-      />
-
       {/* Карточка заявки: поля на чтение плюс история событий. Правка заявки — той же формой,
           что и из таблицы, и только если она этой роли доступна; примечание исполнителя
           (ADR 0053) правится прямо в карточке — у оператора формы правки нет вовсе. */}
@@ -1550,7 +1081,7 @@ function RequestsTab() {
       <RollbackReasonModal
         open={!!rollbackTarget}
         subject={rollbackTarget ? `№ ${rollbackTarget.displayNumber}` : ''}
-        erases={rollbackTarget ? rollbackErases(rollbackTarget) : []}
+        erases={rollbackTarget ? wasteRollbackErases(rollbackTarget) : []}
         confirmLoading={statusMut.isPending}
         onCancel={() => setRollbackTarget(null)}
         onSubmit={(reason) =>
@@ -1865,6 +1396,6 @@ function RequestsTab() {
           </FormGrid>
         </Form>
       </FormModal>
-    </PageTableLayout>
+    </WasteRequestFeed>
   );
 }

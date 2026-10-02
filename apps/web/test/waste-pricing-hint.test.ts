@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ResolvedWasteTariffDto, WasteRequestDto } from '@technic/contracts';
-import { wasteAmountLine, wastePricingHint } from '../src/pages/waste/pricingHint';
+import { wasteAmountLine, wastePricingHint } from '@entities/waste-request';
 // Числа сверяются через тот же форматтер: разделитель разрядов в ru-RU — неразрывный пробел,
 // и вписанный в ожидание руками он делает тест ложно красным.
 import { formatMoney } from '@shared/lib';

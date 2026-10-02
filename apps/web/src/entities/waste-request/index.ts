@@ -1,24 +1,28 @@
 /**
- * Заявка на вывоз мусора: установка, замена и снятие контейнера на площадке, оператор вывоза и
- * факт закрытия (ADR 0010, ADR 0035, ADR 0054). Снаружи берут `@entities/waste-request` —
- * внутренние модули слайса не видны, и перестроить его можно, не трогая потребителей.
+ * Waste requests cover container operations, removal, the assigned operator and completion facts
+ * (ADR 0010, ADR 0035, ADR 0054). Consumers use this public entry so internal modules can move
+ * without changing every import.
  *
- * Слайс собран не целиком, и это его сегодняшнее состояние, а не пропуск: сюда переехали ручки со
- * своими телами запроса и ключи всех запросов модуля, а формы и окна по-прежнему живут в
- * `pages/WasteRequestsPage.tsx` и её вкладках — ключи они берут отсюда. Переезжало это двумя
- * шагами, и не ради осторожности вообще: сдвинуть ячейку кэша заодно с раскладкой значило бы
- * менять поведение под видом переноса, а такую правку видно только глазами на экране.
+ * The slice owns its API, query keys and pure presentation rules. The working registry composes
+ * those rules in `widgets/waste-request-feed`; forms and operation windows remain page-owned until
+ * the next extraction wave.
  */
 export { wasteRequestKeys } from './api/keys';
 export { wasteRequestsApi } from './api/wasteRequestsApi';
 export type { WasteRequestPayload, WasteRequestUpdatePayload } from './api/wasteRequestsApi';
 
 /*
- * Границы календаря заявки на вывоз: «не раньше чем на сегодня» при заведении и «не назад в
- * прошлое» при правке. Считаются по Москве той же функцией контрактов, какой сервер проверяет
- * создание, — иначе у диспетчера из другого региона «сегодня» разошлось бы с ответом API.
+ * Request calendar boundaries use Moscow time and the same contract helper as the API. A local
+ * browser date would make “today” disagree with the server for dispatchers in other time zones.
  */
 export { isBeforeMinRequestDate, isPastDate, minRequestDate } from './model/requestDates';
-/** Адрес заявки вывоза с правом на вкладку: право берётся у слайса заявки, копии здесь нет. */
+/** Build a waste-request link with the contract-owned section permission. */
 export { wasteRequestLink } from './model/links';
 export { wasteRequestErrorMessage } from './model/errorMessage';
+export {
+  wasteAmountLine,
+  wastePricingHint,
+  wasteRollbackErases,
+  wasteWeightFactLine,
+  type WastePricingHint,
+} from './model/presentation';
