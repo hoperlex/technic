@@ -27,7 +27,7 @@
   [assignment-crew.ts](../../apps/api/src/services/assignment-crew.ts),
   [vehicle-request-assignment-repair.ts](../../apps/api/src/routes/vehicle-request-assignment-repair.ts);
   портал —
-  [driverRemovalConfirm.tsx](../../apps/web/src/pages/directories/driverRemovalConfirm.tsx),
+  [driver-removal](../../apps/web/src/features/driver-removal),
   [DriversTab.tsx](../../apps/web/src/pages/directories/DriversTab.tsx),
   [VehicleEsm2Modal.tsx](../../apps/web/src/pages/vehicle/VehicleEsm2Modal.tsx),
   [VehicleRequestViewModal.tsx](../../apps/web/src/widgets/vehicle-request-view/ui/VehicleRequestViewModal.tsx) и

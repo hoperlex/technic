@@ -5,7 +5,8 @@
   удостоверения), [ADR 0021](0021-permissions-model.md) (право `records.purge`),
   [ADR 0060](0060-directory-record-purge.md) (удаление заведённого — второй шаг администратора)
 - Связано: `packages/contracts/src/persons.ts`, `apps/api/src/routes/drivers.ts`,
-  `apps/web/src/pages/directories/driverDocuments.tsx`,
+  `apps/web/src/entities/driver/ui/driverDocuments.tsx`,
+  `apps/web/src/features/driver-documents`,
   `apps/web/src/pages/directories/DriversTab.tsx`; миграций не требует
 
 ## Контекст

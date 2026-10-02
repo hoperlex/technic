@@ -22,37 +22,24 @@ import {
 import { textColumn } from '@shared/ui';
 
 /**
- * Документы водителя в справочнике (ADR 0095): колонки пары «документ + категории», строки карточки
- * на телефоне и блоки документов в карточке человека.
+ * Shared document presentation for registry columns, mobile cards and the person editor.
  *
- * Отдельным модулем рядом со страницей: `DriversTab` держит состояние, запросы и окна, а показ
- * бумаг живёт здесь. Со вторым видом документа этой части стало больше половины справочника, и
- * правят её саму по себе — от фильтров и формы заведения человека она не зависит.
- *
- * Вид документа здесь спрашивается везде явно: у машиниста погрузчика «C» стоит в тракторном, и
- * графа, не назвавшая вид, читалась бы как допуск к грузовику. Там, где вид не назван снаружи, его
- * говорит должность (`requiredCredentialType`).
+ * Every helper either receives a credential type explicitly or derives it from the job title via
+ * `requiredCredentialType` (ADR 0095). This prevents an equal category letter on driver and tractor
+ * credentials from being presented as the same qualification.
  */
 
-/** Сегодняшняя дата — ею меряется годность документа в списке. */
+/** Registry validity is always evaluated against today's date. */
 const today = () => dayjs().format('YYYY-MM-DD');
 
-/**
- * Действующий документ этого вида — первый среди своих: сервер отдаёт их от свежего к старому, а
- * виды перемешаны в одном списке (`DriverDto.licenses`).
- */
+/** The server returns newest records first, while credential kinds share one history array. */
 function currentDocument(d: DriverDto, type: CredentialTypeCode): DriverLicenseDto | undefined {
   return d.licenses.find((l) => l.credentialTypeCode === type);
 }
 
 /**
- * Чего не хватает для путевого листа — из того, о чём строка ещё не сказала. «Действующего
- * удостоверения нет» и «серия и номер не внесены» она называет своими словами и своими местами,
- * а вот пустая дата выдачи не видна нигде: без неё лист печатается с пустой графой, и человек,
- * отобравший неполный комплект фильтром, обязан понимать, что именно вносить.
- *
- * Документ в подписи назван своим именем: у машиниста экскаватора спрашивают тракторное, и «дата
- * выдачи ВУ» отправила бы человека искать не ту бумагу.
+ * Return only waybill gaps not already expressed by the document cell itself. Labels retain the
+ * required credential kind so a machinist is never sent to correct the wrong paper.
  */
 function unsaidGaps(d: DriverDto): string[] {
   const type = requiredCredentialType(d.jobTitle);
@@ -62,12 +49,8 @@ function unsaidGaps(d: DriverDto): string[] {
 }
 
 /**
- * Пара колонок на вид документа: сам документ и его категории. Пара, а не одна графа на всё:
- * категории спрашивают отдельным вопросом — «кто у нас с CE» (ADR 0055), — и приклеенные к номеру
- * они не искались глазами.
- *
- * Пробелы комплекта называет только колонка того документа, которым человек допущен: пустое ВУ у
- * машиниста погрузчика — не пробел, а нормальное состояние карточки.
+ * Render separate credential and category columns. Only the kind required by the job title reports
+ * completeness gaps; an absent driver license on a tractor operator is a normal state.
  */
 export function documentColumns(type: CredentialTypeCode): TableColumnType<DriverDto>[] {
   const short = credentialTypeShortLabels[type];
@@ -94,8 +77,7 @@ export function documentColumns(type: CredentialTypeCode): TableColumnType<Drive
           );
         }
         const defect = licenseDefect(license, today());
-        // Реквизитов нет у документов из кадровой выгрузки: без этой ветки строка начиналась бы
-        // с осиротевшего разделителя, и «не внесено» читалось бы как сбой вёрстки.
+        // Imported credentials may have no requisites; an explicit label avoids an orphan separator.
         const noRequisites = licenseRequisitesMissing(licenseNumberLabel(license));
         return (
           <Space orientation="vertical" size={0}>
@@ -141,10 +123,7 @@ export function documentColumns(type: CredentialTypeCode): TableColumnType<Drive
   ];
 }
 
-/**
- * Состояние документа по должности — бейджем карточки на телефоне: у машиниста экскаватора
- * спрашивают тракторное, и пустое ВУ выносить наверх незачем.
- */
+/** Mobile badges describe the credential required by the person's job title. */
 export function documentBadge(r: DriverDto): ReactNode {
   const type = requiredCredentialType(r.jobTitle);
   const license = currentDocument(r, type);
@@ -159,7 +138,7 @@ export function documentBadge(r: DriverDto): ReactNode {
   );
 }
 
-/** Главная строка карточки — реквизиты того же документа, о котором сказал бейдж. */
+/** The primary line describes the same credential kind as the badge. */
 export function documentPrimary(r: DriverDto): ReactNode {
   const type = requiredCredentialType(r.jobTitle);
   const license = currentDocument(r, type);
@@ -169,16 +148,10 @@ export function documentPrimary(r: DriverDto): ReactNode {
     : licenseNumberLabel(license);
 }
 
-/**
- * Строки карточки про документы — по строке видимых видов и общий хвост о недостающем для листа.
- * Виды приходят те же, что и колонками: отфильтрованные по должности — только её собственный.
- */
+/** Build mobile lines for the same visible credential kinds as the desktop columns. */
 export function documentCardLines(types: CredentialTypeCode[]): ((r: DriverDto) => ReactNode)[] {
   return [
-    // Категории и срок — своими строками на каждый видимый вид документа, как и колонками на
-    // большом экране (ADR 0055): за категориями в справочник и приходят, а приклеенные к номеру
-    // они терялись. Вид назван в самой строке: «Категории C, CE» без него не отличить водителя
-    // от машиниста.
+    // Category and expiry remain separate lines and name their credential kind (ADR 0055).
     ...types.flatMap((type) => {
       const short = credentialTypeShortLabels[type];
       return [
@@ -196,34 +169,27 @@ export function documentCardLines(types: CredentialTypeCode[]): ((r: DriverDto) 
         },
       ];
     }),
-    // Недостающее для листа — строкой: на карточке пустой графы не видно, а отобрав неполный
-    // комплект фильтром, человек должен понимать, что именно вносить.
+    // Cards have no empty cells, so completeness gaps must be named explicitly.
     (r: DriverDto) => unsaidGaps(r).join(' · ') || null,
   ];
 }
 
-/** Учётные действия над документом: их держит страница — у неё запросы и окна с причиной. */
+/** Command ports supplied by the document-management feature. */
 export interface DriverDocumentActions {
   canWrite: boolean;
-  /** Заменить: окно «Новое удостоверение» с подставленным видом документа. */
+  /** Open replacement with this credential kind preselected. */
   onReplace: (d: DriverDto, type: CredentialTypeCode) => void;
   onVerify: (d: DriverDto, license: DriverLicenseDto, status: 'verified' | 'rejected') => void;
   onRevoke: (d: DriverDto, license: DriverLicenseDto) => void;
-  /**
-   * Право убрать документ из карточки (`records.purge`) — отдельно от `canWrite`: вести документы
-   * и стирать заведённое это разные полномочия, и второе есть только у администратора.
-   */
+  /** Destructive correction uses `records.purge`, independently of ordinary document writes. */
   canDelete: boolean;
-  /** Убрать документ — любой, не только действующий: опечатку правят там, где она стоит. */
+  /** Correct any historical row, not only the current credential. */
   onDelete: (d: DriverDto, license: DriverLicenseDto) => void;
 }
 
 /**
- * Документы одного вида в карточке: история и учётные действия над действующим.
- *
- * Блок на вид, а не общий список: действия у документов свои, и «Отметить проверенным» рядом с
- * перемешанной историей поставило бы отметку не на ту бумагу. Пустой блок тоже показывается —
- * им и видно, что тракторного у машиниста нет вовсе.
+ * Credential history grouped by kind. Empty groups stay visible, and commands sit beside their
+ * exact record so verification or correction cannot target a different paper.
  */
 export function documentsBlock(
   d: DriverDto,
@@ -248,8 +214,7 @@ export function documentsBlock(
           const defect = licenseDefect(l, today());
           return (
             <Space key={l.id} size={8} wrap>
-              {/* Категории — через разделитель, но только когда они есть: документ бывает и без
-                  них (реквизиты внесли, набор ещё нет), и висящая точка читалась бы как обрыв. */}
+              {/* Imported records can lack categories, so the separator is conditional too. */}
               <span>
                 {i === 0 ? 'Действующее:' : 'Прежнее:'} {licenseNumberLabel(l)}
                 {licenseCategoriesLabel(l) ? ` · ${licenseCategoriesLabel(l)}` : ''}
@@ -263,8 +228,7 @@ export function documentsBlock(
                 <Typography.Text type="secondary">проверил {l.verifiedByName}</Typography.Text>
               )}
               {l.revokeReason && <Typography.Text type="danger">{l.revokeReason}</Typography.Text>}
-              {/* Кнопка у каждой строки, а не в общей панели действий: панель говорит о действующем
-                  документе, а убирают чаще как раз лишний — второй экземпляр или опечатку. */}
+              {/* Correction belongs to each row because duplicates and historical typos are common. */}
               {actions.canDelete && (
                 <Button
                   size="small"

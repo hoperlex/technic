@@ -15,7 +15,8 @@
   `apps/api/src/routes/drivers.ts`, `apps/api/src/routes/garage.ts`,
   `apps/api/src/services/waybill-issue.ts`, `apps/api/src/services/waybill-esm2.ts`,
   `apps/api/src/services/directory-transfer/defs/staff.ts`,
-  `apps/web/src/pages/directories/DriversTab.tsx`
+  `apps/web/src/pages/directories/DriversTab.tsx`, `apps/web/src/widgets/driver-registry`,
+  `apps/web/src/features/driver-documents`, `apps/web/src/entities/driver/ui/driverDocuments.tsx`
 - Миграция: `0123_tractor_license.sql` — только данные, `ALTER TABLE` ни одного
 - План: [staff-positions-plan.md](../staff-positions-plan.md)
 

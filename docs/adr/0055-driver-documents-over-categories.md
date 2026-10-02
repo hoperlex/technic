@@ -11,6 +11,7 @@
   `packages/contracts/src/persons.ts`, `apps/api/src/services/drivers.ts`,
   `apps/api/src/routes/drivers.ts`, `apps/api/src/services/waybill-issue.ts`,
   `apps/web/src/pages/directories/DriversTab.tsx`,
+  `apps/web/src/widgets/driver-registry`, `apps/web/src/entities/driver/ui/driverDocuments.tsx`,
   `apps/web/src/widgets/vehicle-assignment-dialog`. Миграций не требует
 
 ## Контекст

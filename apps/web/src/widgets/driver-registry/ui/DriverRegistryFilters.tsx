@@ -8,12 +8,11 @@ import {
 import type { FilterDefinition } from '@shared/ui';
 
 /**
- * Отбор справочника водителей: комплект документов, должность, категория и архив.
+ * Driver registry filters: document completeness, job title, category and archive.
  *
- * Вынесено из вкладки тем же порядком, что и отбор техники (`VehicleFilters`): каждый отбор живёт
- * дважды — полосой на десктопе и описанием для шита на телефоне (ADR 0030), — и рядом с формой
- * карточки, документами и мутациями эта пара терялась. Списки модуль не запрашивает: те же
- * категории стоят в карточке, и второй запрос означал бы два ответа на один вопрос.
+ * Desktop controls and mobile-sheet definitions stay together so both layouts ask the same
+ * questions. Dictionaries enter through ports because the card form consumes the same category
+ * data and must not create a second source of truth.
  */
 
 interface Option {
@@ -21,7 +20,7 @@ interface Option {
   label: string;
 }
 
-/** Отборы вкладки в параметрах списка; страница и сортировка сюда не заходят. */
+/** Registry-specific list parameters; paging, sorting and search remain in the list model. */
 export interface DriverFilterParams {
   documents?: DriverDocumentSet;
   jobTitle?: string;
@@ -35,7 +34,7 @@ export interface DriverFiltersDeps<P extends DriverFilterParams> {
   documentSetOptions: Option[];
   jobTitleOptions: Option[];
   filterCategoryOptions: Option[];
-  /** Вид документа, названный должностью: от него зависит подпись поля категории. */
+  /** The job title selects the credential dictionary named in the category label. */
   filterType: CredentialTypeCode;
   canSeeArchive: boolean;
   setDocuments: (v: DriverDocumentSet | undefined) => void;
@@ -43,7 +42,7 @@ export interface DriverFiltersDeps<P extends DriverFilterParams> {
   setCategory: (v: string | undefined) => void;
 }
 
-export function useDriverFilters<P extends DriverFilterParams>({
+export function useDriverRegistryFilters<P extends DriverFilterParams>({
   params,
   setParams,
   documentSetOptions,
@@ -56,18 +55,10 @@ export function useDriverFilters<P extends DriverFilterParams>({
   setCategory,
 }: DriverFiltersDeps<P>) {
   /**
-   * Комплект документов, должность и категория — три вопроса к справочнику. Первый: путевой лист
-   * печатает СНИЛС, номер удостоверения и дату его выдачи, и половина работы со справочником —
-   * дозаполнить тех, у кого чего-то нет; обратное значение нужно не реже — «кем можно закрывать
-   * рейсы». Второй пришёл со вторым видом документа (ADR 0095): «что с бумагами у машинистов»
-   * спрашивают отдельно от водителей, и лишние колонки этому мешают. Третий появился, когда
-   * категория перестала сужать отбор под машину (ADR 0055): «кого можно посадить за седельный
-   * тягач» спрашивают здесь, и глазами по списку это не считается.
-   *
-   * Категория в фильтре названа буквой с описанием — тем же списком, что и в карточке: искать её
-   * будут по букве из удостоверения, а не по формулировке правил. Список — того вида документа,
-   * который назвала должность: буквы у видов совпадают, и общий перечень предлагал бы выбрать
-   * категорию, которой у отобранных людей быть не может.
+   * Completeness, job title and category answer independent registry questions. Job title also
+   * selects the relevant credential type (ADR 0095); category remains advisory rather than an
+   * assignment gate (ADR 0055). The filter reuses the form dictionary so equal letters from driver
+   * and tractor credentials can never be mixed.
    */
   const filters = (
     <Space wrap>
