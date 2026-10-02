@@ -20,8 +20,9 @@
   [TicketBadge.tsx](../../apps/web/src/features/waste-ticket-review/ui/TicketBadge.tsx),
   [TicketCell.tsx](../../apps/web/src/features/waste-ticket-review/ui/TicketCell.tsx),
   [feedColumns.tsx](../../apps/web/src/widgets/waste-request-feed/ui/feedColumns.tsx) (колонка),
-  [WasteRequestsPage.tsx](../../apps/web/src/pages/waste/WasteRequestsPage.tsx) (фокус карточки),
-  [WasteRequestViewModal.tsx](../../apps/web/src/pages/waste/WasteRequestViewModal.tsx)
+  [useWasteRequestView.tsx](../../apps/web/src/widgets/waste-request-view/model/useWasteRequestView.tsx)
+  (фокус карточки),
+  [WasteRequestView.tsx](../../apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx)
   (проматывание к блоку разбора, условие показа блока),
   [useScrollIntoViewWhen.ts](../../apps/web/src/shared/lib/useScrollIntoViewWhen.ts) (общий хук
   проматывания: отсрочка под анимацию окна); тесты —

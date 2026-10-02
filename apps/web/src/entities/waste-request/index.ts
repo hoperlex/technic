@@ -3,9 +3,9 @@
  * (ADR 0010, ADR 0035, ADR 0054). Consumers use this public entry so internal modules can move
  * without changing every import.
  *
- * The slice owns its API, query keys and pure presentation rules. The working registry composes
- * those rules in `widgets/waste-request-feed`; forms and operation windows remain page-owned until
- * the next extraction wave.
+ * The slice owns its API, query keys and pure presentation rules. Features own request commands
+ * and forms, widgets compose the working registry and detail view, and the page only connects
+ * those public entries.
  */
 export { wasteRequestKeys } from './api/keys';
 export { wasteRequestsApi } from './api/wasteRequestsApi';
@@ -19,6 +19,14 @@ export { isBeforeMinRequestDate, isPastDate, minRequestDate } from './model/requ
 /** Build a waste-request link with the contract-owned section permission. */
 export { wasteRequestLink } from './model/links';
 export { wasteRequestErrorMessage } from './model/errorMessage';
+export {
+  containerGroupKey,
+  containerGroupOptions,
+  findContainerGroup,
+  parseContainerGroupKey,
+  presentGroupsHint,
+  type ParsedGroupKey,
+} from './model/containerGroups';
 export {
   wasteAmountLine,
   wastePricingHint,

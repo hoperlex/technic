@@ -14,8 +14,8 @@
   `packages/contracts/src/waste-requests.ts`, `apps/api/src/routes/waste-requests.ts`,
   `apps/api/src/services/waste-request-diff.ts`,
   `apps/api/src/services/waste-request-vehicles.ts`,
-  `apps/web/src/pages/waste/WasteDoneModal.tsx`,
-  `apps/web/src/pages/waste/WasteRequestViewModal.tsx`,
+  `apps/web/src/features/waste-request-completion/ui/WasteRequestCompletionModal.tsx`,
+  `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`,
   `apps/web/src/pages/waste/WasteRequestsPage.tsx`
 
 ## Контекст

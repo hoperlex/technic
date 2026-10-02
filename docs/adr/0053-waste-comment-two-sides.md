@@ -8,8 +8,8 @@
   `packages/contracts/src/waste-requests.ts`, `packages/contracts/src/permissions.ts`,
   `apps/api/src/routes/waste-requests.ts`,
   `apps/web/src/widgets/waste-request-feed/ui/feedCells.tsx`,
-  `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
-  `apps/web/src/pages/waste/WasteRequestViewModal.tsx`
+  `apps/web/src/features/waste-request-comment/ui/WasteRequestCommentField.tsx`,
+  `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`
 
 ## Контекст
 

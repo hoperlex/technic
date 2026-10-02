@@ -14,9 +14,6 @@
     "src/pages/directories/VehicleTypeCardDrawer.tsx": 639,
     "src/pages/directories/VehicleTypesTab.tsx": 733,
     "src/pages/directories/VehiclesTab.tsx": 619,
-    "src/pages/directories/WasteTariffsTab.tsx": 924,
-    "src/pages/waste/WasteDoneModal.tsx": 462,
-    "src/pages/waste/WasteRequestViewModal.tsx": 590,
-    "src/pages/waste/WasteRequestsPage.tsx": 1401
+    "src/pages/directories/WasteTariffsTab.tsx": 924
   }
 }

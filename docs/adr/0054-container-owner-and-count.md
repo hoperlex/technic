@@ -7,8 +7,10 @@
 - Связано: миграция `0080_container_owner_and_count.sql`,
   `packages/contracts/src/waste-requests.ts`, `apps/api/src/db/schema.ts`,
   `apps/api/src/services/container-groups.ts`, `apps/api/src/routes/waste-requests.ts`,
-  `apps/web/src/pages/waste/containerGroups.ts`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
-  `apps/web/src/pages/waste/OnSiteTab.tsx`, `apps/web/src/pages/waste/WasteRequestViewModal.tsx`
+  `apps/web/src/entities/waste-request/model/containerGroups.ts`,
+  `apps/web/src/features/waste-request-editor/ui/WasteRequestEditorModal.tsx`,
+  `apps/web/src/pages/waste/OnSiteTab.tsx`,
+  `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`
 - Постановка снята из дерева 14.09.2026 и остаётся в истории git
 
 ## Контекст

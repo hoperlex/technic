@@ -20,7 +20,8 @@
   [waste-request-history.ts](../../apps/api/src/services/waste-request-history.ts),
   [access-manifest.ts](../../apps/api/src/lib/access-manifest.ts); портал —
   [AddTicketsBlock.tsx](../../apps/web/src/features/waste-ticket-attach/ui/AddTicketsBlock.tsx),
-  [WasteRequestViewModal.tsx](../../apps/web/src/pages/waste/WasteRequestViewModal.tsx),
+  [useWasteTicketAttach.ts](../../apps/web/src/features/waste-ticket-attach/model/useWasteTicketAttach.ts),
+  [WasteRequestView.tsx](../../apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx),
   [WasteRequestsPage.tsx](../../apps/web/src/pages/waste/WasteRequestsPage.tsx); тесты —
   `waste-tickets-add.db.test.ts`, `waste-completion-contracts.test.ts`
 - Решение вырастает из: [ADR 0013](0013-waste-request-tickets.md) (талон как связь файла с

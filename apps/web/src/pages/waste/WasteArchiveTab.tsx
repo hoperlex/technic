@@ -21,7 +21,7 @@ import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '@shared/ui';
 import { usePurgeAction } from '@features/purge-record';
 import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
-import { WasteRequestViewModal } from './WasteRequestViewModal';
+import { WasteRequestView } from '@widgets/waste-request-view';
 
 /**
  * Архив заявок на вывоз (ADR 0070) — удалённые заявки и два действия над ними: вернуть в работу
@@ -292,7 +292,7 @@ export function WasteArchiveTab() {
 
       {/* Карточка архивной заявки только на чтение: править её нечем, а вернуть и снести —
           действия строки. Правку карточка и не предлагает — обработчик ей не передан. */}
-      <WasteRequestViewModal
+      <WasteRequestView
         request={viewRecord ?? opened.record}
         onClose={() => {
           setViewRecord(null);
