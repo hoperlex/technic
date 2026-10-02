@@ -5,7 +5,7 @@ import {
   type Permission,
   type Role,
 } from '@technic/contracts';
-import { GRANT_MODULE_GROUPS, permissionLabel, roleListText } from './grantModel';
+import { GRANT_MODULE_GROUPS, permissionLabel, roleListText } from '@entities/grant';
 
 /**
  * Правая часть конструктора (план §12): что набор открывает — какие модули, что на чтение и что на

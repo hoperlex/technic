@@ -25,7 +25,7 @@ import {
 import { useListParams } from '@shared/lib';
 import { draftOf, GrantBuilderModal, type GrantDraft } from './GrantBuilderModal';
 import { GrantHoldersModal } from './GrantHoldersModal';
-import { roleListText } from './grantModel';
+import { roleListText } from '@entities/grant';
 
 /**
  * Срез «Полномочия» вкладки «Права» (ADR 0106, план §12) — каталог назначаемых наборов и вход в две

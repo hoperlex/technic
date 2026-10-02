@@ -1,20 +1,23 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, App, Button, Checkbox, Form, Space, Spin, Tooltip, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   GRANT_CONFLICT_CODES,
-  type CounterpartyType,
   type GrantDto,
   type GrantStatement,
   type OfficeEquipmentProfileId,
   type Role,
-  type UserAccountDto,
   type UserGrantRefDto,
 } from '@technic/contracts';
-import { grantFormApi, grantKeys } from '@entities/grant';
+import {
+  apiViolationTexts,
+  grantFormApi,
+  grantKeys,
+  GRANT_ROLES,
+  permissionLabel,
+} from '@entities/grant';
 import { isApiError } from '@shared/api';
 import { GrantProfileField } from './GrantProfileField';
-import { apiViolationTexts, GRANT_ROLES, permissionLabel } from './grantModel';
 import {
   applyGrantToggle,
   buildGrantStatements,
@@ -29,7 +32,8 @@ import {
   profilePresetCodes,
   roleGateNoticeText,
   type GrantProfileOption,
-} from './userGrantsModel';
+} from '../model/userGrantsModel';
+import type { UserGrantsControl, UserGrantsFieldParams } from '../model/userGrantsFieldTypes';
 
 /**
  * Поле «Полномочия» окна учётки (план «полномочия назначаются в окне учётки», Р1): наборы прав,
@@ -46,65 +50,6 @@ import {
  * значениям, а не кликами по разметке.
  */
 
-/** Что читает поле и куда отдаёт результат. */
-interface Params {
-  /** Окно открыто. Закрытие сбрасывает ручные отметки (Р4) и показанный отказ. */
-  open: boolean;
-  /** Правится своя учётка: поля нет (Р9). */
-  isSelf: boolean;
-  /** Роль, выбранная в форме **прямо сейчас**: список задаёт она, а не роль в базе (Р2). */
-  role: Role | null;
-  /** Тип контрагента из формы — вторая половина субъекта строки «Добавится» (§6). */
-  counterpartyType: CounterpartyType | null;
-  /** Правимая учётка: её назначения и роль «до». У новой их нет. */
-  record: UserAccountDto | null;
-  /**
-   * Коды наборов, предложенных пожеланием заявителя (план «пожелание при регистрации заполняет
-   * форму активации», §3.6). Пусто или не передано — подстановки нет: так открывается обычная
-   * учётка и заведение новой.
-   *
-   * Третьим множеством гидратации, а не присваиванием в поле, и это другая механика, чем автомат
-   * инициализации формы (§3.5): роль и область он подставляет **однажды**, а наборы
-   * пересчитываются на каждой смене роли. Разница видна на одном сценарии — сменил роль и вернул
-   * обратно: галочки наборов вернутся (пожелание никуда не делось), а снятая руками не вернётся
-   * (`unchecked` живёт, пока открыто окно).
-   */
-  suggestedCodes?: readonly string[];
-  /** Перечитать данные учётки: зовётся, когда сохранение упёрлось в устаревший экран. */
-  onReload: () => void;
-}
-
-export interface UserGrantsControl {
-  /** Поле показывается: роль выбрана, она не `driver`, учётка не своя. */
-  shown: boolean;
-  /**
-   * Каталог дочитан до конца — то есть о полномочиях есть что сказать. Форме он нужен барьером
-   * одобрения заявки (§3.6), и `blocked` его не заменяет: тот считается по ошибке и `complete ===
-   * false`, а **первоначальная загрузка** (`data === undefined`) в него не входит вовсе. В этом
-   * окне `statements()` молча возвращает `undefined` — поле полномочий не уходит в тело.
-   *
-   * Пока роль не подставлялась, молчание было безвредно: администратор ничего не отметил, ничего и
-   * не сохранилось. С подставленной ролью — вредно: можно включить «Активен» и сохранить, получив
-   * учётку с ролью и **без** предложенных наборов, причём молча. Поэтому признак отдаётся честным
-   * (`complete === true`), а запрет одобрять недочитанное ставит валидатор поля роли — тот же, что
-   * держит «заявку рассматривают целиком».
-   */
-  ready: boolean;
-  /**
-   * Каталог отдан неполным или не отдан вовсе — ошибкой; ожидание первого ответа сюда не входит,
-   * его показывает `ready`. Блокирует **и поле роли**: молчание о полномочиях законно лишь пока
-   * роль не переключает их действие (§4.2), и форма не должна доводить до отказа, причину которого
-   * создала сама.
-   */
-  blocked: boolean;
-  /** Высказывание для тела запроса; `undefined` — не отправлять поле вовсе (§4.1). */
-  statements: () => GrantStatement[] | undefined;
-  /** Разложить отказ сервера по полю. `true` — отказ показан, общей ошибки не нужно (Р8). */
-  handleError: (error: unknown) => boolean;
-  /** Сама разметка поля; `null`, когда поля нет. */
-  field: ReactNode;
-}
-
 /**
  * Роль, под ключом которой лежит каталог выключенного запроса. `driver` годится ровно потому, что
  * поля у неё не бывает никогда: запрос под этим ключом не выполняется, и подобрать по нему чужой
@@ -112,7 +57,7 @@ export interface UserGrantsControl {
  */
 const NO_CATALOG_ROLE: Role = 'driver';
 
-export function useUserGrantsField(params: Params): UserGrantsControl {
+export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsControl {
   const { open, isSelf, role, counterpartyType, record, suggestedCodes, onReload } = params;
   const { message } = App.useApp();
   const qc = useQueryClient();

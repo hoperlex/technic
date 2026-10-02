@@ -12,7 +12,7 @@ import {
   type Role,
   type UserGrantRefDto,
 } from '@technic/contracts';
-import { permissionLabel } from './grantModel';
+import { permissionLabel } from '@entities/grant';
 
 /**
  * Поле «Полномочия» окна учётки, посчитанное отдельно от экрана (план «полномочия назначаются в

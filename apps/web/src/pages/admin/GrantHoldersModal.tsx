@@ -20,7 +20,7 @@ import {
   ROLE_MISMATCH_TAG,
   roleListText,
   roleMismatchText,
-} from './grantModel';
+} from '@entities/grant';
 
 /**
  * Реестр выдач набора (план §12): у кого полномочие есть, кто его выдал и когда, — и обе операции

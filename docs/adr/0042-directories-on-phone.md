@@ -4,8 +4,9 @@
 - Связано: [ADR 0030](0030-responsive-layout.md) (раскладка под телефон; п. 5 пересматривается),
   [ADR 0021](0021-permissions-model.md) (права и действия строки),
   [ADR 0037](0037-freight-transport-waybill.md) (справочник водителей),
-  `apps/web/src/components/ListToolbar.tsx`, `apps/web/src/components/listControls.ts`,
-  `apps/web/src/pages/directories/*`, `apps/web/src/pages/admin/UsersTab.tsx`
+  `apps/web/src/shared/ui/ListToolbar.tsx`, `apps/web/src/shared/ui/listControls.ts`,
+  `apps/web/src/pages/directories/*`,
+  `apps/web/src/widgets/user-account-registry/ui/UserAccountRegistry.tsx`
 
 ## Контекст
 

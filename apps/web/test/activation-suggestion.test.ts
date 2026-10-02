@@ -4,7 +4,7 @@ import {
   suggestCounterparty,
   suggestSubdivision,
   type MatchRecord,
-} from '../src/pages/admin/activationSuggestion';
+} from '../src/features/user-account-editor';
 
 /**
  * Подбор области по свободному тексту заявки на регистрацию (план «пожелание при регистрации», §3.7).

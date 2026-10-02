@@ -10,7 +10,7 @@
   пароля)
 - Связано: `packages/contracts/src/audit.ts`, `apps/api/src/routes/audit.ts`,
   `apps/api/src/routes/users.ts`, `apps/api/src/routes/auth.ts`,
-  `apps/web/src/pages/admin/UsersAuditTab.tsx`, миграция `0115`
+  `apps/web/src/widgets/user-audit/ui/UsersAuditTab.tsx`, миграция `0115`
 - План: [registration-reject-mail-plan.md](../registration-reject-mail-plan.md)
 
 ## Контекст

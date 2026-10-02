@@ -126,7 +126,13 @@
 - Разделы портала: `admin`
 - API-маршруты: [users.ts](../apps/api/src/routes/users.ts), [audit.ts](../apps/api/src/routes/audit.ts), [analytics.ts](../apps/api/src/routes/analytics.ts)
 - Остальной API: [audit.ts](../apps/api/src/lib/audit.ts), [user-audit-diff.ts](../apps/api/src/services/user-audit-diff.ts), [analytics](../apps/api/src/services/analytics) (слой атомов «модуль × заказчик × день × позиция»: загрузчики трёх модулей, группировки, нарезка периода — считает один раз и для книги, и для ручки `GET /analytics/summary`), [analytics-export.ts](../apps/api/src/services/analytics-export.ts) и [analytics-export-charts.ts](../apps/api/src/services/analytics-export-charts.ts) (семь листов книги и витрина графиков), [readings-admin-export.ts](../apps/api/src/services/readings-admin-export.ts) (книга показаний той же вкладки), [xlsx.ts](../apps/api/src/lib/xlsx.ts) (писатель книг: числа, стили, сводная, графики)
-- Web: [admin](../apps/web/src/pages/admin) (в нём реестр выгрузок [ExportsTab.tsx](../apps/web/src/pages/admin/ExportsTab.tsx) — одна вкладка на все книги), [user-account](../apps/web/src/entities/user-account), [analytics](../apps/web/src/entities/analytics)
+- Web: [UsersTab.tsx](../apps/web/src/pages/admin/UsersTab.tsx) (композиция),
+  [user-account-registry](../apps/web/src/widgets/user-account-registry),
+  [user-audit](../apps/web/src/widgets/user-audit),
+  [user-account-editor](../apps/web/src/features/user-account-editor),
+  [user-account-lifecycle](../apps/web/src/features/user-account-lifecycle),
+  [user-account](../apps/web/src/entities/user-account), [analytics](../apps/web/src/entities/analytics);
+  реестр выгрузок — [ExportsTab.tsx](../apps/web/src/pages/admin/ExportsTab.tsx), одна вкладка на все книги
 - Тесты: `users-*.db.test.ts`, `user-audit*.db.test.ts`, `audit-*.db.test.ts`, `analytics-*.test.ts`, `analytics-facts-*.db.test.ts`, `exports-tab.test.tsx`
 - Решения: [ADR 0063](adr/0063-user-archive-lifecycle.md), [ADR 0088](adr/0088-user-audit-tab.md), [ADR 0109](adr/0109-user-audit-changes.md), [ADR 0180](adr/0180-readings-admin-export.md), [ADR 0182](adr/0182-analytics-summary-export.md)
 

@@ -10,8 +10,9 @@
   §14 (переходный тест эквивалентности), §15 (этапы 8 и 9);
   `packages/contracts/src/role-migration.ts`, `packages/contracts/src/role-addons.ts`,
   `packages/contracts/src/registration-request.ts`, `apps/api/src/routes/users.ts`,
-  `apps/api/src/check-role-migration.ts`, `apps/web/src/pages/admin/UsersTab.tsx`,
-  `apps/web/src/pages/admin/grantModel.ts`, `docs/runbook.md`
+  `apps/api/src/check-role-migration.ts`,
+  `apps/web/src/features/user-account-editor/model/useUserAccountEditor.tsx`,
+  `apps/web/src/entities/grant/model/grantModel.ts`, `docs/runbook.md`
 - Миграции: `0154` (таблица `user_role_migration`, внешний ключ и CHECK у `user_grants`), `0155`
   (снимок и взведённые назначения площадочных ролей, этап 8), `0156` (то же для руководителя
   отдела, этап 9)

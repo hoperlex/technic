@@ -25,9 +25,9 @@ import {
   HALF_APPROVAL,
   hasExternalEmail,
   isPendingRegistration,
-} from './registrationApproval';
-import { requestedDetailText } from './userAccountLabels';
-import type { UserFormValues } from './UsersTab';
+  requestedDetailText,
+} from '@entities/user-account';
+import type { UserFormValues } from './types';
 
 /**
  * Заполнение формы рассмотрения заявки по пожеланию заявителя (план «пожелание при регистрации

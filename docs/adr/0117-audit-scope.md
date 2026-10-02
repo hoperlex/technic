@@ -8,7 +8,7 @@
 - Связано: [ADR 0106](0106-assignable-permission-grants.md) (выдача и отзыв полномочия пишутся на
   учётку и потому входят в её срез), [ADR 0012](0012-waste-request-history.md) (история карточки —
   другой читатель того же журнала); `packages/contracts/src/audit.ts`,
-  `apps/api/src/routes/audit.ts`, `apps/web/src/pages/admin/UserAuditFilters.tsx`
+  `apps/api/src/routes/audit.ts`, `apps/web/src/widgets/user-audit/ui/UserAuditFilters.tsx`
 - Миграций не требует
 
 ## Контекст

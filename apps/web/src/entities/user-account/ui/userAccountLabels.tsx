@@ -11,7 +11,7 @@ import {
   type Role,
   type UserAccountDto,
 } from '@technic/contracts';
-import { hasExternalEmail } from './registrationApproval';
+import { hasExternalEmail } from '../model/registrationApproval';
 
 /**
  * Как учётка называется на экране: роль с надстройками, адрес с пометкой, уточнение из заявки и

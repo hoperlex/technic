@@ -10,7 +10,7 @@
   запрет), [ADR 0008](0008-persons-and-qualifications.md) (адрес водителя — отдельная запись справочника)
 - Связано: `packages/contracts/src/users.ts`, `packages/contracts/src/audit.ts`,
   `apps/api/src/routes/users.ts`, `apps/api/src/services/mail-auth.ts`,
-  `apps/web/src/pages/admin/ChangeEmailModal.tsx`, миграция `0122`
+  `apps/web/src/features/user-account-lifecycle/ui/ChangeEmailModal.tsx`, миграция `0122`
 - План: [user-email-change-plan.md](../user-email-change-plan.md)
 
 ## Контекст

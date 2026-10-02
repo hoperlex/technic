@@ -54,12 +54,12 @@ const ALLOWED = {
   // attempted action: the request-wide paper limit and the storage file-size limit (ADR 0189).
   'features/waste-ticket-attach/ui/AddTicketsBlock.tsx':
     'стражи загрузки талона в карточке: число и размер файла, формы нет',
-  // Поле причины окно помечает само и тут же, текстом ответа; тост говорит, ЧТО случилось —
-  // сервер ответил 409 про уже предъявленный номер. Это ответ на действие, как `message.error`
-  // строкой ниже, а не отказ по пустому полю.
+  // The modal marks its reason field immediately; the toast reports an action outcome instead:
+  // the server rejected an already submitted ticket number with 409. There is no empty field to
+  // mark here, just as for the adjacent `message.error` response.
   'features/waste-ticket-review/ui/TicketFormModal.tsx':
     'дубль номера талона: 409 сервера, поле причины помечено рядом',
-  'pages/admin/ChangeEmailModal.tsx':
+  'features/user-account-lifecycle/ui/ChangeEmailModal.tsx':
     'предупреждение по итогу успешной смены адреса, а не отказ формы',
   /*
    * Два места волны кандидатов на добавление техники (план `docs/office-equipment-candidate-plan.md`),

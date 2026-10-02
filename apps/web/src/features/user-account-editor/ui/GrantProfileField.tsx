@@ -1,6 +1,6 @@
 import { Form, Select, Typography } from 'antd';
 import type { OfficeEquipmentProfileId } from '@technic/contracts';
-import type { GrantProfileOption } from './userGrantsModel';
+import type { GrantProfileOption } from '../model/userGrantsModel';
 
 /**
  * Пресет бизнес-профиля модуля «Орг.техника» в окне учётки (план профилей оргтехники, Р7).

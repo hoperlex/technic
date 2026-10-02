@@ -44,3 +44,12 @@ export { PhoneInput } from './ui/PhoneInput';
 /** Показ контакта: имя и номер ссылкой. Рядом со ссылкой — причина в шапке самого файла. */
 export { ResponsibleValue } from './ui/ResponsibleValue';
 export { userAccountErrorMessage } from './model/errorMessage';
+export {
+  approvesRegistration,
+  asksAboutMail,
+  HALF_APPROVAL,
+  hasExternalEmail,
+  isPendingRegistration,
+  withMailOutcome,
+} from './model/registrationApproval';
+export { emailCell, requestedDetailText, roleNote, roleTags } from './ui/userAccountLabels';

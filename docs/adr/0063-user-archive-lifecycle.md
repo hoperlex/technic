@@ -10,7 +10,8 @@
   [ADR 0010](0010-counterparties.md) (освобождение ИНН при уходе в архив — тот же приём),
   `apps/api/drizzle/0093_user_archive_unique.sql`, `apps/api/src/routes/auth.ts`,
   `apps/api/src/routes/users.ts`, `apps/api/src/services/directory-purge.ts`,
-  `apps/worker/src/retention.ts`, `apps/web/src/pages/admin/UsersTab.tsx`
+  `apps/worker/src/retention.ts`,
+  `apps/web/src/features/user-account-lifecycle/model/useUserAccountLifecycle.tsx`
 
 ## Контекст
 

@@ -3,8 +3,9 @@
 - Статус: Принято
 - Связано: `apps/api/drizzle/0070_user_phone.sql`, `packages/contracts/src/common.ts`,
   `packages/contracts/src/auth.ts`, `packages/contracts/src/users.ts`,
-  `apps/web/src/components/PhoneField.tsx`, `apps/web/src/pages/auth/RegisterPage.tsx`,
-  `apps/web/src/pages/admin/UsersTab.tsx`,
+  `apps/web/src/entities/user-account/ui/PhoneField.tsx`, `apps/web/src/pages/auth/RegisterPage.tsx`,
+  `apps/web/src/features/user-account-editor/ui/UserAccountEditorModal.tsx`,
+  `apps/web/src/widgets/user-account-registry/ui/UserAccountRegistry.tsx`,
   [ADR 0034](0034-registration-name-parts-and-captcha.md) (регистрация и заявки),
   [ADR 0008](0008-persons-and-qualifications.md) (физлица), миграция `0062` (контакт по заявке)
 

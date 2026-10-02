@@ -14,7 +14,7 @@ import {
   GRANTABLE_PERMISSIONS,
   grantRoleOptions,
   roleListText,
-} from './grantModel';
+} from '@entities/grant';
 
 /**
  * Конструктор набора (план §12) — экран из трёх частей: слева имя, описание и совместимые роли, в
