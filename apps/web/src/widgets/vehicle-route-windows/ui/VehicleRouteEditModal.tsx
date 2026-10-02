@@ -27,7 +27,7 @@ import { useAuth } from '@entities/session';
 import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { trailerTripBody } from '@entities/vehicle-route';
 import { TrailerFields } from '@features/vehicle-route-trailer';
-import { BackdateReasonField } from '@widgets/vehicle-request-editor';
+import { BackdateReasonField } from '@features/backdated-operation';
 
 /**
  * Правка рейса: день, водитель, реквизиты выезда, комментарий, а у перегона — «откуда — куда».

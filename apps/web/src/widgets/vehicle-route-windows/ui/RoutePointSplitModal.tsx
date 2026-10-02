@@ -10,7 +10,7 @@ import {
 import { FormModal } from '@shared/ui';
 import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
-import { actionLabel, pointRoleInputOf } from './routeAssembly';
+import { actionLabel, pointRoleInputOf } from '@entities/vehicle-route';
 
 /**
  * Разнести остановку надвое (Р9а): отмеченные роли уходят в новую точку сразу за исходной.

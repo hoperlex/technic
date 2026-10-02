@@ -14,7 +14,6 @@ import {
   type VehicleRoutePointDto,
   type VehicleRouteDto,
 } from '@technic/contracts';
-import { vehicleRoutesApi } from '@entities/vehicle-route';
 import {
   actionLabel,
   actionPairLabel,
@@ -22,7 +21,8 @@ import {
   mergeHintMessage,
   type PointMergeHint,
   type RouteAssembly,
-} from './routeAssembly';
+  vehicleRoutesApi,
+} from '@entities/vehicle-route';
 import { RoutePointEditModal } from './RoutePointEditModal';
 import { RoutePointSplitModal } from './RoutePointSplitModal';
 

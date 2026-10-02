@@ -19,6 +19,7 @@
   не менялась), план [docs/vehicle-routes-modal-plan.md](../vehicle-routes-modal-plan.md);
   `packages/contracts/src/links.ts`, `apps/web/src/entities/vehicle-route/model/links.ts`,
   `apps/web/src/features/route-modal`, `apps/web/src/widgets/route-modal-host`,
+  `apps/web/src/widgets/vehicle-route-windows`,
   `apps/web/src/pages/vehicle/routeModal.tsx`, `apps/web/src/pages/vehicle/VehicleRequestsPage.tsx`,
   `apps/api/src/routes/waybills.ts`
 - Миграций не требует
@@ -191,9 +192,9 @@
 самого списка заявок ссылки не тронуты: там карточка открывается со всеми действиями, и подменять
 её читалкой — шаг назад.
 
-Карточка рейса не разрезается и в `widgets` не переезжает: держатель окон тянет её из `pages`, а
-`widgets → pages` запрещён матрицей границ (`frontend-fsd-stage-2.md`). Переедет вместе со слайсом
-маршрутов.
+Карточка рейса, список, правка и подённый планировщик живут в
+`widgets/vehicle-route-windows`; URL-держатель передаёт им состояние через публичный контекст
+`features/route-modal`, не импортируя соседний widget и не копируя page-state в renderer-пропы.
 
 Кабинет водителя не затронут: держатель окон стоит над `AppLayout`, а у кабинета свой контур, и
 рейсов «поверх экрана» там нет по существу — водитель видит своё именное задание (ADR 0102).

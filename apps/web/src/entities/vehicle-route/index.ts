@@ -44,3 +44,15 @@ export {
  */
 export { canOpenRoute, vehicleRouteLink } from './model/links';
 export { trailerTripBody, type TrailerTripInput } from './model/trailerTrip';
+export {
+  actionLabel,
+  actionPairLabel,
+  assembleRoute,
+  blockerMessage,
+  mergeHintMessage,
+  pointRoleInputOf,
+  reorderedPointRoles,
+  routeCompositionRefs,
+  type PointMergeHint,
+  type RouteAssembly,
+} from './model/routeAssembly';

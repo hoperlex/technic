@@ -9,7 +9,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { canOpenRoute, vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import { useOpenedRecord } from '@shared/lib';
-import type { RouteModalApi } from './context';
+import type { RouteModalApi, RouteModalWindowsState } from './context';
 
 const ROUTE_PARAM = 'route';
 const LIST_PARAM = 'routes';
@@ -153,24 +153,46 @@ export function useRouteModalState() {
     if (!ownerAlive) setEditing(null);
   }, [editing, listOpen, openedRoute.id]);
 
-  const finishEdit = (updated: VehicleRouteDto) => {
-    setEditing(null);
-    refresh();
-    // A moved route must remain visible in the list at its new date.
-    if (listOpen) openRoutesList({ focusDate: updated.routeDate });
-  };
+  const finishEdit = useCallback(
+    (updated: VehicleRouteDto) => {
+      setEditing(null);
+      refresh();
+      // A moved route must remain visible in the list at its new date.
+      if (listOpen) openRoutesList({ focusDate: updated.routeDate });
+    },
+    [listOpen, openRoutesList, refresh],
+  );
+
+  const windows = useMemo<RouteModalWindowsState>(
+    () => ({
+      listOpen,
+      focus,
+      routeId: openedRoute.id,
+      editing: editing?.route ?? null,
+      refresh,
+      closeRoutesList: () => dropParams([LIST_PARAM]),
+      closeRoute: openedRoute.clear,
+      editRoute,
+      closeEdit: () => setEditing(null),
+      finishEdit,
+    }),
+    [
+      listOpen,
+      focus,
+      openedRoute.id,
+      openedRoute.clear,
+      editing,
+      refresh,
+      dropParams,
+      editRoute,
+      finishEdit,
+    ],
+  );
 
   return {
     api,
-    closeEdit: () => setEditing(null),
-    closeRoutesList: () => dropParams([LIST_PARAM]),
-    editing,
-    finishEdit,
-    focus,
-    listOpen,
     openedRequest,
-    openedRoute,
-    refresh,
+    windows,
   };
 }
 

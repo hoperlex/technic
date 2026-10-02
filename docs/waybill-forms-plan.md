@@ -233,7 +233,7 @@
   — прежний блок «Маршрут» без полей прицепа.
 - Карточка заявки спецтехники: действие «Путевой лист на вывоз».
 - [`VehicleRoutesTab.tsx`](../apps/web/src/pages/vehicle/VehicleRoutesTab.tsx) и
-  [`VehicleRouteModal.tsx`](../apps/web/src/pages/vehicle/VehicleRouteModal.tsx): пометка назначения в
+  [`VehicleRouteWindowView.tsx`](../apps/web/src/widgets/vehicle-route-windows/ui/VehicleRouteWindowView.tsx): пометка назначения в
   списке, у перегона вместо состава — заявка и «откуда/куда».
 - Форма заявки на грузоперевозку: объём и масса необязательны для типа с бланком № 3.
 

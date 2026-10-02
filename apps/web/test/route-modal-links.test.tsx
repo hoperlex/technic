@@ -14,7 +14,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { EntityLink } from '../src/shared/ui';
-import { RouteRequestRow } from '../src/pages/vehicle/RouteRequestRow';
+import { RouteRequestRow } from '@widgets/vehicle-route-windows';
 import { WaybillsPage } from '../src/pages/waybills';
 import { GarageVehiclesTab } from '../src/pages/garage/GarageVehiclesTab';
 

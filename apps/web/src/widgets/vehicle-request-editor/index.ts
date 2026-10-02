@@ -8,6 +8,5 @@ export type {
   VehicleRequestEditorController,
   VehicleRequestEditorPeriodModalProps,
 } from './model/types';
-export { BackdateReasonField } from './ui/VehicleBackdateFields';
 export { RequestRelocationsField } from './ui/RequestRelocationsField';
 export { VehicleRelocationModal } from './ui/VehicleRelocationModal';

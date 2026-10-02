@@ -20,7 +20,7 @@ import { formatDateOnly } from '@shared/lib';
 import { useRouteModal } from '@features/route-modal';
 import { dayColumns } from './dayColumns';
 import { VehicleDayBatchModal } from './VehicleDayBatchModal';
-import { VehicleDayRouteModal } from './VehicleDayRouteModal';
+import { VehicleDayRouteModal } from '@widgets/vehicle-route-windows';
 
 /**
  * «Дни работ» — место, где ведут дни заказа техники на объект (ADR 0100 решение 8).

@@ -10,11 +10,15 @@ import {
   type WaybillTaskRow,
   type VehicleRouteDto,
 } from '@technic/contracts';
-import { vehicleRoutesApi } from '@entities/vehicle-route';
+import {
+  blockerMessage,
+  reorderedPointRoles,
+  type RouteAssembly,
+  vehicleRoutesApi,
+} from '@entities/vehicle-route';
 import { EntityLink } from '@shared/ui';
 import { useAuth } from '@entities/session';
 import { vehicleRequestViewLink } from '@entities/vehicle-request';
-import { blockerMessage, reorderedPointRoles, type RouteAssembly } from './routeAssembly';
 import { useRouteModal } from '@features/route-modal';
 
 /**

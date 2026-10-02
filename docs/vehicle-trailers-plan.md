@@ -149,7 +149,7 @@
 1. **У тягачей нет требования к категории прав**, и прицеп не поднимает его до CE (§2.1).
 2. **Классификатор техники уже принял прицепной тип**, и в нём лежит тягач (§2.2).
 3. **Второй прицеп некуда ввести.** БД, контракты, снимок и шаблон держат прицеп 2, а спрашивает
-   его **ни одно окно**: и [VehicleRouteEditModal.tsx:344](../apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx#L344),
+   его **ни одно окно**: и [VehicleRouteEditModal.tsx](../apps/web/src/widgets/vehicle-route-windows/ui/VehicleRouteEditModal.tsx),
    и [VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx) показывают
    только «Прицеп: марка/госномер» первого. Окно назначения вдобавок **теряет** второй на отправке:
    в тело уходят ровно `trailer1Model`/`trailer1RegNumber`
@@ -314,7 +314,7 @@ A, а потом прицепить B — значит просить его в�
 | `VehicleRouteEditModal`       | да (только слот 1)        | берёт из самого рейса                                                                                                                            |
 | `VehicleRouteCorrectionModal` | да (только слот 1)        | берёт из самого рейса                                                                                                                            |
 | `VehicleDayRouteModal`        | **нет**                   | зовёт `suggest` (:177) и шлёт `trip` как есть                                                                                                    |
-| `VehicleRoutesModal`          | **нет**                   | не спрашивает ничего; водителей просит с жёстко зашитым `withTrailer: false` ([:588](../apps/web/src/pages/vehicle/VehicleRoutesModal.tsx#L588)) |
+| `VehicleRoutesModal`          | **нет**                   | не спрашивает ничего; водителей просит с жёстко зашитым `withTrailer: false` ([CreateRouteModal.tsx](../apps/web/src/widgets/vehicle-route-windows/ui/CreateRouteModal.tsx)) |
 | `VehicleRelocationModal`      | **нет**                   | шлёт только вид сообщения перегона                                                                                                               |
 
 На сервере отсутствие `trip` везде читается одинаково — как «рейс без прицепа»:

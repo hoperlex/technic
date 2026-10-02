@@ -12,7 +12,7 @@ import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
 import { RouteCorrectionConsequences } from './RouteCorrectionConsequences';
-import { useRouteCorrectionChoices } from './routeCorrectionChoices';
+import { useRouteCorrectionChoices } from '../model/routeCorrectionChoices';
 import { trailerTripBody } from '@entities/vehicle-route';
 import { TrailerFields } from '@features/vehicle-route-trailer';
 

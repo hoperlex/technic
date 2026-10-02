@@ -17,10 +17,12 @@ import { authUser } from './factories/auth';
 import { selectOption, typeDate } from './antd';
 import { list } from './factories/common';
 import { vehicleRouteKeys, vehicleTypesForTrailerKey } from '@entities/vehicle-route';
-import { VehicleRouteEditModal } from '../src/pages/vehicle/VehicleRouteEditModal';
-import { VehicleRouteCorrectionModal } from '../src/pages/vehicle/VehicleRouteCorrectionModal';
+import {
+  VehicleRouteCorrectionModal,
+  VehicleRouteEditModal,
+  VehicleRoutesModal,
+} from '@widgets/vehicle-route-windows';
 import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
-import { VehicleRoutesModal } from '../src/pages/vehicle/VehicleRoutesModal';
 
 /**
  * Подстановка прицепа в живых окнах (план `docs/vehicle-trailers-plan.md`, §14, Р20–Р21).

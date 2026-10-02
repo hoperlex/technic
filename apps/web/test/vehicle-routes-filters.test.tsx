@@ -5,7 +5,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
-import { VehicleRoutesModal } from '../src/pages/vehicle/VehicleRoutesModal';
+import { VehicleRoutesModal } from '@widgets/vehicle-route-windows';
 
 /**
  * Фильтры списка маршрутов: полоса полей над таблицей, а не выпадашки в заголовках столбцов.

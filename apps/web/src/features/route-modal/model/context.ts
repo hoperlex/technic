@@ -13,11 +13,36 @@ export interface RouteModalApi {
   editRoute: (route: VehicleRouteDto) => void;
 }
 
+/** URL-backed route windows consumed by the public route-window widget. */
+export interface RouteModalWindowsState {
+  listOpen: boolean;
+  focus: { date?: string; token: number };
+  routeId: string | null;
+  editing: VehicleRouteDto | null;
+  refresh: () => void;
+  closeRoutesList: () => void;
+  closeRoute: () => void;
+  editRoute: (route: VehicleRouteDto) => void;
+  closeEdit: () => void;
+  finishEdit: (route: VehicleRouteDto) => void;
+}
+
 /** Exported so tests can replace expensive route windows with command spies. */
 export const RouteModalContext = createContext<RouteModalApi | undefined>(undefined);
+export const RouteModalWindowsContext = createContext<RouteModalWindowsState | undefined>(
+  undefined,
+);
 
 export function useRouteModal(): RouteModalApi {
   const context = useContext(RouteModalContext);
   if (!context) throw new Error('useRouteModal должен использоваться внутри RouteModalProvider');
+  return context;
+}
+
+export function useRouteModalWindows(): RouteModalWindowsState {
+  const context = useContext(RouteModalWindowsContext);
+  if (!context) {
+    throw new Error('useRouteModalWindows должен использоваться внутри RouteModalProvider');
+  }
   return context;
 }

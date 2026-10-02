@@ -18,7 +18,7 @@ import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { AddressField } from '@features/address-input';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
-import { BackdateReasonField } from './VehicleBackdateFields';
+import { BackdateReasonField } from '@features/backdated-operation';
 
 /**
  * Equipment relocation for a request: delivery to or pickup from the site (migration 0082).

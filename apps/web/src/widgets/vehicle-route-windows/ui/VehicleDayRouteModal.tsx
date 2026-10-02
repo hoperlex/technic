@@ -11,9 +11,7 @@ import {
   isRouteEditable,
   type PlanVehicleRequestDayBody,
   routeRequestCapacity,
-  type SpecialEquipmentRequestDto,
   type VehicleDto,
-  type VehicleRequestDaysDto,
   vehicleLabel,
 } from '@technic/contracts';
 import { driverKeys, driversApi } from '@entities/driver';
@@ -30,8 +28,12 @@ import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-re
 import { formatDateOnly } from '@shared/lib';
 import { trailerTripBody } from '@entities/vehicle-route';
 import { TrailerFields } from '@features/vehicle-route-trailer';
-import { BackdateReasonField } from '@widgets/vehicle-request-editor';
+import { BackdateReasonField } from '@features/backdated-operation';
 import { NEW_ROUTE } from '@features/vehicle-assignment';
+import type {
+  DayRouteFormValues as FormValues,
+  VehicleDayRouteModalProps as Props,
+} from '../model/dayRouteTypes';
 
 /**
  * Поставить день заказа техники на объект в рейс (ADR 0100 решение 8, изменённое ADR 0207 §1:
@@ -49,40 +51,6 @@ import { NEW_ROUTE } from '@features/vehicle-assignment';
  * Своим файлом, а не блоком таблицы дней: окно с формой, тремя запросами и мутацией —
  * самостоятельная вещь, как и соседняя выписка ЭСМ-2 по требованию.
  */
-
-interface Props {
-  /**
-   * Заявка и день, который ставят в рейс; `null` — окно закрыто. Годность заявки проверила таблица
-   * дней правилом `canPlanDay`: заказ техники на объект, в работе, на собственной машине.
-   *
-   * `onDate` — день среза, посчитанный сервером (`VehicleRequestDaysDto.onDate`): им и только им
-   * решается, прошедший ли это день. Часы браузера бывают сбиты, а разойтись с `backdateGuard`
-   * форме нельзя — она либо не спросит причину там, где ручка её потребует, либо потребует там,
-   * где сервер не спрашивает.
-   */
-  target: { request: SpecialEquipmentRequestDto; date: string; onDate: string } | null;
-  onClose: () => void;
-  /** План после планирования: таблицу дней ведёт вызывающий — он же владеет её кэшем. */
-  onDone: (days: VehicleRequestDaysDto) => void;
-}
-
-interface FormValues {
-  vehicleId?: string;
-  /** Идентификатор готового рейса либо `NEW_ROUTE`. */
-  routeId?: string;
-  driverPersonId?: string;
-  /**
-   * Графы прицепа нового рейса: до Э4 окно их не спрашивало и пересылало вслепую — рейс уезжал с
-   * прицепом, которого человек не видел (план `docs/vehicle-trailers-plan.md`, §4.2.2).
-   */
-  withTrailer?: boolean;
-  trailer1Model?: string;
-  trailer1RegNumber?: string;
-  trailer2Model?: string;
-  trailer2RegNumber?: string;
-  /** Причина заднего числа — спрашивается только у прошедшего дня (ADR 0101 п. 4). */
-  reason?: string;
-}
 
 export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
   const { message } = App.useApp();

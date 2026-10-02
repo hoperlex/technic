@@ -15,7 +15,7 @@
   `apps/web/src/pages/vehicle/VehicleDayBatchModal.tsx`,
   `apps/web/src/widgets/vehicle-assignment-dialog/ui/DayBatchReport.tsx`,
   `apps/web/src/widgets/vehicle-assignment-dialog/model/useDayBatch.tsx`,
-  `apps/web/src/pages/vehicle/VehicleDayRouteModal.tsx`,
+  `apps/web/src/widgets/vehicle-route-windows/ui/VehicleDayRouteModal.tsx`,
   миграция [`0339`](../../apps/api/drizzle/0339_day_batch_correction_kind.sql)
 - Изменяет: **решение 8 [ADR 0100](0100-linear-vehicle-days.md)** — «дни заводятся руками, по
   одному, из карточки заявки; ни автоматического планирования при переводе в работу, ни пачки

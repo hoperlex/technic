@@ -6096,7 +6096,7 @@ runbook, память проекта).
 | **4b.2** | 4 | параметризация по режиму, по четыре-пять файлов на агента | файлы разные — самая широкая волна плана |
 | **4b.3** | 1 | механический коммит остальных | — |
 | **4a.1** | 1 | клиент двери `/period`, общий хук рукопожатия, экраны разблокировок | общий код всех окон |
-| **4a.2** | 4 | по окну на агента: [назначение](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx), [перебазировка](../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRelocationModal.tsx), [коррекция маршрута](../apps/web/src/pages/vehicle/VehicleRouteCorrectionModal.tsx), [правка маршрута](../apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx) | четыре разных файла |
+| **4a.2** | 4 | по окну на агента: [назначение](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx), [перебазировка](../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRelocationModal.tsx), [коррекция маршрута](../apps/web/src/widgets/vehicle-route-windows/ui/VehicleRouteCorrectionModal.tsx), [правка маршрута](../apps/web/src/widgets/vehicle-route-windows/ui/VehicleRouteEditModal.tsx) | четыре разных файла |
 | **4a.3** | 1 | метрика старых вызовов и ожидание их исчезновения | — |
 | **5.1** | 4 | четыре читателя истории: `/driver`, `requestVehicleWhere` (4 места), `dayVehicle`, занятость гаража | разные файлы, один чеклист |
 | **5.2** | 1 | боевые Р6 и Р18: два множества смен, подписи, часы | `vehicle-requests.ts` |

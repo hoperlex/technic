@@ -21,8 +21,8 @@
 
 Зеркально к этому: номер заявки в составе рейса и в задании листа становится кликабельным и
 открывает окно просмотра заявки. Сегодня это обычный текст
-([RouteRequestRow.tsx:52](../apps/web/src/pages/vehicle/RouteRequestRow.tsx#L52),
-[RouteTaskRowsBlock.tsx:169](../apps/web/src/pages/vehicle/RouteTaskRowsBlock.tsx#L169)) — из карточки
+([RouteRequestRow.tsx](../apps/web/src/widgets/vehicle-route-windows/ui/RouteRequestRow.tsx),
+[RouteTaskRowsBlock.tsx](../apps/web/src/widgets/vehicle-route-windows/ui/RouteTaskRowsBlock.tsx)) — из карточки
 рейса в заявку не попасть вовсе, её номер ищут руками в списке.
 
 Почему вкладка мешает: рейс — не раздел портала, а сопровождающая запись. Вопрос «а что там за
@@ -101,7 +101,7 @@
 
 Сегодня за ошибку отвечает `useOpenedRecord`: 404 → сообщение «Запись не найдена» и очистка адреса
 ([useOpenedRecord.ts:59](../apps/web/src/shared/lib/useOpenedRecord.ts#L59)). Сама карточка рейса
-ошибку запроса **не обрабатывает вовсе** ([VehicleRouteModal.tsx:91](../apps/web/src/pages/vehicle/VehicleRouteModal.tsx#L91)) —
+ошибку запроса **не обрабатывает вовсе** ([useVehicleRouteWindow.tsx](../apps/web/src/widgets/vehicle-route-windows/model/useVehicleRouteWindow.tsx)) —
 ей это и не требовалось, потому что адрес разбирала вкладка. Убери мы `useOpenedRecord`, не заменив
 его, — ссылка на удалённый рейс оставит пустое окно навсегда.
 

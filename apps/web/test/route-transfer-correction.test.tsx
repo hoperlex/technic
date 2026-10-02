@@ -5,7 +5,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { selectOption } from './antd';
-import { VehicleRouteTransferCorrectionModal } from '../src/pages/vehicle/VehicleRouteTransferCorrectionModal';
+import { VehicleRouteTransferCorrectionModal } from '@widgets/vehicle-route-windows';
 
 /**
  * Окно переноса заявки между рейсами прошедших дней (ADR 0101, Р30).

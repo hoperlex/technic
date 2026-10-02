@@ -12,46 +12,6 @@ import {
 import { formatDateOnly } from '@shared/lib';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 
-/**
- * Backdating (ADR 0101): collect the reason and expose consequences beside the chosen date.
- *
- * The reason becomes the durable audit explanation in `waybill_corrections`. Consequences are
- * calculated before submission with the same contracts the server enforces, so users do not
- * discover affected routes, forms, or approvals only after saving.
- */
-/**
- * Standalone backdate reason for operations that have no request-term consequences (ADR 0101):
- * past ESM-2 issue, relocation, and past order-day flows.
- *
- * It stays separate from `VehicleBackdateFields` because those operations do not need its term,
- * shift, ESM-2-week, or route-mismatch queries.
- *
- * The field is named `reason` to match all three request bodies; request editing uses
- * `backdateReason` to distinguish it from the request comment.
- */
-export function BackdateReasonField({
-  effectiveDate,
-  /** Concise operation-specific consequence shown below the reason. */
-  consequence,
-  placeholder,
-}: {
-  effectiveDate: string;
-  consequence: string;
-  placeholder: string;
-}) {
-  return (
-    <Form.Item
-      name="reason"
-      label="Причина заднего числа"
-      // `backdateGuard` rejects an empty reason, so the form must not submit one.
-      rules={[{ required: true, message: 'Укажите причину' }]}
-      extra={`Дата ${formatDateOnly(effectiveDate)} уже прошла: ${consequence}`}
-    >
-      <Input.TextArea rows={2} maxLength={2000} showCount placeholder={placeholder} />
-    </Form.Item>
-  );
-}
-
 interface Props {
   /** Edited request; `null` means create mode, where only an explanation is needed. */
   record: VehicleRequestDto | null;

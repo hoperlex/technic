@@ -118,7 +118,7 @@
 затирать ввод. Приём, которым это записывается, выбран заказчиком — `useEffectEvent` (Р4).
 
 В портале уже стоят **12 мест** с `eslint-disable-next-line react-hooks/exhaustive-deps`
-([VehicleRoutesModal.tsx:125](../apps/web/src/pages/vehicle/VehicleRoutesModal.tsx#L125),
+([VehicleRoutesModal.tsx](../apps/web/src/widgets/vehicle-route-windows/ui/VehicleRoutesModal.tsx),
 [useTrailerGraphs.ts](../apps/web/src/features/vehicle-route-trailer/model/useTrailerGraphs.ts),
 [CheckboxPicker.tsx:100](../apps/web/src/shared/ui/CheckboxPicker.tsx#L100) и др.) — то есть
 половина портала решение уже записала, но записала выключением проверки. Этот план их не трогает

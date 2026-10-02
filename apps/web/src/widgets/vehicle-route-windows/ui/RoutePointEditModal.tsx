@@ -14,7 +14,7 @@ import { FormGrid, FormModal } from '@shared/ui';
 import { vehicleRoutesApi } from '@entities/vehicle-route';
 import { TimeInput } from '@entities/request';
 import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
-import { pointRoleInputOf } from './routeAssembly';
+import { pointRoleInputOf } from '@entities/vehicle-route';
 
 /**
  * Правка остановки: адрес, план прибытия и записка водителю (§4.3 плана

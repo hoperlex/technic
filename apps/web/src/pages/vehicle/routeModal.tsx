@@ -3,43 +3,20 @@ import { Button, Skeleton } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { ViewModal } from '@shared/ui';
-import {
-  RouteModalHost,
-  type RequestCardRenderProps,
-  type RouteCardRenderProps,
-  type RouteEditRenderProps,
-  type RouteListRenderProps,
-} from '@widgets/route-modal-host';
+import { RouteModalHost, type RequestCardRenderProps } from '@widgets/route-modal-host';
+import { VehicleRouteWindows } from '@widgets/vehicle-route-windows';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
-import { VehicleRouteEditModal } from './VehicleRouteEditModal';
-import { VehicleRouteModal } from './VehicleRouteModal';
-import { VehicleRoutesModal } from './VehicleRoutesModal';
-
-function renderRouteList(props: RouteListRenderProps) {
-  return <VehicleRoutesModal open {...props} />;
-}
-
-function renderRouteCard(props: RouteCardRenderProps) {
-  return <VehicleRouteModal {...props} />;
-}
-
-function renderRouteEdit(props: RouteEditRenderProps) {
-  return <VehicleRouteEditModal {...props} />;
-}
 
 function renderRequestCard(props: RequestCardRenderProps) {
   return <RequestViewById {...props} />;
 }
 
-/** Connect the page-owned route windows to the URL-backed host shared by portal pages. */
+/** Compose URL state, route windows and the page-specific read-only request card. */
 export function RouteModalProvider(): ReactElement {
   return (
-    <RouteModalHost
-      renderRouteList={renderRouteList}
-      renderRouteCard={renderRouteCard}
-      renderRouteEdit={renderRouteEdit}
-      renderRequestCard={renderRequestCard}
-    />
+    <RouteModalHost renderRequestCard={renderRequestCard}>
+      <VehicleRouteWindows />
+    </RouteModalHost>
   );
 }
 

@@ -11,7 +11,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { dateInput, selectOption, typeDate } from './antd';
 import { formatDateOnly } from '@shared/lib';
-import { VehicleRouteEditModal } from '../src/pages/vehicle/VehicleRouteEditModal';
+import { VehicleRouteEditModal } from '@widgets/vehicle-route-windows';
 
 /**
  * Правка рейса: день, водитель и реквизиты выезда.

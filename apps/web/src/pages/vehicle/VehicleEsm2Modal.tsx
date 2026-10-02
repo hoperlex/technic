@@ -20,8 +20,8 @@ import { waybillKeys } from '@entities/waybill';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { formatDateOnly, useIsMobile } from '@shared/lib';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
-import { BackdateReasonField } from '@widgets/vehicle-request-editor';
-import { ackRequiredDetails, confirmWaybillWarnings } from './waybillAckConfirm';
+import { BackdateReasonField } from '@features/backdated-operation';
+import { ackRequiredDetails, confirmWaybillWarnings } from '@features/waybill-issue';
 
 /**
  * Выписка недельного ЭСМ-2 по требованию (ADR 0100 решение 6).
