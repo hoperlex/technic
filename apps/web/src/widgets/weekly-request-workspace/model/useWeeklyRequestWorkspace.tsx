@@ -146,9 +146,7 @@ export function useWeeklyRequestWorkspace() {
     onSuccess: (result) => {
       clearApplyError();
       message.success(
-        result.apply
-          ? `Неделя применена: строк ${result.apply.applied}`
-          : 'Заявка подана на визу',
+        result.apply ? `Неделя применена: строк ${result.apply.applied}` : 'Заявка подана на визу',
       );
       invalidate();
     },
