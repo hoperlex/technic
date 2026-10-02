@@ -10,8 +10,8 @@
   [ADR 0085](0085-weekly-vehicle-request.md) (недельная заявка — план недели, а не заказ)
 - Связано: `packages/contracts/src/vehicles.ts`, `packages/contracts/src/vehicle-requests.ts`,
   `packages/contracts/src/vehicle-request-feed.ts`, `apps/api/src/routes/vehicle-requests.ts`,
-  `apps/web/src/hooks/useVehicleClassificationFilter.tsx`,
-  `apps/web/src/pages/vehicle/VehicleRequestsTab.tsx`,
+  `apps/web/src/entities/vehicle-type/index.ts`,
+  `apps/web/src/widgets/vehicle-request-feed/model/useVehicleRequestFeedState.tsx`,
   `apps/web/src/pages/vehicle/VehicleRoutesTab.tsx`, `apps/web/src/pages/waybills/filters.tsx`,
   справка [guide-filters-vehicle-waybills.md](../guide-filters-vehicle-waybills.md)
 - Миграция: не потребовалась — схема базы не менялась

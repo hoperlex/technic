@@ -1,4 +1,5 @@
 export { VehicleRequestFeed } from './ui/VehicleRequestFeed';
+export { useVehicleRequestFeedState } from './model/useVehicleRequestFeedState';
 export { ApprovalCell, StatusCell } from './ui/orderStateCells';
 export type {
   VehicleRequestFeedActions,

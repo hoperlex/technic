@@ -6,7 +6,17 @@
 export { weeklyRequestKeys } from './api/keys';
 export { weeklyRequestsApi } from './api/weeklyRequestsApi';
 export { weeklyRequestErrorMessage } from './model/errorMessage';
-export { WeeklyStatusTag, weeklyCountsText } from './ui/presentation';
+export {
+  pastWeekSelectOptions,
+  weeklyOverdueWord,
+  weeklyPreviousText,
+  weeklyBackdateAccess,
+  weeklyRequestPath,
+  weeklyToday,
+  weekSelectOptions,
+} from './model/weeklyPresentation';
+export { weeklySkipReasonsFromError } from './model/skipReasons';
+export { WeeklyItemWarnings, WeeklyStatusTag, weeklyCountsText } from './ui/presentation';
 export type {
   WeeklyDecisionResultDto,
   WeeklyRequestHistoryEntryDto,

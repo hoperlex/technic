@@ -11,32 +11,23 @@ import {
   weeklyItemResultLabels,
   weeklyRequestStatusLabels,
 } from '@technic/contracts';
-import type { WeeklyRequestHistoryEntryDto } from '@entities/weekly-request';
+import { WeeklyItemWarnings, type WeeklyRequestHistoryEntryDto } from '@entities/weekly-request';
 import { EntityLink } from '@shared/ui';
 import { formatDateTime, useIsMobile } from '@shared/lib';
 import { waybillLink } from '@entities/waybill';
 import { vehicleRequestLink } from '@entities/vehicle-request';
-import { ItemWarnings } from './weeklyShared';
 
 /**
- * Чек-лист готовности недели (§5 шаг 6) — экран, ради которого модуль и делается. Он отвечает не
- * «что согласовали», а «что из согласованного ещё не готово»: назначена ли машина, стоит ли виза
- * на порождённом заказе, выписан ли ЭСМ-2 за неделю, оформлен ли перегон.
- *
- * Арендная техника показывается нейтральным «ведёт арендодатель», а не красным «не выписано»
- * (Р19): портал на неё документов не выписывает вовсе, и неделя с арендой иначе выглядела бы
- * вечно незаконченной.
+ * Readiness answers what remains after approval: assignment, order approval, ESM-2 and relocation.
+ * Rental paperwork is neutral because the lessor owns it; marking it missing would make every
+ * rental week appear permanently incomplete.
  */
 
 type Can = (permission: Permission) => boolean;
 
 /**
- * Клетка документа: состояние тегом и готовый текст из контрактов. Кнопка печати показывается
- * только при праве `waybills.read` (§5 шаг 6): штаб видит номер и состояние, но журнал бланков
- * ради одной кнопки ему не открывают. Печать живёт в самом журнале — туда ссылка и ведёт.
- *
- * Ссылка на каждый номер, а не на первый (ADR 0142): у недели, в которой кончается месяц, листов
- * ЭСМ-2 два, и одна кнопка «Печать» увела бы человека печатать половину бумаги недели.
+ * Link every printable sheet for readers with waybill access. A month boundary may split one week
+ * into two ESM-2 sheets, so linking only the first would hide half the required paperwork.
  */
 function DocumentCell({ cell, can }: { cell: WeeklyDocumentCellDto; can: Can }) {
   const prints =
@@ -62,7 +53,7 @@ function DocumentCell({ cell, can }: { cell: WeeklyDocumentCellDto; can: Can }) 
   );
 }
 
-/** Машина строки: подпись сегодняшняя, расхождение со снимком — отдельной отметкой (Р14). */
+/** Show today's vehicle label and mark divergence from the approved snapshot separately. */
 function VehicleCell({ row }: { row: WeeklyDocumentRowDto }) {
   return (
     <div style={{ lineHeight: 1.35 }}>
@@ -80,8 +71,8 @@ function ApprovalCell({ row }: { row: WeeklyDocumentRowDto }) {
   if (row.kind === 'leave' || row.result === 'skipped') {
     return <Typography.Text type="secondary">—</Typography.Text>;
   }
-  // Виза с порождённого заказа может слететь позже: содержательная правка лицом без права визы
-  // её снимает (Р8). Без этой колонки «неделя согласована» читалось бы как «всё поедет».
+  // A later material edit may revoke approval on the generated order; week approval alone does
+  // not guarantee that the vehicle will be dispatched.
   return row.approved ? (
     <Tag color="green" style={{ marginInlineEnd: 0 }}>
       есть
@@ -123,9 +114,7 @@ export function WeeklyRequestChecklist({
   const rows = documents.rows;
 
   const orderLink = (row: WeeklyDocumentRowDto) =>
-    // Статуса порождённого заказа чек-лист не знает, а ссылка обязана вести туда, где заказ
-    // показывают: пока неделю отрабатывают, он лежит в списке заявок. Право спрашивает общий
-    // `vehicleRequestLink` — им же закрыт переход у ролей, которым список не положен.
+    // The checklist has no generated-order status, so use the common permission-aware list link.
     row.requestId ? vehicleRequestLink(can, { id: row.requestId, status: 'confirmed' }) : null;
 
   const columns: TableColumnType<WeeklyDocumentRowDto>[] = [
@@ -234,10 +223,7 @@ export function WeeklyRequestChecklist({
   );
 }
 
-/**
- * Строки применённой заявки со своими предупреждениями — тем же текстом, что видел составитель:
- * он объясняет, почему у аренды нет листов портала и откуда в сроке взялись дни до начала недели.
- */
+/** Preserve the warnings the author saw, including rental ownership and pre-week date context. */
 export function WeeklyRequestAgreed({ items }: { items: WeeklyRequestItemDto[] }) {
   return (
     <>
@@ -247,7 +233,7 @@ export function WeeklyRequestAgreed({ items }: { items: WeeklyRequestItemDto[] }
             {item.sourceDisplayNumber ?? item.vehicleTypeName ?? '—'} ·{' '}
             {item.currentVehicleLabel ?? 'машина не назначена'}
           </Typography.Text>
-          <ItemWarnings warnings={item.warnings} />
+          <WeeklyItemWarnings warnings={item.warnings} />
           {!!item.skipReason && (
             <Typography.Text type="danger" style={{ fontSize: 12 }}>
               {item.skipReason}
@@ -259,7 +245,7 @@ export function WeeklyRequestAgreed({ items }: { items: WeeklyRequestItemDto[] }
   );
 }
 
-/** Что событие истории означает человеку: переход статуса либо правка состава (Р17). */
+/** Translate either a status transition or a composition edit into a history label. */
 function historyTitle(entry: WeeklyRequestHistoryEntryDto): string {
   if (entry.event === 'status') {
     const to = entry.toStatus ? weeklyRequestStatusLabels[entry.toStatus] : '—';
@@ -269,11 +255,7 @@ function historyTitle(entry: WeeklyRequestHistoryEntryDto): string {
   return entry.event === 'items_changed' ? 'Состав изменён' : 'Строка снята';
 }
 
-/**
- * История заявки: и статусы, и правки состава. Своя, а не общая история заявок ТС: состав
- * меняется и без перехода — правкой черновика и уборкой строк при удалении заказа насовсем, — и
- * такое событие обязано объяснить пропавшую строку.
- */
+/** Composition edits have their own history because rows may change without a status transition. */
 export function WeeklyRequestHistory({
   entries,
 }: {

@@ -7,19 +7,14 @@ import {
   type WeeklySuggestionOrderDto,
 } from '@technic/contracts';
 import { formatDateOnly, useIsMobile } from '@shared/lib';
-import type { WeeklyOrderDecision, WeeklyOrderRow } from './weeklyComposition';
-import { ItemWarnings, weeklyPreviousText } from './weeklyShared';
+import { WeeklyItemWarnings, weeklyPreviousText } from '@entities/weekly-request';
+import type { WeeklyOrderDecision, WeeklyOrderRow } from '../model/compositionState';
 
-/**
- * Блоки «Остаётся» и «Уезжает» (§5 шаги 2 и 4): решение по каждой единице, которая стоит на
- * площадке. Снятая галка — не отсутствие строки, а решение об отъезде (Р10), поэтому выбор здесь
- * из двух явных вариантов, а не чекбокс: пустой состав из-за неотмеченных строк не должен
- * читаться как «решения не было».
- */
+/** Each on-site order has an explicit stay/leave decision; unchecked is not equivalent to leave. */
 
 const DATE = 'YYYY-MM-DD';
 
-/** Прибавка к сроку словами: «+7 дн.». Ноль не показывается — продление всегда удлиняет срок (Р4). */
+/** Show only a positive extension span because an extension cannot shorten an order. */
 function gainLabel(from: string, to: string): string | null {
   const days = dateKeySpan(shiftDateKey(from, 1), to);
   return days > 0 ? `+${days} дн.` : null;
@@ -36,12 +31,8 @@ interface RowProps {
 }
 
 /**
- * Выбор решения по единице: остаётся или уезжает. Незаполненное значение — «решение не принято».
- *
- * «Остаётся» гасится причиной с сервера (`extendBlockedReason`), а не собственным условием формы:
- * предикат один на портал и API (Р4), и второе его описание здесь разошлось бы с первым — площадка
- * увидела бы вариант, который всегда отказывает. Живой случай ровно один — срок, идущий до
- * воскресенья недели: продлевать внутри неё нечего, и «оставить дальше» решает следующая неделя.
+ * Use the server-owned `extendBlockedReason` instead of recreating eligibility in the form. An
+ * order already running through Sunday can only be kept by the next week's document.
  */
 function DecisionControl({ row, decision, editable, onChange }: RowProps) {
   const blocked = row.extendBlockedReason;
@@ -55,9 +46,7 @@ function DecisionControl({ row, decision, editable, onChange }: RowProps) {
       options={[
         {
           label: blocked ? (
-            // Подсказка объясняет не только запрет, но и выход: заявка на следующую неделю
-            // подтянет этот заказ штатно, и это одна из основных функций недельного документа, а
-            // не обход ограничения.
+            // The tooltip names the supported next-week path instead of only stating the blocker.
             <Tooltip
               title={`${blocked}. Чтобы оставить дальше — соберите заявку на следующую неделю`}
             >
@@ -76,10 +65,9 @@ function DecisionControl({ row, decision, editable, onChange }: RowProps) {
   );
 }
 
-/** «Продлить до»: любой день недели, но строго позже нынешнего конца срока (Р4). */
+/** Extension may end on any target-week day strictly after the current end. */
 function ExtendDateControl({ row, decision, editable, weekStart, weekEnd, onChange }: RowProps) {
-  // Продлевать нечем — и выбирать дату не из чего: единственный день, который сюда влез бы, сервер
-  // тут же и отверг бы.
+  // Do not offer a date when every target-week value would be rejected.
   if (row.extendBlockedReason) return <Typography.Text type="secondary">—</Typography.Text>;
   if (decision.kind !== 'extend') return <Typography.Text type="secondary">—</Typography.Text>;
   const min = row.effectiveDateTo > weekStart ? shiftDateKey(row.effectiveDateTo, 1) : weekStart;
@@ -92,8 +80,7 @@ function ExtendDateControl({ row, decision, editable, weekStart, weekEnd, onChan
         format="DD.MM.YYYY"
         allowClear={false}
         disabled={!editable}
-        // Сокращение срока продлением невозможно: сокращают досрочным завершением, и у него своя
-        // виза (ADR 0044). Форма ограничена снизу тем же днём, что и предикат сервера.
+        // Shortening belongs to the separately approved early-end flow (ADR 0044).
         disabledDate={(d) => {
           const key = d.format(DATE);
           return key < min || key > weekEnd;
@@ -110,13 +97,12 @@ function ExtendDateControl({ row, decision, editable, weekStart, weekEnd, onChan
   );
 }
 
-/** Что строка говорит человеку: предупреждения, пропавший заказ, причина отказа применения. */
+/** Keep warnings, stale-source context and application failures attached to their row. */
 function RowNotes({ row, skipReason }: RowProps) {
   return (
     <div style={{ lineHeight: 1.35 }}>
-      <ItemWarnings warnings={row.warnings} />
-      {/* Запрет продления объясняется здесь же, а не только подсказкой на кнопке: на телефоне
-          подсказку не наведёшь, а решение по единице принимать всё равно надо. */}
+      <WeeklyItemWarnings warnings={row.warnings} />
+      {/* Repeat the blocker as text because touch users cannot rely on a hover tooltip. */}
       {row.extendBlockedReason && (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {row.extendBlockedReason}. Чтобы оставить дальше — соберите заявку на следующую неделю
@@ -132,7 +118,7 @@ interface Props {
   rows: WeeklyOrderRow[];
   decisions: Record<string, WeeklyOrderDecision>;
   setDecision: (requestId: string, patch: Partial<WeeklyOrderDecision>) => void;
-  /** Построчные причины отказа применения (§9), ключ — идентификатор строки состава. */
+  /** Row-level application failures keyed by saved composition item id. */
   skipReasons: Map<string, string>;
   weekStart: string;
   weekEnd: string;
@@ -141,12 +127,8 @@ interface Props {
 }
 
 /**
- * Отчёт по прошлой неделе — строкой **над** составом (§3 п. 4 плана «Отбор состава»).
- *
- * Сверху, а не в конце, потому что читается он до решений: каждая следующая заявка пытается
- * продлить все позиции прошлой, и первый вопрос штаба — «всё ли, о чём договорились неделю назад,
- * доехало сюда». Выбывшие названы поимённо с причиной: без этого пропажу знакомой машины из
- * состава заметить нечем, и на площадке заведут вторую строку.
+ * Put previous-week continuity before decisions and name every dropped order with its reason, so
+ * a missing familiar vehicle cannot silently turn into a duplicate additional request.
  */
 function PreviousWeekNote({ suggestion }: { suggestion: WeeklySuggestionDto | undefined }) {
   const previous = suggestion?.previous;
@@ -160,7 +142,7 @@ function PreviousWeekNote({ suggestion }: { suggestion: WeeklySuggestionDto | un
   );
 }
 
-/** Единицы, заказанные дольше недели, и заказы, не годные в состав, — одной припиской (§7). */
+/** Explain orders outside this week's decision scope without mixing them into editable rows. */
 function SuggestionNotes({ suggestion }: { suggestion: WeeklySuggestionDto | undefined }) {
   const beyond: WeeklySuggestionOrderDto[] = suggestion?.beyond ?? [];
   const blocked = suggestion?.blocked ?? [];
@@ -201,8 +183,7 @@ export function WeeklyRequestComposition(props: Props) {
   if (props.rows.length === 0) {
     return (
       <div>
-        {/* Отчёт по прошлой неделе показывается и здесь: пустой состав при непустой прошлой
-            неделе — это как раз тот случай, когда объяснение нужнее всего. */}
+        {/* Continuity matters most when a non-empty previous week yields no current rows. */}
         <PreviousWeekNote suggestion={props.suggestion} />
         <Typography.Text type="secondary">
           На площадке нет техники, срок которой кончается на этой неделе, — состав собирается из
@@ -243,8 +224,7 @@ export function WeeklyRequestComposition(props: Props) {
   ];
 
   if (isMobile) {
-    // На телефоне строки становятся карточками (ADR 0030): в таблицу с шестью колонками на 360 px
-    // не помещается ни одна из них целиком.
+    // Six decision columns cannot remain legible at the mobile width (ADR 0030).
     return (
       <div className="list-cards">
         <PreviousWeekNote suggestion={props.suggestion} />
@@ -294,12 +274,9 @@ export function WeeklyRequestComposition(props: Props) {
 }
 
 /**
- * Блок «Уезжает» (§5 шаг 4): решения об отъезде отдельным списком — это часть недельного
- * документа и одновременно задача диспетчеру оформить вывоз.
- *
- * Кнопки «Оформить вывоз» здесь нет намеренно: маршрут выписки перегона закрыт объектным ролям по
- * правам, а кнопка, которая всегда отказывает, хуже её отсутствия (Р10). Вывоз оформляют в
- * карточке самого заказа — там же, где заводят доставку.
+ * Leaving rows are both document decisions and dispatch reminders. Pickup stays in the ordinary
+ * order card because site roles cannot issue relocation documents; a guaranteed 403 button here
+ * would be misleading.
  */
 export function WeeklyRequestLeaving({
   rows,

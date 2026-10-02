@@ -1,6 +1,7 @@
-import { Tag } from 'antd';
+import { Tag, Typography } from 'antd';
 import {
   type WeeklyItemCounts,
+  type WeeklyItemWarning,
   type WeeklyRequestStatus,
   weeklyRequestStatusColors,
   weeklyRequestStatusLabels,
@@ -38,5 +39,24 @@ export function WeeklyStatusTag({ status }: { status: WeeklyRequestStatus }) {
     <Tag color={weeklyRequestStatusColors[status]} style={{ marginInlineEnd: 0 }}>
       {weeklyRequestStatusLabels[status]}
     </Tag>
+  );
+}
+
+/** Render contract-owned row warnings, keeping rental notices visually neutral. */
+export function WeeklyItemWarnings({ warnings }: { warnings: WeeklyItemWarning[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <div style={{ lineHeight: 1.35 }}>
+      {warnings.map((warning) => (
+        <div key={warning.kind}>
+          <Typography.Text
+            type={warning.kind === 'rental' ? 'secondary' : 'warning'}
+            style={{ fontSize: 12 }}
+          >
+            {warning.text}
+          </Typography.Text>
+        </div>
+      ))}
+    </div>
   );
 }

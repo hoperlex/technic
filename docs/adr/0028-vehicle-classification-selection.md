@@ -9,10 +9,10 @@
   [ADR 0027](0027-vehicle-request-assignment.md) (назначение машины на заявку),
   `packages/contracts/src/vehicle-classifications.ts`,
   `apps/api/src/routes/vehicle-classifications.ts`, `apps/api/src/routes/vehicle-requests.ts`,
-  `apps/web/src/hooks/useVehicleClassifications.ts`,
+  `apps/web/src/entities/vehicle-type/index.ts`,
   `apps/web/src/pages/directories/VehicleTypesTab.tsx`,
   `apps/web/src/pages/directories/VehiclesTab.tsx`,
-  `apps/web/src/pages/vehicle/VehicleRequestsTab.tsx`, миграция `0052`
+  `apps/web/src/widgets/vehicle-request-feed/model/useVehicleRequestFeedState.tsx`, миграция `0052`
 
 ## Контекст
 

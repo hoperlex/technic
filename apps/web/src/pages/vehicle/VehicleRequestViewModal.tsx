@@ -3,8 +3,8 @@ import {
   VehicleRequestViewModal as VehicleRequestView,
   type VehicleRequestViewModalProps,
 } from '@widgets/vehicle-request-view';
+import { weeklyRequestPath } from '@entities/weekly-request';
 import { VehicleRequestDays } from './VehicleRequestDays';
-import { weeklyRequestPath } from './weeklyShared';
 
 type Props = Omit<VehicleRequestViewModalProps, 'renderDays' | 'weeklyRequestPath'>;
 

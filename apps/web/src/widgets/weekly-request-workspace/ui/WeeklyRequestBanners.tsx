@@ -1,56 +1,46 @@
 import { Alert, Button, Space } from 'antd';
 import type { WeeklyItemCounts, WeeklyVehicleRequestDto } from '@technic/contracts';
 import { formatDateOnly } from '@shared/lib';
-import { weeklyOverdueWord } from './weeklyShared';
+import { weeklyOverdueWord } from '@entities/weekly-request';
 
-/**
- * Состояния недельной заявки словами (§9). Каждое из них легко свести к безликому уведомлению — и
- * тогда человек не поймёт, что делать: «неделя уже началась» без предложенного выхода оставляет
- * черновик в тупике, а «применение не прошло» без построчных причин заставляет сверять список с
- * таблицей глазами.
- *
- * У просроченной недели теперь два разных состояния, и разделены они не правом на кнопку, а
- * ответом на вопрос «что мне с этим делать» (ADR 0101). Тому, у кого есть право прошлого, неделя
- * открыта — баннер называет цену проведения. Тому, у кого его нет, неделя закрыта по-прежнему — но
- * тупиком это быть перестало: выход есть, и он в том, чтобы позвать того, кто проведёт.
- */
+/** Explain both the blocker and the recovery path for every non-routine weekly state. */
 
-/** Права прошлого нет: выход в том, чтобы позвать того, у кого оно есть, — а не только в отмене. */
+/** Without backdate authority, escalation to an operator remains an alternative to cancellation. */
 const NO_RIGHT_HINT =
   'Провести неделю задним числом может тот, у кого есть право коррекции, — диспетчер или ' +
   'администратор. Если техника действительно отработала эти дни, попросите его подать и провести ' +
   'заявку: сроки продлятся, а на прошедшие недели выпишутся листы ЭСМ-2. Если не отработала — ' +
   'снимите заявку и заведите её на следующую неделю.';
 
-/** Право есть, глубины не хватает: за 30 днями начинается работа администратора (Р37 ADR 0101). */
+/** Beyond the correction depth, an administrator must conduct the week (ADR 0101 R37). */
 const DEPTH_HINT =
   'Такую давность проводит администратор: попросите его завизировать заявку — сроки продлятся, а ' +
   'на прошедшие недели выпишутся листы ЭСМ-2. Либо снимите её и заведите неделю заново.';
 
 interface Props {
   request: WeeklyVehicleRequestDto;
-  /** Причина отклонения визирующим: показывается сверху в самой заявке, а не только в истории. */
+  /** The rejection reason remains visible in the document, not only in history. */
   rejection: string | null;
-  /** Почему на эту неделю заявку подать нельзя; `null` — неделя этой учётке открыта. */
+  /** Why this account cannot submit the week; `null` means it is open. */
   weekBlocker: string | null;
-  /** Неделя уже началась или прошла (`isWeeklyWeekOverdue`). */
+  /** The week has started or elapsed. */
   overdue: boolean;
-  /** Есть ли у учётки право прошлого (`waybills.correct`): им отличаются два отказа друг от друга. */
+  /** Whether this account has ordinary backdate authority. */
   canPast: boolean;
-  /** Эффективная дата проведения — воскресенье недели (`weeklyWeekEffectiveDate`). */
+  /** Conduct's effective date, the target week's Sunday. */
   effectiveDate: string;
-  /** Состав ещё правится (`draft`/`pending`) и право на правку есть. */
+  /** Composition is still editable and this account may update it. */
   editable: boolean;
   composable: boolean;
-  /** Заявка ждёт визы: проведение спрашивается на ней, а не на подаче. */
+  /** Conduct is requested during approval, not submission. */
   isPending: boolean;
-  /** Отказ применения целиком: «ни одна строка не применима» с перечнем причин; `null` — отказа не было. */
+  /** Whole-application failure with its server explanation. */
   applyError: string | null;
   counts: WeeklyItemCounts;
-  /** Единицы, по которым решение не принято: в состав они не войдут. */
+  /** Orders without a decision are intentionally omitted from the command. */
   undecided: number;
   onCancel: () => void;
-  /** Завести заявку на следующую неделю; `null` — заводить не вправе. */
+  /** Create the next week's request; `null` when unavailable. */
   onNextWeek: (() => void) | null;
   nextWeekPending: boolean;
 }
@@ -60,8 +50,7 @@ export function WeeklyRequestBanners(props: Props) {
   const total = counts.extend + counts.new + counts.leave;
   const allLeaving = total > 0 && counts.extend === 0 && counts.new === 0;
 
-  // Полоса баннеров сама держит расстояние между собой: снаружи она — один блок, и вставлять её
-  // в общий поток отдельными элементами значило бы отдать расстановку тому, кто её вызывает.
+  // The banner stack owns its spacing so callers compose it as one stable block.
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {request.status === 'draft' && props.rejection && (
@@ -75,9 +64,8 @@ export function WeeklyRequestBanners(props: Props) {
       {request.status === 'cancelled' && (
         <Alert type="warning" showIcon title={`Заявка снята: ${request.cancelReason}`} />
       )}
-      {/* Черновик дожил до своей недели, а прошлое читающему закрыто — права нет вовсе либо не
-          хватает его глубины: подать и завизировать нельзя, отменить можно всегда (§8). Одного 422
-          от API здесь мало: он объясняет отказ, но не выход, — а выход теперь есть и не в отмене. */}
+      {/* An overdue draft remains cancellable and names who can conduct it; a 422 alone would
+          explain the refusal without giving the user a recovery path. */}
       {props.weekBlocker && (
         <Alert
           type="error"
@@ -85,9 +73,8 @@ export function WeeklyRequestBanners(props: Props) {
           title={props.weekBlocker}
           description={
             <>
-              {/* Два отказа, а не один, и зовут они разных людей. Права прошлого нет вовсе — звать
-                  надо диспетчера. Право есть, но не хватает глубины — диспетчер это и есть
-                  читающий, и звать надо того, у кого предела нет (Р37 ADR 0101). */}
+              {/* Missing authority escalates to an operator; exhausted depth escalates further to
+                  an administrator whose correction access has no date boundary. */}
               {props.overdue && <div>{props.canPast ? DEPTH_HINT : NO_RIGHT_HINT}</div>}
               <Space size={8} wrap style={{ marginTop: 8 }}>
                 {props.editable && (
@@ -95,8 +82,7 @@ export function WeeklyRequestBanners(props: Props) {
                     Отменить заявку
                   </Button>
                 )}
-                {/* Состав не переносится: заявка на следующую неделю заводится с пересчитанным
-                    предложением — техника за просроченную неделю всё равно частью уехала (§9). */}
+                {/* Recompute the next week's suggestion instead of copying a stale composition. */}
                 {props.onNextWeek && (
                   <Button loading={props.nextWeekPending} onClick={props.onNextWeek}>
                     Создать на следующую неделю
@@ -107,9 +93,8 @@ export function WeeklyRequestBanners(props: Props) {
           }
         />
       )}
-      {/* Неделя просрочена, но читающему открыта правом прошлого: не отказ, а цена. Действие стоит
-          в панели внизу — оно одно на весь экран, и вторая такая же кнопка в баннере заставила бы
-          гадать, чем они различаются. Баннер отвечает на другой вопрос: во что это обойдётся. */}
+      {/* For an authorized operator this is a cost disclosure, not a blocker; the single command
+          remains in the action bar to avoid two apparently different conduct buttons. */}
       {!props.weekBlocker && props.overdue && composable && (
         <Alert
           type="warning"

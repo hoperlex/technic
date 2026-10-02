@@ -4,20 +4,17 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { PhoneInput } from '@entities/user-account';
 import type { VehicleClassificationGroup } from '@entities/vehicle-type';
-import type { WeeklyNewRow } from './weeklyComposition';
+import type { WeeklyNewRow } from '../model/compositionState';
 
 /**
- * Блок «Нужна дополнительно» (§5 шаг 3): строка обычной заявки, урезанная до недели — позиция
- * классификатора, срок внутри недели, контакт встречающего и доставка по желанию.
- *
- * Конкретную машину строка не называет: её подбирает диспетчер при переводе в работу — площадка
- * не видит парка и не знает занятости (Р5).
+ * Additional demand names a classification, dates, contact and optional delivery. It deliberately
+ * does not name a fleet vehicle because dispatch selects one with access to availability.
  */
 
 const DATE = 'YYYY-MM-DD';
 const { RangePicker } = DatePicker;
 
-/** Подпись над полем: строки состава — не форма antd, и `Form.Item` тут не из чего собрать. */
+/** Label a field without implying that composition rows belong to an antd Form. */
 function Field({ label, width, children }: { label: string; width: number; children: ReactNode }) {
   return (
     <div style={{ flex: `1 1 ${width}px`, minWidth: Math.min(width, 220) }}>
@@ -31,9 +28,9 @@ function Field({ label, width, children }: { label: string; width: number; child
 
 interface Props {
   rows: WeeklyNewRow[];
-  /** Почему строку не примут — тем же предикатом, что и на сервере (`newItemBlocker`). */
+  /** Contract-owned reason why the server would reject this row. */
   issues: Map<string, string>;
-  /** Построчные причины отказа применения (§9): «тип ТС погашен», «объект погашен». */
+  /** Row-level application failures such as retired classification or site. */
   skipReasons: Map<string, string>;
   weekStart: string;
   weekEnd: string;
@@ -47,8 +44,7 @@ interface Props {
 
 export function WeeklyRequestNewItems(props: Props) {
   const { rows, editable, weekStart, weekEnd } = props;
-  // Срок строки не выходит за пн–вс своей недели: то же ограничение держит CHECK базы и
-  // `newItemBlocker` — форма просто не даёт выбрать то, что всё равно не примут.
+  // Keep dates inside the target week, matching both the database check and `newItemBlocker`.
   const outsideWeek = (d: dayjs.Dayjs) => {
     const key = d.format(DATE);
     return key < weekStart || key > weekEnd;
@@ -130,7 +126,7 @@ export function WeeklyRequestNewItems(props: Props) {
                 />
               </Field>
               <Field label="Телефон" width={200}>
-                {/* Тот же ввод под маской, что во всех контактах портала (ADR 0066). */}
+                {/* Use the portal-wide masked phone input (ADR 0066). */}
                 <PhoneInput
                   disabled={!editable}
                   value={row.responsiblePhone}
@@ -146,8 +142,8 @@ export function WeeklyRequestNewItems(props: Props) {
                   onChange={(e) =>
                     props.onUpdate(row.key, {
                       deliveryNeeded: e.target.checked,
-                      // Снятая доставка не оставляет за собой места отправления: сервер такую
-                      // пару всё равно не примет, а поле выглядело бы заполненным.
+                      // Disabling delivery also clears its origin so a hidden stale value cannot
+                      // form a command the server rejects.
                       ...(e.target.checked ? {} : { deliveryFrom: '' }),
                     })
                   }

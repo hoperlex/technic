@@ -11,21 +11,10 @@ import { FormModal } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
 
 /**
- * Проведение просроченной недели задним числом (ADR 0085 + ADR 0101).
- *
- * Виза обычной недели вопросов не задаёт: сроки двигаются вперёд, бумага выписывается на дни,
- * которых ещё не было. Просроченная неделя — другое действие той же кнопки: она продлевает заказы
- * за **уже отработанные** дни, выписывает за них бланки строгой отчётности и, если у недели уже
- * есть листы ЭСМ-2, жжёт их номера. Цену эту называет человек, а не выводит сервер из даты в
- * шапке, — поэтому отдельное окно, а не тихо добавленное поле к прежней кнопке.
- *
- * Устроено как окно коррекции рейса (`VehicleRouteCorrectionModal`) и по той же причине:
- * последствия считает сервер тем же кодом, которым будет их исполнять (`GET /:id/correction`).
- * Второй расчёт в портале разошёлся бы с первым — и окно обещало бы не то, что произойдёт.
- *
- * Чего здесь нет: состава. Его правят на самой странице, и повторять его перечнем в окне значило
- * бы дать два ответа на вопрос «что согласуют». Окно отвечает на другой вопрос — чего это стоит в
- * прошлом.
+ * Conducting an overdue week changes already-worked periods and may invalidate strict-reporting
+ * numbers. The server computes the exact consequences with the same code that executes them; a
+ * second client calculation would drift. Composition stays in the workspace so this dialog has
+ * one responsibility: disclose and confirm the historical cost (ADR 0101).
  */
 
 interface FormValues {
@@ -34,13 +23,10 @@ interface FormValues {
 }
 
 interface Props {
-  /** Заявка, которую проводят; `null` — окно закрыто. */
+  /** Request being conducted; `null` closes the dialog. */
   request: WeeklyVehicleRequestDto | null;
   onClose: () => void;
-  /**
-   * Провести: блок коррекции целиком. Виза уходит тем же вызовом, что и обычная, и мутация живёт
-   * на странице — там же, где разбор 409 и 422, и там же, где состав сохраняется тем же движением.
-   */
+  /** Send the complete correction block through the workspace's shared approval command. */
   onConduct: (correction: WeeklyCorrectionBody) => void;
   pending: boolean;
 }
@@ -48,39 +34,29 @@ interface Props {
 export function WeeklyRequestConductModal({ request, onClose, onConduct, pending }: Props) {
   const [form] = Form.useForm<FormValues>();
 
-  /**
-   * Ключ идемпотентности (Р31 ADR 0101): придумывается **до** отправки и держится, пока окно
-   * открыто на этой заявке. Повтор после обрыва связи обязан вернуть результат прежней операции
-   * (200 и `apply: null`), а не продлить сроки второй раз и не сжечь второй номер бланка.
-   */
+  /** Keep one idempotency key while this request stays open so a retry cannot apply twice. */
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
   useEffect(() => {
     if (!request) return;
     setOperationId(crypto.randomUUID());
     form.setFieldsValue({ reason: '', unlockWaybillIds: [] });
-    // Зависимость — только идентификатор заявки: следи эффект за объектом целиком, ключ операции и
-    // написанная причина перескакивали бы под рукой на каждом обновлении карточки, а ключ обязан
-    // держаться неизменным всё время, пока окно открыто.
+    // Depending on the whole request would reset the key and typed reason after a cache refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request?.id, form]);
 
-  /** Цена операции и её запреты — сервером, теми же правилами, которыми он их и исполнит. */
+  /** Ask the server for both consequences and blockers. */
   const { data: preview, isFetching } = useQuery({
-    // Ключ фабрикой слайса, но массив тот же: страница гасит запросы префиксом
-    // `['weekly-vehicle-requests', …]`, и разошедшийся ключ тихо оставил бы окно со старым
-    // предпросмотром — после визы, которая уже сдвинула сроки.
+    // The entity key keeps preview invalidation under the weekly-request root.
     queryKey: weeklyRequestKeys.correction(request?.id),
     queryFn: () => weeklyRequestsApi.correctionPreview(request!.id),
     enabled: !!request,
   });
 
-  /** Провести нельзя вовсе: право, глубина или состояние документа — сервер называет одну причину. */
+  /** Permission, correction depth or document state may block conduct entirely. */
   const blocked = !!preview && !preview.allowed;
 
   const submit = (v: FormValues) => {
-    // Отказ, уже названный предпросмотром, второй раз не спрашивается: ручка ответит тем же
-    // текстом, но после написанной причины и нажатой кнопки, — а прочитать его человек должен был
-    // до того, как её писать.
+    // Do not submit a command whose preview already names the same refusal.
     if (blocked) return;
     onConduct({ operationId, reason: v.reason.trim(), unlockWaybillIds: v.unlockWaybillIds ?? [] });
   };
@@ -101,9 +77,7 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
       width={720}
     >
       <Form<FormValues> form={form} layout="vertical" onFinish={submit}>
-        {/* Отказ читается первым: право, глубина и состояние документа — три разные причины, и
-          чинит их не тот, кто открыл окно. Кнопка при этом остаётся на месте и просто не
-          отправляет: исчезнувшая кнопка не объясняет, почему её нет. */}
+        {/* Keep the disabled operation visible and explain which external condition blocks it. */}
         {blocked && (
           <Alert
             type="error"
@@ -126,9 +100,8 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
                   Сроки заказов продлятся за уже прошедшие дни — до{' '}
                   {formatDateOnly(preview.weekEnd)} включительно.
                 </li>
-                {/* «Просрочена» и «задним числом» — не одно и то же: у начавшейся недели
-                  воскресенье ещё впереди, и вердикт `backdateGuard` у неё отрицательный. Сказать
-                  это надо здесь, иначе человек прочтёт про прошлое там, где прошлого нет. */}
+                {/* A started week is overdue for planning but not necessarily backdated relative
+                    to its Sunday effective date. */}
                 <li>
                   {preview.backdated
                     ? `Операция идёт задним числом: её эффективная дата — воскресенье недели, ${formatDateOnly(preview.effectiveDate)}, и оно уже прошло.`
@@ -151,9 +124,8 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
                   </li>
                 )}
                 {preview.unlockable.length > 0 && <li>{WAYBILL_CORRECTION_CONFIRM}</li>}
-                {/* Необратимость — последней строкой и без обиняков: «отменить визу» у недельной
-                  заявки не существует, срок сокращают досрочным завершением по каждой машине
-                  (ADR 0044), а списанный номер бланка не возвращается ничем. */}
+                {/* There is no “undo approval”: periods shrink through early end per order, while
+                    an invalidated form number is never returned to the series. */}
                 <li>
                   Отменить проведение одной кнопкой нельзя: сроки сокращают досрочным завершением по
                   каждой машине, а списанный номер бланка не возвращается.
@@ -163,10 +135,8 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
           />
         )}
 
-        {/* Листы отработанных недель — поимённо (Р11 ADR 0101), а не «все прошлые»: после линейной
-          техники в одной неделе законно живут листы двух машин (ADR 0100 п. 7), и общая галочка
-          сожгла бы не тот номер. Неназванный лист остаётся нетронутым — разблокировка адресная и
-          сама в стороны не растёт. */}
+        {/* Select sheets by id: linear equipment may have two vehicles in one week, so a blanket
+            “all past sheets” switch could invalidate the wrong number. */}
         <Form.Item
           name="unlockWaybillIds"
           label="Листы ЭСМ-2 к перевыписке"
@@ -185,9 +155,7 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
           />
         </Form.Item>
 
-        {/* Причина обязательна и здесь, и на сервере (422 без неё): она уезжает в запись операции и
-          в выписанные ею листы (Р35 ADR 0101) — и остаётся единственным объяснением того, почему
-          неделю согласовали после того, как её отработали. */}
+        {/* The durable reason is stored with the correction and every sheet it creates. */}
         <Form.Item
           name="reason"
           label="Причина проведения задним числом"
@@ -202,8 +170,7 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
           />
         </Form.Item>
 
-        {/* Глубина права — справкой, а не запретом: за её пределом сервер сам ответит отказом выше,
-          а здесь строка отвечает на вопрос «докуда я вообще могу», пока он не стал отказом. */}
+        {/* State the account's correction depth before it turns into a server refusal. */}
         {preview?.correctionFloor && (
           <Typography.Text type="secondary">
             Ваша глубина коррекции — недели, кончившиеся не раньше{' '}
