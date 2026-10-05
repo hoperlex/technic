@@ -24,6 +24,13 @@ import { correctionFloorDateKey } from './waybills';
 import { ESM2_UNLOCK_LIMIT } from './vehicle-requests';
 import { formatVehicleRouteNumber } from './vehicle-routes';
 import type { VehicleOwnership } from './vehicles';
+// Отпечаток и подписи предупреждений — те же, что у дверей истории назначения (ADR 0218 решение 8):
+// аннулирование подтверждает последствия тем же рукопожатием, и своя форма отпечатка разошлась бы
+// с чужой при первой же правке алгоритма хеширования.
+import {
+  assignmentAcknowledgementsSchema,
+  assignmentFingerprintSchema,
+} from './assignment-periods';
 
 // ── Недельная заявка на технику ──
 //
@@ -328,8 +335,19 @@ export function weeklyWeekBlocker(
  * Жизненный цикл документа: собирается → ждёт визы → завизирована и применена. Отдельного
  * «применить» нет: виза применяет заявку той же транзакцией (Р6), поэтому `applied` — это ровно
  * «завизирована», а состояния «виза есть, а сроки не сдвинулись» не существует.
+ *
+ * Терминальных состояний два, и путать их нельзя (ADR 0218): `cancelled` — «снята до визы,
+ * следствий не было», `annulled` — «виза была, следствия развёрнуты обратно». Порядок значений
+ * повторяет порядок enum'а базы (`annulled` перед `cancelled`, миграция `0354`): по нему идёт
+ * `ORDER BY status`, и разойдись они — список сортировался бы не так, как обещает словарь.
  */
-export const WEEKLY_REQUEST_STATUSES = ['draft', 'pending', 'applied', 'cancelled'] as const;
+export const WEEKLY_REQUEST_STATUSES = [
+  'draft',
+  'pending',
+  'applied',
+  'annulled',
+  'cancelled',
+] as const;
 export type WeeklyRequestStatus = (typeof WEEKLY_REQUEST_STATUSES)[number];
 
 /**
@@ -344,24 +362,60 @@ export const weeklyRequestStatusLabels: Record<WeeklyRequestStatus, string> = {
   // Не «Завизирована»: подпись отвечает на вопрос площадки «сроки уже сдвинулись?» — а они
   // сдвигаются ровно визой.
   applied: 'Применена',
+  annulled: 'Аннулирована',
   cancelled: 'Снята',
 };
 
-/** Цвета те же, что у визы заявки ТС: ожидание — оранжевое, состоявшееся — зелёное. */
+/**
+ * Цвета те же, что у визы заявки ТС: ожидание — оранжевое, состоявшееся — зелёное.
+ *
+ * У аннулированной цвет свой (`volcano`), а не красный «Снятой»: это разные события, и один цвет
+ * на оба читался бы как «ничего не было», тогда как у аннулированной виза была и номера бланков
+ * сгорели.
+ */
 export const weeklyRequestStatusColors: Record<WeeklyRequestStatus, string> = {
   draft: 'default',
   pending: 'orange',
   applied: 'green',
+  annulled: 'volcano',
   cancelled: 'red',
 };
 
 /**
- * Правится ли состав. До визы — да, любым, у кого есть право в своей области; после — заявка
- * становится историей (Р13): отменить применённую неделю значит сокращать сроки досрочным
- * завершением по каждой машине, и одной кнопкой этого не делается.
+ * Правится ли **состав**. До визы — да, любым, у кого есть право в своей области; после — заявка
+ * становится историей: состав применённой и аннулированной не меняется ничем.
+ *
+ * С ADR 0218 это больше не значит «после визы ничего не сделать»: применённую неделю
+ * разворачивают аннулированием (`weeklyAnnulItemState`, `weeklyAnnulPermission`), и оно трогает
+ * **следствия**, а не строки. Строки остаются с прежними результатами намеренно: по ним отвечают
+ * «что решили и что отменили», а состояние документа сказано шапкой.
  */
 export function isWeeklyRequestEditable(status: WeeklyRequestStatus): boolean {
   return status === 'draft' || status === 'pending';
+}
+
+/**
+ * Действует ли документ, занимая пару «объект + неделя».
+ *
+ * Два терминальных состояния сюда не входят, и предикат заведён ровно затем, чтобы это правило
+ * было одно (ADR 0218 решение 12): кроме частичного уникального индекса «живость» недели
+ * спрашивают ещё три места — создание заявки, предложение состава и предупреждение о другой
+ * активной неделе, — и каждое сверяло `status <> 'cancelled'` своей строкой. Добавление второго
+ * терминального статуса такой перечень молча бы пропустило.
+ */
+export function isWeeklyRequestLive(status: WeeklyRequestStatus): boolean {
+  return status !== 'cancelled' && status !== 'annulled';
+}
+
+/**
+ * Применялась ли заявка, то есть есть ли у неё следствия в заказах.
+ *
+ * `annulled` отвечает `true`: следствия были, их развернули, и ссылки строк по-прежнему держат
+ * заказы, типы и категории (ADR 0218 решение 9 — уборка при удалении насовсем аннулированную
+ * заявку не чистит).
+ */
+export function isWeeklyRequestApplied(status: WeeklyRequestStatus): boolean {
+  return status === 'applied' || status === 'annulled';
 }
 
 /**
@@ -1115,6 +1169,15 @@ export interface WeeklyVehicleRequestDto {
   cancelReason: string;
 
   /**
+   * Разворот применённой заявки (ADR 0218): кто аннулировал, когда и почему. Заполнено ровно у
+   * аннулированной — CHECK схемы держит полную развилку, а не три «или».
+   */
+  annulledBy: string | null;
+  annulledByName: string | null;
+  annulledAt: string | null;
+  annulReason: string;
+
+  /**
    * Виза руководителя строительства. Заполнена ровно у применённой заявки: виза и применение —
    * одно событие (Р6), и «завизирована, но не применена» физически невозможно.
    */
@@ -1341,6 +1404,23 @@ export interface WeeklyDocumentRowDto {
   relocation: WeeklyDocumentCellDto;
   result: WeeklyRequestItemResult;
   skipReason: string;
+  /**
+   * Состояние обратного хода строки (ADR 0218): чем её развернуть и что мешает.
+   *
+   * Считает сервер тем же предикатом, которым считает команда (`weeklyAnnulItemState`). Портал
+   * посчитать это не может и не должен: в строке чек-листа нет ни статуса заказа, ни его
+   * эффективного конца, ни ожидающего отъезда, ни недель, решивших позже, — а была бы, второе
+   * описание правила разошлось бы с первым молча.
+   *
+   * `null` у заявки, которую ещё не применяли: разворачивать нечего.
+   */
+  reversal: {
+    state: WeeklyAnnulState;
+    reason: string;
+    reverse: WeeklyAnnulReversal;
+    /** Дата, к которой вернётся срок; `null` у остальных ходов. */
+    shortenTo: string | null;
+  } | null;
 }
 
 /** Чек-лист готовности недели — экран, ради которого модуль и делается (§5 шаг 6). */
@@ -1419,3 +1499,509 @@ export interface WeeklyCorrectionPreviewDto {
   /** Прошедшие недели без листа: их проведение выпишет само, получив контекст операции. */
   pastWeeks: WeeklyCorrectionWeekDto[];
 }
+
+// ── Аннулирование применённой недели (ADR 0218) ──
+//
+// Виза недели той же транзакцией продлила заказы, породила новые и зафиксировала решения
+// «уезжает». Аннулирование разворачивает **следствия**: сроки возвращаются к снимку
+// `previous_date_to`, порождённые заказы отменяются, решения «уезжает» перестают действовать.
+// Строки состава при этом не переписываются — состояние документа сказано шапкой (решение 9).
+//
+// Ветвей две, и выбирает их **эффективная дата операции** — первый снимаемый день. Не раньше
+// сегодня — обычная ветвь, журнала коррекций нет; раньше — ветвь коррекции под правом прошлого,
+// как проведение просроченной недели (ADR 0116). Правило живёт здесь, потому что спрашивают его
+// двое: окно (какую цену назвать и чем подписать) и сервер (что принять и чем авторизовать).
+
+/**
+ * Состояние обратного хода строки. Третье значение — не удобство, а условие работоспособности
+ * (решение 4): поштучный путь остаётся, и неделя, у которой одну строку уже развернули руками,
+ * иначе оказалась бы заперта навсегда.
+ */
+export const WEEKLY_ANNUL_STATES = ['reversible', 'reverted', 'blocked'] as const;
+export type WeeklyAnnulState = (typeof WEEKLY_ANNUL_STATES)[number];
+
+/** Что именно сделает аннулирование со строкой: ею окно подписывает ход, а сервер исполняет. */
+export const WEEKLY_ANNUL_REVERSALS = ['shorten_to', 'cancel', 'release_leave', 'none'] as const;
+export type WeeklyAnnulReversal = (typeof WEEKLY_ANNUL_REVERSALS)[number];
+
+/**
+ * Серверные препятствия — кодом и текстом, приёмом `VEHICLE_REQUEST_ROLLBACK_BLOCKERS`
+ * (ADR 0211 решение 3).
+ *
+ * Они не живут предикатами здесь, потому что считаются **планом**: подпись дня, заморозка рейса и
+ * состояние листа лежат в таблицах, которых у строки состава нет. Но текст у них один на отказ и
+ * на окно — иначе человек увидел бы препятствие, названное двумя способами.
+ */
+export const WEEKLY_ANNUL_BLOCKERS = ['approved_shift', 'frozen_day', 'locked_sheet'] as const;
+export type WeeklyAnnulBlockerCode = (typeof WEEKLY_ANNUL_BLOCKERS)[number];
+
+export interface WeeklyAnnulBlockerDto {
+  code: WeeklyAnnulBlockerCode;
+  /** Строка состава, к которой относится препятствие. */
+  itemId: string;
+  /** Дни, которыми препятствие объясняется: подписанные смены, замороженные дни. */
+  dates: string[];
+  message: string;
+}
+
+/**
+ * Какое право аннулирует эту неделю — приёмом `weeklyApprovalPermission` (ADR 0116 п. 1) и по той
+ * же причине: правило спрашивают двое, и второй перечень тех же двух случаев разошёлся бы с
+ * первым.
+ *
+ * Ветвь коррекции — одно право прошлого. Обычная ветвь — **два**, и это не щедрость: аннулирование
+ * гасит номера бланков и переписывает бумагу, то есть это работа того, кто ведёт бланки, ровно в
+ * той же мере, в какой это снятие подписи площадки (решение 7). Поэтому массив, а не одно
+ * значение: держателю любого из них ветвь открыта.
+ */
+export function weeklyAnnulPermission(backdated: boolean): Permission[] {
+  return backdated ? ['waybills.correct'] : ['weeklyRequests.approve', 'waybills.correct'];
+}
+
+/**
+ * Есть ли у субъекта право на эту ветвь. Область площадки спрашивается **отдельно и рядом**: она
+ * нужна только там, где право пришло визой, — у `waybills.correct` своей области нет вовсе.
+ */
+export function canAnnulWeeklyRequest(
+  subject: AccessSubject | null | undefined,
+  backdated: boolean,
+): boolean {
+  return weeklyAnnulPermission(backdated).some((permission) => can(subject, permission));
+}
+
+/**
+ * Нужна ли области площадки проверка: право пришло визой, а не журналом бланков.
+ *
+ * Разделено потому, что у двух прав обычной ветви разная природа. `weeklyRequests.approve` — право
+ * заказчика на своей площадке, и без области оно открыло бы руководителю строительства чужую
+ * неделю. `waybills.correct` — право офиса на бумагу всего портала, и область ему взять негде:
+ * у диспетчера площадок нет (ADR 0085 п. 7).
+ */
+export function weeklyAnnulNeedsSiteScope(
+  subject: AccessSubject | null | undefined,
+  backdated: boolean,
+): boolean {
+  return !backdated && !can(subject, 'waybills.correct') && can(subject, 'weeklyRequests.approve');
+}
+
+/** Строка состава глазами аннулирования — ровно те поля, которые спрашивают правила. */
+export interface WeeklyAnnulItem {
+  id: string;
+  kind: WeeklyRequestItemKind;
+  result: WeeklyRequestItemResult;
+  /** Дата, до которой строка продлила заказ (`extend`), либо `null`. */
+  dateTo: string | null;
+  /** Снимок момента применения: срок до изменения. Пуст у `new` и у пропущенной строки. */
+  previousDateTo: string | null;
+  /**
+   * Недели, применённые **позже** нашей и тронувшие тот же заказ: их решения стоят поверх нашего,
+   * и разворачивать наше, не тронув их, значило бы отменить чужое решение молча.
+   */
+  laterWeekRefs: { num: number }[];
+}
+
+/**
+ * Заказ, на который смотрит строка аннулирования. Меньше, чем `WeeklySourceOrder`: сборке состава
+ * нужны вид заявки, назначение и окно недели, а обратному ходу — только сегодняшнее состояние.
+ */
+export interface WeeklyAnnulOrder {
+  status: RequestStatus;
+  deletedAt: string | null;
+  dateFrom: string;
+  dateTo: string | null;
+  /** Оформленный вывоз: `null` — рейса нет. */
+  pickupRoute: { num: number; routeDate: string } | null;
+  /** Дата ожидающего визы досрочного отъезда; `null` — запроса нет. */
+  pendingEarlyEndDate: string | null;
+}
+
+/**
+ * Что аннулирование сделает со строкой и почему — текстом, как `extendBlocker`/`sourceItemBlocker`
+ * (ADR 0085 п. 4): сервер отдаёт эту строку в предпросмотре и в 422, окно и чек-лист подписывают
+ * ею строку. Второго описания в портале нет.
+ *
+ * Наступившие дни строку **не блокируют** — они выбирают ветвь (решение 2). Блокируют факты
+ * работы на снимаемых днях, но их знает только план (`WEEKLY_ANNUL_BLOCKERS`), и здесь их нет.
+ *
+ * `order` равен `null` у строки, заказ которой снесли насовсем: такая строка следствий больше не
+ * имеет, и разворачивать по ней нечего.
+ */
+export function weeklyAnnulItemState(
+  item: WeeklyAnnulItem,
+  order: WeeklyAnnulOrder | null,
+): { state: WeeklyAnnulState; reason: string; reverse: WeeklyAnnulReversal } {
+  const reverted = (reason: string) => ({ state: 'reverted', reason, reverse: 'none' }) as const;
+  const blocked = (reason: string) => ({ state: 'blocked', reason, reverse: 'none' }) as const;
+
+  // Пропущенная строка следствий не имела вовсе: снимка у неё нет (`previous_date_to IS NULL`), и
+  // «эффективный конец равен снимку» на ней не вычислимо. В счёт «хотя бы одна обратима» такая
+  // строка не входит — разворачивать по ней нечего, но и запирать неделю ею нельзя.
+  if (item.result === 'skipped') {
+    return reverted('Строка была пропущена при применении — следствий у неё нет');
+  }
+  if (item.result === 'pending') {
+    return reverted('Строка не применялась');
+  }
+
+  if (item.kind === 'new') {
+    if (!order) return reverted('Порождённый заказ удалён из портала');
+    if (order.deletedAt) return reverted('Порождённый заказ в архиве');
+    if (order.status === 'cancelled') return reverted('Порождённый заказ отменён');
+    if (order.status !== 'new') {
+      return blocked(
+        `Порождённый заказ уже в статусе «${requestStatusLabels[order.status]}» — ` +
+          'закройте или откатите его, потом аннулируйте неделю',
+      );
+    }
+    if (item.laterWeekRefs.length > 0) {
+      return blocked(weeklyAnnulLaterWeeksMessage(item.laterWeekRefs));
+    }
+    return { state: 'reversible', reason: '', reverse: 'cancel' };
+  }
+
+  if (item.kind === 'leave') {
+    // Решение «уезжает» снимается самой шапкой: `loadLeftBy` отбирает только применённые недели.
+    // Поэтому у строки нет своего «уже развёрнуто» — есть только рейс, который мешает.
+    if (order?.pickupRoute) {
+      return blocked(
+        `Вывоз оформлен рейсом ${formatVehicleRouteNumber(order.pickupRoute.num)} на ` +
+          `${dayMonth(order.pickupRoute.routeDate)} — отмените рейс, потом аннулируйте неделю`,
+      );
+    }
+    return { state: 'reversible', reason: '', reverse: 'release_leave' };
+  }
+
+  // `extend`: снимок обязателен — его пишет применение той же транзакцией, что и срок.
+  const snapshot = item.previousDateTo;
+  if (!snapshot) return reverted('Снимка срока у строки нет — разворачивать нечего');
+  if (!order) return reverted('Заказ удалён из портала');
+
+  const current = orderEffectiveDateTo(order);
+  // «Уже развёрнута» — **не позже** снимка, а не «равно ему»: досрочное завершение сокращает срок
+  // до любой даты от сегодня (ADR 0044 п. 5), то есть и ниже прежнего конца. Требуй мы равенства,
+  // строка с сокращённым руками сроком оказалась бы «блокирована: срок изменён», хотя следствие
+  // недели исчезло целиком.
+  if (current <= snapshot) {
+    return reverted(`Срок заказа уже возвращён: идёт до ${dayMonth(current)}`);
+  }
+  if (order.deletedAt) return blocked('Заказ в архиве — верните его из архива или сократите срок');
+  if (order.status !== 'confirmed') {
+    return blocked(
+      `Заказ не в статусе «${requestStatusLabels.confirmed}» — сократите срок вручную`,
+    );
+  }
+  // Сверяется срок, а не версия: версия растёт от правки телефона ответственного (ADR 0085 п. 10),
+  // и строки выбрасывались бы из обратного хода по поводам, к решению не относящимся.
+  if (item.dateTo && current !== item.dateTo) {
+    return blocked(
+      `Срок заказа изменился после недели: неделя продлила до ${dayMonth(item.dateTo)}, ` +
+        `сейчас ${dayMonth(current)} — сократите срок вручную`,
+    );
+  }
+  if (order.pendingEarlyEndDate) {
+    return blocked(
+      `Запрос на досрочный отъезд ${dayMonth(order.pendingEarlyEndDate)} ждёт визы — ` +
+        'решите его, потом аннулируйте неделю',
+    );
+  }
+  if (item.laterWeekRefs.length > 0) {
+    return blocked(weeklyAnnulLaterWeeksMessage(item.laterWeekRefs));
+  }
+  return { state: 'reversible', reason: '', reverse: 'shorten_to' };
+}
+
+/** Один текст на оба вида строк: перечень недель, решивших по заказу позже нашей. */
+function weeklyAnnulLaterWeeksMessage(refs: { num: number }[]): string {
+  const list = refs.map((r) => formatWeeklyRequestNumber(r.num)).join(', ');
+  return refs.length === 1
+    ? `Заказ тронут неделей ${list}, применённой позже — разверните сначала её`
+    : `Заказ тронут неделями ${list}, применёнными позже — разверните сначала их`;
+}
+
+/**
+ * Почему шапку аннулировать нельзя — текстом; `null` — можно.
+ *
+ * Спрашивается ровно статус: запись операции `weekly` у проведённой задним числом недели шапку
+ * **не** запирает (решение 2), её следствия разворачивает ветвь коррекции тем же правом, которым
+ * неделю провели.
+ */
+export function weeklyAnnulHeaderBlocker(header: { status: WeeklyRequestStatus }): string | null {
+  if (header.status === 'annulled') return 'Заявка уже аннулирована';
+  if (header.status === 'applied') return null;
+  return isWeeklyRequestEditable(header.status)
+    ? 'Аннулируют применённую заявку: эта ещё не применялась — её снимают'
+    : 'Заявка снята: следствий у неё не было';
+}
+
+/**
+ * Эффективная дата операции — **первый снимаемый день**: `min(previous_date_to + 1)` по строкам,
+ * которые аннулирование действительно сократит. `null` — срок не двигается вовсе (строк `extend`
+ * к развороту нет), и прошлого операция не трогает.
+ *
+ * Воскресенье недели (приём проведения, ADR 0116 п. 7) здесь солгало бы в обе стороны: у недели,
+ * чей первый снимаемый день ещё впереди, оно уже прошло бы, а у строки с «дырой» до понедельника —
+ * наоборот, стояло бы позже реально переписываемого дня. Предмет у аннулирования — снимаемые дни,
+ * и первый из них отвечает на вопрос «переписываем ли мы прошлое» точнее всякого другого.
+ */
+export function weeklyAnnulEffectiveDate(
+  states: { reverse: WeeklyAnnulReversal; previousDateTo: string | null }[],
+): string | null {
+  let earliest: string | null = null;
+  for (const row of states) {
+    if (row.reverse !== 'shorten_to' || !row.previousDateTo) continue;
+    const firstRemoved = shiftDateKey(row.previousDateTo, 1);
+    if (!earliest || firstRemoved < earliest) earliest = firstRemoved;
+  }
+  return earliest;
+}
+
+/** Строка предпросмотра: что аннулирование сделает с этой строкой состава. */
+export interface WeeklyAnnulItemDto {
+  itemId: string;
+  kind: WeeklyRequestItemKind;
+  /** «Экскаватор (продление)» — тем же текстом, что в чек-листе. */
+  title: string;
+  requestId: string | null;
+  displayNumber: string | null;
+  state: WeeklyAnnulState;
+  reason: string;
+  reverse: WeeklyAnnulReversal;
+  /** Дата, к которой вернётся срок (`shorten_to`); `null` у остальных ходов. */
+  shortenTo: string | null;
+}
+
+/** Лист ЭСМ-2 в ответе предпросмотра — номер показывается только держателю `waybills.read`. */
+export interface WeeklyAnnulSheetDto {
+  waybillId: string;
+  requestId: string;
+  displayNumber: string;
+  number: string;
+  periodFrom: string;
+  periodTo: string;
+}
+
+/**
+ * Цена операции в бумаге — счётчиками всем, номерами только держателю журнала (решение 8).
+ *
+ * `reissue` отделён от `cancel` намеренно: аннулированный без замены номер и аннулированный с
+ * выпиской взамен — разные события для бухгалтерии, и один счётчик на оба отвечал бы на вопрос
+ * «сколько бланков списано» и молчал о том, сколько ушло из серии.
+ */
+export interface WeeklyAnnulPaperDto {
+  /** Листы, которые сгорят без замены: их недели уходят из срока целиком. */
+  cancel: number;
+  /** Листы, которым правится период вниз (ADR 0178 решение 1): номер не горит. */
+  trim: number;
+  /** Листы, которые сгорят и будут выписаны заново укороченными. */
+  reissue: number;
+  /** По какое число подрежется лист недели снимка; `null` — подрезать нечего. */
+  trimmedTo: string | null;
+}
+
+/** Решение истории назначения, которое сокращение погасит (ADR 0126, решение 6). */
+export interface WeeklyAnnulCancelGroupDto {
+  /** День, с которого решение вступало в силу. */
+  effectiveDate: string;
+  /** «Машина», «Машинист» — что именно меняли; состав читается целиком (гашение групповое). */
+  dimensions: string[];
+  /** Подпись решения: «ТС-355: машина А → Б». */
+  title: string;
+}
+
+/**
+ * Что сделает аннулирование — посчитанное сервером до первой правки и подтверждаемое отпечатком
+ * (ADR 0211 решения 1, 4).
+ *
+ * Форма отвечает на три вопроса в том порядке, в каком их задаёт человек: можно ли вообще
+ * (`allowed`, `blockedReason`), какой ценой (`paper`, `cancelGroups`, `shifts`, `linearDays`) и
+ * что подписать (`fingerprint`, `cancelGroupsFingerprint`, `issues`).
+ */
+export interface WeeklyAnnulPreviewDto {
+  weeklyRequestId: string;
+  weekStart: string;
+  weekLabel: string;
+  /** Сегодня по МСК: окно считает им всё то же, что сервер, и не спрашивает часы браузера. */
+  today: string;
+  /**
+   * Эффективная дата операции — первый снимаемый день; `null` — срок не двигается.
+   * Ею объясняется ветвь, и ею же считается глубина.
+   */
+  effectiveDate: string | null;
+  /** Ветвь коррекции: вердикт того же `backdateGuard`, что решит на команде. */
+  backdated: boolean;
+  /** Нужны ли ключ операции и причина в журнале: ветвь коррекции **или** гасимые группы. */
+  requiresOperation: boolean;
+  /** Нижняя граница глубины субъекта; `null` — предела нет (`waybills.correctBeyondLimit`). */
+  correctionFloor: string | null;
+  /** Может ли этот субъект аннулировать: право по ветви, область, шапка и ни одной блокировки. */
+  allowed: boolean;
+  /** Почему нельзя — в том же порядке, в каком откажет команда; `null` — можно. */
+  blockedReason: string | null;
+  items: WeeklyAnnulItemDto[];
+  /** Препятствия, которые знает только план: подпись дня, заморозка, незваный лист. */
+  blockers: WeeklyAnnulBlockerDto[];
+  paper: WeeklyAnnulPaperDto;
+  /**
+   * Листы отработанных недель, которые придётся назвать поимённо (`correction.unlockWaybillIds`,
+   * ADR 0116 п. 11). Номера — только держателю `waybills.read`; остальным `null`, и о том, что
+   * называть есть что, отвечает `unlockableCount`.
+   */
+  unlockable: WeeklyAnnulSheetDto[] | null;
+  unlockableCount: number;
+  cancelGroups: WeeklyAnnulCancelGroupDto[];
+  /** Отпечаток перечня гасимых групп; `null` — гасить нечего. */
+  cancelGroupsFingerprint: string | null;
+  /** Предупреждения по выпускаемым листам — обезличенные, как у визы досрочного завершения. */
+  issues: { issueKey: number; codes: string[]; warningFingerprint: string }[];
+  /** Дни линейных заказов, которые уйдут из рейсов. */
+  linearDays: { detachable: string[]; frozen: string[] };
+  /** Черновики смен на снимаемых днях — их удалит команда. */
+  shifts: string[];
+  /** Недели в работе по тем же заказам: после разворота их строки станут «срок изменился». */
+  pendingWeeks: string[];
+  fingerprint: string;
+  asOf: string;
+}
+
+/**
+ * Тело команды аннулирования.
+ *
+ * Причина обязательна **всегда**, не только в ветви коррекции: `annul_reason` объясняет документ
+ * («почему эту неделю развернули»), а `correction.reason` — разрыв нумерации бланков. В ветви
+ * коррекции это один и тот же текст, и спрашивается он один раз — вторым полем окно просило бы
+ * человека написать одно и то же дважды.
+ *
+ * Отпечатки приходят отдельными полями по образцу двери срока: `fingerprint` подтверждает
+ * последствия целиком, `cancelGroupsFingerprint` — перечень гасимых решений истории. Один
+ * отпечаток на оба не годится: группы человек подтверждает как чужие решения, которые он гасит, и
+ * увидеть их он обязан перечнем, а не числом внутри общего хеша.
+ *
+ * Обязателен ли блок `correction`, схема не решает: ветвь выбирает эффективная дата, а её знает
+ * только сервер, прочитавший состав под блокировкой. Текст отказа — `WEEKLY_ANNUL_CORRECTION_REQUIRED_MESSAGE`.
+ */
+export const annulWeeklyRequestSchema = z
+  .object({
+    reason: weeklyBackdateReasonSchema,
+    version: versionSchema,
+    fingerprint: assignmentFingerprintSchema,
+    cancelGroupsFingerprint: assignmentFingerprintSchema.optional(),
+    acknowledgements: assignmentAcknowledgementsSchema.optional(),
+    /**
+     * Ключ идемпотентности и названные листы — ровно у операции журнала. Причина здесь не
+     * повторяется: её уже спросило поле `reason` выше.
+     */
+    correction: z
+      .object({
+        operationId: uuidSchema,
+        unlockWaybillIds: z.array(uuidSchema).max(ESM2_UNLOCK_LIMIT).optional().default([]),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type AnnulWeeklyRequestInput = z.infer<typeof annulWeeklyRequestSchema>;
+export type AnnulWeeklyRequestBody = z.input<typeof annulWeeklyRequestSchema>;
+
+/**
+ * Отказ команде без ключа операции там, где он нужен. Называет и причину требования, и то, чего
+ * не хватает: «нужен ключ операции» без объяснения читается как придирка формы.
+ */
+export const WEEKLY_ANNUL_CORRECTION_REQUIRED_MESSAGE =
+  'Аннулирование трогает прошедшие дни либо гасит запланированные решения — нужен ключ операции: она уйдёт в журнал коррекций вместе с причиной и вашим именем';
+
+/**
+ * Схема ответа предпросмотра — **замок обезличивания**, а не украшение маршрута (приём
+ * `earlyEndApprovalPreviewResponseSchema`).
+ *
+ * Она объявляется у Fastify, и ответ сериализуется через неё: поле, случайно попавшее в объект, до
+ * клиента не доедет. `satisfies` связывает схему с типом на этапе компиляции — разойтись им молча
+ * нечем.
+ */
+export const weeklyAnnulPreviewResponseSchema = z
+  .object({
+    weeklyRequestId: uuidSchema,
+    weekStart: dateOnlySchema,
+    weekLabel: z.string(),
+    today: dateOnlySchema,
+    effectiveDate: dateOnlySchema.nullable(),
+    backdated: z.boolean(),
+    requiresOperation: z.boolean(),
+    correctionFloor: dateOnlySchema.nullable(),
+    allowed: z.boolean(),
+    blockedReason: z.string().nullable(),
+    items: z.array(
+      z
+        .object({
+          itemId: uuidSchema,
+          kind: z.enum(WEEKLY_ITEM_KINDS),
+          title: z.string(),
+          requestId: uuidSchema.nullable(),
+          displayNumber: z.string().nullable(),
+          state: z.enum(WEEKLY_ANNUL_STATES),
+          reason: z.string(),
+          reverse: z.enum(WEEKLY_ANNUL_REVERSALS),
+          shortenTo: dateOnlySchema.nullable(),
+        })
+        .strict(),
+    ),
+    blockers: z.array(
+      z
+        .object({
+          code: z.enum(WEEKLY_ANNUL_BLOCKERS),
+          itemId: uuidSchema,
+          dates: z.array(dateOnlySchema),
+          message: z.string(),
+        })
+        .strict(),
+    ),
+    paper: z
+      .object({
+        cancel: z.number().int().nonnegative(),
+        trim: z.number().int().nonnegative(),
+        reissue: z.number().int().nonnegative(),
+        trimmedTo: dateOnlySchema.nullable(),
+      })
+      .strict(),
+    unlockable: z
+      .array(
+        z
+          .object({
+            waybillId: uuidSchema,
+            requestId: uuidSchema,
+            displayNumber: z.string(),
+            number: z.string(),
+            periodFrom: dateOnlySchema,
+            periodTo: dateOnlySchema,
+          })
+          .strict(),
+      )
+      .nullable(),
+    unlockableCount: z.number().int().nonnegative(),
+    cancelGroups: z.array(
+      z
+        .object({
+          effectiveDate: dateOnlySchema,
+          dimensions: z.array(z.string()),
+          title: z.string(),
+        })
+        .strict(),
+    ),
+    cancelGroupsFingerprint: assignmentFingerprintSchema.nullable(),
+    issues: z.array(
+      z
+        .object({
+          issueKey: z.number().int().nonnegative(),
+          codes: z.array(z.string()),
+          warningFingerprint: assignmentFingerprintSchema,
+        })
+        .strict(),
+    ),
+    linearDays: z
+      .object({ detachable: z.array(dateOnlySchema), frozen: z.array(dateOnlySchema) })
+      .strict(),
+    shifts: z.array(dateOnlySchema),
+    pendingWeeks: z.array(z.string()),
+    fingerprint: assignmentFingerprintSchema,
+    asOf: dateOnlySchema,
+  })
+  .strict() satisfies z.ZodType<WeeklyAnnulPreviewDto>;

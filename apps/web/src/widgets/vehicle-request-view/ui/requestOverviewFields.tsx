@@ -240,14 +240,10 @@ export function requestOverviewFields({
           {
             key: 'weeklyOrigin',
             label: 'Создан по недельной заявке',
-            children: (
-              <EntityLink
-                to={weeklyRequestPath(weekly.origin.weeklyRequestId)}
-                title="Открыть недельную заявку"
-              >
-                {formatWeeklyRequestNumber(weekly.origin.weeklyRequestNum)}
-              </EntityLink>
-            ),
+            // The week's state sits next to its number (ADR 0218): «created by НЗ-12» and
+            // «created by НЗ-12 (annulled)» are different claims, and the second explains why the
+            // order is cancelled.
+            children: <WeeklyRef link={weeklyRequestPath} week={weekly.origin} />,
           },
         ]
       : []),
@@ -266,17 +262,12 @@ export function requestOverviewFields({
             children: (
               <Space size={12} wrap>
                 {weekly.extensions.map((extension) => (
-                  <span key={`${extension.weeklyRequestId}-${extension.weekStart}`}>
-                    <EntityLink
-                      to={weeklyRequestPath(extension.weeklyRequestId)}
-                      title="Открыть недельную заявку"
-                    >
-                      {formatWeeklyRequestNumber(extension.weeklyRequestNum)}
-                    </EntityLink>{' '}
-                    <Typography.Text type="secondary">
-                      ({weeklyWeekLabel(extension.weekStart)})
-                    </Typography.Text>
-                  </span>
+                  <WeeklyRef
+                    key={`${extension.weeklyRequestId}-${extension.weekStart}`}
+                    link={weeklyRequestPath}
+                    week={extension}
+                    note={weeklyWeekLabel(extension.weekStart)}
+                  />
                 ))}
               </Space>
             ),
@@ -342,4 +333,31 @@ export function requestOverviewFields({
         ]
       : []),
   ];
+}
+
+/**
+ * A link to a weekly request carrying its state (ADR 0218).
+ *
+ * One carrier for both places that render it — the order's origin and the list of extensions:
+ * a second retelling of «number plus state» would drift from the first. The route builder arrives
+ * as a prop, the way this slice takes every route (`weeklyRequestPath`): the card is reusable and
+ * must not know the vehicle pages' URLs.
+ */
+function WeeklyRef(props: {
+  link: (id: string) => string;
+  /** Fields come under their DTO names, so both the origin and an extension fit without a mapper. */
+  week: { weeklyRequestId: string; weeklyRequestNum: number; weeklyRequestStatus: string };
+  /** The parenthesised note: the week label for an extension, nothing for the origin. */
+  note?: string;
+}) {
+  const annulled = props.week.weeklyRequestStatus === 'annulled';
+  const suffix = [props.note, annulled ? 'аннулирована' : null].filter((part) => part).join(', ');
+  return (
+    <span>
+      <EntityLink to={props.link(props.week.weeklyRequestId)} title="Открыть недельную заявку">
+        {formatWeeklyRequestNumber(props.week.weeklyRequestNum)}
+      </EntityLink>
+      {suffix ? <Typography.Text type="secondary"> ({suffix})</Typography.Text> : null}
+    </span>
+  );
 }

@@ -157,12 +157,12 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
                   </li>
                 )}
                 {preview.unlockable.length > 0 && <li>{WAYBILL_CORRECTION_CONFIRM}</li>}
-                {/* Irreversibility goes last and plainly: there is no "undo approval" for a weekly
-                    request, terms are cut by early end per vehicle (ADR 0044), and a written-off
-                    form number never comes back. */}
+                {/* The cost comes last and plainly. Conducting can now be undone (annulment,
+                    ADR 0218), yet a written-off form number never returns to the series, and a day
+                    whose work is already signed stays beyond the annulment's reach. */}
                 <li>
-                  Отменить проведение одной кнопкой нельзя: сроки сокращают досрочным завершением по
-                  каждой машине, а списанный номер бланка не возвращается.
+                  Развернуть проведение можно аннулированием недели, но списанный номер бланка не
+                  возвращается, а дни с подписанной работой придётся разобрать поштучно.
                 </li>
               </ul>
             }

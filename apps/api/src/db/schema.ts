@@ -8204,24 +8204,27 @@ export const waybillCorrections = pgTable(
      * заднего числа прирастает этапами, и добавление нового не должно требовать ALTER TYPE. Реестр
      * значений живёт в контрактах, CHECK держит нижнюю границу от опечатки.
      */
-    kind: text('kind')
-      .notNull()
-      .$type<
-        | 'route'
-        | 'transfer'
-        | 'esm2'
-        | 'cancel'
-        | 'issue'
-        | 'request_date'
-        | 'weekly'
-        | 'crew'
-        | 'assignment_tail'
-        // Пачка дней (миграция 0339): выписка 4-П на весь период заказа техники на объект. Свой
-        // вид, а не `issue`, потому что решение одно, а листов под ним до пятидесяти — в журнале
-        // это обязано читаться одной операцией, иначе «что сделали задним числом» отвечается
-        // полусотней строк, которые нечем связать.
-        | 'day_batch'
-      >(),
+    kind: text('kind').notNull().$type<
+      | 'route'
+      | 'transfer'
+      | 'esm2'
+      | 'cancel'
+      | 'issue'
+      | 'request_date'
+      | 'weekly'
+      | 'crew'
+      | 'assignment_tail'
+      // Пачка дней (миграция 0339): выписка 4-П на весь период заказа техники на объект. Свой
+      // вид, а не `issue`, потому что решение одно, а листов под ним до пятидесяти — в журнале
+      // это обязано читаться одной операцией, иначе «что сделали задним числом» отвечается
+      // полусотней строк, которые нечем связать.
+      | 'day_batch'
+      // Аннулирование применённой недельной заявки (миграция 0356, ADR 0218). Свой вид, а не
+      // `weekly`: тот двигает сроки состава вперёд и выписывает бумагу, а этот двигает их назад
+      // и бумагу гасит. Одно слово на два противоположных события отвечало бы одинаково там, где
+      // спрашивают разное.
+      | 'weekly_annul'
+    >(),
     reason: text('reason').notNull(),
     /**
      * Снимок авторизации (Р9): какие права требовались, когда операцию разрешили. Повтор спустя
@@ -8256,7 +8259,7 @@ export const waybillCorrections = pgTable(
     // числом» отвечается одним словом на два разных события.
     kindCheck: check(
       'waybill_corrections_kind_check',
-      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail', 'day_batch')`,
+      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail', 'day_batch', 'weekly_annul')`,
     ),
     // Снимок обязателен ровно у тех видов, что заведены историей назначения: у остальных его нет и
     // быть не может — миграция их не переписывала.
@@ -9298,6 +9301,10 @@ export const weeklyRequestStatusEnum = pgEnum('weekly_request_status', [
   'draft',
   'pending',
   'applied',
+  // «Аннулирована» (миграция 0354, ADR 0218): виза была, следствия развёрнуты обратно. Порядок
+  // значений задаёт `ORDER BY status`, поэтому значение стоит перед `cancelled` и там же —
+  // в `WEEKLY_REQUEST_STATUSES` контрактов.
+  'annulled',
   'cancelled',
 ]);
 // Три вида строки: «остаётся», «нужна дополнительно» и «уезжает». Третий заведён потому, что
@@ -9346,6 +9353,13 @@ export const weeklyVehicleRequests = pgTable(
     approvedAt: timestamp('approved_at', { withTimezone: true }),
     appliedAt: timestamp('applied_at', { withTimezone: true }),
     cancelReason: text('cancel_reason').notNull().default(''),
+    // Аннулирование применённой недели (миграция 0355, ADR 0218): кто развернул, когда и почему.
+    // RESTRICT на автора — той же причиной, что у `created_by`: «кто развернул неделю» обязано
+    // пережить его увольнение. Причина — `NOT NULL DEFAULT ''`, как `cancel_reason`: на nullable
+    // колонке CHECK с `btrim` не держит ничего (при NULL равенство тоже NULL, проверка проходит).
+    annulledBy: uuid('annulled_by').references(() => users.id, { onDelete: 'restrict' }),
+    annulledAt: timestamp('annulled_at', { withTimezone: true }),
+    annulReason: text('annul_reason').notNull().default(''),
     // Токен оптимистичной блокировки: состав правят несколько человек, а виза применяет ровно тот
     // состав, который видел визирующий.
     version: integer('version').notNull().default(0),
@@ -9365,13 +9379,25 @@ export const weeklyVehicleRequests = pgTable(
     ),
     // Виза и применение — одно событие, поэтому инвариант жизненного цикла записывается двумя
     // равенствами, а не тремя «или»: завизированная — это ровно применённая.
+    //
+    // Аннулированная стоит в правой части обоих равенств (миграция 0355, ADR 0218): она **была**
+    // применена, и виза с моментом применения у неё сохраняются — именно они объясняют, откуда у
+    // заказов взялись продления, которые потом развернули. Сказать «только applied» значило бы
+    // упереться в CHECK на самом переходе.
     appliedStatus: check(
       'weekly_requests_applied_check',
-      sql`(${t.status} = 'applied') = (${t.appliedAt} is not null)`,
+      sql`(${t.status} in ('applied', 'annulled')) = (${t.appliedAt} is not null)`,
     ),
     approvedStatus: check(
       'weekly_requests_approved_status_check',
-      sql`(${t.status} = 'applied') = (${t.approvedBy} is not null)`,
+      sql`(${t.status} in ('applied', 'annulled')) = (${t.approvedBy} is not null)`,
+    ),
+    // Полная развилка, а не три «или»: у аннулированной заполнены все три поля и причина непуста,
+    // у любой другой — все три пусты. Полуснимок «аннулирована, автора нет» — мусор, который
+    // однажды прочитают как факт.
+    annulCheck: check(
+      'weekly_requests_annul_check',
+      sql`(${t.status} = 'annulled') = (${t.annulledBy} is not null and ${t.annulledAt} is not null and btrim(${t.annulReason}) <> '')`,
     ),
     cancelReasonRequired: check(
       'weekly_requests_cancel_check',
@@ -9381,10 +9407,14 @@ export const weeklyVehicleRequests = pgTable(
     // тем же приёмом, что `vehicle_requests.id_type_unique` у назначения.
     idWeekUnique: unique('weekly_requests_id_week_unique').on(t.id, t.weekStart),
     // Одна заявка на пару «объект + неделя»: две означали бы два состава, которые при согласовании
-    // подерутся за один и тот же заказ. Отменённые из ограничения выпадают.
+    // подерутся за один и тот же заказ. Оба терминальных состояния из ограничения выпадают
+    // (миграция 0355): после аннулирования площадка собирает ту же неделю заново, и занятая пара
+    // не дала бы ей этого никаким способом, кроме удаления документа насовсем — вместе с
+    // объяснением. Единственным держателем правила индекс при этом не является: «живость» недели
+    // спрашивают ещё три чтения в маршрутах, и сведено оно в `isWeeklyRequestLive` контрактов.
     objectWeekUniq: uniqueIndex('weekly_requests_object_week_uniq')
       .on(t.objectId, t.weekStart)
-      .where(sql`${t.status} <> 'cancelled'`),
+      .where(sql`${t.status} not in ('cancelled', 'annulled')`),
     numUniq: uniqueIndex('weekly_requests_num_uniq').on(t.num),
     // «Что ждёт визы»: в очередь руководителя попадает только `pending` — черновик виден, но не
     // отвлекает.

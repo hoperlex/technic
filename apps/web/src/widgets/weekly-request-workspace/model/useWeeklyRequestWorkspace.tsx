@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react';
 import { App } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router';
-import { isWeeklyRequestEditable, type WeeklyCorrectionBody } from '@technic/contracts';
+import {
+  isWeeklyRequestApplied,
+  isWeeklyRequestEditable,
+  type WeeklyCorrectionBody,
+} from '@technic/contracts';
 import { garageKeys } from '@entities/garage';
 import { useAuth } from '@entities/session';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
@@ -17,6 +21,7 @@ import {
 import { useVehicleClassifications } from '@entities/vehicle-type';
 import { useWeeklyRequestCreate } from '@features/weekly-request-create';
 import { useWeeklyComposition } from './useWeeklyComposition';
+import { useWeeklyAnnul } from './useWeeklyAnnul';
 import { hasApiStatus } from './apiError';
 import {
   decisionMessage,
@@ -83,10 +88,12 @@ export function useWeeklyRequestWorkspace() {
     // refusal (R14).
     staleTime: 5 * 60_000,
   });
+  // The checklist lives on for an annulled week too: its rows explain what was rolled back
+  // (ADR 0218), and they are shown read-only.
   const documentsQuery = useQuery({
     queryKey: weeklyRequestKeys.documents(id),
     queryFn: () => weeklyRequestsApi.documents(id),
-    enabled: !!id && status === 'applied',
+    enabled: !!id && !!status && isWeeklyRequestApplied(status),
   });
   const historyQuery = useQuery({
     queryKey: weeklyRequestKeys.history(id),
@@ -128,6 +135,11 @@ export function useWeeklyRequestWorkspace() {
     setApplyError(null);
     setSkipReasons(new Map());
   };
+  /** Done and recorded: last refusal's explanations are moot and the related feeds are stale. */
+  const settled = () => {
+    clearApplyError();
+    invalidate();
+  };
   const onError = (error: unknown) => {
     if (hasApiStatus(error, 409)) {
       void queryClient.invalidateQueries({ queryKey: weeklyRequestKeys.root });
@@ -157,6 +169,9 @@ export function useWeeklyRequestWorkspace() {
       version: request.version,
     });
   };
+  /** Annulment of an applied week (ADR 0218) — its own module: the workspace is dense enough. */
+  const annul = useWeeklyAnnul({ request, onSettled: settled, onError });
+
   const saveMutation = useMutation({
     mutationFn: saveComposition,
     onSuccess: () => {
@@ -251,6 +266,7 @@ export function useWeeklyRequestWorkspace() {
     : null;
 
   return {
+    annul,
     request,
     requestQuery,
     status,

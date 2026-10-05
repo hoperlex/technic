@@ -1789,7 +1789,7 @@ export function seesWholeWeeklyRequest(p: Principal): boolean {
  * Этим модуль и отличается от `assertRequestScope`, где роль без площадочной оси не ограничена
  * ничем.
  */
-function managesWeeklyRequestObject(p: Principal, objectId: string): boolean {
+export function managesWeeklyRequestObject(p: Principal, objectId: string): boolean {
   // Учётка без роли прав не имеет вовсе, и «своей оси нет» у неё означает не «все площадки», а «ни
   // одной»: досюда она доходит, только если проверка права на маршруте не удержалась.
   if (!p.role) return false;

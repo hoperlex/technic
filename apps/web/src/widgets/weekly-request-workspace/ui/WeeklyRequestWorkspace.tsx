@@ -1,10 +1,11 @@
 import { Card, Input, Skeleton } from 'antd';
-import { weeklyWeekEffectiveDate } from '@technic/contracts';
+import { isWeeklyRequestApplied, weeklyWeekEffectiveDate } from '@technic/contracts';
 import { ReasonModal } from '@shared/ui';
 import { useWeeklyRequestWorkspace } from '../model/useWeeklyRequestWorkspace';
 import { weeklyReasonText } from '../model/pageState';
 import { WeeklyRequestActions } from './WeeklyRequestActions';
 import { WeeklyRequestBanners } from './WeeklyRequestBanners';
+import { WeeklyRequestAnnulModal } from './WeeklyRequestAnnulModal';
 import { WeeklyRequestConductModal } from './WeeklyRequestConductModal';
 import { WeeklyRequestComposition, WeeklyRequestLeaving } from './WeeklyRequestComposition';
 import { WeeklyRequestHeader, WeeklyRequestNotOpened } from './WeeklyRequestFrame';
@@ -122,7 +123,7 @@ export function WeeklyRequestWorkspace() {
             />
           </Card>
 
-          {status === 'applied' && (
+          {!!status && isWeeklyRequestApplied(status) && (
             <Card size="small" title="Готовность недели">
               <WeeklyRequestChecklist documents={workspace.documents} can={workspace.can} />
             </Card>
@@ -155,6 +156,16 @@ export function WeeklyRequestWorkspace() {
         onConduct={() => workspace.setConducting(true)}
         onReject={() => workspace.setReasonMode('reject')}
         onCancel={() => workspace.setReasonMode('cancel')}
+        onAnnul={workspace.annul.onOpen}
+      />
+
+      {/* Annulment: the server computes the price of the rollback with the very code that will
+          execute it (ADR 0218); the reason and the sheets to reissue are named by the person. */}
+      <WeeklyRequestAnnulModal
+        request={workspace.annul.target}
+        onClose={workspace.annul.onClose}
+        onAnnul={workspace.annul.onAnnul}
+        pending={workspace.annul.pending}
       />
 
       {/* Retroactive conduct window: the operation price is asked from the server by the same code

@@ -12,7 +12,16 @@ import {
   extendBlocker,
   formatVehicleRequestNumber,
   formatWeeklyRequestNumber,
+  annulWeeklyRequestSchema,
+  can,
+  canAnnulWeeklyRequest,
   isWeeklyRequestEditable,
+  isWeeklyRequestLive,
+  WEEKLY_REQUEST_STATUSES,
+  weeklyAnnulHeaderBlocker,
+  weeklyAnnulNeedsSiteScope,
+  weeklyAnnulPreviewResponseSchema,
+  type WeeklyAnnulPreviewDto,
   isWeeklyWeekOverdue,
   itemWarnings,
   minRequestDateKey,
@@ -82,6 +91,7 @@ import {
   approvesOwnWeeklyRequest,
   assertWeeklyRequestScope,
   canApproveWeeklyRequest,
+  managesWeeklyRequestObject,
   seesWholeWeeklyRequest,
 } from '../lib/access';
 // Состояние позиции классификатора для `newItemBlocker` читается тем же справочником, что и на
@@ -92,6 +102,16 @@ import {
   weeklyItemsReadWhere,
 } from '../services/weekly-request-access';
 import { loadLeftBy } from '../services/weekly-request-blockers';
+// Состояние обратного хода строки — один модуль на чек-лист и на команду аннулирования
+// (ADR 0218 решение 4): правило «чем развернуть эту строку» не должно иметь второго носителя.
+import { annulStates } from '../services/weekly-request-annul-state';
+import {
+  applyWeeklyAnnul,
+  assertAnnulOperation,
+  openAnnulDoor,
+  planWeeklyAnnul,
+  weeklyAnnulPreviewDto,
+} from '../services/weekly-request-annul';
 import { esm2CorrectionScope } from '../services/waybill-esm2';
 // Механика заднего числа — общая для всех входов (ADR 0101): вердикт, запись операции,
 // идемпотентность по ключу и связь операции с заявками живут в одном месте, а не переписываются
@@ -133,6 +153,9 @@ const suggestionQuerySchema = z.object({
 const creators = alias(users, 'weekly_creators');
 const updaters = alias(users, 'weekly_updaters');
 const approvers = alias(users, 'weekly_approvers');
+// Автор разворота (ADR 0218) — своим алиасом: у аннулированной заполнены и виза, и разворот, и
+// одним join'ом два имени не прочитать.
+const annullers = alias(users, 'weekly_annullers');
 const historyActors = alias(users, 'weekly_history_actors');
 /** Заказ-основание строки `extend`/`leave`. */
 const sourceRequests = alias(vehicleRequests, 'weekly_source_requests');
@@ -166,6 +189,10 @@ const weeklySelect = {
   status: weeklyVehicleRequests.status,
   comment: weeklyVehicleRequests.comment,
   cancelReason: weeklyVehicleRequests.cancelReason,
+  annulledBy: weeklyVehicleRequests.annulledBy,
+  annulledByName: annullers.fullName,
+  annulledAt: weeklyVehicleRequests.annulledAt,
+  annulReason: weeklyVehicleRequests.annulReason,
   approvedBy: weeklyVehicleRequests.approvedBy,
   approvedByName: approvers.fullName,
   approvedAt: weeklyVehicleRequests.approvedAt,
@@ -185,7 +212,8 @@ function headerQuery() {
     .innerJoin(constructionObjects, eq(weeklyVehicleRequests.objectId, constructionObjects.id))
     .innerJoin(creators, eq(weeklyVehicleRequests.createdBy, creators.id))
     .leftJoin(updaters, eq(weeklyVehicleRequests.updatedBy, updaters.id))
-    .leftJoin(approvers, eq(weeklyVehicleRequests.approvedBy, approvers.id));
+    .leftJoin(approvers, eq(weeklyVehicleRequests.approvedBy, approvers.id))
+    .leftJoin(annullers, eq(weeklyVehicleRequests.annulledBy, annullers.id));
 }
 
 type HeaderRow = Awaited<ReturnType<typeof headerQuery>>[number];
@@ -235,6 +263,16 @@ const itemSelect = {
   vehicleTypeOfVehicle: itemVehicleTypes.name,
   vehicleCategoryOfVehicle: itemVehicleCategories.name,
 };
+
+/**
+ * Статусы «живой» недели — те, что занимают пару «объект + неделя» (ADR 0218 решение 12).
+ *
+ * Перечнем, а не отрицанием двух значений: `ne(status, 'cancelled')` стояло в трёх чтениях, и
+ * второе терминальное состояние каждое из них молча пропустило бы. Множество считается из словаря
+ * контрактов тем же предикатом, которым его считает частичный уникальный индекс по смыслу
+ * (`isWeeklyRequestLive`), — чтобы добавленный однажды статус не потребовал третьего перечня.
+ */
+const LIVE_WEEKLY_STATUSES = WEEKLY_REQUEST_STATUSES.filter(isWeeklyRequestLive);
 
 function itemsQuery() {
   return db
@@ -435,7 +473,10 @@ async function loadOtherWeekly(
     .where(
       and(
         inArray(weeklyVehicleRequestItems.sourceRequestId, sourceIds),
-        ne(weeklyVehicleRequests.status, 'cancelled'),
+        // Оба терминальных состояния выпадают (ADR 0218 решение 12): аннулированная неделя
+        // решением больше не является, и предупреждать о ней как о «другой активной» значило бы
+        // звать площадку к документу, который уже развёрнут.
+        inArray(weeklyVehicleRequests.status, LIVE_WEEKLY_STATUSES),
         gte(weeklyVehicleRequests.weekStart, weekStartKey(moscowDateKeyOf(new Date()))),
       ),
     )
@@ -463,6 +504,10 @@ function toDto(header: HeaderRow, items: WeeklyRequestItemDto[]): WeeklyVehicleR
     status: header.status,
     comment: header.comment,
     cancelReason: header.cancelReason,
+    annulledBy: header.annulledBy,
+    annulledByName: header.annulledByName,
+    annulledAt: header.annulledAt ? header.annulledAt.toISOString() : null,
+    annulReason: header.annulReason,
     approvedBy: header.approvedBy,
     approvedByName: header.approvedByName,
     approvedAt: header.approvedAt ? header.approvedAt.toISOString() : null,
@@ -1112,7 +1157,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
           and(
             eq(weeklyVehicleRequests.objectId, objectId),
             eq(weeklyVehicleRequests.weekStart, scope.weekStart),
-            ne(weeklyVehicleRequests.status, 'cancelled'),
+            inArray(weeklyVehicleRequests.status, LIVE_WEEKLY_STATUSES),
           ),
         );
 
@@ -1239,7 +1284,11 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         and(
           eq(weeklyVehicleRequests.objectId, body.objectId),
           eq(weeklyVehicleRequests.weekStart, body.weekStart),
-          ne(weeklyVehicleRequests.status, 'cancelled'),
+          // Аннулированная неделю не занимает — ровно как снятая (ADR 0218 решение 12): иначе
+          // после ошибочной визы собрать ту же неделю заново было бы нечем, кроме удаления
+          // документа насовсем, то есть вместе с объяснением. Освобождённого частичного индекса
+          // для этого недостаточно: отказ ставит вот это чтение.
+          inArray(weeklyVehicleRequests.status, LIVE_WEEKLY_STATUSES),
         ),
       );
     // Одна заявка на пару «объект + неделя» (план Р3): две означали бы два состава, которые при
@@ -1314,7 +1363,11 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
       const header = await requireHeader(req.params.id);
       assertWeeklyRequestScope(p, header.objectId);
       if (!isWeeklyRequestEditable(header.status)) {
-        throw err.unprocessable('Применённая заявка не правится — она уже стала историей');
+        throw err.unprocessable(
+          header.status === 'annulled'
+            ? 'Аннулированная заявка не правится — её состав остался объяснением того, что развернули'
+            : 'Применённая заявка не правится — она уже стала историей',
+        );
       }
       // Третья точка проверки недели: черновик, заведённый в четверг, доживает до понедельника.
       assertWeekAllowed(header.weekStart, p);
@@ -1375,8 +1428,10 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
       if (!isWeeklyRequestEditable(header.status)) {
         throw err.unprocessable(
           header.status === 'applied'
-            ? 'Применённая заявка не снимается: сроки сокращают досрочным завершением по каждой машине'
-            : 'Заявка уже снята',
+            ? 'Применённая заявка не снимается: её разворачивают аннулированием'
+            : header.status === 'annulled'
+              ? 'Заявка уже аннулирована'
+              : 'Заявка уже снята',
         );
       }
       if (body.status === 'pending' && header.status !== 'draft') {
@@ -1530,7 +1585,9 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         throw err.unprocessable(
           header.status === 'applied'
             ? 'Недельная заявка уже применена'
-            : 'Визируется только заявка, поданная на визу',
+            : header.status === 'annulled'
+              ? 'Недельная заявка аннулирована — визировать нечего'
+              : 'Визируется только заявка, поданная на визу',
         );
       }
 
@@ -1764,7 +1821,9 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
             ? null
             : header.status === 'applied'
               ? 'Недельная заявка уже применена'
-              : 'Визируется только заявка, поданная на визу'));
+              : header.status === 'annulled'
+                ? 'Недельная заявка аннулирована — визировать нечего'
+                : 'Визируется только заявка, поданная на визу'));
 
       // Строки состава — тем же сужением, что и карточка: чек-лист и предпросмотр рассказывают об
       // одних и тех же заказах, и второй отбор открыл бы арендодателю чужие листы площадки.
@@ -1927,6 +1986,36 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
       }
 
       const bounds = weeklyWeekBounds(header.weekStart);
+      /*
+       * Состояние обратного хода каждой строки (ADR 0218 решение 4) — считает сервер, тем же
+       * модулем, которым считает команда аннулирования.
+       *
+       * Портал посчитать это не может: в строке чек-листа нет ни статуса заказа, ни его
+       * эффективного конца, ни ожидающего отъезда, ни недель, решивших позже. Была бы — второе
+       * описание правила разошлось бы с первым молча, и кнопка обещала бы ход, которым команда
+       * откажет.
+       *
+       * У неприменённой заявки разворачивать нечего, и чтений не делается вовсе: `applied_at` у
+       * неё пуст, а значит и «позже применённых» недель не существует по построению.
+       */
+      const reversals = header.appliedAt
+        ? new Map(
+            (
+              await annulStates(db, {
+                weeklyId: header.id,
+                appliedAt: header.appliedAt,
+                items: rows.map((row) => ({
+                  id: row.id,
+                  kind: row.kind,
+                  result: row.result,
+                  dateTo: row.dateTo,
+                  previousDateTo: row.previousDateTo,
+                  orderId: row.sourceRequestId ?? row.createdRequestId,
+                })),
+              })
+            ).map((state) => [state.itemId, state] as const),
+          )
+        : null;
       const docRows: WeeklyDocumentRowDto[] = rows.map((row) => {
         const requestId = row.sourceRequestId ?? row.createdRequestId;
         const num = row.sourceRequestNum ?? row.createdRequestNum;
@@ -1948,6 +2037,16 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
           relocation: relocationCell(row, trips),
           result: row.result,
           skipReason: row.skipReason,
+          reversal: (() => {
+            const state = reversals?.get(row.id);
+            if (!state) return null;
+            return {
+              state: state.state,
+              reason: state.reason,
+              reverse: state.reverse,
+              shortenTo: state.shortenTo,
+            };
+          })(),
         };
       });
 
@@ -1961,6 +2060,300 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         skipped: docRows.filter((row) => row.result === 'skipped').length,
         rows: docRows,
       };
+    },
+  );
+
+  // ── Что развернёт аннулирование этой недели (предпросмотр, ADR 0218 решение 8) ──
+  /**
+   * Читающая половина команды: та же работа теми же функциями, но без единой правки. Окно
+   * показывает ею цену — какие листы ЭСМ-2 сгорят, какие подрежутся, какие отработанные придётся
+   * назвать поимённо, какие запланированные решения погаснут и какие дни уйдут из рейсов, — и её
+   * запреты, если аннулировать нельзя.
+   *
+   * Блокировок расчёт здесь **не берёт** (ADR 0211 решение 1): `FOR UPDATE` на время просмотра
+   * остановил бы работу диспетчеров ради вопроса «что будет, если», а боевую ручку защищает
+   * отпечаток, а не блокировка.
+   *
+   * Доступ — по чтению карточки, как у предпросмотра проведения: понять, почему кнопка
+   * недоступна, должен и тот, кто аннулировать не вправе. Ответ лежит в `allowed` и
+   * `blockedReason`, а не в 403 — отказ маршрута объяснил бы отсутствие права, но не то, что
+   * делать дальше.
+   */
+  r.get(
+    '/:id/annul',
+    { ...auth, schema: { params: idParams, response: { 200: weeklyAnnulPreviewResponseSchema } } },
+    async (req): Promise<WeeklyAnnulPreviewDto> => {
+      const p = requirePrincipal(req);
+      await assertWeeklyRequestReadable(p, req.params.id);
+      // Момент берётся один раз на весь ответ: полночь между двумя `new Date()` дала бы окну
+      // сегодняшний день от одной границы и вчерашний от другой.
+      const now = new Date();
+      const today = moscowDateKeyOf(now);
+      const access = backdateAccessOf(p);
+      /*
+       * Читающая транзакция, а не отдельные запросы: расчёт спрашивает историю назначения, листы,
+       * смены и рейсы десятком чтений, и в `READ COMMITTED` каждое взяло бы свой снимок — отпечаток
+       * тогда описывал бы состояние, которого ни в один момент не существовало. Блокировок при
+       * этом не берётся ни одной (`locked: false`).
+       */
+      const plan = await db.transaction(async (tx) =>
+        planWeeklyAnnul(tx, { weeklyId: req.params.id, asOf: today, locked: false }),
+      );
+      /*
+       * Глубина спрашивается тем же `checkBackdate`, которым её спросит команда, и с заведомо
+       * непустой причиной: вопрос здесь не «хватает ли объяснения» (его человек ещё не написал), а
+       * «пройдёт ли операция задним числом». Вердикт о праве сюда не идёт — право называет сам DTO
+       * своим порядком причин.
+       */
+      const verdict =
+        plan.effectiveDate === null
+          ? null
+          : checkBackdate({
+              effectiveDate: plan.effectiveDate,
+              today,
+              subject: p,
+              hasReason: true,
+            });
+      return weeklyAnnulPreviewDto(plan, {
+        subject: p,
+        canReadWaybills: can(p, 'waybills.read'),
+        inSiteScope: managesWeeklyRequestObject(p, plan.header.objectId),
+        // Граница считается тем же правилом, что и нижний предел дейтпикера: у права без предела
+        // она `null`, и выдуманный «очень давний год» здесь запирал бы то, что сервер примет.
+        correctionFloor: minRequestDateKey(now, access),
+        depthRefusal: verdict && !verdict.ok ? verdict.reason : null,
+      });
+    },
+  );
+
+  // ── Аннулирование применённой недели (ADR 0218) ──
+  /**
+   * Страж пропускает всякого, кому виден модуль, а право спрашивает обработчик — то же
+   * единственное исключение манифеста, что у визы (ADR 0116 п. 2), и по той же причине: прав два,
+   * и какое требуется, решает **ветвь**, а не тело. Страж умеет только конъюнкцию, а «одно или
+   * другое, смотря куда достаёт операция» ею не пишется.
+   *
+   * Ветвь выбирает эффективная дата — первый снимаемый день. Не раньше сегодня — обычная ветвь:
+   * `weeklyRequests.approve` в области площадки либо `waybills.correct`. Раньше — ветвь коррекции:
+   * право прошлого, глубина, причина, ключ идемпотентности и строка журнала, как у проведения
+   * просроченной недели.
+   *
+   * ПОЧЕМУ РАСЧЁТ СЧИТАЕТСЯ ДВАЖДЫ. Первый раз — без блокировок, до транзакции: им выбирается
+   * ветвь и отвечается отказом тому, кому эта команда не принадлежит вовсе. Второй — под
+   * блокировками внутри транзакции, и именно он исполняется. Разойдись они — отпечаток не
+   * совпадёт, и человек вернётся к пересчитанному перечню (409). Иначе выбор ветви зависел бы от
+   * того, что успело измениться между чтением и записью.
+   */
+  r.post(
+    '/:id/annul',
+    { ...auth, schema: { params: idParams, body: annulWeeklyRequestSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      await assertWeeklyRequestReadable(p, req.params.id);
+      const today = moscowDateKeyOf(new Date());
+
+      // Ветвь — по незаблокированному расчёту: право называется раньше, чем команда начнёт ждать
+      // на блокировках заказов, которые ей, может быть, и не принадлежат.
+      const draft = await planWeeklyAnnul(db, {
+        weeklyId: req.params.id,
+        asOf: today,
+        locked: false,
+        unlockWaybillIds: body.correction?.unlockWaybillIds ?? [],
+      });
+      if (!canAnnulWeeklyRequest(p, draft.backdated)) {
+        throw err.forbidden(
+          draft.backdated
+            ? 'Аннулировать неделю, чьи дни уже идут, может тот, у кого есть право коррекции задним числом'
+            : 'Аннулировать применённую неделю может руководитель этой площадки или диспетчер',
+        );
+      }
+      // Область площадки спрашивается только там, где право пришло визой: у `waybills.correct`
+      // своей области нет вовсе — у диспетчера площадок не бывает.
+      if (weeklyAnnulNeedsSiteScope(p, draft.backdated)) {
+        assertWeeklyRequestScope(p, draft.header.objectId);
+      }
+
+      /**
+       * Проверки и исполнение под блокировками — одним телом на обе ветви.
+       *
+       * Второй экземпляр этих проверок был бы худшим, что можно сделать с этой ручкой: ветвь
+       * коррекции и обычная расходятся ровно в одном — есть ли строка журнала, — а всё остальное у
+       * них совпадает дословно.
+       */
+      const annulInTx = async (
+        tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+        correctionId: string | null,
+      ) => {
+        // Гейт режима — первым запросом транзакции (Ж3): не ради значения, а чтобы заморозка
+        // дождалась этой транзакции, а она не проскочила мимо заморозки.
+        const mode = await openAnnulDoor(tx);
+        const plan = await planWeeklyAnnul(tx, {
+          weeklyId: req.params.id,
+          asOf: today,
+          locked: true,
+          unlockWaybillIds: body.correction?.unlockWaybillIds ?? [],
+        });
+        const headerBlocker = weeklyAnnulHeaderBlocker(plan.header);
+        if (headerBlocker) throw err.unprocessable(headerBlocker);
+        if (plan.header.version !== body.version) throw err.conflict();
+
+        /*
+         * Блокировки — полным перечнем и до первой записи: неделю чинят одним заходом, и отказ,
+         * назвавший одну строку из четырёх, заставил бы человека ходить по кругу.
+         */
+        const blockedItems = plan.items.filter(
+          (item) => plan.states.get(item.id)?.state === 'blocked',
+        );
+        if (blockedItems.length > 0 || plan.blockers.length > 0) {
+          const reasons = [
+            ...blockedItems.map((item) => plan.states.get(item.id)?.reason ?? ''),
+            ...plan.blockers.map((blocker) => blocker.message),
+          ].filter((text) => text !== '');
+          throw err.unprocessable(`Аннулировать неделю нельзя: ${reasons.join('; ')}`, {
+            items: 'Есть строки, которые нельзя развернуть',
+          });
+        }
+        const hasReversible =
+          plan.extend.length > 0 ||
+          plan.cancelOrders.length > 0 ||
+          plan.items.some((item) => plan.states.get(item.id)?.reverse === 'release_leave');
+        if (!hasReversible) {
+          throw err.unprocessable('Разворачивать нечего: следствий у этой недели не осталось');
+        }
+
+        /*
+         * Сверка отпечатка — под блокировками и до первой записи: между просмотром и нажатием
+         * последствия меняются, не тронув версию заявки (по заказу выписали лист, появился
+         * черновик смены, неделя стала отработанной).
+         */
+        if (plan.fingerprint !== body.fingerprint) {
+          throw err.conflict(
+            'Последствия изменились с момента просмотра: посмотрите перечень заново',
+          );
+        }
+        if (plan.cancelGroupsFingerprint !== (body.cancelGroupsFingerprint ?? null)) {
+          throw err.conflict(
+            'Перечень гасимых решений изменился с момента просмотра: посмотрите его заново',
+          );
+        }
+        /*
+         * Нужна ли операция, решает **пересчитанный под блокировкой** план, а не выбранная ветвь:
+         * между двумя расчётами наступила полночь либо чужая правка сдвинула первый снимаемый день
+         * в прошлое. Отказ здесь честнее тихого исполнения без журнала.
+         */
+        assertAnnulOperation(plan, body);
+        if (!plan.requiresOperation && correctionId) {
+          throw err.unprocessable(
+            'Последствия изменились: операция журнала этой команде больше не нужна — посмотрите перечень заново',
+          );
+        }
+
+        return applyWeeklyAnnul(tx, {
+          plan,
+          actor: p,
+          reason: body.reason,
+          mode,
+          correctionId,
+          acknowledgements: body.acknowledgements,
+          unlockWaybillIds: body.correction?.unlockWaybillIds ?? [],
+        });
+      };
+
+      let repeated = false;
+      let result: Awaited<ReturnType<typeof annulInTx>> | null = null;
+
+      if (draft.requiresOperation) {
+        const correction = body.correction;
+        if (!correction) assertAnnulOperation(draft, body);
+        const done = await runCorrection(
+          {
+            operationId: correction!.operationId,
+            kind: 'weekly_annul',
+            // Целью служит сама недельная заявка: тело одинаково у двух разных недель одной
+            // площадки, и без идентификатора один ключ покрыл бы две разные команды.
+            target: draft.header.id,
+            body: req.body,
+            reason: body.reason,
+            actorUserId: p.id,
+          },
+          {
+            /*
+             * Право спрашивается на **каждой** попытке, включая повтор: молча отдать прежний
+             * результат тому, у кого право успели отобрать между попытками, — та же утечка, что
+             * выполнить операцию без права. Глубина при этом остаётся проверенной первой попыткой:
+             * второй раз работы не происходит, а пересчитанная назавтра она отказала бы в
+             * результате, который уже получен.
+             */
+            authorize: () => {
+              if (!canAnnulWeeklyRequest(p, true)) throw err.forbidden(BACKDATE_PERMISSION_MESSAGE);
+              return backdateOrThrow(
+                checkBackdate({
+                  effectiveDate: draft.effectiveDate ?? today,
+                  today,
+                  subject: p,
+                  hasReason: body.reason.trim() !== '',
+                }),
+              );
+            },
+            perform: async (tx, record) => {
+              result = await annulInTx(tx, record.id);
+              await linkCorrectionRequests(tx, record.id, [
+                ...result.shortened.map((row) => row.requestId),
+                ...result.cancelled.map((row) => row.requestId),
+              ]);
+              /*
+               * Снимок «было → стало» (Р16 ADR 0101): в самой заявке остаются только результаты
+               * строк, а «какой срок был у ТС-341 до разворота» и «какие номера сгорели»
+               * спрашивают через месяцы — и ответить на это будет нечем.
+               */
+              return {
+                weeklyRequest: { id: draft.header.id, num: draft.header.num },
+                shortened: result.shortened,
+                cancelled: result.cancelled,
+                released: result.released,
+                esm2: result.esm2,
+                unlockWaybillIds: correction!.unlockWaybillIds,
+              };
+            },
+          },
+        );
+        repeated = done.repeated;
+      } else {
+        result = await db.transaction(async (tx) => annulInTx(tx, null));
+      }
+
+      /*
+       * Повтор после обрыва связи: `perform` не звался, своего результата у него нет — и ответ
+       * пересобирается из текущего состояния, как это делает проведение. Снимок DTO протух бы при
+       * первой правке контракта, а повтор обязан отвечать то же, что ответил бы новый запрос.
+       */
+      const outcome = result ?? {
+        weeklyRequestId: draft.header.id,
+        status: 'annulled' as const,
+        shortened: [],
+        cancelled: [],
+        released: 0,
+        esm2: { cancelled: 0, issued: 0 },
+      };
+
+      // Аудит — сверху и дополнительно: история недели пишется той же транзакцией (ADR 0085 п. 16),
+      // а `writeAudit` намеренно не роняет операцию при сбое записи.
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'weekly_request.annul',
+        entityType: 'weekly_vehicle_request',
+        entityId: req.params.id,
+        metadata: {
+          reason: body.reason,
+          shortened: outcome.shortened,
+          cancelled: outcome.cancelled,
+          released: outcome.released,
+          esm2: outcome.esm2,
+          ...(repeated ? { repeated: true } : {}),
+        },
+      });
+      return outcome;
     },
   );
 

@@ -54,6 +54,12 @@ interface Props {
   onConduct: () => void;
   onReject: () => void;
   onCancel: () => void;
+  /**
+   * Annul an applied week (ADR 0218); `null` — no button at all, because the week is not applied or
+   * the viewer holds neither branch's right. A nullable handler rather than a separate boolean: two
+   * fields for one condition drift apart at the first edit.
+   */
+  onAnnul: (() => void) | null;
 }
 
 export function WeeklyRequestActions(props: Props) {
@@ -142,6 +148,15 @@ export function WeeklyRequestActions(props: Props) {
         {props.editable && (
           <Button danger onClick={props.onCancel}>
             Снять заявку
+          </Button>
+        )}
+        {/* Annulment of an applied week (ADR 0218). The button appears by status and right alone;
+            the price and the refusals are named by the window, which asks the server — the preview
+            builds a history and paper plan per extended row, and paying that on every card view
+            would be waste. */}
+        {props.onAnnul && (
+          <Button danger onClick={props.onAnnul}>
+            Аннулировать неделю
           </Button>
         )}
       </Space>

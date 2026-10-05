@@ -825,6 +825,38 @@ describe('разметка бланков', () => {
   });
 
   /**
+   * Each value of the ESM-2 work period ("с", "по", month, year) spans exactly the columns of its
+   * header one row above. A value that is narrower than its header is centred in its own cells,
+   * not under the header: the "по" header covers BI10:BJ10 while the day sat in BI11 alone, and
+   * the number printed hugging the left edge of the box. The template still looked right to the
+   * placeholder checks above, so only the geometry catches it.
+   */
+  it('в ЭСМ-2 значения периода работы стоят под своими подписями по всей ширине', () => {
+    const sheet = decoder.decode(unzipSync(template('esm2'))['xl/worksheets/sheet1.xml']!);
+    const merges = mergesOf(sheet);
+    const columnsOf = (ref: string): [number, number] => {
+      const merge = merges.find((m) => covers(m, ref));
+      return merge
+        ? [colNumber(merge.from), colNumber(merge.to)]
+        : [colNumber(ref), colNumber(ref)];
+    };
+
+    for (const [address, key] of [
+      ['BH11', '{{period_from_day}}'],
+      ['BI11', '{{period_to_day}}'],
+      ['BK11', '{{period_month}}'],
+      ['BP11', '{{period_year}}'],
+    ] as const) {
+      expect(bodyOf(sheet, address), `${key} стоит не в ${address}`).toContain(key);
+      const header = address.replace(/\d+$/, String(rowNumber(address) - 1));
+      expect(
+        columnsOf(address),
+        `${key}: ширина значения не совпадает с подписью ${header}`,
+      ).toEqual(columnsOf(header));
+    }
+  });
+
+  /**
    * Подписи правой колонки шапки ЭСМ-2 («Форма по ОКУД», «Дата составления») прижаты вправо и
    * печатаются переполнением: своей клетки им мало, и текст растекается по пустым соседям слева.
    *

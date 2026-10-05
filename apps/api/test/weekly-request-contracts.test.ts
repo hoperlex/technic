@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   approveWeeklyRequestSchema,
   can,
+  canAnnulWeeklyRequest,
   createWeeklyRequestSchema,
   extendBlocker,
   formatWeeklyRequestNumber,
   itemWarnings,
   newItemBlocker,
+  isWeeklyRequestApplied,
+  isWeeklyRequestLive,
   orderEffectiveDateTo,
   parseWeeklyRequestNumberSearch,
   PHONE_FORMAT_MESSAGE,
@@ -14,6 +17,11 @@ import {
   selectableWeeks,
   sourceItemBlocker,
   updateWeeklyRequestSchema,
+  weeklyAnnulEffectiveDate,
+  weeklyAnnulHeaderBlocker,
+  weeklyAnnulItemState,
+  weeklyAnnulNeedsSiteScope,
+  weeklyAnnulPermission,
   weeklyRequestItemSchema,
   weeklyRequestStatusSchema,
   weeklyWeekBlocker,
@@ -762,5 +770,161 @@ describe('права модуля', () => {
     }
     // У коменданта нет и чтения заказов — именно поэтому у него нет и недели.
     expect(can({ role: 'commandant' }, 'vehicleRequests.read')).toBe(false);
+  });
+});
+
+/*
+ * Аннулирование применённой недели (ADR 0218) — предикаты, которыми решают **и** окно, и сервер.
+ *
+ * Здесь проверяется ровно то, что живёт в контрактах: состояние обратного хода строки, выбор права
+ * по ветви и эффективная дата операции. Факты работы на снимаемых днях (подпись смены, выписанный
+ * 4-П, отработанный лист) знает только план, и их проверяет db-набор.
+ */
+describe('аннулирование: состояние обратного хода строки', () => {
+  const extend = (over: Partial<Parameters<typeof weeklyAnnulItemState>[0]> = {}) => ({
+    id: 'i1',
+    kind: 'extend' as const,
+    result: 'extended' as const,
+    dateTo: '2026-10-11',
+    previousDateTo: '2026-10-04',
+    laterWeekRefs: [],
+    ...over,
+  });
+  const order = (over: Partial<Parameters<typeof weeklyAnnulItemState>[1] & object> = {}) => ({
+    status: 'confirmed' as const,
+    deletedAt: null,
+    dateFrom: '2026-09-28',
+    dateTo: '2026-10-11',
+    pickupRoute: null,
+    pendingEarlyEndDate: null,
+    ...over,
+  });
+
+  it('продление разворачивается, когда срок заказа совпадает с тем, что продлила неделя', () => {
+    const verdict = weeklyAnnulItemState(extend(), order());
+    expect(verdict.state).toBe('reversible');
+    expect(verdict.reverse).toBe('shorten_to');
+  });
+
+  it('«уже развёрнута» — конец срока НЕ ПОЗЖЕ снимка, а не равен ему', () => {
+    // Досрочное завершение сокращает срок до любой даты от сегодня, то есть и ниже прежнего конца.
+    // Требуй предикат равенства — такая строка читалась бы как «срок изменился», хотя следствие
+    // недели исчезло целиком.
+    expect(weeklyAnnulItemState(extend(), order({ dateTo: '2026-10-04' })).state).toBe('reverted');
+    expect(weeklyAnnulItemState(extend(), order({ dateTo: '2026-10-01' })).state).toBe('reverted');
+  });
+
+  it('срок, изменённый после недели, блокирует: сверяется срок, а не версия', () => {
+    const verdict = weeklyAnnulItemState(extend(), order({ dateTo: '2026-10-15' }));
+    expect(verdict.state).toBe('blocked');
+    expect(verdict.reason).toContain('Срок заказа изменился после недели');
+  });
+
+  it('ожидающий визы отъезд блокирует разворот', () => {
+    const verdict = weeklyAnnulItemState(extend(), order({ pendingEarlyEndDate: '2026-10-08' }));
+    expect(verdict.state).toBe('blocked');
+    expect(verdict.reason).toContain('досрочный отъезд');
+  });
+
+  it('неделя, применённая позже, блокирует и называет свой номер', () => {
+    const verdict = weeklyAnnulItemState(extend({ laterWeekRefs: [{ num: 15 }] }), order());
+    expect(verdict.state).toBe('blocked');
+    expect(verdict.reason).toContain(formatWeeklyRequestNumber(15));
+  });
+
+  it('пропущенная строка следствий не имеет и в счёт обратимых не идёт', () => {
+    const verdict = weeklyAnnulItemState(
+      extend({ result: 'skipped', previousDateTo: null }),
+      order(),
+    );
+    expect(verdict.state).toBe('reverted');
+    expect(verdict.reverse).toBe('none');
+  });
+
+  it('порождённый заказ: «Новая» разворачивается отменой, отменённый уже развёрнут', () => {
+    const item = {
+      id: 'i2',
+      kind: 'new' as const,
+      result: 'created' as const,
+      dateTo: null,
+      previousDateTo: null,
+      laterWeekRefs: [],
+    };
+    expect(weeklyAnnulItemState(item, order({ status: 'new' })).reverse).toBe('cancel');
+    expect(weeklyAnnulItemState(item, order({ status: 'cancelled' })).state).toBe('reverted');
+    expect(weeklyAnnulItemState(item, order({ status: 'confirmed' })).state).toBe('blocked');
+  });
+
+  it('«уезжает»: оформленный рейс вывоза блокирует, без него решение просто перестаёт действовать', () => {
+    const item = {
+      id: 'i3',
+      kind: 'leave' as const,
+      result: 'left' as const,
+      dateTo: null,
+      previousDateTo: '2026-10-04',
+      laterWeekRefs: [],
+    };
+    expect(weeklyAnnulItemState(item, order()).reverse).toBe('release_leave');
+    const blocked = weeklyAnnulItemState(
+      item,
+      order({ pickupRoute: { num: 40, routeDate: '2026-10-05' } }),
+    );
+    expect(blocked.state).toBe('blocked');
+    expect(blocked.reason).toContain('Вывоз оформлен рейсом');
+  });
+});
+
+describe('аннулирование: ветвь, право и эффективная дата', () => {
+  it('эффективная дата — первый снимаемый день, минимальный по составу', () => {
+    expect(
+      weeklyAnnulEffectiveDate([
+        { reverse: 'shorten_to', previousDateTo: '2026-10-04' },
+        { reverse: 'shorten_to', previousDateTo: '2026-10-01' },
+        // Строки без хода в расчёт не входят: они срока не двигают.
+        { reverse: 'cancel', previousDateTo: null },
+      ]),
+    ).toBe('2026-10-02');
+  });
+
+  it('без строк продления срок не двигается, и прошлого операция не трогает', () => {
+    expect(weeklyAnnulEffectiveDate([{ reverse: 'cancel', previousDateTo: null }])).toBeNull();
+    expect(weeklyAnnulEffectiveDate([])).toBeNull();
+  });
+
+  it('обычная ветвь открыта визе площадки и диспетчеру, ветвь прошлого — только праву прошлого', () => {
+    expect(weeklyAnnulPermission(false)).toEqual(['weeklyRequests.approve', 'waybills.correct']);
+    expect(weeklyAnnulPermission(true)).toEqual(['waybills.correct']);
+    // Руководитель строительства: обычную неделю аннулирует, неделю с наступившими днями — нет.
+    expect(canAnnulWeeklyRequest({ role: 'rukstroy' }, false)).toBe(true);
+    expect(canAnnulWeeklyRequest({ role: 'rukstroy' }, true)).toBe(false);
+    // Диспетчер — обе ветви: право прошлого у него есть.
+    expect(canAnnulWeeklyRequest({ role: 'dispatcher' }, false)).toBe(true);
+    expect(canAnnulWeeklyRequest({ role: 'dispatcher' }, true)).toBe(true);
+    // Штаб не аннулирует вовсе: визы у него нет.
+    expect(canAnnulWeeklyRequest({ role: 'shtab' }, false)).toBe(false);
+  });
+
+  it('область площадки спрашивается только там, где право пришло визой', () => {
+    // У руководителя строительства право объектное — без области оно открыло бы чужую неделю.
+    expect(weeklyAnnulNeedsSiteScope({ role: 'rukstroy' }, false)).toBe(true);
+    // У диспетчера площадок нет вовсе, и область ему взять негде.
+    expect(weeklyAnnulNeedsSiteScope({ role: 'dispatcher' }, false)).toBe(false);
+    // В ветви прошлого виза не при чём: право одно и оно офисное.
+    expect(weeklyAnnulNeedsSiteScope({ role: 'rukstroy' }, true)).toBe(false);
+  });
+
+  it('шапку аннулируют только применённую, и аннулированную второй раз не предлагают', () => {
+    expect(weeklyAnnulHeaderBlocker({ status: 'applied' })).toBeNull();
+    expect(weeklyAnnulHeaderBlocker({ status: 'annulled' })).toContain('уже аннулирована');
+    expect(weeklyAnnulHeaderBlocker({ status: 'draft' })).toContain('ещё не применялась');
+    expect(weeklyAnnulHeaderBlocker({ status: 'cancelled' })).toContain('снята');
+  });
+
+  it('аннулированная не занимает пару «объект + неделя», но держит ссылки как применённая', () => {
+    expect(isWeeklyRequestLive('annulled')).toBe(false);
+    expect(isWeeklyRequestLive('cancelled')).toBe(false);
+    expect(isWeeklyRequestLive('applied')).toBe(true);
+    expect(isWeeklyRequestApplied('annulled')).toBe(true);
+    expect(isWeeklyRequestApplied('cancelled')).toBe(false);
   });
 });

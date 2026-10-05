@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, type SQL } from 'drizzle-orm';
-import { formatWeeklyRequestNumber } from '@technic/contracts';
+import { formatWeeklyRequestNumber, isWeeklyRequestApplied } from '@technic/contracts';
 import type { db } from '../db/client';
 import {
   weeklyVehicleRequestHistory,
@@ -89,8 +89,13 @@ async function dropItems(
     .orderBy(asc(weeklyVehicleRequests.id))
     .for('update');
 
-  const unapplied = headers.filter((h) => h.status !== 'applied');
-  // Все затронутые заявки применены — убирать нечего, и удаление честно упрётся в `RESTRICT`.
+  // Аннулированная заявка стоит здесь рядом с применённой (ADR 0218 решение 9): следствия у неё
+  // **были**, строки объясняют, что именно развернули, и чистить их `purge` не вправе. Предикат
+  // контрактов, а не сравнение со строкой: `status !== 'applied'` пропустило бы второе состояние
+  // молча и начало бы снимать строки развёрнутой недели.
+  const unapplied = headers.filter((h) => !isWeeklyRequestApplied(h.status));
+  // Все затронутые заявки применены или аннулированы — убирать нечего, и удаление честно упрётся
+  // в `RESTRICT`.
   if (unapplied.length === 0) return undefined;
 
   // Условие прогоняется заново, а не по снятым до блокировки идентификаторам: состав неприменённой
@@ -223,7 +228,8 @@ export async function purgeWeeklyRequestsOfObject(
     .for('update');
   // Статус читается под блокировкой по той же причине, что и при уборке строк: заявка могла стать
   // применённой, пока `purge` ждал, — и тогда площадку не удалить, о чём скажет отказ по ссылке.
-  const unapplied = headers.filter((h) => h.status !== 'applied');
+  // Аннулированная держит ссылки наравне с применённой (ADR 0218 решение 9).
+  const unapplied = headers.filter((h) => !isWeeklyRequestApplied(h.status));
   if (unapplied.length === 0) return undefined;
   await tx.delete(weeklyVehicleRequests).where(
     inArray(

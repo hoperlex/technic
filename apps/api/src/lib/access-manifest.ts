@@ -1553,6 +1553,27 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['weeklyRequests.read'],
   },
+  // Предпросмотр аннулирования — тем же приёмом и по той же причине (ADR 0218 решение 8).
+  'GET /api/v1/weekly-vehicle-requests/:id/annul': {
+    kind: 'permissions',
+    allOf: ['weeklyRequests.read'],
+  },
+  /*
+   * Аннулирование применённой недели (ADR 0218 решение 7) — второе и последнее место манифеста,
+   * где право спрашивает обработчик, а страж ослаблен до чтения. Причина та же, что у визы: прав
+   * два, и какое требуется, решает **ветвь операции**, а не тело запроса. Обычную неделю
+   * аннулирует `weeklyRequests.approve` в области площадки либо `waybills.correct`; неделю, чьи
+   * дни уже идут, — только право прошлого. Страж умеет конъюнкцию, и жёсткое право на нём
+   * закрыло бы одну из ветвей ровно тому, кто её и исполняет.
+   *
+   * Что остаётся проверенным: без `weeklyRequests.read` маршрут не начинает работу, а право по
+   * ветви и область спрашивает `canAnnulWeeklyRequest` вместе с `weeklyAnnulNeedsSiteScope` до
+   * первой записи. Доказывается это сценариями db-теста аннулирования.
+   */
+  'POST /api/v1/weekly-vehicle-requests/:id/annul': {
+    kind: 'permissions',
+    allOf: ['weeklyRequests.read'],
+  },
   'GET /api/v1/weekly-vehicle-requests/:id/documents': {
     kind: 'permissions',
     allOf: ['weeklyRequests.read'],

@@ -1,6 +1,6 @@
 import { Alert, Button, Space } from 'antd';
 import type { WeeklyItemCounts, WeeklyVehicleRequestDto } from '@technic/contracts';
-import { formatDateOnly } from '@shared/lib';
+import { formatDateOnly, formatDateTime } from '@shared/lib';
 import { weeklyOverdueWord } from '@entities/weekly-request';
 
 /**
@@ -77,6 +77,22 @@ export function WeeklyRequestBanners(props: Props) {
       )}
       {request.status === 'cancelled' && (
         <Alert type="warning" showIcon title={`Заявка снята: ${request.cancelReason}`} />
+      )}
+      {/* An annulled request gets its own banner rather than the cancelled one: a cancelled week
+          never had consequences, while here the approval existed and was rolled back. The
+          composition below stays readable — it is what explains exactly what was undone
+          (ADR 0218). */}
+      {request.status === 'annulled' && (
+        <Alert
+          type="warning"
+          showIcon
+          title={`Заявка аннулирована: ${request.annulReason}`}
+          description={
+            request.annulledAt
+              ? `${formatDateTime(request.annulledAt)}${request.annulledByName ? `, ${request.annulledByName}` : ''}. Сроки заказов возвращены, порождённые заказы отменены — что именно развернули, видно в составе и в истории`
+              : 'Сроки заказов возвращены, порождённые заказы отменены — что именно развернули, видно в составе и в истории'
+          }
+        />
       )}
       {/* The draft outlived its week and the past is closed to the reader (no right at all, or not
           enough depth): submitting and approving are impossible, cancelling always possible
