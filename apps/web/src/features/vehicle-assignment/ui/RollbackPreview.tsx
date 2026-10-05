@@ -6,30 +6,32 @@ import type {
 import { formatDateOnly } from '@shared/lib';
 
 /**
- * Второй шаг окна назначения на откате «Выполнена» → «В работе»: что случится после возврата.
+ * Second step of the assignment dialog on the "done" -> "in work" rollback: what happens after the
+ * return.
  *
- * Отдельным файлом от `VehicleAssignModal`, потому что это другой экран, а не часть формы: у него
- * нет ни одного общего с ней значения — он читает только ответ сервера и ничего не спрашивает.
- * В самом окне он и стоял особняком (форма на этом шаге прячется целиком), а весил при этом
- * шестьдесят строк сплошного текста между полями подбора техники.
+ * Separate from the dialog because it is another screen, not part of the form: it shares no value
+ * with it — it only reads the server answer and asks nothing. In the dialog it always stood apart
+ * (the form is hidden entirely at this step) while weighing sixty lines of plain text between the
+ * vehicle selection fields.
  */
 
 /**
- * Всё посчитано сервером той же сверкой, которая потом отработает (§5.4 плана), — «недель срока
- * минус выписанные» обещало бы листы за прошедшие недели, которых сверка не выпишет.
+ * Everything is computed by the server with the same reconciliation that will then run (§5.4 of the
+ * plan) — "term weeks minus issued ones" would promise forms for past weeks that reconciliation
+ * will not issue.
  *
- * О прошлом здесь не сказано ни слова, и это не забывчивость: снимок режима снимается закрытием, а
- * линейный заказ могли закрыть, не распланировав ни одного дня, — тогда угадать, как он вёлся,
- * нечем. Портал говорит только то, что знает точно: чем заказ пойдёт дальше, что сделает сверка
- * ЭСМ-2 и как будет считаться занятость машины.
+ * Not a word about the past here, and not by forgetfulness: closing releases the mode snapshot, and
+ * a linear order may have been closed without a single planned day — then there is nothing to guess
+ * how it was run by. The portal says only what it knows for sure: how the order continues, what
+ * ESM-2 reconciliation will do and how vehicle occupancy will be counted.
  */
 interface Props {
   preview: VehicleRequestStatusPreviewDto;
   /**
-   * Снимок закрытия возвращаемой заявки (Р23 ADR 0178): чем закрыли и каким срок был до того. Им
-   * окно называет сокращение числами — «было по 16-е, стало по 12-е», — а не общей оговоркой.
-   * `null` — заявка закрыта не фактической датой (грузоперевозка, арендодатель, закрытие до этой
-   * волны), и сокращать было нечего.
+   * Closing snapshot of the returned request (R23, ADR 0178): how it was closed and what the term
+   * was before. The dialog names the shortening in numbers by it — "was until the 16th, now until
+   * the 12th" — not by a general caveat. `null` — the request was not closed by an actual date
+   * (freight, a lessor, a closing before that wave), and nothing was shortened.
    */
   fact: VehicleRequestCompletionDto | null;
 }
@@ -37,9 +39,10 @@ interface Props {
 export function RollbackPreview({ preview, fact }: Props) {
   const { issue, cancel } = preview.esm2;
   /*
-   * Срок сокращали — значит есть о чём предупредить конкретными числами. Пара дат берётся из
-   * снимка закрытия, а не считается порталом: разность соседних полей заявки после первой же
-   * правки срока уже не восстановить, ради чего снимок и заведён.
+   * The term was shortened — so there is something to warn about in concrete numbers. The date pair
+   * comes from the closing snapshot, not computed by the portal: after the first term edit the
+   * difference of neighbouring request fields cannot be recovered, which is why the snapshot
+   * exists.
    */
   const shortened =
     fact?.endedOn && fact.previousDateTo && fact.endedOn < fact.previousDateTo
@@ -80,12 +83,13 @@ export function RollbackPreview({ preview, fact }: Props) {
           </ul>
         )}
       </div>
-      {/* Срок возврат не возвращает (Р14 плана `docs/vehicle-request-actual-end-date-plan.md`,
-        решение заказчика по В2). Заявка, закрытая фактической датой, уходила в «Выполнена» с
-        сокращённым сроком и сокращённым листом; возврат в работу отменяет статус, а не сокращение.
-        Сказать это надо до нажатия: человек, возвращающий заявку ради «доработать ещё два дня»,
-        иначе обнаружит прежний укороченный срок уже после — и решит, что портал потерял правку.
-        Снимок прежнего срока при этом остаётся в истории объяснением, а не кнопкой отката. */}
+      {/* The return does not restore the term (R14 of
+        `docs/vehicle-request-actual-end-date-plan.md`, the customer's decision on V2). A request
+        closed by an actual date went to "done" with a shortened term and a shortened form;
+        returning it to work cancels the status, not the shortening. It must be said before the
+        click: someone returning a request "to work two more days" would otherwise find the old
+        shortened term afterwards and decide the portal lost the edit. The previous-term snapshot
+        stays in history as an explanation, not an undo button. */}
       {shortened && (
         <Alert
           type="info"

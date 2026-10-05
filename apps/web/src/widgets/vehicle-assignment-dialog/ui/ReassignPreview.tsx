@@ -7,18 +7,32 @@ import {
 } from '@entities/vehicle-request';
 
 /**
- * Render the server-owned cost of a vehicle change before confirmation: replaced ESM-2 sheets,
- * cleared site approvals, locked work days, and missing machinist anchors.
+ * The cost of a vehicle change, read by the person **before** the click (wave 4a of
+ * `docs/assignment-periods-plan.md`, §7): which ESM-2 numbers burn and which are issued, which site
+ * signatures drop, which days the machinist lacks.
  *
- * This component deliberately performs no parallel calculation. The same server plan is displayed
- * here and executed by the command; pure decisions about silent, blocked, or stale previews live in
- * `@features/vehicle-assignment`. Per-sheet warning confirmations stay beside the command in
- * `reassignConsequences.tsx`.
+ * Separate from the dialog form on the same border as `RollbackPreview`: the form is fields, rules
+ * and sending; this is the list of consequences, which has nothing to do with input and grows with
+ * every new backdate door.
+ *
+ * Nothing is computed here: everything comes ready from the server
+ * (`POST /vehicle-requests/:id/assignment/preview`), computed by the same planner that will then
+ * run (`planReassignCommand`). A second computation in the portal would drift from the first, and
+ * the dialog would promise something other than what happens. Pure decisions about silent, blocked
+ * or stale previews live in `@features/vehicle-assignment`.
+ *
+ * What is absent and why. `requiredVehicleResolution` is always empty at this door: a tail mismatch
+ * locks a term extension, and a vehicle change opens no new days. Warned sheets (`issues`) are not
+ * drawn here either, though the server computes them: they need a confirmation, and the tick with
+ * its form lives in `useReassignConsequences.tsx`, next to the command that carries the signatures.
  */
 
 interface Props {
   preview: AssignmentPreviewDto;
-  /** Why the dialog returned after the server rejected a stale preview. */
+  /**
+   * Why the dialog returned to the consequences by itself: the server said what was shown is stale.
+   * `null` — the person came here the ordinary way, by pressing "Change vehicle".
+   */
   staleReason?: string | null;
 }
 
@@ -33,9 +47,9 @@ export function ReassignPreview({ preview, staleReason }: Props) {
         <Alert type="warning" showIcon title="Последствия пересчитаны" description={staleReason} />
       )}
 
-      {/* Замок подписанных дней — первым: всё, что ниже, при нём не случится вовсе, и читать
-        перечень бумаги раньше запрета значило бы читать его зря. Выход назван прямо: подпись
-        снимает не смена техники, а коррекция задним числом. */}
+      {/* The signed-days lock comes first: nothing below happens while it holds, and reading the
+        paper list before the ban would be reading in vain. The way out is named directly: the
+        signature is removed not by a vehicle change but by a backdated correction. */}
       {blocked.length > 0 && (
         <Alert
           type="error"
@@ -77,8 +91,8 @@ export function ReassignPreview({ preview, staleReason }: Props) {
                 {formatDateOnly(sheet.to)}
               </li>
             ))}
-            {/* Состав, а не одни границы: за неделю на объекте выходят разные машины и разные
-              люди, и «выпишется лист за 10–16 августа» не отвечает на вопрос, чьей фамилией. */}
+            {/* Composition, not just boundaries: different vehicles and people work a site within a
+              week, and "a form for 10–16 August will be issued" does not say under whose name. */}
             {issue.map((sheet) => (
               <li key={sheet.issueKey}>
                 Выпишется лист за {formatDateOnly(sheet.from)} — {formatDateOnly(sheet.to)}:{' '}
@@ -89,9 +103,9 @@ export function ReassignPreview({ preview, staleReason }: Props) {
         )}
       </div>
 
-      {/* Разблокировка отработанных недель (Р11): эти номера сверка сама не тронула бы — их неделя
-        уже кончилась. Перечень серверный, и стоит он рядом с планом нарочно: им объясняется, откуда
-        в списке сгорающих взялись прошлые недели. */}
+      {/* Unlocking worked weeks (R11): reconciliation would not touch these numbers by itself —
+        their week is over. The list is the server's and stands next to the plan on purpose: it
+        explains why past weeks appear among the burning ones. */}
       {preview.requiredUnlocks.length > 0 && (
         <div>
           <Typography.Text strong>Отработанные недели</Typography.Text>
@@ -110,10 +124,10 @@ export function ReassignPreview({ preview, staleReason }: Props) {
         </div>
       )}
 
-      {/* Подписи объекта. Сегодня эта дверь их именно **снимает**, а часы оставляет
-        (`clearShiftApprovals`): удаление заполненных без подписи часов приходит вместе с разрезом
-        срока, и обещать его сейчас нельзя. Часы показаны при каждом дне и суммой — цена
-        подтверждения должна быть видна, а не подразумеваться. */}
+      {/* Site signatures. Today this door **removes** them and keeps the hours
+        (`clearShiftApprovals`): deleting hours filled without a signature comes with the term
+        split, and must not be promised now. Hours are shown per day and as a sum — the cost of the
+        confirmation must be visible, not implied. */}
       {cleared.length > 0 && (
         <div>
           <Typography.Text strong>Подписи объекта</Typography.Text>
@@ -134,9 +148,9 @@ export function ReassignPreview({ preview, staleReason }: Props) {
         </div>
       )}
 
-      {/* Пробелы машиниста (Р16). Смену техники они сегодня не останавливают — история назначений
-        ещё не ведётся, и запретить здесь значило бы отнять работающее действие. Но молчать о них
-        нельзя: пока за эти дни не назван человек, лист ЭСМ-2 за них не выписать. */}
+      {/* Machinist gaps (R16). Today they do not stop a vehicle change — assignment history is not
+        kept yet, and forbidding here would take away a working action. But silence is wrong: until
+        a person is named for these days, no ESM-2 form can be issued for them. */}
       {preview.requiredAnchors.length > 0 && (
         <div>
           <Typography.Text strong>Машинист неизвестен</Typography.Text>
@@ -156,9 +170,9 @@ export function ReassignPreview({ preview, staleReason }: Props) {
         </div>
       )}
 
-      {/* Исход операции считает сервер (Р32), а не календарь на клиенте: плановая смена на будущее
-        причины не требует, а правка прошедших дней требует всегда. Портал только называет вслух то,
-        что решил сервер, — вторая редакция матрицы разошлась бы с серверной на первом уточнении. */}
+      {/* The operation outcome is decided by the server (R32), not by a client calendar: a planned
+        future change needs no reason, while editing past days always does. The portal only voices
+        what the server decided — a second matrix would drift on the first refinement. */}
       {preview.operationRequirement && (
         <div>
           <Typography.Text strong>Журнал коррекций</Typography.Text>
@@ -172,9 +186,9 @@ export function ReassignPreview({ preview, staleReason }: Props) {
         </div>
       )}
 
-      {/* День расчёта входит в отпечаток: предпросмотр, сделанный вчера, не сойдётся с командой
-        сегодня, даже если ничего больше не изменилось. Сказать это здесь дешевле, чем объяснять
-        человеку неожиданный отказ после полуночи. */}
+      {/* The computation day is part of the fingerprint: yesterday's preview will not match today's
+        command even if nothing else changed. Saying it here is cheaper than explaining an
+        unexpected refusal after midnight. */}
       <Typography.Text type="secondary">
         Последствия посчитаны на {formatDateOnly(preview.asOf)}.
       </Typography.Text>

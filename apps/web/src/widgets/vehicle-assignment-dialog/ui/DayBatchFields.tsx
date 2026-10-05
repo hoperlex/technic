@@ -13,67 +13,68 @@ import {
 import { formatDateOnly } from '@shared/lib';
 
 /**
- * Поля пачки «4-П на весь период» (ADR 0207): кто поедет весь срок и чем объясняются прошедшие
- * дни.
+ * Fields of the "4-P for the whole period" batch (ADR 0207): who drives for the whole term and how
+ * past days are explained.
  *
- * Отдельным файлом от обоих окон, которые его показывают, по той же границе, что `TrailerFields`
- * отделён от формы рейса: окна разные — одно принимает заявку в работу, второе добирает
- * пропущенные дни уже работающего заказа, — а вопрос у них один и тот же, и разойтись ему нельзя.
- * Разъедься эти два блока хоть подписью поля, и диспетчер прочёл бы про одно действие две разные
- * истории в соседних окнах.
+ * Separate from both dialogs that show it, on the same border that keeps `TrailerFields` apart from
+ * the route form: the dialogs differ — one takes the request into work, the other collects missed
+ * days of a running order — but the question is the same and must not diverge. If the two blocks
+ * differed even by a field label, the dispatcher would read two stories about one action in
+ * neighbouring dialogs.
  *
- * **Машины здесь нет, и это решение, а не пропуск** (ADR 0207 решение 5). Пачка берёт её из
- * назначения заявки: свободный выбор развёл бы бумагу по двум машинам так, что этого не показали
- * бы ни гараж, ни срез «На объекте», ни ЭСМ-2. Нужна другая единица на отдельный день — её ставят
- * подённой дверью, где расхождение с назначением помечается прямо в таблице.
+ * **There is no vehicle here, and that is a decision, not an omission** (ADR 0207 decision 5). The
+ * batch takes it from the request's assignment: a free choice would spread the paper over two
+ * vehicles in a way that neither the garage, the "On site" view nor ESM-2 would show. Another unit
+ * for a single day is set through the per-day door, where the divergence from the assignment is
+ * marked right in the table.
  *
- * Водитель, наоборот, спрашивается и обязателен: без человека лист не выписывается вовсе. Один на
- * весь период — это названная уступка [ADR 0083](../../../../../docs/adr/0083-no-autofill-dates-and-drivers.md):
- * спрашивать человека по одному на пятьдесят дней значит не иметь пачки. Подмена на субботу
- * остаётся законной и делается подённой дверью.
+ * The driver, on the contrary, is asked and required: no waybill is issued without a person. One
+ * person for the whole period is a named concession of
+ * [ADR 0083](../../../../../../docs/adr/0083-no-autofill-dates-and-drivers.md): asking for a person
+ * one by one for fifty days means having no batch. A Saturday substitute stays legal and is set
+ * through the per-day door.
  */
 
 /**
- * Кто может сесть за эту машину — тем же ключом и тем же отбором, что у подённого окна и у окна
- * принятия в работу: один и тот же список не должен ездить к серверу дважды и тем более
- * отвечать по-разному.
+ * Who may drive this vehicle — with the same key and the same selection as the per-day dialog and
+ * the take-into-work dialog: one list must not travel to the server twice, let alone answer
+ * differently.
  */
 const driversKey = (vehicleId: string | undefined, date: string) =>
   driverKeys.available({ vehicleId, on: date, withTrailer: false });
 
-/**
- * Поля формы, которые собирает блок. Имена общие у обоих окон намеренно: тело пачки собирает одна
- * функция (`dayBatchBody`), и второе имя того же поля разошлось бы с ней молча — форма отправляла
- * бы выбранного водителя в никуда.
- */
 interface Props {
   /**
-   * Срок, по которому пойдёт пачка, — в том виде, в каком он уедет на сервер. У окна принятия в
-   * работу это **фактический** срок из формы, а не заказанный: его правят тут же, и считать дни
-   * по заказанному значило бы обещать бумагу не на те числа.
+   * The term the batch runs on, exactly as it goes to the server. In the take-into-work dialog this
+   * is the **actual** term from the form, not the ordered one: it is edited right there, and
+   * counting days by the ordered term would promise paper for the wrong dates.
    */
   term: DayBatchTerm;
   /**
-   * День среза: им решается, есть ли в сроке прошедшие дни, а значит — спрашивать ли причину
-   * (ADR 0101 п. 4). У таблицы дней его считает сервер (`onDate`), у окна принятия в работу взять
-   * его неоткуда — там день заявки ещё не существует, и портал считает срез по московскому
-   * календарю сам. Последнее слово всё равно за `backdateGuard`: сервер спросит причину сам, если
-   * портал промахнулся мимо полуночи.
+   * The cut-off day: it decides whether the term has past days and hence whether to ask for a
+   * reason (ADR 0101 item 4). For the days table the server computes it (`onDate`); the
+   * take-into-work dialog has nowhere to take it from — the request day does not exist yet there —
+   * so the portal computes the cut-off by the Moscow calendar itself. `backdateGuard` has the final
+   * word: the server asks for a reason itself if the portal missed midnight.
    */
   onDate: string;
-  /** Машина листов: по ней отбираются водители — ровно так же, как в подённом окне. */
+  /** The vehicle of the waybills: drivers are selected by it — exactly as in the per-day dialog. */
   vehicleId: string | undefined;
   /**
-   * Машинист заявки: умолчание поля (ADR 0207 решение 6) и та сторона, с которой сверяется выбор.
-   * `null` — портал его не знает: подставлять некого, и расхождение называть не с чем.
+   * The request machinist: the field's default (ADR 0207 decision 6) and the side the choice is
+   * compared with. `null` — the portal does not know them: there is nobody to fill in and nothing
+   * to name a divergence against.
    */
   machinist: DayBatchMachinist | null;
-  /** Спрашивается ли блок сейчас: в окне принятия в работу — по галочке, в окне пачки — всегда. */
+  /**
+   * Whether the block is asked now: in the take-into-work dialog by the checkbox, in the batch
+   * dialog always.
+   */
   enabled: boolean;
   /**
-   * Галочка, которой блок включается; `null` — окно и есть пачка (кнопка «Распланировать
-   * период»), и включать нечего. Подпись приходит снаружи: в окне принятия в работу галочка
-   * говорит про весь период сразу, а в окне пачки речь только о бумаге.
+   * The checkbox that enables the block; `null` — the dialog is the batch itself ("Plan the period"
+   * button), and there is nothing to enable. The label comes from outside: in the take-into-work
+   * dialog the checkbox is about the whole period at once, in the batch dialog only about paper.
    */
   toggleLabel: string | null;
 }
@@ -90,10 +91,11 @@ export function DayBatchFields({
   const driverId = Form.useWatch('dayBatchDriverId', form);
 
   /**
-   * Водители — тем же запросом и тем же отбором, что у подённого окна: день заказа печатается
-   * обычным 4-П, и графы удостоверения с СНИЛСом в нём те же. Дата отбора — первый день срока:
-   * годность документов считается на один день, а человек в пачке один; истёкшее внутри периода
-   * удостоверение покажет уже сам лист, и переспрашивать по дню здесь нечем.
+   * Drivers — with the same query and selection as the per-day dialog: an order day is printed on
+   * an ordinary 4-P with the same licence and SNILS boxes. The selection date is the first day of
+   * the term: document validity is checked for one day, while the batch has one person; a licence
+   * expiring inside the period will be shown by the waybill itself, and there is nothing to re-ask
+   * per day here.
    */
   const { data: selection, isFetching } = useQuery({
     queryKey: driversKey(vehicleId, term.dateFrom),
@@ -104,10 +106,10 @@ export function DayBatchFields({
   const options = (selection?.drivers ?? []).map(driverOption);
 
   /**
-   * Называет ли этот список машиниста заявки по имени. Списки-то разные: машинистов берут из
-   * справочника целиком (в бланке ЭСМ-2 нет граф под удостоверение), а водителей дня — отбором под
-   * машину на первый день срока, и человек, чья специализация водителя в этот день не действовала
-   * либо чья карточка снята, в него не попадает вовсе.
+   * Whether this list names the request machinist. The lists differ: machinists come from the whole
+   * directory (ESM-2 has no licence boxes), while day drivers are selected for the vehicle on the
+   * first day of the term, and a person whose driver specialization was not active that day, or
+   * whose card was removed, is not in it at all.
    */
   const model = dayBatchModel({
     term,
@@ -134,8 +136,8 @@ export function DayBatchFields({
             <Checkbox>{toggleLabel}</Checkbox>
           </Form.Item>
           <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-            {/* Хвост про пропуски один на оба случая: пропускает пачка одинаково и когда срок
-              влез в порцию целиком, и когда идёт частями. */}
+            {/* The tail about skipped days is shared by both cases: the batch skips the same way
+              whether the term fits one portion or goes in parts. */}
             {model.portionHint ??
               `Каждый день срока (${model.days.length} дн.) встанет в рейс назначенной машины, и по рейсу выпишется путевой лист.`}{' '}
             Дни, которые уже заняты своим рейсом или закрыты бумагой, пачка пропустит и назовёт в
@@ -143,8 +145,8 @@ export function DayBatchFields({
           </Typography.Paragraph>
         </FormGrid.Full>
       ) : (
-        // У окна самой пачки галочки нет, а порцию назвать всё равно надо: без этого диспетчер
-        // узнал бы о недобранном хвосте срока только из отчёта.
+        // The batch dialog has no checkbox, but the portion still has to be named: otherwise the
+        // dispatcher would learn about the uncollected tail of the term only from the report.
         model.portionHint && (
           <FormGrid.Full>
             <Alert type="info" showIcon title={model.portionHint} />

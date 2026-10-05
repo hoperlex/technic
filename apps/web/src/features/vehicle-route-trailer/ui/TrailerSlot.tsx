@@ -4,11 +4,11 @@ import type { TrailerSlotMode } from '@entities/vehicle-route';
 import { TrailerPicker } from './TrailerPicker';
 
 /**
- * Одна пара граф бланка: чекбокс «Из справочника» над ней и два вида ввода под ним (Р17).
+ * One pair of form boxes: the "From directory" checkbox above it and two input modes below (R17).
  *
- * Слоты одинаковы во всём, кроме номера, поэтому описаны одним компонентом: правило «пара граф
- * переключается целиком» иначе стояло бы в двух экземплярах, и второй прицеп повторил бы историю
- * §2 — то, что заводили копированием, разошлось с оригиналом.
+ * The slots are identical except for the number, so they are one component: otherwise the rule
+ * "the box pair switches as a whole" would exist in two copies, and the second trailer would repeat
+ * the story of §2 — what was made by copying drifted from the original.
  */
 export function TrailerSlot({
   slot,
@@ -29,9 +29,10 @@ export function TrailerSlot({
 }) {
   return (
     <>
-      {/* Чекбокс стоит НАД графами и в своём блоке, а не в подписи поля: `<label>` внутри
-        `<label>` отправляет клик в поле — вместо переключения открывался бы список. Тот же приём и
-        по той же причине, что у выбора адреса (`features/address-input/ui/AddressField.tsx`). */}
+      {/* The checkbox stands ABOVE the boxes in its own block, not in the field label: a `<label>`
+        inside a `<label>` sends the click into the field — the list would open instead of the
+        switch. Same technique for the same reason as the address picker
+        (`features/address-input/ui/AddressField.tsx`). */}
       <FormGrid.Full>
         <Checkbox
           checked={mode === 'directory'}
@@ -41,18 +42,18 @@ export function TrailerSlot({
         </Checkbox>
       </FormGrid.Full>
       {mode === 'directory' && (
-        /* Список занимает строку целиком: подпись строки — марка, госномер и метка состояния, и в
-           половине ширины она обрезается ровно на госномере, ради которого её и читают. */
+        /* The list takes the whole row: the row label is make, plate and state mark, and at half
+           width it is cut exactly at the plate it is read for. */
         <FormGrid.Full>
           <TrailerPicker slot={slot} vehicleId={vehicleId} excludeRegNumber={excludeRegNumber} />
         </FormGrid.Full>
       )}
-      {/* Графы остаются полями формы в обоих режимах и в справочнике лишь прячутся — убрать их
-        со страницы значило бы убрать из отправки: `onFinish` получает значения **заведённых**
-        полей, а не весь склад формы (rc-field-form: `validateFields` собирает `getFieldEntities`).
-        Ровно так рейс уже уезжал с половиной состава прицепов (§2, расхождение 1), и повторять это
-        под новым предлогом нельзя. Заодно отсюда и «переключение не теряет набранного»: поле не
-        подменяется списком, а заполняется им. */}
+      {/* The boxes stay form fields in both modes and are only hidden in directory mode — removing
+        them from the page would remove them from submission: `onFinish` receives values of
+        **registered** fields, not the whole form store (rc-field-form: `validateFields` collects
+        `getFieldEntities`). That is exactly how a route once left with half its trailers (§2,
+        discrepancy 1), and it must not repeat under a new pretext. Hence also "switching loses
+        nothing typed": the field is not replaced by the list, the list fills it. */}
       <Form.Item
         name={`trailer${slot}Model`}
         label={`Прицеп ${slot}: марка`}

@@ -19,29 +19,29 @@ import {
 import { vehicleTypesApi } from '@entities/vehicle-type';
 
 /**
- * Применение правила подстановки прицепа (план `docs/vehicle-trailers-plan.md`, §14, Р20–Р21).
+ * Applying the trailer default rule (`docs/vehicle-trailers-plan.md`, §14, R20–R21).
  *
- * Само правило чистое и живёт в сущности (`trailerSubstitution`); здесь — только его применение к
- * живой форме: когда спрашивать, чем считать «своё» и в каком порядке. Вынесено из блока граф не
- * ради длины файла, а потому что это разные предметы: там разметка пары граф, здесь — порядок,
- * на котором работа и ломалась дважды.
+ * The rule itself is pure and lives in the entity (`trailerSubstitution`); here is only its
+ * application to a live form: when to ask, what counts as "own" and in which order. Extracted from
+ * the box block not for file length but because these are different subjects: there the markup of
+ * the box pair, here the ordering on which this work broke twice.
  *
- * **Два независимых процесса, а не один.** Графы (подстановка и очистка) не зависят от типа
- * машины вовсе и не ждут справочника типов: живое закрепление не должно стоять из-за медленного
- * или упавшего списка. Галочка тягача (§4.4 (а)) ждёт тип и имеет собственную одноразовую память
- * на машину — иначе восстановившийся после ошибки запрос менял бы отпечаток источника и повторял
- * подстановку, возвращая снятую человеком галочку.
+ * **Two independent processes, not one.** The boxes (default and clearing) do not depend on the
+ * vehicle type at all and do not wait for the type directory: a live hitch must not stall because
+ * of a slow or failed list. The tractor checkbox (§4.4 (a)) waits for the type and has its own
+ * one-shot memory per vehicle — otherwise a query recovering after an error would change the source
+ * fingerprint and repeat the default, bringing back a checkbox the person unticked.
  */
 export interface TrailerGraphsHook {
   modes: TrailerSlotModes;
   setMode: (slot: 1 | 2, mode: TrailerSlotMode) => void;
-  /** Машина — седельный тягач: этим блок объясняет вставшую саму галочку. */
+  /** The vehicle is a tractor unit: the block explains the self-set checkbox by this. */
   isTractor: boolean;
   /**
-   * Галочку тронул человек. Взводится **самим чекбоксом**, а не памятью эффекта: пока барьером
-   * служило «галочка уже ставилась», случай «справочник типов лежал, человек снял унаследованную
-   * галочку, справочник ожил» проходил мимо — память была пуста, и умолчание тягача возвращало
-   * галочку поверх решения человека.
+   * The person touched the checkbox. Raised **by the checkbox itself**, not by effect memory: while
+   * "the checkbox was already set" served as the barrier, the case "the type directory was down,
+   * the person unticked the inherited checkbox, the directory came back" slipped through — the
+   * memory was empty, and the tractor default put the checkbox back over the person's decision.
    */
   noteWithTrailerTouched: () => void;
 }
@@ -59,10 +59,11 @@ export function useTrailerGraphs({
 }: {
   form: FormInstance;
   /**
-   * Блок граф на экране. `false` — бланк выбранной машины прицепа не печатает либо реквизиты
-   * выезда у рейса уже свои: графы тогда **очищаются**, а не просто прячутся. Скрытые поля
-   * rc-field-form хранит (`preserve`), и полуприцеп прежней машины уехал бы в тело рейса молча —
-   * ровно так он и уезжал, пока условие показа стояло в окнах, а очистка жила только здесь.
+   * The box block is on screen. `false` — the selected vehicle's form does not print a trailer, or
+   * the route's departure details are its own: the boxes are then **cleared**, not just hidden.
+   * rc-field-form keeps hidden fields (`preserve`), and the previous vehicle's semi-trailer would
+   * silently go into the route body — exactly how it went while the display condition sat in the
+   * dialogs and clearing lived only here.
    */
   asks: boolean;
   hitched?: readonly HitchedTrailerDto[];
@@ -71,23 +72,24 @@ export function useTrailerGraphs({
   keepOwnGraphs: boolean;
   substituteOnOpen: boolean;
   record?: TrailerGraphs | null;
-  /** Графы формы, как их видит перерисовка: ими эффект узнаёт, что пора попробовать снова. */
+  /** Form boxes as the render sees them: by them the effect learns it is time to try again. */
   watched: TrailerGraphs;
 }): TrailerGraphsHook {
   /**
-   * Режим каждой пары граф (Р17): состояние окна, а не поле формы — в бланке его нет, а рейс
-   * помнит графы, а не то, каким движением их заполнили (Р11). Слоты переключаются порознь:
-   * закреплённый полуприцеп берут из реестра, а разовый прицеп вписывают руками, и наоборот.
+   * Mode of each box pair (R17): dialog state, not a form field — the form has no such box, and the
+   * route remembers the boxes, not the gesture that filled them (R11). Slots switch independently:
+   * a hitched semi-trailer is taken from the registry while a one-off trailer is typed, and vice
+   * versa.
    */
   const [modes, setModes] = useState<TrailerSlotModes>(MANUAL_TRAILER_MODES);
   const setMode = (slot: 1 | 2, mode: TrailerSlotMode) =>
     setModes((prev) => ({ ...prev, [`slot${slot}`]: mode }));
 
   /**
-   * Типы техники — ради одного вопроса: этот тип седельный тягач или нет. Спрашивается справочник
-   * целиком, потому что в карточке машины (`VehicleDto`) кода типа нет — есть идентификатор и
-   * наименование, а наименование в условии было бы сверкой по написанию. Запрос один на портал:
-   * ключ общий, ответ кэшируется, и пять окон делят одну загрузку.
+   * Vehicle types — for one question: is this type a tractor unit. The whole directory is asked
+   * because the vehicle card (`VehicleDto`) has no type code — only an id and a name, and a name in
+   * the condition would be a match by spelling. One query for the portal: the key is shared, the
+   * answer cached, and five dialogs share one load.
    */
   const { data: tractorTypeIds } = useQuery({
     queryKey: vehicleTypesForTrailerKey,
@@ -99,18 +101,18 @@ export function useTrailerGraphs({
   const isTractor = !!vehicleTypeId && !!tractorTypeIds?.has(vehicleTypeId);
 
   /**
-   * Отпечаток закрепления: подстановка повторяется, когда сменилась машина или её состав прицепов,
-   * и не повторяется больше никогда. Иначе снятая рукой галочка вставала бы обратно на каждой
-   * перерисовке формы — а снимаемой она обязана быть (§4.4). Типа машины в отпечатке нет: он
-   * приезжает отдельным запросом, и его появление не повод подставлять заново.
+   * Hitch fingerprint: the default repeats when the vehicle or its trailer set changed, and never
+   * otherwise. Else a checkbox unticked by hand would come back on every form render — and it must
+   * be untickable (§4.4). The vehicle type is not in the fingerprint: it arrives by a separate
+   * query, and its arrival is no reason to fill again.
    */
   const signature = (hitched ?? [])
     .map((t) => `${t.position}:${t.id}:${t.model}:${t.registrationNumber}:${t.status}`)
     .join('|');
 
   /**
-   * Графы прицепа, как они лежат в форме прямо сейчас. Читаются, а не берутся из наблюдений:
-   * эффект бежит до перерисовки, и наблюдённые значения в нём отстают на коммит.
+   * Trailer boxes as they lie in the form right now. Read, not taken from watches: the effect runs
+   * before the re-render, and watched values lag one commit behind in it.
    */
   const formGraphs = (): TrailerGraphs => ({
     withTrailer: !!form.getFieldValue('withTrailer'),
@@ -120,38 +122,44 @@ export function useTrailerGraphs({
     trailer2RegNumber: form.getFieldValue('trailer2RegNumber') ?? '',
   });
 
-  /** Ответа сервера ещё нет — отдельным именем: выражение в списке зависимостей линт не проверяет. */
+  /** No server answer yet — a separate name: lint does not check an expression in the deps list. */
   const hitchedUnknown = hitched === undefined;
 
   const applied = useRef<string | null>(null);
-  /** Машина, которой уже досталась галочка по типу: своя память, отдельная от памяти граф. */
+  /**
+   * Vehicle that already got the checkbox by type: its own memory, separate from the boxes' memory.
+   */
   const tractorApplied = useRef<string | null>(null);
-  /** Машина, у которой галочку трогал человек: его решение сильнее умолчания по типу. */
+  /** Vehicle whose checkbox the person touched: their decision outranks the type default. */
   const tractorTouched = useRef<string | null>(null);
-  /** Машина, с которой окно открылось, и признак того, что её меняли: ими живёт `substituteOnOpen`. */
+  /**
+   * The vehicle the dialog opened with, and whether it was changed: `substituteOnOpen` lives by
+   * them.
+   */
   const openVehicle = useRef<string | null | undefined>(undefined);
   const vehicleChanged = useRef(false);
 
-  /** Общая часть решения: её читают оба эффекта и обязаны читать одинаково. */
+  /** The shared part of the decision: both effects read it and must read it the same way. */
   const decide = (): ReturnType<typeof trailerSubstitution> =>
     trailerSubstitution({
       hasHitched: !!hitchedTrailerGraphs(hitched),
       keepOwnGraphs,
       vehicleChanged: vehicleChanged.current,
       withTrailer: formGraphs().withTrailer,
-      // Спрятанные графы считаются наравне с видимыми: поля прицепа при снятой галочке уходят со
-      // страницы, а значения остаются в форме и доезжают до тела рейса.
+      // Hidden boxes count like visible ones: with the checkbox unticked the trailer fields leave
+      // the page, but their values stay in the form and reach the route body.
       graphsFilled: trailerGraphsFilled(formGraphs()),
-      // Тип известен только второму эффекту: первый о нём не спрашивает вовсе.
+      // Only the second effect knows the type: the first does not ask about it at all.
       isTractor: tractorTypeIds === undefined ? undefined : isTractor,
     });
 
-  // ── Графы: подстановка и очистка ──
+  // ── Boxes: default and clearing ──
   useEffect(() => {
     /*
-     * Вопроса нет или машины нет — графы уходят. Оба случая об одном: описывать нечего, а
-     * оставленное описывает **чужую** единицу. Сюда же приходит возврат «аренда → своя»: блок
-     * монтируется заново с пустой машиной, и старые графы снимаются до выбора новой.
+     * No question or no vehicle — the boxes go. Both cases are one: nothing to describe, and what
+     * is left describes **someone else's** unit. The "rental -> own" return comes here too: the
+     * block mounts anew with an empty vehicle, and old boxes are cleared before a new one is
+     * chosen.
      */
     if (!asks || !vehicleId) {
       applied.current = null;
@@ -159,8 +167,8 @@ export function useTrailerGraphs({
       tractorTouched.current = null;
       openVehicle.current = undefined;
       vehicleChanged.current = false;
-      // Режим снимается вместе с графами: список, оставшийся открытым над пустой графой, обещал
-      // бы выбор, которого не делали.
+      // The mode goes with the boxes: a list left open over an empty box would promise a choice
+      // nobody made.
       setModes(MANUAL_TRAILER_MODES);
       const current = formGraphs();
       if (current.withTrailer || trailerGraphsFilled(current)) {
@@ -170,18 +178,19 @@ export function useTrailerGraphs({
     }
 
     /*
-     * Машина, с которой окно открылось, запоминается ПЕРВЫМ делом — до любого выхода из эффекта
-     * (Р21). Стояло это ниже, за ожиданием подсказки, и смена машины, сделанная быстрее ответа
-     * сервера, проходила незамеченной: `openVehicle` вставал уже на новую единицу, `vehicleChanged`
-     * оставался ложным, и коррекция (`substituteOnOpen = false`) не делала ничего — графы прежней
-     * машины доезжали до нового бланка.
+     * The vehicle the dialog opened with is remembered FIRST — before any exit from the effect
+     * (R21). It used to sit lower, after waiting for the hint, and a vehicle change faster than the
+     * server answer went unnoticed: `openVehicle` was set to the new unit, `vehicleChanged` stayed
+     * false, and the correction (`substituteOnOpen = false`) did nothing — the previous vehicle's
+     * boxes reached the new form.
      */
     if (openVehicle.current === undefined) openVehicle.current = vehicleId;
     else if (vehicleId !== openVehicle.current) vehicleChanged.current = true;
 
-    // Форма ещё не заполнена значениями записи: решать «что рейс уже описал» не по чему (Р21).
+    // The form is not yet filled with the record's values: nothing to decide "what the route
+    // already described" by (R21).
     if (record && !vehicleChanged.current && !sameTrailerGraphs(record, formGraphs())) return;
-    // Ответа сервера ещё нет: пустых граф это не значит — значит «пока не знаем».
+    // No server answer yet: that does not mean empty boxes — it means "not known yet".
     if (hitchedUnknown) return;
 
     const source = `${vehicleId}|${signature}`;
@@ -194,22 +203,22 @@ export function useTrailerGraphs({
     const action = decide().graphs;
     if (action === 'substitute' && graphs) {
       form.setFieldsValue(graphs);
-      // Подстановка включает режим справочника (Р17, пункт 1) — этого и просили: портал повторяет
-      // решение, принятое в карточке прицепа, и показывает его тем же списком, каким человек
-      // выбрал бы сам. Заодно видно чужое закрепление, если подставленное им и оказалось.
+      // The default switches on directory mode (R17, item 1) — as requested: the portal repeats the
+      // decision taken in the trailer card and shows it with the same list a person would pick
+      // from. It also reveals someone else's hitch if the default turned out to be one.
       setModes(substitutedTrailerModes(hitched));
     } else if (action === 'clear') {
-      // Закрепления у новой машины нет, а в графах стоит прицеп прежней: пустая графа честнее
-      // чужого госномера, который на бумаге читается как правда.
+      // The new vehicle has no hitch, while the boxes hold the previous one's trailer: an empty box
+      // is more honest than someone else's plate, which reads as truth on paper.
       form.setFieldsValue(emptyTrailerGraphs());
       setModes(MANUAL_TRAILER_MODES);
     }
     /*
-     * Зависимости — источник подстановки плюс графы формы. Форма здесь не ради решения (его эффект
-     * читает свежим), а ради **повторной попытки**: барьер выше пропускает прогон, пока форма ещё
-     * занята прежней записью, и без наблюдения за ней окно, заполнившее форму следующим коммитом,
-     * второго прогона не получило бы. Лишних прогонов это не даёт: применённый источник отсекается
-     * отпечатком выше, а до него подстановки и не было.
+     * Dependencies are the default source plus the form boxes. The form is not here for the
+     * decision (the effect reads it fresh) but for the **retry**: the barrier above skips a run
+     * while the form still holds the previous record, and without watching it, a dialog that filled
+     * the form in the next commit would get no second run. It causes no extra runs: an applied
+     * source is cut off by the fingerprint above, and before that there was no default.
      */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -225,13 +234,13 @@ export function useTrailerGraphs({
     watched.trailer2RegNumber,
   ]);
 
-  // ── Галочка по типу машины ──
+  // ── Checkbox by vehicle type ──
   useEffect(() => {
     /*
-     * Ждёт две вещи: ответ справочника типов (`isTractor` до него ложен) и ответ подсказки — при
-     * живом закреплении галочку ставит сама подстановка, и решение здесь зависит от того, есть оно
-     * или нет. Память своя и одноразовая на машину: восстановившийся после ошибки запрос типов
-     * повторного прогона не даёт, а снятую человеком галочку никто не возвращает.
+     * Waits for two things: the type directory answer (`isTractor` is false before it) and the hint
+     * answer — with a live hitch the default sets the checkbox itself, and the decision here
+     * depends on whether there is one. Its own one-shot memory per vehicle: a type query recovering
+     * after an error gives no second run, and nobody brings back a checkbox the person unticked.
      */
     if (!asks || !vehicleId || !isTractor || hitchedUnknown) return;
     if (tractorApplied.current === vehicleId || tractorTouched.current === vehicleId) return;

@@ -11,34 +11,36 @@ import { TrailerSlot } from './TrailerSlot';
 import { useTrailerGraphs } from '../model/useTrailerGraphs';
 
 /**
- * Графы прицепа в форме рейса: галочка «с прицепом», две пары «марка / госномер» под ней и подпись
- * о том, откуда графы взялись.
+ * Trailer boxes in a route form: the "with trailer" checkbox, two "make / plate" pairs below it and
+ * a caption saying where the boxes came from.
  *
- * Один блок на пять окон заведения рейса — правку рейса, перевод заявки в работу, коррекцию
- * задним числом, день линейного заказа и «Новый маршрут». Держать его в копиях уже вышло боком:
- * вторую пару граф заводили копированием, и в окне назначения она осталась только на экране — до
- * сервера доезжала половина состава. Графа бланка одна, и спрашиваться она обязана одним кодом.
+ * One block for the five route-creating dialogs — route edit, taking a request into work, backdated
+ * correction, a linear order day and "New route". Keeping copies already backfired: the second box
+ * pair was added by copying, and in the assignment dialog it stayed on screen only — half the
+ * composition reached the server. The form has one box, and it must be asked by one piece of code.
  *
- * **Почему пар две.** 4-П держит два прицепа, и колонки под них лежали в базе с самого заведения
- * листов. Спрашивать их было негде, и состав из двух прицепов доезжал до бумаги наполовину.
- * Порядок обязателен — сервер не примет второй прицеп при пустом первом (план
- * `docs/vehicle-trailers-plan.md`, §4.6).
+ * **Why two pairs.** The 4-P holds two trailers, and their columns were in the database since
+ * waybills existed. There was nowhere to ask them, and a two-trailer composition reached the paper
+ * by half. Order is mandatory — the server rejects a second trailer with an empty first one
+ * (`docs/vehicle-trailers-plan.md`, §4.6).
  *
- * **Подстановка живёт здесь же, а не в окнах.** Правило чтения закрепления одно на все окна
- * (§4.2.2), и разложенное по пяти формам оно разошлось бы на первой правке. Здесь же оно и
- * выключается само собой там, где прицеп не спрашивают: блок не отрисован — подставлять некуда.
+ * **The default lives here, not in the dialogs.** The rule of reading the hitch is one for all
+ * dialogs (§4.2.2), and spread across five forms it would drift on the first edit. Here it also
+ * switches off by itself where the trailer is not asked: the block is not rendered — nowhere to
+ * fill.
  *
- * **Где блок не показывается.** У формы № 3 граф прицепа нет вовсе (ADR 0071), поэтому прицеп
- * спрашивается только там, где он печатается. Решает это вызывающее окно: бланк рейса знает оно,
- * а у назначения условие и вовсе своё («реквизиты выезда у готового рейса уже свои»).
+ * **Where the block is not shown.** Form No. 3 has no trailer boxes at all (ADR 0071), so the
+ * trailer is asked only where it is printed. The calling dialog decides: it knows the route form,
+ * and the assignment has its own condition anyway ("an existing route has its own departure
+ * details").
  *
- * Подписи и подсказки различаются по окнам намеренно и приходят пропсами: коррекция говорит о
- * рейсе в прошедшем времени, а примеры в подсказках у каждого окна свои — переписывать их заодно
- * с выносом значило бы менять экран под предлогом рефакторинга.
+ * Labels and hints differ per dialog on purpose and come as props: the correction speaks of the
+ * route in the past tense, and examples differ per dialog — rewriting them along with the
+ * extraction would change the screen under a refactoring pretext.
  *
- * Сама пара граф живёт соседним файлом (`TrailerSlot.tsx`): здесь — правило, что и когда встаёт в
- * графы, там — как их показать и переключить. Разделены они бюджетом длины, но граница вышла по
- * смыслу: правило читают вместе с планом, а показ — вместе с экраном.
+ * The box pair itself lives next door (`TrailerSlot.tsx`): here is the rule of what goes into the
+ * boxes and when, there is how they are shown and switched. The split follows meaning: the rule is
+ * read with the plan, the display with the screen.
  */
 export function TrailerFields({
   withTrailer,
@@ -56,85 +58,91 @@ export function TrailerFields({
   asks = true,
 }: {
   /**
-   * Состояние галочки, каким его видит форма прямо сейчас (`Form.useWatch('withTrailer', form)`).
-   * Пропсом, а не своим наблюдением: то же значение окну нужно и для списка водителей — с прицепом
-   * требование поднимается до CE, и список пересобирается (ADR 0055, ADR 0064).
+   * The checkbox state as the form sees it right now (`Form.useWatch('withTrailer', form)`). A
+   * prop, not an own watch: the dialog needs the same value for the driver list — with a trailer
+   * the requirement rises to CE, and the list is rebuilt (ADR 0055, ADR 0064).
    */
   withTrailer: boolean;
-  /** Подпись галочки: коррекция описывает уже состоявшийся день и говорит о нём в прошедшем. */
+  /**
+   * Checkbox label: the correction describes a day that already happened and speaks in the past
+   * tense.
+   */
   checkboxLabel: string;
   /**
-   * Галочка занимает строку целиком. У правки и коррекции — да, у назначения нет: там она стоит
-   * в паре с соседним полем, и перенос её на свою строку переставил бы форму.
+   * The checkbox takes the whole row. In edit and correction it does; in the assignment it does
+   * not: there it pairs with a neighbouring field, and moving it to its own row would rearrange the
+   * form.
    */
   checkboxFullWidth?: boolean;
-  /** Пример марки первого прицепа — свой у каждого окна, по машинам, которые в нём заказывают. */
+  /** Example make of the first trailer — per dialog, by the vehicles ordered there. */
   modelPlaceholder: string;
-  /** Пример госномера первого прицепа. */
+  /** Example plate of the first trailer. */
   regNumberPlaceholder: string;
-  /** Подсказка обеих граф второго прицепа: ею же сказано, что пара необязательна. */
+  /** Placeholder of both second-trailer boxes: it also says the pair is optional. */
   secondPlaceholder: string;
   /**
-   * Закреплённые за машиной прицепы — поле `hitched` ответа `GET /vehicle-routes/suggest`.
-   * `undefined` — ответ ещё не пришёл (подставлять рано), пустой массив — закрепления нет, и
-   * новой подстановки у такой машины не бывает вовсе (§4.2.2, пункт 2).
+   * Trailers hitched to the vehicle — the `hitched` field of `GET /vehicle-routes/suggest`.
+   * `undefined` — no answer yet (too early to fill); an empty array — no hitch, and such a vehicle
+   * never gets a new default at all (§4.2.2, item 2).
    */
   hitched?: readonly HitchedTrailerDto[];
   /**
-   * Машина, о которой спрошено закрепление: её смена — повод подставить заново.
+   * The vehicle whose hitch was asked: its change is a reason to fill again.
    *
-   * Смена **машины в форме** и смена **записи, которую окно показывает**, — разные события с
-   * одинаковым следом в этом пропе, и различить их изнутри нечем. Поэтому окна, живущие дольше
-   * одной записи (все пять — antd не размонтирует закрытое окно), ставят блоку `key` по
-   * идентификатору записи: другой рейс, другой день, другая заявка — другой экземпляр блока с
-   * чистой памятью о том, что он подставлял.
+   * A change of the **vehicle in the form** and a change of the **record the dialog shows** are
+   * different events with the same trace in this prop, and there is no way to tell them apart from
+   * inside. So dialogs that outlive one record (all five — antd does not unmount a closed dialog)
+   * give the block a `key` by record id: another route, another day, another request — another
+   * block instance with a clean memory of what it filled.
    */
   vehicleId?: string | null;
-  /** Тип этой машины: по нему встаёт галочка у седельного тягача (§4.4 (а)). */
+  /** This vehicle's type: the checkbox is set for a tractor unit by it (§4.4 (a)). */
   vehicleTypeId?: string | null;
   /**
-   * Не вытеснять то, что уже описано записью: так открывается окно правки рейса — его графы пришли
-   * из самого рейса, и переписать их закреплением значило бы подменить запись, которую человек
-   * открыл править.
+   * Do not displace what the record already describes: that is how the route edit dialog opens —
+   * its boxes came from the route itself, and overwriting them with the hitch would replace the
+   * record the person opened to edit.
    *
-   * «Описано» — это заполненные графы **или** снятая галочка (Р20): рейс без прицепа описан так же
-   * определённо, как рейс с полуприцепом. А галочка при пустых графах не описывает ничего, и
-   * подставить в них закрепление правка обязана — иначе тягач, у которого галочка встаёт сама,
-   * остаётся с пустыми графами навсегда.
+   * "Described" means filled boxes **or** an unticked checkbox (R20): a route without a trailer is
+   * described as definitely as a route with a semi-trailer. A ticked checkbox with empty boxes
+   * describes nothing, and the edit must fill the hitch into them — otherwise a tractor unit, whose
+   * checkbox sets itself, would stay with empty boxes forever.
    */
   keepOwnGraphs?: boolean;
   /**
-   * Подставлять ли под машину, с которой окно открылось. Коррекция говорит «нет»: она
-   * переписывает **уже состоявшийся день**, и сегодняшнее закрепление о прошлом вторнике не знает
-   * ничего — а подставленное в неё меняет форму само по себе и проводит проверку «коррекция
-   * должна что-то менять» (Р31), сжигая номер бланка за правку, которой человек не делал. Смена
-   * машины в коррекции — другое дело: графы описывают уже не ту единицу, и закрепление новой —
-   * лучшее, что портал о ней знает.
+   * Whether to fill for the vehicle the dialog opened with. The correction says "no": it rewrites a
+   * **day that already happened**, and today's hitch knows nothing about last Tuesday — while
+   * filling it changes the form by itself and passes the "a correction must change something" check
+   * (R31), burning a form number for an edit the person did not make. A vehicle change inside a
+   * correction is different: the boxes no longer describe that unit, and the new one's hitch is the
+   * best the portal knows about it.
    */
   substituteOnOpen?: boolean;
   /**
-   * Графы рейса, который окно открыло править, — **барьер готовности формы** (Р21).
+   * Boxes of the route the dialog opened to edit — the **form readiness barrier** (R21).
    *
-   * Подстановка ждёт, пока графы формы не совпадут с ними: эффекты блока выполняются раньше
-   * заполняющего эффекта окна, и до барьера решение принималось по форме, ещё занятой **прежней
-   * записью**, — прочитав чужое «без прицепа», подстановка молчала, помечала источник применённым
-   * и второй раз к решению не возвращалась. Окно живёт дольше записи (antd не размонтирует
-   * закрытое), так что «прежняя» — это не редкость, а второй открытый подряд рейс.
+   * The default waits until the form boxes match them: the block's effects run before the dialog's
+   * filling effect, and before the barrier the decision was taken by a form still holding the
+   * **previous record** — having read someone else's "no trailer", the default stayed silent,
+   * marked the source as applied and never came back to the decision. The dialog outlives the
+   * record (antd does not unmount a closed one), so "previous" is not rare — it is the second route
+   * opened in a row.
    *
-   * Ждёт только до смены машины: после неё графы описывают уже не ту единицу, и сверять форму с
-   * записью незачем — решение принимает сама смена.
+   * It waits only until the vehicle changes: after that the boxes describe another unit, and there
+   * is nothing to compare the form with — the change itself decides.
    *
-   * Окна заведения записи не правят и проп не передают: сверять там не с чем.
+   * Record-creating dialogs do not edit and do not pass the prop: there is nothing to compare with.
    */
   record?: TrailerGraphs | null;
   /**
-   * Спрашивать ли прицеп вообще. `false` — бланк выбранной машины его не печатает (форма № 3,
-   * ADR 0071) либо реквизиты выезда у рейса уже свои: блок не рисуется, **а графы очищаются**.
+   * Whether to ask the trailer at all. `false` — the selected vehicle's form does not print it
+   * (form No. 3, ADR 0071) or the route's departure details are its own: the block is not rendered,
+   * **and the boxes are cleared**.
    *
-   * Пропом, а не условием у вызова: скрытые поля rc-field-form хранит (`preserve`), и снятый с
-   * экрана блок уносил бы с собой только вопрос, но не ответ — полуприцеп прежней машины уезжал
-   * в тело рейса молча. Условие переехало сюда целиком, поэтому очистка не может быть забыта в
-   * очередном окне.
+   * A prop, not a condition at the call site: rc-field-form keeps hidden fields (`preserve`), and a
+   * block taken off screen would take only the question with it, not the answer — the previous
+   * vehicle's semi-trailer would silently go into the route body. The condition moved here
+   * entirely, so clearing cannot be forgotten in the next dialog.
    */
   asks?: boolean;
 }) {
@@ -152,10 +160,10 @@ export function TrailerFields({
   };
 
   /*
-   * Подстановка, очистка и галочка тягача — соседним файлом (`useTrailerGraphs`). Здесь остаётся
-   * разметка: правило и порядок его применения читают вместе с планом, а пару граф — вместе с
-   * экраном. Зовётся хук **до** отказа рисовать (`asks`): им же графы и очищаются, а хук,
-   * пропущенный вместе с разметкой, оставил бы в форме прицеп чужой машины.
+   * Default, clearing and the tractor checkbox live next door (`useTrailerGraphs`). Markup stays
+   * here: the rule and its order are read with the plan, the box pair with the screen. The hook is
+   * called **before** the refusal to render (`asks`): it also clears the boxes, and a hook skipped
+   * together with the markup would leave another vehicle's trailer in the form.
    */
   const { modes, setMode, isTractor, noteWithTrailerTouched } = useTrailerGraphs({
     form,
@@ -170,8 +178,8 @@ export function TrailerFields({
   });
 
   /**
-   * Подпись говорит о том, что в графах стоит **сейчас**, а не о том, что портал когда-то
-   * подставил: вписал человек другой прицеп — подпись уходит, и врать ей нечем.
+   * The caption speaks of what the boxes hold **now**, not of what the portal once filled: if the
+   * person typed another trailer, the caption goes away and has nothing to lie about.
    */
   const note = graphsAreHitched(hitched, graphs)
     ? hitchedTrailerNote(hitched)
@@ -181,14 +189,15 @@ export function TrailerFields({
 
   const checkbox = (
     <Form.Item name="withTrailer" valuePropName="checked">
-      {/* Свой `onChange` живёт рядом с формовым: `Form.Item` оборачивает его, а не заменяет. Им
-        взводится барьер «галочку трогал человек» — умолчание тягача после этого молчит. */}
+      {/* Our `onChange` lives next to the form's own: `Form.Item` wraps it rather than replacing
+        it. It raises the "the person touched the checkbox" barrier — after that the tractor default
+        stays silent. */}
       <Checkbox onChange={noteWithTrailerTouched}>{checkboxLabel}</Checkbox>
     </Form.Item>
   );
 
-  // Вопроса нет — нет и разметки. Стоит **после** хука: очистку граф делает он, и пропущенный
-  // вместе с разметкой хук оставил бы в форме прицеп чужой машины.
+  // No question — no markup. Placed **after** the hook: the hook clears the boxes, and skipped
+  // together with the markup it would leave another vehicle's trailer in the form.
   if (!asks) return null;
 
   return (
@@ -211,9 +220,9 @@ export function TrailerFields({
             modelPlaceholder={secondPlaceholder}
             regNumberPlaceholder={secondPlaceholder}
             vehicleId={vehicleId}
-            // Одна единица не стоит в двух графах: второй слот не предлагает того, кто уже в
-            // первом (§13.6). Госномером, а не идентификатором: в графах он и лежит, и правило
-            // работает одинаково — выбрали прицеп списком или вписали руками.
+            // One unit does not stand in two boxes: the second slot does not offer what is already
+            // in the first (§13.6). By plate, not id: the plate is what the boxes hold, and the
+            // rule works the same whether the trailer was picked from the list or typed by hand.
             excludeRegNumber={trailer1RegNumber}
           />
           {note && (

@@ -11,44 +11,48 @@ import { foreignHitchWarning, TRAILER_DIRECTORY_HINT } from '@entities/vehicle-r
 import { trailerPickerQuery } from '@entities/vehicle-trailer';
 
 /**
- * Выбор прицепа из реестра для одной пары граф рейса (план `docs/vehicle-trailers-plan.md`, §13).
+ * Choosing a trailer from the registry for one pair of route boxes
+ * (`docs/vehicle-trailers-plan.md`, §13).
  *
- * **Выбор — не закрепление (Р18).** Список кладёт марку и госномер в те же текстовые графы, что
- * человек набрал бы руками, и больше не делает ничего: справочник от рейса не меняется. Закрепление
- * живёт в карточке прицепа и означает «стоит за этой машиной постоянно», а выбор в рейсе — «сегодня
- * едем с этим». Иначе один выезд чужим полуприцепом молча переписал бы реестр.
+ * **Choosing is not hitching (R18).** The list puts make and plate into the same text boxes a
+ * person would type, and does nothing else: the directory does not change from a route. Hitching
+ * lives in the trailer card and means "stands with this vehicle permanently", while a route choice
+ * means "today we go with this one". Otherwise one trip with someone else's semi-trailer would
+ * silently rewrite the registry.
  *
- * Отсюда и устройство поля: своего значения в форме у него нет — оно **выводится** из граф
- * сопоставлением госномера с реестром (Р17, пункт 3). Поэтому переключение режима ничего не теряет
- * и правка граф руками не расходится с показанным выбором: показывать нечего, кроме того, что в
- * графах стоит.
+ * Hence the field's design: it has no value of its own in the form — the value is **derived** from
+ * the boxes by matching the plate with the registry (R17, item 3). So switching modes loses
+ * nothing, and editing the boxes by hand cannot diverge from the shown choice: there is nothing to
+ * show but what the boxes hold.
  *
- * Отдельным файлом, а не внутри `TrailerFields`: блок граф общий на пять окон, и список с поиском,
- * пометками состояния и предупреждением увёл бы его за бюджет качества (`scripts/quality.mjs`).
+ * A file of its own, not inside `TrailerFields`: the box block is shared by five dialogs, and a
+ * searchable list with state marks and a warning is a separate concern from the boxes themselves.
  */
 export function TrailerPicker({
   slot,
   vehicleId,
   excludeRegNumber,
 }: {
-  /** Пара граф бланка 4-П: 1 — первая, 2 — вторая. Ею же названы поля формы и подпись. */
+  /**
+   * Box pair of the 4-P form: 1 — first, 2 — second. It also names the form fields and the label.
+   */
   slot: 1 | 2;
   /**
-   * Машина рейса: с ней сверяется закрепление выбранного прицепа. Чужое — предупреждение (Р19),
-   * своё — обычный случай, ровно его портал и подставляет.
+   * The route's vehicle: the chosen trailer's hitch is checked against it. Someone else's — a
+   * warning (R19); its own — the ordinary case, exactly what the portal fills in.
    */
   vehicleId?: string | null;
   /**
-   * Госномер прицепа из соседней графы: одна единица не стоит в двух слотах сразу, и второй слот
-   * не предлагает того, кто уже выбран в первом (§13.6).
+   * The trailer plate from the neighbouring box: one unit does not stand in two slots at once, and
+   * the second slot does not offer what is already chosen in the first (§13.6).
    */
   excludeRegNumber?: string;
 }) {
   const form = Form.useFormInstance();
   const modelField = `trailer${slot}Model`;
   const regField = `trailer${slot}RegNumber`;
-  // Наблюдение обычное: графы остаются полями формы и в этом режиме — `TrailerFields` их прячет,
-  // а не снимает, иначе выбранное не доехало бы ни до показа здесь, ни до тела рейса.
+  // An ordinary watch: the boxes stay form fields in this mode too — `TrailerFields` hides them
+  // rather than removing them, otherwise the choice would reach neither this display nor the body.
   const model = Form.useWatch<string | undefined>(modelField, form);
   const regNumber = Form.useWatch<string | undefined>(regField, form);
 
@@ -56,9 +60,9 @@ export function TrailerPicker({
   const trailers = data ?? [];
 
   /**
-   * Что стоит в графах — как строка списка. Госномер сравнивается без пробелов и регистра: в
-   * бланке он печатается по-разному («АВ1234 77» и «ав123477» — один прицеп), а графы наполняют и
-   * руками, и подстановкой.
+   * What the boxes hold — as a list row. The plate is compared without spaces and case: the form
+   * prints it in different ways ("АВ1234 77" and "ав123477" are one trailer), and the boxes are
+   * filled both by hand and by defaults.
    */
   const regKey = squash(regNumber);
   const picked = regKey ? trailers.find((t) => squash(t.registrationNumber) === regKey) : undefined;
@@ -69,15 +73,16 @@ export function TrailerPicker({
 
   const excluded = squash(excludeRegNumber);
   const options: PickerEntry[] = trailers
-    // Собственный выбор из отбора не выпадает: стой в обеих графах одно и то же (наследство или
-    // чужая правка) — поле обязано показать, что там стоит, а не опустеть.
+    // An own choice does not fall out of the selection: if both boxes hold the same (inheritance or
+    // someone's edit), the field must show what is there, not go empty.
     .filter((t) => !excluded || t.id === picked?.id || squash(t.registrationNumber) !== excluded)
     .map((t) => ({ value: t.id, label: rowOf(t), search: squash(trailerTitle(t)) }));
 
   /*
-   * Графы, за которыми записи реестра не нашлось, поле показывает как есть — своей группой. Иначе
-   * включённая галочка выглядела бы так, будто стёрла набранное: текст в графах остаётся, а поле
-   * пусто. Сюда же попадает списанный прицеп — в списке его нет, а в графах рейса он законен (Р11).
+   * Boxes with no registry record are shown by the field as they are — in their own group.
+   * Otherwise a ticked checkbox would look as if it erased what was typed: text stays in the boxes
+   * while the field is empty. A written-off trailer lands here too — absent from the list, yet
+   * legal in the route boxes (R11).
    */
   if (!picked && typedTitle) {
     options.push({
@@ -89,9 +94,9 @@ export function TrailerPicker({
   const warning = foreignHitchWarning(picked, vehicleId);
 
   /*
-   * Подпись связывается с полем руками: `htmlFor` `Form.Item` подставляет сам — из `name`, — а у
-   * списка `name` нет и быть не может (своего значения в форме он не держит, см. выше). Без этой
-   * пары клик по подписи никуда не ведёт, а озвучиватель читает поле безымянным.
+   * The label is bound to the field by hand: `Form.Item` sets `htmlFor` itself from `name`, and the
+   * list has no `name` and cannot have one (it holds no value of its own, see above). Without this
+   * pair a click on the label leads nowhere and a screen reader reads the field as unnamed.
    */
   const controlId = `trailer${slot}Picker`;
 
@@ -99,9 +104,9 @@ export function TrailerPicker({
     <Form.Item
       label={`Прицеп ${slot}`}
       htmlFor={controlId}
-      // Подсказка объясняет, что в списке и чего выбор из него не делает, — тем же приёмом, каким
-      // объясняет себя выбор адреса из справочника (ADR 0069). Предупреждение встаёт под ней:
-      // относится оно к выбранной строке, а не к списку, и молчать о нём поле не вправе (Р19).
+      // The hint explains what is in the list and what choosing from it does not do — the same way
+      // the address directory picker explains itself (ADR 0069). The warning stands below it: it
+      // concerns the chosen row, not the list, and the field may not stay silent about it (R19).
       extra={
         <>
           {TRAILER_DIRECTORY_HINT}
@@ -118,23 +123,24 @@ export function TrailerPicker({
         value={picked?.id ?? (typedTitle ? TYPED_VALUE : undefined)}
         options={options}
         showSearch
-        // Подпись строки — узел с меткой состояния, и отбор по ней сравнивал бы разметку. Поэтому
-        // ищется по своей строке: марка и госномер вместе, без пробелов и регистра.
+        // The row label is a node with a state mark, and filtering by it would compare markup. So
+        // the search runs over its own string: make and plate together, without spaces and case.
         filterOption={(input, option) => {
           const needle = squash(input);
           return !needle || (option?.search ?? '').includes(needle);
         }}
         onChange={(id: string) => {
           const t = trailers.find((x) => x.id === id);
-          // «Вписано в графы» выбирать не за чем: это и есть то, что в графах стоит.
+          // "Typed into the boxes" is pointless to choose: it is exactly what the boxes hold.
           if (!t) return;
           form.setFieldsValue({ [modelField]: t.model, [regField]: t.registrationNumber });
         }}
         loading={isFetching}
         style={{ width: '100%' }}
         placeholder="Выберите прицеп из реестра"
-        // Пустой список и несостоявшийся запрос — разные ответы: «ничего не нашлось» на месте
-        // второго читалось бы как пустой реестр, и человек снял бы галочку вместо повтора.
+        // An empty list and a failed request are different answers: "nothing found" in place of the
+        // second would read as an empty registry, and the person would untick the box instead of
+        // retrying.
         notFoundContent={
           isError
             ? 'Не удалось загрузить реестр прицепов'
@@ -147,24 +153,25 @@ export function TrailerPicker({
   );
 }
 
-/** Значение строки «вписано в графы»: идентификатором ему быть нечем — в реестре такой записи нет. */
+/**
+ * Value of the "typed into the boxes" row: it cannot be an id — the registry has no such record.
+ */
 const TYPED_VALUE = '__typed__';
 
-/** Подпись группы для набранного руками — она же объясняет, почему строка стоит отдельно. */
+/** Group label for hand-typed values — it also explains why the row stands apart. */
 const TYPED_GROUP_LABEL = 'Вписано в графы';
 
 interface PickerOption {
   value: string;
   label: ReactNode;
-  /** По чему ищут: марка и госномер одной строкой, приведённой к сравнимому виду. */
+  /** What is searched: make and plate as one string, normalised for comparison. */
   search: string;
 }
 
 /**
- * Группа списка — сегодня она одна: строка, вписанная в графы руками. `search` объявлен и здесь,
- * потому что отбор списка получает элемент как есть: без общего поля обращение к нему в
- * `filterOption` пришлось бы прикрывать приведением типа, то есть обещанием, которого никто не
- * проверяет.
+ * A list group — today there is one: the row typed into the boxes by hand. `search` is declared
+ * here too because the list filter receives the item as is: without a shared field, accessing it in
+ * `filterOption` would need a type cast, i.e. a promise nobody checks.
  */
 interface PickerGroup {
   label: string;
@@ -174,18 +181,18 @@ interface PickerGroup {
 
 type PickerEntry = PickerOption | PickerGroup;
 
-/** Госномер и марка под сравнение: регистр и пробелы в графе бланка ничего не значат. */
+/** Plate and make for comparison: case and spaces in a form box mean nothing. */
 function squash(v: string | null | undefined): string {
   return (v ?? '').toLowerCase().replace(/\s+/g, '');
 }
 
 /**
- * Строка списка: та же подпись, какой прицеп зовут в реестре и в подписи под графами
- * (`trailerTitle`), плюс состояние, если оно не рабочее.
+ * A list row: the same label the trailer has in the registry and under the boxes (`trailerTitle`),
+ * plus its state if not operational.
  *
- * Прицеп в обслуживании предлагается **с пометкой** (§4.2.3): он закреплён и выезжает законно, но
- * планируют такой выезд осознанно. Рабочее состояние молчит — гори метка у каждой строки, среди
- * них не заметить ту одну, что в ремонте.
+ * A trailer under maintenance is offered **with a mark** (§4.2.3): it is hitched and legally goes
+ * out, but such a trip is planned consciously. The operational state stays silent — with a mark on
+ * every row, the one under repair would go unnoticed.
  */
 function rowOf(t: VehicleTrailerDto): ReactNode {
   return (

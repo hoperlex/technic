@@ -1,21 +1,23 @@
 import { workedAmountLabel } from '@technic/contracts';
 
 /**
- * Перечень последствий в окнах предпросмотра — оформление, общее у четырёх окон.
+ * The consequences list in preview dialogs — presentation shared by four dialogs.
  *
- * Своим модулем, а не строками в каждом окне: закрытие фактической датой, смена техники, смена
- * машиниста и досрочное завершение показывают последствия ОДИНАКОВО — человек ходит между ними в
- * одном разговоре, и разъехавшиеся отступы читались бы как разные виды списков. Раньше это было
- * четыре копии стиля и две копии подсчёта.
+ * A module of its own, not lines in each dialog: closing by an actual date, a vehicle change, a
+ * machinist change and an early end show consequences THE SAME way — the person moves between them
+ * in one conversation, and diverging indents would read as different kinds of lists. It used to be
+ * four copies of the style and two copies of the counting.
  *
- * Не в `shared.tsx` слайса: тот про данные заказа (справочники, файлы, опции), а здесь чистое
- * оформление предпросмотра.
+ * Lives in the vehicle-request entity, not with any one dialog: it is pure preview presentation,
+ * independent of the order data.
  */
 
-/** Отступ у маркера и прижатая к заголовку верхушка списка. */
+/** Indent at the marker, and the list top pressed to its heading. */
 export const listStyle = { margin: '4px 0 0', paddingInlineStart: 20 } as const;
 
-/** Сколько всего снимается — числом, а не длиной списка: цена должна читаться одной строкой. */
+/**
+ * How much is removed in total — as a number, not a list length: the cost must read in one line.
+ */
 export function totalOf(days: readonly { hours: number }[]): string {
   const hours = days.reduce((sum, day) => sum + day.hours, 0);
   return `Всего дней: ${days.length} · ${workedAmountLabel('hours', hours)}`;

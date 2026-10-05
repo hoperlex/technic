@@ -7,6 +7,11 @@ import type { AssignmentDeliveryController } from '../model/useAssignmentDeliver
 import type { AssignmentFleetController } from '../model/useAssignmentFleet';
 import type { AssignmentRouteCrewController } from '../model/useAssignmentRouteCrew';
 
+/**
+ * Delivery to the site: a city relocation on the vehicle's own wheels is a route with a 4-P.
+ * Offered, not required: the same machine may come on a carrier, and then there is no waybill at
+ * all. The pickup is created later, from the request card: its date is unknown at this moment.
+ */
 export function AssignmentDeliveryFields({
   delivery,
   fleet,
@@ -30,6 +35,8 @@ export function AssignmentDeliveryFields({
             Техника едет своим ходом — выписать путевой лист 4-П
           </Checkbox>
         </Form.Item>
+        {/* Where the ticked box came from: a prefill must name itself, otherwise it reads as
+            someone else's forgotten edit (ADR 0085 R11). */}
         {delivery.weekly && (
           <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
             Доставку запросила недельная заявка{' '}
@@ -64,6 +71,8 @@ export function AssignmentDeliveryFields({
                   : undefined
             }
           >
+            {/* The only driver in the directory is not filled in by itself: the dispatcher
+                decides who drives (see the new-route driver field). */}
             <AutoSelect
               autoSelectSole={false}
               options={crew.driverOptions}
@@ -74,6 +83,8 @@ export function AssignmentDeliveryFields({
               placeholder={delivery.date ? 'Выберите водителя' : 'Сначала укажите дату перегона'}
             />
           </Form.Item>
+          {/* The relocation prints the same 4-P, and an empty box there is just as empty: it is
+              said here, at its own field, not by one warning for the whole dialog. */}
           {crew.deliveryDriverGaps && (
             <FormGrid.Full>
               <Alert
@@ -84,6 +95,8 @@ export function AssignmentDeliveryFields({
               />
             </FormGrid.Full>
           )}
+          {/* Relocation address (ADR 0069): DaData suggestions or a site from the directory; a free
+              string stays valid — a base or a parking lot is not described by an address. */}
           <AddressField
             name="deliveryFrom"
             label="Откуда"

@@ -11,21 +11,22 @@ import { ViewModal } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
 
 /**
- * Отчёт пачки «4-П на весь период» (ADR 0207 решение 7): что пачка сделала за каждый день срока.
+ * Report of the "4-P for the whole period" batch (ADR 0207 decision 7): what the batch did for each
+ * day of the term.
  *
- * Таблицей, а не подтверждением `Modal.confirm`: строк бывает полсотни, и в них смешаны три разные
- * новости — рейс заведён, лист выписан, день пропущен с причиной. Список из пятидесяти предложений
- * в теле подтверждения не читается вовсе, а читать его обязательно: пропущенные дни диспетчер
- * доделывает руками, и другого места, где ему скажут какие, нет.
+ * A table, not a `Modal.confirm`: there can be fifty rows mixing three different news — route
+ * created, waybill issued, day skipped with a reason. Fifty sentences in a confirmation body are
+ * unreadable, and reading them is mandatory: the dispatcher finishes skipped days by hand, and
+ * there is no other place that says which.
  *
- * Своим файлом от обоих окон, которые пачку зовут: отчёт один и тот же и у галочки принятия в
- * работу, и у кнопки таблицы дней. Показывается он **после** действия, когда первое окно уже
- * закрыто, — это не второй шаг формы, а квитанция.
+ * Separate from both dialogs that call the batch: the report is the same for the take-into-work
+ * checkbox and the days-table button. It shows **after** the action, when the first dialog is
+ * already closed — not a second form step but a receipt.
  */
 
 /**
- * Цвет исхода. `planned` и `issued` разделены не ради подробности: первый расходует строку рейса,
- * второй — ещё и номер бланка строгой отчётности, и в отчёте это разные новости.
+ * Outcome colour. `planned` and `issued` are separate not for detail: the first spends a route row,
+ * the second also a strict-reporting form number, and in the report those are different news.
  */
 const outcomeColors: Record<VehicleRequestDayBatchOutcome, string> = {
   planned: 'blue',
@@ -45,8 +46,8 @@ const columns: TableColumnType<VehicleRequestDayBatchRowDto>[] = [
     key: 'outcome',
     title: 'Исход',
     width: 140,
-    // Подписи — словарь контрактов: исходы там закрытым списком, и портал со своим переводом
-    // молча разошёлся бы с ним, стоило серверу завести исход шестым.
+    // Labels come from the contracts dictionary: outcomes are a closed list there, and a
+    // portal-side translation would silently diverge the moment the server added another outcome.
     render: (_v, row) => (
       <Tag color={outcomeColors[row.outcome]} style={{ marginInlineEnd: 0 }}>
         {dayBatchOutcomeLabels[row.outcome]}
@@ -57,8 +58,8 @@ const columns: TableColumnType<VehicleRequestDayBatchRowDto>[] = [
     key: 'route',
     title: 'Рейс',
     width: 110,
-    // У пропущенного дня здесь стоит тот рейс, который его не принял: без номера причина «в рейсе
-    // не осталось строк задания» не говорит, в каком именно.
+    // For a skipped day this is the route that did not accept it: without the number, "no task rows
+    // left in the route" does not say which route.
     render: (_v, row) => row.routeNumber ?? <Typography.Text type="secondary">—</Typography.Text>,
   },
   {
@@ -80,16 +81,16 @@ const columns: TableColumnType<VehicleRequestDayBatchRowDto>[] = [
 ];
 
 interface Props {
-  /** Ответ пачки; `null` — показывать нечего, окно закрыто. */
+  /** The batch answer; `null` — nothing to show, the dialog is closed. */
   result: VehicleRequestDayBatchResultDto | null;
   onClose: () => void;
 }
 
 export function DayBatchReport({ result, onClose }: Props) {
   /*
-   * Числа берутся из ответа, а не пересчитываются по строкам: сервер считает их по тому же циклу,
-   * что и выписывает, а портал считал бы по показанным строкам. Разойдясь однажды (порция, обрыв
-   * на полпути), шапка соврала бы именно там, где её читают вместо таблицы.
+   * Counts come from the answer, not recounted from rows: the server counts them in the same loop
+   * that issues, while the portal would count shown rows. Once they diverge (a portion, an
+   * interruption halfway), the header would lie exactly where it is read instead of the table.
    */
   const summary = result
     ? [
@@ -106,16 +107,16 @@ export function DayBatchReport({ result, onClose }: Props) {
       open={!!result}
       onClose={onClose}
       width={860}
-      // Содержимое пересобирается при каждом открытии: вторая пачка — другой отчёт, и оставшаяся
-      // от первой прокрутка таблицы показывала бы не те строки.
+      // Content is rebuilt on every opening: a second batch is another report, and the table scroll
+      // left from the first would show the wrong rows.
       destroyOnHidden
       footer={<Button onClick={onClose}>Закрыть</Button>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <Space size={[8, 8]} wrap>
           {summary.map((s) => (
-            // Ноль показывается наравне с остальными: «пропущено 0» — это ответ, а пропавшая
-            // строка читается как «не считали».
+            // Zero is shown like the others: "skipped 0" is an answer, while a missing tag reads as
+            // "not counted".
             <Tag key={s.label} color={s.value > 0 ? s.color : undefined}>
               {s.label}: {s.value}
             </Tag>
@@ -123,9 +124,9 @@ export function DayBatchReport({ result, onClose }: Props) {
         </Space>
 
         {result && result.remaining > 0 ? (
-          // Остаток срока — теми же словами, какими портал обещал его до нажатия (ADR 0207
-          // решение 11). Без этой строки «пачка кончилась» читается как «сделано всё», и
-          // квартальный заказ остался бы наполовину непройденным молча.
+          // The remainder of the term — in the same words the portal promised before the click (ADR
+          // 0207 decision 11). Without this line "the batch ended" reads as "everything is done",
+          // and a quarter-long order would silently stay half-planned.
           <Alert type="info" showIcon title={dayBatchRemainderMessage(result.remaining)} />
         ) : null}
 

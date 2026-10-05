@@ -88,10 +88,9 @@ export const CLIENT_BUILD_HEADER = 'X-Client-Build';
 export const CLIENT_CONTRACT_HEADER = 'X-Client-Contract';
 
 /**
- * Код отказа гейта. Тот же литерал носит 409 предпросмотра смены техники
- * (`widgets/vehicle-assignment-dialog/ui/ReassignPreview.tsx`), поэтому разбирается ПАРА
- * «статус + код», а не код
- * в одиночку: разговор у этих двух отказов разный.
+ * Gate refusal code. The same literal is carried by the 409 of the vehicle-change preview
+ * (`features/vehicle-assignment/model/preview.ts`), so the PAIR "status + code" is matched, never
+ * the code alone: the two refusals lead to different conversations.
  */
 export const CLIENT_UPGRADE_REQUIRED = 'client_upgrade_required';
 

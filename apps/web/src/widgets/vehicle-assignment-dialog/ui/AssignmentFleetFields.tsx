@@ -12,7 +12,18 @@ import type { AssignmentFleetController } from '../model/useAssignmentFleet';
 import type { AssignmentRouteCrewController } from '../model/useAssignmentRouteCrew';
 import type { VehicleAssignmentForm } from '../model/types';
 
-/** Render route-first planning and the complete, advisory-only fleet selector. */
+/**
+ * Route-first planning and the fleet selector.
+ *
+ * The list is not narrowed by anything: neither the ordered category (ADR 0045), nor type (ADR
+ * 0059), nor vehicle kind (ADR 0064). Ordered "Truck crane, 130 t" — the list has a 25 t truck
+ * crane, a 200 t self-propelled crane and, lowest of all, a dump truck. Whether a neighbouring
+ * position fits is the dispatcher's call: they know the fleet and what was agreed with the
+ * customer, while the directory is filled unevenly, and a ban by it would hide the machine that
+ * actually does the work. The mismatch is named — as a list group ("Larger than ordered", "Another
+ * vehicle kind"), a mark in the row and a warning under the field — but the choice is not taken
+ * away.
+ */
 export function AssignmentFleetFields({
   form,
   fleet,
@@ -24,6 +35,14 @@ export function AssignmentFleetFields({
 }) {
   return (
     <>
+      {/* Step 1: which route the request goes with. Asked before the vehicle because that is how
+          the day is planned: a vehicle of this type already has a route, the request is appended as
+          a task row, and the route defines the vehicle (ADR 0052). "New route" restores the old
+          order: the vehicle is chosen and a route is created for it.
+
+          Routes are shown for the form's date: the delivery is edited right here, and a route
+          prints the task of one day — a hint for a neighbouring day would offer routes the request
+          cannot join. */}
       {crew.routeModel.needsRoute && (
         <FormGrid.Full>
           <Typography.Title level={5} style={{ marginTop: 8 }}>
@@ -57,6 +76,9 @@ export function AssignmentFleetFields({
         </FormGrid.Full>
       )}
 
+      {/* Step 2: whose vehicle. The number of units is in the label itself: an empty branch is
+          visible before entering it. Not a form field: ownership is not part of the assignment — it
+          belongs to the vehicle, and here it only narrows the list. */}
       <FormGrid.Full>
         <Form.Item label="Техника">
           <Segmented<VehicleOwnership>
@@ -72,6 +94,7 @@ export function AssignmentFleetFields({
         </Form.Item>
       </FormGrid.Full>
 
+      {/* Step 3 (rental only): from whom. */}
       {fleet.isRental && (
         <Form.Item
           name="lessorId"
@@ -96,6 +119,11 @@ export function AssignmentFleetFields({
         </Form.Item>
       )}
 
+      {/* Step 4: the concrete unit. A mismatch with the ordered position is a warning under the
+          field (ADR 0045, ADR 0059, ADR 0064): it does not cancel the assignment, but it does not
+          pass unnoticed either. A selected route locks the field: the route defines the vehicle
+          (ADR 0052). A truncated fleet is named here too: field search runs over loaded rows, and a
+          vehicle that did not fit the page would look absent. */}
       <Form.Item
         name="vehicleId"
         label="Конкретная техника"
@@ -139,6 +167,8 @@ export function AssignmentFleetFields({
       {fleet.selected && (
         <FormGrid.Full>
           <Space size={8} wrap style={{ marginBottom: 16 }}>
+            {/* The selected vehicle's classifier position: the colour changes when it diverges from
+                the order — the tag and the warning say the same thing in two ways. */}
             <Tag
               color={
                 fleet.substitution
@@ -156,6 +186,8 @@ export function AssignmentFleetFields({
         </FormGrid.Full>
       )}
 
+      {/* Rates: filled from the directory, but these are inputs — the price of a request is agreed
+          separately from the price list. */}
       <Form.Item
         name="pricePerHour"
         label="Стоимость за час, ₽"
