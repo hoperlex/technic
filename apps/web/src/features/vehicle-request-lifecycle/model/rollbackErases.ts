@@ -9,9 +9,16 @@ import {
 import { formatDateOnly } from '@shared/lib';
 
 /**
- * Describe only the work data a rollback to `new` actually removes. Approval is deliberately
- * absent because ADR 0172 keeps it, while optional assignment, route, relocation and completion
- * lines are included only when the request owns them.
+ * What a return to "new" erases from this request (`transitionResetsWork`), as lines built from its
+ * own data.
+ *
+ * The list is not static on purpose: a rented vehicle has no route and no relocations — the lessor
+ * runs them — and a fact exists only on a request that was closed and rolled back into work.
+ * Promising to remove what the request does not have would lie to the person exactly in the dialog
+ * where they decide whether to erase the work; so a line appears only for a filled field.
+ *
+ * The approval is absent entirely (ADR 0172): the rollback keeps it, and a line about it would not
+ * be caution but an untruth — the person would refuse the rollback to protect what is not at risk.
  */
 export function rollbackErases(
   request: VehicleRequestDto,
@@ -19,8 +26,9 @@ export function rollbackErases(
 ): string[] {
   const items: string[] = [];
   if (request.assignment) {
-    // Rates describe the commercial agreement being removed; a rental without rates names the
-    // lessor instead so the confirmation still identifies the affected agreement.
+    // Rates in the same text as the list row: they were agreed for this request (ADR 0027), and what
+    // is erased with the vehicle is the agreement, not a directory row. A rented vehicle without
+    // rates names the lessor: the agreement was with them, and they are the one to call.
     const detail = assignmentRateLabel(request.assignment) || request.assignment.lessorName;
     items.push(
       `Назначенная техника: ${assignmentTitle(request.assignment)}${detail ? ` — ${detail}` : ''}`,

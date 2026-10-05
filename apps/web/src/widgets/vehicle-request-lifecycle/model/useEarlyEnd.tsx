@@ -25,18 +25,33 @@ interface Input {
 }
 
 /**
- * Shared early-end command host. Applying branches use their preview dialogs, while rejection and
- * withdrawal stay simple because they do not change the request term or its forms.
+ * Early-end actions (ADR 0044), one host for both vehicle-request views. Three mutations, two
+ * dialogs and the "who approves their own request" rule live together: split per view, they would
+ * also drift in behaviour — one place would confirm a rejection, another would not.
+ *
+ * Since ADR 0178 both applying branches — the approver's own request and an approval of someone
+ * else's request — follow the history command canon and require a consequences fingerprint. Hence
+ * two dialogs: the request dialog shows consequences as a second step, and the approval, which used
+ * to go straight from the list row, got its own dialog. Rejection and withdrawal stay simple: they
+ * apply nothing.
  */
 export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
   const { message, modal } = App.useApp();
   const { user, can } = useAuth();
   const qc = useQueryClient();
   const [target, setTarget] = useState<SpecialEquipmentRequestDto | null>(null);
+  /**
+   * Rejection asks for a reason: the request stays on the ordered term, and that needs explaining.
+   * The dialog is the shared `ReasonModal`, not a `confirm` with its own field: with a home-made
+   * field the "reason missing" error came as a toast over the dialog and marked nothing (ADR 0094).
+   */
   const [rejectTarget, setRejectTarget] = useState<VehicleRequestDto | null>(null);
+  // The request whose early end is being approved: its dialog has its own preview and fingerprint
+  // (R19).
   const [approveTarget, setApproveTarget] = useState<SpecialEquipmentRequestDto | null>(null);
 
-  // Shortening a term changes request rows, ESM-2 forms, and garage availability together.
+  // A shortened term rewrites waybills too: the server reconciles the request's ESM-2 again (ADR
+  // 0037), and without this the waybill journal shows shifts that no longer exist.
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     void qc.invalidateQueries({ queryKey: waybillKeys.root });
@@ -47,13 +62,17 @@ export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
     mutationFn: (value: { id: string; body: RequestVehicleEarlyEndInput }) =>
       vehicleRequestsApi.requestEarlyEnd(value.id, value.body),
     onSuccess: (result) => {
+      // The message names what really happened: the server applies an approver's own request at
+      // once, and "sent for approval" would be untrue.
       const applied =
         result.requestType === 'special_equipment' && result.earlyEnd?.status === 'approved';
       message.success(applied ? 'Срок заявки сокращён' : 'Запрос отправлен на визу');
       setTarget(null);
       invalidate();
     },
-    // A stale preview is handled by the open dialog, which immediately recomputes consequences.
+    // "Consequences changed" is not an error but a question, and the dialog answers it: it asks for
+    // the plan again and shows the recomputed list with an explanation of why it came back. A toast
+    // would be a second voice about the same thing and draw the eye away from the dialog.
     onError: (error) => {
       if (staleReasonOf(error)) return;
       message.error(errorMessage(error));
@@ -68,6 +87,8 @@ export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
       setRejectTarget(null);
       invalidate();
     },
+    // Stale consequences or changed warnings are answered by the approval dialog itself (it
+    // recomputes the preview); a toast on top would be a second voice about the same thing.
     onError: (error) => {
       if (staleReasonOf(error)) return;
       message.error(errorMessage(error));
@@ -83,7 +104,7 @@ export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
     onError: (error) => message.error(errorMessage(error)),
   });
 
-  // A site-scoped approver applies their own shortening immediately instead of creating a queue.
+  // An own approval applies at once — the same rule as when creating a request (ADR 0032).
   const approvesOwn = isPlaceScopedRole(user?.role ?? null) && can('vehicleRequests.approve');
   const withdraw = (requestValue: VehicleRequestDto) =>
     modal.confirm({
@@ -98,6 +119,7 @@ export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
     approve: setApproveTarget,
     approvesOwn,
     close: () => setTarget(null),
+    // The rejection dialog: rendered by whoever uses the hook — the hook mounts nothing itself.
     node: (
       <ReasonModal
         open={!!rejectTarget}
@@ -121,6 +143,12 @@ export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
         }
       />
     ),
+    /*
+     * The approval dialog: consequences of someone else's request computed **for the approver**
+     * (R19, R26). This is what approval lacked: "Approve" used to go straight from the list row,
+     * and the person approved without seeing what it burns and cancels. The answer is anonymised —
+     * numbers and dates, no form numbers: the approver has no access to the waybill journal.
+     */
     approveNode: renderApproveModal({
       request: approveTarget,
       confirmLoading: decide.isPending,
@@ -135,6 +163,9 @@ export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
     open: setTarget,
     pending: request.isPending || decide.isPending || withdrawRequest.isPending,
     reject: setRejectTarget,
+    // `mutateAsync`, not `mutate`: the dialog awaits the server answer — a 409 "consequences
+    // changed" is cured by showing them again, and it is the dialog that must see the refusal
+    // (R17, ADR 0178).
     submit: (body: RequestVehicleEarlyEndInput) =>
       target ? request.mutateAsync({ id: target.id, body }) : undefined,
     target,
