@@ -7,10 +7,11 @@ import {
 } from '@technic/contracts';
 import { emailCell, isPendingRegistration, PhoneLink, roleTags } from '@entities/user-account';
 import { UserAvatar, type ActionSheetItem, type CardConfig } from '@shared/ui';
+import type { ArchivedRowAction } from './registryColumns';
 
 interface Options {
   actionsFor: (record: UserAccountDto) => ActionSheetItem[];
-  archivedActionsFor: (record: UserAccountDto) => ActionSheetItem[];
+  archivedActionsFor: (record: UserAccountDto) => ArchivedRowAction[];
   edit: (record: UserAccountDto) => void;
 }
 

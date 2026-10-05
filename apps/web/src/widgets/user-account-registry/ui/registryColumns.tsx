@@ -17,9 +17,12 @@ import {
   type ActionSheetItem,
 } from '@shared/ui';
 
+/** Archived-row command; its loading flag is drawn by the desktop row buttons only. */
+export type ArchivedRowAction = ActionSheetItem & { loading?: boolean };
+
 interface Options {
   actionsFor: (record: UserAccountDto) => ActionSheetItem[];
-  archivedActionsFor: (record: UserAccountDto) => ActionSheetItem[];
+  archivedActionsFor: (record: UserAccountDto) => ArchivedRowAction[];
 }
 
 const menuOf = (actions: ActionSheetItem[]) => ({
@@ -164,6 +167,7 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
               size="small"
               danger={action.danger}
               disabled={action.disabled}
+              loading={action.loading}
               icon={archivedIcon(action.key)}
               title={action.label}
               onClick={action.onClick}

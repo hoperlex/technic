@@ -30,13 +30,20 @@ interface Options {
   renderRestoreModal: (port: RestoreModalPort) => ReactNode;
   purge: {
     allowed: boolean;
+    pending: boolean;
     confirm: (id: string, name: string) => void;
   };
 }
 
+/**
+ * Archived-row command. Loading is drawn only by the desktop row buttons: while it is set, the
+ * button swallows clicks, so a double click on restore cannot send a second request.
+ */
+type ArchivedAccountAction = ActionSheetItem & { loading?: boolean };
+
 export interface UserAccountLifecycleController {
   actionsFor: (record: UserAccountDto) => ActionSheetItem[];
-  archivedActionsFor: (record: UserAccountDto) => ActionSheetItem[];
+  archivedActionsFor: (record: UserAccountDto) => ArchivedAccountAction[];
   node: ReactNode;
 }
 
@@ -187,12 +194,19 @@ export function useUserAccountLifecycle({
     ];
   };
 
-  const archivedActionsFor = (record: UserAccountDto): ActionSheetItem[] => [
+  const archivedActionsFor = (record: UserAccountDto): ArchivedAccountAction[] => [
     ...(showHistory
       ? [{ key: 'history', label: 'История', onClick: () => showHistory(record) }]
       : []),
     ...(can('archive.restore')
-      ? [{ key: 'restore', label: 'Восстановить', onClick: () => requestRestore(record) }]
+      ? [
+          {
+            key: 'restore',
+            label: 'Восстановить',
+            loading: restore.isPending,
+            onClick: () => requestRestore(record),
+          },
+        ]
       : []),
     ...(purge.allowed
       ? [
@@ -200,6 +214,7 @@ export function useUserAccountLifecycle({
             key: 'purge',
             label: 'Удалить окончательно',
             danger: true,
+            loading: purge.pending,
             onClick: () => purge.confirm(record.id, record.email),
           },
         ]

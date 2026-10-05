@@ -5,13 +5,13 @@ import { DataTable, PageTableLayout, sortOptionsFrom, type ActionSheetItem } fro
 import { useUserAccountRegistry } from '../model/useUserAccountRegistry';
 import { registryMobileFilters, UserAccountRegistryFilters } from './UserAccountRegistryFilters';
 import { userAccountRegistryCard } from './registryCard';
-import { userAccountRegistryColumns } from './registryColumns';
+import { userAccountRegistryColumns, type ArchivedRowAction } from './registryColumns';
 
 interface Props {
   create: () => void;
   edit: (record: UserAccountDto) => void;
   actionsFor: (record: UserAccountDto) => ActionSheetItem[];
-  archivedActionsFor: (record: UserAccountDto) => ActionSheetItem[];
+  archivedActionsFor: (record: UserAccountDto) => ArchivedRowAction[];
 }
 
 /** Account list presentation; mutations enter through explicit action ports. */
