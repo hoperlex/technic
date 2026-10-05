@@ -15,6 +15,10 @@ import {
 // Только тип: проекция дня наружу («дата и номер рейса») названа один раз и там, где живут правила
 // дней линейного заказа. Импорт типовой, поэтому и кольца импортов он не заводит.
 import type { LinearDayRef } from './vehicle-request-days';
+// Только тип, и это важно: `weekly-vehicle-requests.ts` импортирует отсюда `ESM2_UNLOCK_LIMIT`,
+// то есть ссылка обратная. `import type` стирается при сборке, и цикла во время исполнения не
+// возникает — а словарь статусов недели обязан быть один на оба модуля.
+import type { WeeklyRequestStatus } from './weekly-vehicle-requests';
 import {
   requestStatusLabels,
   requestStatusSchema,
@@ -2875,6 +2879,12 @@ export interface VehicleRequestWeeklyOriginDto {
   weeklyRequestId: string;
   /** Число, а не «НЗ-12»: подпись собирает `formatWeeklyRequestNumber` — она одна на весь портал. */
   weeklyRequestNum: number;
+  /**
+   * Состояние недели (ADR 0218): «Создан по НЗ-12» и «Создан по НЗ-12 (аннулирована)» — разные
+   * утверждения, и второе объясняет, почему заказ отменён. Статусом, а не флагом «аннулирована»:
+   * словарь подписей один на портал, и флаг потребовал бы второго при следующем состоянии.
+   */
+  weeklyRequestStatus: WeeklyRequestStatus;
   /** Строка состава: по ней неделю открывают ровно на том месте, откуда заказ взялся. */
   itemId: string;
   deliveryNeeded: boolean;
@@ -2888,6 +2898,8 @@ export interface VehicleRequestWeeklyOriginDto {
 export interface VehicleRequestWeeklyExtensionDto {
   weeklyRequestId: string;
   weeklyRequestNum: number;
+  /** Состояние недели: продление по аннулированной уже развёрнуто (ADR 0218). */
+  weeklyRequestStatus: WeeklyRequestStatus;
   /** Понедельник продлённой недели; им же список и упорядочен — по порядку продлений. */
   weekStart: string;
 }

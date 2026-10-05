@@ -1343,6 +1343,9 @@ async function weeklyLinksByRequestIds(ids: string[]): Promise<WeeklyLinks> {
         itemId: weeklyVehicleRequestItems.id,
         weeklyRequestId: weeklyVehicleRequests.id,
         weeklyRequestNum: weeklyVehicleRequests.num,
+        // Статус недели едет в карточку заказа (ADR 0218): «Создан по НЗ-12» и «Создан по НЗ-12
+        // (аннулирована)» — разные утверждения, и второе объясняет, почему заказ отменён.
+        weeklyRequestStatus: weeklyVehicleRequests.status,
         deliveryNeeded: weeklyVehicleRequestItems.deliveryNeeded,
         deliveryFrom: weeklyVehicleRequestItems.deliveryFrom,
       })
@@ -1357,6 +1360,7 @@ async function weeklyLinksByRequestIds(ids: string[]): Promise<WeeklyLinks> {
         requestId: weeklyVehicleRequestItems.sourceRequestId,
         weeklyRequestId: weeklyVehicleRequests.id,
         weeklyRequestNum: weeklyVehicleRequests.num,
+        weeklyRequestStatus: weeklyVehicleRequests.status,
         weekStart: weeklyVehicleRequests.weekStart,
       })
       .from(weeklyVehicleRequestItems)
@@ -1377,6 +1381,7 @@ async function weeklyLinksByRequestIds(ids: string[]): Promise<WeeklyLinks> {
     origins.set(row.requestId, {
       weeklyRequestId: row.weeklyRequestId,
       weeklyRequestNum: row.weeklyRequestNum,
+      weeklyRequestStatus: row.weeklyRequestStatus,
       itemId: row.itemId,
       deliveryNeeded: row.deliveryNeeded,
       deliveryFrom: row.deliveryFrom,
@@ -1388,6 +1393,7 @@ async function weeklyLinksByRequestIds(ids: string[]): Promise<WeeklyLinks> {
     list.push({
       weeklyRequestId: row.weeklyRequestId,
       weeklyRequestNum: row.weeklyRequestNum,
+      weeklyRequestStatus: row.weeklyRequestStatus,
       weekStart: row.weekStart,
     });
     extensions.set(row.requestId, list);
@@ -3914,10 +3920,17 @@ function weeklyFeedWhere(p: Principal, q: VehicleFeedQuery): SQL | undefined {
     // Номер спрашивают парой «вид документа + номер» (`parseFeedNumberSearch`): «НЗ-12» и «ТС-12» —
     // две независимые последовательности, и одного числа мало, чтобы понять, что ищут.
     q.kind === 'weekly' && q.num !== undefined ? eq(weeklyVehicleRequests.num, q.num) : undefined,
+    // «Завизированные» — это применённые, а не всякие с непустой визой: аннулированная визу
+    // **хранит** (ADR 0218 решение 9 — ею объясняется, откуда взялись продления), и отбор по одной
+    // колонке показал бы развёрнутую неделю как согласованную. Второе условие отвечает «что ещё
+    // ждёт решения», и там аннулированной тоже нет: решение по ней принято дважды.
     q.approved === undefined
       ? undefined
       : q.approved
-        ? isNotNull(weeklyVehicleRequests.approvedAt)
+        ? and(
+            isNotNull(weeklyVehicleRequests.approvedAt),
+            ne(weeklyVehicleRequests.status, 'annulled'),
+          )
         : isNull(weeklyVehicleRequests.approvedAt),
     ...weeklyDateConds(q.dateFrom, q.dateTo),
     // Отдел сюда не добавляется (Р10а): у недельной заявки заказчик — всегда площадка, своей

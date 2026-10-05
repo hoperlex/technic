@@ -13,6 +13,8 @@ import {
   formatVehicleRequestNumber,
   formatWeeklyRequestNumber,
   isWeeklyRequestEditable,
+  isWeeklyRequestLive,
+  WEEKLY_REQUEST_STATUSES,
   isWeeklyWeekOverdue,
   itemWarnings,
   minRequestDateKey,
@@ -239,6 +241,16 @@ const itemSelect = {
   vehicleCategoryOfVehicle: itemVehicleCategories.name,
 };
 
+/**
+ * Статусы «живой» недели — те, что занимают пару «объект + неделя» (ADR 0218 решение 12).
+ *
+ * Перечнем, а не отрицанием двух значений: `ne(status, 'cancelled')` стояло в трёх чтениях, и
+ * второе терминальное состояние каждое из них молча пропустило бы. Множество считается из словаря
+ * контрактов тем же предикатом, которым его считает частичный уникальный индекс по смыслу
+ * (`isWeeklyRequestLive`), — чтобы добавленный однажды статус не потребовал третьего перечня.
+ */
+const LIVE_WEEKLY_STATUSES = WEEKLY_REQUEST_STATUSES.filter(isWeeklyRequestLive);
+
 function itemsQuery() {
   return db
     .select(itemSelect)
@@ -438,7 +450,10 @@ async function loadOtherWeekly(
     .where(
       and(
         inArray(weeklyVehicleRequestItems.sourceRequestId, sourceIds),
-        ne(weeklyVehicleRequests.status, 'cancelled'),
+        // Оба терминальных состояния выпадают (ADR 0218 решение 12): аннулированная неделя
+        // решением больше не является, и предупреждать о ней как о «другой активной» значило бы
+        // звать площадку к документу, который уже развёрнут.
+        inArray(weeklyVehicleRequests.status, LIVE_WEEKLY_STATUSES),
         gte(weeklyVehicleRequests.weekStart, weekStartKey(moscowDateKeyOf(new Date()))),
       ),
     )
@@ -1115,7 +1130,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
           and(
             eq(weeklyVehicleRequests.objectId, objectId),
             eq(weeklyVehicleRequests.weekStart, scope.weekStart),
-            ne(weeklyVehicleRequests.status, 'cancelled'),
+            inArray(weeklyVehicleRequests.status, LIVE_WEEKLY_STATUSES),
           ),
         );
 
@@ -1242,7 +1257,11 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         and(
           eq(weeklyVehicleRequests.objectId, body.objectId),
           eq(weeklyVehicleRequests.weekStart, body.weekStart),
-          ne(weeklyVehicleRequests.status, 'cancelled'),
+          // Аннулированная неделю не занимает — ровно как снятая (ADR 0218 решение 12): иначе
+          // после ошибочной визы собрать ту же неделю заново было бы нечем, кроме удаления
+          // документа насовсем, то есть вместе с объяснением. Освобождённого частичного индекса
+          // для этого недостаточно: отказ ставит вот это чтение.
+          inArray(weeklyVehicleRequests.status, LIVE_WEEKLY_STATUSES),
         ),
       );
     // Одна заявка на пару «объект + неделя» (план Р3): две означали бы два состава, которые при
@@ -1317,7 +1336,11 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
       const header = await requireHeader(req.params.id);
       assertWeeklyRequestScope(p, header.objectId);
       if (!isWeeklyRequestEditable(header.status)) {
-        throw err.unprocessable('Применённая заявка не правится — она уже стала историей');
+        throw err.unprocessable(
+          header.status === 'annulled'
+            ? 'Аннулированная заявка не правится — её состав остался объяснением того, что развернули'
+            : 'Применённая заявка не правится — она уже стала историей',
+        );
       }
       // Третья точка проверки недели: черновик, заведённый в четверг, доживает до понедельника.
       assertWeekAllowed(header.weekStart, p);
@@ -1378,8 +1401,10 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
       if (!isWeeklyRequestEditable(header.status)) {
         throw err.unprocessable(
           header.status === 'applied'
-            ? 'Применённая заявка не снимается: сроки сокращают досрочным завершением по каждой машине'
-            : 'Заявка уже снята',
+            ? 'Применённая заявка не снимается: её разворачивают аннулированием'
+            : header.status === 'annulled'
+              ? 'Заявка уже аннулирована'
+              : 'Заявка уже снята',
         );
       }
       if (body.status === 'pending' && header.status !== 'draft') {
@@ -1533,7 +1558,9 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         throw err.unprocessable(
           header.status === 'applied'
             ? 'Недельная заявка уже применена'
-            : 'Визируется только заявка, поданная на визу',
+            : header.status === 'annulled'
+              ? 'Недельная заявка аннулирована — визировать нечего'
+              : 'Визируется только заявка, поданная на визу',
         );
       }
 
@@ -1767,7 +1794,9 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
             ? null
             : header.status === 'applied'
               ? 'Недельная заявка уже применена'
-              : 'Визируется только заявка, поданная на визу'));
+              : header.status === 'annulled'
+                ? 'Недельная заявка аннулирована — визировать нечего'
+                : 'Визируется только заявка, поданная на визу'));
 
       // Строки состава — тем же сужением, что и карточка: чек-лист и предпросмотр рассказывают об
       // одних и тех же заказах, и второй отбор открыл бы арендодателю чужие листы площадки.

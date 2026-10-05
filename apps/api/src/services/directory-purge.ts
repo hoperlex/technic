@@ -82,7 +82,7 @@ const REFERENCING_TABLE_LABELS: Record<string, string> = {
   weekly_vehicle_request_items: 'строки применённых недельных заявок',
   // Сама заявка ссылается на площадку: неприменённые уборка сносит целиком, а применённую площадка
   // пережить не может — это её документ-основание.
-  weekly_vehicle_requests: 'применённые недельные заявки',
+  weekly_vehicle_requests: 'применённые и аннулированные недельные заявки',
   vehicle_route_requests: 'состав рейсов',
   vehicle_routes: 'рейсы',
   // Прицеп держит тягача ссылкой `ON DELETE RESTRICT` — единственная настоящая связь реестра
