@@ -85,6 +85,19 @@ export function bundleReport(manifest, dist, budget, routeHint) {
       ...measure(manifest, dist, [...entries, ...roots]),
     };
   }
+  if (budget.requireDynamicRoutes) {
+    // Separate dynamic roots are not enough: a route can still import another section eagerly.
+    // Use the same measured closure, so the ownership guard cannot disagree with the byte budget.
+    for (const [id, route] of Object.entries(routes)) {
+      for (const [otherId, other] of Object.entries(routes)) {
+        if (id === otherId) continue;
+        const sectionRoots = other.roots.filter((root) => !entries.includes(root));
+        if (sectionRoots.some((root) => route.chunks.includes(root))) {
+          throw new Error('Маршрут ' + id + ' статически загружает раздел ' + otherId);
+        }
+      }
+    }
+  }
   const dynamic = {};
   for (const key of Object.keys(manifest)
     .filter((key) => manifest[key].isDynamicEntry)

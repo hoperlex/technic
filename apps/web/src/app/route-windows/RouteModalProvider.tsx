@@ -2,7 +2,7 @@ import type { ReactElement } from 'react';
 import { Button, Skeleton } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
-import { ViewModal } from '@shared/ui';
+import { AsyncContent, ViewModal } from '@shared/ui';
 import { RouteModalHost, type RequestCardRenderProps } from '@widgets/route-modal-host';
 import { VehicleRouteWindows } from '@widgets/vehicle-route-windows';
 import { VehicleRequestViewModal } from '@pages/vehicle';
@@ -52,19 +52,24 @@ function RequestViewById({ requestId, onClose }: RequestCardRenderProps): ReactE
    * waiting inside the window is more honest than delaying it. Otherwise a click on a request
    * number looks for half a second like a click that led nowhere.
    */
-  if (!data) {
-    return (
-      <ViewModal
-        title="Заявка"
-        open
-        onClose={onClose}
-        width={1000}
-        footer={<Button onClick={onClose}>Закрыть</Button>}
-      >
-        <Skeleton active paragraph={{ rows: 6 }} />
-      </ViewModal>
-    );
-  }
+  const pending = (
+    <ViewModal
+      title="Заявка"
+      open
+      onClose={onClose}
+      width={1000}
+      footer={<Button onClick={onClose}>Закрыть</Button>}
+    >
+      <Skeleton active paragraph={{ rows: 6 }} />
+    </ViewModal>
+  );
+  if (!data) return pending;
 
-  return <VehicleRequestViewModal request={data} onClose={onClose} readOnly />;
+  // Code and data can arrive in either order. Both waits keep a closeable window over the page;
+  // putting Suspense around the provider instead would hide the entire portal on a cold link.
+  return (
+    <AsyncContent fallback={pending}>
+      <VehicleRequestViewModal request={data} onClose={onClose} readOnly />
+    </AsyncContent>
+  );
 }

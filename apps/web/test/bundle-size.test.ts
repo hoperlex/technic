@@ -142,6 +142,18 @@ describe('машинный бюджет бандла', () => {
     expect(result.status).toBe(1);
   });
 
+  it('динамический маршрут не вправе синхронно подтягивать соседний раздел', () => {
+    const result = runFixture((fixture) => {
+      const other = 'src/pages/admin/AdministrationPage.tsx';
+      fixture.manifest[other] = { file: 'admin.js', src: other, isDynamicEntry: true };
+      fixture.files['admin.js'] = 'admin code';
+      fixture.budget.routes.admin = { source: other, gzip: 10000 };
+      fixture.manifest[SOURCE]!.imports!.push(other);
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Маршрут waste статически загружает раздел admin');
+  });
+
   it('gate не принимает сторонний dist вместо свежей production-сборки', () => {
     const result = runFixture(undefined, ['--check']);
     expect(result.status).toBe(1);

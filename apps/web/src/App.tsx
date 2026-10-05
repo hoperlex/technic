@@ -30,12 +30,11 @@ import { WasteRequestsPage } from '@pages/waste';
 import { WaybillsPage } from '@pages/waybills';
 
 /**
- * Чем открывается каждый раздел каркаса — и всё, что маршруты знают о разделах сами. Адреса, права
- * и порядок держит реестр (`SHELL_SECTIONS`), здесь остаётся страница.
+ * Pages are the only section detail owned by routing. SHELL_SECTIONS owns paths, permissions and
+ * order; public page entries own their lazy factories, so importing this map loads no section UI.
  *
- * `Record` по `PortalShellSectionId` — не оформление, а сама гарантия: раздел, заведённый в реестре
- * без страницы, не собирается. Раньше состав разделов жил тремя независимыми списками, и новый
- * заводили в двух копиях из трёх.
+ * Record<PortalShellSectionId, ReactNode> makes a registry entry without a page a compile error.
+ * The old three independent section lists let new sections appear in only two of the three.
  */
 const SECTION_PAGES: Record<PortalShellSectionId, ReactNode> = {
   waste: <WasteRequestsPage />,
@@ -45,7 +44,7 @@ const SECTION_PAGES: Record<PortalShellSectionId, ReactNode> = {
   // "Механизация" opens with the rental request list; presence ("В аренде"), the closed-request
   // journal and the archive are tabs inside that page, not sections of their own.
   mechanization: <MechRequestsPage />,
-  // «Орг.техника» (ADR 0085) открывается заявками на обслуживание; парк техники — вкладка внутри.
+  // Office equipment (ADR 0085) opens with service requests; its equipment registry is an inner tab.
   'office-equipment': <ServiceRequestsPage />,
   directories: <DirectoriesPage />,
   admin: <AdministrationPage />,
@@ -58,9 +57,9 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
-        {/* Публичные: по ссылкам из писем ходят те, кто ещё не вошёл — и войти как раз не может. */}
-        {/* Подтверждение адреса выключено (EMAIL_VERIFICATION_ENABLED): страницы нет, старые
-            ссылки уводит на вход общий `*`. Сервер такую ссылку по-прежнему принимает. */}
+        {/* Mail links must work before authentication: their recipients may be unable to log in. */}
+        {/* With EMAIL_VERIFICATION_ENABLED off, old links fall through to login via `*`.
+            The server still accepts verification links; only this page is disabled. */}
         {EMAIL_VERIFICATION_ENABLED ? (
           <Route path="/verify-email" element={<VerifyEmailPage />} />
         ) : null}
@@ -81,10 +80,10 @@ export default function App() {
                 </AsyncContent>
               }
             >
-              {/* Кабинет открывается формой показаний, а не заданием (план driver-readings-first,
-                  Р1): показания — единственное, что водитель в портал вводит, и добираться до них
-                  нажатием поверх читающего экрана он больше не должен. Задание осталось целиком —
-                  страницей по ссылке из шапки, с той же датой в адресе. */}
+              {/* Readings are the cabinet's first screen (driver-readings-first, R1): they are
+                  the only data drivers enter, so a read-only assignment must not add a click on
+                  that path. The complete assignment remains linked from the header, with the
+                  same date in its URL. */}
               <Route index element={<DriverReadingsPage />} />
               <Route path="assignment" element={<DriverPage />} />
             </Route>
@@ -97,33 +96,41 @@ export default function App() {
               shell outside this branch and must not receive these portal windows. */}
           <Route element={<RouteModalProvider />}>
             <Route element={<AppLayout />}>
-              {/* Стартовая страница гейтом НЕ накрывается, и это условие устройства, а не
-                  случайность: отказ любого гейта ведёт сюда, и страж на самом `/` отбивал бы
-                  входящего в себя же — React Router отдал бы пустой экран без единого следа
-                  причины. */}
+              {/* The index must stay outside section gates: every denial redirects here. A gate
+                  on `/` would redirect to itself and leave a blank screen without explaining why. */}
               <Route index element={<HomeRedirect />} />
-              {/* Разделы каркаса — циклом по реестру: кому какой открыт, знает `RequireSection`,
-                  и тот же ответ получают меню и стартовая страница. Поимённых маршрутов здесь
-                  больше нет — они и были третьей копией состава разделов. */}
+              {/* RequireSection, the menu and the landing page ask the same registry. Named
+                  routes here would reintroduce the third section list. Suspense is below
+                  AppLayout and the gate: the shell stays visible, and a denied section's lazy
+                  factory is never rendered or requested. */}
               {SHELL_SECTIONS.map((section) => (
                 <Route key={section.id} element={<RequireSection id={section.id} />}>
-                  <Route path={section.path} element={SECTION_PAGES[section.id]} />
+                  <Route
+                    path={section.path}
+                    element={<AsyncContent>{SECTION_PAGES[section.id]}</AsyncContent>}
+                  />
                 </Route>
               ))}
-              {/* Недельная заявка (ADR 0085) — своя страница с адресом, а не окно поверх списка:
-                  три блока состава, история и документы в модалку не помещаются, а ссылку на
-                  неделю нужно уметь послать. Разделом она не является — отсюда `RequirePermission`
-                  и своё право: `vehicleRequests.read` есть у наблюдателя и арендодателя, которым
-                  планы площадок не показывают (Р12). */}
+              {/* A weekly request (ADR 0085) needs its own shareable URL: three composition
+                  blocks, history and documents do not fit a modal. It is not a shell section,
+                  hence RequirePermission rather than a registry entry. Its own permission is
+                  essential: observers and lessors have vehicleRequests.read but must not see
+                  site plans (R12). */}
               <Route element={<RequirePermission permission="weeklyRequests.read" />}>
-                <Route path="/vehicle-requests/weekly/:id" element={<WeeklyRequestPage />} />
+                <Route
+                  path="/vehicle-requests/weekly/:id"
+                  element={
+                    <AsyncContent>
+                      <WeeklyRequestPage />
+                    </AsyncContent>
+                  }
+                />
               </Route>
             </Route>
           </Route>
         </Route>
-        {/* Неизвестный адрес — на корень, а не сразу стартовой страницей: та умеет отвечать
-            экраном «разделов нет», и вне ветки каркаса он отрисовался бы голым — без меню учётной
-            записи и без выхода. */}
+        {/* Unknown URLs redirect to the index instead of drawing HomeRedirect here: its
+            no-sections screen still needs the shell's account menu and logout control. */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>
