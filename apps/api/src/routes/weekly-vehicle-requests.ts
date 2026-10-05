@@ -92,6 +92,9 @@ import {
   weeklyItemsReadWhere,
 } from '../services/weekly-request-access';
 import { loadLeftBy } from '../services/weekly-request-blockers';
+// Состояние обратного хода строки — один модуль на чек-лист и на команду аннулирования
+// (ADR 0218 решение 4): правило «чем развернуть эту строку» не должно иметь второго носителя.
+import { annulStates } from '../services/weekly-request-annul-state';
 import { esm2CorrectionScope } from '../services/waybill-esm2';
 // Механика заднего числа — общая для всех входов (ADR 0101): вердикт, запись операции,
 // идемпотентность по ключу и связь операции с заявками живут в одном месте, а не переписываются
@@ -1927,6 +1930,36 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
       }
 
       const bounds = weeklyWeekBounds(header.weekStart);
+      /*
+       * Состояние обратного хода каждой строки (ADR 0218 решение 4) — считает сервер, тем же
+       * модулем, которым считает команда аннулирования.
+       *
+       * Портал посчитать это не может: в строке чек-листа нет ни статуса заказа, ни его
+       * эффективного конца, ни ожидающего отъезда, ни недель, решивших позже. Была бы — второе
+       * описание правила разошлось бы с первым молча, и кнопка обещала бы ход, которым команда
+       * откажет.
+       *
+       * У неприменённой заявки разворачивать нечего, и чтений не делается вовсе: `applied_at` у
+       * неё пуст, а значит и «позже применённых» недель не существует по построению.
+       */
+      const reversals = header.appliedAt
+        ? new Map(
+            (
+              await annulStates(db, {
+                weeklyId: header.id,
+                appliedAt: header.appliedAt,
+                items: rows.map((row) => ({
+                  id: row.id,
+                  kind: row.kind,
+                  result: row.result,
+                  dateTo: row.dateTo,
+                  previousDateTo: row.previousDateTo,
+                  orderId: row.sourceRequestId ?? row.createdRequestId,
+                })),
+              })
+            ).map((state) => [state.itemId, state] as const),
+          )
+        : null;
       const docRows: WeeklyDocumentRowDto[] = rows.map((row) => {
         const requestId = row.sourceRequestId ?? row.createdRequestId;
         const num = row.sourceRequestNum ?? row.createdRequestNum;
@@ -1948,6 +1981,16 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
           relocation: relocationCell(row, trips),
           result: row.result,
           skipReason: row.skipReason,
+          reversal: (() => {
+            const state = reversals?.get(row.id);
+            if (!state) return null;
+            return {
+              state: state.state,
+              reason: state.reason,
+              reverse: state.reverse,
+              shortenTo: state.shortenTo,
+            };
+          })(),
         };
       });
 
