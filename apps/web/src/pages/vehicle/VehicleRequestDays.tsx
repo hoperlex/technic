@@ -23,41 +23,39 @@ import { VehicleDayBatchModal } from './VehicleDayBatchModal';
 import { VehicleDayRouteModal } from '@widgets/vehicle-route-windows';
 
 /**
- * «Дни работ» — место, где ведут дни заказа техники на объект (ADR 0100 решение 8).
+ * Work days are maintained at the on-site equipment order (ADR 0100 decision 8).
  *
- * День заказа — отдельный выезд: его кладут в рейс машины на эту дату и печатают в его 4-П. Ради
- * линейной техники дни и заводились — она вечером возвращается на базу, а за день успевает
- * поработать на двух-трёх площадках, — но признаком типа дверь больше не заперта (ADR 0207): 4-П
- * за день просят и у машины, которая неделю стоит на площадке.
+ * An order day is one outing: it joins the vehicle's route for that date and appears on its 4-P.
+ * Days were introduced for linear equipment that returns to base and can visit several sites in
+ * one day. Linearity no longer gates this entry (ADR 0207): equipment staying on one site for a
+ * week can also need a daily 4-P.
  *
- * Дверей к дням две, и обе здесь. Подённая — день знает свой срок и свою заявку, а из карточки
- * маршрута ту же заявку пришлось бы разыскивать по объекту среди всех работающих; со стороны рейса
- * день виден в составе и снимается оттуда, но не добавляется (`LINEAR_DAY_DOOR_MESSAGE`). Пачка —
- * «Распланировать период»: ею проходят срок подряд, и нужна она там, где подённой много, — срок
- * продлили, дни пропустили, листы аннулировали. Прежний запрет на пачку («на разные дни выходят
- * разные машины и разные водители») снят тем, что машину она берёт из назначения и не спрашивает,
- * а конфликтный день пропускает с причиной, а не переставляет.
+ * Both planning entries live here. A single day already knows its order and term; a route card
+ * would have to search all running orders by site. Routes therefore show and remove days but do
+ * not add them (`LINEAR_DAY_DOOR_MESSAGE`). Batch planning covers the whole term after extensions,
+ * missed days or annulled waybills. Different vehicles or drivers on individual dates no longer
+ * prohibit a batch: it takes the assigned vehicle and skips conflicting days with a reason rather
+ * than moving them.
  *
- * Своим файлом, а не блоком карточки заявки: карточка стоит вплотную к своему лимиту длины, а
- * таблица с окном недели, тремя запросами и двумя мутациями — самостоятельная вещь.
+ * The week window, reads and planning commands form their own block. Keeping them inside the
+ * request card made that card exceed its size budget and hid a separate planning workflow.
  */
 
 interface Props {
-  /** Заявка карточки. Дни ведут у любого заказа техники на объект; прочее объяснит `blocker`. */
+  /** Any on-site equipment order can expose days; the server's blocker explains ineligibility. */
   request: SpecialEquipmentRequestDto;
   /**
-   * Читалка: заявку открыли окном поверх чужого экрана — из состава рейса, журнала листов или
-   * гаража (план «маршрут и заявка окнами», §3.5). Таблица остаётся полной, а планирование уходит:
-   * колонки действий нет, окна `VehicleDayRouteModal` нет.
+   * Read-only entry over another screen: route composition, waybill journal or garage (route and
+   * request windows plan, §3.5). The full table remains, but the action column and the planning
+   * dialog are absent.
    *
-   * Флагом, а не отсутствием пропа-действия, как это сделано у самой карточки: планирование дней
-   * живёт внутри этого файла своими мутациями, и «не передать действие» здесь нечего. Условие их
-   * доступности (`canPlan` ниже) — ровно то же `vehicleRequests.status && waybills.read`, которым
-   * открывается рейс, так что диспетчер, заглянувший в заявку из рейса, получил бы рабочий
-   * планировщик там, где просил только посмотреть.
+   * This needs a flag rather than an omitted action prop because planning owns its mutations
+   * here. Its permission pair, vehicleRequests.status && waybills.read, also opens the route, so
+   * rights alone would give a dispatcher an active planner when they only asked to inspect an
+   * order from that route.
    *
-   * Прятать вкладку целиком было бы проще, но читалка стала бы беднее той же карточки в списке:
-   * «каким рейсом едет какой день» — тот самый вопрос, ради которого заявку из рейса и открывают.
+   * Hiding the whole tab would remove the very answer this entry exists for: which route carries
+   * each day. Reading it must remain as complete as reading the same card from the order list.
    */
   readOnly?: boolean;
 }
@@ -68,18 +66,17 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   const qc = useQueryClient();
   const { openRoute } = useRouteModal();
   /**
-   * Рейс, открытый под нами: заявку читают поверх карточки его же рейса (`?route=X&request=Y`), и
-   * день, стоящий именно в X, ссылкой быть не должен — она открывала бы то, что уже под окном
-   * (план §3.1, инвариант 3). Признак берётся из адреса, потому что адрес и есть состояние окон:
-   * своей копии в React у провайдера нет намеренно.
+   * The underlying route already has its card open (`?route=X&request=Y`). A day in X must not
+   * link to that same card underneath this window (plan §3.1, invariant 3). The address is the
+   * window state; the provider deliberately keeps no competing React copy of it.
    */
   const [params] = useSearchParams();
   const openedRouteId = readOnly ? params.get('route') : null;
-  /** День, который ставят в рейс; `null` — окно планирования закрыто. */
+  /** A null target closes the single-day planner. */
   const [planning, setPlanning] = useState<string | null>(null);
-  /** Открыто ли окно пачки «Распланировать период» (ADR 0207). */
+  /** Batch planning has a separate window from a single day (ADR 0207). */
   const [batching, setBatching] = useState(false);
-  /** Неделя, выбранная руками; `null` — показывается неделя дня среза. */
+  /** A manual week selection overrides the server's current-week default. */
   const [picked, setPicked] = useState<string | null>(null);
 
   const { data, isPending } = useQuery({
@@ -88,20 +85,19 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   });
 
   const items = useMemo(() => data?.items ?? [], [data]);
-  /** Дни, уже стоящие в рейсах: ими правило отвечает, свободен ли выбранный день. */
+  /** Existing route days let the shared rule determine whether a selected day is free. */
   const plannedDays = useMemo(() => items.filter((d) => d.route).map((d) => d.date), [items]);
 
   /**
-   * Планирование — тот же ход работы по заявке, что и перевод в работу, плюс право на рейсы: в
-   * плане стоят чужие машины и ФИО водителей собственного парка. Обе проверки те же, что и на
-   * ручке: кнопка не должна обещать того, чего сервер не сделает.
+   * Planning uses the same workflow grant as taking an order into work, plus route access: its
+   * choices expose other vehicles and drivers' names. Both grants match the endpoint so a button
+   * never promises an action the server will refuse.
    */
   const canPlan = can('vehicleRequests.status') && can('waybills.read');
 
   /**
-   * Заявка глазами правил дней. Собирается здесь, а не берётся из ответа: причину недоступности
-   * каждой строки считает то же правило, которым откажет сервер (`planDayBlocker`), — и слова у
-   * отказа обязаны совпасть до буквы.
+   * Build the subject for the shared day rules from the card. Each row's blocker must come from
+   * the same planDayBlocker used by the server, down to the wording of the refusal.
    */
   const subject: LinearDaySubject = {
     requestType: request.requestType,
@@ -114,19 +110,19 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   };
 
   /**
-   * Таблица после правки приезжает от сервера целиком — ею и заменяется кэш: своей версии у дней
-   * нет, а перечёт свободных строк задания в соседних рейсах портал повторить не может.
+   * A write returns the entire day table, which replaces the cache. Days have no separate version
+   * and the portal cannot reproduce the server's renumbering of free task rows in other routes.
    */
   const applyDays = (days: VehicleRequestDaysDto) => {
     qc.setQueryData(vehicleRequestKeys.days(request.id), days);
-    // Список заявок: в строке видны рейс и машина дня, и после планирования они устарели.
+    // Order rows embed the day's route and vehicle, both of which planning can change.
     void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
-    // Список рейсов: день либо встал в чужой рейс, либо завёл новый — состав изменился у обоих.
+    // A day either joins an existing route or creates one; both change the route list's composition.
     void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
-    // Срез гаража: своих таблиц у него нет — день собирается сервером (ADR 0076), — а видно ли в
-    // нём работу, решает состав рейса (ADR 0131). Поставленный день состав наполняет, снятый
-    // опустошает: опустевший рейс без листа из среза исчезает вовсе, а машина и её водитель
-    // возвращаются в свободные. Без гашения диспетчер читает занятость, которой уже нет.
+    // The garage is a server-derived daily view (ADR 0076), whose work visibility depends on route
+    // composition (ADR 0131). Removing the final day removes an empty route without a waybill and
+    // frees its vehicle and driver; adding a day occupies them. Without invalidation the dispatcher
+    // would keep seeing availability that no longer exists.
     void qc.invalidateQueries({ queryKey: garageKeys.root });
   };
 
@@ -140,9 +136,9 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   });
 
   /**
-   * Недели срока: заказ на квартал даёт девяносто строк, а подряд они не читаются (план У13).
-   * Неделя здесь календарная, пн–вс (`weekStartKey`) — той же, которой режутся листы ЭСМ-2 и
-   * недельная заявка: второй недели в портале быть не должно.
+   * A quarter-long order has about ninety days, too many to read in one run (plan U13). Group them
+   * by the same Monday–Sunday weekStartKey used by ESM-2 and weekly requests; the portal must not
+   * invent another definition of a week.
    */
   const weeks = useMemo(() => {
     const byWeek = new Map<string, VehicleRequestDayDto[]>();
@@ -158,10 +154,9 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   }, [items]);
 
   /**
-   * Показанная неделя. Умолчание — неделя дня среза: заказ ведут сегодняшним днём, и открывать
-   * квартальную заявку на её первой неделе значило бы каждый раз пролистывать её до текущей. День
-   * среза считает сервер (`onDate`) — часы браузера бывают сбиты. Срез вне срока (заявка ещё не
-   * началась или уже кончилась) — показывается первая неделя.
+   * Default to the server's current week so a long-running order does not require scrolling from
+   * its first week on every visit. onDate comes from the server because the browser clock can be
+   * wrong. Before or after the order's term, fall back to the first week.
    */
   const defaultWeek = data
     ? (weeks.find((w) => w.start === weekStartKey(data.onDate))?.start ?? weeks[0]?.start ?? null)
@@ -171,12 +166,10 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   const week = index >= 0 ? weeks[index]! : null;
 
   /**
-   * Колонки таблицы, а с ними и колонка действий (снять день с рейса, поставить в рейс). Действия
-   * попадают в таблицу только у того, кто дни планирует, и только в рабочем режиме (см.
-   * `readOnly`) — оба раза отсутствием колонки, а не выключенными кнопками. В читалке права как
-   * раз хватает, и выключенная кнопка соврала бы про причину; заказчику, читающему свой план с
-   * ADR 0122, права не будет никогда, а две мёртвые кнопки в каждой строке — шум, которым портал
-   * нигде не отвечает на «не положено».
+   * The action column exists only with planning rights and in the working entry, never in the
+   * read-only card. Disabled buttons would misstate why a dispatcher with sufficient rights cannot
+   * plan here. A customer reading the plan (ADR 0122) never has those rights, so two dead buttons
+   * per row would be permanent noise. Both cases omit the column entirely.
    */
   const columns = dayColumns({
     can,
@@ -196,14 +189,14 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
 
   if (isPending) return <Spin size="small" />;
 
-  // Дней у этой заявки не ведут вовсе — и таблица объясняет это словами сервера, а не пустотой:
-  // у арендного заказа рейсы ведёт арендодатель, и ждать от портала строк бессмысленно (план У14).
+  // Explain ineligibility with the server's words instead of an empty table: for a rental order,
+  // the lessor maintains routes and the portal has no day rows to supply (plan U14).
   if (data?.blocker) return <Alert type="info" showIcon title={data.blocker} />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* Окно недели: заказ на квартал — девяносто дней, и подряд они не читаются. Стрелки рядом
-        с выбором недели — ими и листают, а выбор нужен, чтобы прыгнуть в конец срока. */}
+      {/* Ninety consecutive days are not readable at once. Arrows browse adjacent weeks; the
+        selector also allows a direct jump to the end of a long term. */}
       <Space size={[12, 8]} wrap>
         <Space.Compact>
           <Button
@@ -230,14 +223,14 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
             onClick={() => setPicked(weeks[index + 1]!.start)}
           />
         </Space.Compact>
-        {/* Итог по всему сроку, а не по показанной неделе: окно листают, а вопрос «сколько дней
-          ещё не занято» задают о заказе целиком. */}
+        {/* The remaining-day question concerns the whole order, so its total must not change
+          when the reader switches the visible week. */}
         <Tag color={plannedDays.length === items.length ? 'green' : 'orange'}>
           распланировано {plannedDays.length} из {items.length} дней
         </Tag>
-        {/* Пачка (ADR 0207): срок подряд, машина из назначения, конфликтные дни — в отчёт. Стоит
-          рядом со счётчиком незанятых дней: именно он и есть повод её нажать. Доступна там же, где
-          подённая дверь, — правило одно, и второго условия у кнопки быть не должно. */}
+        {/* Batch planning (ADR 0207) uses the assigned vehicle and reports conflicting days.
+          Unplanned days are the reason to open it, hence its place beside their total. It uses
+          exactly the same availability condition as the single-day entry. */}
         {!readOnly && canPlan && (
           <Button onClick={() => setBatching(true)}>Распланировать период</Button>
         )}
@@ -258,16 +251,14 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
         подтверждают на вкладке «На объекте», а печатается день строкой задания в листе рейса.
       </Typography.Text>
 
-      {/* Форма планирования: день и объект известны, спрашиваются машина и водитель.
-        Условно, а не спрятанной флагом: ни в читалке, ни у заказчика планировщика нет вовсе — ни
-        на экране, ни взведённым в памяти. Единственная дверь к нему — колонка действий, которой
-        там тоже нет, так что `planning` в этих режимах остаётся `null` навсегда. */}
+      {/* The day and site are known; the planner asks for vehicle and driver. It is absent, not
+        merely hidden, in read-only and customer views. Its only entry is the action column, also
+        absent there, so planning stays null and no latent planner exists in those modes. */}
       {!readOnly && canPlan && (
         <VehicleDayRouteModal
-          // День среза отдаётся окну: им оно решает, прошедший ли это день, а значит — спрашивать
-          // ли причину заднего числа (ADR 0101 п. 4). Считает его сервер (`onDate`) — тем же
-          // поясом, которым считает границу `backdateGuard`; часы браузера бывают сбиты, и
-          // разойтись форме с ручкой здесь нельзя.
+          // The server's onDate uses the same timezone as backdateGuard. It tells the dialog
+          // whether a past-day reason is required (ADR 0101 item 4); a wrong browser clock must
+          // not make the form and endpoint disagree.
           target={planning ? { request, date: planning, onDate: data?.onDate ?? planning } : null}
           onClose={() => setPlanning(null)}
           onDone={(days) => {
@@ -277,9 +268,9 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
         />
       )}
 
-      {/* Пачка — тем же условием и с тем же днём среза, что и подённое окно: правила у них одни,
-        и вторая проверка доступности разошлась бы с первой. Отчёт окно показывает само — он
-        переживает его закрытие, потому что читают его уже после действия. */}
+      {/* The batch shares the single-day condition and server date; a second availability rule
+        would drift. Its own report survives closing the window because it is read after the
+        command has finished. */}
       {!readOnly && canPlan && (
         <VehicleDayBatchModal
           target={batching && data ? { request, onDate: data.onDate } : null}

@@ -8,7 +8,9 @@
   `apps/api/drizzle/0014_vehicle_types_flat_contract.sql`, `apps/api/src/db/schema.ts`,
   `packages/contracts/src/vehicle-types.ts`, `packages/contracts/src/vehicle-requests.ts`,
   `apps/api/src/routes/vehicle-types.ts`, `apps/api/src/routes/vehicle-requests.ts`,
-  `apps/web/src/pages/directories/VehicleTypesTab.tsx`, `apps/web/src/pages/vehicle/shared.tsx`
+  `apps/web/src/widgets/vehicle-classification-registry/index.ts`,
+  `apps/web/src/features/vehicle-type-editor/index.ts`,
+  `apps/web/src/pages/vehicle/shared.tsx`
 
 ## Контекст
 

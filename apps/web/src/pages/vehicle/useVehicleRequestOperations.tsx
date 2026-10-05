@@ -1,15 +1,9 @@
 import { useState } from 'react';
-import { App } from 'antd';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { type SpecialEquipmentRequestDto, type VehicleRequestDto } from '@technic/contracts';
-import { garageKeys } from '@entities/garage';
 import { useAuth } from '@entities/session';
-import {
-  vehicleRequestErrorMessage as errorMessage,
-  vehicleRequestKeys,
-  vehicleRequestsApi,
-} from '@entities/vehicle-request';
-import { vehicleRouteKeys, vehicleRouteLink } from '@entities/vehicle-route';
+import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { vehicleRouteLink } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import * as assignmentModel from '@features/vehicle-assignment';
 import { useRouteModal } from '@features/route-modal';
@@ -38,7 +32,6 @@ type OperationActions = Omit<VehicleRequestFeedActions, 'createWeekly' | 'openWe
  * command port and one rendered node instead of owning every modal state and mutation.
  */
 export function useVehicleRequestOperations() {
-  const { message } = App.useApp();
   const { can } = useAuth();
   const queryClient = useQueryClient();
   // The route and the route list open as windows over this list (ADR 0120): "where does this
@@ -75,15 +68,13 @@ export function useVehicleRequestOperations() {
     renderPeriodModal: (props) => <VehiclePeriodModal {...props} />,
   });
   const lifecycle = useVehicleRequestLifecycle({
-    staleReasonOf: (error) =>
-      assignmentModel.reassignStaleReason(error) ?? assignmentModel.recheckReasonOf(error),
+    staleReasonOf: assignmentModel.assignmentRecheckReason,
     renderCompleteModal: (props) => <VehicleCompleteModal {...props} />,
     renderEarlyEndApproveModal: (props) => <VehicleEarlyEndApproveModal {...props} />,
     renderEarlyEndModal: (props) => <VehicleEarlyEndModal {...props} />,
   });
 
-  // A vehicle change of a running request (ADR 0048) — its own request: the status does not change.
-  const [reassignTarget, setReassignTarget] = useState<VehicleRequestDto | null>(null);
+  const reassignment = assignmentModel.useVehicleReassignment();
   // Machinist change within the term and "composition by dates" (`docs/assignment-periods-plan.md`,
   // §9). A dialog of its own, not a field of the vehicle-change dialog: that one changes what runs
   // the request — vehicle, rates and route — while this is one decision about a person and a date.
@@ -95,34 +86,6 @@ export function useVehicleRequestOperations() {
   } | null>(null);
   const [transferTarget, setTransferTarget] = useState<VehicleRequestDto | null>(null);
   const [esm2Target, setEsm2Target] = useState<VehicleRequestDto | null>(null);
-
-  const reassignMutation = useMutation({
-    mutationFn: (value: { id: string; version: number; command: assignmentModel.AssignCommand }) =>
-      vehicleRequestsApi.changeAssignment(
-        value.id,
-        assignmentModel.reassignRequestBody(value.command, value.version),
-      ),
-    onSuccess: (_updated, value) => {
-      message.success(
-        value.command.correction ? 'Назначение исправлено задним числом' : 'Техника изменена',
-      );
-      setReassignTarget(null);
-      void queryClient.invalidateQueries({ queryKey: vehicleRequestKeys.root });
-      // The request moves to the new vehicle's route — route lists are stale afterwards.
-      void queryClient.invalidateQueries({ queryKey: vehicleRouteKeys.root });
-      // A vehicle change rewrites waybills too: the server reconciles the route's ESM-2 (ADR 0037).
-      void queryClient.invalidateQueries({ queryKey: waybillKeys.root });
-      void queryClient.invalidateQueries({ queryKey: garageKeys.root });
-    },
-    // A stale consequence preview is a question handled inside the assignment dialog, not a
-    // second toast. Other failures still use the entity-owned field labels.
-    onError: (error) => {
-      if (assignmentModel.reassignStaleReason(error) ?? assignmentModel.recheckReasonOf(error)) {
-        return;
-      }
-      message.error(errorMessage(error));
-    },
-  });
 
   const actions: OperationActions = {
     approveEarlyEnd: lifecycle.actions.approveEarlyEnd,
@@ -140,7 +103,7 @@ export function useVehicleRequestOperations() {
     openOrder: setViewRecord,
     openRoute,
     openRoutes: () => openRoutesList(),
-    reassign: setReassignTarget,
+    reassign: reassignment.open,
     rejectEarlyEnd: lifecycle.actions.rejectEarlyEnd,
     remove: lifecycle.actions.remove,
     repairHistory: setRepairTarget,
@@ -182,7 +145,7 @@ export function useVehicleRequestOperations() {
           viewed && canReassign(viewed)
             ? (request) => {
                 closeView();
-                setReassignTarget(request);
+                reassignment.open(request);
               }
             : undefined
         }
@@ -255,22 +218,11 @@ export function useVehicleRequestOperations() {
       {/* Vehicle change of a request in work (ADR 0048): the same selection dialog without the
           actual term — it is agreed already, only what runs the request changes. */}
       <VehicleAssignModal
-        request={reassignTarget}
+        request={reassignment.target}
         mode="reassign"
-        confirmLoading={reassignMutation.isPending}
-        onCancel={() => setReassignTarget(null)}
-        // `mutateAsync`, not `mutate`: the dialog awaits the server answer — a 409 "consequences
-        // changed" is cured by showing them again, and it is the dialog that must learn of the
-        // refusal (wave 4a).
-        onSubmit={(command) =>
-          reassignTarget
-            ? reassignMutation.mutateAsync({
-                id: reassignTarget.id,
-                version: reassignTarget.version,
-                command,
-              })
-            : undefined
-        }
+        confirmLoading={reassignment.pending}
+        onCancel={reassignment.close}
+        onSubmit={reassignment.submit}
       />
       {/* Machinist change within the term and "composition by dates"
           (`docs/assignment-periods-plan.md`, §9): the dialog shows the request history in segments,

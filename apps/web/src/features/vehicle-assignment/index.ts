@@ -60,3 +60,5 @@ export {
   warnedSheetsOf,
 } from './model/warnings';
 export { RollbackPreview } from './ui/RollbackPreview';
+export { assignmentRecheckReason } from './model/recheck';
+export { useVehicleReassignment } from './model/useVehicleReassignment';

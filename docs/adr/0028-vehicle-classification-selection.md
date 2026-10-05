@@ -10,8 +10,8 @@
   `packages/contracts/src/vehicle-classifications.ts`,
   `apps/api/src/routes/vehicle-classifications.ts`, `apps/api/src/routes/vehicle-requests.ts`,
   `apps/web/src/entities/vehicle-type/index.ts`,
-  `apps/web/src/pages/directories/VehicleTypesTab.tsx`,
-  `apps/web/src/pages/directories/VehiclesTab.tsx`,
+  `apps/web/src/widgets/vehicle-classification-registry/index.ts`,
+  `apps/web/src/features/vehicle-editor/index.ts`,
   `apps/web/src/widgets/vehicle-request-feed/model/useVehicleRequestFeedState.tsx`, миграция `0052`
 
 ## Контекст
@@ -59,7 +59,7 @@
 
 6. **Заявка хранит категорию отдельной колонкой с составным FK.** `vehicle_requests
 .vehicle_category_id` + FK `(vehicle_category_id, vehicle_type_id) → vehicle_categories (id,
-   vehicle_type_id)`: категория чужого типа невозможна физически — тем же приёмом, что «модель
+vehicle_type_id)`: категория чужого типа невозможна физически — тем же приёмом, что «модель
    того же типа, что машина» (ADR 0007 §2) и «машина того же типа, что заказан» (ADR 0027).
    RESTRICT: пока на категорию ссылается заявка, из справочника её не удалить — заявка обязана
    показывать заказанное и через год после закрытия.
@@ -81,9 +81,9 @@
    сначала нужно отменить заявку.
 
 10. **Назначение сверяется по категории мягко.**
-    *(Отменено [ADR 0045](0045-vehicle-assignment-by-type.md): назначение по категории не
+    _(Отменено [ADR 0045](0045-vehicle-assignment-by-type.md): назначение по категории не
     сверяется вовсе — подбор идёт по типу, а расхождение с заказанной категорией портал
-    показывает предупреждением. Правило «машина без категории — не «не подходит»» осталось.)*
+    показывает предупреждением. Правило «машина без категории — не «не подходит»» осталось.)_
     Машина **другой** категории на заявку с
     категорией не принимается. Машина **без** категории — принимается: в справочнике категория
     может быть не разнесена (особенно у аренды), и «неизвестно» — не то же самое, что «не

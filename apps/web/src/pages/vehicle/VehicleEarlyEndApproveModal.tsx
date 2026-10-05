@@ -13,8 +13,7 @@ import { WarnedSheetsConfirm } from '@entities/waybill';
 import {
   acknowledgementsOf,
   anonymousWarnedSheetsOf,
-  reassignStaleReason,
-  recheckReasonOf,
+  assignmentRecheckReason,
 } from '@features/vehicle-assignment';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
 import { formatDateOnly } from '@shared/lib';
@@ -123,7 +122,7 @@ export function VehicleEarlyEndApproveModal({
        * прежний визирующий больше не вправе. Прочие отказы показывает тостом общий хук.
        */
       // Changed warnings of a sheet are the same question and get the same answer.
-      const stale = reassignStaleReason(e) ?? recheckReasonOf(e);
+      const stale = assignmentRecheckReason(e);
       if (!stale) return;
       setStaleReason(stale);
       previewMut.mutate(request);

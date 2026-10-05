@@ -11,8 +11,7 @@ import {
   type AssignCommand,
   reassignPreviewBlocked,
   reassignPreviewIsSilent,
-  reassignStaleReason,
-  recheckReasonOf,
+  assignmentRecheckReason,
   warnedSheetsOf,
 } from '@features/vehicle-assignment';
 import { ReassignPreview } from '../ui/ReassignPreview';
@@ -80,7 +79,7 @@ export function useReassignConsequences({
         }
       : payload;
     void Promise.resolve(onSubmit(command)).catch((e: unknown) => {
-      const reason = reassignStaleReason(e) ?? recheckReasonOf(e);
+      const reason = assignmentRecheckReason(e);
       if (reason) mut.mutate({ payload, stale: reason });
     });
   }

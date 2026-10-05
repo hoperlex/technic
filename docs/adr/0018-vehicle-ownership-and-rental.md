@@ -6,7 +6,9 @@
   [ADR 0010](0010-counterparties.md) (контрагенты и их роли)
 - Связано: `apps/api/drizzle/0037_vehicle_ownership.sql`, `apps/api/src/db/schema.ts`,
   `packages/contracts/src/vehicles.ts`, `apps/api/src/routes/vehicles.ts`,
-  `apps/api/src/routes/counterparties.ts`, `apps/web/src/pages/directories/VehiclesTab.tsx`
+  `apps/api/src/routes/counterparties.ts`, `apps/web/src/widgets/vehicle-registry/index.ts`,
+  `apps/web/src/features/vehicle-editor/index.ts`,
+  `apps/web/src/features/vehicle-lifecycle/index.ts`
 
 ## Контекст
 

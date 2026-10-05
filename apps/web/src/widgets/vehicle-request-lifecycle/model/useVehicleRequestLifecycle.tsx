@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { App, Button, Space } from 'antd';
+import { App } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   canRequestEarlyEnd,
@@ -243,36 +243,6 @@ export function useVehicleRequestLifecycle({
     (canEdit || canDelete) &&
     (!isPlaceScopedRole(user?.role) || request.status === 'new');
 
-  // A decision on an early end is taken after reading the reason, which is in the card. A decided
-  // request gets no buttons: an approved one has already shortened the term, a rejected one
-  // explains why that did not happen.
-  const earlyEndActions = (request: VehicleRequestDto) => {
-    if (request.requestType !== 'special_equipment' || request.earlyEnd?.status !== 'pending') {
-      return null;
-    }
-    return (
-      <Space size={8} wrap>
-        {canApprove && (
-          <>
-            <Button size="small" type="primary" onClick={() => earlyEnd.approve(request)}>
-              Согласовать
-            </Button>
-            <Button size="small" danger onClick={() => earlyEnd.reject(request)}>
-              Отклонить
-            </Button>
-          </>
-        )}
-        {/* Whoever could file the request may withdraw it: the withdrawal reaches both the
-            dispatcher and the site. */}
-        {canEdit && (
-          <Button size="small" onClick={() => earlyEnd.withdraw(request)}>
-            Отозвать запрос
-          </Button>
-        )}
-      </Space>
-    );
-  };
-
   // `mutateAsync`, not `mutate`: right after the transition the dialog calls the 4-P day batch as
   // a second request (ADR 0207), and days are planned only for a request already taken into work.
   const assignmentSubmit = (command: AssignmentStatusCommand) =>
@@ -309,7 +279,7 @@ export function useVehicleRequestLifecycle({
       submit: assignmentSubmit,
       target: assignmentTarget,
     },
-    earlyEndActions,
+    earlyEndActions: earlyEnd.earlyEndActions,
     node: (
       <>
         {/* Rejecting an early-end request: the reason is asked by the hook's dialog. */}

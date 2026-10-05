@@ -105,9 +105,22 @@
   [driver-editor](../apps/web/src/features/driver-editor),
   [driver-documents](../apps/web/src/features/driver-documents),
   [driver-removal](../apps/web/src/features/driver-removal),
-  [driver](../apps/web/src/entities/driver)
+  [driver](../apps/web/src/entities/driver),
+  [waste-tariff-registry](../apps/web/src/widgets/waste-tariff-registry),
+  [waste-tariff-editor](../apps/web/src/features/waste-tariff-editor),
+  [waste-tariff-lifecycle](../apps/web/src/features/waste-tariff-lifecycle),
+  [waste-type-editor](../apps/web/src/features/waste-type-editor),
+  [waste-tariff](../apps/web/src/entities/waste-tariff),
+  [vehicle-registry](../apps/web/src/widgets/vehicle-registry),
+  [vehicle-editor](../apps/web/src/features/vehicle-editor),
+  [vehicle-lifecycle](../apps/web/src/features/vehicle-lifecycle),
+  [fuel-norm-management](../apps/web/src/features/fuel-norm-management),
+  [counterparty-registry](../apps/web/src/widgets/counterparty-registry),
+  [counterparty-editor](../apps/web/src/features/counterparty-editor),
+  [counterparty-lifecycle](../apps/web/src/features/counterparty-lifecycle)
 - Тесты: `directory-*.db.test.ts`, `vehicles-*.db.test.ts`, `drivers-*.db.test.ts`,
-  `vehicle-classifier-slices.test.tsx`, `vehicle-type-waybill-form.test.tsx`
+  `vehicle-classifier-slices.test.tsx`, `vehicle-type-waybill-form.test.tsx`,
+  `waste-tariffs-tab.test.tsx`, `counterparties-tab.test.tsx`, `maintenance-card.test.tsx`
 - Решения: [ADR 0001](adr/0001-vehicle-classification.md), [ADR 0051](adr/0051-suppliers-and-warehouses.md), [ADR 0138](adr/0138-vehicle-trailers-registry.md)
 
 ## Автозапчасти

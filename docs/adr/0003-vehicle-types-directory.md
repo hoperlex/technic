@@ -5,7 +5,9 @@
 - Основано на: [ADR 0001](0001-vehicle-classification.md), [ADR 0002](0002-vehicle-classification-population.md)
 - Связано: `packages/contracts/src/vehicle-types.ts`, `apps/api/src/routes/vehicle-types.ts`,
   `apps/api/src/routes/vehicle-kinds.ts`, `apps/api/drizzle/0011_vehicle_types_invariants.sql`,
-  `apps/web/src/pages/directories/VehicleTypesTab.tsx`
+  `apps/web/src/widgets/vehicle-classification-registry/index.ts`,
+  `apps/web/src/features/vehicle-type-editor/index.ts`,
+  `apps/web/src/features/vehicle-classification-lifecycle/index.ts`
 
 ## Контекст
 

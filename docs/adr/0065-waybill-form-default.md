@@ -10,7 +10,8 @@
   [ADR 0060](0060-esm2-weekly-waybill.md) (ЭСМ-2 ведёт портал), миграция `0094`,
   `packages/contracts/src/{waybills,vehicle-types,vehicle-routes}.ts`,
   `apps/api/src/routes/{vehicle-types,vehicle-routes}.ts`,
-  `apps/web/src/pages/directories/VehicleTypesTab.tsx`
+  `apps/web/src/features/vehicle-type-editor/index.ts`,
+  `apps/web/src/widgets/vehicle-classification-registry/index.ts`
 
 ## Контекст
 

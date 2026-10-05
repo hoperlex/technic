@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { App } from 'antd';
+import { App, Button, Space } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   type DecideVehicleEarlyEndBody,
@@ -115,7 +115,38 @@ export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
       onOk: () => withdrawRequest.mutateAsync(requestValue.id),
     });
 
+  // A decision is taken after reading the reason in the card. A decided request gets no buttons:
+  // approval already shortened the term, while rejection explains why that did not happen.
+  // Both the feed and the on-site view use this renderer so their rights and action sets agree.
+  const earlyEndActions = (value: VehicleRequestDto) => {
+    if (value.requestType !== 'special_equipment' || value.earlyEnd?.status !== 'pending') {
+      return null;
+    }
+    return (
+      <Space size={8} wrap>
+        {can('vehicleRequests.approve') && (
+          <>
+            <Button size="small" type="primary" onClick={() => setApproveTarget(value)}>
+              Согласовать
+            </Button>
+            <Button size="small" danger onClick={() => setRejectTarget(value)}>
+              Отклонить
+            </Button>
+          </>
+        )}
+        {/* Whoever could file the request may withdraw it: the withdrawal reaches both the
+            dispatcher and the site. */}
+        {can('vehicleRequests.update') && (
+          <Button size="small" onClick={() => withdraw(value)}>
+            Отозвать запрос
+          </Button>
+        )}
+      </Space>
+    );
+  };
+
   return {
+    earlyEndActions,
     approve: setApproveTarget,
     approvesOwn,
     close: () => setTarget(null),

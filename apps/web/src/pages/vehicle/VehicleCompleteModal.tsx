@@ -31,8 +31,7 @@ import {
 } from './completionCommand';
 import {
   acknowledgementsOf,
-  reassignStaleReason,
-  recheckReasonOf,
+  assignmentRecheckReason,
   warnedSheetsOf,
 } from '@features/vehicle-assignment';
 
@@ -274,7 +273,7 @@ export function VehicleCompleteModal({
        * том же и увёл бы глаз от экрана, на который и надо смотреть.
        */
       // The warnings of a sheet changing is the same question and gets the same answer.
-      const stale = reassignStaleReason(e) ?? recheckReasonOf(e);
+      const stale = assignmentRecheckReason(e);
       if (stale && shown) {
         setStaleReason(stale);
         previewMut.mutate(shown.body);

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Space } from 'antd';
+import { Button } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import type { SpecialEquipmentRequestDto } from '@technic/contracts';
@@ -197,32 +197,12 @@ export function VehicleRequestsOnSiteTab() {
         onChange={onTableChange}
       />
 
-      {/* Правка отсюда не предлагается: заявку ведут в списке заказов, здесь — только смотрят. */}
+      {/* Editing belongs to the order list; this entry only reads the request. */}
       <VehicleRequestViewModal
         request={viewRecord}
         onClose={() => setViewRecord(null)}
-        // Решают по запросу здесь же: причина сокращения видна только в карточке.
-        earlyEndActions={(r) =>
-          r.requestType === 'special_equipment' && r.earlyEnd?.status === 'pending' ? (
-            <Space size={8} wrap>
-              {canDecide && (
-                <>
-                  <Button size="small" type="primary" onClick={() => earlyEnd.approve(r)}>
-                    Согласовать
-                  </Button>
-                  <Button size="small" danger onClick={() => earlyEnd.reject(r)}>
-                    Отклонить
-                  </Button>
-                </>
-              )}
-              {canRequest && (
-                <Button size="small" onClick={() => earlyEnd.withdraw(r)}>
-                  Отозвать запрос
-                </Button>
-              )}
-            </Space>
-          ) : null
-        }
+        // The reason is read in the card, so the shared decision actions are offered here too.
+        earlyEndActions={earlyEnd.earlyEndActions}
       />
 
       {/* Подтверждение смен: правят их только здесь, в карточке заявки таблицу читают. */}

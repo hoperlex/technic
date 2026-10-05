@@ -1,5 +1,5 @@
 import { useVehicleRequestEarlyEnd } from '@widgets/vehicle-request-lifecycle';
-import { reassignStaleReason, recheckReasonOf } from '@features/vehicle-assignment';
+import { assignmentRecheckReason } from '@features/vehicle-assignment';
 import { VehicleEarlyEndApproveModal } from './VehicleEarlyEndApproveModal';
 
 /**
@@ -9,15 +9,14 @@ import { VehicleEarlyEndApproveModal } from './VehicleEarlyEndApproveModal';
  * stale-preview readers are injected here, exactly as `useVehicleRequestOperations` does for the
  * request feed.
  *
- * Known debt, not a scheduled step: the two pages wire the same host twice, and the on-site view
- * also repeats the approve/reject/withdraw buttons that `useVehicleRequestLifecycle` renders as
- * `earlyEndActions`. The adapter can go once the early-end dialogs live in a slice the widget may
- * import and the on-site view consumes the widget's controller directly; until then any change to
- * the injected dialog or stale-reason readers must be made in both places.
+ * Stage 4 debt: remove this adapter together with the lifecycle renderer ports after the history
+ * dialogs and their shared consequence helpers have owners below widgets. Moving only the dialog
+ * would create a feature-to-feature dependency on assignment. Both pages already use the same
+ * early-end action renderer and stale-reason reader; only dialog composition remains here.
  */
 export function useEarlyEnd() {
   return useVehicleRequestEarlyEnd({
-    staleReasonOf: (error) => reassignStaleReason(error) ?? recheckReasonOf(error),
+    staleReasonOf: assignmentRecheckReason,
     renderApproveModal: (props) => <VehicleEarlyEndApproveModal {...props} />,
   });
 }
