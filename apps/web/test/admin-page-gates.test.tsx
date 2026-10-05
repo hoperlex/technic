@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { act, screen, waitFor } from '@testing-library/react';
 import { Route, Routes } from 'react-router';
 import {
   ADMIN_PAGE_PERMISSIONS,
@@ -12,7 +12,8 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { AppLayout } from '../src/app/layout';
-import { AdministrationPage } from '../src/pages/admin';
+import { AdministrationPage } from '@pages/admin';
+import { AsyncContent } from '@shared/ui';
 import { HomeRedirect, RequireSection } from '../src/app/routing/ProtectedRoute';
 
 /**
@@ -50,11 +51,22 @@ const TAB_ROUTES = {
   'GET /releases': () => json([]),
 };
 
-/** Сколько вкладок заводит страница держателю одного этого права. */
-function tabsFor(permission: Permission): number {
+/** Count tabs only after the public page module has loaded, including the zero-tab case. */
+async function tabsFor(permission: Permission): Promise<number> {
   mockHttp(TAB_ROUTES);
-  const { unmount } = renderWithUser(<AdministrationPage />, { user: holder(permission) });
-  // Состав вкладок считается синхронно из прав — ждать нечего, ждут данные внутри вкладки.
+  const { unmount } = renderWithUser(
+    <AsyncContent fallback={<span data-testid="admin-loading" />}>
+      <AdministrationPage />
+    </AsyncContent>,
+    { user: holder(permission) },
+  );
+  // The cold module graph is transformed by Vitest, not fetched from a production chunk. Drain
+  // that work explicitly so the DOM polling budget still measures rendering rather than compilation.
+  await act(() => vi.dynamicImportSettled());
+  // Tab composition is synchronous once the module arrives; waiting for a tab would incorrectly
+  // reject permissions that legitimately expose none. Tab data is not the readiness condition.
+  await waitFor(() => expect(screen.queryByTestId('admin-loading')).toBeNull());
+  expect(screen.queryByText('Не удалось открыть экран')).toBeNull();
   const count = screen.queryAllByRole('tab').length;
   unmount();
   return count;
@@ -90,8 +102,11 @@ function renderPortal(permission: Permission) {
 }
 
 describe('список прав входа и вкладки страницы не разъезжаются', () => {
-  it('вкладку заводят ровно права из ADMIN_PAGE_PERMISSIONS', () => {
-    const opening = PERMISSIONS.filter((permission) => tabsFor(permission) > 0);
+  it('вкладку заводят ровно права из ADMIN_PAGE_PERMISSIONS', async () => {
+    const opening: Permission[] = [];
+    for (const permission of PERMISSIONS) {
+      if ((await tabsFor(permission)) > 0) opening.push(permission);
+    }
     // Сравнение в обе стороны: недостающее право — это выданный доступ, который не работает, а
     // лишнее — открытая страница без единой вкладки на ней.
     expect([...opening].sort()).toEqual([...ADMIN_PAGE_PERMISSIONS].sort());

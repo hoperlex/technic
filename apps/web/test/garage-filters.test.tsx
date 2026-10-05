@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import type { QueryClient } from '@tanstack/react-query';
 import type {
   GarageDriverListDto,
@@ -13,6 +13,7 @@ import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
 import { GaragePage } from '../src/pages/garage';
+import { AsyncContent } from '@shared/ui';
 
 /**
  * Отбор среза дня по площадке и по бланку работы дня (план «Срезы дня», Р6–Р8, Р20).
@@ -97,10 +98,12 @@ function renderPage(tab: 'vehicles' | 'drivers') {
     'GET /auto-part-receipts/vehicles/snapshot': ({ query }) =>
       json({ to: query.get('to') ?? '', items: [] }),
   });
-  const rendered = renderWithUser(<GaragePage />, {
-    user: admin,
-    route: `/garage?tab=${tab}&date=${ON_DATE}`,
-  });
+  const rendered = renderWithUser(
+    <AsyncContent>
+      <GaragePage />
+    </AsyncContent>,
+    { user: admin, route: `/garage?tab=${tab}&date=${ON_DATE}` },
+  );
   return { ...rendered, http };
 }
 
@@ -153,7 +156,9 @@ describe('гараж: отбор по площадке и бланку', () => {
   it('вкладка водителей шлёт площадки и бланки набором — и тем же набором считает сводку', async () => {
     const { http } = renderPage('vehicles');
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Водители' }));
+    // Let Vitest finish transforming the cold public-entry graph before testing tab interaction.
+    await act(() => vi.dynamicImportSettled());
+    fireEvent.click(await screen.findByRole('tab', { name: 'Водители' }));
     await waitFor(() => expect(http.lastCall('GET /garage/drivers')).toBeTruthy());
 
     await openFilter('Все объекты');
