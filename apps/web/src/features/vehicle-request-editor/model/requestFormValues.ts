@@ -266,10 +266,13 @@ export function copyScheduledPlan(
  *    yesterday corrected. Copies are taken from a request in any status (ADR 0206), so "move to the
  *    first available day" is no longer the only answer — for a running order it would push the end
  *    past the original one too.
- * 2. Classifier and customer are preserved only when available to the copying user. A position
- *    switched off in the directory is rejected by the server (`resolveClassification`), and a
- *    customer outside the user's picker is sent as an empty pair (K8); in both cases the field is
- *    left empty and asks, instead of showing a value that will be rejected on save.
+ * 2. Classifier and customer are preserved only when available to the copying user, and neither
+ *    is answered here. A position switched off in the directory is rejected by the server
+ *    (`resolveClassification`), and a customer outside the user's picker is sent as an empty pair
+ *    (K8); in both cases the field is left empty and asks, instead of showing a value that will be
+ *    rejected on save. The editor answers both once the form can: the position from a current
+ *    PICK answer (`useCopyClassificationSync`), the customer once the picker follows the source
+ *    kind — see `customerKey` below.
  * 3. Trips lose their IDs (`copyTrip`) because the server must create new rows.
  *
  * Attachments are not copied: `assertFilesAttachable` permits each stored object to belong to at
@@ -284,14 +287,23 @@ export function copyFormValues(
     today: string;
     /** Whether the source classifier position is still active. */
     hasClassification: boolean;
-    /** Whether the source customer is available to the copying user. */
-    hasCustomer: boolean;
   },
 ): FormFill {
-  const { minDate, today, hasClassification, hasCustomer } = options;
+  const { minDate, today, hasClassification } = options;
   const common = {
     requestType: r.requestType,
-    customerKey: hasCustomer ? (costTargetKeyOf(r) ?? undefined) : undefined,
+    /*
+     * The customer is deliberately not decided here, and restoring it would reintroduce a defect.
+     * Whether the copying account may order for the source customer depends on the axes of the
+     * SOURCE request kind — the place axis for on-site equipment, the account scope plus departments
+     * for freight (ADR 0201) — and the picker switches to those axes only on the render after the
+     * dialog has opened with this very fill. Answered at fill time, the question is answered about
+     * the previous opening of the dialog: a department with its own places copying an equipment
+     * order would be told it has no customers at all and would face an empty required field.
+     *
+     * The editor fills the field as soon as the picker can answer (`useVehicleRequestEditorState`).
+     */
+    customerKey: undefined,
     classificationKey: hasClassification ? classificationKeyOf(r) : '',
     comment: r.comment,
     // A copy is proposed inside the allowed window (`copyTermPlan`, `copyScheduledPlan`), so there

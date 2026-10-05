@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Form } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { QUERY_PROFILE } from '@shared/config';
@@ -311,10 +311,6 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     setCopy({ source: request, minDate, today });
     resetWindow();
     setTripsExpanded(tripsNeedExpanding(request));
-    // The customer is checked by the same question the form uses to build the body (K8): a value
-    // outside the picker goes out as an empty pair, and filling it would show a customer the server
-    // will not accept. The pair is computed once: two calls would answer one question twice.
-    const pair = customer.customerPairOf(costTargetKeyOf(request));
     form.setFieldsValue(
       copyFormValues(request, {
         minDate,
@@ -322,7 +318,6 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
         // Fill only after this opening's PICK observer has accepted the list. Even a cache entry
         // fresh at the last render may have aged or been invalidated by the time of this click.
         hasClassification: false,
-        hasCustomer: !!pair.objectId || !!pair.departmentId,
       }),
     );
     files.reset([]);
@@ -340,6 +335,38 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
    * here, and a second copy of it would offer the copy on one screen and hide it on the other.
    */
   const canCopy = (request: VehicleRequestDto) => canCopyVehicleRequest(can, user, request);
+
+  /*
+   * The customer of a copy is offered one render later than the rest of its values, and that delay
+   * is the whole point: the composition of the picker follows the request kind standing in the FORM
+   * (place axis for on-site equipment, scope plus departments for freight), and inside the click
+   * that opens the copy the form still holds the kind of the previous opening. Asked there, the
+   * question "is this customer on offer to me" is answered about the wrong kind — a department with
+   * its own places (ADR 0201) copying an equipment order was told it had no objects at all, and the
+   * place it is entitled to never reached the required field.
+   *
+   * Here the picker has already switched to the source kind, so one and the same rule answers for
+   * the form and for the copy; the directory may also still have been loading at the click, and that
+   * wait no longer counts as "not on offer" either.
+   *
+   * A customer outside the account's offer stays empty on purpose (ADR 0173 §3): the field then asks
+   * the person instead of submitting a value the server would refuse.
+   */
+  const copyCustomerKey = copy ? costTargetKeyOf(copy.source) : null;
+  const copyCustomerPair = customer.customerPairOf(copyCustomerKey);
+  const copyCustomerOffered = !!copyCustomerPair.objectId || !!copyCustomerPair.departmentId;
+  /*
+   * `copy` stands in the dependencies next to the key: reopening a copy of the SAME order gives the
+   * same key, and keyed by it alone the fill would skip the second opening, whose form has just been
+   * reset.
+   */
+  useEffect(() => {
+    if (!copy || !copyCustomerKey || !copyCustomerOffered) return;
+    // A value already chosen by hand wins: the directory may have arrived after the person gave up
+    // waiting and picked a customer themselves.
+    if (form.getFieldValue('customerKey')) return;
+    form.setFieldsValue({ customerKey: copyCustomerKey });
+  }, [copy, copyCustomerKey, copyCustomerOffered, form]);
 
   return {
     backdated,
