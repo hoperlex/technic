@@ -13,31 +13,30 @@ import { useUserAuditFilters, type AuditFilterParams } from './UserAuditFilters'
 import { UserAuditPathDrawer, type AuditTarget } from './UserAuditPathDrawer';
 
 /**
- * Журнал изменений учётных записей (ADR 0088, ADR 0109): что стало с учёткой, кто это сделал и
- * когда.
+ * Account change log (ADR 0088, ADR 0109): what happened to an account, who did it and when.
  *
- * Экран отвечает на вопросы разбора — «кто выдал этому человеку роль диспетчера», «кому открыли
- * СУ-10 в прошлый вторник», «что стало с учёткой, которой больше нет». Раньше он показывал список
- * действий администраторов без расшифровки: правка объектов, отделов и контактов приезжала одной
- * строкой «Учётная запись изменена», а отобрать журнал по данным самих учёток было нечем.
+ * The screen answers review questions — "who gave this person the dispatcher role", "who was given
+ * SU-10 last Tuesday", "what happened to an account that no longer exists". It used to show a list
+ * of administrator actions without detail: edits of objects, departments and contacts arrived as a
+ * single "Account changed" line, and there was no way to filter the log by account data.
  *
- * Двух вещей здесь нет намеренно. Кода действия не видно нигде: строку собирает описатель из
- * контрактов (`describeAuditEntry`, `auditChangesOf`) — раздвоившись в вёрстке, формулировки
- * разъехались бы при первом же новом поле учётки. И карточки события нет: строка сама себе
- * карточка, а связный рассказ показывает путь учётки — панель, которая открывается по строке.
+ * Two things are absent on purpose. The action code is never shown: the line is built by the
+ * contracts describer (`describeAuditEntry`, `auditChangesOf`) — duplicated in markup, the wording
+ * would drift with the first new account field. And there is no event card: the row is its own
+ * card, and the connected story is the account path — the drawer opened from the row.
  */
 
 /**
- * Границы периода — моментами, а не сутками: записи ложатся с точностью до секунды, и «за 10
- * августа» — это промежуток от полуночи до полуночи, посчитанный в часовом поясе портала (МСК).
- * Без часового пояса граница уехала бы на часы: у сервера свой UTC, у браузера — свой.
+ * Period bounds are instants, not days: entries are stored to the second, and "on August 10" is the
+ * span from midnight to midnight computed in the portal time zone (Moscow). Without the time zone
+ * the bound would shift by hours: the server has its UTC, the browser has its own.
  */
 const dayStart = (date: string | undefined): string | undefined =>
   date ? dayjs.tz(date, MOSCOW_TZ).startOf('day').toISOString() : undefined;
 const dayEnd = (date: string | undefined): string | undefined =>
   date ? dayjs.tz(date, MOSCOW_TZ).endOf('day').toISOString() : undefined;
 
-/** Над кем действовали: ФИО, адрес и чем учётка стала сейчас. Пусто — её удалили насовсем. */
+/** Whom the action targeted: name, address and what the account is now. Empty — it was purged. */
 function targetCell(entry: AuditEntryDto) {
   if (!entry.targetName && !entry.targetEmail) return '—';
   return (
@@ -65,27 +64,27 @@ function targetCell(entry: AuditEntryDto) {
 }
 
 export function UsersAuditTab() {
-  // Поиск идёт по людям — ФИО и адресу учётки, ФИО администратора, — а не по столбцам таблицы:
-  // сортируемых и ищущихся колонок у журнала нет вовсе.
+  // Search goes by people — the account's name and address, the administrator's name — not by
+  // table columns: the log has no searchable columns at all.
   const { params, setParams, setSort, onTableChange } = useListParams<AuditFilterParams>(
     {},
     { searchKeys: [] },
   );
 
-  /** Чей путь открыт панелью; `null` — панель закрыта. */
+  /** Whose path is open in the drawer; `null` means the drawer is closed. */
   const [path, setPath] = useState<AuditTarget | null>(null);
   /**
-   * Чьей учёткой сужен журнал. Живёт здесь, а не приходит снаружи: разбор конкретного человека
-   * теперь показывает панель пути — и из списка учёток, и из строки журнала, — а этот фильтр
-   * остался тем, чем и был, обычным сужением ленты.
+   * Which account narrows the log. It lives here rather than coming from outside: reviewing a
+   * particular person is now done by the path drawer — from both the account list and a log row —
+   * and this filter stays what it always was, an ordinary narrowing of the feed.
    */
   const [target, setTarget] = useState<AuditTarget | null>(null);
 
-  /** Правка любого фильтра возвращает на первую страницу: та же страница при другом наборе — уже другие записи. */
+  /** Any filter change returns to page one: the same page over a different set is other records. */
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
-  /** Смена человека — такая же смена отбора, как и любая другая: страница возвращается на первую. */
+  /** Changing the person is a filter change like any other: the page returns to the first one. */
   useEffect(() => {
     setParams((p) => ({ ...p, page: 1 }));
   }, [target?.id, setParams]);
@@ -94,8 +93,8 @@ export function UsersAuditTab() {
     ...params,
     from: dayStart(params.from),
     to: dayEnd(params.to),
-    // Цель — пара «тип сущности и её идентификатор»: журнал общий на весь портал, и без типа
-    // фильтр отобрал бы заодно однажды совпавший идентификатор чужой записи.
+    // The target is the pair "entity type and id": the log is shared by the whole portal, and
+    // without the type the filter would also pick up a record of another kind with a matching id.
     entityType: target ? 'user' : undefined,
     entityId: target?.id,
   };
@@ -125,8 +124,8 @@ export function UsersAuditTab() {
       width: 150,
       render: (_v, r) => formatDateTime(r.createdAt),
     }),
-    // Учётка вторым столбцом, а не последним: экран про то, что стало с людьми, и читают его по
-    // ним же — «кто» отвечает уже на вопрос, кем это сделано.
+    // The account is the second column, not the last: the screen is about what happened to people
+    // and is read by them — the "who" column answers a different question, by whom it was done.
     textColumn<AuditEntryDto>({
       key: 'target',
       title: 'Учётная запись',
@@ -136,9 +135,9 @@ export function UsersAuditTab() {
       width: 260,
       render: (_v, r) => targetCell(r),
     }),
-    // Сортировка идёт по коду действия, а показывается человекочитаемая строка: одинаковые
-    // события собираются рядом, и читать их подряд («все отказы за месяц») удобнее, чем выбирать
-    // их фильтром по одному.
+    // Sorting is by action code while a human-readable line is shown: identical events cluster
+    // together, and reading them in a row ("all rejections this month") is easier than picking
+    // them one by one with a filter.
     textColumn<AuditEntryDto>({
       key: 'action',
       title: 'Что изменилось',
@@ -150,20 +149,20 @@ export function UsersAuditTab() {
       key: 'actorName',
       title: 'Кто изменил',
       dataIndex: 'actorName',
-      // Сортировки нет: сервер упорядочивает журнал по времени и коду действия, а ФИО автора
-      // приходит join'ом — `AUDIT_SORT_FIELDS` его не принимает.
+      // No sorting: the server orders the log by time and action code, while the author's name
+      // comes from a join — `AUDIT_SORT_FIELDS` does not accept it.
       sortable: false,
       searchable: false,
       width: 220,
-      // Пусто — учётку автора удалили насовсем либо действие человек сделал сам до входа
-      // (подтверждение адреса, восстановление пароля по ссылке из письма).
+      // Empty when the author's account was purged, or when the person acted before signing in
+      // (address confirmation, password reset from an email link).
       render: (_v, r) => r.actorName ?? '—',
     }),
   ];
 
   /**
-   * Строка журнала карточкой на телефоне (ADR 0042). Заголовок — учётка: список читают по людям,
-   * а момент события уходит подстрокой, как и автор правки.
+   * A log row as a card on the phone (ADR 0042). The title is the account: the list is read by
+   * people, while the event time goes to a subline, as does the author of the edit.
    */
   const card: CardConfig<AuditEntryDto> = {
     title: (r) => r.targetName ?? r.targetEmail ?? '—',

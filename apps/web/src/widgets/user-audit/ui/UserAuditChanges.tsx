@@ -9,26 +9,26 @@ import {
 } from '@technic/contracts';
 
 /**
- * Что событие сделало с учётной записью (ADR 0109): заголовок и под ним значения — «Роль:
- * Диспетчер → Механик».
+ * What an event did to an account (ADR 0109): a heading and the values under it — "Role:
+ * Dispatcher → Mechanic".
  *
- * Один компонент на таблицу журнала и на панель пути: строка события в обоих местах отвечает на
- * один и тот же вопрос, и раздвоившись в вёрстке, формулировки разъехались бы при первом же новом
- * поле учётки. Правило сборки при этом не здесь, а в контрактах (`auditChangesOf`) — вёрстка
- * только показывает готовое.
+ * One component serves both the log table and the path drawer: the event line answers the same
+ * question in both places, and two copies of the markup would drift apart with the first new
+ * account field. The assembly rule itself lives in contracts (`auditChangesOf`); the markup only
+ * shows the result.
  */
 
 const line = { fontSize: 12 } as const;
 
-/** Подпись поля; незнакомый код — из записи, сделанной другой версией портала. */
+/** Field label; an unknown code comes from an entry written by another portal version. */
 function labelOf(field: string): string {
   return userAuditFieldLabels[field as UserAuditField] ?? field;
 }
 
 /**
- * Значение изменения. Три вида, и различать их обязательно: обычная пара, появившееся значение
- * (стрелка из пустоты только мешает) и правка, значения которой журнал не сохранил, — про неё
- * честно говорится, что было изменение, но чего именно — неизвестно.
+ * The value of a change. There are three kinds and they must stay distinct: an ordinary pair, a
+ * value that appeared (an arrow from nothing only gets in the way), and an edit whose values the
+ * log did not keep — for it the line honestly says there was a change, but not what it was.
  */
 function valueOf(change: AuditChangeDto): string {
   if (change.to === null) return 'значения не сохранены';
@@ -50,10 +50,10 @@ export function AuditChangeLines({ entry }: { entry: AuditEntryDto }) {
 }
 
 /**
- * Событие целиком: что произошло и что в учётке стало другим.
+ * The whole event: what happened and what became different in the account.
  *
- * Заголовок остаётся и при пустом перечне — событий без значений хватает (сброс пароля,
- * подтверждение адреса), и строка «—» вместо них читалась бы как потеря записи.
+ * The heading stays even with an empty change list — events without values are common (password
+ * reset, address confirmation), and a "—" line instead would read as a lost entry.
  */
 export function AuditEventCell({ entry }: { entry: AuditEntryDto }) {
   return (

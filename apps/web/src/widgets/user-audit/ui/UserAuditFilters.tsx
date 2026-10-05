@@ -18,27 +18,27 @@ import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { userAccountKeys, usersApi } from '@entities/user-account';
 
 /**
- * Отбор журнала изменений (ADR 0109): по самим событиям — период, действие, администратор — и по
- * данным учётной записи, над которой действовали.
+ * Change-log filters (ADR 0109): by the events themselves — period, action, administrator — and by
+ * the data of the account that was acted on.
  *
- * Второе и есть то, ради чего экран переделан: вопросы к журналу задают про людей — «что меняли у
- * механиков», «кому открыли СУ-10», — а раньше отобрать по ним было нечем. Отбор идёт по состоянию
- * учётки **сейчас**: снимка на момент события журнал не хранит, и обещать машину времени полосе
- * фильтров нельзя.
+ * The second group is why the screen was rebuilt: questions to the log are asked about people —
+ * "what was changed for mechanics", "who was given SU-10" — and there used to be nothing to filter
+ * them by. Filtering uses the account's state **now**: the log keeps no snapshot at event time,
+ * and a filter bar must not promise a time machine.
  *
- * Вынесено из подвкладки отдельным модулем: полей десяток, и каждое живёт дважды — полосой на
- * десктопе и описанием для шита на телефоне (ADR 0030).
+ * Kept in a module of its own: there are about ten fields, and each lives twice — as a bar on
+ * desktop and as a descriptor for the phone sheet (ADR 0030).
  */
 
-/** Учётка, которой сужен журнал: идентификатор для запроса, имя — для подписи в поле. */
+/** The account narrowing the log: the id for the query, the name for the field label. */
 export interface AuditFilterTarget {
   id: string;
   name: string;
 }
 
 export interface AuditFilterParams {
-  // Индекс-сигнатура — от `useListParams`: набор фильтров уходит в запрос как есть, и параметры
-  // списка (страница, сортировка) живут в том же объекте.
+  // The index signature comes from `useListParams`: the filter set goes to the request as is, and
+  // list parameters (page, sorting) live in the same object.
   [key: string]: unknown;
   search?: string;
   actions?: string;
@@ -56,9 +56,9 @@ export interface AuditFilterParams {
 const DATE = 'YYYY-MM-DD';
 
 /**
- * Галочки отбора — по действиям, цель которых учётная запись: те же, что отдаёт срез журнала на
- * сервере. Выдача и отзыв полномочия (ADR 0106) в ленте видны, и отобрать их читателю нужно тем же
- * полем — фильтр, который короче ленты, заставляет искать событие глазами.
+ * Action checkboxes cover the actions whose target is an account — the same ones the server's log
+ * slice returns. Grant issue and revocation (ADR 0106) are visible in the feed, so the reader must
+ * be able to pick them with the same field: a filter shorter than the feed forces searching by eye.
  */
 const actionOptions = USER_TARGET_AUDIT_ACTIONS.map((action) => ({
   value: action,
@@ -70,9 +70,9 @@ const accessOptions = [
   { value: 'false', label: 'Доступ закрыт' },
 ];
 /**
- * Архив тремя положениями, а не галочкой «показать архив», как в списке учёток: журнал по
- * построению рассказывает о прошлом, и умолчание, скрывающее архивные учётки, отрезало бы самый
- * частый вопрос к нему — что стало с человеком, которого уже уволили.
+ * Archive as three positions rather than a "show archive" checkbox as in the account list: the log
+ * is about the past by construction, and a default hiding archived accounts would cut off the most
+ * frequent question to it — what happened to a person who has already left.
  */
 const archiveOptions = [
   { value: 'include', label: 'Любые учётки' },
@@ -89,9 +89,9 @@ interface Args {
 
 export function useUserAuditFilters({ params, apply, target, onTargetChange }: Args) {
   /**
-   * Люди для обоих списков выбора — один запрос: и действующим лицом, и целью бывает одна и та же
-   * учётка. Неактивные из списка не убраны: журнал читают как раз про тех, кого выключили, и
-   * фильтр без них отвечал бы «записей нет» на самый частый вопрос.
+   * People for both pickers come from one query: the same account can be both actor and target.
+   * Inactive accounts are not removed: the log is read precisely about those who were switched off,
+   * and a filter without them would answer "no entries" to the most frequent question.
    */
   const { data: people, isFetching: peopleLoading } = useQuery({
     queryKey: userAccountKeys.options(),
@@ -104,12 +104,12 @@ export function useUserAuditFilters({ params, apply, target, onTargetChange }: A
       }),
   });
   const personOptions = (people?.items ?? []).map((u) => ({ value: u.id, label: u.fullName }));
-  // Учётка из архива в списке действующих не значится, а историю у неё спрашивают чаще прочих —
-  // имя её приезжает вместе с выбором, поэтому поле показывает человека, а не голый идентификатор.
+  // An archived account is not in the list of live ones, yet its history is asked most often — its
+  // name arrives with the selection, so the field shows a person rather than a bare id.
   const targetOptions = withSavedOption(personOptions, { id: target?.id, name: target?.name });
 
-  // Площадки берутся все, включая закрытые: журнал рассказывает о прошлом, и по учёткам закрытой
-  // площадки спрашивают ровно тогда, когда разбирают, куда делись её люди.
+  // All sites are loaded, closed ones included: the log is about the past, and accounts of a closed
+  // site are asked about exactly when reviewing where its people went.
   const { data: objects, isFetching: objectsLoading } = useQuery({
     queryKey: objectKeys.options({ activeOnly: false }),
     queryFn: () => objectsApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
@@ -125,7 +125,7 @@ export function useUserAuditFilters({ params, apply, target, onTargetChange }: A
     queryFn: () =>
       counterpartiesApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
   });
-  // Группами по типу, как в форме учётки: тип контрагента решает, чем учётка в портале занята.
+  // Grouped by type, as in the account form: the counterparty type decides what the account does.
   const counterpartyGroups = COUNTERPARTY_TYPES_WITH_ACCOUNTS.map((type) => ({
     label: counterpartyTypeLabels[type],
     options: (counterparties?.items ?? [])
@@ -157,12 +157,12 @@ export function useUserAuditFilters({ params, apply, target, onTargetChange }: A
       <Select
         allowClear
         mode="multiple"
-        // Отмеченное сворачивается в «+N», когда не помещается: набор бывает и в десяток
-        // действий, и растянутое поле выдавило бы остальные фильтры на другую строку.
+        // Selected items collapse into "+N" when they do not fit: a set can hold a dozen actions,
+        // and a stretched field would push the other filters to another line.
         maxTagCount="responsive"
-        // Поиск по подписи: действий в списке под два десятка, и нужное — «пароль сброшен»,
-        // «полномочие выдано» — иначе ищется прокруткой. По подписи, а не по коду действия:
-        // кода читатель не видит нигде, он и в строке журнала не показывается.
+        // Search by label: the list holds about twenty actions, and the needed one ("password
+        // reset", "grant issued") would otherwise be found by scrolling. By label, not by action
+        // code: the reader never sees the code, it is not shown even in the log row.
         showSearch
         optionFilterProp="label"
         placeholder="Все действия"
@@ -255,7 +255,7 @@ export function useUserAuditFilters({ params, apply, target, onTargetChange }: A
     </Space>
   );
 
-  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  /** The same filters as descriptors, for the phone sheet (ADR 0030). */
   const mobileFilters: FilterDefinition[] = [
     {
       kind: 'dateRange',

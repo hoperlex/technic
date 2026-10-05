@@ -14,9 +14,9 @@ import { userAccountErrorMessage as errorMessage } from '@entities/user-account'
 
 interface Props {
   open: boolean;
-  /** Учётка, которой меняют адрес: из неё берётся прежний адрес и признак «это я сам». */
+  /** Account whose address changes: source of the previous address and of the "it is me" flag. */
   user: UserDto | null;
-  /** Свою учётку меняют с подтверждением паролем — и выходят из портала сразу после смены. */
+  /** One's own account changes with password confirmation and signs out right after the change. */
   self: boolean;
   onCancel: () => void;
   onSubmit: (body: ChangeUserEmailBody) => void;
@@ -30,29 +30,29 @@ interface Values {
 }
 
 /**
- * Смена адреса учётной записи (ADR 0092) — предупреждающее окно, а не поле в карточке.
+ * Account address change (ADR 0092) is a warning modal, not a field in the account form.
  *
- * Адрес учётки это логин, и смена делает сразу четыре вещи: переносит вход, гасит живые ссылки
- * восстановления, завершает сессии на всех устройствах и отправляет два письма. Ни одну из них
- * администратор не увидит в форме правки телефона — поэтому окно перечисляет их до нажатия, а не
- * сообщает после.
+ * The address is the login, and changing it does four things at once: moves the sign-in, voids
+ * live password-reset links, ends sessions on all devices and sends two emails. The administrator
+ * would see none of these in a phone-edit form, so the modal lists them before the click rather
+ * than reporting after.
  *
- * Адрес вводится дважды. Опечатка здесь — это одновременно потеря входа и письма постороннему,
- * причём портал её не заметит: `ivan@su10.ru` и `ivam@su10.ru` одинаково правильны с виду.
- * Повторный ввод — единственная проверка, которая ловит именно этот случай.
+ * The address is typed twice. A typo here means both a lost login and mail to a stranger, and the
+ * portal cannot notice it: `ivan@su10.ru` and `ivam@su10.ru` look equally valid. The repeated
+ * entry is the only check that catches exactly this case.
  */
 export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirmLoading }: Props) {
   const [form] = Form.useForm<Values>();
   const newEmail = Form.useWatch('newEmail', form) ?? '';
 
-  // Окно переиспользуется для разных учёток: адрес предыдущей не должен оставаться в полях.
+  // The modal is reused for different accounts: the previous address must not stay in the fields.
   useEffect(() => {
     if (open) form.resetFields();
   }, [open, form]);
 
-  // Предупреждение о чужом домене (ADR 0090) — то же правило, что на форме регистрации, и здесь
-  // оно нужно ровно затем же: рабочий адрес сотрудника опечаткой в домене превращается в чужой,
-  // а выглядит правильным. Пустое поле молчит — предупреждать не о чем.
+  // Foreign-domain warning (ADR 0090) — the same rule as on the registration form, needed for the
+  // same reason: a typo in the domain turns an employee's work address into someone else's while it
+  // still looks right. An empty field stays silent — there is nothing to warn about.
   const external = newEmail.trim() !== '' && !isInternalEmail(newEmail.trim());
 
   return (
@@ -74,8 +74,9 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
         onFinish={(v: Values) =>
           onSubmit({
             newEmail: v.newEmail.trim(),
-            // Пароль уходит только со своей учётки: чужую сервер о нём не спрашивает, и посылать
-            // туда пустую строку значило бы получить 400 на поле, которого в окне не было.
+            // The password is sent only for one's own account: the server does not ask for it on
+            // another account, and sending an empty string there would get a 400 on a field the
+            // modal never showed.
             ...(self ? { currentPassword: v.currentPassword } : {}),
           })
         }
@@ -108,11 +109,11 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
         >
           <Input autoFocus autoComplete="off" />
         </Form.Item>
-        {/* Второе поле сверяется с первым, а не наоборот: человек правит опечатку там, где её
-            заметил, и обе стороны сравнения должны быть равноправны — antd пересчитывает правило
-            при изменении зависимости. */}
-        {/* Приведение и здесь: иначе повтор расходился бы с первым полем невидимым пробелом,
-            и человек искал бы опечатку там, где её нет. */}
+        {/* The second field is checked against the first, not the other way round: the person fixes
+            a typo wherever they notice it, and both sides of the comparison must be equal — antd
+            re-runs the rule when the dependency changes. */}
+        {/* Normalisation here too: otherwise the repeat would differ from the first field by an
+            invisible space, and the person would hunt for a typo that is not there. */}
         <Form.Item
           name="newEmailRepeat"
           label="Повторите новый адрес"
@@ -142,8 +143,9 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
             title="Адрес вне доменов компании — проверьте, что он написан верно"
           />
         ) : null}
-        {/* Поле пароля есть только у своей учётки: чужую сервер паролем не защищает, и выключенное
-            поле обещало бы проверку, которой не будет (ADR 0033 §6). */}
+        {/* The password field exists only for one's own account: the server does not guard another
+            account with a password, and a disabled field would promise a check that never happens
+            (ADR 0033 §6). */}
         {self ? (
           <Form.Item
             name="currentPassword"
@@ -154,9 +156,9 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
             <Input.Password autoComplete="current-password" />
           </Form.Item>
         ) : null}
-        {/* Адрес водителя в справочнике — отдельная запись (ADR 0008): задания на рейс уходят по
-            нему, а не по адресу учётки, и смена здесь его не трогает. Напоминание общее, без
-            проверки привязки: карточка учётки о связи с физлицом не рассказывает. */}
+        {/* A driver's directory address is a separate record (ADR 0008): trip assignments go there,
+            not to the account address, and this change does not touch it. The reminder is generic,
+            without checking the link: the account card does not tell about its link to a person. */}
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           Если человек получает задания на рейс как водитель, его адрес правится отдельно — в
           карточке водителя.
@@ -167,18 +169,19 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
 }
 
 /**
- * Действие «сменить адрес» целиком: состояние окна, запрос, разбор исходов и готовое окно.
+ * The whole "change address" action: modal state, request, outcome handling and the ready modal.
  *
- * Хук, а не пятьдесят строк в списке учёток: у смены свои побочные последствия (два письма,
- * архивная тень, выход из портала при смене себе), и разбирать их посреди вкладки, которая занята
- * ролями и областью, значит смешать два разных разговора. Вызывающему остаётся пункт меню.
+ * A hook rather than fifty lines in the account list: the change has its own side effects (two
+ * emails, an archived shadow, signing out when changing one's own), and handling them in the middle
+ * of a tab busy with roles and scope would mix two different conversations. The caller only adds a
+ * menu item.
  */
 export function useChangeEmailAction(opts: {
-  /** Кто смотрит: свою учётку меняют с паролем и с выходом из портала. */
+  /** Who is viewing: one's own account changes with a password and signs out. */
   currentUserId: string | undefined;
   /**
-   * Что обновить после смены. Колбэком, а не запросом отсюда: какой список показан и каким ключом
-   * он закэширован — дело вызывающего экрана, а хук отвечает за саму смену.
+   * What to refresh after the change. A callback rather than a query from here: which list is shown
+   * and under which cache key is the calling screen's business; the hook owns the change itself.
    */
   onChanged: () => void;
 }) {
@@ -192,16 +195,17 @@ export function useChangeEmailAction(opts: {
       usersApi.changeEmail(v.id, v.body),
     onSuccess: ({ user: updated, notifiedNew, notifiedOld, shadowsArchived }) => {
       setUser(null);
-      // Своя учётка: сессии отозваны сервером, и следующий же запрос вернёт 401. Портал уходит на
-      // страницу входа сам, не дожидаясь этого, — иначе человек увидел бы не объяснение, а ошибку
-      // на первом попавшемся экране. Список обновлять незачем: сессии уже нет.
+      // One's own account: the server has revoked the sessions and the next request returns 401.
+      // The portal goes to the sign-in page by itself without waiting for that — otherwise the
+      // person would see an error on a random screen instead of an explanation. There is no need
+      // to refresh the list: the session is gone.
       if (self) {
         message.success(`Адрес изменён на ${updated.email}. Войдите заново — уже по новому адресу`);
         void logout();
         return;
       }
-      // Про письма говорится по каждому отдельно: «отправлены» одним словом скрыло бы, что до
-      // прежнего ящика предупреждение не дошло, — а это и есть та новость, ради которой оно шло.
+      // Each email is reported separately: a single "sent" would hide that the warning did not reach
+      // the old mailbox — and that is exactly the news it was sent for.
       message.success(
         [
           `Адрес изменён на ${updated.email}`,
@@ -214,8 +218,8 @@ export function useChangeEmailAction(opts: {
           .filter(Boolean)
           .join(', '),
       );
-      // Не ошибка и не отказ — последствие, о котором узнают только сейчас: адрес занимала
-      // архивная учётка, и вернуть её из архива уже нельзя (ADR 0063).
+      // Neither an error nor a refusal — a consequence learned only now: an archived account held
+      // the address, and it can no longer be restored from the archive (ADR 0063).
       if (shadowsArchived) {
         message.warning(
           'Этот адрес принадлежал архивной учётной записи — восстановить её из архива больше нельзя',
@@ -227,9 +231,9 @@ export function useChangeEmailAction(opts: {
   });
 
   return {
-    /** Открыть окно для учётки. */
+    /** Open the modal for an account. */
     openFor: (u: UserDto) => setUser(u),
-    /** Готовое окно — вызывающему остаётся поставить его рядом с остальными. */
+    /** The ready modal — the caller only places it next to the others. */
     modal: (
       <ChangeEmailModal
         open={!!user}

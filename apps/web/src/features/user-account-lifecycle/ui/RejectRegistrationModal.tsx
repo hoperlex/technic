@@ -5,7 +5,7 @@ import type { RejectUserBody } from '@technic/contracts';
 
 interface Props {
   open: boolean;
-  /** Адрес заявки: он же адрес письма — по нему администратор и узнаёт, кому отказывает. */
+  /** Registration address, also the mail address — by it the administrator sees whom they reject. */
   email?: string;
   onCancel: () => void;
   onSubmit: (body: RejectUserBody) => void;
@@ -19,17 +19,17 @@ interface Values {
 }
 
 /**
- * Отказ по заявке на регистрацию: причина для разбора внутри, отметка об отправке и текст, который
- * прочитает сам заявитель.
+ * Rejecting a registration: an internal reason for later review, a send flag and the text the
+ * applicant will read.
  *
- * Своё окно, а не общий `ReasonModal` (`@shared/ui`): у того один
- * `onSubmit(reason: string)` и пять вызывающих — отмена заявки, возврат в «Новую», отказ по
- * недельной заявке, отказ по заявке на обслуживание и этот. Продеть через него второй текст и флаг
- * значит усложнить окно отмены заявки ради формы, нужной одному экрану.
+ * A modal of its own rather than the shared `ReasonModal` (`@shared/ui`): that one has a single
+ * `onSubmit(reason: string)` and five callers — request cancellation, return to "New", weekly
+ * request rejection, service request rejection and this one. Threading a second text and a flag
+ * through it would complicate the cancellation modal for a form one screen needs.
  *
- * Полей причины два намеренно: формулировка для разбора («дубль, человек уже заведён под другим
- * адресом») наружу не годится, а одно общее поле заставило бы писать обтекаемо — и запись в аудите
- * перестала бы отвечать на вопрос, почему доступ не дали.
+ * The two reason fields are deliberate: wording for internal review ("duplicate, the person already
+ * has an account under another address") is unfit for the outside, and one shared field would force
+ * vague wording — and the audit entry would stop answering why access was not granted.
  */
 export function RejectRegistrationModal({
   open,
@@ -39,11 +39,11 @@ export function RejectRegistrationModal({
   confirmLoading,
 }: Props) {
   const [form] = Form.useForm<Values>();
-  // Отметка читается из формы, а не из состояния рядом: по ней и показывается поле ответа, и
-  // собирается тело запроса — двум источникам тут разойтись негде.
+  // The flag is read from the form, not from separate state: it both shows the reply field and
+  // builds the request body, so there are no two sources to diverge.
   const notify = Form.useWatch('notifyApplicant', form) ?? true;
 
-  // Окно переиспользуется для разных заявок: причина и ответ предыдущей не должны подставляться.
+  // The modal is reused for different registrations: the previous reason and reply must not leak.
   useEffect(() => {
     if (open) form.resetFields();
   }, [open, form]);
@@ -67,9 +67,9 @@ export function RejectRegistrationModal({
           onSubmit({
             reason: v.reason.trim(),
             notifyApplicant: v.notifyApplicant,
-            // Со снятой отметкой текст не уходит вовсе: antd хранит значения скрытых полей, и
-            // набранный, а потом передуманный ответ иначе лёг бы в аудит как отправленный —
-            // хотя его никто не получил.
+            // With the flag off the text is not sent at all: antd keeps values of hidden fields,
+            // and a reply typed and then abandoned would otherwise land in the audit as sent —
+            // though nobody received it.
             ...(v.notifyApplicant ? { applicantMessage: v.applicantMessage?.trim() } : {}),
           })
         }
@@ -88,8 +88,8 @@ export function RejectRegistrationModal({
         <Form.Item name="notifyApplicant" valuePropName="checked">
           <Checkbox>Сообщить заявителю по почте</Checkbox>
         </Form.Item>
-        {/* Поля ответа со снятой отметкой нет вовсе, а не выключенное: писать текст, который никуда
-            не уйдёт, — работа впустую (ADR 0033 §6). */}
+        {/* With the flag off the reply field is absent, not disabled: writing text that goes nowhere
+            is wasted work (ADR 0033 §6). */}
         {notify ? (
           <Form.Item
             name="applicantMessage"

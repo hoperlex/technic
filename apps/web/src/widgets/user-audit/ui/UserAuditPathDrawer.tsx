@@ -14,22 +14,21 @@ import { auditApi, userAuditKeys } from '@entities/user-audit';
 import { AuditEventCell } from './UserAuditChanges';
 
 /**
- * Путь одной учётной записи (ADR 0109): от заявки на регистрацию до того, чем учётка стала
- * сегодня.
+ * The path of one account (ADR 0109): from the registration request to what the account is today.
  *
- * Лентой сверху вниз, а не таблицей: вопрос к этой панели — «как человек дошёл до нынешнего
- * доступа», и события здесь читают подряд, а не сравнивают между собой. По той же причине порядок
- * обратный ленте журнала — от старого к новому: путь читается с начала.
+ * A top-down timeline rather than a table: the question to this drawer is "how did the person
+ * arrive at their current access", so events are read in sequence, not compared. For the same
+ * reason the order is the reverse of the log — oldest first: a path is read from its start.
  *
- * Заканчивается путь состоянием «сейчас», и это не украшение. Последнее событие отвечает, что
- * поменяли, но не отвечает, что в итоге у человека есть: снятая надстройка и оставшиеся у него
- * четыре — разные новости, а по одной строке журнала вторую не восстановить.
+ * The path ends with the "now" state, and that is not decoration. The last event says what was
+ * changed but not what the person has as a result: one removed add-on and the four that remain are
+ * different news, and the second cannot be reconstructed from a single log line.
  */
 
-/** Хвост длинной истории человеку уже не нужен — как и в истории заявки. */
+/** The tail of a long history is no longer useful to a person — same as in request history. */
 const PATH_LIMIT = 200;
 
-/** Кем учётка стала: роль, доступ, архив — тремя баблами, как в списке учёток. */
+/** What the account became: role, access, archive — three bubbles, as in the account list. */
 function StateTags({ user }: { user: UserAccountDto }) {
   return (
     <Space size={4} wrap>
@@ -46,7 +45,7 @@ function StateTags({ user }: { user: UserAccountDto }) {
   );
 }
 
-/** Чем учётка стала к сегодняшнему дню; пустые поля пропущены — «—» в пяти строках подряд не читается. */
+/** The account as of today; empty fields are skipped — "—" on five lines in a row does not read. */
 function currentFields(user: UserAccountDto): ViewField[] {
   const fields: ViewField[] = [
     { key: 'state', label: 'Сейчас', full: true, children: <StateTags user={user} /> },
@@ -85,7 +84,7 @@ function currentFields(user: UserAccountDto): ViewField[] {
   return fields;
 }
 
-/** Событие пути: когда и что сделали, кто — отдельной строкой снизу. */
+/** A path event: when and what was done, and who — on a separate line below. */
 function pathItem(entry: AuditEntryDto) {
   return {
     key: entry.id,
@@ -96,8 +95,8 @@ function pathItem(entry: AuditEntryDto) {
         </Typography.Text>
         <AuditEventCell entry={entry} />
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {/* Пусто — автора удалили насовсем либо человек сделал это сам до входа: подтвердил
-              адрес, восстановил пароль по ссылке из письма. */}
+          {/* Empty when the author was purged, or when the person did it themselves before signing
+              in: confirmed the address, reset the password from an email link. */}
           {entry.actorName ?? 'без администратора'}
         </Typography.Text>
       </Space>
@@ -106,12 +105,12 @@ function pathItem(entry: AuditEntryDto) {
 }
 
 /**
- * Учётка, чей путь показывают: идентификатор для запросов, имя — для заголовка, пока карточка не
- * загрузилась. Панель открывают из строки, где имя уже есть, и показывать вместо него пустоту
- * незачем.
+ * The account whose path is shown: the id for queries and the name for the title until the card
+ * loads. The drawer is opened from a row that already has the name, so there is no reason to show
+ * a blank instead.
  *
- * Объявлен здесь, а не на подвкладке: чей путь смотрят — вопрос самой панели, а открывают её из
- * двух мест сразу (журнал и список учёток).
+ * Declared here rather than in a sub-tab: whose path is viewed is the drawer's own concern, and it
+ * is opened from two places (the log and the account list).
  */
 export interface AuditTarget {
   id: string;
@@ -119,7 +118,7 @@ export interface AuditTarget {
 }
 
 interface Props {
-  /** Чей путь показан; `null` — панель закрыта. */
+  /** Whose path is shown; `null` means the drawer is closed. */
   target: AuditTarget | null;
   onClose: () => void;
 }
@@ -140,7 +139,7 @@ export function UserAuditPathDrawer({ target, onClose }: Props) {
     page: 1,
     pageSize: PATH_LIMIT,
     sortBy: 'createdAt',
-    // От старого к новому: путь читают с начала, а не с последней правки.
+    // Oldest first: a path is read from its start, not from the latest edit.
     sortOrder: 'asc',
   };
   const { data: events, isFetching: eventsLoading } = useQuery({
@@ -156,9 +155,9 @@ export function UserAuditPathDrawer({ target, onClose }: Props) {
     <Drawer
       open={open}
       onClose={onClose}
-      // Во весь экран на телефоне и широкой полосой на десктопе: в событии по три-четыре строки
-      // значений, и в узкой панели каждая переносилась бы по слогам. Ширина задаётся `size` —
-      // `width` в antd 6 устарел, и тем же именем её задаёт соседняя карточка типа ТС.
+      // Full screen on a phone and a wide panel on desktop: an event has three or four value lines,
+      // and a narrow panel would wrap each by syllable. Width is set with `size` — `width` is
+      // deprecated in antd 6, and the neighbouring vehicle-type card uses the same prop.
       size={isMobile ? '100%' : 520}
       title={user?.fullName ?? target?.name ?? 'Путь учётной записи'}
       destroyOnHidden
@@ -168,7 +167,7 @@ export function UserAuditPathDrawer({ target, onClose }: Props) {
       ) : user ? (
         <ViewFields items={currentFields(user)} />
       ) : (
-        // Учётку удалили насовсем: события её жизни в журнале остались, а карточки уже нет.
+        // The account was purged: its life events remain in the log, but the card is gone.
         <Typography.Text type="secondary">Учётная запись удалена насовсем</Typography.Text>
       )}
       <div style={{ marginTop: 16 }}>
