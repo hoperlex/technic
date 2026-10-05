@@ -1,0 +1,14 @@
+{
+  "requireDynamicRoutes": false,
+  "entryGzip": 965896,
+  "routes": {
+    "waste": { "source": "src/pages/waste/WasteRequestsPage.tsx", "gzip": 965896 },
+    "vehicle-requests": { "source": "src/pages/vehicle/VehicleRequestsPage.tsx", "gzip": 965896 },
+    "waybills": { "source": "src/pages/waybills/WaybillsPage.tsx", "gzip": 965896 },
+    "garage": { "source": "src/pages/garage/GaragePage.tsx", "gzip": 965896 },
+    "mechanization": { "source": "src/pages/mech/MechRequestsPage.tsx", "gzip": 965896 },
+    "office-equipment": { "source": "src/pages/service/ServiceRequestsPage.tsx", "gzip": 965896 },
+    "directories": { "source": "src/pages/directories/DirectoriesPage.tsx", "gzip": 965896 },
+    "admin": { "source": "src/pages/admin/AdministrationPage.tsx", "gzip": 965896 }
+  }
+}

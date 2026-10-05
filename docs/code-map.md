@@ -192,8 +192,10 @@
 - Разделы портала: —
 - API-маршруты: —
 - Остальной API: —
-- Web: [layout](../apps/web/src/app/layout), [ui](../apps/web/src/shared/ui), [App.tsx](../apps/web/src/App.tsx)
-- Тесты: `boundaries.test.ts`, `portal-sections.test.ts`, `*-list.test.tsx`
+- Web: [layout](../apps/web/src/app/layout), [ui](../apps/web/src/shared/ui), [App.tsx](../apps/web/src/App.tsx),
+  [AsyncContent](../apps/web/src/shared/ui/AsyncContent.tsx), [useVersionCheck](../apps/web/src/shared/lib/useVersionCheck.ts),
+  [app-update-banner](../apps/web/src/widgets/app-update-banner)
+- Тесты: `boundaries.test.ts`, `portal-sections.test.ts`, `chunk-recovery.test.tsx`, `app-update-banner.test.tsx`, `*-list.test.tsx`
 - Решения: [ADR 0030](adr/0030-responsive-layout.md), [ADR 0121](adr/0121-portal-sections-registry.md), [ADR 0136](adr/0136-select-popup-width.md)
 
 ## Схема, миграции и выкат
@@ -211,10 +213,11 @@
 ## Ворота качества и проверки документации
 
 - Домен: `качество`
-- Источник истины: [check.mjs](../scripts/check.mjs), [check-docs.mjs](../scripts/check-docs.mjs), [quality.mjs](../apps/web/scripts/quality.mjs)
+- Источник истины: [check.mjs](../scripts/check.mjs), [check-docs.mjs](../scripts/check-docs.mjs), [quality.mjs](../apps/web/scripts/quality.mjs),
+  [bundle-size.mjs](../apps/web/scripts/bundle-size.mjs), [bundle-budget.json](../apps/web/bundle-budget.json)
 - Разделы портала: —
 - API-маршруты: —
 - Остальной API: —
 - Web: [scripts](../apps/web/scripts)
-- Тесты: `pnpm check`, `pnpm check:db`, `pnpm check:docs`, `pnpm test:docs`
+- Тесты: `pnpm check`, `pnpm check:db`, `pnpm check:docs`, `pnpm test:docs`, `bundle-size.test.ts`
 - Решения: [ADR 0147](adr/0147-quality-gates.md)

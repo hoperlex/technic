@@ -249,6 +249,14 @@ step({
   run: () => exec('npx', ['tsc', '-p', 'tools/maintenance/tsconfig.json', '--noEmit']),
 });
 
+// This gate always builds with a fixed BUILD_ID and compares measured positive byte limits.
+// Keep it out of pretest: targeted UI tests must not pay for a production build each time.
+step({
+  title: 'фронт: бюджет бандла',
+  hint: 'pnpm --filter @technic/web bundle:check',
+  run: () => exec('pnpm', ['--filter', '@technic/web', 'bundle:check']),
+});
+
 /*
  * Документация — последним шагом (ADR 0176). Порог включения был назван заранее: ноль ошибок, и он
  * достигнут — 106 битых ссылок починены, а исторические пути отделены от опечаток вопросом к
