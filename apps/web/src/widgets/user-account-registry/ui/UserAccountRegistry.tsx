@@ -23,6 +23,8 @@ export function UserAccountRegistry({ create, edit, actionsFor, archivedActionsF
   return (
     <PageTableLayout
       filters={<UserAccountRegistryFilters model={model} />}
+      // On the phone the list is read as cards, search is a bar in the panel, and the other filters
+      // and sorting are sheets (ADR 0042).
       mobile={{
         search: {
           value: model.params.search,

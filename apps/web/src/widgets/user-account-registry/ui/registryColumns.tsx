@@ -44,6 +44,8 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
       dataIndex: 'email',
       searchable: false,
       width: 220,
+      // The foreign-domain mark sits next to the address rather than in its own column: it appears
+      // on one row in ten, and a column for it would stand empty.
       render: (_value, record) => emailCell(record),
     }),
     textColumn<UserAccountDto>({
@@ -68,6 +70,9 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
         </Space>
       ),
     }),
+    // Phone (ADR 0043): the administrator reviews a registration and calls from this very page, so
+    // the number is in the list, not only in the form. No sorting — nobody orders by number, and
+    // USER_SORT_FIELDS does not accept it.
     textColumn<UserAccountDto>({
       key: 'phone',
       title: 'Телефон',
@@ -77,6 +82,9 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
       width: 160,
       render: (_value, record) => (record.phone ? <PhoneLink phone={record.phone} /> : '—'),
     }),
+    // A role with add-ons (ADR 0086) is rendered by hand rather than with badgeColumn: that column
+    // draws one tag per cell, and here there can be several. Sorting stays by role —
+    // USER_SORT_FIELDS knows only it, and an add-on does not define row order.
     textColumn<UserAccountDto>({
       key: 'role',
       title: 'Роль',
@@ -89,8 +97,14 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
       key: 'scope',
       title: 'Область',
       dataIndex: 'constructionObjects',
+      // One column for both axes rather than two: they are mutually exclusive (ADR 0040), and a
+      // second one would be empty for everyone except department accounts. There is nothing to
+      // sort a set by — "Object1, Object7" and "Object2" compare only by an arbitrary
+      // representative (ADR 0039).
       sortable: false,
       searchable: false,
+      // Departments are shown by code and objects by name — that is how they are called at work.
+      // Full department names go to the hover hint: they are needed for checking, not recognition.
       render: (_value, record) => {
         if (record.departments.length > 0) {
           return (
@@ -109,6 +123,7 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
       title: 'Контрагент',
       dataIndex: 'counterpartyName',
       searchable: false,
+      // The type next to the name: for an executor it answers "what does this account run".
       render: (_value, record) =>
         record.counterpartyName
           ? counterpartyTypeHasAccounts(record.counterpartyType)
@@ -124,6 +139,11 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
       falseText: 'Нет',
       width: 120,
     }),
+    // Email verification (ADR 0072): until the address is confirmed the registration must not be
+    // activated, and the administrator should see that in the list rather than learn it from a
+    // refusal. While verification is switched off (EMAIL_VERIFICATION_ENABLED) the column is
+    // absent: it does not block activation, and "not confirmed" on a fresh registration would
+    // claim something the portal no longer requires.
     ...(EMAIL_VERIFICATION_ENABLED
       ? [
           textColumn<UserAccountDto>({
@@ -142,6 +162,8 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
           }),
         ]
       : []),
+    // Registration date: the period filter works on it, and without the column the filtered rows
+    // would look filtered by nothing visible.
     textColumn<UserAccountDto>({
       key: 'createdAt',
       title: 'Зарегистрирован',
@@ -158,6 +180,8 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
           </Dropdown>
         );
       }
+      // Archived row (ADR 0063): icon buttons instead of a menu. They draw the command's loading
+      // state, which also swallows a repeated click while the request is in flight.
       return (
         <Space size={4}>
           <Tag>в архиве</Tag>

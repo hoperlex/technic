@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import type { FilterDefinition } from '@shared/ui';
 import type { UserAccountRegistryModel } from '../model/useUserAccountRegistry';
 
+/** The same filters as descriptors, for the phone sheet (ADR 0030). */
 export function registryMobileFilters(model: UserAccountRegistryModel): FilterDefinition[] {
   const { params, applyFilter } = model;
   return [
@@ -92,6 +93,8 @@ export function UserAccountRegistryFilters({ model }: { model: UserAccountRegist
   const { params, applyFilter } = model;
   return (
     <Space wrap size={8}>
+      {/* Registrations lie in the shared list among employees but are reviewed in a separate pass,
+          hence a full-width switch rather than one more dropdown. */}
       <Segmented
         value={model.showPending ? 'pending' : 'all'}
         onChange={(value) => model.setPending(value === 'pending')}
@@ -110,6 +113,7 @@ export function UserAccountRegistryFilters({ model }: { model: UserAccountRegist
       />
       <Input.Search
         allowClear
+        // A phone number is matched by digits: the spelling ("+7", "8", brackets) does not matter.
         placeholder="Email, ФИО или телефон"
         style={{ width: 240 }}
         defaultValue={params.search}
