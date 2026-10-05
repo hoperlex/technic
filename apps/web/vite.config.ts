@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import { checkPureBarrels, pureBarrelRules } from './scripts/pure-barrels';
 
 // Меняется при каждом релизе: deploy-auto пробрасывает короткий commit SHA через BUILD_ID.
 // Fallback на таймстамп — только для локального `pnpm build` без переменной.
@@ -18,7 +19,11 @@ const versionFilePlugin = (): Plugin => ({
 });
 
 export default defineConfig({
-  plugins: [react(), versionFilePlugin()],
+  plugins: [
+    react(),
+    versionFilePlugin(),
+    { name: 'audit-pure-barrels', buildStart: checkPureBarrels },
+  ],
   // Алиасы слоёв берутся из tsconfig.json: один источник истины на tsc, vite и vitest.
   resolve: { tsconfigPaths: true },
   // __BUILD_ID__ вшивается в бандл; хук useVersionCheck сверяет его с /version.json.
@@ -31,9 +36,11 @@ export default defineConfig({
     },
   },
   build: {
-    // Манифест сборки — не для рантайма (страницу отдаёт index.html), а для замера: по нему
-    // scripts/bundle-size.mjs считает, сколько JS скачивает первый экран. Считать «на глаз» по
-    // именам файлов нельзя — после разделения бандла у маршрута появятся свои общие чанки.
+    // Only measured, audited re-export entries are transparent to tree shaking. Do not group
+    // vendor chunks by hand or exempt bootstrap modules; the budget counts every static import.
+    rolldownOptions: { treeshake: { moduleSideEffects: pureBarrelRules } },
+    // The manifest serves measurement, not runtime routing: bundle-size.mjs follows the whole
+    // first-screen closure, including shared chunks, instead of guessing from the entry filename.
     manifest: true,
     outDir: 'dist',
     sourcemap: true,
