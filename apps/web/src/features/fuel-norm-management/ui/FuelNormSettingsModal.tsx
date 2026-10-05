@@ -9,16 +9,16 @@ import { fuelNormKeys, fuelNormsApi } from '@entities/fuel-norm';
 import { vehicleReadingKeys } from '@entities/vehicle-reading';
 
 /**
- * Настройки сверки: границы зимнего сезона и допуск в процентах (план `docs/fuel-norms-plan.md`,
- * §2.3).
+ * Reconciliation settings: winter-season boundaries and tolerance percentage
+ * (`docs/fuel-norms-plan.md` §2.3).
  *
- * **Версий у настроек нет, и это осознанное исключение** (Р8а): в отличие от самих норм, правка
- * здесь меняет и уже показанные отчёты — граница сезона переставляет ставку, допуск переставляет
- * границу превышения. Поэтому окно говорит об этом прямо и спрашивает подтверждение, а внизу
- * показывает, кто менял в последний раз: другого следа истории у настроек нет.
+ * Settings deliberately have no versions (R8a). Unlike a norm version, a change here rewrites
+ * reports already shown: season boundaries select a different rate and tolerance moves the excess
+ * threshold. The modal therefore states the consequence, asks for confirmation and shows the last
+ * editor—the only history available for these global settings.
  *
- * День-месяц выбирается двумя списками, а не датой: у сезона нет года, и календарь предлагал бы
- * выбрать его — с неизбежным вопросом «а что будет в следующем».
+ * Month and day are separate selects because a season has no year; a date picker would force an
+ * irrelevant year and make next year's behavior ambiguous.
  */
 
 interface Props {
@@ -40,8 +40,9 @@ const MONTHS = Array.from({ length: 12 }, (_, i) => ({
   label: dayjs().month(i).format('MMMM'),
 }));
 
-/** Дней в месяце без года: февраль — 29, потому что сезон високосность не различает. */
-const daysIn = (month: number): number => [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
+/** Days in a yearless month; February allows 29 because season settings do not vary by leap year. */
+const daysIn = (month: number): number =>
+  [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]!;
 
 const pad = (value: number): string => String(value).padStart(2, '0');
 
@@ -73,7 +74,7 @@ export function FuelNormSettingsModal({ open, onCancel, settings }: Props) {
     onSuccess: async () => {
       message.success('Настройки сверки сохранены');
       await qc.invalidateQueries({ queryKey: fuelNormKeys.root });
-      // Сверка считается сервером: без сброса кэша сводка осталась бы с прежним допуском.
+      // Reconciliation is server-derived and otherwise keeps displaying the previous tolerance.
       await qc.invalidateQueries({ queryKey: vehicleReadingKeys.root });
       onCancel();
     },

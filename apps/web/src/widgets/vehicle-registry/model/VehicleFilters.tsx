@@ -9,28 +9,23 @@ import type { BaseParams } from '@shared/lib';
 import type { FilterDefinition } from '@shared/ui';
 
 /**
- * Отбор справочника техники: принадлежность, тип, арендодатель, статус, поиск и архив.
+ * Fleet filters: ownership, type, lessor, status, search and archive.
  *
- * Вынесено из самой вкладки отдельным модулем (приём `OfficeEquipmentFilters`): отборов шесть, и
- * каждый живёт дважды — полосой на десктопе и описанием для шита на телефоне (ADR 0030). Во
- * вкладке при этом остаётся работа с данными: запросы, колонки, форма карточки, мутации и
- * подтверждения.
- *
- * Списки для селектов модуль не запрашивает, а получает готовыми: те же типы и арендодатели стоят
- * в форме карточки, и второй запрос за ними означал бы два ответа на один вопрос. По той же
- * причине готовыми приходят и наборы статусов: у аренды он свой (ADR 0018 §15), и разойтись
- * набору отбора с набором карточки нельзя.
+ * Each filter exists twice—as a desktop control and a phone-sheet definition (ADR 0030)—so both
+ * views are built together here. Lookup options are supplied by the registry query model instead
+ * of fetched again, and status sets are shared with the editor because rental has its own lifecycle
+ * (ADR 0018 §15).
  */
 
-/** Отборы вкладки в параметрах списка; страница и сортировка сюда не заходят. */
+/** Registry filters carried in list params; pagination and sorting are supplied by the base type. */
 export interface VehicleFilterParams {
   ownership?: VehicleOwnership;
   vehicleTypeId?: string;
   lessorId?: string;
   status?: VehicleStatus;
   includeDeleted?: string;
-  // Статус и поиск задаются только панелью над таблицей: продублируй их выпадашкой столбца —
-  // и любая сортировка сбрасывала бы выбранное (в onChange таблицы приходит пустой фильтр).
+  // Status and search exist only in the toolbar. Mirroring them as column filters would make every
+  // sort clear the value because Ant Table reports empty filters for absent column controls.
 }
 
 interface Option {
@@ -41,9 +36,8 @@ interface Option {
 interface Args {
   params: BaseParams & VehicleFilterParams;
   /**
-   * Тот же `setParams` вкладки, а не патч-функция: смена принадлежности читает прежний
-   * `lessorId` из состояния, и делать это она обязана внутри обновления, а не по значению,
-   * прочитанному отрисовкой.
+   * The registry's state setter, not a patch callback: changing ownership must read the current
+   * lessor id inside the state update rather than from a potentially stale render.
    */
   setParams: Dispatch<SetStateAction<BaseParams & VehicleFilterParams>>;
   typeOptions: Option[];
@@ -77,7 +71,7 @@ export function useVehicleFilters({
           setParams((p) => ({
             ...p,
             ownership: v === 'all' ? undefined : (v as VehicleOwnership),
-            // Фильтр по арендодателю осмыслен только внутри аренды.
+            // A lessor filter has meaning only within rental offers.
             lessorId: v === 'rental' ? p.lessorId : undefined,
             page: 1,
           }))
@@ -135,9 +129,9 @@ export function useVehicleFilters({
   );
 
   /**
-   * Те же фильтры описаниями — для шита на телефоне (ADR 0030). Принадлежность на десктопе —
-   * переключатель на три положения; в шите это список с пустым значением «все», потому что
-   * три кнопки во всю ширину заняли бы там целую строку ради одного выбора.
+   * The same filters described for the phone sheet (ADR 0030). Ownership is a three-way desktop
+   * segment but a select with an empty “all” value on phones, where three full-width buttons would
+   * consume an entire row for one choice.
    */
   const mobileFilters: FilterDefinition[] = [
     {
@@ -154,7 +148,7 @@ export function useVehicleFilters({
         setParams((p) => ({
           ...p,
           ownership: v as VehicleOwnership | undefined,
-          // Фильтр по арендодателю осмыслен только внутри аренды.
+          // A lessor filter has meaning only within rental offers.
           lessorId: v === 'rental' ? p.lessorId : undefined,
           page: 1,
         })),

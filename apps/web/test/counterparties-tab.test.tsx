@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { CounterpartyDto, ObjectDto } from '@technic/contracts';
-import { CounterpartiesTab } from '../src/pages/directories/CounterpartiesTab';
+import { CounterpartiesTab } from '@pages/directories';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
 import { json, mockHttp, type HttpMock } from './http';

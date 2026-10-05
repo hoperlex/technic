@@ -96,19 +96,19 @@ const ALLOWED = {
   'pages/vehicle/VehicleRepairModal.tsx':
     'починка истории: отказ относится к трём альтернативным разделам сразу, а не к полю',
   /*
-   * Три окна прицепов и техники — один и тот же вид тоста: **второе изменение в базе, о котором не
-   * просили**, названное уже ПОСЛЕ удавшегося действия (ответ 200 на руках). Пометить в форме
-   * нечего — поля, которое отказало, не существует: сохранение прошло, а прицепы отцепились или
-   * оказались вытеснены по правилам §4.2.3 плана прицепов. Тот же случай, что у смены адреса
-   * учётки и у письма службе выше.
+   * Trailer and vehicle dialogs use the same warning: a successful command caused a second,
+   * unrequested database change. There is no rejected field to mark—the save has already returned
+   * 200, while trailer hitches were released or displaced under trailer-plan §4.2.3.
    *
-   * Молчать нельзя: закрепление живёт в чужой карточке, и о сошедшем прицепе иначе узнают из
-   * жалобы. Показывается такой тост дольше обычного (8 с) — его читают, а не проматывают.
+   * Silence is unsafe because the hitch lives in another card and would otherwise surface only in
+   * a complaint. The toast stays up for eight seconds because it describes an action outcome.
    */
   'pages/directories/TrailerHitchModal.tsx':
     'вытеснение прицепа из слота: словами сервера, после удавшейся привязки',
-  'pages/directories/VehiclesTab.tsx':
-    'списание и архив машины отцепляют её прицепы (§4.2.3): итог действия, а не отказ поля',
+  'features/vehicle-editor/model/useVehicleEditor.tsx':
+    'vehicle retirement or form change releases hitches (§4.2.3): action outcome, not field refusal',
+  'features/vehicle-lifecycle/model/useVehicleLifecycle.ts':
+    'vehicle archival releases hitches (§4.2.3): action outcome, not field refusal',
   'features/vehicle-type-editor/model/useVehicleTypeEditor.tsx':
     'перевод типа на форму № 3 отцепляет прицепы у всех машин типа: итог действия',
   /*

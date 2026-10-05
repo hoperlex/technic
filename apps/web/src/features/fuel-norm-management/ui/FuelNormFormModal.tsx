@@ -16,29 +16,26 @@ import { vehicleReadingKeys } from '@entities/vehicle-reading';
 import { vehiclesApi } from '@entities/vehicle';
 
 /**
- * Версия нормы: машина, дата начала действия, две ставки и единица (план `docs/fuel-norms-plan.md`,
- * §2.2).
+ * A fuel-norm version: vehicle, effective date, two seasonal rates and a unit
+ * (`docs/fuel-norms-plan.md` §2.2).
  *
- * **Дата — главное поле формы, а не реквизит.** Правка ставки заводит НОВУЮ версию, и та действует
- * с указанного дня; прошлые периоды считаются прежней (Р6). Умолчание — начало текущего месяца
- * (Р7): приказ приходит в середине месяца, а действует с его начала, и подставлять сегодняшний
- * день значило бы резать месяц пополам на ровном месте.
+ * The date is the form's primary rule, not metadata. Editing a rate creates a new version from
+ * that day while earlier periods retain the old one (R6). New records default to the month's start
+ * (R7), because an order arriving mid-month normally applies from its first day.
  *
- * **Совпадение даты перезаписывает версию этого дня** (Р7а): человек, поправивший опечатку через
- * час, обязан получить сохранение, а не отказ базы. Форма предупреждает об этом словами, когда
- * дата уже прошла: перезапись прошлой версии меняет уже показанные отчёты.
- *
- * Будущая дата запрещена (Р7): файл обмена возит срез действующего, и версия, заведённая вперёд,
- * вступала бы в силу молча.
+ * Reusing a date replaces that day's version (R7a), so correcting a recent typo succeeds instead
+ * of hitting a uniqueness error. A past replacement can change reports already seen by users, and
+ * the form states that consequence. Future dates are forbidden (R7): exchange exports only the
+ * current snapshot, so a scheduled version would become effective without appearing there.
  */
 
 interface Props {
   open: boolean;
   onCancel: () => void;
   onSaved: () => void;
-  /** Правка заведённой версии; `null` — заведение новой. */
+  /** Existing version to edit; null starts a new one. */
   record?: VehicleFuelNormDto | null;
-  /** Окно открыто из строки машины: выбор техники заперт — спрашивали про неё. */
+  /** A vehicle-row entry locks the picker to the vehicle that opened it. */
   lockedVehicleId?: string | null;
 }
 
@@ -89,8 +86,8 @@ export function FuelNormFormModal({ open, onCancel, onSaved, record, lockedVehic
         note: values.note ?? '',
       };
       /*
-       * Правка версии идёт PATCH'ем только когда дата не менялась. Сменили дату — это уже другая
-       * версия, и заводить её должен POST: он же и перезапишет запись того дня, если она есть.
+       * PATCH applies only while the effective date is unchanged. A different date is a different
+       * version and therefore uses POST, which also replaces an existing version on that day.
        */
       if (record && record.effectiveFrom === body.effectiveFrom) {
         return fuelNormsApi.update(record.id, body);
@@ -100,7 +97,7 @@ export function FuelNormFormModal({ open, onCancel, onSaved, record, lockedVehic
     onSuccess: async () => {
       message.success('Норма сохранена');
       await qc.invalidateQueries({ queryKey: fuelNormKeys.root });
-      // Сводка гаража считает сверку сервером: без сброса её кэша экран показывал бы старые числа.
+      // Garage reconciliation is server-derived and otherwise keeps displaying stale totals.
       await qc.invalidateQueries({ queryKey: vehicleReadingKeys.root });
       onSaved();
     },
@@ -146,8 +143,7 @@ export function FuelNormFormModal({ open, onCancel, onSaved, record, lockedVehic
           <DatePicker
             format="DD.MM.YYYY"
             style={{ width: '100%' }}
-            // Будущее закрыто: срез обмена возит действующее, и версия вперёд вступала бы в силу
-            // молча, без чьего-либо ведома.
+            // Exchange carries only current values; a future version would activate silently.
             disabledDate={(d) => d.isAfter(dayjs(), 'day')}
           />
         </Form.Item>

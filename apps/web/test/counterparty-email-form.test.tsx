@@ -13,7 +13,7 @@ import {
   type CounterpartyFormValues,
   counterpartyCreatePayload,
   counterpartyUpdatePayload,
-} from '../src/pages/directories/CounterpartyFormFields';
+} from '@features/counterparty-editor';
 
 /** Поле сохраняет общий ящик, поэтому проверка обязана сработать до общего тоста API. */
 function FormHarness({

@@ -28,9 +28,9 @@
   [services/readings-export.ts](../../apps/api/src/services/readings-export.ts) (матрица),
   [services/readings-admin-export.ts](../../apps/api/src/services/readings-admin-export.ts) (свод и
   параметры), [defs/fuel-norms.ts](../../apps/api/src/services/directory-transfer/defs/fuel-norms.ts)
-  (обмен); портал — [FuelNormsModal.tsx](../../apps/web/src/pages/directories/FuelNormsModal.tsx),
-  [FuelNormFormModal.tsx](../../apps/web/src/pages/directories/FuelNormFormModal.tsx),
-  [FuelNormSettingsModal.tsx](../../apps/web/src/pages/directories/FuelNormSettingsModal.tsx),
+  (обмен); портал — [FuelNormsModal.tsx](../../apps/web/src/features/fuel-norm-management/ui/FuelNormsModal.tsx),
+  [FuelNormFormModal.tsx](../../apps/web/src/features/fuel-norm-management/ui/FuelNormFormModal.tsx),
+  [FuelNormSettingsModal.tsx](../../apps/web/src/features/fuel-norm-management/ui/FuelNormSettingsModal.tsx),
   [ReadingsStatsTab.tsx](../../apps/web/src/pages/garage/ReadingsStatsTab.tsx),
   [ReadingCardTotals.tsx](../../apps/web/src/pages/garage/ReadingCardTotals.tsx),
   [ReadingCardMonths.tsx](../../apps/web/src/pages/garage/ReadingCardMonths.tsx); тесты —

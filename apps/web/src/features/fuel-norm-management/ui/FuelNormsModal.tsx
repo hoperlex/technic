@@ -12,27 +12,24 @@ import { FuelNormFormModal } from './FuelNormFormModal';
 import { FuelNormSettingsModal } from './FuelNormSettingsModal';
 
 /**
- * Справочник норм расхода топлива — окном из вкладки «Техника» (план `docs/fuel-norms-plan.md`,
- * §2 и §5; приём тот же, что у моделей оргтехники, ADR 0120).
+ * Fuel-norm directory opened as a modal from the fleet registry (`docs/fuel-norms-plan.md` §2, §5;
+ * the same navigation pattern as office-equipment models in ADR 0120).
  *
- * Почему окно, а не вкладка. Норма — не раздел портала, а свойство карточки техники: её заводят,
- * стоя в реестре парка, и читают, разбираясь с одной машиной. Вкладка ради справочника, который
- * открывают из строки, стоила бы места в шапке «Справочников» и увела бы человека от машины.
+ * A norm is a vehicle-card property, not a portal section: users open it while inspecting one
+ * vehicle. A separate tab would consume directory navigation and pull them away from that context.
  *
- * **Окно показывает версии, а не строки.** У машины их столько, сколько было приказов, и это не
- * дубли: правка заводит новую версию, старая остаётся действовать на свои периоды (Р6). Поэтому
- * умолчание — «только действующие»: справочник открывают вопросом «какая норма сейчас», а историю
- * разворачивают переключателем.
+ * Rows are versions, not duplicates. Each order creates a new version while the old one remains
+ * valid for its periods (R6). The default therefore shows current versions; history is explicit.
  *
- * Кнопок обмена файлом здесь нет намеренно (Р21): выгрузка уносит справочник целиком, загрузка
- * меняет сотни строк одним нажатием, и права на это выданы не тем, кто ведёт справочник по строке.
- * Обмен живёт на своей вкладке в «Администрировании» — решение 10 ADR 0073 остаётся в силе.
+ * File exchange is deliberately absent here (R21). Export affects the whole directory and import
+ * changes hundreds of records, under permissions different from row maintenance. That workflow
+ * remains in Administration as required by ADR 0073 decision 10.
  */
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** Окно, открытое из строки реестра, сужено до одной машины: у неё и спрашивали. */
+  /** A row-opened modal is narrowed to the vehicle the user was asking about. */
   vehicleId?: string | null;
   vehicleLabel?: string;
 }
@@ -42,7 +39,7 @@ const SHOWN_DATE = 'DD.MM.YYYY';
 export function FuelNormsModal({ open, onClose, vehicleId = null, vehicleLabel }: Props) {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
-  // Ведение справочника — общим правом модуля (Р19): своего права у норм нет.
+  // Norm maintenance uses the directory-wide write permission (R19), not a separate grant.
   const canWrite = can('directories.write');
   const isMobile = useIsMobile();
   const qc = useQueryClient();
@@ -50,7 +47,7 @@ export function FuelNormsModal({ open, onClose, vehicleId = null, vehicleLabel }
   const [formOpen, setFormOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [record, setRecord] = useState<VehicleFuelNormDto | null>(null);
-  /** История приказов по умолчанию свёрнута: см. шапку файла. */
+  /** Order history starts collapsed; the default answers which norm applies now. */
   const [currentOnly, setCurrentOnly] = useState(true);
 
   const { params, onTableChange } = useListParams<{ sortBy?: string; sortOrder?: 'asc' | 'desc' }>(
@@ -85,9 +82,9 @@ export function FuelNormsModal({ open, onClose, vehicleId = null, vehicleLabel }
   });
 
   /**
-   * Снятие спрашивают подтверждением, и текст у него длиннее обычного не для солидности: снятие
-   * переписывает уже показанные отчёты (смены возвращаются к предыдущей версии) и необратимо —
-   * на ту же дату можно завести новую запись, а снятую вернуть уже нечем (Р7б).
+   * Removal needs an explicit consequence: reports already seen may fall back to the preceding
+   * version, and removal is irreversible. A new version may reuse the date, but the removed record
+   * itself cannot be restored (R7b).
    */
   const confirmRemove = (row: VehicleFuelNormDto) => {
     modal.confirm({
@@ -146,7 +143,7 @@ export function FuelNormsModal({ open, onClose, vehicleId = null, vehicleLabel }
       key: 'fuelType',
       title: 'Топливо',
       width: 110,
-      // Справочно (Р4): в сверке вид топлива не участвует — расход считается в литрах.
+      // Fuel type is descriptive only (R4); reconciliation compares quantities in litres.
       render: (_v, r) => r.fuelType || <Typography.Text type="secondary">—</Typography.Text>,
     },
     ...(canWrite
@@ -208,7 +205,7 @@ export function FuelNormsModal({ open, onClose, vehicleId = null, vehicleLabel }
           </Space>
         ) : null
       }
-      // Тело обязано иметь высоту: `DataTable` меряет контейнер и считает по нему прокрутку.
+      // DataTable measures its container to derive scrolling, so the body needs an explicit height.
       bodyStyle={{
         ...(isMobile ? { height: '100%' } : { height: '70vh' }),
         display: 'flex',
@@ -242,8 +239,8 @@ export function FuelNormsModal({ open, onClose, vehicleId = null, vehicleLabel }
         />
       </div>
 
-      {/* Форма внутри окна списка: antd поднимает z-index вложенного окна по контексту, а соседнее
-          на телефоне оказалось бы под шторкой списка. */}
+      {/* Nest forms under the list modal so Ant raises their z-index; a sibling modal sits behind
+          the full-screen list sheet on phones. */}
       <FuelNormFormModal
         open={formOpen}
         record={record}

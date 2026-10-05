@@ -11,7 +11,7 @@ import { MOSCOW_TZ } from '@shared/config';
  * Those copies are STILL HERE, and they are the reason this module exists rather than proof that
  * the job is done. `formatMoney` is spelled out by hand in at least `entities/mech-request`
  * (`mechMoney`), `entities/service-request/ui/ServiceEstimateTable.tsx` and
- * `pages/directories/vehicleRegistryColumns.tsx` — and the last of the three has already drifted:
+ * `widgets/vehicle-registry/ui/vehicleRegistryColumns.tsx` — and the last of the three has drifted:
  * it prints no kopecks where the rest of the portal prints two. Moving the helper here only made
  * the copies reachable for merging; each merge is its own change, because each one may shift what a
  * screen shows.

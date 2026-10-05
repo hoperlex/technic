@@ -6,7 +6,7 @@ import type {
   WasteTariffDto,
   WasteTypeDto,
 } from '@technic/contracts';
-import { WasteTariffsTab } from '../src/pages/directories/WasteTariffsTab';
+import { WasteTariffsTab } from '@pages/directories';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
 import { json, mockHttp, type HttpMock } from './http';

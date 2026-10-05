@@ -15,7 +15,7 @@ import { emptyList, list } from './factories/common';
 import { maintenanceRecord, maintenanceSummary } from './factories/maintenance';
 import { MOBILE_VIEWPORT } from './viewport';
 import { VehicleMaintenanceBlock } from '../src/features/vehicle-maintenance';
-import { VehiclesTab } from '../src/pages/directories/VehiclesTab';
+import { VehiclesTab } from '@pages/directories';
 import { GaragePage } from '../src/pages/garage';
 
 /**

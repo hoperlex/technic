@@ -22,21 +22,18 @@ import type { ReactNode } from 'react';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 
 /**
- * Колонки реестра техники.
- *
- * Отдельным модулем потому, что состав колонок здесь — не оформление, а правило: переключатель
- * принадлежности убирает неприменимые колонки (у аренды нет госномера и марки, у своей нет цен), а
- * архивная строка меняет весь набор действий. Рядом с формой карточки и мутациями вкладки это
- * правило терялось среди `Form.Item`.
+ * Fleet registry columns. Their shape is a rule rather than decoration: ownership hides fields
+ * that cannot apply (rentals have no registration/model here; owned vehicles have no rates), and
+ * an archived row replaces the complete action set.
  */
 
-/** Деньги в таблице: прочерк вместо нуля — цена не задана, а не «бесплатно». */
+/** A missing rate is a dash, not zero: “not specified” must not read as “free”. */
 const money = (v: number | null) =>
   v == null ? '—' : `${v.toLocaleString('ru-RU', { minimumFractionDigits: 0 })} ₽`;
 
-/** Всё, чем строка таблицы отвечает наружу: вкладка держит и состояние, и сами действия. */
+/** Every action a registry row delegates to its composing features. */
 export interface VehicleColumnsDeps {
-  /** Выбранная принадлежность; пусто — общий список, и тогда колонка принадлежности нужна. */
+  /** Selected ownership; empty means the mixed list needs an ownership column. */
   ownershipFilter: VehicleOwnership | undefined;
   showOwnColumns: boolean;
   showRentalColumns: boolean;
@@ -66,7 +63,7 @@ export function vehicleRegistryColumns({
   onDelete,
 }: VehicleColumnsDeps): TableColumnsType<VehicleDto> {
   return [
-    // Колонку принадлежности показываем только в общем списке: в отфильтрованном она одинакова.
+    // Ownership is useful only in the mixed list; after filtering every row has the same value.
     ...(ownershipFilter
       ? []
       : [
@@ -166,8 +163,8 @@ export function vehicleRegistryColumns({
       dataIndex: 'status',
       width: 160,
       sorter: true,
-      // У предложения с неактивным арендодателем рядом со статусом висит причина, по которой его
-      // нельзя включить, — иначе выключенный вариант в форме выглядел бы поломкой.
+      // State why an inactive lessor blocks activation; otherwise the disabled editor option looks
+      // like a broken control.
       render: (v: VehicleStatus, r: VehicleDto) => {
         const reason = rentalActivationBlockReason(r);
         return (
@@ -182,8 +179,7 @@ export function vehicleRegistryColumns({
         );
       },
     },
-    // Ширина задана явно: в живой ветви теперь четыре кнопки, в архивной — тег и две, и
-    // умолчание в 130 px рвало бы их на две строки.
+    // Live rows have four buttons and archived rows a tag plus two; the old default wrapped them.
     actionsColumn<VehicleDto>((r) =>
       r.deletedAt ? (
         <Space>

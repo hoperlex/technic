@@ -6,8 +6,5 @@
   },
   "rawKeyFiles": 0,
   "antdDeprecated": 17,
-  "maxLines": {
-    "src/pages/directories/CounterpartiesTab.tsx": 439,
-    "src/pages/directories/VehiclesTab.tsx": 619
-  }
+  "maxLines": {}
 }
