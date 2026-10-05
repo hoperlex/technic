@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Tag } from 'antd';
 import {
+  DeleteOutlined,
   EditOutlined,
   EyeOutlined,
   FieldTimeOutlined,
@@ -32,7 +33,12 @@ import type {
 } from '../model/types';
 import { ApprovalCell, StatusCell } from './orderStateCells';
 
-/** Mobile cards expose the same information and commands as desktop rows without a wide table. */
+/**
+ * Phone card of a feed row (ADR 0030). Orders and weeks render their own line sets rather than a
+ * common one: the two documents share only the number and the site. Both sets are concatenated into
+ * one list because a row belongs to exactly one document kind, so the other kind's lines return
+ * null and are skipped.
+ */
 export function vehicleRequestFeedCard({
   actions,
   pending,
@@ -42,6 +48,9 @@ export function vehicleRequestFeedCard({
   pending: VehicleRequestFeedPending;
   rights: VehicleRequestFeedRights;
 }): CardConfig<VehicleRequestFeedRow> {
+  // Order lines answer what was ordered and when, what took it and at what rate. Approval is a
+  // button right in the card: for the construction manager it is the main action of this list, and
+  // hiding it in the action sheet would add two taps to it.
   const orderLines: ((request: VehicleRequestDto) => ReactNode)[] = [
     (request) =>
       `${vehicleClassificationLabel({
@@ -53,8 +62,11 @@ export function vehicleRequestFeedCard({
       request.assignment
         ? `${assignmentTitle(request.assignment)} · ${assignmentRateLabel(request.assignment) || request.assignment.lessorName || 'без ставки'}`
         : null,
-    // Route is both a real link (including Ctrl-click) and an action-sheet item with a larger
-    // touch target. DataTable suppresses the card open gesture when the link itself is activated.
+    // The same route and the same "lost request" warning as the desktop "Маршрут" column. The
+    // number is a real link, not text: the card takes the tap for itself only where no link is
+    // under the finger (opensRow), so one gesture never means two different things. The route is
+    // also duplicated as an action-sheet item because a full-width item is easier to hit than a
+    // number inside a line; the link stays for Ctrl-click and a neighbouring browser tab.
     (request) => {
       const route = request.route;
       if (route) {
@@ -96,7 +108,9 @@ export function vehicleRequestFeedCard({
     (request) => (request.deletedAt ? <Tag>в архиве</Tag> : null),
   ];
 
-  // A composition is summarized instead of listing ten vehicles in a single phone card.
+  // The same lines the weekly request had in its own former list: site, composition in words,
+  // pending approval, cancellation reason and author. The composition is counted, not listed: ten
+  // vehicles on a phone would be a screen of scrolling for one list row.
   const weeklyLines: ((weekly: WeeklyVehicleRequestDto) => ReactNode)[] = [
     (weekly) => weekly.objectName,
     (weekly) => weeklyCountsText(weekly.counts),
@@ -112,6 +126,17 @@ export function vehicleRequestFeedCard({
       icon: <EyeOutlined />,
       onClick: () => actions.openOrder(request),
     };
+    /*
+     * The route is an action-sheet item, not only a link inside a card line: a full-width item is
+     * easier to hit with a finger than a number inside text. The number in the label lets the user
+     * check it is the expected route before tapping.
+     *
+     * The right is asked through the link address (routeLink returns null without it), not through
+     * a separate condition: where the number stays plain text there must be no item either,
+     * otherwise the route window would open where links are not shown. The item lives in every
+     * branch, including the archived one: an archived request still had its route, and "what did it
+     * travel in" is asked about archived requests more often than about live ones.
+     */
     const route = request.route;
     const routeActions: ActionSheetItem[] =
       route && actions.routeLink(route.id)
@@ -139,6 +164,8 @@ export function vehicleRequestFeedCard({
         : [view, ...routeActions];
     }
 
+    // Equipment change has its own right (ADR 0048), so it is offered in the short lessor branch
+    // below as well: a lessor cannot edit the request but swaps its own vehicle.
     const reassign: ActionSheetItem[] = actions.canReassign(request)
       ? [
           {
@@ -149,6 +176,8 @@ export function vehicleRequestFeedCard({
           },
         ]
       : [];
+    // Machinist change sits next to equipment change: the same decision about the request, only
+    // about the person rather than the vehicle.
     const machinist: ActionSheetItem[] = actions.canChangeMachinist(request)
       ? [
           {
@@ -159,6 +188,8 @@ export function vehicleRequestFeedCard({
           },
         ]
       : [];
+    // History repair sits next to machinist change: the same assignment history, but about its
+    // gaps.
     const repair: ActionSheetItem[] = actions.canRepairHistory(request)
       ? [
           {
@@ -169,6 +200,8 @@ export function vehicleRequestFeedCard({
           },
         ]
       : [];
+    // A role without the right to manage requests (an observer, a lessor) gets no edit/delete
+    // items: a disabled item reads as "not now", while for this role it is "never".
     if (!rights.canEdit && !rights.canDelete) {
       return [view, ...routeActions, ...reassign, ...machinist, ...repair];
     }
@@ -215,6 +248,7 @@ export function vehicleRequestFeedCard({
       {
         key: 'delete',
         label: request.status === 'new' ? 'Удалить' : 'Переместить в архив',
+        icon: <DeleteOutlined />,
         danger: true,
         disabled: !actions.canModify(request),
         onClick: () => actions.remove(request),
@@ -238,6 +272,9 @@ export function vehicleRequestFeedCard({
         />
       );
     },
+    // The department is shown by the same code as in the desktop column: there is no hover hint on
+    // a phone, but one customer must never get two different captions. For a week the primary line
+    // is the week itself, since that is what the document is named by.
     primary: (row) =>
       row.kind === 'weekly' ? row.weekly.weekLabel : requestCustomerLabel(row.order).text,
     lines: [

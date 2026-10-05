@@ -22,6 +22,7 @@ export function vehicleRequestFeedActionsColumn({
   actions: VehicleRequestFeedActions;
   rights: VehicleRequestFeedRights;
 }): TableColumnType<VehicleRequestFeedRow> {
+  // One equipment-change button for both action branches: the lessor's short branch has it too.
   const reassignButton = (request: VehicleRequestDto) => (
     <Tooltip title="Сменить технику">
       <Button
@@ -34,7 +35,8 @@ export function vehicleRequestFeedActionsColumn({
   );
 
   return actionsColumn<VehicleRequestFeedRow>((row) => {
-    // Weekly decisions require the full composition, so the feed exposes only its page.
+    // A weekly row has exactly one action, open the week: its composition is edited, approved and
+    // cancelled on its own page, where the user sees what exactly is being approved.
     if (row.kind === 'weekly') {
       return (
         <RowActionButton
@@ -46,6 +48,8 @@ export function vehicleRequestFeedActionsColumn({
     }
 
     const request = row.order;
+    // The card opens for an archived order too: what was in it and why can only be understood
+    // there, since the table row has neither history nor full addresses.
     const view = (
       <Tooltip title="Открыть карточку">
         <Button
@@ -76,8 +80,10 @@ export function vehicleRequestFeedActionsColumn({
       );
     }
 
-    // Permanently unavailable commands are omitted. Reassignment has its own permission and may
-    // remain available to a lessor who cannot edit the request itself.
+    // A role without the right to manage requests (an observer) sees no edit/delete buttons: a
+    // disabled button reads as "not now", while for this role it is "never". Equipment change has
+    // its own right (ADR 0048) and is asked separately: a lessor cannot edit the request but swaps
+    // its own vehicle.
     if (!rights.canEdit && !rights.canDelete) {
       return actions.canReassign(request) ? (
         <Space size={4}>
@@ -94,7 +100,9 @@ export function vehicleRequestFeedActionsColumn({
       <Space size={4}>
         {view}
         {actions.canReassign(request) && reassignButton(request)}
-        {/* A pending early-end decision opens the card so its reason is read before approval. */}
+        {/* Early end (ADR 0044): while a request awaits approval the button leads to the card,
+            because the decision is made after reading the reason, and the reason is there. Without
+            a pending request the shortening is requested right from here. */}
         {actions.canDecideEarlyEnd(request) ? (
           <Tooltip title="Ждёт визы на досрочное завершение">
             <Button

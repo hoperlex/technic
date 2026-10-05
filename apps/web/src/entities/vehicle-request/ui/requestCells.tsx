@@ -8,8 +8,15 @@ import { formatDateOnly } from '@shared/lib';
 import { ExpandableCell } from '@shared/ui';
 
 /**
- * Assigned equipment uses the same two-line shell in the live feed and history. The second line
- * remains a consumer callback because the live feed shows the rate while history shows the lessor.
+ * Assigned equipment in a list row (ADR 0027): what took the request, then the note the column is
+ * read for. The live feed and the history journal share this two-line shell so the "Техника"
+ * column keeps the same row height on every tab; the second line remains a consumer callback
+ * because the live feed shows the rate ("what did it cost") while history shows the lessor.
+ *
+ * The cell collapses (ExpandableCell) not for the assignment itself (two lines, nothing to hide)
+ * but for the weekly composition that fills the same column with a line per vehicle. A request
+ * without an assignment is a bare dash: there is nothing to collapse, and measuring would run for
+ * every "Новая" request in the list.
  */
 export function VehicleRequestAssignmentCell({
   assignment,
@@ -32,8 +39,11 @@ export function VehicleRequestAssignmentCell({
 }
 
 /**
- * A pending early-end request must stay visible beside the unchanged term; an approved request
- * explains why the visible term is shorter. Rejected requests belong to history, not the feed.
+ * Early end in a list row (ADR 0044): a pending request in orange, an approved shortening as a grey
+ * "срок сокращён с …" note. A pending request is shown wherever the request is visible: until
+ * approval the row keeps the old term, and without the tag the site would learn about the
+ * equipment leaving on the day it leaves. A rejected request is not shown: the request lives by
+ * the ordered term, and the explanation is in the card.
  */
 export function VehicleRequestEarlyEndTag({
   earlyEnd,

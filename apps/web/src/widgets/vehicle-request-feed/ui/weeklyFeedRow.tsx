@@ -8,9 +8,17 @@ import {
 import { formatDateOnly, formatDateTime } from '@shared/lib';
 import { ExpandableCell } from '@shared/ui';
 
+/*
+ * Weekly-request cells of the common vehicle feed. A separate module rather than branches inside
+ * the columns: everything a weekly row differs in is gathered here, exactly as many differences as
+ * the document has own fields. There is deliberately no document-kind tag: the "НЗ-12" number
+ * names the document already, and the vehicle type column stays empty for a week because a weekly
+ * document has no classifier position.
+ */
+
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
-/** A composition item names its source/vehicle, decision and optional resulting date. */
+/** One composition item as a phrase: whose unit, what was decided about it and until when. */
 function itemLine(item: WeeklyRequestItemDto): string {
   const vehicle =
     item.currentVehicleLabel ??
@@ -19,8 +27,9 @@ function itemLine(item: WeeklyRequestItemDto): string {
       categoryName: item.vehicleCategoryName,
     });
   const head = [item.sourceDisplayNumber, vehicle].filter(Boolean).join(' · ');
-  // Leave rows have no date because the source order already owns it; inventing one here would
-  // make the weekly document appear to have decided more than it actually did.
+  // Extension ("остаётся до 23.08") and a new unit (term inside the week) carry a date; a leaving
+  // unit does not, because the source order already owns that date. Repeating it here would make
+  // the weekly document appear to have decided more than it actually did.
   const tail = item.dateTo
     ? `${weeklyItemKindLabels[item.kind]} до ${formatDateOnly(item.dateTo)}`
     : weeklyItemKindLabels[item.kind];
@@ -28,8 +37,14 @@ function itemLine(item: WeeklyRequestItemDto): string {
 }
 
 /**
- * A weekly document can contain ten vehicles, while a regular assignment contains two lines.
- * ExpandableCell keeps both document kinds in the same row-height contract.
+ * The "Техника" column of a weekly row: the whole composition. A weekly document can contain ten
+ * vehicles, while a regular assignment has two lines; ExpandableCell keeps both document kinds in
+ * the same row-height contract. Collapsed it shows two units, enough to recognise the week, and
+ * expanding reveals the composition without opening the page.
+ *
+ * The composition arrives from the server already narrowed to the account's scope (a lessor sees
+ * only its own lines, and counts are computed over them too), so there is no filter here: a second
+ * place holding the same condition would drift away from the first.
  */
 export function WeeklyCompositionCell({ weekly }: { weekly: WeeklyVehicleRequestDto }) {
   if (weekly.items.length === 0) return dash;
@@ -44,7 +59,11 @@ export function WeeklyCompositionCell({ weekly }: { weekly: WeeklyVehicleRequest
   );
 }
 
-/** Only newly requested vehicles carry their own on-site contact in a weekly document. */
+/**
+ * Only "нужна дополнительно" (new) items carry their own on-site contact, like an ordinary order.
+ * Extension and leaving items have none: their contact stayed in the order itself, and showing it
+ * here would duplicate someone else's field.
+ */
 export function WeeklyContactsCell({ weekly }: { weekly: WeeklyVehicleRequestDto }) {
   const contacts = weekly.items.filter(
     (item) => item.kind === 'new' && item.responsibleName.trim(),
@@ -65,8 +84,11 @@ export function WeeklyContactsCell({ weekly }: { weekly: WeeklyVehicleRequestDto
 }
 
 /**
- * Weekly approval is deliberately read-only in the feed: approving it also moves order terms and
- * issues forms, so the user must review the complete composition on the weekly page first.
+ * Weekly approval sits in the same column as order approval but is deliberately read-only in the
+ * feed, even though an order has a button: approving a week moves order terms and issues forms in
+ * the same transaction (docs/adr/0085-weekly-vehicle-request.md, Р6), so approving from a list
+ * row would apply a document without seeing the composition being applied. The decision is made
+ * on the weekly page.
  */
 export function WeeklyApprovalCell({ weekly }: { weekly: WeeklyVehicleRequestDto }) {
   if (weekly.status === 'pending') {

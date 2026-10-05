@@ -56,6 +56,10 @@ export interface VehicleRequestFeedActions {
   repairHistory: (request: SpecialEquipmentRequestDto) => void;
   requestEarlyEnd: (request: SpecialEquipmentRequestDto) => void;
   restore: (request: VehicleRequestDto) => void;
+  /**
+   * Route address, or null when the account may not open routes. The null doubles as the right:
+   * where the number stays text there must be no route action either.
+   */
   routeLink: (routeId: string) => string | null;
 }
 
@@ -91,9 +95,15 @@ export interface VehicleRequestFeedList {
 }
 
 export interface VehicleRequestFeedSummary {
+  /** Orders without approval: they never move past "Новая", which statuses hide (ADR 0025). */
   awaitingApproval: number;
   confirmed: number;
   new: number;
+  /**
+   * Weekly requests awaiting approval, from the feed response (weeklyPendingCount). Counted over
+   * the account's scope, not over the feed filters: it is about pending work, not about the
+   * current page of results (docs/adr/0085-weekly-vehicle-request.md, Р6).
+   */
   weeklyPending: number;
 }
 

@@ -109,6 +109,21 @@ describe('телефон: рейс из карточки заявки', () => {
     fireEvent.click(screen.getByText('Открыть маршрут Р-12'));
     expect(openRoute).toHaveBeenCalledWith('route-1');
   });
+
+  /*
+   * Пункт удаления держит свой значок, как и в колонке «Действия» на десктопе: при выносе ленты в
+   * виджет он его потерял, и опасный пункт шита оказался единственным без иконки.
+   */
+  it('пункт удаления в шите действий идёт со значком', async () => {
+    mockHttp(FEED_ROUTES);
+    renderWithUser(<VehicleRequestsTab />, { viewport: MOBILE_VIEWPORT });
+
+    expect(await screen.findByText('Т-42')).toBeDefined();
+    openActions();
+
+    const remove = screen.getByRole('button', { name: /Переместить в архив/ });
+    expect(remove.querySelector('.anticon-delete')).not.toBeNull();
+  });
 });
 
 /** Два рейса дня и заказ на площадке рядом: пункты положены только рейсам, и обоим. */

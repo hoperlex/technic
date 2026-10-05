@@ -4,7 +4,15 @@ import { requestContacts } from '@entities/vehicle-request';
 import { PhoneLink } from '@entities/user-account';
 import { ExpandableCell } from '@shared/ui';
 
-/** The feed turns entity contact data into direct call targets without coupling two entities. */
+/**
+ * Contacts in a list row: role with name, then address and phone. It answers "whom to call and
+ * where to go", the second question to the request list after the request itself; before this
+ * column the answer cost opening every request card. The feed turns entity contact data into
+ * call targets without coupling the vehicle-request and user-account entities.
+ *
+ * The cell collapses (ExpandableCell): freight has two contacts with long addresses, which would
+ * stretch every list row to five or six lines.
+ */
 export function RequestContactsCell({ request }: { request: VehicleRequestDto }) {
   const contacts = requestContacts(request);
   if (contacts.length === 0) return <Typography.Text type="secondary">—</Typography.Text>;
@@ -25,6 +33,7 @@ export function RequestContactsCell({ request }: { request: VehicleRequestDto })
               </Typography.Text>
             )}
             {contact.address && contact.phone ? ' · ' : null}
+            {/* The number is a tel: link because a list contact is for calling (ADR 0066). */}
             {contact.phone && <PhoneLink phone={contact.phone} />}
           </div>
         </div>

@@ -16,7 +16,12 @@ function plural(count: number, one: string, few: string, many: string): string {
   return many;
 }
 
-/** A compact composition label shared by the feed card and the weekly request page. */
+/**
+ * Composition total in words, "8 единиц: 5 продлений, 2 новых, 1 уезжает"
+ * (docs/weekly-vehicle-request-plan.md, §5 step 3), shared by the feed card and the weekly request
+ * page. Empty item kinds are not listed: "0 новых" answers a question nobody asked and lengthens a
+ * line that is read at a glance.
+ */
 export function weeklyCountsText(counts: WeeklyItemCounts): string {
   const total = counts.extend + counts.new + counts.leave;
   if (total === 0) return 'Состав пуст';

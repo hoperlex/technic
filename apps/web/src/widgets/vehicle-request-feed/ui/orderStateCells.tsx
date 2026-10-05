@@ -18,8 +18,11 @@ import { formatDateTime, useIsMobile } from '@shared/lib';
 import { ActionSheet } from '@shared/ui';
 
 /**
- * The live feed is the only list where status and approval are commands rather than labels.
- * Mutation ownership stays in the page; these cells expose only the requested next value.
+ * The two cells that manage a request right from its list row: status (ADR 0021) and the
+ * construction manager's approval (ADR 0025). The live feed is the only list where they are
+ * commands rather than labels: the closed-requests journal has nothing to manage, and the
+ * "На объекте" view only reads. Mutation ownership stays in the page; these cells expose only the
+ * requested next value.
  */
 export function StatusCell({
   status,
@@ -31,7 +34,9 @@ export function StatusCell({
 }: {
   status: RequestStatus;
   deleted: boolean;
+  /** Construction manager's approval: without it the request is not taken into work (ADR 0025). */
   approved: boolean;
+  /** Shown as a tooltip on the tag: the table has no column for it. */
   cancelReason?: string | null;
   pending: boolean;
   onChange: (status: RequestStatus) => void;
@@ -39,10 +44,13 @@ export function StatusCell({
   const { user } = useAuth();
   const isMobile = useIsMobile();
   const [sheetOpen, setSheetOpen] = useState(false);
-  // The contracts predicate is the single source for role/status transitions and the approval gate.
+  // The contracts predicate is the single source for role/status transitions and the approval gate:
+  // the linear cycle is for request-managing roles, rolling back closed requests is admin-only, and
+  // "В работе" before approval is offered to nobody because the server would reject it.
   const transitions = user ? allowedVehicleRequestTransitions(status, user, approved) : [];
   const plain = <Tag color={requestStatusColors[status]}>{requestStatusLabels[status]}</Tag>;
-  // Mobile cards print the cancellation reason as a line because hover tooltips do not exist there.
+  // Mobile cards print the cancellation reason as a line (ADR 0030) because a tooltip does not open
+  // on tap.
   const tag =
     cancelReason && !isMobile ? (
       <Tooltip title={`Причина отмены: ${cancelReason}`}>{plain}</Tooltip>
@@ -51,7 +59,8 @@ export function StatusCell({
     );
   if (deleted || transitions.length === 0) return tag;
 
-  // A bottom sheet keeps every target under the thumb and stops the card's own open gesture.
+  // On a phone transitions are a bottom sheet: a dropdown opens past the finger, and tapping the
+  // tag must not also open the request card (hence stopPropagation below).
   if (isMobile) {
     return (
       <>
@@ -101,7 +110,8 @@ export function StatusCell({
 /**
  * Approval is editable only for approvers and only before work starts (ADR 0025). Every other
  * role/status sees a badge, so a permanently unavailable command is not misread as temporarily
- * disabled.
+ * disabled. The state is read by colour (green approved, orange waiting), not by text: in the list
+ * it is the first thing both the dispatcher and the construction manager look at.
  */
 export function ApprovalCell({
   status,
@@ -118,6 +128,10 @@ export function ApprovalCell({
   approved: boolean;
   approvedByName: string | null;
   approvedAt: string | null;
+  /**
+   * The role's approval right only. A request on someone else's object is cut off by the server
+   * itself (assertRequestScope), so the cell does not repeat that check.
+   */
   canApprove: boolean;
   pending: boolean;
   onChange: (approved: boolean) => void;
@@ -150,6 +164,7 @@ export function ApprovalCell({
       variant="solid"
       loading={pending}
       icon={approved ? <CheckOutlined /> : undefined}
+      // Approval sits inside a clickable row/card: pressing it must not also open the request card.
       onClick={(event) => {
         event.stopPropagation();
         onChange(!approved);

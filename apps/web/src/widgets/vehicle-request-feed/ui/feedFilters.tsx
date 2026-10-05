@@ -25,8 +25,8 @@ export function VehicleRequestFeedFilterBar({ filters }: { filters: FeedFilters 
         value={filters.documentTypeValue}
         onChange={filters.onDocumentTypeChange}
       />
-      {/* A week has meaning only for weekly documents; retaining a hidden value would silently
-          exclude every regular order after the document type changes. */}
+      {/* The week filter belongs to one document kind and is shown only when that kind is
+          selected: an order has no week at all, so a set week would cut off every order. */}
       {filters.kind === 'weekly' && (
         <Select
           allowClear
@@ -54,9 +54,14 @@ export function VehicleRequestFeedFilterBar({ filters }: { filters: FeedFilters 
         onChange={filters.onApprovalChange}
       />
       {/* Customer, classification and assigned-vehicle selectors keep their domain hooks in the
-          page; the widget owns where their desktop and mobile representations are composed. */}
+          page; the widget owns where their desktop and mobile representations are composed.
+          Customer is the same picker as in the form (docs/department-requests-plan.md, Р9): sites
+          and departments in one field. There are never two customer filters side by side: a
+          request has one customer, and the second filter would always yield nothing. */}
       {filters.customerControls}
+      {/* Ordered equipment: a whole type or one of its categories (ADR 0028). */}
       {filters.classificationControls}
+      {/* Assigned vehicle (ADR 0098): requests closed with this fleet unit. */}
       {filters.vehicleControls}
       <Input.Search
         allowClear
@@ -68,6 +73,7 @@ export function VehicleRequestFeedFilterBar({ filters }: { filters: FeedFilters 
   );
 }
 
+/** The same filters as definitions for the phone filter sheet (ADR 0030). */
 export function vehicleRequestFeedMobileFilters(filters: FeedFilters): FilterDefinition[] {
   return [
     {
@@ -79,6 +85,8 @@ export function vehicleRequestFeedMobileFilters(filters: FeedFilters): FilterDef
       placeholder: 'Все типы заявок',
       onChange: filters.onDocumentTypeChange,
     },
+    // Week only for the selected document kind, as in the desktop bar: an order has no week, and
+    // a set week filter would cut off every order.
     ...(filters.kind === 'weekly'
       ? [
           {
@@ -110,6 +118,8 @@ export function vehicleRequestFeedMobileFilters(filters: FeedFilters): FilterDef
       placeholder: 'Любое согласование',
       onChange: filters.onApprovalChange,
     },
+    // The same customer picker as the desktop bar (Р9): a choice clears the other half of the
+    // object/department pair here too.
     filters.customerMobileFilter,
     filters.classificationMobileFilter,
     filters.vehicleMobileFilter,
