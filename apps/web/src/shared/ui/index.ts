@@ -4,6 +4,7 @@
  * changing their callers.
  */
 export * from './ActionSheet';
+export * from './ActiveWindowContent';
 export * from './actionMenu';
 export * from './AutoSelect';
 export * from './AsyncContent';

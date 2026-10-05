@@ -73,10 +73,12 @@ function renderLayout(viewport: Viewport = DESKTOP_VIEWPORT) {
   );
 }
 
-/** Окно открывается только нажатием — до него в разметке нет ни ссылок, ни номера. */
-function openSupport() {
+/** The shell opens immediately; its links and phone arrive with the deferred body. */
+async function openSupport() {
   fireEvent.click(screen.getByText('Техподдержка'));
-  return screen.getByRole('dialog');
+  const dialog = screen.getByRole('dialog');
+  await within(dialog).findByRole('link', { name: /Написать в Telegram/ });
+  return dialog;
 }
 
 describe('место служебных пунктов', () => {
@@ -116,9 +118,9 @@ describe('место служебных пунктов', () => {
 });
 
 describe('окно с контактами', () => {
-  it('даёт три способа связи, и все три ведут по своим адресам', () => {
+  it('даёт три способа связи, и все три ведут по своим адресам', async () => {
     renderLayout();
-    const dialog = openSupport();
+    const dialog = await openSupport();
 
     const links = within(dialog).getAllByRole('link');
     const hrefs = links.map((el) => el.getAttribute('href'));
@@ -126,9 +128,9 @@ describe('окно с контактами', () => {
     expect(SUPPORT_TELEGRAM_URL).toContain(SUPPORT_PHONE);
   });
 
-  it('номер показан в едином формате портала (ADR 0066)', () => {
+  it('номер показан в едином формате портала (ADR 0066)', async () => {
     renderLayout();
-    const dialog = openSupport();
+    const dialog = await openSupport();
     // Тот же вид, что в карточке учётки и в путевом листе: второе написание номера завелось бы
     // ровно с такого экрана, где его набрали руками.
     expect(within(dialog).getByText(formatPhone(SUPPORT_PHONE))).toBeDefined();

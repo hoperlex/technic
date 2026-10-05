@@ -1,61 +1,54 @@
-import { Button, Space } from 'antd';
+import { lazy } from 'react';
+import { Button } from 'antd';
 import type { ServiceRequestDto } from '@technic/contracts';
-import { ServiceRequestContext } from '@entities/service-request';
-import { ViewModal } from '@shared/ui';
-import { useServiceChatFeed } from '../model/useServiceChatFeed';
-import { ServiceChatComposer } from './ServiceChatComposer';
-import { ServiceChatFeed } from './ServiceChatFeed';
+import { ActiveWindowContent, AsyncContent, ViewModal, WindowActivityScope } from '@shared/ui';
+
+const ServiceChatBody = lazy(() =>
+  import('./ServiceChatBody').then((module) => ({ default: module.ServiceChatBody })),
+);
 
 /**
- * Тело окна — отдельным компонентом, потому что в нём живут запросы, опрос и курсор прочтения.
- * Окно `destroyOnHidden`, поэтому закрытие размонтирует тело: у следующей заявки лента, граница
- * «Новых» и подтверждённый курсор начинаются заново, а не достаются ей от предыдущей.
- */
-function ServiceChatBody({ request }: { request: ServiceRequestDto }) {
-  const feed = useServiceChatFeed(request.id);
-  return (
-    <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-      {/* Шапка та же, что у окон действий (Р57): решение принимает и тот, кто пришёл по ссылке из
-          письма, — он не помнит, что за заявка, а спорит в ней о конкретном аппарате. */}
-      <ServiceRequestContext request={request} />
-      <ServiceChatFeed feed={feed} request={request} />
-      <ServiceChatComposer request={request} onSent={feed.append} />
-    </Space>
-  );
-}
-
-/**
- * Обсуждение заявки на обслуживание (ADR 0141) — лента реплик отдельным окном.
+ * Service-request discussion (ADR 0141) is a message feed in a separate window.
  *
- * Окном, а не секцией карточки: карточка отвечает на вопрос «что за заявка», и лента, которая за
- * месяц вырастает в полсотни строк, вытеснила бы из неё ответ. Вызванное из карточки, окно
- * рендерится ВНУТРИ неё (ADR 0140) — иначе оно делит слой с карточкой и прячется под ней.
+ * The card answers "what is this request"; a discussion growing to fifty messages in a month
+ * would displace that answer. When opened from the card, this window must render INSIDE it
+ * (ADR 0140), otherwise it shares the card's layer and can disappear underneath it.
  *
- * Адресат здесь — пометка, а не ограничение видимости (решение 2 ADR): текст реплики видят все,
- * кому видна заявка, и окно не делает вид, что что-то прячет.
+ * Addressees are labels, not visibility restrictions (decision 2): everyone who sees the request
+ * can read its messages. The window must not imply privacy that the server does not provide.
+ * Keep this shell synchronous for focus and closing while the feed loads; the shell's unread
+ * counter uses this same public feature entry but must not download the feed before opening it.
  */
 export function ServiceChatModal({
   request,
   onClose,
 }: {
-  /** `null` — окно закрыто. */
+  /** null means the window is closed. */
   request: ServiceRequestDto | null;
   onClose: () => void;
 }) {
   return (
-    <ViewModal
-      title={request ? `Обсуждение ${request.displayNumber}` : 'Обсуждение'}
-      open={!!request}
-      onClose={onClose}
-      width={720}
-      destroyOnHidden
-      footer={[
-        <Button key="close" onClick={onClose}>
-          Закрыть
-        </Button>,
-      ]}
-    >
-      {request && <ServiceChatBody request={request} />}
-    </ViewModal>
+    <WindowActivityScope open={!!request}>
+      <ViewModal
+        title={request ? `Обсуждение ${request.displayNumber}` : 'Обсуждение'}
+        open={!!request}
+        onClose={onClose}
+        width={720}
+        destroyOnHidden
+        footer={[
+          <Button key="close" onClick={onClose}>
+            Закрыть
+          </Button>,
+        ]}
+      >
+        <ActiveWindowContent>
+          {request && (
+            <AsyncContent>
+              <ServiceChatBody request={request} />
+            </AsyncContent>
+          )}
+        </ActiveWindowContent>
+      </ViewModal>
+    </WindowActivityScope>
   );
 }
