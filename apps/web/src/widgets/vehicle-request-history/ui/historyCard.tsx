@@ -14,7 +14,10 @@ import { formatDate, formatMoney } from '@shared/lib';
 import type { CardConfig } from '@shared/ui';
 import { historyTerm } from './historyTerm';
 
-/** Mobile card for the closed-request journal. */
+/**
+ * Journal row on a phone (ADR 0030): how the request ended and what it cost come first, since those
+ * two numbers are why the journal is opened. Term, customer, vehicle and both signatures follow.
+ */
 export function historyCard(
   onOpen: (request: VehicleRequestDto) => void,
 ): CardConfig<VehicleRequestDto> {

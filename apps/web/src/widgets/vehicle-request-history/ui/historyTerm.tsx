@@ -3,7 +3,7 @@ import type { VehicleRequestDto } from '@technic/contracts';
 import { formatDateTimeMaybe } from '@entities/request';
 import { calendarDayCount, formatDateOnly } from '@shared/lib';
 
-/** Show the work period for equipment and the submission moment for freight. */
+/** Work term: the period with the ordered day count for equipment, the delivery date for freight. */
 export function historyTerm(request: VehicleRequestDto) {
   if (request.requestType !== 'special_equipment') {
     return <div>{formatDateTimeMaybe(request.scheduledAt, request.scheduledTimeUnspecified)}</div>;

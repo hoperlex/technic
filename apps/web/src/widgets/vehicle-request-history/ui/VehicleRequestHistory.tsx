@@ -34,9 +34,12 @@ import { historyColumns } from './historyColumns';
 interface HistoryParams {
   requestType?: string;
   status?: string;
+  /** Request customer (ADR 0040): the "Object/department" picker fills exactly one of the two. */
   objectId?: string;
   departmentId?: string;
+  /** Ordered equipment (ADR 0028) as a set: t<uuid> is a whole type, c<uuid> one of its categories. */
   classifications?: string;
+  /** The vehicle that closed the request (ADR 0098), next to "rented from whom". */
   vehicleId?: string;
   lessorId?: string;
   num?: number;
@@ -44,7 +47,19 @@ interface HistoryParams {
   dateTo?: string;
 }
 
-/** Closed vehicle-request journal with desktop table and mobile cards. */
+/**
+ * Journal of closed vehicle orders (ADR 0029). The first tab answers "what is in work now"; this one
+ * answers the later questions: when and for which site equipment was taken, for how long, who
+ * approved the order, which lessor it was rented from and what it cost.
+ *
+ * So a journal row is not a request-list row: instead of status and approval buttons it carries the
+ * completion fact (worked amount and cost) and both names, the one who approved the order and the
+ * one who assigned the vehicle. Open requests are not here: while a request is run it has no
+ * outcome, and each request's event chronology lives in its card (ADR 0015).
+ *
+ * The card itself is injected (renderRequest) because the page adapter binds it to the work-day tab
+ * that still lives in pages/vehicle.
+ */
 export function VehicleRequestHistory({
   renderRequest,
 }: {
@@ -52,8 +67,14 @@ export function VehicleRequestHistory({
 }) {
   const { user } = useAuth();
   const customerDefaults = useRequestCustomerDefaults();
+  // A lessor sees only its own requests (ADR 0038): the "rented from whom" filter would repeat its
+  // single option, and the list of other lessors is none of its business.
   const isLessor = actsForCounterparty(user, 'vehicle_lessor');
   const { params, setParams, setSort, onTableChange } = useListParams<HistoryParams>(
+    // The default is the account's predetermined customer: the object of an object role (ADR 0039)
+    // or the department of a department role (ADR 0040), and nothing for a department with sites
+    // (ADR 0201). The server returns only the caller's scope anyway; the journal just does not make
+    // people pick what is already decided.
     {
       objectId: customerDefaults.objectId,
       departmentId: customerDefaults.departmentId,
@@ -67,11 +88,23 @@ export function VehicleRequestHistory({
     classifications: params.classifications,
     onChange: applyFilter,
   });
+  // "Which vehicle" is a question separate from "rented from whom" (the lessor filter below): one
+  // unit is rented from one lessor, and one lessor rents out different units (ADR 0098).
   const vehicleFilter = useVehicleFilter({ vehicleId: params.vehicleId, onChange: applyFilter });
+  /*
+   * The "Object/department" picker replaced the former object filter
+   * (docs/department-requests-plan.md, R9), using the module-wide filter: closed department
+   * requests sit in the journal alongside object ones, and the journal had no second axis at all.
+   * The options are computed by the same hook as the form, by the account's axis; a reader without
+   * an axis of their own (observer, lessor) sees both groups, which is not an access extension: the
+   * server narrows the result, not the filter.
+   */
   const customerFilter = useRequestCustomerFilter({
     objectId: params.objectId,
     departmentId: params.departmentId,
     onChange: applyFilter,
+    // Longer than the shared label: next to the request-type and vehicle filters a short
+    // "Customer" would get lost.
     label: 'Объект/отдел',
     placeholder: 'Все объекты и отделы',
   });
@@ -80,12 +113,16 @@ export function VehicleRequestHistory({
     queryKey: vehicleRequestKeys.closedList(params),
     queryFn: () => vehicleRequestsApi.historyList(params),
   });
+  // The summary uses the same filters as the table: a total that is not about what the person sees
+  // misleads more surely than no total at all.
   const { data: summary } = useQuery({
     queryKey: vehicleRequestKeys.closedSummary(params),
     queryFn: () => vehicleRequestsApi.historySummary(params),
   });
 
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
+  // A closed request named in the URL: links from a route's composition or the waybill journal lead
+  // here, because the request list no longer holds a closed request (ADR 0029).
   const opened = useOpenedRecord<VehicleRequestDto>({
     active: useActiveTabKey() === 'history',
     queryKey: (id) => vehicleRequestKeys.detail(id),
@@ -102,6 +139,8 @@ export function VehicleRequestHistory({
       value: (
         <Space size={6}>
           <span>{formatMoney(summary?.totalCost ?? 0)}</span>
+          {/* Without this caveat the total reads as "this is all we spent", while part of the work
+              is closed with own vehicles that are not counted in money. */}
           {!!summary?.withoutCost && (
             <Tooltip
               title={`Выполненных заявок без суммы: ${summary.withoutCost}. Своя техника без ставки либо закрытие до появления учёта стоимости`}
@@ -140,8 +179,12 @@ export function VehicleRequestHistory({
         value={params.status as RequestStatus | undefined}
         onChange={(value: RequestStatus | undefined) => applyFilter({ status: value })}
       />
+      {/* An empty filter value means "all", so the field does not pre-fill a single option by
+          itself: the default comes from the pair above. */}
       {customerFilter.controls}
+      {/* Ordered equipment: a whole type or one of its categories (ADR 0028). */}
       {classificationFilter.controls}
+      {/* The vehicle that closed the request (ADR 0098). */}
       {vehicleFilter.controls}
       {!isLessor && (
         <Select
@@ -155,6 +198,8 @@ export function VehicleRequestHistory({
           onChange={(value: string | undefined) => applyFilter({ lessorId: value })}
         />
       )}
+      {/* The period is by work term: a monthly journal means "what worked this month", not "what
+          got closed in it". */}
       <DatePicker.RangePicker
         format="DD.MM.YYYY"
         style={{ width: 250 }}
@@ -179,6 +224,7 @@ export function VehicleRequestHistory({
     </Space>
   );
 
+  // The same filters as descriptions for the phone filter sheet (ADR 0030).
   const mobileFilters: FilterDefinition[] = [
     {
       kind: 'select',
@@ -221,6 +267,7 @@ export function VehicleRequestHistory({
           },
         ]),
     {
+      // By work term, as on the desktop panel.
       kind: 'dateRange',
       key: 'period',
       label: 'Период работ',
@@ -251,6 +298,7 @@ export function VehicleRequestHistory({
         },
       }}
     >
+      {/* The summary sits at tab level above the filters: it is about the whole journal. */}
       <TabsExtra tabKey="history">
         <SummaryBar title="За период" items={summaryItems} />
       </TabsExtra>

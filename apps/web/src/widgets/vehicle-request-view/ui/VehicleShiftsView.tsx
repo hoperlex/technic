@@ -23,6 +23,8 @@ const columns: TableColumnType<VehicleRequestShiftDto>[] = [
     key: 'machineHours',
     title: 'Моточасы',
     width: 110,
+    // An unfilled day and an idle day read differently: the first has no hours at all, the second
+    // has an honest zero with an explanation next to it.
     render: (_value, shift) =>
       shift.filledAt ? workedAmountLabel('hours', shift.machineHours) : dash,
   },
@@ -58,8 +60,15 @@ const columns: TableColumnType<VehicleRequestShiftDto>[] = [
   },
 ];
 
-/** Read-only shift ledger; confirmation remains in the on-site workflow. */
+/**
+ * Shifts of an on-site equipment order, read-only, as the request card shows them.
+ *
+ * Shifts are kept on the "On site" tab (ADR 0036), which shows what stands on the site today; people
+ * without a link to the site come here for them: the dispatcher checking an invoice and the lessor
+ * in a dispute about hours. Hence the same table without input fields.
+ */
 export function VehicleShiftsView({ requestId }: { requestId: string }) {
+  // Same key as the shift confirmation window: it is the same table, no need to fetch it twice.
   const { data, isPending } = useQuery({
     queryKey: vehicleRequestKeys.shifts(requestId),
     queryFn: () => vehicleRequestsApi.shifts(requestId),

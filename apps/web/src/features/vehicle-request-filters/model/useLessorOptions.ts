@@ -1,7 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 
-/** Include inactive lessors because closed requests remain searchable after cooperation ends. */
+/**
+ * Lessors for the journal filter: counterparties with the "vehicle lessor" role, which rental costs
+ * are grouped by. Inactive ones stay in the list because the journal is read about partners the
+ * company no longer works with.
+ */
 export function useLessorOptions() {
   const { data, isFetching } = useQuery({
     queryKey: counterpartyKeys.vehicleLessorOptions(),

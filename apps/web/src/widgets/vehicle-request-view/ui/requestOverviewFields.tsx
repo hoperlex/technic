@@ -38,6 +38,11 @@ interface OverviewFieldOptions {
   weeklyRequestPath: (id: string) => string;
 }
 
+/*
+ * Early-end request: the date the term is asked to be cut to, why, who asked and how it ended. The
+ * reason must be shown: the decision is made by it, and a rejection without it would leave the
+ * request on its old term with no explanation.
+ */
 function EarlyEndDetails({
   earlyEnd,
   actions,
@@ -79,6 +84,11 @@ function EarlyEndDetails({
   );
 }
 
+/*
+ * Term: the work period for special equipment, the delivery date (and time if set) for freight. The
+ * period gets its calendar-day count, the same hint as in the request form: rental length counted
+ * in the head from two dates comes out wrong, and decisions are made by it.
+ */
 function termOf(request: VehicleRequestDto): ReactNode {
   if (request.requestType !== 'special_equipment') {
     return formatDateTimeMaybe(request.scheduledAt, request.scheduledTimeUnspecified);
@@ -122,11 +132,14 @@ export function requestOverviewFields({
         </Tag>
       ),
     },
+    // Approval (ADR 0025): the card must say not only whether it exists but who approved.
     {
       key: 'approval',
       label: 'Согласование',
       full: true,
       children: request.approvedAt ? (
+        // The signature goes on a line below the tag, not beside it: in a narrow window the name
+        // next to the tag gets a two-letter column and breaks mid-word.
         <Space orientation="vertical" size={4}>
           <Tag color="green" icon={<CheckCircleOutlined />} style={{ marginInlineEnd: 0 }}>
             Завизирована
@@ -143,12 +156,21 @@ export function requestOverviewFields({
     },
     {
       key: 'customer',
+      // The request customer (ADR 0040): an object shows its code, a department shows its own.
       label: request.departmentId ? 'Отдел' : 'Объект',
       full: true,
       children: request.departmentId
         ? `${request.departmentCode} — ${request.departmentName}`
         : `${request.objectCode} — ${request.objectName}`,
     },
+    /*
+     * What was ordered: classifier position, term, who receives the vehicle and, for freight, cargo
+     * and addresses. The order goes above execution: the card is opened with "what was asked for",
+     * and "what closed it" answers that question.
+     *
+     * Ordered classifier position (ADR 0028): the category with its specs, or the type itself when
+     * it has no specs.
+     */
     {
       key: 'vehicleType',
       label: 'Тип/категория',
@@ -157,6 +179,12 @@ export function requestOverviewFields({
         categoryName: request.vehicleCategoryName,
       }),
     },
+    /*
+     * The request was caught by a switch of the type's linear flag (migration 0137): the directory
+     * now runs orders of this type differently, while this one finishes the way it was created. The
+     * row sits right under the type because it is about the type. Without it the dispatcher sees two
+     * requests of one type behaving differently and no explanation on screen.
+     */
     ...(request.requestType === 'special_equipment' && request.linearFrozen
       ? [
           {
@@ -186,6 +214,10 @@ export function requestOverviewFields({
       label: request.requestType === 'special_equipment' ? 'Период работы' : 'Подача',
       children: termOf(request),
     },
+    /*
+     * Early end (ADR 0044): the card is where the request is decided, because it is decided after
+     * reading the reason, and the reason is only here. The row sits under the term it changes.
+     */
     ...(request.requestType === 'special_equipment' && request.earlyEnd
       ? [
           {
@@ -198,6 +230,11 @@ export function requestOverviewFields({
           },
         ]
       : []),
+    /*
+     * The weekly request that produced this order (docs/adr/0085-weekly-vehicle-request.md, R11).
+     * It sits next to the term: an order must explain its appearance, and it appeared where someone
+     * decided the vehicle stays on site for another week.
+     */
     ...(weekly?.origin
       ? [
           {
@@ -214,6 +251,12 @@ export function requestOverviewFields({
           },
         ]
       : []),
+    /*
+     * Extensions as a separate list row (docs/adr/0085-weekly-vehicle-request.md, R16): an order is
+     * created by exactly one weekly request but extended week after week, so a single "basis" field
+     * would lie by the second week. The week itself goes next to the number: it tells what the
+     * extension was for.
+     */
     ...(weekly && weekly.extensions.length > 0
       ? [
           {
@@ -240,6 +283,8 @@ export function requestOverviewFields({
           },
         ]
       : []),
+    // Who receives the equipment on site (migration 0062). Freight has a contact per trip end, shown
+    // below next to its address.
     ...(request.requestType === 'special_equipment'
       ? [
           {
@@ -251,13 +296,21 @@ export function requestOverviewFields({
           },
         ]
       : []),
+    // Cargo and addresses exist only for freight: special equipment is ordered for a term.
     ...(trips ? [{ key: 'amount', label: 'Объём / масса', children: amountText }] : []),
+    /*
+     * A single trip is shown as a pair of addresses with contacts, exactly as requests looked before
+     * multi-trip requests: a one-trip request is yesterday's request (R24), and a one-row table would
+     * change the card of every existing request while adding nothing. Requests with several trips get
+     * a table below the fields.
+     */
     ...(singleTrip
       ? [
           {
             key: 'loading',
             label: 'Погрузка',
             full: true,
+            // Address verification mark (ADR 0006), the same as in the trips table.
             children: <AddressCell text={singleTrip.fromLocation} meta={singleTrip.fromAddress} />,
           },
           {

@@ -7,6 +7,12 @@ import { VehicleRoutesModal } from './VehicleRoutesModal';
 export function VehicleRouteWindows() {
   const state = useRouteModalWindows();
 
+  /*
+   * Conditional mount instead of an open flag: destroyOnHidden only clears the ViewModal body, while
+   * the state of child windows (correction, ticket transfer, adding a request, the edit) lives
+   * outside it. A hidden window would keep them armed, and the next route would open with a foreign
+   * correction window on top.
+   */
   return (
     <>
       {state.listOpen && (
