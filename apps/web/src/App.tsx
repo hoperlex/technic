@@ -1,6 +1,6 @@
 import { type ReactNode } from 'react';
 import { Spin } from 'antd';
-import { Navigate, Route, Routes } from 'react-router';
+import { Navigate, Route, Routes, useLocation } from 'react-router';
 import {
   EMAIL_VERIFICATION_ENABLED,
   SHELL_SECTIONS,
@@ -50,6 +50,22 @@ const SECTION_PAGES: Record<PortalShellSectionId, ReactNode> = {
   admin: <AdministrationPage />,
 };
 
+/**
+ * One boundary guards the whole driver cabinet, so it is reset by pathname: an ordinary render error
+ * on the assignment page must not stay on screen after the driver goes back to readings.
+ */
+function DriverCabinetShell() {
+  const { pathname } = useLocation();
+  return (
+    <AsyncContent
+      resetKey={pathname}
+      fallback={<Spin style={{ margin: '40vh auto', display: 'block' }} />}
+    >
+      <DriverLayout />
+    </AsyncContent>
+  );
+}
+
 export default function App() {
   return (
     <>
@@ -72,14 +88,7 @@ export default function App() {
               explicitly. Only the entry condition is shared: RequireSection reads the role and
               permission from the registry instead of duplicating them in another guard. */}
           <Route element={<RequireSection id="driver-cabinet" />}>
-            <Route
-              path="/driver"
-              element={
-                <AsyncContent fallback={<Spin style={{ margin: '40vh auto', display: 'block' }} />}>
-                  <DriverLayout />
-                </AsyncContent>
-              }
-            >
+            <Route path="/driver" element={<DriverCabinetShell />}>
               {/* Readings are the cabinet's first screen (driver-readings-first, R1): they are
                   the only data drivers enter, so a read-only assignment must not add a click on
                   that path. The complete assignment remains linked from the header, with the
@@ -107,7 +116,12 @@ export default function App() {
                 <Route key={section.id} element={<RequireSection id={section.id} />}>
                   <Route
                     path={section.path}
-                    element={<AsyncContent>{SECTION_PAGES[section.id]}</AsyncContent>}
+                    // The key gives each section its own boundary: React reuses one instance for
+                    // same-typed elements at one position, and a failure would follow the user
+                    // into every other section.
+                    element={
+                      <AsyncContent key={section.id}>{SECTION_PAGES[section.id]}</AsyncContent>
+                    }
                   />
                 </Route>
               ))}
