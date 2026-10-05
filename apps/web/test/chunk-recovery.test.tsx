@@ -78,6 +78,65 @@ describe('восстановление загрузки чанка', () => {
     expect(reloadPage).not.toHaveBeenCalled();
   });
 
+  it('прогретый раздел сохраняет черновик при отказе нового дочернего чанка', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const loadLeaf = vi.fn(() =>
+      Promise.reject(
+        new TypeError('error loading dynamically imported module: /assets/old-tab.js'),
+      ),
+    );
+    const Leaf = lazy(loadLeaf);
+    function LoadedSection() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <label>
+            Черновик прогретого раздела
+            <input defaultValue="Не терять до ручного обновления" />
+          </label>
+          <button onClick={() => setOpen(!open)}>Переключить вкладку</button>
+          {open && (
+            <AsyncContent>
+              <Leaf />
+            </AsyncContent>
+          )}
+        </>
+      );
+    }
+    const loadSection = vi.fn(async () => ({ default: LoadedSection }));
+    const Section = lazy(loadSection);
+    renderWithUser(
+      <>
+        <AppUpdateBanner />
+        <AsyncContent>
+          <Section />
+        </AsyncContent>
+      </>,
+    );
+
+    const draft = (await screen.findByLabelText('Черновик прогретого раздела')) as HTMLInputElement;
+    fireEvent.change(draft, { target: { value: 'Изменённый черновик' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Переключить вкладку' }));
+    const recovery = await screen.findByRole('alertdialog', {
+      name: 'Не удалось загрузить часть портала',
+    });
+    expect(draft.value).toBe('Изменённый черновик');
+    expect(loadSection).toHaveBeenCalledTimes(1);
+    expect(loadLeaf).toHaveBeenCalledTimes(1);
+    expect(reloadPage).not.toHaveBeenCalled();
+    expect(within(recovery).queryByRole('button', { name: 'Позже' })).toBeNull();
+
+    // Remounting a failed lazy leaf cannot repair its cached rejection or discard the parent draft.
+    fireEvent.click(screen.getByRole('button', { name: 'Переключить вкладку' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Переключить вкладку' }));
+    expect(loadSection).toHaveBeenCalledTimes(1);
+    expect(loadLeaf).toHaveBeenCalledTimes(1);
+    expect(draft.value).toBe('Изменённый черновик');
+    expect(reloadPage).not.toHaveBeenCalled();
+    fireEvent.click(within(recovery).getByRole('button', { name: /Обновить страницу/u }));
+    expect(reloadPage).toHaveBeenCalledTimes(1);
+  });
+
   it('ошибка рендера не выдаётся за несовместимую версию или потерянный чанк', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     function Broken(): never {
