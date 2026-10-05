@@ -39,8 +39,13 @@ export function findContainerGroup(
 }
 
 /**
- * Describe who already owns containers at the site. An empty site is still information; silence
- * would be indistinguishable from a request that has not loaded.
+ * The hint under the operator field: who already works at this site and what stands there. For a
+ * replacement or a removal it explains the "whoever brought it takes it away" rule (ADR 0054); for
+ * an installation or a waste haul it answers the same "whom to call" question — which is why it is
+ * shown for every request type.
+ *
+ * An empty site is information, not its absence: "no containers" is an answer too, and silence
+ * would read as "nobody asked".
  */
 export function presentGroupsHint(groups: readonly PresentContainerGroupDto[]): string {
   if (groups.length === 0) return 'На объекте сейчас нет контейнеров';

@@ -22,6 +22,8 @@ import { WasteArchiveTab } from './WasteArchiveTab';
 import { WasteHistoryTab } from './WasteHistoryTab';
 import { WasteStatsTab } from './WasteStatsTab';
 
+// The tab lives in the URL, not in state: links from neighbouring sections (the install request
+// number in the sites list) arrive with a ready answer which tab to show and what to open on it.
 const TABS = ['requests', 'on-site', 'history', 'blind-check', 'archive', 'stats'] as const;
 
 /** Route-level owner: tabs, URL selection and permission-gated tab composition. */
