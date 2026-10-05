@@ -26,8 +26,10 @@ import { BackdateReasonField } from '@features/backdated-operation';
  * A self-driven city trip can receive a 4-P waybill. It remains optional because equipment may
  * arrive on a carrier, and the portal does not model transport method.
  *
- * Delivery is also offered during confirmation, while pickup is planned only when the work end is
- * known (ADR 0044). Waybill issuance stays in the route card so all routes use one document flow.
+ * Delivery is also offered during confirmation, while pickup lives only here: when the request is
+ * taken into work, the pickup date is unknown — it becomes known towards the end of work, including
+ * an early end (ADR 0044). The waybill itself is issued in the route card, where freight waybills
+ * are born too: there must not be a second way for the document to come into being.
  */
 
 interface Props {
@@ -44,7 +46,7 @@ interface FormValues {
   driverPersonId?: string;
   moveFrom?: string;
   moveTo?: string;
-  /** Backdate reason, required only for a past relocation date (ADR 0101). */
+  /** Backdate reason, required only for a past relocation date (ADR 0101 item 4). */
   reason?: string;
 }
 
@@ -86,8 +88,9 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
   const on = routeDate?.format('YYYY-MM-DD');
 
   /*
-   * Past relocation dates are legitimate operationally, but ADR 0101 requires both permission and
-   * an explanation, matching route-side creation.
+   * Past relocation dates are legitimate operationally — the equipment left on Friday and is entered
+   * on Monday — but since ADR 0101 (item 4) such a route needs the permission and an explanation:
+   * both doors to the past share one rule, and the route-side door has asked for a reason for long.
    */
   const past = !!on && on < moscowDateKeyOf(new Date());
 
@@ -112,10 +115,12 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
         driverPersonId: v.driverPersonId,
         moveFrom: v.moveFrom!.trim(),
         moveTo: v.moveTo!.trim(),
-        // Use the shared constant because communication kind is printed on the form but is not a
-        // user choice for city relocations.
+        // A city relocation: the communication kind is printed in the form header and is the same
+        // for every such route. The shared constant, not a local literal: the dialog never asks for
+        // it, and a drift from the three-word list would only be noticed on paper.
         trip: { communicationKind: RELOCATION_COMMUNICATION_KIND },
-        // Send a reason only for past dates, matching the server guard and visible form fields.
+        // The reason is sent only for a past date: for today or tomorrow the server does not ask
+        // for it, and a reason field on an ordinary relocation would read as mandatory.
         ...(past ? { reason: v.reason } : {}),
       }),
     onSuccess: async (route) => {
@@ -157,8 +162,10 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
             <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} inputReadOnly={isMobile} />
           </Form.Item>
 
-          {/* Driver assignment is optional while planning, but waybill issuance will require it.
-              Never auto-select the sole candidate because dispatch must make that decision. */}
+          {/* The driver is optional: the route is planned ahead and the person assigned in the
+              morning, as for a freight route. The waybill will not be issued without one, and the
+              route card says so. Never auto-select even the sole candidate: dispatch decides who
+              drives. */}
           <Form.Item
             name="driverPersonId"
             label="Водитель"
@@ -203,8 +210,9 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
             placeholder="Объект, адрес площадки"
           />
 
-          {/* A past date requires permission and a reason (ADR 0101). Route creation records the
-              explanation in its audit trail; later waybill issuance guards its own backdating. */}
+          {/* A past date requires permission and a reason (ADR 0101 item 4). A relocation has no
+              row in the correction journal: the route spends no strict-reporting number, so the
+              explanation goes to the creation audit. Issuing its waybill asks its own reason. */}
           {past && (
             <FormGrid.Full>
               <BackdateReasonField

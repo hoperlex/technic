@@ -15,26 +15,30 @@ const HEAD_TAIL: Record<RequestStatus, string> = {
   confirmed: ' — она остаётся в работе',
   done: ' — она остаётся выполненной',
   completed: '',
-  // Copying creates a new request and never reopens the cancelled source; state that explicitly.
+  // A copy does not reopen a cancelled request: a new request with its own number is created and
+  // the old refusal stays a refusal. It must be said in words — "create the same" reads as "restore".
   cancelled: ' — копия не возобновляет отменённую',
 };
 
 /**
  * Copy-form notice describing what stays with the source and which term is proposed (ADR 0206).
  *
- * Copying is allowed from every status. The notice explains before saving that the source is not
- * changed and why proposed dates can differ from the source dates.
+ * Copying is allowed from every status, and this notice is the only place that says so before
+ * saving. It answers two real fears at once: "I am about to spoil a completed request" and "why
+ * are the dates in the fields not the ones in the card". Unexplained, the second reads as a form
+ * bug, and the person edits the proposed term back into the past, where creation rejects it.
  *
- * Text branches on data rather than status: the calendar chooses the proposed term and populated
- * fields determine what remains attached to the source.
- *
- * This is a pure presentation helper so the editor host can use it without page ownership.
+ * Text branches on data rather than status: the calendar chooses the proposed term (a cancelled
+ * request may have a future term, a "new" one an elapsed term) and populated fields determine what
+ * remains attached to the source. Only the heading names the status, repeating the card.
  */
 export function copyNotice(r: VehicleRequestDto, minDate: Dayjs, today: string): ReactNode {
   const num = r.displayNumber;
   const extension =
     r.requestType === 'special_equipment' && r.status === 'confirmed'
-      ? // A copy cannot extend an active assignment; point users to the edit or weekly-order flow.
+      ? // Extending an order by copying is usually a mistake: the second request for the same
+        // vehicle stands next to the first and collides with its occupancy. The right door is
+        // different, so name it directly.
         `Нужна та же машина дольше — копия не поможет: срок ${num} продлевают правкой даты окончания, а площадка — «Заявкой на неделю».`
       : null;
   return (
@@ -55,20 +59,23 @@ function dayText(d: Dayjs): string {
 }
 
 /**
- * Human-readable proposed term. A missing end date is a one-day order and is shown once, matching
- * the server model.
+ * Human-readable proposed term. A missing end date is a one-day order (the server reads it the
+ * same way) and is shown as one date: "23.09.2026 – 23.09.2026" reads as a filling bug.
  *
- * Duration is intentionally omitted because the date field already owns that calculation.
+ * The number of days is omitted on purpose: the day counter already stands under the "end date"
+ * field, and a second one would eventually disagree because different rules would count them.
  */
 function termText(from: Dayjs, to: Dayjs | null): string {
   return to ? `${dayText(from)} – ${dayText(to)}` : dayText(from);
 }
 
 /**
- * Term line selected by request dates rather than status.
+ * Term line selected by request dates rather than status (`copyTermPlan`, `copyScheduledPlan`).
  *
- * A shift can mean either an elapsed date or the role-specific lead-time cutoff (ADR 0104), so the
- * notice distinguishes those reasons instead of always claiming the source is in the past.
+ * A shift has two reasons, named separately. Not only the past moves dates: a term entirely ahead
+ * that does not reach the first available day moves by the same shift — for a requester that day
+ * is tomorrow, and after 15:00 the day after tomorrow (ADR 0104). Telling them about an "elapsed
+ * term" for an order starting tomorrow would be false exactly where the proposed dates are explained.
  */
 function termLine(r: VehicleRequestDto, minDate: Dayjs, today: string): string {
   if (r.requestType === 'special_equipment') {
@@ -84,11 +91,13 @@ function termLine(r: VehicleRequestDto, minDate: Dayjs, today: string): string {
   }
   const plan = copyScheduledPlan(r, minDate);
   const day = dayText(plan.scheduledDate);
-  // Do not present the midnight storage sentinel as an explicitly requested delivery time.
+  // No hour when the request has none (`scheduledTimeUnspecified`): "00:00" would read as an agreed
+  // midnight delivery that nobody asked for.
   const time = plan.scheduledTime ? `, ${plan.scheduledTime}` : '';
   if (plan.kind === 'ahead')
     return `Состав перенесён из неё, подача предложена прежняя: ${day}${time}.`;
-  // Classify the date in Moscow time; a browser-zone midnight could describe the wrong reason.
+  // The delivery day is a Moscow day key, the same key the term branches on: comparing the moment
+  // with browser-zone midnight would name the reason by someone else's calendar.
   const why =
     scheduledMoment(r).format('YYYY-MM-DD') < today
       ? 'день подачи прошёл'
@@ -100,12 +109,16 @@ function termLine(r: VehicleRequestDto, minDate: Dayjs, today: string): string {
 /**
  * Describe what stays with the source and what the copy omits.
  *
- * Mention assignment, route, and completion only when present. Attachments never carry over
- * (`assertFilesAttachable`), which must be clear before the new request is saved.
+ * Vehicle, route and completion fact are named only when the request has them: promising that
+ * "the vehicle stays with T-42" when none was assigned would lie exactly where the person decides
+ * whether to copy. Attachments never carry over (`assertFilesAttachable`), and this is said before
+ * saving — learning about it afterwards means discovering the loss after the request has gone.
  */
 function legacyLine(r: VehicleRequestDto): string {
   const attachments = 'вложения не переносятся — приложите их заново.';
-  // Build the list from actual relations so the notice never promises nonexistent retained data.
+  // Built from what is filled, not printed whole: for an order with an assigned vehicle but no
+  // route and no fact, "vehicle, route and fact stay" would name two things the request lacks, and
+  // the next line about attachments would be read with the same (misplaced) trust.
   const kept = [
     r.assignment ? 'техника' : null,
     r.route ? 'рейс' : null,

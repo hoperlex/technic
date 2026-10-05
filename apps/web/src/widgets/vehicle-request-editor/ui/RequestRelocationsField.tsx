@@ -23,16 +23,20 @@ import { VehicleRelocationModal } from './VehicleRelocationModal';
 /**
  * Request relocations shown inside the editor: delivery to and pickup from the site (migration 0082).
  *
- * Relocations are maintained here because corrections are usually discovered while editing the
- * request, and the retired route tab should not be required to find an incorrectly created trip.
+ * Relocations are maintained here because they are corrected exactly when the request itself is
+ * opened: the equipment went on a carrier, the date moved, the pickup was created on the wrong
+ * request. Previously a wrong relocation could only be removed from the route tab, by number.
  *
- * `createRelocationRoute` permits at most one route per purpose. Zero remains valid because portal
- * data does not model whether the equipment arrived on a carrier.
+ * At most one route per purpose — the server enforces it (`createRelocationRoute`) — so only the
+ * missing purposes are offered. Zero is a normal state: the portal does not track the delivery
+ * method, and the equipment may arrive on a carrier without any waybill.
  *
- * Actions apply immediately because a relocation is a separate route, not a draft request field.
+ * Actions apply immediately, not on "Save": a relocation is a separate route, not a request field.
+ * The block says so, otherwise the person would expect closing the dialog unsaved to undo it.
  *
- * The display number opens the route modal (ADR 0120) so route details and forms can be handled
- * without abandoning the request edit.
+ * The display number opens the route modal (ADR 0120, `docs/vehicle-routes-modal-plan.md` §1,
+ * stage 3) so the route and its 4-P waybill are handled on top of the form, without abandoning the
+ * request edit.
  */
 
 const PURPOSES = ['delivery', 'pickup'] as const;
@@ -98,16 +102,19 @@ export function RequestRelocationsField({ request }: Props) {
       )}
 
       {existing.map((route) => {
-        // Any issued waybill keeps the route in the strict-reporting journal permanently. Such a
-        // route must be corrected through waybill cancellation and the route card.
+        // Any issued waybill keeps the route in the strict-reporting journal permanently, even a
+        // cancelled one (the server refuses with the same answer). Such a route is corrected by
+        // cancelling the waybill and editing the route in its card.
         const documented = !!route.waybill;
         return (
           <Space key={route.id} size={8} wrap>
             <Tag color={route.purpose === 'delivery' ? 'blue' : 'gold'}>
               {routePurposeShortLabels[route.purpose]}
             </Tag>
-            {/* Keep the route link and delete button as siblings so their independent click
-                handling cannot trigger the other action. Without route access, the number remains text. */}
+            {/* The link and the delete button are siblings, not nested: `EntityLink` suppresses only
+                its own navigation (`preventDefault` on a plain left click) and lets the event
+                bubble, so nesting would let one click reach `confirmRemove` or vice versa. Without
+                route access the number stays plain text. */}
             <EntityLink
               to={vehicleRouteLink(can, route.id)}
               title="Открыть маршрут"

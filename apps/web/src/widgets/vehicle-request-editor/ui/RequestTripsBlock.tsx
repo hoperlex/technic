@@ -18,24 +18,28 @@ import { blankTrip, repeatTrip, type TripFormValue } from '@features/vehicle-req
 import { tripsCountLabel } from '@entities/vehicle-request';
 
 /**
- * Freight-request trip list (`docs/route-trips-plan.md`, section 4.1).
+ * Freight-request trip list (`docs/route-trips-plan.md`, section 4.1, stage 6).
  *
- * Single-trip requests retain the compact field layout. The list expands only when needed so the
- * common case does not pay the interaction cost of multi-trip ordering.
+ * A one-trip request looks and is filled **exactly as before**: same fields, same order, same grid
+ * cells, plus one button below. The list expands on demand because one-trip requests are the
+ * majority, and their input must not get harder for the sake of "six from the quarry".
  *
- * Trips live directly in form values because nested address and contact controls need full paths;
- * `Form.List` prefixes only its own `Form.Item` descendants.
+ * Trips live directly in form values (`trips`), not in `Form.List`: nested address and contact
+ * controls call the form with full paths, while `Form.List` prefixes only its own `Form.Item`
+ * descendants — a nested component knows nothing about that prefix.
  */
 
 interface Props {
   /**
-   * Persisted trips for edit mode; `null` means create mode. Rows use them for stable display
-   * numbers and narrowly scoped legacy validation exemptions.
+   * Persisted trips for edit mode; `null` means create mode. Rows learn their previous state from
+   * them: the display number ("ТС-40/2") and the R2a exemptions for an unverified address and an
+   * empty contact.
    */
   savedTrips: readonly VehicleRequestTripDto[] | null;
   /**
-   * Expanded mode is selected for multiple trips or details compact mode would hide, and remains
-   * enabled after the user adds a trip.
+   * Whether to show the list. The form decides when the dialog opens: yes for several trips, and
+   * for a single trip carrying its own time or note (compact mode does not show them). After that
+   * the "+ trip" button raises the flag itself.
    */
   expanded: boolean;
   onExpand: () => void;
@@ -79,7 +83,8 @@ function RepeatModal({
       <Form layout="vertical">
         <Form.Item
           label="Сколько копий добавить"
-          // Explain the reset here: repeated trips should not claim identical delivery times.
+          // What a copy carries is said here, not in history: copies have an empty delivery time on
+          // purpose (R3) — six trips in a shift follow a schedule, not one moment.
           extra="Адреса, контакты и груз копируются; время подачи у копий остаётся «как у заявки»"
         >
           <InputNumber
@@ -105,13 +110,18 @@ export function RequestTripsBlock({
 }: Props) {
   const form = Form.useFormInstance();
   /*
-   * Subscribe only to list composition. Rendering reads the current form value because the watch
-   * notification arrives later and its snapshot could briefly show stale rows.
+   * Subscribe only to list composition: the returned value is unused, the rerender signal is what
+   * matters. Rendering reads the current form value (`rows` below), not the subscription snapshot:
+   * it arrives a macrotask later, and in the frame between them the list would show stale rows.
    *
-   * Selecting keys avoids rerendering the whole block for every character typed into a trip.
+   * A selector over keys rather than watching all of `trips`: `useWatch` compares results by
+   * serialization, so the block rerenders on add, repeat and remove — not on every character typed
+   * into the sixth trip's address.
    *
-   * `preserve` includes client keys that have no rendered field. Without them a new row would not
-   * be observable until rendered, while rendering itself depends on observing the row.
+   * `preserve` is mandatory: without it the watch sees values of **registered fields only**
+   * (`getFieldsValue()` vs `getFieldsValue(true)`), and the row key has no field — nobody shows or
+   * edits it. That would loop: a new row is not rendered, so its fields do not exist, so it is
+   * absent from the composition, so it never appears.
    */
   Form.useWatch(tripKeys, { form, preserve: true });
   /** Row being repeated; `null` means the modal is closed. */
@@ -121,8 +131,9 @@ export function RequestTripsBlock({
   /**
    * Read trips from the form at action time.
    *
-   * The block rerenders only for composition changes, so handlers must not capture field values
-   * from an older render and overwrite text entered since then.
+   * A function, not a render value: the block rerenders only on composition changes, while typing
+   * changes form values between rerenders. A handler holding a render snapshot would make "+ trip"
+   * pressed after typing an address save the composition together with the erased address.
    */
   const readTrips = () => (form.getFieldValue('trips') ?? []) as TripFormValue[];
   /** Render snapshot; only field contents can change before the next composition rerender. */
@@ -132,8 +143,10 @@ export function RequestTripsBlock({
   /**
    * Replace list composition atomically.
    *
-   * Removing a row shifts all following field paths. Clear path-bound errors at the same time so
-   * they cannot become attached to a different trip; submission validates the new list again.
+   * Edited whole, not row by row: removal shifts the neighbours, and their fields move to other
+   * paths. Row errors are cleared together with the composition — they would stay on the old paths,
+   * i.e. on other rows now, and the person would look for a missing address where it is filled.
+   * The rules re-check the list on submit.
    */
   const setTrips = (next: TripFormValue[]) => {
     form.setFieldsValue({ trips: next });
@@ -176,7 +189,7 @@ export function RequestTripsBlock({
     setRepeatAt(null);
   };
 
-  // Compact mode preserves the established single-trip form.
+  // Compact mode: a one-trip request is yesterday's request (R24), with the very same fields.
   if (!expanded && rows.length <= 1) {
     return (
       <>
@@ -213,8 +226,9 @@ export function RequestTripsBlock({
                 size="small"
                 title={
                   <Space size={8} wrap>
-                    {/* Only persisted trips have display numbers; numbers are never reused, so a
-                        new row must wait for the server-assigned value. */}
+                    {/* Only persisted trips show a number: numbers are never reused (R13a), and
+                        "ТС-40/2" on a new row after removing the second would promise what the
+                        server will not do. A new row gets its number on save. */}
                     <span>{saved ? saved.displayNumber : 'Новая ездка'}</span>
                     <Typography.Text type="secondary" style={{ fontWeight: 'normal' }}>
                       строка {index + 1} из {rows.length}
@@ -234,8 +248,9 @@ export function RequestTripsBlock({
                         Повторить
                       </Button>
                     </Tooltip>
-                    {/* Persisted trips are soft-deleted because issued forms may reference them.
-                        Confirm the action and explain that the display number remains reserved. */}
+                    {/* A removed persisted trip is soft-deleted (R13a): an issued waybill may refer
+                        to it, and the strict-reporting form journal must remember what was printed.
+                        Hence the confirmation, naming the number that will not come back. */}
                     <Popconfirm
                       title={saved ? `Убрать ездку ${saved.displayNumber}?` : 'Убрать ездку?'}
                       description="Она перестанет ехать и печататься, но останется в истории и в журнале листов. Номер за ней сохранится: следующая ездка получит следующий свободный."
@@ -250,7 +265,8 @@ export function RequestTripsBlock({
                         size="small"
                         danger
                         icon={<DeleteOutlined />}
-                        // A freight request must retain at least one origin-destination pair.
+                        // At least one trip: a request without trips is an order that does not say
+                        // what to carry and where.
                         disabled={rows.length <= 1}
                         onClick={saved ? undefined : () => removeTrip(index)}
                       />
@@ -274,7 +290,8 @@ export function RequestTripsBlock({
             <Button icon={<PlusOutlined />} onClick={addTrip} disabled={full}>
               Ездка
             </Button>
-            {/* Row order is not route order; routing owns the actual visit sequence. */}
+            {/* Row order means nothing: trips are ordered by number, and the visit order belongs
+                to the route (R1). Without this line the list reads as a route. */}
             <Typography.Text type="secondary">
               {full
                 ? `Ездок в заявке не больше ${MAX_ROUTE_REQUESTS}: заявка едет одним маршрутом целиком`

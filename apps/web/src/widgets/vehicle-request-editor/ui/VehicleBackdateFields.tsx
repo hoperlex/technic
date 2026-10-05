@@ -12,14 +12,28 @@ import {
 import { formatDateOnly } from '@shared/lib';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 
+/**
+ * Backdating (ADR 0101, R6 and R15): the reason for the edit and its cost, in the same form where
+ * the date was chosen. The block appears exactly when the operation goes into the past and does
+ * two things.
+ *
+ * **Asks for the reason.** It is not a decoration or a comment field: the reason goes into the
+ * operation record (`waybill_corrections`) and stays the only explanation of why the request was
+ * dated yesterday — two months later accounting reads it, not the author.
+ *
+ * **Names the consequences before the click.** The request date drags the route, the paperwork and
+ * the site's signatures along, and learning that from the journal the next day is too late. Every
+ * line is computed with the same contract the server uses: the portal's promise and the handler's
+ * behaviour must match word for word.
+ */
 interface Props {
   /** Edited request; `null` means create mode, where only an explanation is needed. */
   record: VehicleRequestDto | null;
   /** Calendar currently shown by the form. */
   next: RequestCalendar;
   /**
-   * Effective operation date used by the server's permission check. This component is rendered
-   * only for a past date.
+   * Effective operation date — the one the server checks the permission by (`movedRequestDateKey`
+   * for an edit, the chosen day for a creation). This component is rendered only for a past date.
    */
   effectiveDate: string;
 }
@@ -35,10 +49,13 @@ export function VehicleBackdateFields({ record, next, effectiveDate }: Props) {
       : null;
 
   /*
-   * Load shifts to identify filled days falling outside the new term. They remain stored and
-   * reappear if the term is restored, but disappear from the current shift table with approvals.
+   * Shifts falling outside the new term (R23). The rows are not deleted — restoring the date brings
+   * the hours back — but they vanish from the shift table together with the site's signatures on
+   * them. Only the shift list itself knows which days go: the request summary answers with
+   * "approved / pending" counts, not dates.
    *
-   * Reuse the same query key as the shift dialog and request card.
+   * Same query key as the shift dialog and the request card: it is the same table, and fetching it a
+   * second time is pointless.
    */
   const { data: shifts } = useQuery({
     queryKey: vehicleRequestKeys.shifts(record?.id),
@@ -49,8 +66,9 @@ export function VehicleBackdateFields({ record, next, effectiveDate }: Props) {
   const notes: string[] = [];
 
   /*
-   * A route-date mismatch is allowed because request and route may be edited independently, but
-   * users must see the same warning before and after saving (ADR 0082).
+   * Route-day mismatch (ADR 0082 item 3). The portal does not forbid such an edit — request and
+   * route are edited by different people at different times — but must say so before the click,
+   * with the same text the dialog shows after saving.
    */
   if (record?.requestType === 'freight_transport' && record.route && next.scheduledDay) {
     const mismatch = routeDateMismatch(
@@ -61,11 +79,14 @@ export function VehicleBackdateFields({ record, next, effectiveDate }: Props) {
   }
 
   /*
-   * Touching elapsed ESM-2 weeks predicts a server rejection, not merely a warning: an elapsed or
-   * worked weekly form cannot be silently replaced by term editing.
+   * ESM-2 weeks the term edit touches in the past (R8, R21). This is not a warning but a predicted
+   * refusal: reconciliation will neither issue a form for an elapsed week nor write off a worked
+   * one, so the server rejects the whole edit (such weeks are reissued by correcting the weekly
+   * form). The portal must say it before the click, or the person writes a reason and gets 422.
    *
-   * Only `auto` mode can derive weeks from the term. Linear requests derive them from issued forms
-   * that are not available in this editor, so the server remains authoritative there.
+   * Computed only for requests whose forms the portal maintains itself (`auto`). For a linear order
+   * the set of weeks is defined by already issued forms (ADR 0100 §5), which the form does not have;
+   * there the server supplies the line by refusing.
    */
   if (record?.requestType === 'special_equipment' && term) {
     const mode = esm2Mode({
@@ -97,7 +118,8 @@ export function VehicleBackdateFields({ record, next, effectiveDate }: Props) {
     }
   }
 
-  // Filled days outside the new term remain stored but disappear from the active shift table.
+  // Days with entered hours that fall outside the new term: hours and signatures survive in the
+  // database but vanish from the shift table — and the request would close without them.
   if (term && shifts) {
     const lost = shifts.items.filter((s) => s.filledAt && !isShiftDayInTerm(term, s.date));
     if (lost.length > 0) {
@@ -115,7 +137,8 @@ export function VehicleBackdateFields({ record, next, effectiveDate }: Props) {
       <Form.Item
         name="backdateReason"
         label="Причина заднего числа"
-        // `backdateGuard` rejects an empty reason, so the form must not submit one.
+        // Required by the server (`backdateGuard` answers 422 without it), hence required here: the
+        // form must not send a body that is certain to be rejected.
         rules={[{ required: true, message: 'Укажите причину' }]}
         extra={`Дата ${formatDateOnly(effectiveDate)} уже прошла: правка уйдёт в журнал коррекций с вашим именем и этой причиной`}
       >

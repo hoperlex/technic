@@ -13,6 +13,7 @@ const FILE_MAX_COUNT = 20;
 const FILE_MAX_SIZE = 52_428_800;
 
 export interface EditorFile {
+  /** Needed by the list link: images and PDFs open in the viewer, other files download. */
   contentType: string;
   filename: string;
   id: string;
@@ -99,7 +100,16 @@ export function FileEditor({ editor }: { editor: FileEditorController }) {
   );
 }
 
-/** One classification position: a category, or the type itself when it has no categories. */
+/**
+ * Choice of the ordered equipment (ADR 0028): one classifier position — a type category ("Truck
+ * cranes, 130 t") or the type itself when it has no specs ("Auger"). The list is grouped by vehicle
+ * kind and narrowed by the request type, so the field is disabled until that is chosen. The form
+ * holds the position key; the API receives the "type + category" pair.
+ *
+ * The position's price level (the average rate of its vehicles) is shown on the right only in the
+ * open list (`optionRender`): search runs by name and the selected value shows the name too — a
+ * price in the closed field would read as an agreed rate, while it is only a reference.
+ */
 export function VehicleClassificationSelect({
   groups,
   loading,
