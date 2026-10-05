@@ -1,12 +1,11 @@
 import { useState, type ReactNode } from 'react';
 import { App } from 'antd';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   canRequestEarlyEnd,
   type ConfirmScheduleBody,
   isPlaceScopedRole,
   minRequestDateKey,
-  ROLLBACK_WAYBILL_MESSAGE,
   statusChangeRequiresReason,
   transitionRequiresAssignment,
   transitionRequiresCompletion,
@@ -26,7 +25,7 @@ import {
 } from '@entities/vehicle-request';
 import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
-import { rollbackErases } from '@features/vehicle-request-lifecycle';
+import { useRollbackConsequences } from '@features/vehicle-request-lifecycle';
 import type {
   AssignmentStatusCommand,
   VehicleCompleteModalProps,
@@ -49,9 +48,11 @@ interface StatusCommand {
   completion?: CompleteVehicleRequestInput;
   id: string;
   /**
-   * Fingerprint of the consequences shown by the assignment dialog's second step (§5.4 of the
-   * plan). Sent only with the "done" -> "confirmed" rollback: there the portal promised an exact
-   * ESM-2 reconciliation result, and the server verifies the promise still holds.
+   * Fingerprint of the consequences the person was shown, sent by the two rollbacks that read a
+   * preview first: "done" -> "confirmed" from the assignment dialog's second step (ADR 0178), where
+   * the portal promised an exact ESM-2 reconciliation result, and the return to "new" (ADR 0211),
+   * where it promised the erased work days, relocations and sheets. The server rebuilds the plan
+   * under its locks and refuses with 409 when the promise no longer holds.
    */
   previewFingerprint?: string;
   /** Actual term refined when taking into work: ordered for one time, started at another. */
@@ -90,18 +91,14 @@ export function useVehicleRequestLifecycle({
   // Completion asks for worked time and cost (ADR 0029): the fact travels with the status too.
   const [completeTarget, setCompleteTarget] = useState<VehicleRequestDto | null>(null);
 
-  /**
-   * Relocations of the request being returned to "new" (migration 0082): they drive for this
-   * request on its assigned vehicle, so the rollback erases them together with the assignment.
-   * Fetched only while the dialog is open and only for on-site orders — freight has no
-   * relocations, and an extra request per list row for a dialog opened once a month is pointless.
-   * Same key as the request card: a card opened just before answers from cache.
+  /*
+   * What the return to "new" takes away is computed by the server (ADR 0211) and asked when the
+   * dialog opens. The portal used to assemble the list itself from the request DTO and its
+   * relocations — a second carrier of the rule, which kept silent about work days, shifts, a
+   * pending early end and ESM-2, and promised to remove a relocation that stays because a waybill
+   * was issued for it.
    */
-  const { data: rollbackRelocations } = useQuery({
-    queryKey: vehicleRequestKeys.relocations(rollbackTarget?.id),
-    queryFn: () => vehicleRequestsApi.relocations(rollbackTarget!.id),
-    enabled: !!rollbackTarget && rollbackTarget.requestType === 'special_equipment',
-  });
+  const rollback = useRollbackConsequences({ target: rollbackTarget });
 
   const status = useMutation({
     mutationFn: (value: StatusCommand) =>
@@ -128,7 +125,16 @@ export function useVehicleRequestLifecycle({
       void qc.invalidateQueries({ queryKey: waybillKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
-    onError: (error) => message.error(errorMessage(error)),
+    /*
+     * For the return to "new" a 409 is not an error but a question: the consequences changed
+     * between reading and clicking, and the dialog itself answers it with a fresh list. The toast
+     * stays silent only when the dialog took the refusal over; other refusals show as for every
+     * transition.
+     */
+    onError: (error, value) => {
+      if (value.status === 'new' && rollback.recheck(error)) return;
+      message.error(errorMessage(error));
+    },
   });
 
   const changeStatus = (request: VehicleRequestDto, next: RequestStatus) => {
@@ -254,8 +260,8 @@ export function useVehicleRequestLifecycle({
           assignment: command.assignment,
           // The dialog always asks for the term when taking into work — `null` never comes here.
           schedule: command.schedule ?? undefined,
-          // Only the "done" -> "confirmed" rollback sends it: other transitions do not call the
-          // preview, and there is nothing promised to the server.
+          // Of the assignment dialog's transitions only the "done" -> "confirmed" rollback sends it:
+          // taking a new request into work calls no preview, and nothing was promised.
           previewFingerprint: command.previewFingerprint,
         })
       : undefined;
@@ -333,28 +339,33 @@ export function useVehicleRequestLifecycle({
           }
         />
         {/* Return to "new": the reason is mandatory like a cancellation reason, and above the field
-            is the list of what the request loses. A request with an issued waybill cannot be
-            rolled back (`ROLLBACK_WAYBILL_MESSAGE`): work that went into an issued form must not
-            be erased — said here, before a reason is typed in vain. */}
+            is the server's account of what the request loses and keeps (ADR 0211). Blockers come
+            in the same answer — an issued waybill, approved shifts — in the door's own words, so
+            the person learns of them before typing a reason in vain. The request's own
+            `hasActiveWaybill` flag is not asked any more: it is a second carrier of the
+            `active_waybill` blocker. */}
         <RollbackReasonModal
           open={!!rollbackTarget}
           subject={rollbackTarget ? `№ ${rollbackTarget.displayNumber}` : ''}
-          erases={rollbackTarget ? rollbackErases(rollbackTarget, rollbackRelocations ?? []) : []}
-          // A flag of the request itself, not of its route (ADR 0207). An on-site order has no
-          // route of its own — the paperwork hangs on day routes and relocations — so
-          // `route.hasWaybill` always answered "no waybill": the dialog opened, the person typed a
-          // reason and hit 409. Relocations are not checked separately: the flag already covers
-          // them (`activeWaybillOfRequest`), and a second check would copy the server rule.
-          blocker={rollbackTarget?.hasActiveWaybill ? ROLLBACK_WAYBILL_MESSAGE : null}
-          confirmLoading={status.isPending}
+          consequences={rollback.node}
+          /*
+           * Until the consequences arrive the button shows a wait and the click does not go out:
+           * there is nothing to promise the person yet, while everything would be erased. Blockers
+           * live inside the notice too — the server names them in the words the door refuses with.
+           */
+          confirmLoading={status.isPending || rollback.pending}
           onCancel={() => setRollbackTarget(null)}
           onSubmit={(reason) =>
             rollbackTarget &&
             status.mutate({
               id: rollbackTarget.id,
               status: 'new',
-              version: rollbackTarget.version,
+              // The version the read consequences were computed for: the fingerprint confirms
+              // exactly that state, and another state's version would be checked against the
+              // wrong plan.
+              version: rollback.version ?? rollbackTarget.version,
               comment: reason,
+              previewFingerprint: rollback.fingerprint,
             })
           }
         />

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Alert } from 'antd';
 import { ReasonModal } from '@shared/ui';
 
@@ -35,8 +36,19 @@ interface RollbackProps {
    * собирает вызывающий экран: у заказа техники стирается одно (машина, рейс, факт), у вывоза
    * мусора другое (факт и талоны), а обещать снятие того, чего у заявки нет, нельзя — общий
    * список для обоих модулей врал бы половине заявок.
+   *
+   * Не спрашивается, когда последствия приходят готовой плашкой (`consequences`).
    */
-  erases: string[];
+  erases?: string[];
+  /**
+   * Готовая плашка последствий вместо перечня строками — и вместо `erases` с `blocker` сразу.
+   *
+   * Заведена для заказа техники, где перечень считает сервер (ADR 0211): там бывает не только
+   * «будет стёрто», но и «останется, потому что держит лист», ожидание ответа и отказ
+   * предпросмотра, — а окно о заявке не знает ничего и разбирать эти состояния не должно. Вывоз
+   * мусора и механизация по-прежнему передают строки: правило у них своё и целиком в портале.
+   */
+  consequences?: ReactNode;
   /**
    * Помеха, из-за которой сервер возврат не пропустит (выписанный путевой лист,
    * `ROLLBACK_WAYBILL_MESSAGE`). Показывается тут же: узнать о ней после набранной причины
@@ -54,7 +66,13 @@ interface RollbackProps {
  * запросом смены статуса. Второе окно с полем «Причина» отличалось бы от первого только
  * заголовком — и разъезжалось бы с ним при каждой правке.
  */
-export function RollbackReasonModal({ subject, erases, blocker, ...rest }: RollbackProps) {
+export function RollbackReasonModal({
+  subject,
+  erases = [],
+  consequences,
+  blocker,
+  ...rest
+}: RollbackProps) {
   return (
     <ReasonModal
       {...rest}
@@ -64,31 +82,35 @@ export function RollbackReasonModal({ subject, erases, blocker, ...rest }: Rollb
       cancelText="Не возвращать"
       danger
       notice={
-        <>
-          {blocker && <Alert type="error" showIcon title={blocker} style={{ marginBottom: 12 }} />}
-          <Alert
-            type="warning"
-            showIcon
-            title="Заявка вернётся в состояние только что заведённой"
-            description={
-              erases.length > 0 ? (
-                <>
-                  Будет стёрто:
-                  <ul style={{ margin: '4px 0 0', paddingInlineStart: 20 }}>
-                    {erases.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                // Нечего стирать — так и сказано: пустой список «будет стёрто» человек читает
-                // как недогрузившийся, а не как «работы по заявке не завелось».
-                'Стирать у заявки нечего — сменится только статус.'
-              )
-            }
-            style={{ marginBottom: 16 }}
-          />
-        </>
+        consequences ?? (
+          <>
+            {blocker && (
+              <Alert type="error" showIcon title={blocker} style={{ marginBottom: 12 }} />
+            )}
+            <Alert
+              type="warning"
+              showIcon
+              title="Заявка вернётся в состояние только что заведённой"
+              description={
+                erases.length > 0 ? (
+                  <>
+                    Будет стёрто:
+                    <ul style={{ margin: '4px 0 0', paddingInlineStart: 20 }}>
+                      {erases.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : (
+                  // Нечего стирать — так и сказано: пустой список «будет стёрто» человек читает
+                  // как недогрузившийся, а не как «работы по заявке не завелось».
+                  'Стирать у заявки нечего — сменится только статус.'
+                )
+              }
+              style={{ marginBottom: 16 }}
+            />
+          </>
+        )
       }
     />
   );

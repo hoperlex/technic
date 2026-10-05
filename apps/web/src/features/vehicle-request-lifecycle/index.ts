@@ -1,2 +1,8 @@
-/** Pure descriptions used by destructive vehicle-request lifecycle confirmations. */
-export { rollbackErases } from './model/rollbackErases';
+/**
+ * Разговор о необратимом в жизни заказа техники: возврат в «Новую» со стиранием работы.
+ *
+ * Перечня стираемого здесь больше нет своего — его считает сервер (ADR 0211). Слайс держит две
+ * половины одного разговора: вопрос серверу с отпечатком ответа и слова, которыми ответ называют
+ * человеку.
+ */
+export { useRollbackConsequences } from './model/useRollbackConsequences';

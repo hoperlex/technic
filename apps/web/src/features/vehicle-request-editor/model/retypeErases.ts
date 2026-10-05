@@ -3,9 +3,9 @@ import { vehicleRequestTermLabel } from '@entities/vehicle-request';
 
 /**
  * What a request loses when converted to the other type (ADR 0091), as lines built from its own
- * data — the same technique as `rollbackErases`: the list is assembled per filled field, not
- * written up front. Promising the loss of something the request does not have would be a lie in
- * exactly the window where the person decides whether to convert.
+ * data: the list is assembled per filled field, not written up front. Promising the loss of
+ * something the request does not have would be a lie in exactly the window where the person
+ * decides whether to convert.
  *
  * The on-site contact is deliberately absent: it is not lost but moves into the new type's field
  * (`handleRequestTypeChange`), and the person sees it in the form before saving.
