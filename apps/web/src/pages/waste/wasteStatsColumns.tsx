@@ -33,11 +33,16 @@ export const FIGURES_WIDTH = 120 + 120 + 160 + 230;
  * The icon is focusable and the tooltip opens on click as well: a phone has no hover, and a
  * keyboard user would otherwise have no way to read why the figure is marked. The same lines go to
  * `aria-label`, so a screen reader hears them without opening anything.
+ *
+ * The popup is anchored by its right edge because these marks sit in the right-hand half of a
+ * horizontally scrollable table. A centred first placement can widen the document before
+ * rc-trigger corrects it, toggling the browser scrollbar and starting another alignment pass.
  */
 function WarningMark({ warning }: { warning: StatsWarning }): ReactNode {
   if (warning.length === 0) return null;
   return (
     <Tooltip
+      placement="topRight"
       trigger={['hover', 'focus', 'click']}
       title={warning.map((line) => (
         <div key={line}>{line}</div>
