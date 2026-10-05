@@ -138,6 +138,7 @@ async function openEdit(displayNumber: string): Promise<void> {
   const row = (await screen.findByText(displayNumber)).closest('tr')!;
   fireEvent.click(row.querySelector('.anticon-edit')!.closest('button')!);
   await waitFor(() => expect(screen.getByText(`Заявка ${displayNumber}`)).toBeDefined());
+  await screen.findByLabelText('Тип заявки');
 }
 
 /** Поле формы по подписи — вместе со своим блоком: у него читается и состояние, и подсказка. */

@@ -157,11 +157,11 @@ function addressField(label: string): HTMLElement {
   return labelNode!.closest('.address-field') as HTMLElement;
 }
 
-/** Открывает форму новой заявки и переключает её на грузоперевозку. */
+/** The shell title precedes lazy fields; wait for the actual picker before changing request type. */
 async function openFreightForm(): Promise<void> {
   fireEvent.click(await screen.findByText('Создать заявку'));
   await screen.findByText('Новая заявка на автотехнику');
-  const type = document.querySelector('#requestType')!;
+  const type = await screen.findByLabelText('Тип заявки');
   fireEvent.mouseDown(type);
   fireEvent.click(await screen.findByTitle('Грузоперевозка'));
   await screen.findByText('Место погрузки');

@@ -156,16 +156,18 @@ function renderModal(
 
 const CHECKBOX_LABEL = 'Исправить задним числом: работала другая машина';
 
-/** Включить коррекцию и дождаться списка листов: он приезжает запросом уже после нажатия. */
+/** The cold shell has no controls; enabling correction then requests the selectable waybills. */
 async function enableCorrection(): Promise<void> {
-  fireEvent.click(screen.getByText(CHECKBOX_LABEL));
+  fireEvent.click(await screen.findByText(CHECKBOX_LABEL));
   await screen.findByLabelText('Причина коррекции');
 }
 
 describe('коррекция назначения задним числом в окне смены техники', () => {
-  it('без права на коррекцию блока нет вовсе', () => {
-    // Штаб технику не назначает и прошлое не правит: у него нет ни `waybills.correct`, ни повода.
+  it('без права на коррекцию блока нет вовсе', async () => {
+    // HQ cannot assign equipment or correct its past: waybills.correct is absent for this role.
+    // Check the loaded form: an empty shell must not satisfy the permission assertion.
     renderModal({ user: authUser({ role: 'shtab' }) });
+    await screen.findByLabelText('Машинист');
     expect(screen.queryByText(CHECKBOX_LABEL)).toBeNull();
   });
 
@@ -220,6 +222,7 @@ describe('коррекция назначения задним числом в �
 
   it('без признака коррекции окно остаётся обычной сменой техники', async () => {
     const { onSubmit } = renderModal();
+    await screen.findByLabelText('Машинист');
     fireEvent.click(screen.getByRole('button', { name: 'Сменить технику' }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());

@@ -111,12 +111,13 @@ function renderPage(rows: WasteRequestDto[], over: RouteMap = {}, user?: AuthUse
   return http;
 }
 
-/** Карточка закрытой заявки: в журнале её открывают единственным действием строки. */
+/** Wait for the footer; a global role query over the retained tables can starve the lazy import. */
 async function openHistoryCard(displayNumber: string) {
   switchToTab('История');
   const row = (await screen.findByText(displayNumber)).closest('tr');
   expect(row, `строка ${displayNumber}`).toBeTruthy();
   fireEvent.click(within(row as HTMLElement).getByLabelText('Открыть карточку'));
+  await screen.findByText('Закрыть', { selector: 'button span' });
   return screen.findByText(`Заявка № ${displayNumber}`);
 }
 

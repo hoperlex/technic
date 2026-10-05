@@ -296,6 +296,8 @@ describe('дверь читалки в список заявок', () => {
     const { unmount } = renderCard(deleted, { readOnly: true });
 
     await screen.findByText('Заявка ТС-8');
+    // A missing action in the loading shell is not proof of the card's permission gate.
+    await screen.findByRole('button', { name: 'Закрыть' });
     expect(screen.queryByRole('link', { name: 'Открыть в списке заявок' })).toBeNull();
     unmount();
 
