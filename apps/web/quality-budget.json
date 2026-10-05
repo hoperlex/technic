@@ -8,9 +8,6 @@
   "antdDeprecated": 17,
   "maxLines": {
     "src/pages/directories/CounterpartiesTab.tsx": 439,
-    "src/pages/directories/VehicleSpecsTab.tsx": 480,
-    "src/pages/directories/VehicleTypeCardDrawer.tsx": 639,
-    "src/pages/directories/VehicleTypesTab.tsx": 733,
     "src/pages/directories/VehiclesTab.tsx": 619,
     "src/pages/directories/WasteTariffsTab.tsx": 924
   }

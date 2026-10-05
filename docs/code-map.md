@@ -93,12 +93,21 @@
 - API-маршруты: [counterparties.ts](../apps/api/src/routes/counterparties.ts), [objects.ts](../apps/api/src/routes/objects.ts), [departments.ts](../apps/api/src/routes/departments.ts), [warehouses.ts](../apps/api/src/routes/warehouses.ts), [container-types.ts](../apps/api/src/routes/container-types.ts), [vehicles.ts](../apps/api/src/routes/vehicles.ts), [vehicle-models.ts](../apps/api/src/routes/vehicle-models.ts), [vehicle-types.ts](../apps/api/src/routes/vehicle-types.ts), [vehicle-kinds.ts](../apps/api/src/routes/vehicle-kinds.ts), [vehicle-categories.ts](../apps/api/src/routes/vehicle-categories.ts), [vehicle-classifications.ts](../apps/api/src/routes/vehicle-classifications.ts), [vehicle-specs.ts](../apps/api/src/routes/vehicle-specs.ts), [vehicle-trailers.ts](../apps/api/src/routes/vehicle-trailers.ts), [drivers.ts](../apps/api/src/routes/drivers.ts), [manuals.ts](../apps/api/src/routes/manuals.ts), [directory-transfer.ts](../apps/api/src/routes/directory-transfer.ts)
 - Остальной API: [directory-purge.ts](../apps/api/src/services/directory-purge.ts), [directory-transfer](../apps/api/src/services/directory-transfer)
 - Web: [directories](../apps/web/src/pages/directories) (композиция вкладок),
+  [vehicle-classification-registry](../apps/web/src/widgets/vehicle-classification-registry),
+  [vehicle-type-card](../apps/web/src/widgets/vehicle-type-card),
+  [vehicle-spec-registry](../apps/web/src/widgets/vehicle-spec-registry),
+  [vehicle-type-editor](../apps/web/src/features/vehicle-type-editor),
+  [vehicle-spec-editor](../apps/web/src/features/vehicle-spec-editor),
+  [vehicle-classification-lifecycle](../apps/web/src/features/vehicle-classification-lifecycle),
+  [vehicle-type-spec-management](../apps/web/src/features/vehicle-type-spec-management),
+  [vehicle-category-management](../apps/web/src/features/vehicle-category-management),
   [driver-registry](../apps/web/src/widgets/driver-registry),
   [driver-editor](../apps/web/src/features/driver-editor),
   [driver-documents](../apps/web/src/features/driver-documents),
   [driver-removal](../apps/web/src/features/driver-removal),
   [driver](../apps/web/src/entities/driver)
-- Тесты: `directory-*.db.test.ts`, `vehicles-*.db.test.ts`, `drivers-*.db.test.ts`
+- Тесты: `directory-*.db.test.ts`, `vehicles-*.db.test.ts`, `drivers-*.db.test.ts`,
+  `vehicle-classifier-slices.test.tsx`, `vehicle-type-waybill-form.test.tsx`
 - Решения: [ADR 0001](adr/0001-vehicle-classification.md), [ADR 0051](adr/0051-suppliers-and-warehouses.md), [ADR 0138](adr/0138-vehicle-trailers-registry.md)
 
 ## Автозапчасти
