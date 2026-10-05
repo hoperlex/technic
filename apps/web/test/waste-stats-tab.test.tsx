@@ -347,8 +347,17 @@ describe('вывоз: вкладка «Статистика»', () => {
     // The reasons are readable by pointing at the icon, one line each.
     const ticketsMark = r.getAllByRole('img').find((el) => el.getAttribute('aria-label') === paper);
     fireEvent.mouseEnter(ticketsMark!);
-    expect(await screen.findByText('Не подтверждено: 3 талона на 10 м³')).toBeTruthy();
+    const firstReason = await screen.findByText('Не подтверждено: 3 талона на 10 м³');
+    expect(firstReason).toBeTruthy();
     expect(screen.getByText('Не распознано: 1 файл — не удалось прочитать')).toBeTruthy();
+    /*
+     * The warning marks sit in the right-hand half of the table. Anchoring the popup by its right
+     * edge keeps its first positioned frame inside the viewport; a centred popup briefly widened
+     * the document, toggled the browser scrollbar, and made rc-trigger realign in a loop.
+     */
+    expect(
+      firstReason.closest('.ant-tooltip')?.classList.contains('ant-tooltip-placement-topRight'),
+    ).toBe(true);
 
     // Quality is shown next to the numbers, the new rows of ADR 0209 included.
     expect(screen.getByText(hasText('Вывозов без принятого талона: 1 из 3'))).toBeTruthy();

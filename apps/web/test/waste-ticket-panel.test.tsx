@@ -74,7 +74,9 @@ describe('разбор талонов при выключенном распоз
     renderWithUser(<WasteTicketsPanel requestId="wr-1" />);
 
     // Раньше такой файл не попадал в ответ вовсе, и экран показывал пустоту там, где бумага лежит.
-    await waitFor(() => expect(screen.getAllByText(/в разбор не поступал/i).length).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(screen.getAllByText(/в разбор не поступал/i).length).toBeGreaterThan(0),
+    );
     expect(screen.getByText(/распознавание было выключено/i)).toBeDefined();
   });
 
