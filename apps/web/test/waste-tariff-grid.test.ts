@@ -4,7 +4,7 @@ import {
   buildWasteTariffGrid,
   wasteTariffColumnOperators,
   wasteTariffRowKey,
-} from '../src/pages/directories/wasteTariffGrid';
+} from '@entities/waste-tariff';
 
 const TRANS = 'op-trans-invest';
 const TRINITY = 'op-trinity';

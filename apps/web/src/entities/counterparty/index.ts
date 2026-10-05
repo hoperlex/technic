@@ -9,4 +9,5 @@
  */
 export { counterpartiesApi } from './api/counterpartiesApi';
 export { counterpartyKeys } from './api/keys';
+export { counterpartyOperatorGridQuery } from './api/queries';
 export { counterpartyErrorMessage } from './model/errorMessage';

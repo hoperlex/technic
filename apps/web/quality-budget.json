@@ -8,7 +8,6 @@
   "antdDeprecated": 17,
   "maxLines": {
     "src/pages/directories/CounterpartiesTab.tsx": 439,
-    "src/pages/directories/VehiclesTab.tsx": 619,
-    "src/pages/directories/WasteTariffsTab.tsx": 924
+    "src/pages/directories/VehiclesTab.tsx": 619
   }
 }

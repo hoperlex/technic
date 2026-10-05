@@ -7,3 +7,10 @@ export type { WasteTariffTarget } from './api/wasteTariffsApi';
 export { wasteTariffKeys } from './api/keys';
 export { wasteTariffResolveQuery } from './api/queries';
 export { wasteTariffErrorMessage } from './model/errorMessage';
+export {
+  buildWasteTariffGrid,
+  wasteTariffColumnOperators,
+  wasteTariffKindLabels,
+  wasteTariffRowKey,
+  type WasteTariffGridRow,
+} from './model/grid';
