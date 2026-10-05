@@ -546,7 +546,7 @@ REFERENCES files ON DELETE CASCADE, added_at timestamptz)`, PK `(waybill_id, fil
 
 ## 11. Портал (`apps/web`)
 
-- Форма перевода в работу ([`VehicleAssignModal.tsx`](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx)):
+- Форма перевода в работу ([`VehicleAssignModal.tsx`](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx)):
   обязательное поле «Машинист» со списком из справочника водителей целиком (Р14, Р15) и
   строка-предупреждение «Будет выписано N путевых листов ЭСМ-2: 31.08–06.09, 07.09–13.09…» —
   считается тем же `esm2Periods` (§9). Человек должен видеть, сколько бланков он сейчас израсходует.

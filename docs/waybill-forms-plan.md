@@ -228,12 +228,12 @@
 
 ## 7. Портал (`apps/web`)
 
-- [`VehicleAssignModal.tsx`](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx): блок «Доставка на
+- [`VehicleAssignModal.tsx`](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx): блок «Доставка на
   объект» для заявок спецтехники (чекбокс, дата, водитель, откуда/куда, реквизиты рейса); у легковых
   — прежний блок «Маршрут» без полей прицепа.
 - Карточка заявки спецтехники: действие «Путевой лист на вывоз».
 - [`VehicleRoutesTab.tsx`](../apps/web/src/pages/vehicle/VehicleRoutesTab.tsx) и
-  [`VehicleRouteModal.tsx`](../apps/web/src/pages/vehicle/VehicleRouteModal.tsx): пометка назначения в
+  [`VehicleRouteWindowView.tsx`](../apps/web/src/widgets/vehicle-route-windows/ui/VehicleRouteWindowView.tsx): пометка назначения в
   списке, у перегона вместо состава — заявка и «откуда/куда».
 - Форма заявки на грузоперевозку: объём и масса необязательны для типа с бланком № 3.
 

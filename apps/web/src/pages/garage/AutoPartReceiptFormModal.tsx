@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { App, DatePicker, Form, Input, Typography } from 'antd';
+import { App, Form, Typography } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation } from '@tanstack/react-query';
 import {
@@ -13,7 +13,8 @@ import {
 import { autoPartReceiptApi } from '@entities/auto-part-receipt';
 import { useAuth } from '@entities/session';
 import { errorFields, formatMoney } from '@shared/lib';
-import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
+import { ReceiptHeaderFields } from './ReceiptHeaderFields';
 import { ReceiptLinesEditor } from './ReceiptLinesEditor';
 import { WAREHOUSE_DESTINATION_VALUE } from './receiptVehicleOptions';
 import { ReceiptScanField, type ScanFile } from './ReceiptScanField';
@@ -62,7 +63,6 @@ import {
  */
 
 const DATE = 'YYYY-MM-DD';
-const SHOWN_DATE = 'DD.MM.YYYY';
 
 interface Values {
   purchasedOn: Dayjs;
@@ -94,6 +94,8 @@ export function AutoPartReceiptFormModal({
   const [draftReady, setDraftReady] = useState(false);
   const [filesError, setFilesError] = useState<string | undefined>();
   const [rows, setRows] = useState<ReceiptLineRow[]>([]);
+  const [appliedFileIds, setAppliedFileIds] = useState<string[]>([]);
+  const [uploadsInFlight, setUploadsInFlight] = useState(0);
   const [linesError, setLinesError] = useState<string | undefined>();
   const [lineErrors, setLineErrors] = useState<ReceiptLineErrors>({});
 
@@ -112,6 +114,7 @@ export function AutoPartReceiptFormModal({
       });
       setFiles(receipt.files.map((file) => ({ ...file })));
       setRows(receiptLinesFromDto(receipt.lines));
+      setAppliedFileIds([]);
     } else if (restored) {
       form.setFieldsValue({
         purchasedOn: dayjs(restored.values.purchasedOn),
@@ -121,11 +124,13 @@ export function AutoPartReceiptFormModal({
       });
       setFiles(restored.files.map((file) => ({ ...file })));
       setRows(restored.rows.map((row) => ({ ...row })));
+      setAppliedFileIds(restored.appliedFileIds ?? []);
     } else {
       // The Moscow day is the same boundary the API validates around midnight.
       form.setFieldsValue({ purchasedOn: dayjs(today) });
       setFiles([]);
       setRows([newReceiptLine()]);
+      setAppliedFileIds([]);
     }
 
     setFilesError(undefined);
@@ -146,8 +151,9 @@ export function AutoPartReceiptFormModal({
       },
       files,
       rows,
+      appliedFileIds,
     });
-  }, [draftReady, files, form, open, receipt, rows, today, userId]);
+  }, [appliedFileIds, draftReady, files, form, open, receipt, rows, today, userId]);
 
   useEffect(() => {
     persistCreateDraft();
@@ -224,9 +230,15 @@ export function AutoPartReceiptFormModal({
   const markOutsideForm = (): boolean => {
     const lines = validateReceiptLines(rows);
     setLineErrors(lines);
-    setFilesError(files.length === 0 ? RECEIPT_NO_FILES_MESSAGE : undefined);
+    setFilesError(
+      uploadsInFlight > 0
+        ? 'Дождитесь загрузки всех сканов'
+        : files.length === 0
+          ? RECEIPT_NO_FILES_MESSAGE
+          : undefined,
+    );
     setLinesError(rows.length === 0 ? RECEIPT_NO_LINES_MESSAGE : undefined);
-    return files.length === 0 || rows.length === 0 || hasLineErrors(lines);
+    return uploadsInFlight > 0 || files.length === 0 || rows.length === 0 || hasLineErrors(lines);
   };
 
   /**
@@ -237,16 +249,40 @@ export function AutoPartReceiptFormModal({
    * (Р10а, Р11). Уже набранное руками не затирается пустотой: пустое поле черновика оставляет
    * то, что стоит в форме.
    */
-  const applyDraft = (draft: ReceiptDraft) => {
+  const applyDraft = (draft: ReceiptDraft, fileIds: string[], mode: 'replace' | 'append') => {
     const current = form.getFieldsValue();
     form.setFieldsValue({
-      purchasedOn: draft.header.purchasedOn ? dayjs(draft.header.purchasedOn) : current.purchasedOn,
-      documentNumber: draft.header.documentNumber || current.documentNumber,
-      sellerName: draft.header.sellerName || current.sellerName,
+      purchasedOn:
+        mode === 'append'
+          ? current.purchasedOn
+          : draft.header.purchasedOn
+            ? dayjs(draft.header.purchasedOn)
+            : current.purchasedOn,
+      documentNumber:
+        mode === 'append'
+          ? current.documentNumber || draft.header.documentNumber
+          : draft.header.documentNumber || current.documentNumber,
+      sellerName:
+        mode === 'append'
+          ? current.sellerName || draft.header.sellerName
+          : draft.header.sellerName || current.sellerName,
     });
     const next = receiptRowsFromDraft(draft);
-    setRows(next.rows);
-    setLineErrors(next.errors);
+    if (mode === 'append') {
+      // Previously applied pages may have been corrected by hand; append only the new file rows.
+      setRows((previous) => {
+        const placeholder =
+          previous.length === 1 && !previous[0]?.name.trim() && previous[0]?.amount === null;
+        const existing = placeholder ? [] : previous;
+        return [...existing, ...next.rows];
+      });
+      setLineErrors((previous) => ({ ...previous, ...next.errors }));
+      setAppliedFileIds((previous) => [...new Set([...previous, ...fileIds])]);
+    } else {
+      setRows(next.rows);
+      setLineErrors(next.errors);
+      setAppliedFileIds(fileIds);
+    }
     setLinesError(undefined);
     // Дата в будущем формой не принимается вовсе, и подставлять её значило бы заполнить поле
     // заведомым отказом. Прочитанное называется на самом поле даты, а не тостом в углу (ADR 0094):
@@ -302,54 +338,16 @@ export function AutoPartReceiptFormModal({
           onError={setFilesError}
           disabled={busy}
           formFilled={rows.some((row) => row.name.trim() !== '' || row.amount !== null)}
+          lineCount={
+            rows.length === 1 && !rows[0]?.name.trim() && rows[0]?.amount === null ? 0 : rows.length
+          }
+          appliedFileIds={appliedFileIds}
           onApplyDraft={applyDraft}
+          onResetApplied={() => setAppliedFileIds([])}
+          onUploadCountChange={setUploadsInFlight}
         />
 
-        <FormGrid>
-          <Form.Item
-            name="purchasedOn"
-            label="Дата чека"
-            rules={[{ required: true, message: 'Укажите дату чека' }]}
-            extra="Дата документа: по ней считаются суммы и периоды"
-          >
-            <DatePicker
-              format={SHOWN_DATE}
-              style={{ width: '100%' }}
-              allowClear={false}
-              disabled={busy}
-              // Вперёд нельзя, назад — сколько угодно: чек приносят через неделю, и это норма,
-              // а не исправление прошлого (Р13).
-              disabledDate={(d) => d.format(DATE) > today}
-            />
-          </Form.Item>
-
-          <Form.Item
-            name="documentNumber"
-            label="Номер чека"
-            rules={[{ required: true, message: 'Номер чека обязателен' }]}
-            // Уникальности у номера нет: его выдаёт продавец, и два «0001» из разных магазинов —
-            // обычное дело (Р1а).
-            extra="Номер с бумаги; своей нумерации у портала нет"
-          >
-            <Input maxLength={100} placeholder="0001" disabled={busy} />
-          </Form.Item>
-
-          <Form.Item
-            name="sellerName"
-            label="Продавец"
-            // Необязателен, и это не непоследовательность рядом с обязательным номером (Р1а):
-            // название магазина на ленте бывает нечитаемо.
-            extra="Необязательно: на ленте название бывает нечитаемо"
-          >
-            <Input maxLength={200} placeholder="Автозапчасти на Ленина" disabled={busy} />
-          </Form.Item>
-
-          <FormGrid.Full>
-            <Form.Item name="note" label="Примечание">
-              <Input.TextArea rows={2} maxLength={1000} showCount disabled={busy} />
-            </Form.Item>
-          </FormGrid.Full>
-        </FormGrid>
+        <ReceiptHeaderFields today={today} busy={busy} />
 
         <Form.Item
           label="Строки чека"

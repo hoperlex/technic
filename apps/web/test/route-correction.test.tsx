@@ -5,7 +5,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { selectOption } from './antd';
-import { VehicleRouteCorrectionModal } from '../src/pages/vehicle/VehicleRouteCorrectionModal';
+import { VehicleRouteCorrectionModal } from '@widgets/vehicle-route-windows';
 
 /**
  * Окно коррекции рейса задним числом (ADR 0101, Р18/Р34/Р36).

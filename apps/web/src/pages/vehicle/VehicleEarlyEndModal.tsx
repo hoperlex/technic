@@ -15,9 +15,13 @@ import { calendarDaysLabel, formatDateOnly } from '@shared/lib';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { WarnedSheetsConfirm } from '@entities/waybill';
-import { acknowledgementsOf, anonymousWarnedSheetsOf, recheckReasonOf } from './assignmentWarnings';
+import {
+  acknowledgementsOf,
+  anonymousWarnedSheetsOf,
+  reassignStaleReason,
+  recheckReasonOf,
+} from '@features/vehicle-assignment';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
-import { reassignStaleReason } from './ReassignPreview';
 
 /**
  * Досрочное завершение заказа спецтехники (ADR 0044): техника освободилась раньше срока.

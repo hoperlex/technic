@@ -1,0 +1,330 @@
+import { useEffect, useState } from 'react';
+import { Alert, App, Form, Input, Select, Typography } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  communicationKindOptions,
+  isRelocationPurpose,
+  type VehicleRouteDto,
+} from '@technic/contracts';
+import { sameTrailerGraphs, vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
+import { waybillKeys, waybillsApi } from '@entities/waybill';
+import { garageKeys } from '@entities/garage';
+import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
+import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-route';
+import { RouteCorrectionConsequences } from './RouteCorrectionConsequences';
+import { useRouteCorrectionChoices } from '../model/routeCorrectionChoices';
+import { trailerTripBody } from '@entities/vehicle-route';
+import { TrailerFields } from '@features/vehicle-route-trailer';
+
+/**
+ * Исправление исполнения рейса задним числом (ADR 0101, Р2).
+ *
+ * Окно правки и окно коррекции — разные окна, и это не удобство, а разная цена действия. Правка
+ * меняет план: рейс ещё не стал документом, и стоит она ничего. Коррекция переписывает **уже
+ * состоявшийся день**: действующий номер бланка сгорает, взамен уходит следующий по серии (Р10),
+ * назначения заявок едут за машиной рейса, подписи объекта под днями снимаются (Р5), а подшитые к
+ * старому листу файлы на новый не переезжают (Р34). Поэтому здесь обязательна причина и поэтому же
+ * всё перечисленное человек читает **до** нажатия, а не узнаёт после (Р18, Р36).
+ *
+ * Последствия считает сервер тем же кодом, которым будет их исполнять
+ * (`GET /vehicle-routes/:id/correction`): второй расчёт в портале разошёлся бы с первым — и окно
+ * обещало бы не то, что произойдёт.
+ */
+
+interface FormValues {
+  vehicleId: string;
+  driverPersonId: string;
+  withTrailer: boolean;
+  trailer1Model: string;
+  trailer1RegNumber: string;
+  trailer2Model: string;
+  trailer2RegNumber: string;
+  garageNumber: string;
+  communicationKind: string;
+  transportationKind: string;
+  reason: string;
+}
+
+interface Props {
+  /** null — окно закрыто. */
+  route: VehicleRouteDto | null;
+  onClose: () => void;
+  /**
+   * Рейс переписан: списки рейсов, заявок и журнал листов после этого не те же.
+   *
+   * С точками: коррекция пересобирает рейс целиком, и карточка кладёт ответ в кэш как есть — без
+   * порядка объезда она показала бы пустой список остановок до следующей перечитки.
+   */
+  onSaved: (route: VehicleRouteDto) => void;
+}
+
+export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) {
+  const { message } = App.useApp();
+  const qc = useQueryClient();
+  const [form] = Form.useForm<FormValues>();
+
+  /**
+   * Ключ идемпотентности (Р31): придумывается **до** отправки и держится всё время, пока открыто
+   * окно. Повтор после сетевого таймаута обязан вернуть результат прежней операции, а не сжечь
+   * второй номер серии; поэтому же повторная отправка идёт тем же телом — отпечаток считается со
+   * всей команды целиком, и пересобранное со свежей версией тело сервер повтором не признает.
+   */
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  useEffect(() => {
+    if (!route) return;
+    setOperationId(crypto.randomUUID());
+    form.setFieldsValue({
+      vehicleId: route.vehicleId,
+      driverPersonId: route.driverPersonId ?? undefined,
+      withTrailer: route.withTrailer,
+      trailer1Model: route.trailer1Model,
+      trailer1RegNumber: route.trailer1RegNumber,
+      trailer2Model: route.trailer2Model,
+      trailer2RegNumber: route.trailer2RegNumber,
+      garageNumber: route.garageNumber,
+      // Умолчанием пустая графа здесь, в отличие от окна правки, не заполняется: подставленное
+      // значение само по себе отличало бы форму от рейса, и проверка «коррекция должна что-то
+      // менять» (Р31) пропускала бы нажатие, которым человек не менял ничего, — номер бланка
+      // сгорал бы ради слова, дописанного порталом. Поле обязательное, и вид сообщения у старого
+      // рейса выбирается рукой: это осознанное решение, а не подстановка.
+      communicationKind: route.communicationKind,
+      transportationKind: route.transportationKind,
+      reason: '',
+    });
+    // Зависимость — только идентификатор рейса: следи эффект за `route` целиком, ключ операции и
+    // черновик формы перескакивали бы под рукой на каждом обновлении карточки, а ключ обязан
+    // держаться неизменным всё время, пока окно открыто.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route?.id, form]);
+
+  const vehicleId = Form.useWatch('vehicleId', form) ?? route?.vehicleId;
+  const driverPersonId = Form.useWatch('driverPersonId', form);
+  const withTrailer = Form.useWatch('withTrailer', form) ?? false;
+  const communicationKind = Form.useWatch('communicationKind', form);
+
+  /** Последствия и блокировки — сервером, теми же правилами, которыми он их и исполнит. */
+  const { data: preview, isFetching: previewLoading } = useQuery({
+    queryKey: vehicleRouteKeys.correctionPreview(route?.id),
+    queryFn: () => vehicleRoutesApi.correctionPreview(route!.id),
+    enabled: !!route,
+  });
+
+  /**
+   * Карточка действующего листа: отметки печати и выгрузки (Р18) и подшитые к номеру файлы (Р34).
+   * Берутся из журнала, а не считаются заново: «уходила ли бумага» — вопрос журнала, и два разных
+   * ответа на него хуже одного.
+   */
+  const { data: sheet } = useQuery({
+    queryKey: waybillKeys.detail(preview?.waybill?.id),
+    queryFn: () => waybillsApi.get(preview!.waybill!.id),
+    enabled: !!preview?.waybill,
+  });
+
+  /** Списки выбора — отдельным модулем: отбор там исторический, причина в его шапке. */
+  const { vehicleOptions, fleetLoading, driverOptions, driversLoading, suggestion, vehicleTypeId } =
+    useRouteCorrectionChoices({ route, vehicleId, withTrailer });
+
+  const correct = useMutation({
+    mutationFn: (v: FormValues) =>
+      vehicleRoutesApi.correct(route!.id, {
+        operationId,
+        version: route!.version,
+        vehicleId: v.vehicleId,
+        driverPersonId: v.driverPersonId,
+        trip: {
+          ...trailerTripBody(v),
+          garageNumber: v.garageNumber ?? '',
+          communicationKind: v.communicationKind ?? '',
+          transportationKind: v.transportationKind ?? '',
+        },
+        reason: v.reason,
+      }),
+    onSuccess: async (updated) => {
+      message.success(`Рейс исправлен, выписан лист ${updated.waybill?.number ?? ''}`);
+      qc.setQueryData(vehicleRouteKeys.detail(updated.id), updated);
+      // Журнал листов и гараж после коррекции показывают другое: там списанный номер, новый номер
+      // и другая машина дня.
+      await qc.invalidateQueries({ queryKey: waybillKeys.root });
+      await qc.invalidateQueries({ queryKey: garageKeys.root });
+      onSaved(updated);
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
+  /** Меняет ли форма хоть что-то (Р31): тело, повторяющее рейс, сожгло бы номер впустую. */
+  const changed =
+    !!route &&
+    (vehicleId !== route.vehicleId ||
+      (driverPersonId ?? null) !== route.driverPersonId ||
+      !sameTrailerGraphs(trailerTripBody(form.getFieldsValue()), route) ||
+      (form.getFieldValue('garageNumber') ?? '') !== route.garageNumber ||
+      (form.getFieldValue('communicationKind') ?? '') !== route.communicationKind ||
+      (form.getFieldValue('transportationKind') ?? '') !== route.transportationKind);
+
+  const submit = (v: FormValues) => {
+    if (preview?.blocking) {
+      message.error(preview.blocking.reason);
+      return;
+    }
+    if (!changed) {
+      message.error('Коррекция должна что-то менять: иначе номер бланка сгорит впустую');
+      return;
+    }
+    correct.mutate(v);
+  };
+
+  return (
+    <FormModal
+      title={route ? `Маршрут ${route.displayNumber} · исправить исполнение` : 'Коррекция рейса'}
+      open={!!route}
+      onCancel={onClose}
+      onSubmit={() => form.submit()}
+      confirmLoading={correct.isPending}
+      okText="Исправить и выписать лист"
+      okDanger
+      width={720}
+    >
+      <Form<FormValues> form={form} layout="vertical" onFinish={submit}>
+        <FormGrid>
+          {/* Блокировка состава (Р3, Р13) читается первой: с закрытой или новой заявкой в рейсе
+            коррекция невозможна, и чинит это другой человек — окно называет, какой именно. */}
+          {preview?.blocking && (
+            <FormGrid.Full>
+              <Alert
+                type="error"
+                showIcon
+                title="Рейс сейчас не исправить"
+                description={
+                  <>
+                    {preview.blocking.reason}
+                    {preview.blocking.requests.length > 0 && (
+                      <div>Заявки: {preview.blocking.requests.join(', ')}</div>
+                    )}
+                  </>
+                }
+              />
+            </FormGrid.Full>
+          )}
+
+          <FormGrid.Full>
+            <RouteCorrectionConsequences
+              route={route}
+              preview={preview}
+              sheet={sheet}
+              vehicleId={vehicleId}
+            />
+          </FormGrid.Full>
+
+          {/* Машина правится только здесь (ADR 0082 п. 5 в редакции ADR 0101): «поедет другой
+            машиной» в будущем это другое назначение, а в прошедшем дне рейс состоялся один. */}
+          <Form.Item
+            name="vehicleId"
+            label="Машина рейса"
+            rules={[{ required: true, message: 'Выберите машину' }]}
+            extra="Списанная и стоящая в ремонте техника в списке есть: она могла работать в тот день"
+          >
+            <AutoSelect
+              autoSelectSole={false}
+              options={vehicleOptions}
+              showSearch
+              optionFilterProp="label"
+              loading={fleetLoading}
+              placeholder="Чем ехали на самом деле"
+            />
+          </Form.Item>
+
+          <Form.Item
+            name="driverPersonId"
+            label="Водитель"
+            rules={[{ required: true, message: 'Выберите водителя' }]}
+            extra="Список — на день рейса: уволившийся после него из выбора не пропадает"
+          >
+            <AutoSelect
+              autoSelectSole={false}
+              options={driverOptions}
+              showSearch
+              optionFilterProp="label"
+              loading={driversLoading}
+              placeholder="Кто вёл на самом деле"
+            />
+          </Form.Item>
+
+          {/* У формы № 3 граф прицепа нет вовсе (ADR 0071) — спрашивается он там, где печатается. */}
+          {/* Вторая пара граф здесь нужнее, чем где-либо: коррекция переписывает то, что уже
+            уехало на бумаге, и рейс с двумя прицепами до сих пор нельзя было описать иначе как
+            забыв половину. */}
+          {route?.formCode !== 'leg3' && (
+            <TrailerFields
+              key={route?.id}
+              withTrailer={withTrailer}
+              checkboxLabel="Рейс был с прицепом"
+              checkboxFullWidth
+              modelPlaceholder="СЗАП-8551"
+              regNumberPlaceholder="АВ1234 77"
+              secondPlaceholder="Если прицепов было два"
+              hitched={suggestion?.hitched}
+              vehicleId={vehicleId}
+              vehicleTypeId={vehicleTypeId}
+              // День состоялся: закрепление знает о сменённой машине, а о прошлом вторнике — нет.
+              substituteOnOpen={false}
+            />
+          )}
+
+          <Form.Item name="garageNumber" label="Гаражный номер">
+            <Input placeholder="Из справочника техники, если пусто" />
+          </Form.Item>
+          {/* Список, а не строка: значение уходит в графу нового бланка, и написание у всех
+            листов обязано быть одним. Крестика и пункта «не выбрано» нет — очистить графу окном
+            нельзя. Значение, пришедшее от старого рейса мимо набора, показывается выбранным и
+            остаётся пунктом списка (`communicationKindOptions`): оно уже напечатано на выданном
+            листе, и коррекция машины не должна попутно переписывать графу, которой не касалась. */}
+          <Form.Item
+            name="communicationKind"
+            label="Вид сообщения"
+            rules={[{ required: true, message: 'Выберите вид сообщения' }]}
+          >
+            <Select
+              options={communicationKindOptions(communicationKind)}
+              placeholder="Выберите вид сообщения"
+            />
+          </Form.Item>
+          <Form.Item name="transportationKind" label="Вид перевозки">
+            <Input placeholder="коммерческая" />
+          </Form.Item>
+
+          {/* Причина обязательна: она уходит в запись операции, в причину аннулирования старого
+            листа и в новый лист (Р16, Р35) — и через два месяца отвечает на вопрос, почему за один
+            день в журнале два номера. */}
+          <FormGrid.Full>
+            <Form.Item
+              name="reason"
+              label="Причина коррекции"
+              rules={[{ required: true, message: 'Укажите причину' }]}
+              extra="Останется в журнале, в аннулированном листе и в новом"
+            >
+              <Input.TextArea
+                rows={2}
+                maxLength={2000}
+                placeholder="На рейс выехала другая машина: ТС-341 в ремонте"
+              />
+            </Form.Item>
+          </FormGrid.Full>
+
+          {route && isRelocationPurpose(route.purpose) && (
+            <FormGrid.Full>
+              <Typography.Text type="secondary">
+                Это перегон техники: состава у него нет, и назначение заявки коррекция не трогает —
+                машину заказа правят в его карточке.
+              </Typography.Text>
+            </FormGrid.Full>
+          )}
+          {previewLoading && (
+            <FormGrid.Full>
+              <Typography.Text type="secondary">Считаем последствия…</Typography.Text>
+            </FormGrid.Full>
+          )}
+        </FormGrid>
+      </Form>
+    </FormModal>
+  );
+}

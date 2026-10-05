@@ -17,7 +17,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { waybillKeys, WarnedSheetsConfirm } from '@entities/waybill';
 import { driverKeys, driversApi } from '@entities/driver';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
-import { recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
+import { recheckReasonOf, warnedSheetsOf } from '@features/vehicle-assignment';
 import { MachinistAnchorFields } from './MachinistFields';
 import { MachinistChangePreview, MachinistForbiddenAlert } from './MachinistChangePreview';
 import { KnownFillFields, KnownFillsMade, madeFillsOf, TailResolutionField } from './RepairFields';

@@ -384,8 +384,8 @@ ASSIGNMENT_CUTOVER_READY=1 npx vitest run test/esm2-week-audit.test.ts
 ## 9. Что осталось за границами этой волны
 
 - **Фронт.** Ю10: `esm2Periods` считают `VehicleEsm2Modal`, `VehicleEarlyEndModal` и
-  `assignDriverHints`; у `VehicleEarlyEndModal` теста нет вовсе. Периметр `apps/web/test` здесь не
-  инвентаризован — храповик сканирует только `apps/api/test`.
+  `features/vehicle-assignment/model/people.ts`; у `VehicleEarlyEndModal` теста нет вовсе. Периметр
+  `apps/web/test` здесь не инвентаризован — храповик сканирует только `apps/api/test`.
 - **`assignment-rollback.db.test.ts`** держит свою копию переключения режима намеренно (отдельный
   процесс, гонка на двух соединениях) и на механику не переводился.
 - **Гейт `ASSIGNMENT_CUTOVER_READY=1`** сегодня отвечает «32 незакрытых». Это и есть мера остатка

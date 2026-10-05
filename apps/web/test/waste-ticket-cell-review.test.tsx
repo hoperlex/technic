@@ -5,7 +5,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { wasteRequest } from './factories/waste';
 import { TicketCell } from '../src/features/waste-ticket-review';
-import { WasteRequestViewModal } from '../src/pages/waste/WasteRequestViewModal';
+import { WasteRequestView } from '@widgets/waste-request-view';
 
 /**
  * Крестик колонки «Талоны» и его подсказка (ADR 0195).
@@ -153,7 +153,7 @@ describe('карточка с разбором открывается и у за
     });
 
     renderWithUser(
-      <WasteRequestViewModal
+      <WasteRequestView
         // Заявка закрыта, бумаги за ней не числится, донести талон уже нельзя — и всё же за ней
         // висит неподтверждённый талон, заведённый руками.
         request={wasteRequest({

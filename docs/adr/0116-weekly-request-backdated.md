@@ -18,7 +18,9 @@
   `apps/api/src/routes/weekly-vehicle-requests.ts`,
   `apps/api/src/services/weekly-request-apply.ts`,
   `apps/api/src/services/vehicle-request-period.ts`, `apps/api/src/services/waybill-esm2.ts`,
-  `apps/api/src/lib/access.ts`, `apps/web/src/pages/vehicle/WeeklyRequest*.tsx`
+  `apps/api/src/lib/access.ts`,
+  `apps/web/src/widgets/weekly-request-workspace/model/useWeeklyRequestWorkspace.tsx`,
+  `apps/web/src/widgets/weekly-request-workspace/ui/WeeklyRequestConductModal.tsx`
 - Миграции: `0157` — вид операции `weekly` в `waybill_corrections_kind_check`
 
 ## Контекст

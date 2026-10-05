@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reassignRequestBody } from '../src/pages/vehicle/assignCommand';
+import { reassignRequestBody } from '@features/vehicle-assignment';
 
 /**
  * The body of the vehicle change (`PATCH /vehicle-requests/:id/assignment`) as the requests list

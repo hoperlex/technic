@@ -459,7 +459,7 @@ SELECT j.id, j.next_run_at FROM jobs j
   стоит наката двухсот миграций на каждый файл.
 - 111 предупреждений линта (`max-lines` 34, `no-unused-vars` 31, `exhaustive-deps` 25,
   `consistent-type-imports` 21) не разбираются. `exhaustive-deps` в
-  [VehicleAssignModal.tsx](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx) (9 штук, среди них
+  [VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx) (9 штук, среди них
   пропущенные `request` и `form`) стоит посмотреть отдельной работой — там возможен настоящий
   дефект, но вслепую его не найти.
 - `pg`: `Client.activeQuery` и `Client.queryQueue` объявлены устаревшими и исчезнут в pg@9. Это

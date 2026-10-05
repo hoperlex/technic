@@ -44,20 +44,22 @@ const ALLOWED = {
   // записано, хотя записи как раз и не было.
   'features/device-poll/model/actions.ts':
     'исход опроса по сети: показание не записано (молчание, чужой серийник, нет счётчика), формы нет',
-  'pages/waste/WasteRequestsPage.tsx':
-    'стражи загрузки: число файлов и размер — про действие, не про поле',
-  'pages/waste/WasteDoneModal.tsx': 'стражи загрузки талона: число и размер файла',
-  // Догрузка талонов к выполненной заявке (ADR 0189): формы здесь нет вовсе — блок живёт в
-  // карточке заявки, — а оба тоста про само действие: сколько бумаги уже за заявкой числится и
-  // какой файл хранилище примет. Те же два стража, что в окне закрытия строкой выше.
+  // Upload guards describe an attempted action, not a missing form value: the editor owns request
+  // files, while the completion dialog owns the initial ticket batch.
+  'features/waste-request-editor/ui/WasteRequestEditorSchedule.tsx':
+    'request upload guards: file count and size are action outcomes, not field validation',
+  'features/waste-request-completion/ui/WasteRequestCompletionModal.tsx':
+    'completion upload guards: ticket count and file size',
+  // Adding tickets to a completed request has no form field to mark. Both notices describe the
+  // attempted action: the request-wide paper limit and the storage file-size limit (ADR 0189).
   'features/waste-ticket-attach/ui/AddTicketsBlock.tsx':
     'стражи загрузки талона в карточке: число и размер файла, формы нет',
-  // Поле причины окно помечает само и тут же, текстом ответа; тост говорит, ЧТО случилось —
-  // сервер ответил 409 про уже предъявленный номер. Это ответ на действие, как `message.error`
-  // строкой ниже, а не отказ по пустому полю.
+  // The modal marks its reason field immediately; the toast reports an action outcome instead:
+  // the server rejected an already submitted ticket number with 409. There is no empty field to
+  // mark here, just as for the adjacent `message.error` response.
   'features/waste-ticket-review/ui/TicketFormModal.tsx':
     'дубль номера талона: 409 сервера, поле причины помечено рядом',
-  'pages/admin/ChangeEmailModal.tsx':
+  'features/user-account-lifecycle/ui/ChangeEmailModal.tsx':
     'предупреждение по итогу успешной смены адреса, а не отказ формы',
   /*
    * Два места волны кандидатов на добавление техники (план `docs/office-equipment-candidate-plan.md`),

@@ -30,7 +30,7 @@
   [driverRemovalConfirm.tsx](../../apps/web/src/pages/directories/driverRemovalConfirm.tsx),
   [DriversTab.tsx](../../apps/web/src/pages/directories/DriversTab.tsx),
   [VehicleEsm2Modal.tsx](../../apps/web/src/pages/vehicle/VehicleEsm2Modal.tsx),
-  [VehicleRequestViewModal.tsx](../../apps/web/src/pages/vehicle/VehicleRequestViewModal.tsx) и
+  [VehicleRequestViewModal.tsx](../../apps/web/src/widgets/vehicle-request-view/ui/VehicleRequestViewModal.tsx) и
   [VehicleMachinistModal.tsx](../../apps/web/src/pages/vehicle/VehicleMachinistModal.tsx)
   (17.09.2026 — плашка карточки заказа и имена состава); тесты —
   [esm2-correction.db.test.ts](../../apps/api/test/esm2-correction.db.test.ts),

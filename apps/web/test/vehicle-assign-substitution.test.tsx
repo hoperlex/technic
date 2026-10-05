@@ -5,7 +5,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
 import { machinist, vehicleRequest } from './factories/vehicle';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 
 /**
  * Подбор техники в форме перевода в работу не сужен ничем: ни заказанной категорией (ADR 0045),

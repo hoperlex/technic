@@ -29,8 +29,12 @@ import {
   defaultUnit,
   plannedAmount,
 } from './completionCommand';
-import { acknowledgementsOf, recheckReasonOf, warnedSheetsOf } from './assignmentWarnings';
-import { reassignStaleReason } from './ReassignPreview';
+import {
+  acknowledgementsOf,
+  reassignStaleReason,
+  recheckReasonOf,
+  warnedSheetsOf,
+} from '@features/vehicle-assignment';
 
 /**
  * Закрытие заявки фактом (ADR 0029) и фактической датой (ADR 0178).

@@ -4,7 +4,7 @@ import {
   subjectFilterPatch,
   subjectFilterValue,
   subjectKindValue,
-} from '../src/pages/waste/subjectFilter';
+} from '@widgets/waste-request-feed';
 
 /**
  * Фильтр «Контейнер / машина» в списке заявок на вывоз. Одно поле спрашивает две разные вещи —

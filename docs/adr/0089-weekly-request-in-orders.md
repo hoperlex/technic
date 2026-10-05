@@ -15,7 +15,9 @@
   `packages/contracts/src/weekly-vehicle-requests.ts`,
   `apps/api/src/services/weekly-request-access.ts`,
   `apps/api/src/services/weekly-request-blockers.ts`, `apps/api/src/lib/access.ts`,
-  `apps/web/src/pages/vehicle/`. **Миграций нет: схема БД не менялась.**
+  `apps/web/src/widgets/vehicle-request-feed/model/useVehicleRequestFeedState.tsx`,
+  `apps/web/src/widgets/weekly-request-workspace/index.ts`,
+  `apps/web/src/features/weekly-request-create/index.ts`. **Миграций нет: схема БД не менялась.**
 
 ## Контекст
 

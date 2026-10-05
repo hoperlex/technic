@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Checkbox, Empty, Input, Space, Tag, Typography } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import type { Permission } from '@technic/contracts';
-import { GRANT_MODULE_GROUPS, type GrantModuleGroup, permissionLabel } from './grantModel';
+import { GRANT_MODULE_GROUPS, type GrantModuleGroup, permissionLabel } from '@entities/grant';
 
 /**
  * Средняя часть конструктора (план §12): права чекбоксами, сгруппированные по модулям, с

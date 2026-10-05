@@ -29,7 +29,7 @@
   [GrantEffectPanel.tsx](../../apps/web/src/pages/admin/GrantEffectPanel.tsx),
   [GrantImpactConfirm.tsx](../../apps/web/src/pages/admin/GrantImpactConfirm.tsx),
   [GrantHoldersModal.tsx](../../apps/web/src/pages/admin/GrantHoldersModal.tsx),
-  [grantModel.ts](../../apps/web/src/pages/admin/grantModel.ts),
+  [grantModel.ts](../../apps/web/src/entities/grant/model/grantModel.ts),
   [grantsApi.ts](../../apps/web/src/entities/grant/api/grantsApi.ts) и
   [keys.ts](../../apps/web/src/entities/grant/api/keys.ts) (ручки и ключи кэша);
   подключение — [AdministrationPage.tsx](../../apps/web/src/pages/admin/AdministrationPage.tsx); сервер —

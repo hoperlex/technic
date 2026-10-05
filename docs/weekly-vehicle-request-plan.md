@@ -83,7 +83,7 @@
    не применилась ни одна строка, не становится применённой.
 5. **Арендная техника документов от портала не получает** (Р19). `esm2Required`
    (`packages/contracts/src/waybills.ts:140`) требует `ownership === 'own'`, доставку форма
-   назначения предлагает только своей машине (`apps/web/src/pages/vehicle/VehicleAssignModal.tsx:404`).
+   назначения предлагает только своей машине (`apps/web/src/widgets/vehicle-assignment-dialog`).
    Чек-лист пишет «ведёт арендодатель», а не «документа нет».
 
 ---
@@ -975,7 +975,7 @@ export async function applyWeeklyRequest(tx, params: {
 - `src/pages/vehicle/VehicleRequestsPage.tsx` — вкладка «Недельные заявки»;
 - `src/pages/vehicle/VehicleRequestsOnSiteTab.tsx` — кнопка «Заявка на неделю»;
 - `src/pages/vehicle/VehicleRequestViewModal.tsx` — «Создан по НЗ-12» и список продлений (Р16);
-- `src/pages/vehicle/VehicleAssignModal.tsx` — предзаполнение доставки из `weeklyOrigin` (Р11);
+- `src/widgets/vehicle-assignment-dialog` — предзаполнение доставки из `weeklyOrigin` (Р11);
 - `src/api/resources.ts` — `weeklyRequestsApi`.
 
 Понятие недели портал берёт из контрактов (`selectableWeeks`, `weeklyWeekLabel`): вторая реализация

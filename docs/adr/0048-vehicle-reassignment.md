@@ -6,7 +6,7 @@
   [ADR 0021](0021-permissions-model.md) (матрица прав),
   [ADR 0037](0037-freight-transport-waybill.md) (путевой лист), маршруты (вкладка «Маршруты»),
   `packages/contracts/src/vehicle-requests.ts`, `apps/api/src/routes/vehicle-requests.ts`,
-  `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`. Миграции не требует
+  `apps/web/src/widgets/vehicle-assignment-dialog`. Миграции не требует
 
 ## Контекст
 

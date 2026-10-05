@@ -6,7 +6,7 @@ import { FILE_MAX_COUNT, FILE_MAX_SIZE, fileLimitsHint } from '@shared/config';
  * их через `resolve.tsconfigPaths`. Разойтись эти три инструмента могут молча: `tsc --noEmit`
  * останется зелёным, а сборка или тесты упадут на «cannot resolve». Здесь проверяется резолвинг
  * vitest; за vite отвечает сборка (в графе приложения `@shared/config` импортирует
- * `WasteDoneModal`), за tsc — сам typecheck.
+ * `WasteRequestCompletionModal`), за tsc — сам typecheck.
  */
 describe('алиасы слоёв', () => {
   it('модуль shared доступен по алиасу, а не по относительному пути', () => {

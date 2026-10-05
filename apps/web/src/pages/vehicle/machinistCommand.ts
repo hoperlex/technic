@@ -61,7 +61,7 @@ export interface MachinistCommandExtras {
   unlockFingerprint?: string | null;
   /** Причина и ключ идемпотентности — там, где их спросил `operationRequirement` (Р32). */
   operation?: { operationId: string; reason: string } | null;
-  /** Signatures per warned sheet (B4) from the shown preview; see `assignmentWarnings.ts`. */
+  /** Signatures per warned sheet (B4) from the shown assignment preview. */
   acknowledgements?: Record<string, string>;
 }
 

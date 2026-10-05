@@ -6,7 +6,7 @@ import {
   findContainerGroup,
   parseContainerGroupKey,
   presentGroupsHint,
-} from '../src/pages/waste/containerGroups';
+} from '@entities/waste-request';
 
 /**
  * Выбор контейнера в заявке на замену и снятие (ADR 0054). Форма спрашивает одним полем — «какой

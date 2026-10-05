@@ -118,8 +118,8 @@
 затирать ввод. Приём, которым это записывается, выбран заказчиком — `useEffectEvent` (Р4).
 
 В портале уже стоят **12 мест** с `eslint-disable-next-line react-hooks/exhaustive-deps`
-([VehicleRoutesModal.tsx:125](../apps/web/src/pages/vehicle/VehicleRoutesModal.tsx#L125),
-[useTrailerGraphs.ts:214](../apps/web/src/pages/vehicle/useTrailerGraphs.ts#L214),
+([VehicleRoutesModal.tsx](../apps/web/src/widgets/vehicle-route-windows/ui/VehicleRoutesModal.tsx),
+[useTrailerGraphs.ts](../apps/web/src/features/vehicle-route-trailer/model/useTrailerGraphs.ts),
 [CheckboxPicker.tsx:100](../apps/web/src/shared/ui/CheckboxPicker.tsx#L100) и др.) — то есть
 половина портала решение уже записала, но записала выключением проверки. Этот план их не трогает
 (они линт не красят), а новое пишет иначе.
@@ -130,7 +130,7 @@
 `useMemo` строкой ниже. Мемоизация там не работает вовсе — считается каждый раз. Не корректность,
 но и не то, ради чего писали `useMemo`.
 
-Второе — [VehicleAssignModal.tsx:270](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L270) —
+Второе — [VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx) —
 единственное место замера, которое выбранным приёмом **не закрывается**: это `useMemo`, а
 `useEffectEvent` вызывается только из эффекта, и плагин это проверяет уровнем `rules-of-hooks`
 (ошибка). Редакция 2 делала отсюда вывод «значит `disable`»; редакция 3 его отменила — приём
@@ -645,7 +645,7 @@ sed 's|…, \[targetId\]);|…, []);|' <файл> | npx eslint --stdin --stdin-f
   `VehicleCompleteModal:179`, `VehicleEarlyEndModal:112`, `VehiclePeriodModal:104`,
   `VehicleEarlyEndApproveModal:77`. Форма — с аргументом (Р4, редакция 3), и ворота проверяют
   снятие ключа, а не вызов;
-- **разобрать по существу** (1) — [VehicleAssignModal.tsx:270](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L270).
+- **разобрать по существу** (1) — [VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx).
 
 **Последнее переписано редакцией 3: `disable` там не обоснован** (найдено ревью 11.09.2026).
 Редакция 2 утверждала, что дописать `request` нельзя, потому что `vehicleCategorySpecs` приходит

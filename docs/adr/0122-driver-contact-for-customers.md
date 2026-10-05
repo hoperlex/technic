@@ -13,7 +13,7 @@
   [ADR 0102](0102-driver-cabinet.md) (обратная сторона: водитель видит своё задание, а не заказчика);
   `apps/api/src/routes/vehicle-requests.ts`, `apps/api/src/lib/access-manifest.ts`,
   `packages/contracts/src/vehicle-requests.ts`,
-  `apps/web/src/pages/vehicle/VehicleRequestViewModal.tsx`,
+  `apps/web/src/widgets/vehicle-request-view`,
   `apps/web/src/pages/vehicle/VehicleRequestDays.tsx`
 - Миграций не требует, схему не трогает
 

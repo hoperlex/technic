@@ -3,8 +3,8 @@
 - Статус: Принято
 - Связано: `apps/api/drizzle/0031_request_files_kind.sql`, `apps/api/src/db/schema.ts`,
   `packages/contracts/src/waste-requests.ts`, `apps/api/src/routes/waste-requests.ts`,
-  `apps/web/src/pages/waste/WasteDoneModal.tsx`,
-  `apps/web/src/pages/waste/WasteRequestViewModal.tsx`,
+  `apps/web/src/features/waste-request-completion/ui/WasteRequestCompletionModal.tsx`,
+  `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`,
   `apps/web/src/pages/waste/WasteRequestsPage.tsx`
 
 ## Контекст

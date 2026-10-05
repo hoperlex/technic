@@ -11,7 +11,7 @@
   [ADR 0027](0027-vehicle-request-assignment.md) (техника при переводе в работу),
   [ADR 0037](0037-freight-transport-waybill.md) (бланк закреплён за типом ТС),
   `packages/contracts/src/vehicles.ts`, `apps/api/src/routes/vehicle-requests.ts`,
-  `apps/api/src/routes/vehicle-routes.ts`, `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`,
+  `apps/api/src/routes/vehicle-routes.ts`, `apps/web/src/widgets/vehicle-assignment-dialog`,
   план `docs/vehicle-larger-type-plan.md`, миграция `0083` (и `0084` — следующим релизом)
 
 ## Контекст

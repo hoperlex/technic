@@ -9,8 +9,8 @@ import {
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { FormGrid, FormModal } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
-import { DayBatchFields, type DayBatchFormValues } from './DayBatchFields';
-import { useDayBatch } from './useDayBatch';
+import type { DayBatchFormValues } from '@features/vehicle-assignment';
+import { DayBatchFields, useDayBatch } from '@widgets/vehicle-assignment-dialog';
 
 /**
  * «Распланировать период» — вторая дверь пачки «4-П на весь период» (ADR 0207 решение 4).

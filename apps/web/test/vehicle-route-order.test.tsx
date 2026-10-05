@@ -4,7 +4,7 @@ import type { VehicleRequestRouteDto, VehicleRouteDto } from '@technic/contracts
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
-import { VehicleRouteModal } from '../src/pages/vehicle/VehicleRouteModal';
+import { VehicleRouteModal } from '@widgets/vehicle-route-windows';
 
 /**
  * Карточка рейса: порядок заявок — это строки задания бланка 4-П, и переставляются они стрелками

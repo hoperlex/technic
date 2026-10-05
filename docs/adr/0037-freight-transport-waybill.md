@@ -9,7 +9,7 @@
   [ADR 0005](0005-vehicle-types-flatten.md) (плоский классификатор),
   [ADR 0021](0021-permissions-model.md) (модель прав),
   `packages/contracts/src/vehicle-requests.ts`, `apps/api/src/routes/vehicle-requests.ts`,
-  `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`, миграции `0058`+
+  `apps/web/src/widgets/vehicle-assignment-dialog`, миграции `0058`+
 
 ## Контекст
 

@@ -17,7 +17,8 @@
   [ADR 0041](0041-waybill-freight-only-and-printing.md) (у кого бывает лист, а у кого ЭСМ-2);
   `packages/contracts/src/vehicle-routes.ts`, `apps/api/src/routes/vehicle-requests.ts`,
   `apps/api/src/services/vehicle-routes.ts`,
-  `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`
+  `apps/web/src/features/vehicle-assignment`,
+  `apps/web/src/widgets/vehicle-assignment-dialog`
 - Миграций не требует
 
 ## Контекст

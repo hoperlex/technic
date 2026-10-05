@@ -706,7 +706,7 @@ CREATE INDEX vehicle_requests_linear_frozen_idx
   — счётчик замороженных рядом с признаком;
 - `VehicleRequestViewModal.tsx`, `VehicleRequestsTab.tsx` — метка «прежний режим: по неделям / по
   дням, с <дата>» (Р7);
-- [`VehicleAssignModal.tsx`](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx) — вызов
+- [`VehicleAssignModal.tsx`](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx) — вызов
   предпросмотра статуса в `onSubmit` и второй шаг с последствиями на откате `done → confirmed`
   (§5.4); сегодня окно шлёт статус сразу
   ([`VehicleRequestsTab.tsx:2365`](../apps/web/src/pages/vehicle/VehicleRequestsTab.tsx#L2365)).

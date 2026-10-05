@@ -8,7 +8,9 @@
   [ADR 0046](0046-waste-request-without-tariff.md) (незаданный тариф не мешает заявке)
 - Связано: `packages/contracts/src/waste-requests.ts`, `packages/contracts/src/enums.ts`,
   `apps/api/src/routes/waste-requests.ts`, `apps/api/src/db/schema.ts`,
-  `apps/web/src/pages/waste/WasteDoneModal.tsx`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
+  `apps/web/src/entities/waste-request/model/presentation.ts`,
+  `apps/web/src/features/waste-request-completion/ui/WasteRequestCompletionModal.tsx`,
+  `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
   миграции `0090`, `0091`
 
 ## Контекст

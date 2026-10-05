@@ -3,7 +3,7 @@ import { screen, fireEvent } from '@testing-library/react';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { wasteRequest } from './factories/waste';
-import { WasteRequestViewModal } from '../src/pages/waste/WasteRequestViewModal';
+import { WasteRequestView } from '@widgets/waste-request-view';
 
 /**
  * Комментарий заявки на вывоз разведён по сторонам (ADR 0053): площадка и исполнитель говорят
@@ -32,9 +32,9 @@ const request = wasteRequest({
  * карточка объявляет строкой «История недоступна»: по ней видно, что запрос отработал. Ожидание
  * обязательно, а не для порядка: ответ, пришедший после теста, обновлял бы снятое с экрана дерево.
  */
-async function renderCard(props: Partial<Parameters<typeof WasteRequestViewModal>[0]> = {}) {
+async function renderCard(props: Partial<Parameters<typeof WasteRequestView>[0]> = {}) {
   mockHttp({ 'GET /waste-requests/:id/history': () => json([]) });
-  renderWithUser(<WasteRequestViewModal request={request} onClose={vi.fn()} {...props} />);
+  renderWithUser(<WasteRequestView request={request} onClose={vi.fn()} {...props} />);
   await screen.findByText('История недоступна');
 }
 

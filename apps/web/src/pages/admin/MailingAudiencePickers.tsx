@@ -3,7 +3,7 @@ import { Button, Modal } from 'antd';
 import { type Permission } from '@technic/contracts';
 import { CheckboxPicker, type CheckboxPickerItem, type CheckboxPickerValue } from '@shared/ui';
 import { GrantPermissionPicker } from './GrantPermissionPicker';
-import { PERMISSION_MODULE_GROUPS, permissionLabel } from './grantModel';
+import { PERMISSION_MODULE_GROUPS, permissionLabel } from '@entities/grant';
 
 /**
  * Поля аудитории, которые открывают окно выбора: набор задаётся не строкой, а кнопкой с объёмом.

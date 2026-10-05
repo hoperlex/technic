@@ -16,7 +16,7 @@ import { selectOption } from './antd';
 import { list } from './factories/common';
 import { vehicleRequest } from './factories/vehicle';
 import { VehicleRequestDays } from '../src/pages/vehicle/VehicleRequestDays';
-import { VehicleRouteModal } from '../src/pages/vehicle/VehicleRouteModal';
+import { VehicleRouteModal } from '@widgets/vehicle-route-windows';
 
 /**
  * Дни линейного заказа в портале (ADR 0100): заказ такой машины ведётся не неделями стояния на

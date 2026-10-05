@@ -1,6 +1,60 @@
-.receipt-recognition-progress {
+.receipt-recognition-panel {
+  /* Reserve the same space before upload and after every OCR transition in the centered modal. */
+  box-sizing: border-box;
+  height: 184px;
+  min-width: 0;
+  padding: 8px 0;
+  border-block: 1px solid;
   display: grid;
-  gap: 4px;
+  grid-template-rows: auto 4px minmax(0, 1fr) 28px;
+  gap: 8px;
+}
+
+.receipt-recognition-panel__heading,
+.receipt-recognition-panel__warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.receipt-recognition-panel__heading > .anticon,
+.receipt-recognition-panel__warning > .anticon {
+  flex: none;
+  margin-top: 4px;
+}
+
+.receipt-recognition-panel__body {
+  /* Long warnings must stay readable without moving the form or its actions. */
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.receipt-recognition-panel__body p {
+  margin: 0 0 4px;
+}
+
+.receipt-recognition-panel__body p:last-child {
+  margin-bottom: 0;
+}
+
+.receipt-recognition-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 575px) {
+  .receipt-recognition-panel {
+    height: 224px;
+    grid-template-rows: auto 4px minmax(0, 1fr) 56px;
+  }
 }
 
 .receipt-recognition-progress__track {
@@ -20,10 +74,6 @@
   animation: receipt-recognition-progress 1.5s ease-in-out infinite alternate;
 }
 
-.receipt-recognition-progress__hint {
-  font-size: 12px;
-}
-
 @keyframes receipt-recognition-progress {
   from {
     transform: translateX(0);
@@ -35,7 +85,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .receipt-recognition-progress__indeterminate,
-  .receipt-recognition-progress .anticon-spin {
+  .receipt-recognition-panel .anticon-spin {
     animation: none;
   }
 }

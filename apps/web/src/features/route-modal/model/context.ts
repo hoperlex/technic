@@ -1,44 +1,48 @@
 import { createContext, useContext } from 'react';
 import type { VehicleRouteDto } from '@technic/contracts';
 
-/**
- * Договор окон рейса, списка рейсов и заявки (ADR 0120). Сам провайдер живёт в `pages/vehicle`
- * (`routeModal.tsx`): он рисует четыре окна слоя `pages`, и переехать сюда целиком не может.
- * Здесь — только то, что нужно зовущей стороне.
- */
+/** Commands available to records that open URL-backed route/request windows (ADR 0120). */
 export interface RouteModalApi {
-  /** Карточка рейса поверх текущей страницы. Заявку, если она открыта, вытесняет. */
+  /** Open one route and displace a request overlay if present. */
   openRoute: (routeId: string) => void;
-  /**
-   * Список рейсов. `focusDate` — просьба встать на этот день: пришли из рейса позавчерашнего дня,
-   * и список, оставшийся на сегодняшнем, этого рейса не показал бы вовсе.
-   */
+  /** Open the route list and optionally focus the period containing one date. */
   openRoutesList: (options?: { focusDate?: string }) => void;
-  /** Карточка заявки на чтение — ложится поверх рейса или списка, из которых её открыли. */
+  /** Overlay a read-only request without discarding the route underneath it. */
   openRequest: (requestId: string) => void;
-  /**
-   * Правка реквизитов рейса — окном поверх того, откуда её позвали: карточки рейса или строки
-   * списка. Единственный метод контракта, который адреса не трогает вовсе: правка — шаг внутри
-   * окна, а не место, куда ходят по ссылке.
-   */
+  /** Open the non-addressable edit child owned by the current route card or list. */
   editRoute: (route: VehicleRouteDto) => void;
 }
 
-/**
- * Экспортируется ради тестов — по той же причине, что и `AuthContext`: они подставляют заглушку
- * значением контекста, а не поднимают провайдер с настоящими окнами и запросами внутри.
- */
-export const RouteModalContext = createContext<RouteModalApi | undefined>(undefined);
+/** URL-backed route windows consumed by the public route-window widget. */
+export interface RouteModalWindowsState {
+  listOpen: boolean;
+  focus: { date?: string; token: number };
+  routeId: string | null;
+  editing: VehicleRouteDto | null;
+  refresh: () => void;
+  closeRoutesList: () => void;
+  closeRoute: () => void;
+  editRoute: (route: VehicleRouteDto) => void;
+  closeEdit: () => void;
+  finishEdit: (route: VehicleRouteDto) => void;
+}
 
-/**
- * Чем открыть рейс, список рейсов и заявку с любого экрана портала.
- *
- * Отсутствие контекста — ошибка монтажа, а не «нет прав»: провайдер стоит над всей веткой
- * `AppLayout`, и любая страница портала под ним. Молча проглоченный клик по номеру рейса читался
- * бы как поломка самого рейса, а не сборки приложения, — поэтому падаем громко.
- */
+/** Exported so tests can replace expensive route windows with command spies. */
+export const RouteModalContext = createContext<RouteModalApi | undefined>(undefined);
+export const RouteModalWindowsContext = createContext<RouteModalWindowsState | undefined>(
+  undefined,
+);
+
 export function useRouteModal(): RouteModalApi {
-  const ctx = useContext(RouteModalContext);
-  if (!ctx) throw new Error('useRouteModal должен использоваться внутри RouteModalProvider');
-  return ctx;
+  const context = useContext(RouteModalContext);
+  if (!context) throw new Error('useRouteModal должен использоваться внутри RouteModalProvider');
+  return context;
+}
+
+export function useRouteModalWindows(): RouteModalWindowsState {
+  const context = useContext(RouteModalWindowsContext);
+  if (!context) {
+    throw new Error('useRouteModalWindows должен использоваться внутри RouteModalProvider');
+  }
+  return context;
 }

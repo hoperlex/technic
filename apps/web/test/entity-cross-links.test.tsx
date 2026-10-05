@@ -8,7 +8,7 @@ import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { vehicleFeed, vehicleRequest, vehicleSummary } from './factories/vehicle';
 import { wasteRequest } from './factories/waste';
-import { VehicleRoutesModal } from '../src/pages/vehicle/VehicleRoutesModal';
+import { VehicleRoutesModal } from '@widgets/vehicle-route-windows';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 import { VehicleRequestsPage } from '../src/pages/vehicle';
 import { WaybillsPage } from '../src/pages/waybills';

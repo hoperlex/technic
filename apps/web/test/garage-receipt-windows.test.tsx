@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type {
   AutoPartReceiptDto,
@@ -134,15 +134,85 @@ function renderParts(route: string, role: 'mechanic' | 'manager' | 'admin' = 'me
     'GET /auto-part-receipts/scans/f-draft/recognition': () =>
       json({
         fileId: 'f-draft',
-        status: 'unsupported',
+        status: 'done',
         queuedAt: null,
         delayed: false,
-        totalPages: 0,
-        processedPages: 0,
-        draft: null,
-        errorClass: 'terminal',
-        errorScope: 'item',
-        message: 'Тестовый файл',
+        totalPages: 1,
+        processedPages: 1,
+        draft: {
+          header: {
+            documentNumber: 'DRAFT-42',
+            purchasedOn: '2026-09-15',
+            purchasedOnRaw: '15.09.2026',
+            purchasedOnIssue: '',
+            sellerName: 'Черновик Поставщик',
+          },
+          lines: [
+            {
+              article: 'A-42',
+              name: 'Фильтр из черновика',
+              quantity: 2,
+              quantityRaw: '2',
+              unit: 'шт',
+              amount: 3200,
+              kind: 'part',
+              issues: [],
+            },
+          ],
+          notes: {
+            linesTotal: 3200,
+            documentTotal: 3200,
+            draftTotal: 3200,
+            linesTruncated: false,
+            recognizedLines: 1,
+            droppedLines: 0,
+          },
+        },
+        errorClass: null,
+        errorScope: null,
+        message: '',
+        duplicate: null,
+      }),
+    'GET /auto-part-receipts/scans/f-draft-2/recognition': () =>
+      json({
+        fileId: 'f-draft-2',
+        status: 'done',
+        queuedAt: null,
+        delayed: false,
+        totalPages: 1,
+        processedPages: 1,
+        draft: {
+          header: {
+            documentNumber: '',
+            purchasedOn: '',
+            purchasedOnRaw: '',
+            purchasedOnIssue: '',
+            sellerName: '',
+          },
+          lines: [
+            {
+              article: 'B-8',
+              name: 'Шланг второго листа',
+              quantity: 1,
+              quantityRaw: '1',
+              unit: 'шт',
+              amount: 1800,
+              kind: 'part',
+              issues: [],
+            },
+          ],
+          notes: {
+            linesTotal: 5000,
+            documentTotal: 5000,
+            draftTotal: 1800,
+            linesTruncated: false,
+            recognizedLines: 1,
+            droppedLines: 0,
+          },
+        },
+        errorClass: null,
+        errorScope: null,
+        message: '',
         duplicate: null,
       }),
   });
@@ -217,6 +287,7 @@ describe('окно «Принять чек»', () => {
           note: '',
         },
       ],
+      appliedFileIds: ['f-draft'],
     });
 
     renderParts(`/garage?tab=parts&newReceipt=1&date=${ON_DATE}`);
@@ -225,6 +296,51 @@ describe('окно «Принять чек»', () => {
     expect(screen.getByDisplayValue('Черновик Поставщик')).toBeDefined();
     expect(screen.getByDisplayValue('Фильтр из черновика')).toBeDefined();
     expect(screen.getByText('draft.pdf')).toBeDefined();
+    expect(await screen.findByText('Распознанные позиции уже в форме')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Заполнить форму' })).toBeNull();
+  });
+
+  it('после F5 добавляет второй лист, сохраняя ручную правку первого', async () => {
+    saveReceiptCreateDraft('user-1', {
+      values: {
+        purchasedOn: '2026-09-15',
+        documentNumber: 'DRAFT-42',
+        sellerName: 'Черновик Поставщик',
+        note: '',
+      },
+      files: [
+        { id: 'f-draft', filename: 'first.pdf', isNew: true },
+        { id: 'f-draft-2', filename: 'second.jpg', isNew: true },
+      ],
+      rows: [
+        {
+          key: 'edited-first-line',
+          vehicleId: null,
+          toWarehouse: false,
+          article: 'A-42',
+          name: 'Фильтр исправлен вручную',
+          quantity: 2,
+          unit: 'шт',
+          amount: 3200,
+          note: '',
+        },
+      ],
+      appliedFileIds: ['f-draft'],
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      renderParts(`/garage?tab=parts&newReceipt=1&date=${ON_DATE}`);
+      expect(await screen.findByText('Новых позиций: 1')).toBeDefined();
+      fireEvent.click(screen.getByRole('button', { name: 'Добавить новые строки' }));
+
+      expect(confirm).not.toHaveBeenCalled();
+      expect(screen.getByDisplayValue('Фильтр исправлен вручную')).toBeDefined();
+      expect(await screen.findByDisplayValue('Шланг второго листа')).toBeDefined();
+      expect(screen.getByText(/Всего по чеку: 5 000,00 ₽/)).toBeDefined();
+      expect(screen.getByText('Распознанные позиции уже в форме')).toBeDefined();
+    } finally {
+      confirm.mockRestore();
+    }
   });
 
   it('менеджер открывает форму по праву роли', async () => {

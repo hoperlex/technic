@@ -17,8 +17,8 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { weeklyItem, weeklyRequest } from './factories/vehicle';
-import { WeeklyRequestPage } from '../src/pages/vehicle/WeeklyRequestPage';
-import { weeklyToday } from '../src/pages/vehicle/weeklyShared';
+import { weeklyToday } from '@entities/weekly-request';
+import { WeeklyRequestPage } from '@pages/vehicle';
 
 /**
  * Просроченная недельная заявка на экране: черновик дожил до своей недели, техника эти дни

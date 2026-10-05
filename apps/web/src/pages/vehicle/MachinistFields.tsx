@@ -1,7 +1,7 @@
 import { Alert, DatePicker, Form, Typography } from 'antd';
 import type { DriverDto, RequiredAnchor, SpecialEquipmentRequestDto } from '@technic/contracts';
 import { AutoSelect } from '@shared/ui';
-import { machinistOption } from './assignDriverHints';
+import { machinistOption } from '@features/vehicle-assignment';
 import { formatDateOnly } from '@shared/lib';
 
 /**

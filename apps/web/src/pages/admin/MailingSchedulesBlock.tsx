@@ -16,7 +16,7 @@ import { formatDateTime } from '@shared/lib';
 import { mailingErrorMessage as errorMessage } from '@entities/mailing';
 import { MailingScheduleForm } from './MailingScheduleForm';
 import { mailingRunColumns } from './mailingRunColumns';
-import { permissionLabel } from './grantModel';
+import { permissionLabel } from '@entities/grant';
 import {
   ALL_WEEKDAYS,
   saveErrorMessage,

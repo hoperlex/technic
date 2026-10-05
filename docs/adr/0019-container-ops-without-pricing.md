@@ -5,7 +5,7 @@
 - Связано: `packages/contracts/src/waste-tariffs.ts`, `packages/contracts/src/waste-requests.ts`,
   `apps/api/src/routes/waste-requests.ts`, `apps/api/src/services/waste-pricing.ts`,
   `apps/api/src/db/schema.ts`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
-  `apps/web/src/pages/waste/WasteRequestViewModal.tsx`
+  `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`
 
 ## Контекст
 

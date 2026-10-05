@@ -18,7 +18,7 @@ import { useEarlyEnd } from './earlyEndActions';
 import { onSiteCard } from './onSiteCard';
 import { onSiteColumns } from './onSiteColumns';
 import { onSiteFilters } from './onSiteFilters';
-import { useWeeklyRequestCreate } from './weeklyShared';
+import { useWeeklyRequestCreate } from '@features/weekly-request-create';
 
 /**
  * Техника, которая работает на объектах прямо сейчас (ADR 0036). Первая вкладка отвечает на «что

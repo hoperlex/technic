@@ -3,7 +3,7 @@ import type { AssignmentPreviewDto } from '@technic/contracts';
 import { TailMismatchAlert } from './AssignmentHistoryPanel';
 import { driverStateLabel, type AssignmentSegment } from './assignmentTimeline';
 import { formatDateOnly } from '@shared/lib';
-import { listStyle } from './consequencesList';
+import { consequencesListStyle as listStyle } from '@entities/vehicle-request';
 
 /**
  * Цена смены машиниста, прочитанная человеком **до** нажатия (этап 6 плана

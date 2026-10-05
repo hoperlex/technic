@@ -5,7 +5,7 @@ import type {
   RepairPreviewDto,
   TailResolution,
 } from '@technic/contracts';
-import { acknowledgementsOf } from './assignmentWarnings';
+import { acknowledgementsOf } from '@features/vehicle-assignment';
 
 /**
  * Сборка тела двери ремонта (подэтап 6a плана `docs/assignment-periods-plan.md`, Р29).
@@ -41,7 +41,7 @@ interface Handshake {
    * fingerprint, and a preview without it never matches a command with it.
    */
   restore?: boolean;
-  /** Signatures per warned sheet (B4), from the shown preview; see `assignmentWarnings.ts`. */
+  /** Signatures per warned sheet (B4), from the shown assignment preview. */
   acknowledgements?: Record<string, string>;
 }
 

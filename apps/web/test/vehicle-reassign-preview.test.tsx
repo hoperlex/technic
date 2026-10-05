@@ -6,7 +6,7 @@ import { apiError, json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
 import { assignmentPreview, machinist, vehicleRequest } from './factories/vehicle';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 
 /**
  * Последствия смены техники — вторым шагом окна (волна 4a плана `docs/assignment-periods-plan.md`).

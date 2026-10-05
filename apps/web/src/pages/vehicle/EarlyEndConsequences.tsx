@@ -1,7 +1,7 @@
 import { Alert, Space, Typography } from 'antd';
 import type { EarlyEndApprovalPreviewDto } from '@technic/contracts';
 import { formatDateOnly } from '@shared/lib';
-import { listStyle } from './consequencesList';
+import { consequencesListStyle as listStyle } from '@entities/vehicle-request';
 
 /**
  * Цена досрочного завершения, прочитанная **до** нажатия (ADR 0178, Р19, Р26): и тем, кто просит

@@ -149,11 +149,11 @@
 1. **У тягачей нет требования к категории прав**, и прицеп не поднимает его до CE (§2.1).
 2. **Классификатор техники уже принял прицепной тип**, и в нём лежит тягач (§2.2).
 3. **Второй прицеп некуда ввести.** БД, контракты, снимок и шаблон держат прицеп 2, а спрашивает
-   его **ни одно окно**: и [VehicleRouteEditModal.tsx:344](../apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx#L344),
-   и [VehicleAssignModal.tsx:1920](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L1920) показывают
+   его **ни одно окно**: и [VehicleRouteEditModal.tsx](../apps/web/src/widgets/vehicle-route-windows/ui/VehicleRouteEditModal.tsx),
+   и [VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx) показывают
    только «Прицеп: марка/госномер» первого. Окно назначения вдобавок **теряет** второй на отправке:
    в тело уходят ровно `trailer1Model`/`trailer1RegNumber`
-   ([VehicleAssignModal.tsx:1163](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L1163)).
+   ([VehicleAssignModal.tsx](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx)).
 4. **`trailerLabel` считает половину состава, и собирается он в трёх местах.** Один и тот же
    кусок — `[trailer1Model, trailer1RegNumber].filter(Boolean).join(' ')` — переписан трижды:
 
@@ -314,7 +314,7 @@ A, а потом прицепить B — значит просить его в�
 | `VehicleRouteEditModal`       | да (только слот 1)        | берёт из самого рейса                                                                                                                            |
 | `VehicleRouteCorrectionModal` | да (только слот 1)        | берёт из самого рейса                                                                                                                            |
 | `VehicleDayRouteModal`        | **нет**                   | зовёт `suggest` (:177) и шлёт `trip` как есть                                                                                                    |
-| `VehicleRoutesModal`          | **нет**                   | не спрашивает ничего; водителей просит с жёстко зашитым `withTrailer: false` ([:588](../apps/web/src/pages/vehicle/VehicleRoutesModal.tsx#L588)) |
+| `VehicleRoutesModal`          | **нет**                   | не спрашивает ничего; водителей просит с жёстко зашитым `withTrailer: false` ([CreateRouteModal.tsx](../apps/web/src/widgets/vehicle-route-windows/ui/CreateRouteModal.tsx)) |
 | `VehicleRelocationModal`      | **нет**                   | шлёт только вид сообщения перегона                                                                                                               |
 
 На сервере отсутствие `trip` везде читается одинаково — как «рейс без прицепа»:
@@ -820,7 +820,7 @@ API и формы рейса.
 | `apps/api/src/routes/waybills.ts`                            | то же, журнал листов                                   | ~5    |
 | `apps/api/src/services/driver-assignment.ts`                 | то же, ЭСМ-2 (инертно, но не расходится)               | ~10   |
 | `apps/web/src/pages/vehicle/VehicleRouteEditModal.tsx`       | вторая пара граф                                       | ~35   |
-| `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`          | вторая пара граф **и её отправка** (сегодня теряется)  | ~45   |
+| `apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx` | вторая пара граф **и её отправка** (сегодня теряется)  | ~45   |
 | `apps/web/src/pages/vehicle/VehicleRouteCorrectionModal.tsx` | вторая пара граф                                       | ~35   |
 | `apps/api/test/vehicle-routes-contracts.test.ts`             | паритет трёх мест, отказ слота 2 без слота 1           | ~90   |
 | `apps/api/test/waybill-blank.db.test.ts`                     | второй прицеп доезжает до снимка и печатается          | ~65   |

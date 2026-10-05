@@ -119,10 +119,10 @@ export function FileState({ file }: { file: WasteTicketFileDto }) {
  * Талон ищется по `check.subjectKey` — у построчных проверок это его идентификатор. Не нашёлся
  * (полоса и список разъехались между перерисовками) — кнопки нет: проверить условия нечем.
  *
- * Права здесь не проверяются намеренно и это не упущение: вся панель разбора монтируется только
- * с `wasteRequests.ticketReview` (`WasteRequestViewModal`, ADR 0114, Р25), и «Подтвердить»,
- * «Исправить», «Не талон» рядом живут по тому же признаку. Своя проверка означала бы второе
- * правило доступа, которое однажды разойдётся с первым.
+ * Permission checks intentionally stay outside this component. `WasteRequestView` mounts the
+ * whole review panel only with `wasteRequests.ticketReview` (ADR 0114, R25), including the sibling
+ * confirm, correct and dismiss actions. Rechecking here would create a second access rule that
+ * could drift from the panel boundary.
  */
 function yearFixTarget(
   check: WasteTicketCheckDto,

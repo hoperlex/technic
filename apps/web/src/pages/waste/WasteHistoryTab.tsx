@@ -26,7 +26,7 @@ import { dayEnd, dayStart, formatMoney, useListParams, useOpenedRecord } from '@
 import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
 import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
 import { wasteHistoryCard, wasteHistoryColumns } from './wasteHistoryColumns';
-import { WasteRequestViewModal } from './WasteRequestViewModal';
+import { WasteRequestView } from '@widgets/waste-request-view';
 
 const DATE = 'YYYY-MM-DD';
 
@@ -358,7 +358,7 @@ export function WasteHistoryTab() {
       {/* Карточка закрытой заявки на чтение: править в ней нечего — обработчик правки окну не
           передан. Единственное действие — возврат завершённой заявки в работу, и только у того,
           кому этот ход открыт правом. */}
-      <WasteRequestViewModal
+      <WasteRequestView
         request={viewRecord ?? opened.record}
         onClose={() => {
           setViewRecord(null);

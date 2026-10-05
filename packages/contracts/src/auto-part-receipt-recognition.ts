@@ -184,7 +184,10 @@ function isKopecks(value: number): boolean {
  * `droppedLines`, и портал предлагает завести вторую запись (это законно — уникальности у номера
  * чека нет вовсе, обе записи честно назовут один номер).
  */
-export function receiptDraftFrom(response: ReceiptRecognitionResponse, today: string): ReceiptDraft {
+export function receiptDraftFrom(
+  response: ReceiptRecognitionResponse,
+  today: string,
+): ReceiptDraft {
   const documentNumber = text(response.documentNumber, 100).value;
   const sellerName = text(response.sellerName, 200).value;
   const purchasedOnRaw = (response.purchasedOnRaw ?? '').trim();
@@ -257,6 +260,50 @@ export function receiptDraftFrom(response: ReceiptRecognitionResponse, today: st
       linesTruncated: response.linesTruncated,
       recognizedLines: response.lines.length,
       droppedLines: Math.max(0, response.lines.length - RECEIPT_MAX_LINES),
+    },
+  };
+}
+
+/**
+ * One receipt can be photographed as several files. Their per-file drafts are already validated
+ * by receiptDraftFrom; concatenate only those rows, preserving the attachment order and the
+ * receipt-wide line limit. The first readable header and last printed total follow the same
+ * rule as mergeReceiptPages, while overflow must remain visible to the person entering the bill.
+ */
+export function mergeReceiptDrafts(drafts: readonly ReceiptDraft[]): ReceiptDraft {
+  if (drafts.length === 1) return drafts[0]!;
+  const allLines = drafts.flatMap((draft) => draft.lines);
+  const lines = allLines.slice(0, RECEIPT_MAX_LINES);
+  const lastPrinted = <K extends 'linesTotal' | 'documentTotal'>(key: K): number | null => {
+    for (let index = drafts.length - 1; index >= 0; index -= 1) {
+      const value = drafts[index]?.notes[key];
+      if (value !== null && value !== undefined) return value;
+    }
+    return null;
+  };
+  const date = drafts.find(
+    (draft) =>
+      draft.header.purchasedOnRaw || draft.header.purchasedOn || draft.header.purchasedOnIssue,
+  )?.header;
+  return {
+    header: {
+      documentNumber:
+        drafts.find((draft) => draft.header.documentNumber)?.header.documentNumber ?? '',
+      purchasedOn: date?.purchasedOn ?? '',
+      purchasedOnRaw: date?.purchasedOnRaw ?? '',
+      purchasedOnIssue: date?.purchasedOnIssue ?? '',
+      sellerName: drafts.find((draft) => draft.header.sellerName)?.header.sellerName ?? '',
+    },
+    lines,
+    notes: {
+      linesTotal: lastPrinted('linesTotal'),
+      documentTotal: lastPrinted('documentTotal'),
+      draftTotal: Math.round(lines.reduce((sum, line) => sum + (line.amount ?? 0) * 100, 0)) / 100,
+      linesTruncated: drafts.some((draft) => draft.notes.linesTruncated),
+      recognizedLines: drafts.reduce((sum, draft) => sum + draft.notes.recognizedLines, 0),
+      droppedLines:
+        drafts.reduce((sum, draft) => sum + draft.notes.droppedLines, 0) +
+        Math.max(0, allLines.length - RECEIPT_MAX_LINES),
     },
   };
 }

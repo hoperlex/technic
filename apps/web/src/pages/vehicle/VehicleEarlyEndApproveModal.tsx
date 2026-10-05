@@ -10,9 +10,13 @@ import { FormModal } from '@shared/ui';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { WarnedSheetsConfirm } from '@entities/waybill';
-import { acknowledgementsOf, anonymousWarnedSheetsOf, recheckReasonOf } from './assignmentWarnings';
+import {
+  acknowledgementsOf,
+  anonymousWarnedSheetsOf,
+  reassignStaleReason,
+  recheckReasonOf,
+} from '@features/vehicle-assignment';
 import { EarlyEndConsequences } from './EarlyEndConsequences';
-import { reassignStaleReason } from './ReassignPreview';
 import { formatDateOnly } from '@shared/lib';
 
 /**

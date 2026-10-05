@@ -9,12 +9,13 @@
   `apps/api/src/services/vehicle-request-days.ts`,
   `apps/api/src/services/readings-aggregate.ts`,
   `apps/api/src/services/mailings/digest-waybills.ts`,
-  `apps/web/src/pages/vehicle/VehicleAssignModal.tsx`,
-  `apps/web/src/pages/vehicle/DayBatchFields.tsx`,
+  `apps/web/src/features/vehicle-assignment/model/dayBatch.ts`,
+  `apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx`,
+  `apps/web/src/widgets/vehicle-assignment-dialog/ui/DayBatchFields.tsx`,
   `apps/web/src/pages/vehicle/VehicleDayBatchModal.tsx`,
-  `apps/web/src/pages/vehicle/DayBatchReport.tsx`,
-  `apps/web/src/pages/vehicle/useDayBatch.tsx`,
-  `apps/web/src/pages/vehicle/VehicleDayRouteModal.tsx`,
+  `apps/web/src/widgets/vehicle-assignment-dialog/ui/DayBatchReport.tsx`,
+  `apps/web/src/widgets/vehicle-assignment-dialog/model/useDayBatch.tsx`,
+  `apps/web/src/widgets/vehicle-route-windows/ui/VehicleDayRouteModal.tsx`,
   миграция [`0339`](../../apps/api/drizzle/0339_day_batch_correction_kind.sql)
 - Изменяет: **решение 8 [ADR 0100](0100-linear-vehicle-days.md)** — «дни заводятся руками, по
   одному, из карточки заявки; ни автоматического планирования при переводе в работу, ни пачки

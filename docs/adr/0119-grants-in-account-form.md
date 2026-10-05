@@ -12,7 +12,7 @@
   [план фичи](../account-form-grants-plan.md), [план реструктуризации](../permissions-restructure-plan.md)
   §12, §13.1; `packages/contracts/src/grants.ts`, `packages/contracts/src/users.ts`,
   `apps/api/src/routes/users.ts`, `apps/api/src/services/grant-catalog.ts`,
-  `apps/web/src/pages/admin/userGrantsModel.ts`
+  `apps/web/src/features/user-account-editor/model/userGrantsModel.ts`
 - Миграций не требует
 
 ## Контекст

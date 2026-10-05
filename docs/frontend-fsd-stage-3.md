@@ -90,24 +90,25 @@
 
 ### Контур M — разрез монолитов
 
-|                                              Волна |    Оценка | Результат                                                                                                                                                                                                                                                   | Обязательная проверка                                                                                                      |
-| -------------------------------------------------: | --------: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| **0. Подготовка и закрытие долгов прошлого этапа** |   3,5–4 ч | На чистом `origin/main` переснят baseline; `.claude/worktrees` исключены из корневого lint; 30 случаев анализатора инвалидаций классифицированы, неизвестная пишущая мутация делает проверку красной; ожидающая ветка ремонта согласована до горячих файлов | `pnpm check:cache-invalidation`, root lint без шума worktree, `pnpm check`; при вливании ремонта — его целевые и DB-наборы |
-|                **1. Контракт page/widget-слайсов** | 2,5–3,5 ч | Корневые route-entry перенесены за публичные входы page-слайсов; для `pages` и `widgets` добавлены положительные и отрицательные boundary-фикстуры; `App.tsx` больше не знает внутренних файлов страницы                                                    | boundary, portal-routes, typecheck, тесты маршрутов; без `lazy()`                                                          |
-|      **2. Лента заявок на технику: представление** |     3–4 ч | Карточка телефона, колонки таблицы, фильтры и summary выделены в `widgets/vehicle-request-feed`; callbacks и права заданы явным интерфейсом                                                                                                                 | `vehicle-feed`, row-open, mobile, filters, entity-links; снимок query keys                                                 |
-|        **3а. Лента: редактор и копирование** |     3–4 ч | Чистая модель создания, редактирования, копирования и переоформления собрана в `features/vehicle-request-editor`; композиционный хост формы, файлов, адреса, заказчика и заднего хода — в `widgets/vehicle-request-editor`; page получает один контроллер редактора | create/copy/edit/retype/backdate, form blockers, cache invalidation                                                        |
-|             **3б. Лента: lifecycle-действия** |     3–4 ч | Статус, виза, удаление/восстановление и досрочное завершение собраны в `features/vehicle-request-lifecycle`; callback-порт widget сокращён до feature-команд, страница оставляет route/tab orchestration                                                   | flow approval/rollback, status, archive/restore, early-end, cache invalidation                                             |
-|        **4. Назначение техники: модель и команда** |     3–4 ч | Выбор техники, водителя, маршрута, подмены, доставки и batch-дней отделён от React-разметки; построитель команды и preview имеют unit-тесты                                                                                                                 | assign, substitution, driver advisories, day-batch, waybill form                                                           |
-|         **5. Назначение техники: шаги интерфейса** |     3–4 ч | Форма, preview последствий и подтверждение собраны feature-слайсом; `VehicleAssignModal` исчезает из списка `maxLines`                                                                                                                                      | весь кластер assignment/ESM-2/reassign; typecheck и boundary                                                               |
-|        **6. Карточка, история и общий хост рейса** |     3–4 ч | `VehicleRequestViewModal`, история и `routeModal` разделены; состояние deep-link остаётся в `features/route-modal`, отображение становится `widgets/route-modal-host`                                                                                       | ADR 0120: deep-link, back/forward, mobile modal, удалённый рейс                                                            |
-|                    **7. Рейсы и недельная заявка** |     3–4 ч | `VehicleRouteModal`, `VehicleRoutesModal`, `VehicleDayRouteModal`, `WeeklyRequestPage` и `weeklyComposition` ниже порога; самостоятельные блоки получают widget/feature-владельцев                                                                          | route order/filter/correction/transfer, weekly composition и права                                                         |
-|               **8. Вывоз: список и представление** |     3–4 ч | Page-слайс оставляет вкладки и URL; текущий список, карточки, колонки, summary и фильтры образуют `widgets/waste-request-feed`                                                                                                                              | first-screen, row-open, create, status, archive; query-key parity                                                          |
-|                      **9. Вывоз: действия и окна** |     3–4 ч | Редактор с файлами, назначение оператора, статус, комментарий и талоны разнесены по features; `WasteRequestViewModal` и `WasteDoneModal` ниже порога                                                                                                        | все `flow-waste-*`, tickets, pricing, history, cache invalidation                                                          |
-|                             **10. Учётки и аудит** |     3–4 ч | `UsersTab` превращён в композицию registry-widget, editor/lifecycle features и audit-widget; права не выводятся из видимости вкладки                                                                                                                        | `users-*`, grants, audit, registration, department-heads                                                                   |
-|                                   **11. Водители** | 2,5–3,5 ч | `DriversTab` разбит на registry-widget и features документов/удаления; существующие подсказки категорий и квалификаций не дублируются                                                                                                                       | весь кластер `driver-*`, directory-purge, mobile cards                                                                     |
-|           **12. Классификатор и карточка типа ТС** |     3–4 ч | `VehicleTypesTab`, `VehicleTypeCardDrawer`, `VehicleSpecsTab` ниже порога и используют публичные слайсы                                                                                                                                                     | vehicle type/spec/classification, формы и drawer, boundary                                                                 |
-|        **13. Парк, тарифы и остаток справочников** |     3–4 ч | `VehiclesTab`, `WasteTariffsTab`, `CounterpartiesTab` и оставшиеся directory-файлы бюджета ниже 400 строк                                                                                                                                                   | vehicle registry, tariff pricing, counterparties, purge и связанные инвалидации                                            |
-|                         **14. Закрытие контура M** |   2,5–4 ч | `quality-budget.maxLines` пуст; нет прямого импорта внутренностей pages/widgets; документация и карта кода указывают новые владельцы; снят новый bundle baseline                                                                                            | `quality:update`, полный web три раза, `pnpm check`, `check:docs`, production build                                        |
+|                                              Волна |    Оценка | Результат                                                                                                                                                                                                                                                           | Обязательная проверка                                                                                                      |
+| -------------------------------------------------: | --------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| **0. Подготовка и закрытие долгов прошлого этапа** |   3,5–4 ч | На чистом `origin/main` переснят baseline; `.claude/worktrees` исключены из корневого lint; 30 случаев анализатора инвалидаций классифицированы, неизвестная пишущая мутация делает проверку красной; ожидающая ветка ремонта согласована до горячих файлов         | `pnpm check:cache-invalidation`, root lint без шума worktree, `pnpm check`; при вливании ремонта — его целевые и DB-наборы |
+|                **1. Контракт page/widget-слайсов** | 2,5–3,5 ч | Корневые route-entry перенесены за публичные входы page-слайсов; для `pages` и `widgets` добавлены положительные и отрицательные boundary-фикстуры; `App.tsx` больше не знает внутренних файлов страницы                                                            | boundary, portal-routes, typecheck, тесты маршрутов; без `lazy()`                                                          |
+|      **2. Лента заявок на технику: представление** |     3–4 ч | Карточка телефона, колонки таблицы, фильтры и summary выделены в `widgets/vehicle-request-feed`; callbacks и права заданы явным интерфейсом                                                                                                                         | `vehicle-feed`, row-open, mobile, filters, entity-links; снимок query keys                                                 |
+|              **3а. Лента: редактор и копирование** |     3–4 ч | Чистая модель создания, редактирования, копирования и переоформления собрана в `features/vehicle-request-editor`; композиционный хост формы, файлов, адреса, заказчика и заднего хода — в `widgets/vehicle-request-editor`; page получает один контроллер редактора | create/copy/edit/retype/backdate, form blockers, cache invalidation                                                        |
+|                  **3б. Лента: lifecycle-действия** |     3–4 ч | Чистые описания последствий живут в `features/vehicle-request-lifecycle`; статус, виза, удаление/восстановление и досрочное завершение собраны хостом `widgets/vehicle-request-lifecycle`; page оставляет assignment-окно адаптером до волн 4–5                     | flow approval/rollback, status, archive/restore, early-end, cache invalidation                                             |
+|        **4. Назначение техники: модель и команда** |     3–4 ч | Выбор техники, водителя, маршрута, подмены, доставки и batch-дней отделён от React-разметки; построитель команды и preview имеют unit-тесты                                                                                                                         | assign, substitution, driver advisories, day-batch, waybill form                                                           |
+|         **5. Назначение техники: шаги интерфейса** |     3–4 ч | Форма, preview последствий и подтверждение собраны публичным widget-слайсом поверх чистой feature-модели; `VehicleAssignModal` исчезает из списка `maxLines`                                                                                                        | весь кластер assignment/ESM-2/reassign; typecheck и boundary                                                               |
+|        **6. Карточка, история и общий хост рейса** |     3–4 ч | `VehicleRequestViewModal`, история и `routeModal` разделены; состояние deep-link остаётся в `features/route-modal`, отображение становится `widgets/route-modal-host`                                                                                               | ADR 0120: deep-link, back/forward, mobile modal, удалённый рейс                                                            |
+|                       **7а. Окна и список рейсов** |     3–4 ч | `VehicleRouteModal`, `VehicleRoutesModal` и `VehicleDayRouteModal` разделены за widget/feature-владельцами; renderer-порты хоста заменены публичным route-window widget                                                                                             | route order/filter/correction/transfer, deep-link и cache invalidation                                                     |
+|           **7б. Недельная заявка и остаток ленты** |     3–4 ч | `WeeklyRequestPage`, `weeklyComposition` и остаток `VehicleRequestsTab` ниже порога; page-слой заказа ТС оставляет только композицию готовых блоков                                                                                                                 | weekly composition, права, request feed/lifecycle и boundary                                                               |
+|               **8. Вывоз: список и представление** |     3–4 ч | Page-слайс оставляет вкладки и URL; текущий список, карточки, колонки, summary и фильтры образуют `widgets/waste-request-feed`                                                                                                                                      | first-screen, row-open, create, status, archive; query-key parity                                                          |
+|                      **9. Вывоз: действия и окна** |     3–4 ч | Редактор с файлами, назначение оператора, статус, комментарий и талоны разнесены по features; карточка собрана в widget, прежние `WasteRequestViewModal` и `WasteDoneModal` удалены                                                                                 | все `flow-waste-*`, tickets, pricing, history, cache invalidation                                                          |
+|                             **10. Учётки и аудит** |     3–4 ч | `UsersTab` превращён в композицию registry-widget, editor/lifecycle features и audit-widget; права не выводятся из видимости вкладки                                                                                                                                | `users-*`, grants, audit, registration, department-heads                                                                   |
+|                                   **11. Водители** | 2,5–3,5 ч | `DriversTab` разбит на registry-widget и features документов/удаления; существующие подсказки категорий и квалификаций не дублируются                                                                                                                               | весь кластер `driver-*`, directory-purge, mobile cards                                                                     |
+|           **12. Классификатор и карточка типа ТС** |     3–4 ч | `VehicleTypesTab`, `VehicleTypeCardDrawer`, `VehicleSpecsTab` ниже порога и используют публичные слайсы                                                                                                                                                             | vehicle type/spec/classification, формы и drawer, boundary                                                                 |
+|        **13. Парк, тарифы и остаток справочников** |     3–4 ч | `VehiclesTab`, `WasteTariffsTab`, `CounterpartiesTab` и оставшиеся directory-файлы бюджета ниже 400 строк                                                                                                                                                           | vehicle registry, tariff pricing, counterparties, purge и связанные инвалидации                                            |
+|                         **14. Закрытие контура M** |   2,5–4 ч | `quality-budget.maxLines` пуст; нет прямого импорта внутренностей pages/widgets; документация и карта кода указывают новые владельцы; снят новый bundle baseline                                                                                                    | `quality:update`, полный web три раза, `pnpm check`, `check:docs`, production build                                        |
 
 Корректировка после волны 2: `VehicleRequestsTab` сократился с 2 805 до 1 941 строки, но явный
 порт представления показал 24 сценарных callback-а. Исходная волна 3 превышала бы потолок 4 часа,
@@ -118,6 +119,70 @@
 feature → feature нарушила бы границы этапа. Чистые преобразования формы и команда
 переоформления остались в feature. После этого разреза `VehicleRequestsTab` уменьшился до 933
 сырых строк; оставшийся сценарный код относится к волне 3б.
+
+Уточнение по реализации волны 3б: lifecycle-хост стал widget по той же причине, что и редактор —
+до волн 4–5 он компонует page-owned окна назначения, выполнения и предпросмотра через типизированные
+renderer-адаптеры. Команды, их состояния и cache effects больше не принадлежат странице; чистое
+описание последствий отката лежит в feature. `VehicleRequestsTab` после волны — 617 сырых строк,
+оставшийся объём относится прежде всего к программе назначения и карточке.
+
+Уточнение по реализации волны 4: `features/vehicle-assignment` владеет неизменяемой командой,
+которой сначала считают preview, а затем подтверждают запись, а также чистыми моделями выбора
+машины, рейса и водителя, доставки, batch-дней и классификации preview. Общий сборщик граф прицепа
+опущен в entity рейса, потому что им пользуются пять разных окон. `VehicleAssignModal` после
+отделения модели — 1 733 сырых строки; React-состояние, шаги и разметка остаются целью волны 5.
+
+Уточнение по реализации волны 5: `widgets/vehicle-assignment-dialog` стал композиционным хостом,
+потому что форма собирает самостоятельный feature `address-input`; зависимость feature → feature
+нарушила бы контракт этапа. Чистая модель и команда остались в `features/vehicle-assignment`,
+чистые правила прицепа — в `entities/vehicle-route`, а композиция справочников и полей формы — в
+`features/vehicle-route-trailer`. Page импортирует только публичные входы widget и feature,
+а самый большой файл нового слайса содержит меньше 230 сырых строк.
+
+Переоценка после волны 6: interfaces не превратились в копию page-state. Карточка получает только
+две page-зависимости (`renderDays` и построитель адреса недельной заявки), история — один renderer
+карточки, а route-host — четыре renderer-а окон; URL, права, запросы и edit-owner живут в
+`features/route-modal`. Три файла сняты с `maxLines`, новых исключений нет. Однако прежняя волна 7
+объединяла 1 997 строк окон рейса, 840 строк недельного сценария и оставшиеся 617 строк
+`VehicleRequestsTab`; это уже две независимые интеграционные поверхности и больше четырёх часов.
+Поэтому она разделена на 7а и 7б без изменения порядка волн 8–19. Ленивая загрузка по-прежнему
+начинается только после закрытия контура M.
+
+Уточнение по реализации волны 7а: `widgets/vehicle-route-windows` владеет списком, карточкой,
+правкой, коррекцией, переносом и подённым планировщиком. Общий host больше не принимает три
+renderer-а route-окон: page подключает один публичный widget, а URL-состояние приходит из
+`features/route-modal`. Чистая сборка точек и строк задания опущена в entity рейса; общие для
+нескольких сценариев причина заднего числа и подтверждение предупреждений листа оформлены
+feature-слайсами. Три прежних page-монолита сняты с `maxLines`, новых исключений нет.
+
+Уточнение по реализации волны 7б: `widgets/weekly-request-workspace` владеет запросами, составом,
+визой, проведением задним числом, чек-листом и историей недельного документа; route-page оставляет
+шестистрочный адаптер. Общий вход в создание недели оформлен `features/weekly-request-create`, а
+навигация и представления недели — `entities/weekly-request`. Запрос, сводка и фильтры общей ленты
+перенесены в модель `widgets/vehicle-request-feed`; page-композиция связывает её с независимыми
+editor/lifecycle/assignment widgets через один локальный host операций. Все три прежние записи
+`VehicleRequestsTab`, `WeeklyRequestPage` и `weeklyComposition` сняты с `maxLines`, новых нет.
+
+Уточнение по реализации волны 8: `widgets/waste-request-feed` владеет запросом рабочего списка,
+summary, фильтрами, колонками и мобильной карточкой; чистые правила цены, факта и последствий отката
+лежат в `entities/waste-request`. Формы и окна передаются виджету через явные порты и остаются в
+page до волны 9. Форма list/summary query keys и URL-параметров не изменилась.
+`WasteRequestsPage` уменьшился с 1 870 до 1 401 сырой строки, крупнейший новый файл содержит 222
+строки; новых исключений `maxLines` нет.
+
+Уточнение по реализации волны 9: редактор заявки с файлами, назначение оператора, жизненный цикл,
+завершение, комментарий и догрузка талонов живут в отдельных feature-слайсах. Карточку с историей
+и разбором талонов собирает `widgets/waste-request-view`; page оставляет вкладки, URL и соединение
+публичных входов со списком волны 8. `WasteRequestsPage` уменьшился с 1 401 до 221 сырой строки,
+старые `WasteRequestViewModal` и `WasteDoneModal` удалены, крупнейший новый production-файл — 392
+строки. Все три записи вывоза сняты с `maxLines`, новых исключений нет.
+
+Уточнение по реализации волны 10: `widgets/user-account-registry` владеет запросом списка,
+фильтрами, колонками и мобильной карточкой; создание и правка учётки собраны в
+`features/user-account-editor`, а пароль, email, активация, отказ, архив и восстановление — в
+`features/user-account-lifecycle`. Журнал и путь одной учётки перенесены в `widgets/user-audit`.
+`UsersTab` уменьшился с 1 367 до 92 сырых строк и оставляет только композицию и независимую
+проверку `audit.read`; запись снята с `maxLines`, новых исключений нет.
 
 После волны 14 проводится обязательная переоценка. Если `maxLines` не пуст или внешний потребитель
 ещё импортирует внутренний файл страницы/виджета, контур L не начинается: остаток получает свою

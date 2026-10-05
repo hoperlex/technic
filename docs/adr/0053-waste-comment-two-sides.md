@@ -6,8 +6,10 @@
   контрагента), [ADR 0012](0012-waste-request-history.md) (история заявки)
 - Связано: миграция `0078_waste_request_operator_comment.sql`,
   `packages/contracts/src/waste-requests.ts`, `packages/contracts/src/permissions.ts`,
-  `apps/api/src/routes/waste-requests.ts`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
-  `apps/web/src/pages/waste/WasteRequestViewModal.tsx`
+  `apps/api/src/routes/waste-requests.ts`,
+  `apps/web/src/widgets/waste-request-feed/ui/feedCells.tsx`,
+  `apps/web/src/features/waste-request-comment/ui/WasteRequestCommentField.tsx`,
+  `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`
 
 ## Контекст
 
@@ -27,7 +29,7 @@
 ## Решения
 
 1. **Две колонки, а не журнал сообщений.** `waste_requests.operator_comment` (`text NOT NULL
-   DEFAULT ''`) рядом с `comment` (миграция `0078`). Сторон ровно две, и от каждой нужно
+DEFAULT ''`) рядом с `comment` (миграция `0078`). Сторон ровно две, и от каждой нужно
    актуальное примечание, а не переписка: журнал потребовал бы порядка, авторства каждой записи,
    непрочитанного и уведомлений — это другой продукт. Кто и когда правил примечание, уже отвечает
    история заявки (ADR 0012).

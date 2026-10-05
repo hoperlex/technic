@@ -19,7 +19,7 @@ import {
   outOfRangeHintText,
   profilePresetCodes,
   roleGateNoticeText,
-} from '../src/pages/admin/userGrantsModel';
+} from '../src/features/user-account-editor';
 import {
   CUSTOM,
   CUSTOM_ID,

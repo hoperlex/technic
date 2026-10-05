@@ -12,6 +12,8 @@ export interface ReceiptCreateDraftSnapshot {
   values: ReceiptCreateDraftValues;
   files: ScanFile[];
   rows: ReceiptLineRow[];
+  /** OCR file drafts already transferred to rows; survives F5 to prevent adding them twice. */
+  appliedFileIds?: string[];
 }
 
 interface StoredReceiptCreateDraft extends ReceiptCreateDraftSnapshot {
@@ -75,7 +77,9 @@ function parseStored(value: unknown): StoredReceiptCreateDraft | null {
     !Array.isArray(stored.files) ||
     !stored.files.every(isScanFile) ||
     !Array.isArray(stored.rows) ||
-    !stored.rows.every(isReceiptRow)
+    !stored.rows.every(isReceiptRow) ||
+    (stored.appliedFileIds !== undefined &&
+      (!Array.isArray(stored.appliedFileIds) || !stored.appliedFileIds.every(isString)))
   ) {
     return null;
   }

@@ -23,9 +23,10 @@
   [ADR 0102](0102-driver-cabinet.md) (подсказка работника — образец «предлагаем, но не выбираем»),
   [ADR 0090](0090-internal-email-domains.md) (пометка внешней почты);
   `packages/contracts/src/registration-request.ts`, `apps/web/src/pages/auth/RegisterPage.tsx`,
-  `apps/web/src/pages/admin/useActivationDefaults.tsx`,
-  `apps/web/src/pages/admin/activationSuggestion.ts`,
-  `apps/web/src/pages/admin/userGrantsModel.ts`, `apps/web/src/pages/admin/UserGrantsField.tsx`
+  `apps/web/src/features/user-account-editor/model/useActivationDefaults.tsx`,
+  `apps/web/src/features/user-account-editor/model/activationSuggestion.ts`,
+  `apps/web/src/features/user-account-editor/model/userGrantsModel.ts`,
+  `apps/web/src/features/user-account-editor/ui/UserGrantsField.tsx`
 - План работы — [registration-wishes-and-activation-plan.md](../registration-wishes-and-activation-plan.md),
   редакция 3: опрос и два ревью 28.08.2026
 

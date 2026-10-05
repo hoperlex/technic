@@ -10,7 +10,7 @@ import {
   ROLE_MISMATCH_TAG,
   roleMismatchText,
   userDeltaText,
-} from './grantModel';
+} from '@entities/grant';
 
 /**
  * Подтверждение операции по предпросмотру последствий (ADR 0106, решение 7; план §12, §13.1).

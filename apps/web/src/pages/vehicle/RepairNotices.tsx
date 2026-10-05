@@ -1,7 +1,7 @@
 import { Alert } from 'antd';
 import type { OperationRequirement, RepairPreviewDto, RepairResultDto } from '@technic/contracts';
 import { formatDateOnly } from '@shared/lib';
-import { listStyle } from './consequencesList';
+import { consequencesListStyle as listStyle } from '@entities/vehicle-request';
 
 /**
  * What the "History repair" window says about itself, apart from the consequences list: why a

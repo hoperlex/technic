@@ -10,7 +10,7 @@ import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { openSelectOptions } from './antd';
 import { list } from './factories/common';
-import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { VehicleAssignModal } from '@widgets/vehicle-assignment-dialog';
 
 /**
  * Водители, уже работавшие на выбранной машине, стоят первыми и помечены (ADR 0056).

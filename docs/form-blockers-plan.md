@@ -63,14 +63,14 @@
 
 ### 2.2 Тосты-блокеры (17 штук в 9 файлах)
 
-| Файл                                                                                 | Блокеров | Форма есть?     |
-| ------------------------------------------------------------------------------------ | -------- | --------------- |
-| [VehicleAssignModal](../apps/web/src/pages/vehicle/VehicleAssignModal.tsx#L770)      | 6        | да              |
-| [WasteDoneModal](../apps/web/src/pages/waste/WasteDoneModal.tsx#L193)                | 3        | да              |
-| [VehicleCompleteModal](../apps/web/src/pages/vehicle/VehicleCompleteModal.tsx#L172)  | 2        | да              |
-| [VehicleEarlyEndModal](../apps/web/src/pages/vehicle/VehicleEarlyEndModal.tsx#L103)  | 1        | да              |
-| ServiceAcceptModal, ServiceCompleteModal, EstimateEditorModal, EstimateApprovalModal | по 1     | нет             |
-| [shared.tsx](../apps/web/src/pages/vehicle/shared.tsx#L647)                          | 1        | нет (`confirm`) |
+| Файл                                                                                                                     | Блокеров | Форма есть?     |
+| ------------------------------------------------------------------------------------------------------------------------ | -------- | --------------- |
+| [VehicleAssignModal](../apps/web/src/widgets/vehicle-assignment-dialog/ui/VehicleAssignModal.tsx)                        | 6        | да              |
+| [WasteRequestCompletionModal](../apps/web/src/features/waste-request-completion/ui/WasteRequestCompletionModal.tsx#L188) | 3        | да              |
+| [VehicleCompleteModal](../apps/web/src/pages/vehicle/VehicleCompleteModal.tsx#L172)                                      | 2        | да              |
+| [VehicleEarlyEndModal](../apps/web/src/pages/vehicle/VehicleEarlyEndModal.tsx#L103)                                      | 1        | да              |
+| ServiceAcceptModal, ServiceCompleteModal, EstimateEditorModal, EstimateApprovalModal                                     | по 1     | нет             |
+| [shared.tsx](../apps/web/src/pages/vehicle/shared.tsx#L647)                                                              | 1        | нет (`confirm`) |
 
 Отдельно: 4 тоста — **не блокеры полей**, а стражи загрузки («Не более N файлов», «Файл больше
 50 МБ»). Они остаются тостами: относятся к действию, а не к полю.

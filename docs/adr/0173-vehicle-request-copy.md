@@ -12,9 +12,9 @@
 - Область: портал — новые
   [requestFormValues.ts](../../apps/web/src/features/vehicle-request-editor/model/requestFormValues.ts) (тип значений формы
   и две подстановки — правкой и копией) и
-  [VehicleRequestCardFooter.tsx](../../apps/web/src/pages/vehicle/VehicleRequestCardFooter.tsx)
+  [vehicleRequestCardFooter.tsx](../../apps/web/src/widgets/vehicle-request-view/ui/vehicleRequestCardFooter.tsx)
   (кнопки футера карточки), правки
-  [VehicleRequestViewModal.tsx](../../apps/web/src/pages/vehicle/VehicleRequestViewModal.tsx)
+  [VehicleRequestViewModal.tsx](../../apps/web/src/widgets/vehicle-request-view/ui/VehicleRequestViewModal.tsx)
   (действие `onCopy`),
   [useVehicleRequestEditorState.ts](../../apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState.ts)
   (`openCopy` и гейт),
