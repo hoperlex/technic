@@ -6,12 +6,16 @@ import {
   DeleteOutlined,
   PlusOutlined,
 } from '@ant-design/icons';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { VehicleTypeSpecDto } from '@technic/contracts';
 import {
+  vehicleCategoryKeys,
+  vehicleClassificationKeys,
   vehicleSpecKeys,
   vehicleSpecsApi,
   vehicleTypeErrorMessage as errorMessage,
+  vehicleTypeKeys,
+  vehicleTypeSpecKeys,
   vehicleTypesApi,
 } from '@entities/vehicle-type';
 import { useIsMobile } from '@shared/lib';
@@ -28,7 +32,6 @@ interface Props {
   specs: VehicleTypeSpecDto[];
   categoriesCount: number;
   loading: boolean;
-  invalidate: () => void;
 }
 
 const sectionHeadStyle = {
@@ -39,14 +42,9 @@ const sectionHeadStyle = {
 };
 
 /** Manage the required spec set whose completeness every category must preserve (ADR 0016). */
-export function VehicleTypeSpecsSection({
-  typeId,
-  specs,
-  categoriesCount,
-  loading,
-  invalidate,
-}: Props) {
+export function VehicleTypeSpecsSection({ typeId, specs, categoriesCount, loading }: Props) {
   const { message, modal } = App.useApp();
+  const queryClient = useQueryClient();
   const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm<AttachFormValues>();
@@ -61,6 +59,20 @@ export function VehicleTypeSpecsSection({
       }),
     enabled: !!typeId,
   });
+
+  // Specs and category tuples are one invariant (ADR 0016): a spec change rewrites every category
+  // of the type, and a category change is read through the type, the spec directory and the
+  // classifier. Every mutation of the type card therefore drops the same five caches; the set is
+  // kept identical to the one in vehicle-category-management on purpose. The classifier (ADR 0028) is
+  // assembled from types and categories, so a new category changes both what the directory shows
+  // and what the pickers offer.
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: vehicleTypeSpecKeys.byType(typeId) });
+    void queryClient.invalidateQueries({ queryKey: vehicleCategoryKeys.root });
+    void queryClient.invalidateQueries({ queryKey: vehicleTypeKeys.root });
+    void queryClient.invalidateQueries({ queryKey: vehicleSpecKeys.root });
+    void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
+  };
 
   const attach = useMutation({
     mutationFn: (values: AttachFormValues) =>

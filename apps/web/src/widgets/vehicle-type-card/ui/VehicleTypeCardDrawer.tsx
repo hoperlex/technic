@@ -1,12 +1,11 @@
 import { Button, Drawer, Space, Tooltip, Typography } from 'antd';
 import { DeleteFilled } from '@ant-design/icons';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { waybillFormLabels, type VehicleTypeDto } from '@technic/contracts';
 import {
   vehicleCategoryKeys,
   vehicleCategoriesApi,
   vehicleClassificationKeys,
-  vehicleSpecKeys,
   vehicleTypeKeys,
   vehicleTypeSpecKeys,
   vehicleTypesApi,
@@ -27,7 +26,6 @@ interface Props {
  * changes the same classification invariant (ADR 0016).
  */
 export function VehicleTypeCardDrawer({ type, onClose }: Props) {
-  const queryClient = useQueryClient();
   const isMobile = useIsMobile();
   const typeId = type?.id ?? '';
   const purge = usePurgeAction({
@@ -53,15 +51,6 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   });
   const specs = specsQuery.data ?? [];
   const categories = categoriesQuery.data?.items ?? [];
-
-  const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: vehicleTypeSpecKeys.byType(typeId) });
-    void queryClient.invalidateQueries({ queryKey: vehicleCategoryKeys.root });
-    void queryClient.invalidateQueries({ queryKey: vehicleTypeKeys.root });
-    void queryClient.invalidateQueries({ queryKey: vehicleSpecKeys.root });
-    // Classification rows are derived from types and categories rather than stored separately.
-    void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
-  };
 
   return (
     <Drawer
@@ -113,14 +102,12 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
           specs={specs}
           categoriesCount={categories.length}
           loading={specsQuery.isFetching}
-          invalidate={invalidate}
         />
         <VehicleTypeCategoriesSection
           typeId={typeId}
           specs={specs}
           categories={categories}
           loading={categoriesQuery.isFetching}
-          invalidate={invalidate}
         />
       </Space>
     </Drawer>

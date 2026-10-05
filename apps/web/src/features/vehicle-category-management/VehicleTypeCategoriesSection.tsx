@@ -24,7 +24,12 @@ import {
 } from '@technic/contracts';
 import {
   vehicleCategoriesApi,
+  vehicleCategoryKeys,
+  vehicleClassificationKeys,
+  vehicleSpecKeys,
   vehicleTypeErrorMessage as errorMessage,
+  vehicleTypeKeys,
+  vehicleTypeSpecKeys,
 } from '@entities/vehicle-type';
 import { weeklyRequestKeys } from '@entities/weekly-request';
 import { useIsMobile } from '@shared/lib';
@@ -42,7 +47,6 @@ interface Props {
   specs: VehicleTypeSpecDto[];
   categories: VehicleCategoryDto[];
   loading: boolean;
-  invalidate: () => void;
 }
 
 const sectionHeadStyle = {
@@ -53,19 +57,27 @@ const sectionHeadStyle = {
 };
 
 /** Edit complete, unique spec tuples that form orderable vehicle categories (ADR 0016). */
-export function VehicleTypeCategoriesSection({
-  typeId,
-  specs,
-  categories,
-  loading,
-  invalidate,
-}: Props) {
+export function VehicleTypeCategoriesSection({ typeId, specs, categories, loading }: Props) {
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<VehicleCategoryDto | null>(null);
   const [form] = Form.useForm<CategoryFormValues>();
+
+  // Specs and category tuples are one invariant (ADR 0016): a spec change rewrites every category
+  // of the type, and a category change is read through the type, the spec directory and the
+  // classifier. Every mutation of the type card therefore drops the same five caches; the set is
+  // kept identical to the one in vehicle-type-spec-management on purpose. The classifier (ADR 0028) is
+  // assembled from types and categories, so a new category changes both what the directory shows
+  // and what the pickers offer.
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: vehicleTypeSpecKeys.byType(typeId) });
+    void queryClient.invalidateQueries({ queryKey: vehicleCategoryKeys.root });
+    void queryClient.invalidateQueries({ queryKey: vehicleTypeKeys.root });
+    void queryClient.invalidateQueries({ queryKey: vehicleSpecKeys.root });
+    void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
+  };
 
   const openCreate = () => {
     setEditing(null);
