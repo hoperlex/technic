@@ -42,8 +42,8 @@ export function useVehicleRequestViewData(
    *
    * Taken from the URL rather than React state because the URL is the window state: the host keeps
    * no second copy on purpose, or Back and the screen would diverge on the first navigation. Only
-   * asked in the overlay: in a list card a route in the URL is a foreign route opened under the list
-   * and has nothing to do with this request.
+   * asked in the overlay: in a list card a route in the URL is a foreign route opened under the
+   * list and has nothing to do with this request.
    *
    * 'route' is ROUTE_PARAM of useRouteModalState in @features/route-modal, which is not exported;
    * both must match vehicleRoutePath in packages/contracts/src/links.ts. Rename one and a request
@@ -60,9 +60,9 @@ export function useVehicleRequestViewData(
   /*
    * "All routes" is one of three doors to the route list (next to the route row, in the section
    * toolbar and in the route card). It is here because people go to the list from here: to see what
-   * the vehicle is busy with that day and to find a route to put the request in. The right is the one
-   * that opens a route: the list shows the same foreign vehicles and own-fleet driver names. The
-   * overlay has no button: a window over a window over a window is unreadable, and the reader
+   * the vehicle is busy with that day and to find a route to put the request in. The right is the
+   * one that opens a route: the list shows the same foreign vehicles and own-fleet driver names.
+   * The overlay has no button: a window over a window over a window is unreadable, and the reader
    * already has the list where they opened the request from.
    */
   const showAllRoutes = !readOnly && canOpenRoute(can);
@@ -102,8 +102,8 @@ export function useVehicleRequestViewData(
    * the dispatcher takes the request into work and hands over the form right away. Without
    * waybills.read the role is not shown the driver's personal data (ADR 0037 item 13).
    *
-   * Asked for both request kinds: an on-site equipment order has documents too, weekly ESM-2, one per
-   * week of the term (migration 0087), hence a list.
+   * Asked for both request kinds: an on-site equipment order has documents too, weekly ESM-2, one
+   * per week of the term (migration 0087), hence a list.
    */
   const asksWaybill = !!request && can('waybills.read');
   const { data: waybills } = useQuery({
@@ -128,8 +128,9 @@ export function useVehicleRequestViewData(
   /*
    * Where the order came from and how it was extended (docs/adr/0085-weekly-vehicle-request.md, R11
    * and R16). Arrives in the DTO itself. Only for those with access to the weekly section (a link
-   * ending in a refusal is worse than a plain number) and only for on-site equipment: weekly requests
-   * have nothing to do with freight, which has a delivery moment rather than a work period.
+   * ending in a refusal is worse than a plain number) and only for on-site equipment: weekly
+   * requests have nothing to do with freight, which has a delivery moment rather than a work
+   * period.
    */
   const weekly =
     request?.requestType === 'special_equipment' && can('weeklyRequests.read')
@@ -139,8 +140,8 @@ export function useVehicleRequestViewData(
         }
       : null;
   /*
-   * How the assigned vehicle differs from what was ordered (ADR 0045, ADR 0059, ADR 0064), shown as a
-   * tag next to the vehicle. The rule is the one of the assignment window: one wording for the
+   * How the assigned vehicle differs from what was ordered (ADR 0045, ADR 0059, ADR 0064), shown as
+   * a tag next to the vehicle. The rule is the one of the assignment window: one wording for the
    * choice, the card and the history.
    */
   const assignmentHint = useMemo(() => {
@@ -165,8 +166,8 @@ export function useVehicleRequestViewData(
     return {
       label: [assignment.categoryName ?? assignment.typeName, hint].filter(Boolean).join(' · '),
       level:
-        // A foreign kind is the largest mismatch and gets the warning tag regardless of specs: a dump
-        // truck and a truck crane have nothing comparable.
+        // A foreign kind is the largest mismatch and gets the warning tag regardless of specs: a
+        // dump truck and a truck crane have nothing comparable.
         substitution.kindMismatch ||
         substitution.relation === 'smaller' ||
         substitution.relation === 'mixed'
@@ -180,10 +181,10 @@ export function useVehicleRequestViewData(
   const total = trips ? requestCargoTotal(trips) : null;
   /*
    * A trip the card may show as the familiar field pair instead of a table: the only one, and
-   * carrying nothing the pair has no place for. Its own delivery time (R3) and note are exactly what
-   * the pair cannot say, and hiding them is not allowed ("at what time exactly", "sand, call an hour
-   * ahead" are why they were filled). Backfilled trips have both empty (migration 0136 does not fill
-   * them), so a request created before multi-trip requests looks exactly as it did.
+   * carrying nothing the pair has no place for. Its own delivery time (R3) and note are exactly
+   * what the pair cannot say, and hiding them is not allowed ("at what time exactly", "sand, call
+   * an hour ahead" are why they were filled). Backfilled trips have both empty (migration 0136 does
+   * not fill them), so a request created before multi-trip requests looks exactly as it did.
    */
   const singleTrip =
     trips && trips.length === 1 && !trips[0]?.scheduledAt && !trips[0]?.comment
@@ -193,8 +194,8 @@ export function useVehicleRequestViewData(
    * "60 m3 / 5 t · 6 trips": the quantity for the whole request. Both units are printed side by
    * side rather than via tripCargoLabel, which returns what fits the waybill column (volume, else
    * mass): a mixed request, part in cubic metres and part in tonnes, would lose half the order in
-   * the card. The trip count is attached because "60 m3" alone is indistinguishable from one trip of
-   * sixty cubic metres.
+   * the card. The trip count is attached because "60 m3" alone is indistinguishable from one trip
+   * of sixty cubic metres.
    */
   const amountText = total
     ? [

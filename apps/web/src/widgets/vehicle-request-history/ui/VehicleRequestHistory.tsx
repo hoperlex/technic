@@ -37,7 +37,9 @@ interface HistoryParams {
   /** Request customer (ADR 0040): the "Object/department" picker fills exactly one of the two. */
   objectId?: string;
   departmentId?: string;
-  /** Ordered equipment (ADR 0028) as a set: t<uuid> is a whole type, c<uuid> one of its categories. */
+  /**
+   * Ordered equipment (ADR 0028) as a set: t<uuid> is a whole type, c<uuid> one of its categories.
+   */
   classifications?: string;
   /** The vehicle that closed the request (ADR 0098), next to "rented from whom". */
   vehicleId?: string;
@@ -48,8 +50,8 @@ interface HistoryParams {
 }
 
 /**
- * Journal of closed vehicle orders (ADR 0029). The first tab answers "what is in work now"; this one
- * answers the later questions: when and for which site equipment was taken, for how long, who
+ * Journal of closed vehicle orders (ADR 0029). The first tab answers "what is in work now"; this
+ * one answers the later questions: when and for which site equipment was taken, for how long, who
  * approved the order, which lessor it was rented from and what it cost.
  *
  * So a journal row is not a request-list row: instead of status and approval buttons it carries the

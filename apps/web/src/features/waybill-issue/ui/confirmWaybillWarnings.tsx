@@ -23,8 +23,9 @@ import { WaybillWarningList } from '@entities/waybill';
  *
  * The assignment doors (history repair, period) answer the same 409 code with a different body: a
  * per-sheet `issues` list instead of one fingerprint, because one command there issues several
- * blanks. `ackRequiredDetails` returns `null` for that body on purpose — those doors read it through
- * `@features/vehicle-assignment`, and only the warning list itself (`@entities/waybill`) is shared.
+ * blanks. `ackRequiredDetails` returns `null` for that body on purpose — those doors read it
+ * through `@features/vehicle-assignment`, and only the warning list itself (`@entities/waybill`) is
+ * shared.
  */
 
 /** What the window reads from the refusal: the part common to both bodies, set and fingerprint. */

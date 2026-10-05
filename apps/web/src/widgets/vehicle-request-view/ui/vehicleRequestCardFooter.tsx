@@ -57,10 +57,10 @@ export function vehicleRequestCardFooter({
       : []),
     /*
      * The overlay offers no actions; instead it has a door to where they are: the request list with
-     * this request's card open (ADR 0120 item 7). The href is computed from the loaded DTO because the
-     * status is not enough: a deleted request lives in the archive, chosen by deletedAt, and the
-     * archive is closed by archive.read. Without it vehicleRequestLink returns null and there is no
-     * button: a link ending in a refusal is worse than none.
+     * this request's card open (ADR 0120 item 7). The href is computed from the loaded DTO because
+     * the status is not enough: a deleted request lives in the archive, chosen by deletedAt, and
+     * the archive is closed by archive.read. Without it vehicleRequestLink returns null and there
+     * is no button: a link ending in a refusal is worse than none.
      *
      * A real link, not navigate on click: the request list is opened in a neighbouring browser tab
      * while the route stays on screen, the same technique as EntityLink. Following it drops request

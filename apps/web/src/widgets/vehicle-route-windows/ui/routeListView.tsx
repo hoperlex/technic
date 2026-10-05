@@ -44,9 +44,10 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
         <Space orientation="vertical" size={0}>
           <Space size={6}>
             <span>{route.displayNumber}</span>
-            {/* A relocation sits in the same list as freight routes: it is the same vehicle's route on
-                the same day, and there would be nowhere to look for it in a separate window. The
-                tag marks it, and so does the different content of the "Requests" column. */}
+            {/* A relocation sits in the same list as freight routes: it is the same vehicle's
+                route on the same day, and there would be nowhere to look for it in a separate
+                window. The tag marks it, and so does the different content of the "Requests"
+                column. */}
             {isRelocationPurpose(route.purpose) && (
               <Tag color={route.purpose === 'delivery' ? 'blue' : 'gold'}>
                 {routePurposeShortLabels[route.purpose]}
@@ -83,8 +84,9 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
       sortable: false,
       searchable: false,
       width: 220,
-      // A missing driver is a state, not a bug: the route was assembled in advance and the person is
-      // set in the morning. But no waybill can be issued without one, so it must not stay silent.
+      // A missing driver is a state, not a bug: the route was assembled in advance and the person
+      // is set in the morning. But no waybill can be issued without one, so it must not stay
+      // silent.
       render: (_value, route) => route.driverName || <Tag color="orange">не назначен</Tag>,
     }),
     textColumn<VehicleRouteDto>({
@@ -95,8 +97,8 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
       searchable: false,
       width: 280,
       render: (_value, route) => {
-        // Taken out of the row up front: type narrowing does not survive into onActivate, which runs
-        // later, so TS would no longer know the field is non-null there.
+        // Taken out of the row up front: type narrowing does not survive into onActivate, which
+        // runs later, so TS would no longer know the field is non-null there.
         const source = route.sourceRequest;
         // A relocation has no composition: it rides on one request, and "from -> to" is its task.
         return isRelocationPurpose(route.purpose) ? (
@@ -177,10 +179,10 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
     }),
     /*
      * Composition and waybill issue live in the card; from here a route is opened and its header
-     * edited, because "move the day" and "change the driver" are morning actions that do not justify
-     * opening the card. Both windows are owned by the URL-window host: the card because it is also
-     * opened from the garage and the waybill journal where there is no list, the edit because it
-     * must die together with the window it was opened from.
+     * edited, because "move the day" and "change the driver" are morning actions that do not
+     * justify opening the card. Both windows are owned by the URL-window host: the card because it
+     * is also opened from the garage and the waybill journal where there is no list, the edit
+     * because it must die together with the window it was opened from.
      */
     actionsColumn<VehicleRouteDto>((route) => {
       const frozen = !isRouteEditable(route.waybill?.status ?? null);

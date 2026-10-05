@@ -40,12 +40,13 @@ interface Args {
  * docs/route-trips-plan.md): stops with arrows, roles and responsible people. The request list is
  * still there but with a different role: it adds and removes work rather than setting the order,
  * because print order is set by the points (R11), and arrows on the composition would no longer
- * move the document. What will be printed on the form is shown by the collapsed "Waybill task" block.
+ * move the document. What will be printed on the form is shown by the collapsed "Waybill task"
+ * block.
  *
  * An issued waybill freezes the card: composition, points and driver are editable only before it,
  * because the form is already with the driver, and a record diverging from the paper in hand is
- * worse than no record (ADR 0037 item 9). To rebuild a route the waybill is cancelled, with the same
- * right and reason as in the journal.
+ * worse than no record (ADR 0037 item 9). To rebuild a route the waybill is cancelled, with the
+ * same right and reason as in the journal.
  *
  * The child windows (correction, ticket transfer) live in this state, not in the host, because they
  * are opened only from the card and must die with it.
@@ -81,9 +82,9 @@ export function useVehicleRouteWindow({ routeId, onChanged }: Args) {
   const frozen = !!route && !isRouteEditable(route.waybill?.status ?? null);
 
   /*
-   * What can be put into this route: freight requests in work on own vehicles, delivered on the same
-   * day. The selection mirrors what the server checks, otherwise the list would offer requests it
-   * rejects.
+   * What can be put into this route: freight requests in work on own vehicles, delivered on the
+   * same day. The selection mirrors what the server checks, otherwise the list would offer requests
+   * it rejects.
    *
    * The ordered vehicle type does not narrow the list (ADR 0059): a vehicle's day is assembled by
    * sites, and sites order different things, a dump truck and a flatbed. Such a request used to be
@@ -92,8 +93,8 @@ export function useVehicleRouteWindow({ routeId, onChanged }: Args) {
    *
    * Requests of other routes are included alongside free ones: moving a request from R-7 to R-9 is
    * one transfer action, not "remove and add" in two steps between which the request hangs without
-   * a route. Excluded are only requests whose route is frozen by an issued waybill: a request cannot
-   * vanish from the paper the driver holds.
+   * a route. Excluded are only requests whose route is frozen by an issued waybill: a request
+   * cannot vanish from the paper the driver holds.
    */
   const { data: candidates } = useQuery({
     queryKey: vehicleRequestKeys.forRoute(route?.routeDate),
@@ -243,8 +244,8 @@ export function useVehicleRouteWindow({ routeId, onChanged }: Args) {
    * way; that is where correction starts: its own right, a mandatory reason, a burnt number.
    *
    * Readiness uses the server's rule (canCorrectRoute), otherwise the button would promise what the
-   * endpoint will not do. When disabled it explains itself: with a closed request in the composition
-   * correction becomes a joint job (R38), and the person must know whom to go to.
+   * endpoint will not do. When disabled it explains itself: with a closed request in the
+   * composition correction becomes a joint job (R38), and the person must know whom to go to.
    */
   const correction =
     route && past && can('waybills.correct')

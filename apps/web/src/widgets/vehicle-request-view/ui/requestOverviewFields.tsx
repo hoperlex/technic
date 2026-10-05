@@ -182,8 +182,8 @@ export function requestOverviewFields({
     /*
      * The request was caught by a switch of the type's linear flag (migration 0137): the directory
      * now runs orders of this type differently, while this one finishes the way it was created. The
-     * row sits right under the type because it is about the type. Without it the dispatcher sees two
-     * requests of one type behaving differently and no explanation on screen.
+     * row sits right under the type because it is about the type. Without it the dispatcher sees
+     * two requests of one type behaving differently and no explanation on screen.
      */
     ...(request.requestType === 'special_equipment' && request.linearFrozen
       ? [
@@ -283,8 +283,8 @@ export function requestOverviewFields({
           },
         ]
       : []),
-    // Who receives the equipment on site (migration 0062). Freight has a contact per trip end, shown
-    // below next to its address.
+    // Who receives the equipment on site (migration 0062). Freight has a contact per trip end,
+    // shown below next to its address.
     ...(request.requestType === 'special_equipment'
       ? [
           {
@@ -299,10 +299,10 @@ export function requestOverviewFields({
     // Cargo and addresses exist only for freight: special equipment is ordered for a term.
     ...(trips ? [{ key: 'amount', label: 'Объём / масса', children: amountText }] : []),
     /*
-     * A single trip is shown as a pair of addresses with contacts, exactly as requests looked before
-     * multi-trip requests: a one-trip request is yesterday's request (R24), and a one-row table would
-     * change the card of every existing request while adding nothing. Requests with several trips get
-     * a table below the fields.
+     * A single trip is shown as a pair of addresses with contacts, exactly as requests looked
+     * before multi-trip requests: a one-trip request is yesterday's request (R24), and a one-row
+     * table would change the card of every existing request while adding nothing. Requests with
+     * several trips get a table below the fields.
      */
     ...(singleTrip
       ? [

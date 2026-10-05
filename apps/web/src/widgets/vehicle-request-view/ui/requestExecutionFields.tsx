@@ -41,14 +41,15 @@ export function requestExecutionFields({
 }: ExecutionFieldOptions): ViewField[] {
   return [
     /*
-     * Waybills (ADR 0037, printing ADR 0041). The row appears only once a waybill is issued: rentals
-     * have none at all, and "Waybill: -" on such a request would read as a forgotten document. The
-     * number next to the button is not decoration: the waybill is looked up by it in the journal and
-     * on paper.
+     * Waybills (ADR 0037, printing ADR 0041). The row appears only once a waybill is issued:
+     * rentals have none at all, and "Waybill: -" on such a request would read as a forgotten
+     * document. The number next to the button is not decoration: the waybill is looked up by it in
+     * the journal and on paper.
      *
-     * An on-site equipment order has as many waybills as weeks in its term (ESM-2): each is labelled
-     * with its week, otherwise identical-looking numbers could not be told apart when choosing which
-     * to print. Cancelled ones stay in the list, so a burnt number is visible where it was issued.
+     * An on-site equipment order has as many waybills as weeks in its term (ESM-2): each is
+     * labelled with its week, otherwise identical-looking numbers could not be told apart when
+     * choosing which to print. Cancelled ones stay in the list, so a burnt number is visible where
+     * it was issued.
      *
      * A linear order shows the row even when empty: it may have no waybills at all (the portal does
      * not issue them), but the missing one has to be issued from somewhere (ADR 0100 decision 6).
@@ -200,8 +201,9 @@ export function requestExecutionFields({
         ]
       : []),
     /*
-     * Completion fact (ADR 0029): "how much was worked and what it cost". Only a request closed by a
-     * fact has it: a cancelled one never does, and for older completed ones it cannot be restored.
+     * Completion fact (ADR 0029): "how much was worked and what it cost". Only a request closed by
+     * a fact has it: a cancelled one never does, and for older completed ones it cannot be
+     * restored.
      */
     ...(request.completion
       ? [

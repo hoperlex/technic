@@ -85,21 +85,21 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
       footer={
         route && (
           <Space wrap>
-            {/* The door to the route list: the tab people used to reach it by is gone (ADR 0120),
-                and the card is one of its three replacements (section 3.3 of
-                docs/vehicle-routes-modal-plan.md). The route day is always passed: coming from a
-                route of the day before yesterday, a list left on its own period would show neither
-                it nor its day neighbours, and the neighbours are why people leave the card ("what
-                else is this vehicle doing").
+            {/* The door to the route list: the tab people used to reach it by is gone (ADR
+                0120), and the card is one of its three replacements (section 3.3 of
+                docs/vehicle-routes-modal-plan.md). The route day is always passed: coming from
+                a route of the day before yesterday, a list left on its own period would show
+                neither it nor its day neighbours, and the neighbours are why people leave the
+                card ("what else is this vehicle doing").
 
-                On the left rather than next to "Issue waybill": that one spends a form number, and a
-                navigation button shoulder to shoulder with it would compete for the click with an
-                irreversible action.
+                On the left rather than next to "Issue waybill": that one spends a form number,
+                and a navigation button shoulder to shoulder with it would compete for the click
+                with an irreversible action.
 
-                The right is asked by its own call although the card cannot open without it (the URL
-                host drops ?route=). The button leads to the LIST, closed by the same canOpenRoute,
-                and deducing "the card is open, so the list is allowed" would be a rule that holds
-                only until the first change of access conditions. */}
+                The right is asked by its own call although the card cannot open without it (the
+                URL host drops ?route=). The button leads to the LIST, closed by the same
+                canOpenRoute, and deducing "the card is open, so the list is allowed" would be a
+                rule that holds only until the first change of access conditions. */}
             {canOpenRoute(can) && (
               <Button
                 icon={<UnorderedListOutlined />}
@@ -109,9 +109,9 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
                 Все маршруты
               </Button>
             )}
-            {/* Route edit uses the same right as everything else in the card: the day is moved and the
-                driver changed on the morning of that day, which is the most common reason to open
-                the card. */}
+            {/* Route edit uses the same right as everything else in the card: the day is moved
+                and the driver changed on the morning of that day, which is the most common
+                reason to open the card. */}
             {onEdit && (
               <Button
                 icon={<EditOutlined />}
@@ -122,9 +122,9 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
                 Редактировать
               </Button>
             )}
-            {/* A cancelled waybill cannot be printed (canPrintWaybill), and the button does not even
-                mention it: the route is already unfrozen, and the talk here must be about the new
-                form, not the written-off number. */}
+            {/* A cancelled waybill cannot be printed (canPrintWaybill), and the button does not
+                even mention it: the route is already unfrozen, and the talk here must be about
+                the new form, not the written-off number. */}
             {route.waybill && route.waybill.status !== 'cancelled' && (
               <PrintWaybillButton
                 waybillId={route.waybill.id}
@@ -192,7 +192,8 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
             <Descriptions.Item label="Водитель">
               {route.driverName || <Tag color="orange">не назначен</Tag>}
             </Descriptions.Item>
-            {/* A relocation's task is not a composition but two lines "from -> to" (migration 0082). */}
+            {/* A relocation's task is not a composition but two lines "from -> to" (migration
+                0082). */}
             {relocation && (
               <Descriptions.Item label={routePurposeLabels[route.purpose]}>
                 {route.moveFrom} → {route.moveTo}
@@ -233,7 +234,8 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
           )}
           {/* Driver document gaps are shown before "Issue waybill", not in the confirmation:
               assigning another person is easier while the form is not spent yet. A frozen route
-              stays silent: its waybill is printed, and it is too late to talk about empty columns. */}
+              stays silent: its waybill is printed, and it is too late to talk about empty
+              columns. */}
           {!frozen && driverGaps && (
             <Alert
               type="warning"
@@ -272,10 +274,10 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
               door. */}
           {!relocation && (
             <div>
-              {/* The counter is just the request count, without "of seven": paper is measured by task
-                  rows, not requests (R11), and a request with six trips takes six of seven rows
-                  while staying one entry here. Capacity is named by the "Waybill task" block, where
-                  printed rows are counted. */}
+              {/* The counter is just the request count, without "of seven": paper is measured
+                  by task rows, not requests (R11), and a request with six trips takes six of
+                  seven rows while staying one entry here. Capacity is named by the "Waybill
+                  task" block, where printed rows are counted. */}
               <Typography.Title level={5}>Заявки рейса ({route.requests.length})</Typography.Title>
               {route.requests.length === 0 && (
                 <Typography.Paragraph type="secondary">

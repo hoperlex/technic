@@ -11,10 +11,10 @@ import { formatDateOnly } from '@shared/lib';
  * One issue attempt: the backdate and the warning acknowledgement live in it together (R21 of
  * docs/route-trips-plan.md).
  *
- * Together because the attempt is repeated WHOLE: after 409 waybill_ack_required the portal sends the
- * same request with the same operation key plus the fingerprint. Split them into two mutations and
- * the confirmation of a backdated issue would lose either the reason or the key, and a second key
- * would burn a second form number.
+ * Together because the attempt is repeated WHOLE: after 409 waybill_ack_required the portal sends
+ * the same request with the same operation key plus the fingerprint. Split them into two mutations
+ * and the confirmation of a backdated issue would lose either the reason or the key, and a second
+ * key would burn a second form number.
  */
 type IssueAttempt = {
   backdate?: { reason: string; operationId: string };
@@ -86,10 +86,10 @@ export function useRouteWaybillCommands({
    * Issue on a past day (ADR 0101 item 4, plan gap 1).
    *
    * The portal used to issue such a waybill silently: same button, same request. Now it is an
-   * operation: the reason is mandatory (the server asks for it and writes it into the correction log
-   * and the waybill itself, R35), and the idempotency key is generated BEFORE sending and does not
-   * change while the dialog is open, so a retry after a dropped connection returns the same number
-   * instead of burning the next one (R31).
+   * operation: the reason is mandatory (the server asks for it and writes it into the correction
+   * log and the waybill itself, R35), and the idempotency key is generated BEFORE sending and does
+   * not change while the dialog is open, so a retry after a dropped connection returns the same
+   * number instead of burning the next one (R31).
    *
    * A separate dialog rather than a field in the card: it is asked rarely, and a permanent "reason"
    * field next to a regular same-day issue would read as mandatory.
@@ -139,8 +139,8 @@ export function useRouteWaybillCommands({
    * person can tell "forgot to add requests" from "issuing empty on purpose".
    */
   const confirmIssue = () => {
-    // A past day has its own dialog and price (ADR 0101, gap 1): the waybill is born by a correction
-    // operation, and the server will not issue it without a reason.
+    // A past day has its own dialog and price (ADR 0101, gap 1): the waybill is born by a
+    // correction operation, and the server will not issue it without a reason.
     if (past) return confirmBackdatedIssue();
     if (!driverGaps && !blank) return issue.mutate({});
     modal.confirm({

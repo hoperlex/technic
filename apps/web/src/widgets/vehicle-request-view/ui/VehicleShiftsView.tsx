@@ -63,9 +63,9 @@ const columns: TableColumnType<VehicleRequestShiftDto>[] = [
 /**
  * Shifts of an on-site equipment order, read-only, as the request card shows them.
  *
- * Shifts are kept on the "On site" tab (ADR 0036), which shows what stands on the site today; people
- * without a link to the site come here for them: the dispatcher checking an invoice and the lessor
- * in a dispute about hours. Hence the same table without input fields.
+ * Shifts are kept on the "On site" tab (ADR 0036), which shows what stands on the site today;
+ * people without a link to the site come here for them: the dispatcher checking an invoice and the
+ * lessor in a dispute about hours. Hence the same table without input fields.
  */
 export function VehicleShiftsView({ requestId }: { requestId: string }) {
   // Same key as the shift confirmation window: it is the same table, no need to fetch it twice.

@@ -24,8 +24,8 @@ export function RouteAddRequestBlock({ route, adding, attach, candidate, free, s
            * must see they are taking it from R-7, not picking a free one.
            *
            * Numbers stay plain text here on purpose: an option label is a string that the search
-           * runs on (optionFilterProp="label"), so there is no room for markup in it, and a click on
-           * an option belongs to choosing; a link inside would steal the list's only action. The
+           * runs on (optionFilterProp="label"), so there is no room for markup in it, and a click
+           * on an option belongs to choosing; a link inside would steal the list's only action. The
            * same holds for the warning below: it is about the request being added now, not a
            * composition record people go to look at.
            */

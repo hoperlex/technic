@@ -3,8 +3,8 @@ import type { SpecialEquipmentRequestDto, VehicleRequestDaysDto } from '@technic
 export interface VehicleDayRouteModalProps {
   /**
    * The request and the day being put into a route; null means the window is closed. The day table
-   * has already checked the request with canPlanDay (on-site equipment order, in work, own vehicle),
-   * so the window does not repeat that pre-check.
+   * has already checked the request with canPlanDay (on-site equipment order, in work, own
+   * vehicle), so the window does not repeat that pre-check.
    *
    * onDate is the cut-off day computed by the server (VehicleRequestDaysDto.onDate), and only it
    * decides whether the day is in the past. The browser clock may be wrong, and the form must not

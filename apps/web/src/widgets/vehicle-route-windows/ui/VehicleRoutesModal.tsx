@@ -73,12 +73,12 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
   /*
    * A request to show a specific day (openRoutesList({ focusDate })): sent by the route card's "All
    * routes" button and by the route edit with the new day it was moved to. Otherwise the list would
-   * open on today while the route it was opened for lies the day before yesterday, and the user would
-   * decide the route was lost.
+   * open on today while the route it was opened for lies the day before yesterday, and the user
+   * would decide the route was lost.
    *
    * The dependency is the counter, not the date, and that is the point of the effect. A repeated
-   * request for the same day must bring the period back if the user moved it to another month; keyed
-   * by the date value, the second effect would not fire at all since the date did not change.
+   * request for the same day must bring the period back if the user moved it to another month;
+   * keyed by the date value, the second effect would not fire at all since the date did not change.
    */
   useEffect(() => {
     if (!focusDate) return;

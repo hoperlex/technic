@@ -87,9 +87,9 @@ export function RequestTripsTable({ trips }: { trips: VehicleRequestTripDto[] })
           key: 'cargo',
           title: 'Груз',
           width: 160,
-          // The cargo label is the one the form prints (tripCargoLabel): different units on the card
-          // and on the waybill would start an argument about what was carried. The trip note goes on
-          // the second line; it is what explains "sand, call an hour ahead".
+          // The cargo label is the one the form prints (tripCargoLabel): different units on the
+          // card and on the waybill would start an argument about what was carried. The trip note
+          // goes on the second line; it is what explains "sand, call an hour ahead".
           render: (_value, trip) => (
             <div style={{ lineHeight: 1.35 }}>
               <div>{tripCargoLabel(trip) || '—'}</div>
@@ -105,8 +105,8 @@ export function RequestTripsTable({ trips }: { trips: VehicleRequestTripDto[] })
           key: 'scheduledAt',
           title: 'Подача',
           width: 150,
-          // A trip's own time (R3) refines the request's: empty means "same as the request", and that
-          // is said in words. A dash would read as "no time at all", while there is one, the
+          // A trip's own time (R3) refines the request's: empty means "same as the request", and
+          // that is said in words. A dash would read as "no time at all", while there is one, the
           // request's.
           render: (_value, trip) =>
             trip.scheduledAt ? (

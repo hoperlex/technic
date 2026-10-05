@@ -187,10 +187,10 @@ export function RouteTaskRowsBlock({
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <Space size={8} wrap>
                         <Tag>{row.slot}</Tag>
-                        {/* The row number is the request number with its trip («ТС-40/2»), and it
-                          stays bold for the same reason as in the composition: there are up to
-                          ten rows (seven on 4-P), and eyes navigate them by number. Without the right to view
-                          requests it stays plain text as before. */}
+                        {/* The row number is the request number with its trip («ТС-40/2»), and
+                            it stays bold for the same reason as in the composition: there are
+                            up to ten rows (seven on 4-P), and eyes navigate them by number.
+                            Without the right to view requests it stays plain text as before. */}
                         <EntityLink
                           to={vehicleRequestViewLink(can, row.ref.requestId)}
                           title="Открыть заявку"

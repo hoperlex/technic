@@ -154,7 +154,8 @@ export function VehicleRequestViewModal({
                  * linear one (ADR 0207 decision 1): a daily 4-P is asked for a vehicle that stands
                  * on site all week too, and hiding the door by the type flag would answer "no such
                  * paper" where it is issued. An order that is not entitled to days (a rental, one
-                 * not taken into work) gets the server's explanation (blocker) instead of emptiness.
+                 * not taken into work) gets the server's explanation (blocker) instead of
+                 * emptiness.
                  *
                  * The tab has no permission of its own (ADR 0122): "who comes to me on Thursday and
                  * with what" is the customer's question; day planning is gated by canPlan inside.
@@ -173,9 +174,9 @@ export function VehicleRequestViewModal({
                 {
                   key: 'shifts',
                   label: 'Смены',
-                  // Read-only: shifts are confirmed on the "On site" tab, which shows what stands on
-                  // the site today. People come here for them without a link to the site: to check
-                  // an invoice or settle a dispute about hours.
+                  // Read-only: shifts are confirmed on the "On site" tab, which shows what stands
+                  // on the site today. People come here for them without a link to the site: to
+                  // check an invoice or settle a dispute about hours.
                   children: <VehicleShiftsView requestId={request.id} />,
                 },
               ]}

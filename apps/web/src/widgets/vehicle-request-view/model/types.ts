@@ -12,10 +12,10 @@ export interface VehicleRequestViewModalProps {
   onEdit?: (request: VehicleRequestDto) => void;
   /**
    * Create a new request with the same composition (ADR 0173; any status since ADR 0206). Offered
-   * for a non-deleted request to someone allowed to create requests of this type. The
-   * button lives in the card, not the row, for the same reason as vehicle change: whether to repeat
-   * an order is decided after reading all of it (addresses, cargo, contact, note), and the row shows
-   * half of that.
+   * for a non-deleted request to someone allowed to create requests of this type. The button lives
+   * in the card, not the row, for the same reason as vehicle change: whether to repeat an order is
+   * decided after reading all of it (addresses, cargo, contact, note), and the row shows half of
+   * that.
    */
   onCopy?: (request: VehicleRequestDto) => void;
   /**
@@ -32,9 +32,9 @@ export interface VehicleRequestViewModalProps {
    */
   onChangeMachinist?: (request: VehicleRequestDto) => void;
   /**
-   * Move the request to another route (ADR 0052). Absent when unavailable: routes are run by whoever
-   * runs dispatch, while many people read the card. The card additionally requires both route
-   * permissions before showing the button (see useVehicleRequestViewData).
+   * Move the request to another route (ADR 0052). Absent when unavailable: routes are run by
+   * whoever runs dispatch, while many people read the card. The card additionally requires both
+   * route permissions before showing the button (see useVehicleRequestViewData).
    */
   onTransfer?: (request: VehicleRequestDto) => void;
   /**

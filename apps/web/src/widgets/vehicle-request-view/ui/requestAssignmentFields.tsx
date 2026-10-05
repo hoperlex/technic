@@ -104,9 +104,10 @@ export function requestAssignmentFields({
                     )}
                     {/* The person's card was removed from the directory (ADR 0190). That does
                         not cancel the work (they are on this vehicle today), but the order will
-                        issue one more strict-accounting form to a removed person, and that must be
-                        said here rather than discovered by the customer's accounting. The "change
-                        machinist" button is right next to it: the mark is an invitation to use it. */}
+                        issue one more strict-accounting form to a removed person, and that must
+                        be said here rather than discovered by the customer's accounting. The
+                        "change machinist" button is right next to it: the mark is an invitation
+                        to use it. */}
                     {driver.cardRemovedOn && (
                       <Tooltip
                         title={`Карточка снята ${dayjs(driver.cardRemovedOn).format('DD.MM.YYYY')}. Выписанные бланки остаются в силе, а новые пойдут на снятую карточку — назначьте другого машиниста.`}
@@ -145,8 +146,8 @@ export function requestAssignmentFields({
     /*
      * The route the request rides (ADR 0050) and the door to the route list. The valued row appears
      * for a request placed in a route: "Route: -" on a new request would read as a forgotten route,
-     * and freight in progress without a route is flagged by a tag in the list. Transfer sits next to
-     * the value, like vehicle change: one field changes, not the whole request (ADR 0052).
+     * and freight in progress without a route is flagged by a tag in the list. Transfer sits next
+     * to the value, like vehicle change: one field changes, not the whole request (ADR 0052).
      *
      * A request without a route still gets the row, but only for "All routes" and only for those
      * entitled to the list: this is where people go looking for a route to put the request in.

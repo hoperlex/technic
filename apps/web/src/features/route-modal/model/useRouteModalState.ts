@@ -12,12 +12,12 @@ import { useOpenedRecord } from '@shared/lib';
 import type { RouteModalApi, RouteModalWindowsState } from './context';
 
 /*
- * A route, the route list and a request open as windows over whatever page asked about them
- * (ADR 0120, plan docs/vehicle-routes-modal-plan.md). There is no "Routes" tab any more: the
- * question "what is that route" is asked from a request row, the garage day view or the waybill
- * journal, and answering it used to cost leaving the screen, losing its filters and finding the way
- * back. That is why the host sits above every portal page (App.tsx) and callers know it only through
- * the commands of RouteModalApi.
+ * A route, the route list and a request open as windows over whatever page asked about them (ADR
+ * 0120, plan docs/vehicle-routes-modal-plan.md). There is no "Routes" tab any more: the question
+ * "what is that route" is asked from a request row, the garage day view or the waybill journal, and
+ * answering it used to cost leaving the screen, losing its filters and finding the way back. That
+ * is why the host sits above every portal page (App.tsx) and callers know it only through the
+ * commands of RouteModalApi.
  *
  * The URL is the only window state: openRoute is a parameter write and nothing more. Mirror it in
  * React state and Back would diverge from the screen on the first navigation, and the route link
@@ -155,10 +155,10 @@ export function useRouteModalState() {
 
   /*
    * After a route edit the whole screen under the window is stale, because routes are now edited
-   * from the waybill journal and the garage day view, not only from the route list. The request list
-   * shows the route number and the "no route" warning; the waybill journal because a waybill is born
-   * by the route endpoint and an edit of composition or date rewrites an issued one; the garage
-   * because a vehicle's and driver's daily occupancy is exactly the routes.
+   * from the waybill journal and the garage day view, not only from the route list. The request
+   * list shows the route number and the "no route" warning; the waybill journal because a waybill
+   * is born by the route endpoint and an edit of composition or date rewrites an issued one; the
+   * garage because a vehicle's and driver's daily occupancy is exactly the routes.
    */
   const refresh = useCallback(() => {
     void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
@@ -168,14 +168,14 @@ export function useRouteModalState() {
   }, [qc]);
 
   /*
-   * A route over the current page. A request overlay yields to the route: placing the route under it
-   * would open an invisible window. Both edits go in ONE setSearchParams write: two calls in a row
-   * would produce an intermediate frame with both parameters and an extra history entry, and Back
-   * would return to that frame instead of the request the user left.
+   * A route over the current page. A request overlay yields to the route: placing the route under
+   * it would open an invisible window. Both edits go in ONE setSearchParams write: two calls in a
+   * row would produce an intermediate frame with both parameters and an extra history entry, and
+   * Back would return to that frame instead of the request the user left.
    *
    * History policy: replace only on list -> card, otherwise the "list <-> card" cycle grows history
-   * without bound. Displacing a request is a single push: Back must bring the request back. A click on
-   * a number on a regular page is a push too: there Back is expected to close the window.
+   * without bound. Displacing a request is a single push: Back must bring the request back. A click
+   * on a number on a regular page is a push too: there Back is expected to close the window.
    */
   const openRoute = useCallback(
     (routeId: string) => {
@@ -195,12 +195,12 @@ export function useRouteModalState() {
   );
 
   /*
-   * The route list displaces a request for the same reason as the card: "All routes" is offered from
-   * the read-only request card too, and a request left on top would hide the list.
+   * The route list displaces a request for the same reason as the card: "All routes" is offered
+   * from the read-only request card too, and a request left on top would hide the list.
    *
    * History policy: replace on card -> list (the same cycle) and on a repeated focus while the list
-   * is already open, where the URL does not change and a new entry would be empty. push when opening
-   * from a regular page and when displacing a request.
+   * is already open, where the URL does not change and a new entry would be empty. push when
+   * opening from a regular page and when displacing a request.
    */
   const openRoutesList = useCallback(
     (options?: { focusDate?: string }) => {
@@ -263,10 +263,10 @@ export function useRouteModalState() {
    * of a foreign route if the user then opens the neighbouring one. Unsaved fields are lost exactly
    * as when the window is closed with the cross.
    *
-   * The owner must be compared by identity, and that is the point of this effect. An edit opened from
-   * a list row has no route in the URL at all, so comparing with it would close the form in the same
-   * frame it opened. The list is therefore checked by its own flag (listOpen) and the card by its id,
-   * which also catches switching to a neighbouring route.
+   * The owner must be compared by identity, and that is the point of this effect. An edit opened
+   * from a list row has no route in the URL at all, so comparing with it would close the form in
+   * the same frame it opened. The list is therefore checked by its own flag (listOpen) and the card
+   * by its id, which also catches switching to a neighbouring route.
    */
   useEffect(() => {
     if (!editing) return;
