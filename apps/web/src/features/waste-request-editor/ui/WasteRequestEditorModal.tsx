@@ -155,7 +155,8 @@ export function WasteRequestEditorModal({
       )
     : 'ok';
 
-  // A site change resets the container: both the directory type and the presence group depend on it.
+  // A site change resets the container: the directory type and the presence group both depend on
+  // the site.
   const resetSubject = () =>
     form.setFieldsValue({
       containerTypeId: undefined,

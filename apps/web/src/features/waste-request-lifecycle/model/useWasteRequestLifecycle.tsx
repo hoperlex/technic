@@ -49,13 +49,22 @@ export function useWasteRequestLifecycle({
   const canEdit = can('wasteRequests.update');
   const canDelete = can('wasteRequests.delete');
   const canRestore = can('archive.restore');
+  // Starting work and cancelling go through modals because both need input (the operator, the
+  // reason), so the target request is kept in state.
   const [operatorTarget, setOperatorTarget] = useState<WasteRequestDto | null>(null);
   const [cancelTarget, setCancelTarget] = useState<WasteRequestDto | null>(null);
+  // A rollback to "new" (transitionResetsWork) is separate state from cancellation: both use one
+  // reason modal, but a rollback also lists what it erases, and a single state could not tell
+  // the two apart.
   const [rollbackTarget, setRollbackTarget] = useState<WasteRequestDto | null>(null);
+  // Completion: the fact (volume and cost, or only a ticket) and the comment are entered in their
+  // own modal and sent together with the status in one request.
   const [completionTarget, setCompletionTarget] = useState<WasteRequestDto | null>(null);
 
   const invalidateRequests = () => void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
 
+  // The completion modal already hands over the request body: the actual volume with its cost
+  // (ADR 0035) and the request tickets; this command only attaches them to the status change.
   const status = useMutation({
     mutationFn: (value: StatusCommand) =>
       wasteRequestsApi.changeStatus(value.id, value.status, value.version, {
@@ -68,7 +77,9 @@ export function useWasteRequestLifecycle({
       setRollbackTarget(null);
       setCompletionTarget(null);
       invalidateRequests();
-      // A rollback erases ticket recognition in the same transaction under its own cache root.
+      // A rollback to "new" erases the tickets with their pages and accepted mismatches in the same
+      // transaction as the status (purgeRequestRecognition), under their own cache root. Without
+      // this the card would keep listing them and offer actions on rows that no longer exist.
       void qc.invalidateQueries({ queryKey: wasteTicketKeys.root });
     },
     onError: (error) => {
@@ -77,7 +88,9 @@ export function useWasteRequestLifecycle({
     },
   });
 
-  // Assignment changes the version first; the status command must use the returned version.
+  // Moving into work assigns the executor: from then on the operator sees the request (ADR 0010).
+  // Two sequential requests: assignment bumps the request version, so the status change must use
+  // the version returned by the assignment.
   const startWork = useMutation({
     mutationFn: async (value: {
       request: WasteRequestDto;
@@ -102,7 +115,15 @@ export function useWasteRequestLifecycle({
     },
   });
 
+  /**
+   * Starting work goes through operator assignment; completion through the fact-and-ticket modal;
+   * cancellation and rollback to "new" through a mandatory reason. Other rollbacks run at once:
+   * they erase nothing, so there is nothing to explain.
+   */
   const changeStatus = (request: WasteRequestDto, next: RequestStatus) => {
+    // Rollback to "new" erases what the work produced (transitionResetsWork): the removal fact and
+    // tickets. It asks for a reason in the cancellation modal but lists above the field what this
+    // request will lose, because after the click there is nothing to restore.
     if (transitionResetsWork(request.status, next)) {
       setRollbackTarget(request);
       return;
@@ -111,10 +132,14 @@ export function useWasteRequestLifecycle({
       setCancelTarget(request);
       return;
     }
+    // The operator modal preselects an executor already chosen in the request itself, so it then
+    // only confirms that choice (WasteOperatorAssignmentModal).
     if (request.status === 'new' && next === 'confirmed') {
       setOperatorTarget(request);
       return;
     }
+    // Completion goes through the modal for every request type: container operations also present
+    // a ticket, and every completion needs its comment (ADR 0013).
     if (next === 'done') {
       setCompletionTarget(request);
       return;
@@ -150,6 +175,11 @@ export function useWasteRequestLifecycle({
       cancelText: 'Отмена',
       onOk: () => removeRequest.mutateAsync(request.id),
     });
+  // A place-scoped customer (site or department role) edits a request only until it is taken into
+  // work: after that it is bound by arrangements with the executor. This is the same predicate as
+  // the server's assertObjectRoleEditable (apps/api/src/lib/access.ts), and this copy must match
+  // it: if they diverge, the portal either offers edits the API rejects or hides allowed ones.
+  // The rule is about the customer, not the site, so a department role on its site falls under it.
   const canModify = (request: WasteRequestDto) =>
     !request.deletedAt &&
     (canEdit || canDelete) &&
@@ -175,6 +205,9 @@ export function useWasteRequestLifecycle({
           request: completionTarget,
           confirmLoading: status.isPending,
           onCancel: () => setCompletionTarget(null),
+          // Completion facts: removal reports actual volume and cost (ADR 0035), container
+          // operations a ticket (ADR 0013); a ticket is mandatory in both cases (ADR 0020), and a
+          // difference from the planned volume is a hint that does not block saving.
           onSubmit: (value) =>
             completionTarget &&
             status.mutate({
@@ -201,6 +234,8 @@ export function useWasteRequestLifecycle({
             })
           }
         />
+        {/* Rollback to "new": the reason is as mandatory as a cancellation reason (the server
+            requires it too), and above the field the modal lists what this request will lose. */}
         <RollbackReasonModal
           open={!!rollbackTarget}
           subject={rollbackTarget ? `№ ${rollbackTarget.displayNumber}` : ''}

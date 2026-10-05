@@ -15,6 +15,7 @@ export interface WasteRequestOperatorModalProps {
 
 export interface WasteRequestCompletionValue {
   comment: string;
+  /** Removal fact; null for a container operation, which has no hauled quantity. */
   completion: CompleteWasteRequestInput | null;
   ticketFileIds: string[];
 }

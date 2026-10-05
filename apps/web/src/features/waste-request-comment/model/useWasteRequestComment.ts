@@ -7,7 +7,11 @@ import {
   wasteRequestsApi,
 } from '@entities/waste-request';
 
-/** Persist an operator comment and immediately refresh the record shown by the owning card. */
+/**
+ * Persist the executor note (ADR 0053). The card shows a list-row record, so the saved request is
+ * handed back to it at once: otherwise the open card would keep the old version and a second edit
+ * in a row would hit a version conflict.
+ */
 export function useWasteRequestComment(onSaved: (request: WasteRequestDto) => void) {
   const { message } = App.useApp();
   const qc = useQueryClient();

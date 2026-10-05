@@ -7,7 +7,11 @@ import {
   wasteRequestsApi,
 } from '@entities/waste-request';
 
-/** Attach late ticket evidence and refresh the open card before another upload can start. */
+/**
+ * Attach tickets to a completed request (ADR 0189). The card shows a list-row record, so the
+ * updated request is handed back to it at once: otherwise the open card would keep the old version
+ * and the old paper list, and a second upload in a row would hit a version conflict.
+ */
 export function useWasteTicketAttach(onSaved: (request: WasteRequestDto) => void) {
   const { message } = App.useApp();
   const qc = useQueryClient();

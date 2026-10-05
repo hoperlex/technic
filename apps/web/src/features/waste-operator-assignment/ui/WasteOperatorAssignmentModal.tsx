@@ -23,7 +23,11 @@ interface Props {
   request: WasteRequestDto | null;
 }
 
-/** Keep the owner-mismatch decision beside the operator that causes it. */
+/**
+ * Operator assignment while moving a request into work. The executor is mandatory: the request
+ * reaches its operator's list through exactly this field (ADR 0010). The owner-mismatch decision
+ * stays beside the operator that causes it (ADR 0054).
+ */
 export function WasteOperatorAssignmentModal({
   confirmLoading,
   loading,
@@ -34,12 +38,15 @@ export function WasteOperatorAssignmentModal({
 }: Props) {
   const [form] = Form.useForm<WasteOperatorAssignmentValue>();
   const operatorId = Form.useWatch('operatorCounterpartyId', form);
+  // What stands on the affected site: the "whom to call" hint and the basis for the foreign
+  // container warning (ADR 0054). Same query key as the editor form, so the cache is shared.
   const { data: groups } = useQuery({
     queryKey: wasteRequestKeys.presentGroups(request?.objectId),
     queryFn: () => wasteRequestsApi.presentGroups(request!.objectId),
     enabled: !!request,
   });
 
+  // An executor may already be chosen in the request itself; the modal then only confirms it.
   useEffect(() => {
     form.resetFields();
     if (request?.operatorCounterpartyId) {
@@ -59,6 +66,8 @@ export function WasteOperatorAssignmentModal({
       onSubmit={() => form.submit()}
       confirmLoading={confirmLoading}
       okText="В работу"
+      // One field needs no columns; the wider modal only stops the operator label and its hint
+      // from wrapping syllable by syllable, as they did at 480 px.
       width={640}
     >
       <Form form={form} layout="vertical" onFinish={onSubmit}>
@@ -66,6 +75,8 @@ export function WasteOperatorAssignmentModal({
           name="operatorCounterpartyId"
           label="Оператор вывоза"
           rules={[{ required: true, message: 'Выберите оператора' }]}
+          // Site containers are shown here because assignment is when the crew is decided, and
+          // "whoever installed it removes it" is part of that decision (ADR 0054).
           extra={
             options.length === 0
               ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
