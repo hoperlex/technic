@@ -15,7 +15,11 @@ import type {
 } from '../model/types';
 import { WasteCommentCell, WasteStatusCell, WasteSubjectCell } from './feedCells';
 
-/** Desktop columns own only row presentation and dispatch commands through the widget port. */
+/**
+ * Desktop columns own only row presentation and dispatch commands through the widget port. The
+ * column key is also the server sort field (WASTE_REQUEST_SORT_FIELDS): renaming a sortable key
+ * silently breaks sorting.
+ */
 export function wasteRequestFeedColumns({
   actions,
   pending,
@@ -36,7 +40,8 @@ export function wasteRequestFeedColumns({
         <span style={{ whiteSpace: 'nowrap' }}>{request.displayNumber}</span>
       ),
     },
-    // Every column has a width so one long comment cannot stretch the max-content table.
+    // Every column has a width: with scroll.x='max-content' a column without one grows to its
+    // content, and a single long comment would bring back horizontal scroll for the whole table.
     textColumn<WasteRequestDto>({
       key: 'objectName',
       title: 'Объект',
@@ -53,6 +58,10 @@ export function wasteRequestFeedColumns({
       dataIndex: 'containerTypeName',
       width: 230,
       sorter: true,
+      // The cost is the subject's second line: its own column cost more than it helped, and the
+      // price per m³ next to the amount explains why the same volume costs differently. Scrap
+      // removal has no money at all (ADR 0067), so the delivered weight takes the second line:
+      // such a request has no subject, and without it the row would not say how it ended.
       render: (_value, request) => {
         const amountLine = wasteAmountLine(request);
         const weightLine = wasteWeightFactLine(request);
@@ -83,7 +92,9 @@ export function wasteRequestFeedColumns({
       sorter: true,
       render: (_value, request) => request.wasteTypeName ?? '—',
     },
-    // Ticket review is permission-protected on both the client and endpoint (ADR 0114).
+    // Ticket review (ADR 0114, Р24) sits next to the request subject, not at the row end: it is
+    // read together with the volume it refers to. Without the review right (Р25) there is no
+    // column at all, and the endpoint rejects the parameter the same way.
     ...(rights.canReviewTickets
       ? [
           {
@@ -103,6 +114,8 @@ export function wasteRequestFeedColumns({
       dataIndex: 'requestType',
       labels: requestTypeLabels,
       colors: requestTypeColors,
+      // Type captions are long ("Замена полного контейнера на пустой"); the tag wraps to a second
+      // line, otherwise such a column would take half the screen on one line.
       width: 160,
       multiline: true,
     }),
@@ -126,7 +139,8 @@ export function wasteRequestFeedColumns({
         </div>
       ),
     },
-    // An operator sees only its own counterparty, so repeating it in every row adds no information.
+    // A waste operator sees only its own requests (ADR 0010), so the column would repeat the same
+    // value in every row.
     ...(rights.isOperator
       ? []
       : [
@@ -153,11 +167,14 @@ export function wasteRequestFeedColumns({
         />
       ),
     },
-    // Search covers both comment sides, while sorting intentionally follows the site comment.
+    // Sorting follows the site line only (one key per column): the order of two concatenated texts
+    // means nothing. Search still covers both lines, on the server (ADR 0053).
     textColumn<WasteRequestDto>({
       key: 'comment',
       title: 'Комментарий',
       dataIndex: 'comment',
+      // Wider than other text columns and as wide as the vehicle feed comment: the collapsed cell
+      // has only two lines, and a narrow column fits nothing but the side labels into them.
       width: 260,
       render: (_value, request) => <WasteCommentCell request={request} collapsible />,
     }),
@@ -169,6 +186,8 @@ export function wasteRequestFeedColumns({
       render: (_value, request) => <FilesCell files={request.files} />,
     },
     actionsColumn<WasteRequestDto>((request) => {
+      // The card opens for an archived request too: what was in it and why can only be understood
+      // there, since the row has neither author nor history.
       const view = (
         <Tooltip title="Открыть карточку">
           <Button
@@ -197,6 +216,8 @@ export function wasteRequestFeedColumns({
           </Space>
         );
       }
+      // A role that does not manage requests at all (observer, operator) gets no buttons: a
+      // disabled button reads as "not now", while for this role it is "never".
       if (!rights.canEdit && !rights.canDelete) return view;
       const allowed = actions.canModify(request);
       return (

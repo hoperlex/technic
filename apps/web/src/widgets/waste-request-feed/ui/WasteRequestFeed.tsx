@@ -28,7 +28,8 @@ export function WasteRequestFeed({
       filters={<WasteRequestFeedFilterBar options={state.filterOptions} />}
       extra={
         <Space size={8}>
-          {/* Desktop has room for a separate audit entry; mobile exposes it as a list action. */}
+          {/* Entry into the recognition audit. On a phone the panel belongs to filters and no
+              second round button is added next to "Создать заявку"; there it is a list action. */}
           <TicketAuditButton allowed={rights.canAuditTickets} />
           {rights.canCreate ? (
             <Button type="primary" icon={<PlusOutlined />} onClick={actions.create}>
@@ -40,6 +41,7 @@ export function WasteRequestFeed({
       mobile={{
         filters: wasteRequestFeedMobileFilters(state.filterOptions),
         sort: {
+          // Captions where the column header is two-line markup.
           options: sortOptionsFrom(columns, {
             createdAt: 'Дата создания',
             num: 'Номер заявки',
@@ -51,27 +53,41 @@ export function WasteRequestFeed({
         primaryAction: rights.canCreate
           ? { label: 'Создать заявку', icon: <PlusOutlined />, onClick: actions.create }
           : undefined,
+        // The audit entry on a phone: the round button is taken by request creation, and without
+        // this action the right holder could open the audit window only from a link.
         secondaryActions: auditAction ? [auditAction] : undefined,
       }}
     >
+      {/* The summary sits at tab level, above filters and the button: it is about the whole list,
+          not the toolbar, and takes no height from the table there. */}
       <TabsExtra tabKey="requests">
         <SummaryBar
           title="Заявок"
           items={[
+            // An operator executes requests rather than processing them (ADR 0010): it has no
+            // "Новые", requests reach its list already moved into work.
             ...(rights.isOperator ? [] : [{ label: 'Не обработанных', value: state.summary.new }]),
             { label: requestStatusLabels.confirmed, value: state.summary.confirmed },
-            // Done requests remain in the working list until a reviewer completes the paperwork.
+            // "Выполнена" is the completion queue (ADR 0135): hauled, but the paperwork is still
+            // being reviewed. The number belongs here because the "История" tab does not have such
+            // requests, and without it nobody sees how many closures await review.
             { label: requestStatusLabels.done, value: state.summary.done },
           ]}
         />
       </TabsExtra>
 
-      {/* Registry-level health must be visible where reviewers expect pending paper to appear. */}
+      {/* Recognition outage banner here too, not only in the card (Р29): whoever keeps the
+          registry expects warnings in the list, and a silent service looks like a calm day from
+          here. Asked by the same right as the review itself. */}
       {rights.canReviewTickets && <TicketRecognitionBanner enabled />}
 
       <DataTable<WasteRequestDto>
         columns={columns}
         card={card}
+        // A row click opens the card, the same gesture as tapping a phone card (card.onOpen), as in
+        // the waste archive and the vehicle feed. The "Открыть карточку" action button stays: a
+        // keyboard cannot reach a row, and cells with active content do not pass the click to the
+        // row (opensRow).
         onRowClick={actions.open}
         data={state.rows}
         total={state.total}

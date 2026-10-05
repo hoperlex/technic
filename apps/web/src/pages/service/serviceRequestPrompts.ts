@@ -10,12 +10,13 @@ export interface ReasonPrompt {
   success: string;
   submit: (reason: string) => Promise<unknown>;
   /**
-   * Что заявка потеряет по нажатию (ADR 0161, решение по перечню потерь). Пусто — терять нечего,
-   * и блок не рисуется вовсе: пустой список «будет стёрто» читается как недогрузившийся, а не как
-   * «ничего не пропадёт».
+   * What the request loses on confirmation (ADR 0161, decision on the loss list). Empty means
+   * nothing to lose, and the block is not rendered at all: an empty "will be erased" list reads as
+   * not loaded yet rather than "nothing will disappear".
    *
-   * Перечень собирается ПО САМОЙ ЗАЯВКЕ, а не по матрице сброса вообще: обещать снятие того, чего
-   * у неё нет, значит пугать выдуманной потерей (приём `rollbackErases` вывоза мусора, ADR 0135).
+   * The list is built FROM THIS REQUEST, not from the reset matrix in general: promising to remove
+   * what the request does not have frightens the user with an invented loss (the same approach as
+   * wasteRollbackErases in entities/waste-request, ADR 0135).
    */
   erases?: string[];
 }

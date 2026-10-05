@@ -16,17 +16,26 @@ const requestTypeOptions = REQUEST_TYPES.map((type) => ({
   label: requestTypeLabels[type],
 }));
 
-// Completed and cancelled requests live in History, and the working endpoint rejects them.
+// Working statuses only (ADR 0135): completed and cancelled requests live in the "История" tab and
+// the working endpoint does not return them at all; a filter option that ends in a refusal is
+// worse than no option.
 const statusOptions = OPEN_WASTE_STATUSES.map((status) => ({
   value: status,
   label: requestStatusLabels[status],
 }));
 
-/** Desktop filters preserve the original order, dimensions and option semantics. */
+/**
+ * Desktop filter bar: object, type, status, subject, delivery period, operator, review and number.
+ * The mobile definitions below are the same filters for the phone sheet (ADR 0030) and share their
+ * values and handlers, so the two cannot drift.
+ */
 export function WasteRequestFeedFilterBar({ options }: { options: WasteFilterOptions }): ReactNode {
   return (
     <Space size={[12, 8]} wrap>
-      {/* Popup width is governed by the portal-level rule (ADR 0136), not duplicated here. */}
+      {/* The field stays narrow so the bar does not spread, while the opened list is wider than
+          the field: a site caption with its address is longer than any sensible filter, and cut
+          by an ellipsis it stops answering "is this the right site". Popup width is governed by
+          the portal-level rule in the root provider (ADR 0136), not duplicated here. */}
       <Select
         style={{ width: 240 }}
         value={options.objects.value}
@@ -62,7 +71,10 @@ export function WasteRequestFeedFilterBar({ options }: { options: WasteFilterOpt
         value={options.subject.value}
         onChange={options.subject.onChange}
       />
-      {/* Delivery is filtered by calendar dates while API parameters use inclusive instants. */}
+      {/* The period is by delivery date, as in the "История" journal: the list is read by when
+          things were hauled, not when the request was created. Both bounds are optional: "since
+          the start of the month" and "until Friday" are asked as often as a full range. Calendar
+          dates here become inclusive instants in the API parameters. */}
       <DatePicker.RangePicker
         format="DD.MM.YYYY"
         style={{ width: 250 }}
@@ -94,7 +106,12 @@ export function WasteRequestFeedFilterBar({ options }: { options: WasteFilterOpt
           }
         />
       )}
-      {/* The review registry uses the same server predicate and permission as the ticket badge. */}
+      {/* The working registry of whoever checks the paper (ADR 0114, Р24), behind its own right
+          (Р25). A request with no discrepancy at all is still selected while its tickets are
+          unconfirmed: otherwise a correctly recognised ticket would stay unconfirmed forever, and
+          an unconfirmed ticket does not reserve its number. The server filter (ticketReview =
+          pending in the waste-requests route) selects pending work, not only discrepancies, and
+          the tooltip text below describes exactly that. */}
       {options.ticketReview && (
         <Tooltip title="Заявки, где талоны ждут человека: не подтверждены, спорны, не прочитаны или расходятся с закрытием">
           <Button
@@ -120,7 +137,11 @@ export function WasteRequestFeedFilterBar({ options }: { options: WasteFilterOpt
   );
 }
 
-/** Mobile filter descriptions share the same values and handlers as the desktop bar. */
+/**
+ * The same filters as definitions for the phone sheet (ADR 0030). The desktop bar stays a bar: it
+ * is fully visible there, and rebuilding it from definitions would be a rewrite for uniformity's
+ * sake. Values and handlers are shared with it, so there is nothing to drift.
+ */
 export function wasteRequestFeedMobileFilters(options: WasteFilterOptions): FilterDefinition[] {
   return [
     {
@@ -131,6 +152,7 @@ export function wasteRequestFeedMobileFilters(options: WasteFilterOptions): Filt
       options: options.objects.options,
       placeholder: 'Все объекты',
       loading: options.objects.loading,
+      // With one object the filter is shown but fixed; with several it chooses among the own ones.
       disabled: options.objects.disabled,
       onChange: (value) => options.objects.onChange(value ?? ''),
     },

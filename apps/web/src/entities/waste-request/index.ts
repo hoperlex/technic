@@ -12,11 +12,15 @@ export { wasteRequestsApi } from './api/wasteRequestsApi';
 export type { WasteRequestPayload, WasteRequestUpdatePayload } from './api/wasteRequestsApi';
 
 /*
- * Request calendar boundaries use Moscow time and the same contract helper as the API. A local
- * browser date would make “today” disagree with the server for dispatchers in other time zones.
+ * Request calendar boundaries: "not earlier than today" on creation and "not back into the past" on
+ * edit. They use Moscow time and the same contract helper the API validates creation with. A local
+ * browser date would make "today" disagree with the server for dispatchers in other time zones.
  */
 export { isBeforeMinRequestDate, isPastDate, minRequestDate } from './model/requestDates';
-/** Build a waste-request link with the contract-owned section permission. */
+/**
+ * Build a waste-request link with the contract-owned section permission: the right is taken from
+ * the request slice, with no copy of it here.
+ */
 export { wasteRequestLink } from './model/links';
 export { wasteRequestErrorMessage } from './model/errorMessage';
 export {

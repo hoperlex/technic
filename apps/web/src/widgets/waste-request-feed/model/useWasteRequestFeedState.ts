@@ -18,7 +18,11 @@ interface FeedParams extends WasteFilterValues {
   num?: number;
 }
 
-/** Own the working-list URL state and preserve the list/summary query-key shapes. */
+/**
+ * Own the working-list URL state and preserve the list/summary query-key shapes. Filters live in
+ * the panel above the table, not in column dropdowns: a header hides them, and half of them
+ * (object, operator) are directory lists that do not fit there.
+ */
 export function useWasteRequestFeedState(
   sources: WasteRequestFeedSources,
   canReviewTickets: boolean,
@@ -43,7 +47,9 @@ export function useWasteRequestFeedState(
     applyFilter({ num: parseWasteRequestNumberSearch(value) });
   };
 
-  // Delivery filters are calendar dates in the UI and exact instants in both the request and key.
+  // Delivery filters are calendar dates in the UI and exact instants in both the request and the
+  // cache key: deliveryAt is stored with time, and a key built from the raw dates would let two
+  // different periods with the same dates share one cache entry.
   const listQuery = {
     ...params,
     deliveryFrom: dayStart(params.deliveryFrom),
@@ -53,7 +59,8 @@ export function useWasteRequestFeedState(
     queryKey: wasteRequestKeys.list(listQuery),
     queryFn: () => wasteRequestsApi.list(listQuery),
   });
-  // Summary shares the list root so every existing mutation invalidates both views together.
+  // Header summary: how many requests await processing and how many are in work. Its key shares
+  // the list root, so every existing mutation invalidates both views together.
   const summaryQueryResult = useQuery({
     queryKey: wasteRequestKeys.summary(params.objectId),
     queryFn: () => wasteRequestsApi.summary({ objectId: params.objectId }),
