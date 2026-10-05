@@ -2,54 +2,55 @@ import { Form, Select } from 'antd';
 import type { UserDepartmentRefDto } from '@technic/contracts';
 
 /**
- * Отделы учётки (ADR 0040) — вторая ось области — вместе с ответом на «руководит ли он ими»
- * (§11.1 плана реструктуризации прав, миграция 0149).
+ * The account's departments (ADR 0040) — the second scope axis — together with the answer to "does
+ * this person head them" (§11.1 of the permissions restructuring plan, migration 0149).
  *
- * **Зачем признак в карточке учётки, если ставят его не здесь.** Раньше руководителя делала роль:
- * администратор выбирал «Руководитель отдела», добавлял отдел — и человек начинал визировать
- * заявки. Теперь роль и руководство развязаны, признак живёт на привязке (`user_departments
- * .is_head`) и ставится только из карточки отдела. Промолчи форма об этом — администратор,
- * заводящий руководителя ровно так, как заводил год подряд, получил бы учётку, которая ничего не
- * визирует, и никакого объяснения на экране.
+ * **Why show the flag in the account card if it is not set here.** The head used to be made by the
+ * role: the administrator picked "department head", added a department — and the person started
+ * approving requests. Now role and headship are decoupled; the flag lives on the link
+ * (`user_departments.is_head`) and is set only from the department card. Were the form silent about
+ * it, an administrator creating a head exactly the way they did for a year would get an account
+ * that approves nothing, with no explanation on screen.
  *
- * **Показывается, но не задаётся.** Признак приходит той же строкой, что и сам отдел
- * (`UserDepartmentRefDto.isHead`), а ручка учётки его не принимает: `PATCH /users/:id` знает только
- * `departmentIds` — участие. Задать его отсюда было бы можно лишь перезаписью набора руководителей
- * у каждого затронутого отдела — то есть правкой чужих карточек вслепую, из формы, которая про них
- * не спрашивала.
+ * **Shown, not set.** The flag arrives in the same row as the department itself
+ * (`UserDepartmentRefDto.isHead`), but the account endpoint does not accept it: `PATCH /users/:id`
+ * knows only `departmentIds` — membership. Setting it from here would only be possible by
+ * overwriting the head set of every affected department — that is, blindly editing other cards from
+ * a form that never asked about them.
  *
- * Читается из самой карточки, а не с другой стороны связи (`DepartmentDto.heads`): справочник
- * отдаёт в выпадающий список только действующие отделы, и руководство выключенным пропало бы с
- * экрана, оставшись в базе.
+ * Read from the account card itself, not from the other side of the link (`DepartmentDto.heads`):
+ * the directory feeds only active departments into the dropdown, and headship of a disabled one
+ * would vanish from the screen while staying in the database.
  */
 
 interface Props {
-  /** Подпись выбранной роли: поле называется её именем — «Отделы (для роли „…“)». */
+  /** Label of the selected role: the field is named after it — "Departments (for role …)". */
   roleLabel: string;
-  /** Отделы учётки с признаком руководства; пусто — учётку только заводят или отделов у неё нет. */
+  /** Account departments with the head flag; empty — the account is being created or has none. */
   departments: UserDepartmentRefDto[];
-  /** Учётку только заводят: руководить ей ещё нечем, и разговор о признаке другой. */
+  /** The account is being created: it heads nothing yet, so the flag talk is different. */
   isNew: boolean;
   options: { value: string; label: string }[];
   loading: boolean;
 }
 
-/** Чем отдел называют в подсказке: код и наименование, как в самом выпадающем списке. */
+/** How a department is named in the hint: code and name, as in the dropdown itself. */
 const departmentTitle = (d: { code: string; name: string }): string => `${d.code} — ${d.name}`;
 
 export function UserDepartmentsField({ roleLabel, departments, isNew, options, loading }: Props) {
   const headed = departments.filter((d) => d.isHead);
 
   /*
-   * Три разных ответа, а не один общий текст: «руководит вот этими», «не руководит ничем» и «пока
-   * не о чем говорить». Средний — рабочее состояние сотрудника отдела, и звучать он обязан как
-   * факт, а не как недоделка; заодно снимает вопрос про роль, которая раньше значила руководство.
+   * Three distinct answers, not one generic text: "heads these", "heads nothing" and "nothing to
+   * talk about yet". The middle one is the normal state of a department employee and must read as
+   * a fact, not as something unfinished; it also settles the question about the role that used to
+   * mean headship.
    */
   const hint = isNew
     ? 'Руководителем отдела учётка становится не здесь: сохраните её и назначьте в справочнике «Отделы»'
     : headed.length > 0
-      ? // Отдел, убранный отсюда, уносит и руководство им (связь удаляется целиком) — сказать об
-        // этом надо до сохранения, а не показать пропажу в справочнике после.
+      ? // A department removed here takes its headship along (the link is deleted entirely) —
+        // this must be said before saving, not discovered as a loss in the directory afterwards.
         `Руководит: ${headed.map(departmentTitle).join(' · ')}. Признак ставят в справочнике «Отделы»; убранный здесь отдел снимет и руководство им`
       : 'Отделами не руководит — участие задаётся здесь, руководство в справочнике «Отделы». Роль «Руководитель отдела» сама по себе руководителем не делает';
 

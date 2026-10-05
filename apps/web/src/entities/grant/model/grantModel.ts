@@ -19,18 +19,18 @@ import {
 import { isApiError } from '@shared/api';
 
 /**
- * Словарь конструктора полномочий (ADR 0106, план §12): что показывать в списке прав, какие роли
- * предлагать и какими словами пересказывать ответ сервера.
+ * Vocabulary of the grant set builder (ADR 0106, plan §12): what to show in the permission list,
+ * which roles to offer and in what words to retell the server's response.
  *
- * Своего представления о модели здесь нет ни строчки, и это главное свойство файла. Перечень
- * выдаваемых прав отбирается предикатом контрактов (`isGrantable`), список ролей — той же самой
- * проверкой выдачи, которой отказывает сервер (`validateGrantAssignment`), а нарушения барьеров не
- * вычисляются вовсе — они приходят готовыми текстами и только раскладываются по местам. Вторая
- * копия любого из этих правил на портале разошлась бы с сервером в первую же правку каталога: форма
- * показала бы галочку, которую сервер отклонит, либо спрятала бы ту, которую он принимает.
+ * There is not a single line of its own model here, and that is the file's main property. Grantable
+ * permissions are selected by the contracts predicate (`isGrantable`), the role list by the very
+ * assignment check the server rejects with (`validateGrantAssignment`), and barrier violations are
+ * not computed at all — they arrive as ready texts and are only placed. A second copy of any of
+ * these rules on the portal would drift from the server on the first catalog edit: the form would
+ * show a checkbox the server rejects, or hide one it accepts.
  */
 
-/** Модуль в списке прав: его выдаваемые права в порядке словаря `PERMISSIONS`. */
+/** A module in the permission list: its grantable permissions in `PERMISSIONS` dictionary order. */
 export interface GrantModuleGroup {
   module: PermissionModule;
   label: string;
@@ -38,16 +38,17 @@ export interface GrantModuleGroup {
 }
 
 /**
- * Права конструктора, разложенные по модулям витрины.
+ * Builder permissions grouped by showcase module.
  *
- * Невыдаваемые (`NON_GRANTABLE_PERMISSIONS`, инвариант 5 плана §8) отсеиваются здесь, у самого
- * источника списка, а не в разметке: спрятать чекбокс — задача одного места, и «показали, но
- * заблокировали» тут не годится. Право, которое не выдаётся ни при каких условиях, в конструкторе
- * не выбор с причиной отказа, а строка, которой в наборе не бывает; удаление насовсем и ведение
- * учёток не должны даже мелькать в списке того, что можно собрать.
+ * Non-grantable ones (`NON_GRANTABLE_PERMISSIONS`, invariant 5 of plan §8) are filtered here, at
+ * the list's source, not in markup: hiding a checkbox is a job for one place, and "shown but
+ * disabled" does not fit here. A permission that is never grantable under any conditions is not a
+ * choice with a refusal reason in the builder but a row that never occurs in a set; permanent
+ * deletion and account management must not even flash in the list of what can be assembled.
  *
- * Модуль без единого выдаваемого права выпадает целиком — так уходит кабинет водителя: оба его
- * права защищены, и пустой заголовок модуля обещал бы выбор, которого нет.
+ * A module without a single grantable permission drops out entirely — this is how the driver
+ * cabinet goes: both its permissions are protected, and an empty module header would promise a
+ * choice that does not exist.
  */
 export const GRANT_MODULE_GROUPS: GrantModuleGroup[] = PERMISSION_MODULES.map((module) => ({
   module,
@@ -55,19 +56,19 @@ export const GRANT_MODULE_GROUPS: GrantModuleGroup[] = PERMISSION_MODULES.map((m
   permissions: PERMISSIONS_BY_MODULE[module].filter(isGrantable),
 })).filter((group) => group.permissions.length > 0);
 
-/** Все права, которые конструктор вообще показывает: ими же он чистит присланный состав. */
+/** All permissions the builder shows at all: it also uses them to clean an incoming composition. */
 export const GRANTABLE_PERMISSIONS: Permission[] = GRANT_MODULE_GROUPS.flatMap(
   (group) => group.permissions,
 );
 
 /**
- * Тот же список, но **весь словарь** — без отбора выдаваемых.
+ * The same list, but the **whole dictionary** — without filtering to grantable ones.
  *
- * Нужен адресации рассылок (ADR 0111): расписание не выдаёт право, а спрашивает «у кого оно есть»,
- * и `NON_GRANTABLE_PERMISSIONS` к этому вопросу отношения не имеет. Спрятать здесь `users.manage`
- * значило бы завести второй смысл у списка невыдаваемых прав — и, хуже того, скрыть от формы право,
- * которое расписанию могла подобрать миграция: открыв такое расписание, администратор молча снял бы
- * его адресацию, ничего в форме не тронув.
+ * Needed by mailing addressing (ADR 0111): a schedule does not grant a permission, it asks "who has
+ * it", and `NON_GRANTABLE_PERMISSIONS` has nothing to do with that question. Hiding `users.manage`
+ * here would give the non-grantable list a second meaning — and, worse, hide from the form a
+ * permission a migration may have assigned to a schedule: on opening such a schedule the
+ * administrator would silently drop its addressing without touching anything in the form.
  */
 export const PERMISSION_MODULE_GROUPS: GrantModuleGroup[] = PERMISSION_MODULES.map((module) => ({
   module,
@@ -76,11 +77,11 @@ export const PERMISSION_MODULE_GROUPS: GrantModuleGroup[] = PERMISSION_MODULES.m
 })).filter((group) => group.permissions.length > 0);
 
 /**
- * Роли, которым полномочия выдаются, — сегодня это все, кроме водителя.
+ * Roles that can receive grants — today all except the driver.
  *
- * Выводятся проверкой выдачи, а не списком с вычеркнутым `driver`: барьер 2 живёт в контрактах, и
- * записанное здесь имя роли стало бы вторым ответом на вопрос «кому наборы не положены». Заведут
- * вторую такую роль — список сузится сам, без правки этого файла.
+ * Derived from the assignment check, not from a list with `driver` struck out: barrier 2 lives in
+ * the contracts, and a role name written here would be a second answer to "who may not hold grant
+ * sets". Should a second such role appear, the list narrows by itself without editing this file.
  */
 export const GRANT_ROLES: Role[] = ROLES.filter(
   (role) =>
@@ -97,17 +98,17 @@ export const grantRoleOptions = GRANT_ROLES.map((role) => ({
   label: roleLabels[role],
 }));
 
-/** Подпись права — глаголом от лица учётки, как её объявляет каталог прав. */
+/** Permission label — a verb phrase from the account's viewpoint, as the catalog declares it. */
 export function permissionLabel(permission: Permission): string {
   return PERMISSION_CATALOG[permission].label;
 }
 
-/** Совместимые роли строкой. Пусто — набор выдавать некому, и сказать это надо словами. */
+/** Compatible roles as a string. Empty: nobody may get the set, and that must be said in words. */
 export function roleListText(roles: readonly Role[]): string {
   return roles.length > 0 ? roles.map((role) => roleLabels[role]).join(', ') : 'ни одной роли';
 }
 
-/** Русское склонение по числу: 1 — `one`, 2–4 — `few`, 5–20 и 11–14 — `many`. */
+/** Russian plural form by count: 1 — `one`, 2–4 — `few`, 5–20 and 11–14 — `many`. */
 function plural(count: number, one: string, few: string, many: string): string {
   const tail = count % 100;
   const last = count % 10;
@@ -117,23 +118,24 @@ function plural(count: number, one: string, few: string, many: string): string {
   return many;
 }
 
-/** «затронет 1 учётку, 2 учётки, 5 учёток» — винительный падеж: так стоит в сводке предпросмотра. */
+/** "affects 1 / 2 / 5 accounts" in Russian forms — accusative case, as in the preview summary. */
 export function accountsWord(count: number): string {
   return plural(count, 'учётку', 'учётки', 'учёток');
 }
 
-/** «добавится 1 право, 2 права, 5 прав». */
+/** "1 / 2 / 5 permissions will be added" in Russian forms. */
 export function permissionsWord(count: number): string {
   return plural(count, 'право', 'права', 'прав');
 }
 
 /**
- * Сводка последствий: сколько учёток затронуто и сколько **разных** прав придёт и уйдёт.
+ * Impact summary: how many accounts are affected and how many **distinct** permissions are added
+ * and removed.
  *
- * Права считаются множеством по всем затронутым, а не суммой по строкам: «добавится 2 права»
- * означает два права каталога, а не два человека, каждому по одному. Сумма по строкам на десяти
- * держателях дала бы «добавится 20 прав» там, где добавляется два, — и предупреждение читалось бы
- * как поломка.
+ * Permissions are counted as a set across all affected accounts, not summed per row: "2
+ * permissions will be added" means two catalog permissions, not two people with one each. A per-row
+ * sum over ten holders would say "20 permissions will be added" where two are added — and the
+ * warning would read as a malfunction.
  */
 export interface GrantImpactSummary {
   accounts: number;
@@ -152,10 +154,10 @@ export function impactSummary(impact: GrantImpactDto): GrantImpactSummary {
 }
 
 /**
- * Сводка словами — то самое «затронет 7 учёток: добавится 2 права, снимется 1» из §12.
+ * The summary in words — the "affects 7 accounts: 2 permissions added, 1 removed" from §12.
  *
- * Ноль затронутых — не пустая строка, а отдельный ответ: набор, который никому не выдан, правится
- * без последствий, и молчание в этом месте читалось бы как незагрузившийся предпросмотр.
+ * Zero affected is not an empty string but a separate answer: a set assigned to nobody is edited
+ * without consequences, and silence here would read as a preview that failed to load.
  */
 export function impactSummaryText(impact: GrantImpactDto): string {
   const { accounts, added, removed } = impactSummary(impact);
@@ -171,31 +173,36 @@ export function impactSummaryText(impact: GrantImpactDto): string {
   return `Затронет ${accounts} ${accountsWord(accounts)}: ${addedText}, ${removedText}.`;
 }
 
-/** Пометка держателя, чья роль вне списка совместимых, — тегом. */
+/** Tag marking a holder whose role is outside the compatible list. */
 export const ROLE_MISMATCH_TAG = 'роль не в списке';
 
 /**
- * Та же пометка у взведённого заранее назначения (шаг prepare, ADR 0113) — своими словами.
+ * The same mark for a pre-armed assignment (prepare step, ADR 0113) — in its own words.
  *
- * Несоответствие роли здесь не поломка, а состояние по построению: набор выдан держателю
- * упраздняемой роли за релиз до перевода и до него прав не даёт — их и так даёт роль. Показывать
- * такую строку тем же оранжевым «роль не в списке» нельзя: администратор увидел бы сотни
- * предупреждений и «прибрал» бы ровно те выдачи, на которых держится перевод.
+ * The role mismatch here is not a fault but a state by construction: the set is granted to a
+ * holder of a role being retired one release before the migration and gives no permissions until
+ * then — the role already gives them. Such a row must not be shown with the same orange "role not
+ * in the list" tag: the administrator would see hundreds of warnings and "clean up" exactly the
+ * grants the migration relies on.
  */
 export const ROLE_MIGRATION_PENDING_TAG = 'ждёт перевода роли';
 
-/** Взведено ли назначение переводом ролей: выдано переводом и держатель ещё на старой роли. */
+/**
+ * Whether an assignment is armed by the role migration: granted by it while the holder is still on
+ * the old role.
+ */
 export function isPendingRoleMigration(role: Role | null, origin: GrantOrigin): boolean {
   return origin === 'migration' && roleMigrationOf(role) !== null;
 }
 
 /**
- * То же самое словами, и без них обойтись нельзя: тег сообщает о несоответствии, а администратору
- * нужен его смысл — выдача жива, но прав по ней у человека нет вовсе (§13.1). Молчаливый массовый
- * отзыв опаснее несоответствия, поэтому назначение остаётся, и объяснить это обязан экран.
+ * The same in words, which cannot be done without: the tag reports the mismatch, but the
+ * administrator needs its meaning — the grant is alive, yet the person has no permissions from it
+ * at all (§13.1). A silent mass revocation is more dangerous than a mismatch, so the assignment
+ * stays, and the screen must explain it.
  *
- * У взведённой заранее выдачи смысл противоположный, и потому текст свой: прав она не даёт по
- * замыслу, а отзыв — единственное, чем перевод можно испортить.
+ * A pre-armed grant means the opposite, hence its own text: it gives no permissions by design, and
+ * revoking it is the only way to spoil the migration.
  */
 export function roleMismatchText(role: Role | null, origin: GrantOrigin = 'manual'): string {
   const migration = roleMigrationOf(role);
@@ -206,7 +213,7 @@ export function roleMismatchText(role: Role | null, origin: GrantOrigin = 'manua
   return `${whose} не входит в список совместимых: выдача жива, но доступ по набору у этой учётки погашен — прав он ей не даёт.`;
 }
 
-/** Что изменится у одного держателя — словами, а не двумя списками кодов. */
+/** What changes for one holder — in words, not as two code lists. */
 export function userDeltaText(user: GrantImpactUserDto): string {
   if (user.roleMismatch) return 'прав по набору не получает: роль не в списке совместимых';
   const parts: string[] = [];
@@ -216,17 +223,18 @@ export function userDeltaText(user: GrantImpactUserDto): string {
   if (user.removed.length > 0) {
     parts.push(`снимется: ${user.removed.map(permissionLabel).join(', ')}`);
   }
-  // Пустая дельта — тоже ответ: человек операцией затронут, но не теряет и не получает ничего.
+  // An empty delta is an answer too: the person is affected but neither gains nor loses anything.
   return parts.length > 0 ? parts.join('; ') : 'доступ не изменится';
 }
 
 /**
- * Нарушения барьеров текстами сервера — из предпросмотра и из отказа одинаково.
+ * Barrier violations as server texts — from the preview and from a rejection alike.
  *
- * Один разбор на две формы ответа намеренно: половины у них те же самые (`violations` — про сам
- * набор, `holders` — про итог у держателей), и второй разбор дал бы двум экранам разные слова об
- * одном запрете. Сообщения не пересобираются: они уже написаны с виновником внутри («право „Ведение
- * учётных записей“ не выдаётся полномочиями…»), и переписать их короче значило бы потерять причину.
+ * One parser for two response shapes on purpose: their halves are the same (`violations` — about
+ * the set itself, `holders` — about the outcome for holders), and a second parser would give two
+ * screens different words for one prohibition. Messages are not rebuilt: they are already written
+ * with the culprit inside ("the 'account management' permission is not granted by grants…"), and
+ * shortening them would lose the reason.
  */
 function violationTextsOf(details: unknown): string[] {
   if (!details || typeof details !== 'object') return [];
@@ -239,17 +247,17 @@ function violationTextsOf(details: unknown): string[] {
   ];
 }
 
-/** Нарушения, показанные предпросмотром: «так сохранить нельзя» — до нажатия. */
+/** Violations shown by the preview: "cannot be saved like this" — before the click. */
 export function impactViolationTexts(impact: GrantImpactDto): string[] {
   return violationTextsOf({ violations: impact.violations, holders: impact.holders });
 }
 
-/** Нарушения из отказа 400: тем же разбором, что и предпросмотр. */
+/** Violations from a 400 rejection: parsed the same way as the preview. */
 export function apiViolationTexts(error: unknown): string[] {
   return isApiError(error) ? violationTextsOf(error.details) : [];
 }
 
-/** Данные устарели: 409 отпечатка последствий и версии — исход у них один, «посмотрите заново». */
+/** Stale data: a 409 on the impact fingerprint or version — both have one outcome, "look again". */
 export function isStaleConflict(error: unknown): boolean {
   return isApiError(error) && error.status === 409;
 }

@@ -36,24 +36,25 @@ import {
 import type { UserGrantsControl, UserGrantsFieldParams } from '../model/userGrantsFieldTypes';
 
 /**
- * Поле «Полномочия» окна учётки (план «полномочия назначаются в окне учётки», Р1): наборы прав,
- * которые администратор выдаёт вместе с ролью, областью и активацией — одной операцией.
+ * The "Grants" field of the account window (plan "grants are assigned in the account window",
+ * R1): permission sets the administrator grants together with role, scope and activation — in a
+ * single operation.
  *
- * Заменяет поле «Надстройки», а не встаёт рядом с ним: две системные надстройки — это те же наборы
- * (`SYSTEM_GRANT_CODES`), и показанные дважды они были бы двумя выключателями одного доступа.
+ * It replaces the "Add-ons" field rather than standing next to it: the two system
+ * add-ons are the same grant sets (`SYSTEM_GRANT_CODES`), and shown twice they would be two
+ * switches for one access.
  *
- * Поля нет вовсе в трёх случаях, и каждый — решение, а не умолчание: роль не выбрана (полномочия
- * выдаются поверх должности), роль `driver` (барьер 2 ADR 0106) и своя учётка (инвариант 6, Р9).
- * Недоступное портал не показывает даже выключенным (ADR 0033 §6).
+ * The field is absent in three cases, each a decision rather than a default: no role selected
+ * (grants sit on top of the position), role `driver` (barrier 2 of ADR 0106) and one's own account
+ * (invariant 6, R9). The portal does not show what is unavailable, not even disabled (ADR 0033 §6).
  *
- * Расчётная часть — в `userGrantsModel`: гидратацию и сборку тела проверяют юнит-тестами по
- * значениям, а не кликами по разметке.
+ * The computation lives in `userGrantsModel`: hydration and body assembly are checked by
+ * value-level unit tests, not by clicking through markup.
  */
 
 /**
- * Роль, под ключом которой лежит каталог выключенного запроса. `driver` годится ровно потому, что
- * поля у неё не бывает никогда: запрос под этим ключом не выполняется, и подобрать по нему чужой
- * ответ нельзя.
+ * The role used as the catalog key of a disabled query. `driver` fits precisely because it never
+ * has the field: a query under this key never runs, so it cannot pick up someone else's response.
  */
 const NO_CATALOG_ROLE: Role = 'driver';
 
@@ -64,9 +65,10 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
 
   const shown = !!role && !isSelf && GRANT_ROLES.includes(role);
   /*
-   * Назначения приходят карточкой учётки — все, включая несовместимые с её нынешней ролью: из них
-   * гидратируются галочки, ими же берётся версия набора, которого нет в отфильтрованном каталоге
-   * (Р7). Подстраховка `?? []` — на ответ портала, отданный сервером до выката поля.
+   * Assignments come with the account card — all of them, including those incompatible with its
+   * current role: checkboxes are hydrated from them, and they supply the version of a set missing
+   * from the filtered catalog (R7). The `?? []` fallback covers a response from a server that
+   * predates the field's rollout.
    */
   const assigned: UserGrantRefDto[] = useMemo(() => record?.grants ?? [], [record]);
   const roleBefore = record?.role ?? null;
@@ -76,42 +78,42 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
     queryFn: () => grantFormApi.catalog(role ?? NO_CATALOG_ROLE),
     enabled: open && shown,
     /*
-     * Каталог перечитывается при каждом открытии окна: его версии уходят в тело (Р7), и показанный
-     * из кэша прошлогодний состав обернулся бы 409 на сохранении — там, где человек ничего не менял.
+     * The catalog is refetched on every window open: its versions go into the body (R7), and a
+     * stale composition served from cache would turn into a 409 on save where nothing was changed.
      */
     staleTime: 0,
   });
   const catalog: GrantDto[] = useMemo(() => catalogQuery.data?.items ?? [], [catalogQuery.data]);
-  /** Список дочитан до конца — только тогда о полномочиях можно высказываться (§6, §3.6). */
+  /** The list is read to the end — only then may the form speak about grants (§6, §3.6). */
   const ready = shown && catalogQuery.data?.complete === true;
   const blocked = shown && (catalogQuery.isError || catalogQuery.data?.complete === false);
 
   const [edits, setEdits] = useState(NO_GRANT_EDITS);
   /**
-   * Выбранный пресет профиля (Р7) — состоянием поля, а не значением формы: сохраняется не профиль,
-   * а НАБОРЫ; в `UserFormValues` он был бы вторым высказыванием о том же доступе.
+   * The selected profile preset (R7) is field state, not a form value: the GRANT SETS are saved,
+   * not the profile; in `UserFormValues` it would be a second statement about the same access.
    */
   const [profile, setProfile] = useState<OfficeEquipmentProfileId | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
-  /** Ушло ли поле в последнем запросе: отказ по молчанию подсвечивать нечем (Р8). */
+  /** Was the field in the last request: a rejection over silence has nothing to mark (R8). */
   const sent = useRef(false);
-  /** Роль, о последствиях которой уже сказали: сообщение не повторяется на каждый рендер. */
+  /** Role whose consequences were already announced: the message must not repeat on each render. */
   const noticed = useRef<Role | null>(null);
 
   useEffect(() => {
     if (open) return;
-    // Закрытие окна сбрасывает решение целиком: ручные отметки живут, пока открыто окно (Р4).
+    // Closing the window discards the whole decision: manual edits live only while it is open (R4).
     setEdits(NO_GRANT_EDITS);
-    // Пресет — то же решение одного захода: открытая заново учётка показывает выданное.
+    // The preset is part of that one-sitting decision: a reopened account shows what is assigned.
     setProfile(null);
     setErrors([]);
     noticed.current = null;
   }, [open]);
 
   /*
-   * Предложенные — ОДНО множество на два источника (Р7): пожелание заявителя при активации (ADR
-   * 0143) и выбранный профиль. Второй аргумент гидратации означал бы второе правило подстановки,
-   * расходящееся с первым ровно на снятых руками галочках.
+   * Suggested is ONE set fed by two sources (R7): the applicant's wish on activation (ADR 0143) and
+   * the selected profile. A second hydration argument would mean a second prefill rule, diverging
+   * from the first exactly on manually unchecked boxes.
    */
   const suggested = useMemo(
     () => [...(suggestedCodes ?? []), ...profilePresetCodes(profile)],
@@ -124,9 +126,9 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
   const outOfRange = useMemo(() => outOfRangeGrants(assigned, catalog), [assigned, catalog]);
 
   /*
-   * Смена роли: сказать надо о последствии, а не о снятии (Р4). Момент выбран не «когда кликнули по
-   * роли», а «когда пришёл каталог новой роли»: до него неизвестно, что именно перестанет
-   * действовать, — совместимость считает сервер, а не экран.
+   * Role change: speak about the consequence, not about removal (R4). The moment is not "when the
+   * role was clicked" but "when the new role's catalog arrived": before that it is unknown what
+   * stops being in effect — compatibility is computed by the server, not the screen.
    */
   useEffect(() => {
     if (!ready || !role) return;
@@ -144,8 +146,8 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
   }, [ready, role, roleBefore, outOfRange, message]);
 
   const statements = (): GrantStatement[] | undefined => {
-    // Поля нет или список неполон — `grants` в тело не уходит вовсе: правка сохранит всё
-    // остальное, назначений не касаясь (§6).
+    // No field or an incomplete list — `grants` is left out of the body entirely: the edit saves
+    // everything else without touching assignments (§6).
     if (!shown || !ready) {
       sent.current = false;
       return undefined;
@@ -163,17 +165,17 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
   const handleError = (error: unknown): boolean => {
     if (!isApiError(error)) return false;
     if (error.status === 409 && error.code === GRANT_CONFLICT_CODES.impactChanged) {
-      // Состав набора изменили между открытием карточки и сохранением (Р7): подписывали не то, что
-      // применилось бы. Исход у этого один — перечитать и открыть заново.
+      // The set's composition changed between opening the card and saving (R7): what was signed is
+      // not what would be applied. The only outcome is to reload and reopen.
       message.error(`${error.message} — состав полномочия изменили, откройте карточку заново`);
       void qc.invalidateQueries({ queryKey: grantKeys.root });
       onReload();
       return true;
     }
     /*
-     * 400 раскладывается на поле, но только если поле в запросе было (Р8): отказ по молчанию —
-     * смена роли, переключающая действие назначений, — виноват не галочкой, а устаревшим экраном, и
-     * подсвечивать в нём нечего.
+     * A 400 is mapped onto the field only if the field was in the request (R8): a rejection over
+     * silence — a role change that switches assignments' effect — is caused not by a checkbox but
+     * by a stale screen, and there is nothing in it to highlight.
      */
     if (error.status !== 400 || !sent.current) return false;
     const texts = [
@@ -224,9 +226,9 @@ interface FieldProps {
   assigned: UserGrantRefDto[];
   value: string[];
   onChange: (next: string[]) => void;
-  /** Выбранный пресет; `null` — не выбирали: галочки тогда описывают одну лишь выдачу. */
+  /** Selected preset; `null` — none chosen: checkboxes then describe the assignment alone. */
   profile: OfficeEquipmentProfileId | null;
-  /** Профили, о которых при этой роли есть что сказать (`grantProfileOptions`). */
+  /** Profiles that have something to say under this role (`grantProfileOptions`). */
   profileOptions: GrantProfileOption[];
   onProfile: (next: OfficeEquipmentProfileId | null) => void;
   loading: boolean;
@@ -234,11 +236,11 @@ interface FieldProps {
   onRetry: () => void;
   errors: string[];
   outOfRangeHint: string | null;
-  /** Права сверх должности, уже подписями каталога: пусто — набор ничего не добавляет. */
+  /** Permissions beyond the position, already as catalog labels: empty — the sets add nothing. */
   added: string;
 }
 
-/** Наборы совместимой роли чекбоксами: подпись — имя, подсказка — состав (§6). */
+/** Grant sets of the compatible role as checkboxes: label is the name, tooltip the content (§6). */
 function GrantsField({
   catalog,
   assigned,
@@ -258,8 +260,9 @@ function GrantsField({
 
   return (
     <>
-      {/* Пресет профиля (Р7) — своим полем и своим файлом. Пока каталог едет или пришёл неполным,
-          его нет вовсе: предлагать профиль, наборов которого мы не знаем, — обещать полвыдачи. */}
+      {/* Profile preset (R7) — its own field and file. While the catalog is loading or arrived
+          incomplete it is absent: offering a profile whose sets are unknown promises half a
+          grant. */}
       {!blocked && !loading ? (
         <GrantProfileField profile={profile} options={profileOptions} onChange={onProfile} />
       ) : null}
@@ -279,8 +282,9 @@ function GrantsField({
         extra={
           blocked ? undefined : (
             <Space orientation="vertical" size={0}>
-              {/* Что полномочия дают сверх должности — двумя субъектами, а не вычитанием из прав
-                записи: у заявки их нет вовсе, а при смене роли они описывают прежнего человека. */}
+              {/* What grants give beyond the position — via two subjects, not by subtracting from
+                the record's permissions: an application has none, and after a role change they
+                describe the previous person. */}
               {value.length > 0 ? (
                 <span>
                   {added
@@ -288,7 +292,7 @@ function GrantsField({
                     : 'Сверх должности ничего не добавится: эти права уже даёт роль'}
                 </span>
               ) : null}
-              {/* Назначения вне диапазона роли: они живы, но прав по ним нет (§13.1). */}
+              {/* Assignments outside the role's range: alive, but yield no permissions (§13.1). */}
               {outOfRangeHint ? <span>{outOfRangeHint}</span> : null}
             </Space>
           )
@@ -325,8 +329,9 @@ function GrantsField({
                   <Tooltip title={grantCompositionText(grant)}>
                     <span>{grant.name}</span>
                   </Tooltip>
-                  {/* Взведённое переводом ролей (ADR 0113) не снимается здесь вовсе: часть
-                    подготовленного перевода снимают в реестре выдач, где видно, что снимается (Р4). */}
+                  {/* A grant armed by the role migration (ADR 0113) cannot be removed here at all:
+                    part of a prepared migration is removed in the grants registry, where it is
+                    visible what gets removed (R4). */}
                   {locked.has(grant.id) ? (
                     <Typography.Text type="secondary">
                       {' '}

@@ -15,73 +15,75 @@ import {
 import { permissionLabel } from '@entities/grant';
 
 /**
- * Поле «Полномочия» окна учётки, посчитанное отдельно от экрана (план «полномочия назначаются в
- * окне учётки», Р4 и §6): гидратация галочек, сборка высказывания и строка «Добавится».
+ * The "Grants" field of the account window, computed apart from the screen (plan "grants are
+ * assigned in the account window", R4 and §6): checkbox hydration, statement assembly and the
+ * "will be added" line.
  *
- * Своим файлом, а не внутри компонента, по одной причине: **тело запроса здесь не равно значению
- * группы чекбоксов**, и это самое неочевидное место фичи. В группе лежат только совместимые
- * отмеченные наборы, а высказать форма обязана и то, что из группы исчезло, — назначение, которое
- * смена роли гасит (§6, «Сериализация тела»). Правило это проверяется юнит-тестами по значениям, а
- * не кликами по разметке: разложенное по обработчикам, оно проверялось бы через экран, то есть
- * заметно хуже.
+ * It lives in its own file rather than inside the component for one reason: **the request body
+ * here is not equal to the checkbox group value**, and this is the least obvious part of the
+ * feature. The group holds only compatible checked grant sets, yet the form must also speak about
+ * what vanished from the group — an assignment that the role change extinguishes (§6, "body
+ * serialization"). This rule is checked by value-level unit tests, not by clicking through markup:
+ * spread across handlers it could only be tested through the screen, which is noticeably worse.
  *
- * Своего представления о совместимости здесь нет ни строчки: что совместимо с итоговой ролью,
- * говорит каталог, отобранный сервером по роли (`grantFormApi.catalog`), а что действовало до
- * правки — `roleMismatch` назначения, посчитанный сервером же. Вторая копия любого из этих правил
- * разошлась бы с сервером в первую же правку `grant_roles`.
+ * There is not a single line of its own notion of compatibility here: what is compatible with the
+ * resulting role is told by the catalog the server filtered by role (`grantFormApi.catalog`), and
+ * what was in effect before the edit is the assignment's `roleMismatch`, also computed by the
+ * server. A second copy of either rule would drift from the server on the first `grant_roles` edit.
  */
 
 /**
- * Что администратор тронул руками, пока окно открыто, — два устойчивых множества (Р4).
+ * What the administrator touched by hand while the window is open — two stable sets (R4).
  *
- * Второе (`unchecked`) не роскошь: без него снятая галочка вернулась бы сама при следующей смене
- * роли — гидратация считает от **выданных**, а выданным набор остаётся до сохранения. Человек снял
- * бы полномочие, сменил роль и сохранил бы его обратно, ничего не заметив.
+ * The second one (`unchecked`) is not a luxury: without it an unchecked box would come back on its
+ * own at the next role change — hydration starts from **assigned** grants, and a set stays assigned
+ * until save. A person would uncheck a grant, change the role and save it back without noticing.
  *
- * Живут они ровно до закрытия окна: решение принимают за один заход.
+ * They live exactly until the window closes: the decision is made in a single sitting.
  */
 export interface GrantManualEdits {
-  /** Отмеченные руками — в том числе те, что учётке ещё не выданы. */
+  /** Checked by hand — including those not yet assigned to the account. */
   checked: readonly string[];
-  /** Снятые руками: гидратация обязана их не возвращать. */
+  /** Unchecked by hand: hydration must not bring them back. */
   unchecked: readonly string[];
 }
 
-/** Ничего не трогали: с этого состояния окно открывается и к нему же возвращается при закрытии. */
+/** Nothing touched: the window opens in this state and returns to it on close. */
 export const NO_GRANT_EDITS: GrantManualEdits = { checked: [], unchecked: [] };
 
-/** Назначения, которые форма снять не даёт: взведённые переводом ролей (Р4, ADR 0113). */
+/** Assignments the form does not allow to remove: armed by the role migration (R4, ADR 0113). */
 export function lockedGrantIds(assigned: readonly UserGrantRefDto[]): Set<string> {
   return new Set(assigned.filter((g) => g.origin === 'migration').map((g) => g.id));
 }
 
 /**
- * Профиль модуля «Орг.техника» пунктом выпадающего списка (план профилей оргтехники, Р7).
+ * An office equipment module profile as a dropdown option (office equipment profiles plan, R7).
  *
- * Список строится ИЗ РЕЕСТРА КОНТРАКТОВ (`OFFICE_EQUIPMENT_PROFILE_REGISTRY`), а не из здешней
- * таблицы «профиль → наборы»: вторая такая таблица разошлась бы с первой ровно так же молча, как
- * разошлась бы копия правил совместимости, — и администратор выдал бы половину профиля, считая, что
- * выдал целый.
+ * The list is built FROM THE CONTRACTS REGISTRY (`OFFICE_EQUIPMENT_PROFILE_REGISTRY`), not from a
+ * local "profile → grant sets" table: a second such table would drift from the first just as
+ * silently as a copy of the compatibility rules would — and the administrator would grant half a
+ * profile believing they had granted the whole one.
  *
- * Отбор по каталогу — тот же способ, каким форма показывает несовместимость набора: каталог отобран
- * сервером по выбранной роли, и профиль, ни одного кода которого этой роли не положено, предлагать
- * нечего — выбор его ничего бы не отметил.
+ * Filtering by the catalog is the same way the form shows a set's incompatibility: the catalog is
+ * filtered by the server for the selected role, and a profile none of whose codes this role may
+ * hold has nothing to offer — choosing it would check nothing.
  *
- * «Сервисный центр» СТОИТ В СПИСКЕ ВСЕГДА И ВЫКЛЮЧЕННЫМ (Р11). Кодами он не выдаётся вовсе, и
- * отбор по каталогу выбросил бы его первым — а это ровно то, чего делать нельзя: администратор
- * ищет в списке все четыре профиля, и молчаливо пропавший читался бы как «такого профиля нет» либо
- * «я его уже выдал». Подпись объясняет, чем он выдаётся на самом деле: пустой список кодов в
- * реестре — это утверждение о способе выдачи, а не пропуск.
+ * The "service center" profile IS ALWAYS IN THE LIST AND ALWAYS DISABLED (R11). It is not
+ * granted by codes at all, and catalog filtering would drop it first — which is exactly what must
+ * not happen: the administrator looks for all four profiles in the list, and a silently missing one
+ * would read as "no such profile" or "I have already granted it". The label explains how it is
+ * actually granted: an empty code list in the registry is a statement about the granting method,
+ * not an omission.
  */
 export interface GrantProfileOption {
   value: OfficeEquipmentProfileId;
-  /** Подпись пункта: у выключенного она же и объяснение — второго места под него в списке нет. */
+  /** Option label: for a disabled option it is also the explanation — there is no other place. */
   label: string;
-  /** Кодами не выдаётся: выбрать нельзя, но видеть — обязательно. */
+  /** Not granted by codes: cannot be chosen, but must be visible. */
   disabled: boolean;
 }
 
-/** Чем «Сервисный центр» выдаётся вместо набора — дословно пара из Р2. */
+/** What grants the "service center" profile instead of a grant set — verbatim the pair from R2. */
 const SERVICE_PROFILE_HINT =
   'выдаётся ролью «Оператор» и контрагентом сервисной компании, не здесь';
 
@@ -98,60 +100,63 @@ export function grantProfileOptions(catalog: readonly GrantDto[]): GrantProfileO
 }
 
 /**
- * Коды выбранного профиля — то, что уходит в **предложенные** гидратации (Р7), и ничего сверх того.
+ * Codes of the selected profile — what goes into the hydration's **suggested** set (R7), nothing
+ * more.
  *
- * Выбор профиля НИЧЕГО НЕ СОХРАНЯЕТ И НИЧЕГО НЕ ОТМЕЧАЕТ САМ: он лишь дополняет третье множество
- * формулы, а решают её выданные, ручные отметки и снятия. Отсюда даром достаются четыре свойства,
- * которых иначе пришлось бы добиваться по отдельности: снятое руками не возвращается (снятия
- * вычитаются последними), смена роли гасит несовместимое сама (пересечение с каталогом),
- * несовместимое не уходит на сервер (тело собирается от того же значения), а «повышение прав»
- * остаётся сохранением формы администратором — не побочным эффектом выбора в списке.
+ * Choosing a profile SAVES NOTHING AND CHECKS NOTHING BY ITSELF: it only extends the third set of
+ * the formula, while the outcome is decided by assigned grants, manual checks and manual unchecks.
+ * Four properties come for free that would otherwise each need separate work: a manual uncheck is
+ * not undone (unchecks are subtracted last), a role change extinguishes incompatible sets on its
+ * own (intersection with the catalog), incompatible sets never reach the server (the body is built
+ * from the same value), and "privilege escalation" remains the administrator saving the form — not
+ * a side effect of picking from a list.
  *
- * Оба кода профиля ИТ уходят вместе и одним высказыванием (`buildGrantStatements` собирает тело
- * целиком, одним запросом): половина профиля — это человек, которого можно назначить исполнителем,
- * но который не видит модуль, либо наоборот.
+ * Both codes of the IT profile go together, in one statement (`buildGrantStatements` assembles the
+ * whole body in one request): half a profile is a person who can be assigned as executor but does
+ * not see the module, or the other way round.
  */
 export function profilePresetCodes(profile: OfficeEquipmentProfileId | null): readonly string[] {
   return profile ? OFFICE_EQUIPMENT_PROFILE_REGISTRY[profile].grants : [];
 }
 
 /**
- * Значение группы чекбоксов (Р4; план «пожелание при регистрации заполняет форму активации», §3.6):
+ * The checkbox group value (R4; plan "the registration wish fills the activation form", §3.6):
  *
  * ```text
- * ((выданные ∪ предложенные ∪ отмеченные_вручную) \ снятые_вручную) ∩ список_наборов_итоговой_роли
+ * ((assigned ∪ suggested ∪ checked_by_hand) \ unchecked_by_hand) ∩ grant_sets_of_resulting_role
  * ```
  *
- * Пересчитывается при открытии и при **каждой** смене роли — иначе ломается тот самый переход,
- * ради которого заведён диапазон: у `shtab` взведённое переводом `vehicle_ordering` несовместимо и
- * скрыто, при переходе на `site` оно попадает в диапазон, и не отмеченное галочкой было бы отозвано
- * сервером вместе со своим `id`, которого ищет откат перевода ролей.
+ * Recomputed on open and on **every** role change — otherwise the very transition the range exists
+ * for breaks: for `shtab` the migration-armed `vehicle_ordering` is incompatible and hidden; on a
+ * switch to `site` it enters the range, and if left unchecked the server would revoke it together
+ * with its `id`, which the role migration rollback looks for.
  *
- * **Предложенные** — третье множество, и подстановка по пожеланию делается здесь, а не отдельным
- * присваиванием в поле, ради трёх свойств, которые формула отдаёт даром (§3.6): снятое руками не
- * возвращается (`снятые_вручную` вычитаются последними); смена роли гасит предложенное сама —
- * «Заказ техники» совместим только с `site` и при другой роли выпадает из пересечения; несовместимое
- * не уходит на сервер, потому что тело собирает `buildGrantStatements` от этого же значения.
+ * **Suggested** is the third set, and the wish-based prefill happens here rather than by a separate
+ * assignment into the field, for three properties the formula gives for free (§3.6): a manual
+ * uncheck is not undone (`unchecked_by_hand` is subtracted last); a role change extinguishes the
+ * suggestion on its own — "vehicle ordering" is compatible only with `site` and drops out of the
+ * intersection under another role; incompatible sets never reach the server, because
+ * `buildGrantStatements` builds the body from this same value.
  *
- * Взведённое переводом из `снятых_вручную` изымается здесь же: снять его нельзя, и попади оно туда
- * обходом (устаревшая разметка, чужая правка), молчаливая потеря части перевода была бы дороже
- * лишней проверки.
+ * Migration-armed grants are removed from `unchecked_by_hand` right here: they cannot be unchecked,
+ * and if one got there by a bypass (stale markup, someone else's edit), silently losing part of the
+ * migration would cost more than an extra check.
  *
- * Порядок — каталожный: список читают глазами, и он не должен перескакивать при отметке.
+ * Order follows the catalog: the list is read by eye and must not jump around when checked.
  */
 export function hydrateGrantSelection(input: {
   assigned: readonly UserGrantRefDto[];
   catalog: readonly GrantDto[];
   edits: GrantManualEdits;
   /**
-   * Коды наборов, предложенных пожеланием заявителя (§3.6). Отсутствие поля и пустой список —
-   * одно и то же: у обычной учётки и у заведения новой подстановки нет вовсе.
+   * Codes of grant sets suggested by the applicant's wish (§3.6). A missing field and an empty list
+   * are the same thing: an ordinary account and a newly created one have no prefill at all.
    *
-   * Кодами, а не идентификаторами, и это не мелочь: код набора стабилен навсегда, а `id` строки
-   * каталога — нет. Перевод в идентификаторы идёт по каталогу, отобранному сервером под выбранную
-   * роль, — второго представления о том, что какой роли положено, форма не заводит. Кода, которого
-   * в живом каталоге нет (набор переименован, роль другая), подстановка молча не находит: каталог
-   * здесь источник правды, а не таблица умолчаний.
+   * Codes rather than ids, and this matters: a set's code is stable forever, a catalog row's `id`
+   * is not. Translation into ids goes through the catalog the server filtered for the selected
+   * role — the form keeps no second notion of what each role may hold. A code absent from the live
+   * catalog (set renamed, different role) is silently not found: the catalog is the source of truth
+   * here, not a table of defaults.
    */
   suggestedCodes?: readonly string[];
 }): string[] {
@@ -161,18 +166,19 @@ export function hydrateGrantSelection(input: {
   const suggested = new Set(suggestedCodes);
   for (const grant of catalog) if (suggested.has(grant.code)) wanted.add(grant.id);
   for (const id of edits.checked) wanted.add(id);
-  // Снятые — последними и после предложенных: иначе подстановка возвращала бы галочку, которую
-  // администратор только что снял, и делала бы это на каждой смене роли.
+  // Unchecks go last, after suggestions: otherwise the prefill would restore a box the
+  // administrator just unchecked, and would do so on every role change.
   for (const id of edits.unchecked) if (!locked.has(id)) wanted.delete(id);
   return catalog.filter((g) => wanted.has(g.id)).map((g) => g.id);
 }
 
 /**
- * Ручная правка, снятая с самой группы: что появилось — в «отмеченные», что исчезло — в «снятые».
+ * A manual edit read off the group itself: what appeared goes to "checked", what vanished to
+ * "unchecked".
  *
- * Считается разницей значений, а не событием чекбокса: `Checkbox.Group` отдаёт итоговый список, и
- * восстановить по нему намерение можно только сравнением с прежним. Множества при этом
- * взаимоисключающие — отметив снятое, человек берёт своё слово назад целиком.
+ * Computed as a difference of values, not from the checkbox event: `Checkbox.Group` emits the
+ * resulting list, and intent can be recovered from it only by comparing with the previous one. The
+ * sets are mutually exclusive — re-checking an unchecked box takes the person's word back entirely.
  */
 export function applyGrantToggle(
   edits: GrantManualEdits,
@@ -196,7 +202,9 @@ export function applyGrantToggle(
   return { checked: [...checked], unchecked: [...unchecked] };
 }
 
-/** Назначения вне диапазона итоговой роли: выданы, но этой ролью не действуют (§13.1, §4.3). */
+/**
+ * Assignments outside the resulting role's range: assigned, but void under this role (§13.1, §4.3).
+ */
 export function outOfRangeGrants(
   assigned: readonly UserGrantRefDto[],
   catalog: readonly GrantDto[],
@@ -206,33 +214,34 @@ export function outOfRangeGrants(
 }
 
 /**
- * Тело запроса (§6, «Сериализация тела»):
+ * The request body (§6, "body serialization"):
  *
  * ```text
- * строки = управляемые назначения ∪ переключаемые назначения ∪ отмеченные наборы
- * selected(id) = id ∈ значение группы чекбоксов
- * version(id)  = из каталога, а для назначения вне списка — из `UserAccountDto.grants`
+ * rows = managed assignments ∪ switched assignments ∪ checked grant sets
+ * selected(id) = id ∈ checkbox group value
+ * version(id)  = from the catalog; for an assignment outside it — from `UserAccountDto.grants`
  * ```
  *
- * **Переключаемые** — те, чьё действие меняет сама смена роли: до правки набор действовал
- * (`roleMismatch: false`), а с новой ролью несовместим — или наоборот. Без такой строки переход
- * `site → shtab` уходил бы на сервер молча, и правило полноты (§4.2) отвечало бы 400 на верном по
- * смыслу запросе: в группе гасимого набора нет вовсе — он несовместим и не показан чекбоксом.
- * `selected: false` у него означает не «снять», а «вижу, что перестаёт действовать» (§4.3).
+ * **Switched** are those whose effect is changed by the role change itself: before the edit the set
+ * was in effect (`roleMismatch: false`) and is incompatible with the new role — or vice versa.
+ * Without such a row the `site → shtab` transition would reach the server silently, and the
+ * completeness rule (§4.2) would answer 400 to a request that is correct in meaning: the
+ * extinguished set is not in the group at all — it is incompatible and not shown as a checkbox.
+ * Its `selected: false` means not "remove" but "I see it stops being in effect" (§4.3).
  *
- * Роль не менялась — переключаемых нет по определению, и лишних строк тело не несёт: назначение
- * вне диапазона роли операцией не затрагивается (Р4).
+ * If the role did not change there are no switched rows by definition, and the body carries no
+ * extra rows: an assignment outside the role's range is not touched by the operation (R4).
  *
- * Набор, версии которого нет ни в каталоге, ни в назначениях, пропускается: сказать о нём нечего —
- * подписывают состав, а он неизвестен.
+ * A set whose version is in neither the catalog nor the assignments is skipped: there is nothing to
+ * say about it — what is signed is the composition, and it is unknown.
  */
 export function buildGrantStatements(input: {
   assigned: readonly UserGrantRefDto[];
   catalog: readonly GrantDto[];
   selected: readonly string[];
-  /** Роль учётки до правки: по ней сервер считал `roleMismatch`. У новой учётки её нет. */
+  /** Role before the edit: the server computed `roleMismatch` from it. A new account has none. */
   roleBefore: Role | null;
-  /** Роль, выбранная в форме прямо сейчас, — та, по которой отобран каталог. */
+  /** The role currently selected in the form — the one the catalog was filtered by. */
   roleAfter: Role | null;
 }): GrantStatement[] {
   const { assigned, catalog, selected, roleBefore, roleAfter } = input;
@@ -240,19 +249,19 @@ export function buildGrantStatements(input: {
   const chosen = new Set(selected);
   const versions = new Map<string, number>();
   for (const grant of assigned) versions.set(grant.id, grant.version);
-  // Каталог поверх назначений: состав, который форма показала подсказкой, — это его версия.
+  // Catalog wins over assignments: the composition the form showed in the hint is its version.
   for (const grant of catalog) versions.set(grant.id, grant.version);
 
   const spoken = new Set<string>();
   for (const grant of assigned) {
     const managed = inRange.has(grant.id);
-    const switched = roleAfter !== roleBefore && !grant.roleMismatch !== managed; // до ≠ после
+    const switched = roleAfter !== roleBefore && !grant.roleMismatch !== managed; // before ≠ after
     if (managed || switched) spoken.add(grant.id);
   }
   for (const id of chosen) spoken.add(id);
 
-  // Порядок — каталожный, следом назначения вне списка: тело читают в отладке и в тестах, и
-  // порядок, зависящий от обхода множества, сравнивать пришлось бы сортировкой на каждой стороне.
+  // Catalog order, then assignments outside the list: the body is read in debugging and tests, and
+  // an order depending on set iteration would force sorting on both sides of every comparison.
   const order = [...catalog.map((g) => g.id), ...assigned.map((g) => g.id)];
   const rows: GrantStatement[] = [];
   const done = new Set<string>();
@@ -267,14 +276,15 @@ export function buildGrantStatements(input: {
 }
 
 /**
- * Строка «Добавится» — **что полномочия дают сверх должности** (§6).
+ * The "will be added" line — **what the grants give beyond the position** (§6).
  *
- * Считается двумя полными субъектами, а не вычитанием из прав учётки, и это не осторожность:
- * список прав записи отвечает про **прежнего** субъекта — до смены роли и до смены типа
- * контрагента, — а у нерассмотренной заявки он пуст вовсе, и в строку попали бы права самой роли.
+ * Computed from two full subjects, not by subtracting from the account's permissions, and this is
+ * not mere caution: the record's permission list describes the **previous** subject — before the
+ * role change and before the counterparty type change — and for an unreviewed application it is
+ * empty altogether, so the role's own permissions would land in the line.
  *
- * Гейт совместимости здесь не нужен: состав берётся у отмеченных наборов, а отмечены бывают только
- * совместимые с итоговой ролью — каталог отобран ею же.
+ * No compatibility gate is needed here: the composition is taken from checked sets, and only sets
+ * compatible with the resulting role can be checked — the catalog is filtered by it.
  */
 export function grantAddedPermissions(input: {
   role: Role | null;
@@ -291,27 +301,29 @@ export function grantAddedPermissions(input: {
   return permissionsFor({ role, counterpartyType, grantPermissions }).filter((p) => !base.has(p));
 }
 
-/** Модули, где набор снимает сужение области (ADR 0106, решение 2), — их именами витрины. */
+/** Modules where a grant set lifts scope narrowing (ADR 0106, decision 2), by showcase names. */
 const SCOPE_MODULE_LABELS: Record<string, string> = {
   serviceRequests: 'Орг.техника: заявки',
   officeEquipment: 'Орг.техника: справочник',
 };
 
 /**
- * Та же таблица сквозной области, но по ключу-строке: код набора приходит из базы, где рядом лежат
- * собранные администратором, и приведение его к `SystemGrantCode` обещало бы обратное.
+ * The same wide-scope table, keyed by plain string: a set's code comes from the database, where
+ * administrator-built sets live alongside, and casting it to `SystemGrantCode` would promise the
+ * opposite.
  */
 const WIDE_SCOPE_BY_CODE = new Map<string, readonly string[]>(
   Object.entries(GRANT_MODULE_WIDE_SCOPE),
 );
 
 /**
- * Подсказка чекбокса: состав набора правами и — у системного набора со сквозной областью —
- * предупреждение о ней.
+ * Checkbox hint: the set's composition as permissions and — for a system set with wide scope — a
+ * warning about it.
  *
- * Область названа отдельной фразой, а не подразумевается составом: «Согласование ИТ» отличается от
- * прочих наборов не правом, а тем, что видит модуль целиком, минуя область роли. Умолчи форма об
- * этом, администратор выдал бы визу ИТ отделу, считая, что человек останется в своём отделе.
+ * Scope is stated as a separate phrase rather than implied by the composition: "IT approval"
+ * differs from other sets not by a permission but by seeing the whole module, bypassing the role's
+ * scope. Were the form silent about it, the administrator would grant the IT approval to a
+ * department believing the person stays within their department.
  */
 export function grantCompositionText(grant: GrantDto): string {
   const composition =
@@ -324,17 +336,17 @@ export function grantCompositionText(grant: GrantDto): string {
   return `${composition}. Область: видит эти разделы целиком (${names}), а не только свой объект или отдел`;
 }
 
-/** Как набор называют в сообщениях: имя в кавычках — так же, как его подписывает чекбокс. */
+/** How a set is named in messages: name in quotes — the same way the checkbox labels it. */
 const grantNames = (grants: readonly UserGrantRefDto[]): string =>
   grants.map((g) => `«${g.name}»`).join(', ');
 
 /**
- * Сообщение при смене роли — **о последствии, а не о снятии** (Р4).
+ * The role change message — **about the consequence, not about removal** (R4).
  *
- * У надстроек текст звучал «надстройка снята», и это было правдой: несовместимую надстройку форма
- * действительно снимала. У наборов иначе, и разница принципиальная: назначение остаётся жить, а
- * прав по нему нет — их гасит гейт совместимости при чтении. Скажи форма «снято», администратор
- * пошёл бы выдавать набор заново, а он никуда не девался.
+ * For add-ons the text read "add-on removed", and it was true: the form really removed an
+ * incompatible add-on. Grant sets differ, and the difference is fundamental: the assignment stays
+ * alive but yields no permissions — the compatibility gate extinguishes them on read. Were the form
+ * to say "removed", the administrator would go grant the set again, while it never went anywhere.
  */
 export function roleGateNoticeText(
   role: Role | null,
@@ -348,11 +360,11 @@ export function roleGateNoticeText(
 }
 
 /**
- * Справка под полем: что учётке ещё выдано, но этой ролью не действует.
+ * Help text under the field: what is still assigned to the account but void under this role.
  *
- * Показывается всегда, а не только сразу после смены роли: сообщение человек закроет, а вопрос
- * «почему в списке нет набора, который я точно выдавал» остаётся — и ответ на него должен быть на
- * экране в момент, когда его задают.
+ * Shown always, not only right after a role change: the person will close the message, but the
+ * question "why is a set I definitely granted missing from the list" remains — and its answer must
+ * be on screen at the moment it is asked.
  */
 export function outOfRangeHintText(grants: readonly UserGrantRefDto[]): string | null {
   if (grants.length === 0) return null;
