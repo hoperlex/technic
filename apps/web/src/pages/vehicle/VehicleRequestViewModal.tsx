@@ -9,7 +9,6 @@ import {
   assignmentTitle,
   completionLabel,
   earlyEndDaysSaved,
-  formatWeeklyRequestNumber,
   isVehicleSubstitution,
   type RequestHistoryEntryDto,
   requestCargoTotal,

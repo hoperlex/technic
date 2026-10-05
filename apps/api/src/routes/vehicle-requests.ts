@@ -247,7 +247,7 @@ import {
   scheduleFilesDeletion,
 } from '../services/request-files';
 import { fileView } from '../services/file-view';
-import { registerPurgeRoute } from '../services/directory-purge';
+import { asReferenceConflict, registerPurgeRoute } from '../services/directory-purge';
 // Уборка следов недельной заявки при удалении насовсем (ADR 0085 Р15): общая на все четыре
 // вкладки, откуда `purge` доходит до её ссылок.
 import { dropWeeklyItemsOfRequest } from '../services/weekly-request-cleanup';
@@ -8508,16 +8508,39 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     assertObjectRoleEditable(p, existing.status, 'удалять');
 
     if (existing.status === 'new') {
-      await db.transaction(async (tx) => {
-        const linked = await tx
-          .select({ id: files.id, objectKey: files.objectKey })
-          .from(vehicleRequestFiles)
-          .innerJoin(files, eq(vehicleRequestFiles.fileId, files.id))
-          .where(eq(vehicleRequestFiles.vehicleRequestId, id));
-        // Детали, файловые связи и история удаляются каскадом (onDelete cascade).
-        await tx.delete(vehicleRequests).where(eq(vehicleRequests.id, id));
-        await hardDeleteFiles(tx, linked);
-      });
+      try {
+        await db.transaction(async (tx) => {
+          const linked = await tx
+            .select({ id: files.id, objectKey: files.objectKey })
+            .from(vehicleRequestFiles)
+            .innerJoin(files, eq(vehicleRequestFiles.fileId, files.id))
+            .where(eq(vehicleRequestFiles.vehicleRequestId, id));
+          /*
+           * Намерение уступает, факт держит (ADR 0085 п. 15) — то же правило, что у удаления
+           * насовсем, и тем же сервисом. Строка «остаётся» или «уезжает» **неприменённой** недели
+           * этому заказу не основание, а намерение: она снимается, и событие истории недели
+           * объясняет пропавшую строку.
+           *
+           * До ADR 0218 этой уборки здесь не было, и площадка, удаляя заказ, попавший в чей-то
+           * черновик недели, получала **500**: ошибка внешнего ключа до обработчика не доходила.
+           * Заказ применённой или аннулированной недели по-прежнему не удаляется — его следствие
+           * объясняет документ, — но теперь отвечает 409 со номером недели, а не внутренней ошибкой.
+           */
+          await dropWeeklyItemsOfRequest(tx, p, {
+            id,
+            displayNumber: formatVehicleRequestNumber(existing.num),
+          });
+          // Детали, файловые связи и история удаляются каскадом (onDelete cascade).
+          await tx.delete(vehicleRequests).where(eq(vehicleRequests.id, id));
+          await hardDeleteFiles(tx, linked);
+        });
+      } catch (e) {
+        // Отказ БД переводится в человеческий 409 тем же переводчиком, что у удаления насовсем:
+        // «на запись ссылаются применённые и аннулированные недельные заявки». Без него ошибка
+        // внешнего ключа доезжала до обработчика ошибок как 500 — то есть площадка, удаляя заказ,
+        // созданный неделей, видела внутреннюю ошибку вместо объяснения (ADR 0218).
+        throw asReferenceConflict(e, 'заявку');
+      }
       await writeAudit({
         actorUserId: p.id,
         action: 'vehicle_request.hard_delete',

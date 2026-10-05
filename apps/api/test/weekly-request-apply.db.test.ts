@@ -2459,6 +2459,66 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
     }, 60_000);
 
+    it('удаление заказа: созданный применённой неделей отвечает 409, а из черновика удаляется', async () => {
+      const objectId = await freshObject();
+      const classification = ctx.ownVehicles[0]!;
+      const applied = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [newItem(classification, W1, W1_END)],
+      });
+      await submitAndApprove(applied);
+      const createdId = (await itemRows(applied.id))[0]!.created_request_id!;
+
+      /*
+       * Заказ применённой недели насовсем не удаляется: он её следствие, и документ им объясняется.
+       * До ADR 0218 это отвечало **500** — ошибка внешнего ключа не переводилась вовсе.
+       */
+      const refused = await inject(
+        'DELETE',
+        `/api/v1/vehicle-requests/${createdId}`,
+        ctx.admin.auth,
+      );
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(refused.body).toContain('недельных заявок');
+
+      /*
+       * Заказ, попавший в чей-то **черновик**, удаляется: строка там — намерение, а не факт, и
+       * снимается тем же сервисом, которым её снимает удаление насовсем.
+       *
+       * Своя площадка и ближняя неделя — требование отбора состава, а не аккуратность: заказ живёт
+       * по текущую неделю, и для W2 он негоден по сроку («кончился больше недели назад»), а пара
+       * «объект + неделя» у W1 на прежней площадке занята применённой заявкой.
+       *
+       * Техника **арендная**, и это тоже условие достижимости случая: в состав недели идёт только
+       * заказ, побывавший в работе, а своей машине портал выписывает ЭСМ-2 — и аннулированный
+       * бланк держит заказ сам, по журналу (ADR 0037 п. 11). Арендной бумаги нет вовсе
+       * (`esm2Mode` отвечает `none`), поэтому ссылок, кроме строки недели, у заказа не остаётся.
+       */
+      const draftObjectId = await freshObject();
+      const other = await makeOrder({ objectId: draftObjectId, ownership: 'rental' });
+      const draft = await makeWeekly(ctx.admin.auth, {
+        objectId: draftObjectId,
+        weekStart: W1,
+        items: [leaveItem(other)],
+      });
+      expect(await itemRows(draft.id)).toHaveLength(1);
+      const rolled = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${other.id}/status`,
+        ctx.admin.auth,
+        { status: 'new', comment: 'возвращаем в новую', version: other.version },
+      );
+      expect(rolled.statusCode, rolled.body).toBe(200);
+      const deleted = await inject(
+        'DELETE',
+        `/api/v1/vehicle-requests/${other.id}`,
+        ctx.admin.auth,
+      );
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect(await itemRows(draft.id)).toHaveLength(0);
+    }, 60_000);
+
     it('читатель без права получает предпросмотр с отказом, а команда отвечает 403', async () => {
       const objectId = await freshObject();
       const order = await makeOrder({ objectId });
