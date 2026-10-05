@@ -9,6 +9,7 @@ import type {
   UpdateVehicleRequestInput,
   VehicleRequestDriverDto,
   VehicleRequestDto,
+  VehicleRequestRollbackPreviewDto,
   VehicleRequestStatusPreviewDto,
 } from '@technic/contracts';
 import { apiFetch } from '@shared/api';
@@ -120,6 +121,26 @@ export const vehicleRequestLifecycle = {
     apiFetch<VehicleRequestStatusPreviewDto>(`/vehicle-requests/${id}/status/preview`, {
       method: 'POST',
       body: { ...body, comment: body.comment ?? '' },
+    }),
+  /**
+   * What the rollback «В работе» → «Новая» will erase and what it will keep (ADR 0211) — the same
+   * plan the door itself executes. The portal only puts it into words: the rule has one carrier.
+   *
+   * A handle of its own, not a branch of `statusPreview`, for two reasons. Rights: that one demands
+   * `waybills.read` at the door, while the rollback right comes in grants without the waybill
+   * journal (ADR 0106) — hiding the list from its holder would leave him exactly the window this
+   * replaces. Body: the rollback takes nothing but a reason, and the reason changes nothing in what
+   * gets erased, so the version is the whole body.
+   *
+   * Refusals worth knowing: 422 on a transition that erases nothing («Отменена» → «Новая»), 409 on
+   * a stale `version` — the door's own handshake. The answer's `fingerprint` goes back to the door
+   * in `previewFingerprint`; `esm2.sheets` is `null` for anyone without the journal, and then the
+   * counters are the whole answer about the paper.
+   */
+  rollbackPreview: (id: string, version: number) =>
+    apiFetch<VehicleRequestRollbackPreviewDto>(`/vehicle-requests/${id}/rollback/preview`, {
+      method: 'POST',
+      body: { version },
     }),
   /** Виза руководителя строительства: `approved: false` — отзыв (ADR 0025). */
   setApproval: (id: string, approved: boolean, version: number) =>
