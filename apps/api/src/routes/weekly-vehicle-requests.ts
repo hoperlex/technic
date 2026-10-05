@@ -21,6 +21,7 @@ import {
   weeklyAnnulHeaderBlocker,
   weeklyAnnulNeedsSiteScope,
   weeklyAnnulPreviewResponseSchema,
+  weeklyItemHadEffect,
   type WeeklyAnnulPreviewDto,
   isWeeklyWeekOverdue,
   itemWarnings,
@@ -2214,12 +2215,13 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
             items: 'Есть строки, которые нельзя развернуть',
           });
         }
-        const hasReversible =
-          plan.extend.length > 0 ||
-          plan.cancelOrders.length > 0 ||
-          plan.items.some((item) => plan.states.get(item.id)?.reverse === 'release_leave');
-        if (!hasReversible) {
-          throw err.unprocessable('Разворачивать нечего: следствий у этой недели не осталось');
+        /*
+         * Закрывать документ можно и тогда, когда разворачивать уже нечего: след недели могли
+         * убрать поштучно (решение 4 ADR 0218). Отказ остаётся ровно у недели, ни одна строка
+         * которой не применилась, — там документ ничего и не утверждает.
+         */
+        if (!plan.items.some((item) => weeklyItemHadEffect(item.result))) {
+          throw err.unprocessable('Закрывать нечего: ни одна строка этой недели не применилась');
         }
 
         /*

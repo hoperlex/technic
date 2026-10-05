@@ -1584,6 +1584,22 @@ export function weeklyAnnulNeedsSiteScope(
   return !backdated && !can(subject, 'waybills.correct') && can(subject, 'weeklyRequests.approve');
 }
 
+/**
+ * Были ли у строки следствия в заказах — то есть есть ли что закрывать документом.
+ *
+ * Отвечает `result`, а не состояние обратного хода: «уже развёрнута» и «следствий не было» — два
+ * разных ответа, которые `weeklyAnnulItemState` сводит в одно значение `reverted`. Первое означает,
+ * что неделя сработала и её след убрали руками; второе — что строка не применялась вовсе
+ * (`skipped`, `pending`), и закрывать по ней нечего.
+ *
+ * Разница решает, можно ли аннулировать неделю (решение 4 ADR 0218): документ, все следствия
+ * которого уже развёрнуты поштучно, обязан закрываться — иначе он навсегда остаётся «Применённой»
+ * и держит пару «объект + неделя», а человек, начавший разбор руками, не может его закончить.
+ */
+export function weeklyItemHadEffect(result: WeeklyRequestItemResult): boolean {
+  return result === 'extended' || result === 'created' || result === 'left';
+}
+
 /** Строка состава глазами аннулирования — ровно те поля, которые спрашивают правила. */
 export interface WeeklyAnnulItem {
   id: string;

@@ -120,14 +120,22 @@ export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: 
 
         {preview && (
           <>
-            {/* Ветвь — первой строкой: «задним числом» меняет и право, и цену, и человек обязан
-              увидеть это раньше перечня строк. */}
+            {/* The branch comes first: «backdated» changes both the right and the price, and the
+                person must see it before the list of rows. A week whose consequences were already
+                rolled back by hand removes no days at all — saying «the days have not come yet»
+                there would describe days that do not exist (ADR 0218 решение 4). */}
             <Alert
               type={preview.backdated ? 'warning' : 'info'}
               showIcon
               style={{ marginBottom: 16 }}
               title={
-                preview.backdated ? 'Операция идёт задним числом' : 'Снимаемые дни ещё не наступили'
+                preview.backdated
+                  ? 'Операция идёт задним числом'
+                  : preview.items.every((item) => item.state !== 'reversible')
+                    ? 'Следствия уже развёрнуты — аннулирование только закроет документ'
+                    : preview.effectiveDate
+                      ? 'Снимаемые дни ещё не наступили'
+                      : 'Сроки заказов не двигаются'
               }
               description={
                 <ul style={{ margin: 0, paddingInlineStart: 20 }}>
