@@ -3,14 +3,9 @@ import { useQuery } from '@tanstack/react-query';
 import {
   checkContainerOwner,
   FOREIGN_CONTAINER_SPLIT_MESSAGE,
-  isPricedRequestType,
-  isVolumeAllowed,
-  MIN_WASTE_VOLUME_M3,
   presentGroupLabel,
   REQUEST_TYPES,
   requestTypeLabels,
-  volumeStepMessage,
-  WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
 } from '@technic/contracts';
 import {
@@ -18,11 +13,9 @@ import {
   containerGroupOptions,
   findContainerGroup,
   presentGroupsHint,
-  wastePricingHint,
   wasteRequestKeys,
   wasteRequestsApi,
 } from '@entities/waste-request';
-import { wasteTariffResolveQuery } from '@entities/waste-tariff';
 import { withSavedOption } from '@shared/lib';
 import { AutoSelect, FormGrid, FormModal, type FormBlockersApi } from '@shared/ui';
 import type { FormInstance } from 'antd';
@@ -31,6 +24,7 @@ import type {
   WasteRequestEditorSources,
   WasteRequestFormValues,
 } from '../model/types';
+import { WasteRequestEditorRemovalFields } from './WasteRequestEditorRemovalFields';
 import { WasteRequestEditorSchedule } from './WasteRequestEditorSchedule';
 
 interface Props {
@@ -72,42 +66,25 @@ export function WasteRequestEditorModal({
 }: Props) {
   const objectId = Form.useWatch('objectId', form);
   const requestType = Form.useWatch('requestType', form);
-  const wasteTypeId = Form.useWatch('wasteTypeId', form);
-  const volumeM3 = Form.useWatch('volumeM3', form);
   const operatorId = Form.useWatch('operatorCounterpartyId', form);
   const groupKey = Form.useWatch('containerGroupKey', form);
-  const priced = requestType ? isPricedRequestType(requestType) : false;
 
-  const formWasteTypes = withSavedOption(sources.wasteTypes.options, {
-    id: record?.wasteTypeId,
-    name: record?.wasteTypeName,
-  });
+  // The saved container type is kept selectable the same way as the saved waste type: the
+  // directory entry may have been disabled (installation), or the container may have been removed
+  // from the site by another request (replacement and removal). The edit field is required, and
+  // without this it would open empty on a request whose subject was chosen long ago.
   const savedContainerType = { id: record?.containerTypeId, name: record?.containerTypeName };
+  // Executor options follow the selected site: a different site means a different list.
   const operatorOptions = sources.operatorOptionsFor(objectId, {
     id: record?.operatorCounterpartyId ?? null,
     name: record?.operatorName ?? null,
   });
 
-  const { data: tariffResult, isError: tariffRequestFailed } = useQuery({
-    ...wasteTariffResolveQuery({
-      wasteTypeId,
-      target: { containerKind: WASTE_REMOVAL_CONTAINER_KIND },
-      operatorCounterpartyId: operatorId,
-    }),
-    enabled: priced && !!wasteTypeId,
-  });
-  const tariff = tariffResult?.tariff ?? null;
-  const volumeStepM3 = tariff?.volumeStepM3 ?? null;
-  const pricingHint = wastePricingHint({
-    isPriced: priced,
-    wasteTypeId,
-    operatorSelected: !!operatorId,
-    tariff,
-    resolved: tariffResult != null,
-    requestFailed: tariffRequestFailed,
-    volumeM3: priced ? (volumeM3 ?? null) : null,
-  });
+  // The editor has no completion fact: it is submitted when the request is closed and corrected by
+  // a repeated completion (ADR 0035), where the price-list estimate is in front of the user.
 
+  // What stands on the site and whose it is (ADR 0054): presence groups. They are the choice for
+  // replacement and removal, the cap on the count and the "whom to call" hint.
   const { data: presentGroups, isLoading: presentLoading } = useQuery({
     queryKey: wasteRequestKeys.presentGroups(objectId),
     queryFn: () => wasteRequestsApi.presentGroups(objectId),
@@ -121,13 +98,21 @@ export function WasteRequestEditorModal({
         ownerCounterpartyId: record.containerOwnerCounterpartyId,
       })
     : undefined;
-  // A request being edited already removed its containers from presence, so add them back to cap.
+  // Nothing beyond what stands on the site can be removed. A request being edited has already
+  // subtracted its own units from presence, so its own count is added back to the cap, the same
+  // way the server counts it.
   const ownContribution =
     record?.requestType === 'container_removal' && groupKey === savedGroupKey
       ? record.containersCount
       : 0;
   const maxContainers = Math.max(1, (selectedGroup?.quantity ?? 1) + ownContribution);
+  // Replacement and removal choose among containers currently on the site. Removal names no
+  // equipment at all (ADR 0022): the volume is ordered and the operator reports vehicles at
+  // completion.
   const fromObjectField = {
+    // Presence is counted per site and may no longer contain the request's own choice, so it is
+    // added separately. The "no containers on the site" hint stays truthful: it describes the site,
+    // not what the edited request refers to.
     options: withSavedOption(containerGroupOptions(groups), {
       id: savedGroupKey,
       name: savedContainerType.name
@@ -157,6 +142,8 @@ export function WasteRequestEditorModal({
             ...fromObjectField,
           }
         : null;
+  // Whoever installed a container removes it (ADR 0054). The form evaluates the mismatch with the
+  // same contract rule as the server: a warning before submit beats a rejection after it.
   const ownerVerdict = requestType
     ? checkContainerOwner(
         {
@@ -168,6 +155,7 @@ export function WasteRequestEditorModal({
       )
     : 'ok';
 
+  // A site change resets the container: both the directory type and the presence group depend on it.
   const resetSubject = () =>
     form.setFieldsValue({
       containerTypeId: undefined,
@@ -186,6 +174,8 @@ export function WasteRequestEditorModal({
       width={880}
     >
       <Form form={form} layout="vertical" onFinish={onFinish} {...blockers.formProps}>
+        {/* Fields go in pairs (FormGrid): a narrow modal hid half the form below the fold while
+            the right side stayed empty. Phones get one column in the same field order. */}
         <FormGrid>
           <Form.Item
             name="objectId"
@@ -214,6 +204,8 @@ export function WasteRequestEditorModal({
                 form.setFieldsValue({
                   containerTypeId: undefined,
                   containerGroupKey: undefined,
+                  // The count returns to one container: "3" from the previous request type means
+                  // nothing for the new one, and installation and removal have no count at all.
                   containersCount: 1,
                   ownerMismatchReason: undefined,
                   wasteTypeId: undefined,
@@ -230,6 +222,7 @@ export function WasteRequestEditorModal({
               rules={[{ required: true, message: 'Выберите тип контейнера' }]}
             >
               <AutoSelect
+                // A type disabled in the directory stays visible on an existing request.
                 options={withSavedOption(sources.containerTypes.cont, savedContainerType)}
                 loading={sources.containerTypes.loading}
                 showSearch
@@ -238,57 +231,15 @@ export function WasteRequestEditorModal({
             </Form.Item>
           )}
 
-          {priced && (
-            <>
-              <Form.Item
-                name="wasteTypeId"
-                label="Тип мусора"
-                rules={[{ required: true, message: 'Выберите тип мусора' }]}
-              >
-                <AutoSelect
-                  options={formWasteTypes}
-                  loading={sources.wasteTypes.loading}
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="Что вывозим"
-                />
-              </Form.Item>
-              <Form.Item
-                name="volumeM3"
-                label="Объём, м³"
-                rules={[
-                  { required: true, message: 'Укажите объём' },
-                  {
-                    type: 'number',
-                    min: MIN_WASTE_VOLUME_M3,
-                    message: `Не менее ${MIN_WASTE_VOLUME_M3} м³`,
-                  },
-                  {
-                    validator: (_rule, value: number | undefined) =>
-                      value == null || isVolumeAllowed(value, volumeStepM3)
-                        ? Promise.resolve()
-                        : Promise.reject(new Error(volumeStepMessage(volumeStepM3!))),
-                  },
-                ]}
-              >
-                <InputNumber
-                  min={MIN_WASTE_VOLUME_M3}
-                  step={volumeStepM3 ?? 1}
-                  precision={0}
-                  style={{ width: '100%' }}
-                  placeholder={volumeStepM3 ? `Кратно ${volumeStepM3}` : 'Например, 20'}
-                />
-              </Form.Item>
-            </>
-          )}
-          {pricingHint && (
-            <FormGrid.Full>
-              <div style={{ marginTop: -16, marginBottom: 24 }}>
-                <Typography.Text type={pricingHint.tone}>{pricingHint.text}</Typography.Text>
-              </div>
-            </FormGrid.Full>
-          )}
+          <WasteRequestEditorRemovalFields
+            form={form}
+            record={record}
+            wasteTypes={sources.wasteTypes}
+          />
 
+          {/* The container is chosen as a presence group, type together with owner (ADR 0054): a
+              site can hold two identical containers from different operators, and a type without
+              an owner does not answer "which one is being removed". */}
           {subjectField && (
             <>
               <Form.Item
@@ -331,11 +282,16 @@ export function WasteRequestEditorModal({
             </>
           )}
 
+          {/* The executor is chosen only on an existing request: at creation it is usually not
+              known yet, and an extra field would distract. A new request gets its operator by a
+              separate list action or when it is moved into work. */}
           {canAssignOperator && record && (
             <Form.Item
               name="operatorCounterpartyId"
               label="Оператор вывоза"
               tooltip="Контрагент, который выполняет заявку; он увидит её в своём списке"
+              // Who already works on the site is shown where the executor is chosen (ADR 0054): it
+              // answers both "whom to call" and "why not this one".
               extra={
                 operatorOptions.length === 0
                   ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
@@ -352,6 +308,8 @@ export function WasteRequestEditorModal({
             </Form.Item>
           )}
 
+          {/* "The remover is not the installer": removal passes with an explained reason, while
+              replacement never passes, because it would change the container owner on the site. */}
           {ownerVerdict !== 'ok' && (
             <FormGrid.Full>
               <div style={{ marginTop: -8, marginBottom: 16 }}>

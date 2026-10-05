@@ -35,10 +35,14 @@ export function WasteRequestEditorSchedule({
         label="Дата доставки"
         rules={[{ required: true, message: 'Укажите дату' }]}
       >
+        {/* A new request starts no earlier than today in Moscow time; an existing one may move
+            freely as long as it does not go into the past. */}
         <DatePicker
           format="DD.MM.YYYY"
           style={{ width: '100%' }}
           placeholder="дд.мм.гггг"
+          // On a phone the keyboard opens with the calendar and hides it: dates are picked there,
+          // not typed.
           inputReadOnly={isMobile}
           disabledDate={record ? isPastDate : isBeforeMinRequestDate}
         />
@@ -51,6 +55,8 @@ export function WasteRequestEditorSchedule({
       >
         <TimeInput />
       </Form.Item>
+      {/* Who receives the truck on site: the operator drives to a person, not to an address, and
+          without a contact the drop point and access are sorted out only on arrival. */}
       <FormGrid.Full>
         <ResponsibleFields
           nameField="responsibleName"
@@ -59,6 +65,8 @@ export function WasteRequestEditorSchedule({
           phoneLabel="Контактный телефон"
           phoneInput={PhoneInput}
         />
+        {/* The site comment only: the executor writes its own line in the request card (ADR 0053),
+            and the request form never touches it. */}
         <Form.Item name="comment" label="Комментарий площадки">
           <Input.TextArea rows={3} maxLength={2000} showCount />
         </Form.Item>
