@@ -30,6 +30,7 @@ export function useVehicleSpecEditor(): VehicleSpecEditorController {
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<VehicleSpecDto | null>(null);
   const [form] = Form.useForm<SpecFormValues>();
+  // An attached spec already takes part in value canonicalisation: unit and precision are frozen.
   const isUsed = (record?.usedInTypes ?? 0) > 0;
 
   const create = () => {
@@ -83,7 +84,8 @@ export function useVehicleSpecEditor(): VehicleSpecEditorController {
           maxValue: values.maxValue ?? null,
           sortOrder: values.sortOrder,
           isActive: values.isActive,
-          // Omit frozen fields instead of relying on the server to ignore stale form values.
+          // Frozen fields are sent only for a spec not yet attached to any type: unit and precision
+          // are part of the meaning of categories already built on it.
           ...(isUsed ? {} : { unit: values.unit ?? '', decimals: values.decimals }),
         },
       });

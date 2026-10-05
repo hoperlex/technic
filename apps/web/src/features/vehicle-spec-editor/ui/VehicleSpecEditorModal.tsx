@@ -28,7 +28,11 @@ interface Props {
   onSubmit: (values: SpecFormValues) => void;
 }
 
-/** Spec fields keep unit and precision immutable once category values depend on them. */
+/**
+ * Spec fields. Unit and precision freeze once the spec is attached to a type: attached values are
+ * already canonicalised with them, and changing either would change the meaning of existing
+ * categories.
+ */
 export function VehicleSpecEditorModal({ open, record, form, pending, onCancel, onSubmit }: Props) {
   const isEdit = !!record;
   const isUsed = (record?.usedInTypes ?? 0) > 0;
@@ -58,6 +62,7 @@ export function VehicleSpecEditorModal({ open, record, form, pending, onCancel, 
                 ]
           }
         >
+          {/* The code is a stable system identifier and cannot change after creation. */}
           <Input disabled={isEdit} placeholder="например lift_capacity" />
         </Form.Item>
         <Form.Item

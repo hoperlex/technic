@@ -63,9 +63,9 @@ export function VehicleTypeSpecsSection({ typeId, specs, categoriesCount, loadin
   // Specs and category tuples are one invariant (ADR 0016): a spec change rewrites every category
   // of the type, and a category change is read through the type, the spec directory and the
   // classifier. Every mutation of the type card therefore drops the same five caches; the set is
-  // kept identical to the one in vehicle-category-management on purpose. The classifier (ADR 0028) is
-  // assembled from types and categories, so a new category changes both what the directory shows
-  // and what the pickers offer.
+  // kept identical to the one in vehicle-category-management on purpose. The classifier
+  // (ADR 0028) is assembled from types and categories, so a new category changes both what the
+  // directory shows and what the pickers offer.
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: vehicleTypeSpecKeys.byType(typeId) });
     void queryClient.invalidateQueries({ queryKey: vehicleCategoryKeys.root });
@@ -98,7 +98,8 @@ export function VehicleTypeSpecsSection({ typeId, specs, categoriesCount, loadin
   });
   const reorder = useMutation({
     mutationFn: async (ordered: VehicleTypeSpecDto[]) => {
-      // Spec order also determines category field and generated-name order.
+      // Spec order also sets the field order of the category form and the order of parts in its
+      // generated name, so only rows that actually moved are renumbered.
       for (const [index, spec] of ordered.entries()) {
         const sortOrder = (index + 1) * 10;
         if (spec.sortOrder !== sortOrder)
@@ -223,6 +224,8 @@ export function VehicleTypeSpecsSection({ typeId, specs, categoriesCount, loadin
         dataSource={specs}
         loading={loading}
         pagination={false}
+        // On a phone the table scrolls sideways inside its frame: five columns with order buttons
+        // would otherwise shrink to unreadable at 360 px (ADR 0030).
         scroll={isMobile ? { x: 'max-content' } : undefined}
         locale={{ emptyText: <Empty description="ТТХ не заданы — у типа нет категорий" /> }}
       />

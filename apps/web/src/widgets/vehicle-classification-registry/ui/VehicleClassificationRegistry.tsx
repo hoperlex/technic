@@ -70,6 +70,8 @@ export function VehicleClassificationRegistry({
     </Space>
   );
 
+  // The same filters as descriptions for the phone sheet (ADR 0030). No search here: it is a line
+  // in the list panel (ADR 0042), and a second field in the sheet would ask the same thing.
   const mobileFilters: FilterDefinition[] = [
     {
       kind: 'select',
@@ -99,6 +101,8 @@ export function VehicleClassificationRegistry({
           Добавить
         </Button>
       }
+      // On a phone the directory is read as cards; search and filters live in the panel and the
+      // sheet (ADR 0042).
       mobile={{
         search: {
           value: registry.params.search,

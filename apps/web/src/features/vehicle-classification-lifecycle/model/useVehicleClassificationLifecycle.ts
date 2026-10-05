@@ -15,7 +15,12 @@ export interface VehicleClassificationLifecycleController {
   pending: boolean;
 }
 
-/** Activate exactly the category or type represented by a flat classifier row. */
+/**
+ * Activate exactly the category or type represented by a flat classifier row (ADR 0028). A row can
+ * be a type or a category, and deactivation switches off exactly what is in the row — otherwise
+ * deactivating «Автокран, г/п 25 т» would take every other truck crane with it. Deactivation asks
+ * for confirmation, activation is inline.
+ */
 export function useVehicleClassificationLifecycle(): VehicleClassificationLifecycleController {
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
@@ -25,6 +30,8 @@ export function useVehicleClassificationLifecycle(): VehicleClassificationLifecy
         await vehicleCategoriesApi.update(row.vehicleCategoryId, { isActive });
         return;
       }
+      // Nothing to read from the response: activity does not touch the blank, and only the blank
+      // releases hitches (docs/vehicle-trailers-plan.md §4.2.3).
       await vehicleTypesApi.update(row.vehicleTypeId, { isActive });
     },
     onSuccess: (_data, values) => {

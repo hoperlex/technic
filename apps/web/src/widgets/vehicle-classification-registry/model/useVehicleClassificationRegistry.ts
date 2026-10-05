@@ -19,11 +19,17 @@ export interface VehicleClassificationParams {
   search?: string;
   kindId?: string;
   isActive?: string;
+  // An index signature keeps the params object usable as the apiFetch query as-is.
   [key: string]: unknown;
 }
 
-/** Own list/filter state and the activation command for classifier rows. */
+/**
+ * Own list/filter state of the classifier registry and the read-only dictionaries its rows need.
+ * Activation lives in the vehicle-classification-lifecycle feature, not here.
+ */
 export function useVehicleClassificationRegistry() {
+  // pageSize comes from the contract: the server accepts only PAGE_SIZES (100/200/500), and any
+  // other value is rejected by querystring validation, so the list would not load at all.
   const [params, setParams] = useState<VehicleClassificationParams>({
     page: 1,
     pageSize: DEFAULT_PAGE_SIZE,
@@ -37,7 +43,9 @@ export function useVehicleClassificationRegistry() {
     queryKey: vehicleClassificationKeys.list(params),
     queryFn: () => vehicleClassificationsApi.list(params),
   });
-  // Classification rows omit type-only fields needed by edit and card actions.
+  // The types themselves, for edit and the card: a classifier row carries only what is shown,
+  // while the form needs the whole type (code, kind, description, order). There are dozens of
+  // types, so they are loaded at once.
   const typesQuery = useQuery({
     queryKey: vehicleTypeKeys.full(),
     queryFn: () =>
@@ -48,6 +56,7 @@ export function useVehicleClassificationRegistry() {
     queryFn: () => vehicleKindsApi.list({ pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
   });
 
+  // Sorting is server-side; clearing it returns the directory to its own sort order.
   const changeTable = (change: TableChange) =>
     setParams((current) => ({
       ...current,

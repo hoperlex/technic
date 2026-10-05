@@ -11,9 +11,11 @@ import { AutoSelect } from '@shared/ui';
 
 /**
  * Vehicle type fields are shared by create and edit flows and stay outside the registry
- * presentation (ADR 0005).
+ * presentation (ADR 0005). The type has more questions than the list has columns — waybill blank,
+ * linear mode, maintenance marking — each with its own explanation.
+ *
  * The form only asks and explains type attributes. The controller owns their commands, including
- * the separate confirmation protocol for switching linear order mode.
+ * the separate confirmation protocol for switching linear order mode (ADR 0107).
  */
 
 export interface VtFormValues {
@@ -28,8 +30,9 @@ export interface VtFormValues {
   /** Linear equipment orders are managed by work days rather than standing weeks. */
   isLinear?: boolean;
   /**
-   * The checkbox maps to a maintenance basis through contract helpers, so another basis does not
-   * turn into a second UI-owned domain mapping.
+   * Whether maintenance is tracked by odometer (R13). A checkbox in the form, a calculation basis
+   * in the model: maintenanceBasisOf / isOdometerMaintenance translate it, so a third basis (engine
+   * hours) becomes an edit of the contract mapping, not a second UI-owned domain mapping.
    */
   maintenanceByOdometer?: boolean;
 }
@@ -48,10 +51,15 @@ export function VehicleTypeFormFields({ form, record, kinds, kindsLoading }: Pro
   const isEdit = !!record;
   const kindOptions = kinds.map((k) => ({ value: k.id, label: k.name }));
 
-  /** Kind decides whether a trip-form question is meaningful; kind itself is immutable on edit. */
+  /**
+   * The form's vehicle kind: on edit the type's own (kind is immutable), on create the selected
+   * one. It decides whether to ask about passenger transport: a blank exists only where the
+   * vehicle runs trips.
+   */
   const watchKindId = Form.useWatch('kindId', form);
   const formKindCode = isEdit ? record.kindCode : kinds.find((k) => k.id === watchKindId)?.code;
-  // The explanatory copy must follow the same linear-mode value that drives document behavior.
+  // Watched because it changes the truth about the type's waybills: ESM-2 is not issued
+  // automatically for a linear type, and the hint must say what the portal will actually do.
   const watchIsLinear = Form.useWatch('isLinear', form);
 
   const codeRules = isEdit
@@ -101,8 +109,13 @@ export function VehicleTypeFormFields({ form, record, kinds, kindsLoading }: Pro
         <Switch />
       </Form.Item>
 
-      {/* Ask in fleet language instead of exposing a form-code dictionary. Special equipment has
-          no choice here: weekly ESM-2 comes from the request and trip documents use 4-P. */}
+      {/* The blank is asked as «is this passenger transport», not as a form choice: that is how
+          the directory keeper sets it and how the fleet speaks. The default is 4-П: an own
+          vehicle always has a waybill (ADR 0065).
+
+          Special equipment has no such field: its weekly ESM-2 is not set by the type's blank (it
+          comes from the request), and everything printed per trip — relocation to the site and a
+          linear equipment day — goes on 4-П regardless of the type. There is nothing to answer. */}
       {formKindCode === FREIGHT_VEHICLE_KIND_CODE && (
         <Form.Item
           name="isPassenger"
@@ -114,8 +127,10 @@ export function VehicleTypeFormFields({ form, record, kinds, kindsLoading }: Pro
       )}
       {!!formKindCode && formKindCode !== FREIGHT_VEHICLE_KIND_CODE && (
         <Form.Item label="Путевой лист">
-          {/* Linear equipment has no portal-created ESM-2 or relocation trip, so the explanation
-              must not promise either while still stating that the type owns no form code. */}
+          {/* The first half depends on the flag: for a linear type the portal neither issues ESM-2
+              by itself nor creates a relocation trip — the equipment returns to the garage
+              nightly — so the old wording would be a promise the portal does not keep. The second
+              half holds in both cases: no blank is assigned to such a type. */}
           <Typography.Text type="secondary">
             {watchIsLinear
               ? 'ЭСМ-2 по заявке на технику выписывается по требованию, а день работ на объекте печатается по 4-П.'
@@ -125,14 +140,25 @@ export function VehicleTypeFormFields({ form, record, kinds, kindsLoading }: Pro
         </Form.Item>
       )}
 
-      {/* Linear mode describes order accounting, not a document blank, so every kind can use it.
-          Label and hint come from contracts to match the directory export. */}
+      {/* Linear mode is about how the order is run, not about the blank, so it is asked for every
+          kind: a dump truck is ordered to a site for soil removal and works shifts there like an
+          excavator. The neighbouring «Легковой транспорт» stays with the freight kind — it is
+          about the waybill form, which special equipment cannot answer.
+
+          Label and hint come from contracts: the server prints the same wording as the column
+          header of the directory export, and the two must not diverge. */}
       <Form.Item name="isLinear" valuePropName="checked" extra={LINEAR_VEHICLE_TYPE_HINT}>
         <Checkbox>{LINEAR_VEHICLE_TYPE_LABEL}</Checkbox>
       </Form.Item>
 
-      {/* The maintenance hint names the unchecked consequence because “not tracked” is a valid
-          directory default, not a broken empty value in the garage. */}
+      {/* Maintenance marking (R13). Asked for every kind and next to linear mode because the same
+          person answers it in the same pass: creating a type, they know whether the equipment has
+          an odometer and whether maintenance is tracked by it.
+
+          The hint must name the consequence of the unchecked box, not only the meaning of the
+          checked one: the directory default is «not tracked», and without this phrase an empty
+          maintenance column in the garage reads as a portal failure rather than an unmarked
+          type. */}
       <Form.Item
         name="maintenanceByOdometer"
         valuePropName="checked"

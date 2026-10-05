@@ -37,7 +37,12 @@ interface Props {
   };
 }
 
-/** Read-only specification registry; every write enters through an explicit action port. */
+/**
+ * Specification directory (ADR 0016): the characteristics whose values make up the categories of
+ * vehicle types. Read-only here; every write enters through an explicit action port. Deactivation
+ * is forbidden while a spec is attached to types, and unit and precision freeze with the first
+ * attachment because they are part of the meaning of existing categories.
+ */
 export function VehicleSpecRegistry({ create, edit, toggle, togglePending, purge }: Props) {
   const [params, setParams] = useState<SpecParams>({
     page: 1,
@@ -100,6 +105,7 @@ export function VehicleSpecRegistry({ create, edit, toggle, togglePending, purge
       width: 110,
       sorter: true,
       render: (value: boolean, spec) => (
+        // An attached spec cannot be switched off: detach it in the type card first.
         <Tooltip
           title={spec.usedInTypes > 0 ? 'ТТХ привязан к типам — сначала отвяжите' : undefined}
         >
@@ -152,6 +158,8 @@ export function VehicleSpecRegistry({ create, edit, toggle, togglePending, purge
       />
     </Space>
   );
+  // The same filters as descriptions for the phone sheet (ADR 0030). No search here: it is a line
+  // in the list panel (ADR 0042), and a second field would ask the same thing.
   const mobileFilters: FilterDefinition[] = [
     {
       kind: 'select',
@@ -166,6 +174,8 @@ export function VehicleSpecRegistry({ create, edit, toggle, togglePending, purge
       onChange: (isActive) => patchParams({ isActive }),
     },
   ];
+  // Spec card on a phone (ADR 0042): the name with its unit is how the characteristic is called,
+  // followed by value bounds and the number of types it is already attached to.
   const card: CardConfig<VehicleSpecDto> = {
     title: (spec) => spec.name,
     badge: (spec) => (
@@ -187,6 +197,7 @@ export function VehicleSpecRegistry({ create, edit, toggle, togglePending, purge
         key: 'toggle',
         label: spec.isActive ? 'Деактивировать' : 'Активировать',
         danger: spec.isActive,
+        // An attached spec is not switched off: it is detached in the type card first.
         disabled: spec.isActive && spec.usedInTypes > 0,
         onClick: () => toggle(spec, !spec.isActive),
       },

@@ -68,9 +68,9 @@ export function VehicleTypeCategoriesSection({ typeId, specs, categories, loadin
   // Specs and category tuples are one invariant (ADR 0016): a spec change rewrites every category
   // of the type, and a category change is read through the type, the spec directory and the
   // classifier. Every mutation of the type card therefore drops the same five caches; the set is
-  // kept identical to the one in vehicle-type-spec-management on purpose. The classifier (ADR 0028) is
-  // assembled from types and categories, so a new category changes both what the directory shows
-  // and what the pickers offer.
+  // kept identical to the one in vehicle-type-spec-management on purpose. The classifier
+  // (ADR 0028) is assembled from types and categories, so a new category changes both what the
+  // directory shows and what the pickers offer.
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: vehicleTypeSpecKeys.byType(typeId) });
     void queryClient.invalidateQueries({ queryKey: vehicleCategoryKeys.root });
@@ -92,7 +92,7 @@ export function VehicleTypeCategoriesSection({ typeId, specs, categories, loadin
     for (const value of category.values) values[value.specId] = value.value;
     form.setFieldsValue({
       values,
-      // An empty field preserves automatic naming instead of copying its current generated value.
+      // The automatic name is not put into the field: an empty field means «keep the auto name».
       name: category.isAutoName ? '' : category.name,
       sortOrder: category.sortOrder,
       isActive: category.isActive,
@@ -142,7 +142,9 @@ export function VehicleTypeCategoriesSection({ typeId, specs, categories, loadin
     onSuccess: () => {
       message.success('Категория удалена');
       invalidate();
-      // Removal also drops unapplied weekly-request rows that referred to this category.
+      // The same removal makes the server drop rows of unapplied weekly requests that ordered this
+      // category: the week's composition is different now (docs/adr/0085-weekly-vehicle-request.md,
+      // R15).
       void queryClient.invalidateQueries({ queryKey: weeklyRequestKeys.root });
     },
     onError: (error) => message.error(errorMessage(error)),
@@ -184,6 +186,7 @@ export function VehicleTypeCategoriesSection({ typeId, specs, categories, loadin
             key: 'name',
             title: 'Категория',
             dataIndex: 'name',
+            // On a phone the table slides sideways; the name stays as the row anchor (ADR 0030).
             width: isMobile ? 150 : undefined,
             fixed: isMobile ? 'left' : undefined,
             render: (value: string, category) => (
