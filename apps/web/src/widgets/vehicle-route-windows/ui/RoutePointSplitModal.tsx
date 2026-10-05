@@ -13,31 +13,31 @@ import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-rout
 import { actionLabel, pointRoleInputOf } from '@entities/vehicle-route';
 
 /**
- * Разнести остановку надвое (Р9а): отмеченные роли уходят в новую точку сразу за исходной.
+ * Split a stop in two (R9a): the checked roles move to a new point right after the original one.
  *
- * Обратное действие «совместить» стоит в самом списке и окна не требует — там выбирать нечего:
- * точки одного адреса известны, и сводятся они все сразу. Здесь выбор есть, и он единственное, о
- * чём окно спрашивает: «этих грузим на первом корпусе, тех на третьем» — это решение человека, и
- * угадать его нечем.
+ * The reverse action, «совместить» (merge), lives in the list itself and needs no window — there is
+ * nothing to choose: same-address points are known and are all combined at once. Here there is a
+ * choice, and it is the only thing the window asks: "these are loaded at building one, those at
+ * building three" — that is the person's decision, and there is nothing to guess it from.
  *
- * Адрес новая точка берёт у исходной: разносят не место, а работу. Время прибытия и комментарий у
- * неё свои и пустые — они описывают заезд, а заездов теперь два.
+ * The new point takes the original's address: what is split is the work, not the place. Its
+ * arrival time and comment are its own and empty — they describe a visit, and now there are two.
  */
 
 interface Props {
-  /** `null` — окно закрыто; версия для запроса берётся у рейса, а не у точки (Р16). */
+  /** `null` — window closed; the request version comes from the route, not the point (R16). */
   route: VehicleRouteDto | null;
   point: VehicleRoutePointDto | null;
   onClose: () => void;
   onSaved: (route: VehicleRouteDto) => void;
 }
 
-/** Ключ роли внутри точки: пара «строка задания + роль» — тем же ключом её опознаёт сервер. */
+/** A role's key within a point: the "task row + role" pair — the server identifies it likewise. */
 function roleKey(action: RoutePointAction): string {
   return `${taskRefKey(action.ref)}:${action.role}`;
 }
 
-/** Чего не хватает разнесению: ничего не отмечено либо отмечено всё. */
+/** What the split is missing: either nothing is checked or everything is. */
 const HINTS = [
   'Отметьте, что уходит в новую точку',
   'Что-то должно остаться здесь: точка без задания не остаётся',
@@ -47,22 +47,23 @@ export function RoutePointSplitModal({ route, point, onClose, onSaved }: Props) 
   const { message } = App.useApp();
   const [picked, setPicked] = useState<string[]>([]);
 
-  // Выбор сбрасывается вместе со сменой точки: окно открывают из разных строк подряд, и роли,
-  // отмеченные на прошлой остановке, к этой отношения не имеют.
+  // The selection resets when the point changes: the window is opened from different rows in a
+  // row, and roles checked on the previous stop have nothing to do with this one.
   useEffect(() => setPicked([]), [point?.id]);
 
   const actions = point?.actions ?? [];
   const moving = actions.filter((action) => picked.includes(roleKey(action)));
-  /** Исходная точка не должна опустеть (Р13) — это же проверит сервер под блокировкой. */
+  /** The original point must not become empty (R13) — the server checks the same under a lock. */
   const ready = moving.length > 0 && moving.length < actions.length;
 
   const split = useMutation({
     mutationFn: () => {
       /*
-       * Отмеченное сверяется с **сегодняшним** составом точки, а не с тем, что было при открытии
-       * окна: карточка перечитывает рейс сама (Р18), и пока человек выбирал, роль могли увести
-       * совмещением. Разошлось — отказ словами: разнести «то, что осталось» значило бы сделать не
-       * то действие, которое человек отметил, и молча.
+       * The selection is checked against the point's **current** roles, not those present when
+       * the window opened: the card re-reads the route by itself (R18), and while the person was
+       * choosing, a role may have been taken away by a merge. On mismatch — a refusal in words:
+       * splitting off "whatever is left" would silently perform an action other than the one the
+       * person checked.
        */
       const current = (route!.points ?? []).find((p) => p.id === point!.id);
       const roles = current?.actions.filter((action) => picked.includes(roleKey(action))) ?? [];
@@ -86,8 +87,8 @@ export function RoutePointSplitModal({ route, point, onClose, onSaved }: Props) 
       title={point ? `Разнести точку ${point.position}` : 'Разнести точку'}
       open={!!point && !!route}
       onCancel={onClose}
-      // Кнопка не выключается, а отвечает причиной: `FormModal` держит один вид подвала на все
-      // формы портала, и выключенная кнопка в нём объяснить себя ничем не может.
+      // The button is not disabled but answers with the reason: `FormModal` keeps one footer layout
+      // for every form in the portal, and a disabled button there has no way to explain itself.
       onSubmit={() => (ready ? split.mutate() : message.error(HINTS[moving.length === 0 ? 0 : 1]))}
       confirmLoading={split.isPending}
       okText="Разнести"
@@ -108,8 +109,8 @@ export function RoutePointSplitModal({ route, point, onClose, onSaved }: Props) 
             ))}
           </Space>
         </Checkbox.Group>
-        {/* Чего не хватает — видно рядом со списком, а не только после нажатия: отметить «всё»
-          это не разнесение, а переезд остановки на место самой себя. */}
+        {/* What is missing is shown next to the list, not only after clicking: checking
+          "everything" is not a split but moving the stop onto its own place. */}
         {!ready && (
           <Typography.Text type="warning">{HINTS[moving.length === 0 ? 0 : 1]}</Typography.Text>
         )}

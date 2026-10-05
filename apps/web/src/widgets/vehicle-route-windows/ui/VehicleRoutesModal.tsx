@@ -18,30 +18,32 @@ import { CreateRouteModal } from './CreateRouteModal';
 import { routeListView } from './routeListView';
 
 /**
- * Список рейсов — окном поверх той страницы, где о рейсах спросили
- * (план `docs/vehicle-routes-modal-plan.md`; сами рейсы — `docs/vehicle-routes-plan.md`, ADR 0050).
+ * The route list as a window over the page where routes were asked about
+ * (docs/vehicle-routes-modal-plan.md; routes themselves: docs/vehicle-routes-plan.md, ADR 0050).
  *
- * Почему окно, а не вкладка, какой список был раньше. Рейс — не раздел портала, а сопровождающая
- * запись: вопрос «чем занята машина» задают, стоя в заявке, в гараже и в журнале путевых листов.
- * Вкладка отвечала на него уходом с экрана — с потерей фильтров той страницы, откуда спросили, и
- * поиском обратной дороги. Список при этом нужен одному человеку — диспетчеру, собирающему день, —
- * и ради него раздел держал вкладку, мимо которой ходили все остальные.
+ * Why a window rather than the tab the list used to be. A route is not a portal section but an
+ * accompanying record: "what is the vehicle busy with" is asked from a request, the garage and the
+ * waybill journal. The tab answered by leaving the screen, losing the asking page's filters and
+ * searching for the way back. Meanwhile the list itself is needed by one person, the dispatcher
+ * assembling the day, and the section kept a tab for them that everyone else walked past.
  *
- * Отвечает окно на вопрос дня диспетчера: чем занята машина, кто за рулём и выписан ли бланк.
- * Заявки попадают сюда переводом в работу, но собирают рейс здесь: порядок заявок, водитель и
- * реквизиты выезда — свойства рейса, а не заявки.
+ * The window answers the dispatcher's daily question: what the vehicle is busy with, who drives and
+ * whether the form is issued. Requests arrive here by being taken into work, but the route is
+ * assembled here: request order, driver and departure details belong to the route, not the request.
  *
- * Открывается день сегодняшний: рейс планируют накануне и правят утром, а история рейсов читается
- * журналом путевых листов. Просьба показать другой день приходит извне — `focusDate`/`focusToken`.
+ * It opens on today: routes are planned the day before and adjusted in the morning, and route
+ * history is read through the waybill journal. A request to show another day comes from outside via
+ * focusDate/focusToken.
  *
- * Чего в окне нет. Адреса оно не знает вовсе: `?routes=1`, `?route=…` и `?request=…` разбирает
- * провайдер окон (`routeModal.tsx`), он же держит карточку рейса и окно правки — список их только
- * просит открыться (`openRoute`, `editRoute`). Собственное действие у него одно — завести рейс.
+ * What the window does not do. It knows nothing about the URL: ?routes=1, ?route=... and
+ * ?request=... are parsed by useRouteModalState (@features/route-modal), and the route card and the
+ * edit window are mounted by VehicleRouteWindows next to this list. The list only asks them to open
+ * (openRoute, editRoute). Its own action is one: creating a route.
  */
 
 const DATE = 'YYYY-MM-DD';
 
-/** Состояние документа — им диспетчер закрывает день: «что ещё без листа». */
+/** Waybill state: the dispatcher closes the day by it ("what is still without a waybill"). */
 const WAYBILL_FILTERS = [
   { value: 'none', label: 'Без листа' },
   { value: 'issued', label: 'Лист выписан' },
@@ -51,11 +53,11 @@ type WaybillFilter = (typeof WAYBILL_FILTERS)[number]['value'];
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** День, на который встаёт период списка; 'YYYY-MM-DD'. */
+  /** Day the list period moves to; 'YYYY-MM-DD'. */
   focusDate?: string;
-  /** Счётчик просьб сфокусироваться: растёт на каждый вызов openRoutesList. */
+  /** Focus request counter: grows with every openRoutesList call. */
   focusToken: number;
-  /** Списки портала устарели после правки рейса — инвалидацию делает провайдер. */
+  /** Portal lists are stale after a route change; the URL-window state owner invalidates them. */
   onChanged: () => void;
 }
 
@@ -63,20 +65,20 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
   const { message } = App.useApp();
   const isMobile = useIsMobile();
   const { can } = useAuth();
-  /** Карточка рейса и карточка заявки — окна провайдера: список только просит их открыть. */
+  /** Route card and request card belong to the URL-window host: the list only asks to open them. */
   const { openRoute, openRequest, editRoute } = useRouteModal();
   const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs]>([dayjs(), dayjs()]);
   const [creating, setCreating] = useState(false);
 
-  /**
-   * Просьба показать конкретный день (`openRoutesList({ focusDate })`): её шлют карточка рейса
-   * кнопкой «Все маршруты» и правка рейса — новым днём, на который его переставили. Иначе список
-   * открывался бы сегодняшним числом, а рейс, ради которого его открыли, лежал бы в позавчера — и
-   * человек решал бы, что рейс пропал.
+  /*
+   * A request to show a specific day (openRoutesList({ focusDate })): sent by the route card's "All
+   * routes" button and by the route edit with the new day it was moved to. Otherwise the list would
+   * open on today while the route it was opened for lies the day before yesterday, and the user would
+   * decide the route was lost.
    *
-   * Зависимость — счётчик, а не сама дата, и это главное в эффекте. Повторная просьба про тот же
-   * день обязана вернуть период на место, если его руками увели в другой месяц; по значению даты
-   * второй такой эффект не сработал бы вовсе — дата ведь не изменилась.
+   * The dependency is the counter, not the date, and that is the point of the effect. A repeated
+   * request for the same day must bring the period back if the user moved it to another month; keyed
+   * by the date value, the second effect would not fire at all since the date did not change.
    */
   useEffect(() => {
     if (!focusDate) return;
@@ -85,11 +87,11 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusToken]);
 
-  /**
-   * Фильтры живут полосой над таблицей, а не выпадашками столбцов: в заголовке их не видно, а
-   * часть значений — списки справочников (техника, водители), которым в выпадашке столбца места
-   * нет. Тем же порядком собраны «Заявки ТС» и «Пользователи» — списки портала фильтруются
-   * одинаково.
+  /*
+   * Filters live in a bar above the table, not in column dropdowns: they are not visible in the
+   * header, and some values are directory lists (vehicles, drivers) with no room in a column
+   * dropdown. The vehicle requests and users lists are built the same way, so portal lists filter
+   * alike.
    */
   const { params, setParams, setSort, onTableChange } = useListParams<{
     vehicleId?: string;
@@ -97,7 +99,7 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
     waybill?: WaybillFilter;
   }>({}, { searchKeys: [] });
 
-  /** Смена любого фильтра возвращает список на первую страницу. */
+  // Any filter change returns the list to the first page.
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
@@ -116,13 +118,13 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
 
   const { columns, card } = routeListView({ can, openRequest, openRoute, editRoute });
 
-  /** Полоса фильтров над таблицей: поиск, техника, водитель, состояние листа и период рейсов. */
+  // Filter bar above the table: search, vehicle, driver, waybill state and route period.
   const filters = (
     <Space size={[12, 8]} wrap>
       <Input.Search
         allowClear
-        // Ищет сервер сразу по трём приметам рейса: номер («Р-12»), госномер машины и фамилия
-        // водителя — рейс запоминают то одним, то другим.
+        // The server searches by three route traits at once: number ("Р-12"), vehicle plate and
+        // driver surname, because people remember a route by any of them.
         placeholder="Р-12, госномер или водитель"
         style={{ width: 240 }}
         defaultValue={params.search}
@@ -158,8 +160,8 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
         value={params.waybill}
         onChange={(v: WaybillFilter | undefined) => applyFilter({ waybill: v })}
       />
-      {/* Период рейсов остаётся обязательным: маршруты читают по дням, и «вся история сразу» —
-        не тот вопрос, который здесь задают. Поэтому без крестика. */}
+      {/* The route period stays mandatory: routes are read by day, and "the whole history at
+          once" is not the question asked here. Hence no clear button. */}
       <DatePicker.RangePicker
         format="DD.MM.YYYY"
         value={range}
@@ -174,7 +176,7 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
     </Space>
   );
 
-  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  // The same filters as descriptions for the phone filter sheet (ADR 0030).
   const mobileFilters: FilterDefinition[] = [
     {
       kind: 'select',
@@ -225,20 +227,20 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
       open={open}
       onClose={onClose}
       width={1080}
-      // Список переоткрывают на другом дне и из другого места портала: пересобрать его дешевле,
-      // чем тащить за собой фильтры прошлого захода.
+      // The list is reopened on another day and from another portal place: rebuilding it is cheaper
+      // than dragging the previous visit's filters along.
       destroyOnHidden
-      // Создание — единственное собственное действие списка, и на телефоне ему место в футере
-      // окна, а не круглой кнопкой: `Fab` живёт у нижней навигации страницы, которой под окном
-      // нет вовсе. Одна кнопка работает в обоих видах — окном на десктопе и шитом на телефоне.
+      // Creating is the list's only own action, and on a phone it belongs in the window footer
+      // rather than a round button: Fab lives at the page's bottom navigation, which does not exist
+      // under the window. One button works in both forms, a window on desktop and a sheet on phone.
       footer={
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
           Новый маршрут
         </Button>
       }
-      // Тело обязано иметь высоту: `DataTable` меряет свой контейнер (`useElementSize`) и считает
-      // по нему `scroll.y`, а в теле, растущем по содержимому, он намерил бы ноль и схлопнулся.
-      // На телефоне окно и так во весь экран — там высота своя, а не доля от неё.
+      // The body must have a height: DataTable measures its container (useElementSize) to compute
+      // scroll.y, and in a content-sized body it would measure zero and collapse. On a phone the
+      // window is full-screen anyway, so the height is its own rather than a share of the viewport.
       bodyStyle={{
         ...(isMobile ? { height: '100%' } : { height: '70vh' }),
         display: 'flex',
@@ -247,10 +249,10 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
         overflow: 'hidden',
       }}
     >
-      {/* Полосу фильтров десктопа и панель телефона рисуем сами: `PageTableLayout` остался
-          страницам, а в окне у списка своя оболочка. Шесть выпадашек фиксированной ширины на
-          360 px заняли бы экран целиком (ADR 0030), поэтому на телефоне — `ListToolbar` с шитами.
-          Главного действия ему не передаём: «Новый маршрут» стоит в футере окна. */}
+      {/* The desktop filter bar and the phone toolbar are drawn here: PageTableLayout belongs to
+          pages, and the list has its own shell inside a window. Six fixed-width dropdowns would
+          fill a 360 px screen (ADR 0030), so the phone gets ListToolbar with sheets. No primary
+          action is passed to it: "New route" sits in the window footer. */}
       {isMobile ? (
         <ListToolbar
           search={{
@@ -270,8 +272,8 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
         <div style={{ flex: '0 0 auto' }}>{filters}</div>
       )}
 
-      {/* Прокрутку на телефоне держит эта обёртка: карточки списка растут по содержимому, и без
-          неё они уехали бы за нижний край окна. На десктопе прокручивается сама таблица. */}
+      {/* On a phone this wrapper scrolls: list cards grow with content and would otherwise run past
+          the bottom of the window. On desktop the table scrolls by itself. */}
       <div
         style={{
           flex: '1 1 auto',
@@ -293,9 +295,9 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
         />
       </div>
 
-      {/* Окно создания стоит внутри окна списка намеренно: antd поднимает z-index вложенных
-          окон над родительским по контексту, а соседнее — на телефоне оказалось бы под шторкой
-          списка. В адресе оно не отражается: это шаг внутри списка, а не место портала. */}
+      {/* The create window is nested in the list window on purpose: antd raises nested windows'
+          z-index above the parent by context, while a sibling would end up under the list sheet on
+          a phone. It is not reflected in the URL: it is a step inside the list, not a place. */}
       <CreateRouteModal
         open={creating}
         onCancel={() => setCreating(false)}
@@ -303,9 +305,8 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
           setCreating(false);
           onChanged();
           message.success('Маршрут заведён');
-          // Период встаёт на день заведённого рейса: рейс заводят и на завтра, и на послезавтра, а
-          // список остался бы на сегодняшнем дне — и, закрыв карточку, человек не нашёл бы в нём
-          // только что созданного рейса.
+          // The period moves to the new route's day: routes are created for tomorrow and later, and
+          // a list left on today would not show the route just created once the card is closed.
           const day = dayjs(route.routeDate);
           setRange([day, day]);
           openRoute(route.id);

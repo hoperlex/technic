@@ -15,40 +15,42 @@ import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 
 /**
- * Чем наполнены поля выбора в окне коррекции рейса (ADR 0101): машина, водитель, прицепы.
+ * What fills the choice fields of the route correction window (ADR 0101): vehicle, driver,
+ * trailers.
  *
- * Вынесено из самого окна (`VehicleRouteCorrectionModal.tsx`) по границе предмета — тем же
- * разрезом, что и перечень последствий рядом: там форма (поля, правила, отправка), здесь три
- * запроса со своими правилами отбора, которые к вводу не относятся вовсе. Ратчет качества
- * (`scripts/quality.mjs`) считает строки у окна, и списки тянули его вверх, ничего не добавляя
- * форме.
+ * Extracted from the window itself (`VehicleRouteCorrectionModal.tsx`) along a subject boundary,
+ * the same cut as the neighbouring list of consequences: the window holds the form (fields, rules,
+ * submission), while this holds three queries with their own selection rules that have nothing to
+ * do with input. The quality ratchet (`scripts/quality.mjs`) counts the window's lines, and the
+ * lists were pushing it up without adding anything to the form.
  *
- * ГЛАВНОЕ, ЧТО ДЕРЖИТ ЭТОТ МОДУЛЬ: **отбор здесь исторический, а не сегодняшний**. Исправляют
- * прошедший день, и списки обязаны показывать то, чем и кем работали ТОГДА: списанную с тех пор
- * машину (Р17) и уволившегося после рейса водителя (ADR 0101 п. 15). Сведи любой из двух списков
- * к обычному «что доступно сейчас» — и рейс за прошлую неделю станет не на кого и не на что
- * выписать.
+ * THE MAIN INVARIANT OF THIS MODULE: **the selection here is historical, not current**. A past day
+ * is being corrected, and the lists must show what was used and who worked THEN: a vehicle
+ * decommissioned since (R17) and a driver who left after the route (ADR 0101 item 15). Reduce
+ * either list to the usual "what is available now" and a route from last week can no longer be
+ * issued to anyone or on anything.
  *
- * Последствия и блокировки сюда не переехали намеренно: их считает сервер (`correctionPreview`),
- * и держит их само окно — от них зависит, отпустит ли оно нажатие. Заодно это оставило все сырые
- * ключи коррекции в одном файле: `rawKeyFiles` в `scripts/quality.mjs` считает ФАЙЛЫ, и разрез,
- * разносящий литералы по двум, растит долг, не добавив ни одного нового ключа. Здешние три
- * запроса идут семействами из `entities/<сущность>/api/keys` — перевод карточки рейса и его листа на
- * семейства остаётся отдельной работой, как и сказано в шапке `vehicleRouteKeys`.
+ * Consequences and blockers deliberately did not move here: the server computes them
+ * (correctionPreview), and the window itself holds them, because they decide whether it lets the
+ * press through. All queries of the window and of this module use key families from
+ * entities/<entity>/api/keys (vehicleRouteKeys, waybillKeys, driverKeys, vehicleKeys), so splitting
+ * them across files adds no raw-key debt (rawKeyFiles in
+ * apps/web/scripts/quality.mjs counts files with literal keys).
  */
 
 interface Args {
   route: VehicleRouteDto | null;
-  /** Машина, стоящая в поле сейчас: от неё зависят и прицепы, и список водителей. */
+  /** The vehicle currently in the field: both trailers and the driver list depend on it. */
   vehicleId: string | undefined;
   withTrailer: boolean;
 }
 
 export function useRouteCorrectionChoices({ route, vehicleId, withTrailer }: Args) {
   /**
-   * Парк целиком, включая списанную и стоящую в ремонте технику (Р17): истории статусов у машины
-   * нет, а исправляют задним числом как раз ту единицу, которую с тех пор списали. Состояние
-   * названо в строке выбора — «поехала машина, которой сегодня нет в строю» человек должен видеть.
+   * The whole fleet, including decommissioned and under-repair vehicles (R17): a vehicle has no
+   * status history, and a backdated correction often concerns exactly the unit decommissioned
+   * since. The status is named in the option label: the person must see "a vehicle that is out of
+   * service today went on this route".
    */
   const { data: fleet, isFetching: fleetLoading } = useQuery({
     queryKey: vehicleKeys.ownForCorrection(),
@@ -79,8 +81,9 @@ export function useRouteCorrectionChoices({ route, vehicleId, withTrailer }: Arg
   );
 
   /**
-   * Прицепы, закреплённые за **выбранной** машиной (§4.2.2 плана прицепов): её здесь меняют, и
-   * спрашиваем о той, что стоит в поле, — закрепление прежней описывало бы уже не тот рейс.
+   * Trailers bound to the **selected** vehicle (trailers plan section 4.2.2): the vehicle is what
+   * gets changed here, so we ask about the one in the field; the previous vehicle's binding would
+   * describe a different route.
    */
   const { data: suggestion } = useQuery({
     queryKey: vehicleRouteKeys.suggest(vehicleId, route?.routeDate),
@@ -89,9 +92,9 @@ export function useRouteCorrectionChoices({ route, vehicleId, withTrailer }: Arg
   });
 
   /**
-   * Кто мог сесть за эту машину **в день рейса**: отбор исторический (ADR 0101 п. 15), и уволенный
-   * после рейса человек из списка не пропадает — иначе лист за прошлую неделю нельзя было бы
-   * выписать на того, кто её и отработал.
+   * Who could drive this vehicle **on the route day**: the selection is historical (ADR 0101 item
+   * 15), and a person dismissed after the route does not drop out of the list; otherwise a sheet
+   * for last week could not be issued to the person who actually worked it.
    */
   const { data: selection, isFetching: driversLoading } = useQuery({
     queryKey: driverKeys.available({ vehicleId, on: route?.routeDate, withTrailer }),
@@ -119,7 +122,7 @@ export function useRouteCorrectionChoices({ route, vehicleId, withTrailer }: Arg
     driverOptions,
     driversLoading,
     suggestion,
-    /** Тип выбранной машины: по нему поле прицепов решает, что ей вообще можно прицепить. */
+    /** Type of the selected vehicle: the trailer field uses it to decide what can be hitched. */
     vehicleTypeId: fleet?.items.find((v) => v.id === vehicleId)?.vehicleTypeId,
   };
 }

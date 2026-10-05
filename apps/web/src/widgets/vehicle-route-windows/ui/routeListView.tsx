@@ -37,11 +37,16 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
       title: 'Маршрут',
       dataIndex: 'displayNumber',
       width: 140,
+      // Search lives in the bar above the table: one search covers route number, plate and driver
+      // surname, and a magnifier in one column header would promise searching that column only.
       searchable: false,
       render: (_value, route) => (
         <Space orientation="vertical" size={0}>
           <Space size={6}>
             <span>{route.displayNumber}</span>
+            {/* A relocation sits in the same list as freight routes: it is the same vehicle's route on
+                the same day, and there would be nowhere to look for it in a separate window. The
+                tag marks it, and so does the different content of the "Requests" column. */}
             {isRelocationPurpose(route.purpose) && (
               <Tag color={route.purpose === 'delivery' ? 'blue' : 'gold'}>
                 {routePurposeShortLabels[route.purpose]}
@@ -78,6 +83,8 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
       sortable: false,
       searchable: false,
       width: 220,
+      // A missing driver is a state, not a bug: the route was assembled in advance and the person is
+      // set in the morning. But no waybill can be issued without one, so it must not stay silent.
       render: (_value, route) => route.driverName || <Tag color="orange">не назначен</Tag>,
     }),
     textColumn<VehicleRouteDto>({
@@ -88,7 +95,10 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
       searchable: false,
       width: 280,
       render: (_value, route) => {
+        // Taken out of the row up front: type narrowing does not survive into onActivate, which runs
+        // later, so TS would no longer know the field is non-null there.
         const source = route.sourceRequest;
+        // A relocation has no composition: it rides on one request, and "from -> to" is its task.
         return isRelocationPurpose(route.purpose) ? (
           <Space orientation="vertical" size={0}>
             <span>
@@ -112,6 +122,10 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
           <Typography.Text type="secondary">рейс пуст</Typography.Text>
         ) : (
           <Space orientation="vertical" size={0}>
+            {/* A request number opens its card as a window over the list: route composition is read
+                with "what is that request", which used to be answered by switching tabs and
+                searching for the number. The link stays real (Ctrl opens a new browser tab), and
+                without request rights vehicleRequestViewLink returns null, leaving plain text. */}
             {route.requests.map((item) => (
               <span key={item.requestId}>
                 {item.position}.{' '}
@@ -142,6 +156,9 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
       render: (_value, route) =>
         route.waybill ? (
           <Space orientation="vertical" size={0}>
+            {/* The number leads to the journal searched by this number: a waybill has no card, and
+                the journal row tells what happened to the form and what it is filed with
+                (ADR 0037). */}
             <span>
               <EntityLink
                 to={waybillLink(can, route.waybill.number)}
@@ -158,6 +175,13 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
           <Typography.Text type="secondary">не выписан</Typography.Text>
         ),
     }),
+    /*
+     * Composition and waybill issue live in the card; from here a route is opened and its header
+     * edited, because "move the day" and "change the driver" are morning actions that do not justify
+     * opening the card. Both windows are owned by the URL-window host: the card because it is also
+     * opened from the garage and the waybill journal where there is no list, the edit because it
+     * must die together with the window it was opened from.
+     */
     actionsColumn<VehicleRouteDto>((route) => {
       const frozen = !isRouteEditable(route.waybill?.status ?? null);
       return (
@@ -167,6 +191,7 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
             icon={<EyeOutlined />}
             onClick={() => openRoute(route.id)}
           />
+          {/* The wrapper explains the disabled button: antd shows no tooltip on a disabled one. */}
           <span title={frozen ? ROUTE_FROZEN_MESSAGE : undefined}>
             <RowActionButton
               title="Редактировать маршрут"
@@ -180,6 +205,8 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
     }, 110),
   ];
 
+  // Phone card (ADR 0030): route number and date in the header, vehicle and driver as lines; a tap
+  // opens the same route as the desktop "Open" button.
   const card: CardConfig<VehicleRouteDto> = {
     title: (route) => `${route.displayNumber} · ${formatDateOnly(route.routeDate)}`,
     badge: (route) =>

@@ -5,34 +5,37 @@ import type { vehicleRoutesApi } from '@entities/vehicle-route';
 import type { waybillsApi } from '@entities/waybill';
 
 /**
- * Цена коррекции рейса, прочитанная человеком **до** нажатия (ADR 0101, Р18 и Р36): какой номер
- * сгорит, чьи назначения переедут, какие подписи снимутся и что из бумаги уже ушло наружу.
+ * The cost of a route correction, read by the person **before** the press (ADR 0101, R18 and
+ * R36): which number burns, whose assignments move, which sign-offs are removed and which paper
+ * has already gone out.
  *
- * Вынесено из самого окна (`VehicleRouteCorrectionModal.tsx`) по границе предмета: там форма —
- * поля, правила и отправка, — а здесь перечень последствий, который растёт от каждой новой двери
- * заднего числа и к вводу не относится вовсе. Ратчет качества (`scripts/quality.mjs`) считает
- * строки у окна, и перечень тянул его вверх, ничего не добавляя форме.
+ * Extracted from the window itself (`VehicleRouteCorrectionModal.tsx`) along a subject boundary:
+ * the window holds the form (fields, rules and submission), while this is the list of
+ * consequences, which grows with every new backdating door and has nothing to do with input. The
+ * quality ratchet (`scripts/quality.mjs`) counts the window's lines, and the list was pushing it
+ * up without adding anything to the form.
  *
- * Считать здесь нечего: всё приходит готовым от сервера (`GET /vehicle-routes/:id/correction`) и
- * из карточки листа. Второй расчёт в портале разошёлся бы с тем, который потом исполнит операцию, —
- * и окно обещало бы не то, что произойдёт.
+ * Nothing is computed here: everything comes ready from the server
+ * (`GET /vehicle-routes/:id/correction`) and from the sheet card. A second calculation in the
+ * portal would drift from the one that later executes the operation, and the window would promise
+ * something other than what actually happens.
  */
 
 type CorrectionPreview = Awaited<ReturnType<typeof vehicleRoutesApi.correctionPreview>>;
 type WaybillCard = Awaited<ReturnType<typeof waybillsApi.get>>;
 
 interface Props {
-  /** Рейс, чей день исправляют; `null` — окно закрыто, и говорить не о чем. */
+  /** The route whose day is corrected; `null` means the window is closed, nothing to say. */
   route: VehicleRouteDto | null;
   preview: CorrectionPreview | undefined;
-  /** Карточка действующего листа: отметки печати, выгрузки и подшитые файлы (Р18, Р34). */
+  /** Card of the current sheet: print and export marks and attached files (R18, R34). */
   sheet: WaybillCard | undefined;
-  /** Машина, выбранная в форме: ею отличается «сменит машину» от «ехала та же». */
+  /** Vehicle chosen in the form: tells "will change the vehicle" from "the same one drove". */
   vehicleId: string | undefined;
 }
 
 export function RouteCorrectionConsequences({ route, preview, sheet, vehicleId }: Props) {
-  /** Заявки, у которых коррекция перепишет назначение: линейные дни в их число не входят. */
+  /** Requests whose assignment the correction rewrites; linear days are not among them. */
   const reassigned = (preview?.requests ?? []).filter(
     (r) => r.workDate === null && r.assignedVehicleId !== vehicleId,
   );
@@ -56,9 +59,10 @@ export function RouteCorrectionConsequences({ route, preview, sheet, vehicleId }
               источник истины о том, чем едут; ставки при этом не трогаются.
             </li>
           )}
-          {/* Линейный день (ADR 0100 п. 4): машина дня это машина рейса, а назначение заказа
-            отвечает за весь его срок и остаётся прежним. Сказать это нужно там же, где перечислены
-            сменившие машину, — иначе список прочтётся и про дни. */}
+          {/* A linear day (ADR 0100 item 4): the day's vehicle is the route's vehicle, while the
+            order's assignment covers its whole term and stays unchanged. This must be said right
+            next to the list of requests changing vehicle, otherwise that list would be read as
+            covering the days too. */}
           {linearDays.length > 0 && (
             <li>
               Дни линейных заказов ({linearDays.map((r) => r.displayNumber).join(', ')}) поедут

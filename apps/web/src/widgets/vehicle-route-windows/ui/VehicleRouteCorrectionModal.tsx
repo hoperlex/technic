@@ -17,18 +17,20 @@ import { trailerTripBody } from '@entities/vehicle-route';
 import { TrailerFields } from '@features/vehicle-route-trailer';
 
 /**
- * Исправление исполнения рейса задним числом (ADR 0101, Р2).
+ * Backdated correction of how a route was actually executed (ADR 0101, R2).
  *
- * Окно правки и окно коррекции — разные окна, и это не удобство, а разная цена действия. Правка
- * меняет план: рейс ещё не стал документом, и стоит она ничего. Коррекция переписывает **уже
- * состоявшийся день**: действующий номер бланка сгорает, взамен уходит следующий по серии (Р10),
- * назначения заявок едут за машиной рейса, подписи объекта под днями снимаются (Р5), а подшитые к
- * старому листу файлы на новый не переезжают (Р34). Поэтому здесь обязательна причина и поэтому же
- * всё перечисленное человек читает **до** нажатия, а не узнаёт после (Р18, Р36).
+ * The edit window and the correction window are separate windows, and not for convenience: the
+ * actions cost different things. An edit changes the plan: the route is not a document yet, and
+ * the edit costs nothing. A correction rewrites **a day that has already happened**: the current
+ * blank number is burned and the next one in the series is issued instead (R10), request
+ * assignments follow the route's vehicle, the site's sign-offs under the days are removed (R5), and
+ * files attached to the old sheet do not move to the new one (R34). That is why a reason is
+ * mandatory here, and why the person reads all of the above **before** pressing the button rather
+ * than finding out afterwards (R18, R36).
  *
- * Последствия считает сервер тем же кодом, которым будет их исполнять
- * (`GET /vehicle-routes/:id/correction`): второй расчёт в портале разошёлся бы с первым — и окно
- * обещало бы не то, что произойдёт.
+ * The consequences are computed by the server with the same code that will execute them
+ * (`GET /vehicle-routes/:id/correction`): a second calculation in the portal would drift from the
+ * first, and the window would promise something other than what actually happens.
  */
 
 interface FormValues {
@@ -46,14 +48,16 @@ interface FormValues {
 }
 
 interface Props {
-  /** null — окно закрыто. */
+  /** null means the window is closed. */
   route: VehicleRouteDto | null;
   onClose: () => void;
   /**
-   * Рейс переписан: списки рейсов, заявок и журнал листов после этого не те же.
+   * The route was rewritten: route lists, request lists and the sheet journal are no longer the
+   * same after this.
    *
-   * С точками: коррекция пересобирает рейс целиком, и карточка кладёт ответ в кэш как есть — без
-   * порядка объезда она показала бы пустой список остановок до следующей перечитки.
+   * Comes with route points: a correction rebuilds the whole route, and the card puts the response
+   * into the cache as is; without the stop order it would show an empty stop list until the next
+   * refetch.
    */
   onSaved: (route: VehicleRouteDto) => void;
 }
@@ -64,10 +68,11 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
   const [form] = Form.useForm<FormValues>();
 
   /**
-   * Ключ идемпотентности (Р31): придумывается **до** отправки и держится всё время, пока открыто
-   * окно. Повтор после сетевого таймаута обязан вернуть результат прежней операции, а не сжечь
-   * второй номер серии; поэтому же повторная отправка идёт тем же телом — отпечаток считается со
-   * всей команды целиком, и пересобранное со свежей версией тело сервер повтором не признает.
+   * Idempotency key (R31): generated **before** submission and kept for as long as the window is
+   * open. A retry after a network timeout must return the result of the earlier operation instead
+   * of burning a second number in the series; for the same reason the retry sends the same body:
+   * the fingerprint is computed over the whole command, and the server will not recognise a body
+   * rebuilt with a fresh version as a retry.
    */
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
   useEffect(() => {
@@ -82,18 +87,19 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
       trailer2Model: route.trailer2Model,
       trailer2RegNumber: route.trailer2RegNumber,
       garageNumber: route.garageNumber,
-      // Умолчанием пустая графа здесь, в отличие от окна правки, не заполняется: подставленное
-      // значение само по себе отличало бы форму от рейса, и проверка «коррекция должна что-то
-      // менять» (Р31) пропускала бы нажатие, которым человек не менял ничего, — номер бланка
-      // сгорал бы ради слова, дописанного порталом. Поле обязательное, и вид сообщения у старого
-      // рейса выбирается рукой: это осознанное решение, а не подстановка.
+      // Unlike the edit window, an empty field is not filled with a default here: a substituted
+      // value would by itself make the form differ from the route, and the "a correction must
+      // change something" check (R31) would let through a press in which the person changed
+      // nothing, burning a blank number for a word the portal added. The field is required, and
+      // the communication kind of an old route is picked by hand: a deliberate decision, not a
+      // substitution.
       communicationKind: route.communicationKind,
       transportationKind: route.transportationKind,
       reason: '',
     });
-    // Зависимость — только идентификатор рейса: следи эффект за `route` целиком, ключ операции и
-    // черновик формы перескакивали бы под рукой на каждом обновлении карточки, а ключ обязан
-    // держаться неизменным всё время, пока окно открыто.
+    // The only dependency is the route id: if the effect tracked the whole `route`, the operation
+    // key and the form draft would reset under the user's hand on every card refresh, while the
+    // key must stay unchanged for as long as the window is open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route?.id, form]);
 
@@ -102,7 +108,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
   const withTrailer = Form.useWatch('withTrailer', form) ?? false;
   const communicationKind = Form.useWatch('communicationKind', form);
 
-  /** Последствия и блокировки — сервером, теми же правилами, которыми он их и исполнит. */
+  /** Consequences and blockers come from the server, by the same rules it will execute them. */
   const { data: preview, isFetching: previewLoading } = useQuery({
     queryKey: vehicleRouteKeys.correctionPreview(route?.id),
     queryFn: () => vehicleRoutesApi.correctionPreview(route!.id),
@@ -110,9 +116,9 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
   });
 
   /**
-   * Карточка действующего листа: отметки печати и выгрузки (Р18) и подшитые к номеру файлы (Р34).
-   * Берутся из журнала, а не считаются заново: «уходила ли бумага» — вопрос журнала, и два разных
-   * ответа на него хуже одного.
+   * Card of the current sheet: print and export marks (R18) and files attached to the number
+   * (R34). Taken from the journal rather than recomputed: "has the paper left the building" is the
+   * journal's question, and two different answers to it are worse than one.
    */
   const { data: sheet } = useQuery({
     queryKey: waybillKeys.detail(preview?.waybill?.id),
@@ -120,7 +126,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
     enabled: !!preview?.waybill,
   });
 
-  /** Списки выбора — отдельным модулем: отбор там исторический, причина в его шапке. */
+  /** Choice lists live in a separate module: their selection is historical, see its header. */
   const { vehicleOptions, fleetLoading, driverOptions, driversLoading, suggestion, vehicleTypeId } =
     useRouteCorrectionChoices({ route, vehicleId, withTrailer });
 
@@ -142,8 +148,8 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
     onSuccess: async (updated) => {
       message.success(`Рейс исправлен, выписан лист ${updated.waybill?.number ?? ''}`);
       qc.setQueryData(vehicleRouteKeys.detail(updated.id), updated);
-      // Журнал листов и гараж после коррекции показывают другое: там списанный номер, новый номер
-      // и другая машина дня.
+      // After a correction the sheet journal and the garage show something else: a cancelled
+      // number, a new number and a different vehicle for the day.
       await qc.invalidateQueries({ queryKey: waybillKeys.root });
       await qc.invalidateQueries({ queryKey: garageKeys.root });
       onSaved(updated);
@@ -151,7 +157,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  /** Меняет ли форма хоть что-то (Р31): тело, повторяющее рейс, сожгло бы номер впустую. */
+  /** Whether the form changes anything (R31): a body repeating the route would waste a number. */
   const changed =
     !!route &&
     (vehicleId !== route.vehicleId ||
@@ -186,8 +192,9 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
     >
       <Form<FormValues> form={form} layout="vertical" onFinish={submit}>
         <FormGrid>
-          {/* Блокировка состава (Р3, Р13) читается первой: с закрытой или новой заявкой в рейсе
-            коррекция невозможна, и чинит это другой человек — окно называет, какой именно. */}
+          {/* The composition blocker (R3, R13) is read first: with a closed or new request in the
+            route a correction is impossible, and someone else has to fix that; the window names
+            who exactly. */}
           {preview?.blocking && (
             <FormGrid.Full>
               <Alert
@@ -215,8 +222,9 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
             />
           </FormGrid.Full>
 
-          {/* Машина правится только здесь (ADR 0082 п. 5 в редакции ADR 0101): «поедет другой
-            машиной» в будущем это другое назначение, а в прошедшем дне рейс состоялся один. */}
+          {/* The vehicle is edited only here (ADR 0082 item 5 as amended by ADR 0101): "will go by
+            another vehicle" in the future is a different assignment, while in a past day only one
+            route actually took place. */}
           <Form.Item
             name="vehicleId"
             label="Машина рейса"
@@ -249,10 +257,11 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
             />
           </Form.Item>
 
-          {/* У формы № 3 граф прицепа нет вовсе (ADR 0071) — спрашивается он там, где печатается. */}
-          {/* Вторая пара граф здесь нужнее, чем где-либо: коррекция переписывает то, что уже
-            уехало на бумаге, и рейс с двумя прицепами до сих пор нельзя было описать иначе как
-            забыв половину. */}
+          {/* Form No. 3 has no trailer fields at all (ADR 0071): the trailer is asked only where
+            it is printed. */}
+          {/* The second pair of fields matters here more than anywhere: a correction rewrites
+            what has already gone out on paper, and until now a route with two trailers could
+            only be described by forgetting half of it. */}
           {route?.formCode !== 'leg3' && (
             <TrailerFields
               key={route?.id}
@@ -265,7 +274,8 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
               hitched={suggestion?.hitched}
               vehicleId={vehicleId}
               vehicleTypeId={vehicleTypeId}
-              // День состоялся: закрепление знает о сменённой машине, а о прошлом вторнике — нет.
+              // The day already happened: the trailer binding knows the current vehicle, not last
+              // Tuesday.
               substituteOnOpen={false}
             />
           )}
@@ -273,11 +283,12 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
           <Form.Item name="garageNumber" label="Гаражный номер">
             <Input placeholder="Из справочника техники, если пусто" />
           </Form.Item>
-          {/* Список, а не строка: значение уходит в графу нового бланка, и написание у всех
-            листов обязано быть одним. Крестика и пункта «не выбрано» нет — очистить графу окном
-            нельзя. Значение, пришедшее от старого рейса мимо набора, показывается выбранным и
-            остаётся пунктом списка (`communicationKindOptions`): оно уже напечатано на выданном
-            листе, и коррекция машины не должна попутно переписывать графу, которой не касалась. */}
+          {/* A list rather than free text: the value goes into a field of the new blank, and its
+            spelling must be the same on every sheet. There is no clear button and no "not
+            selected" option, so the window cannot empty the field. A value inherited from an old
+            route that is outside the set is shown as selected and stays an option of the list
+            (`communicationKindOptions`): it is already printed on the issued sheet, and a vehicle
+            correction must not silently rewrite a field it did not touch. */}
           <Form.Item
             name="communicationKind"
             label="Вид сообщения"
@@ -292,9 +303,9 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
             <Input placeholder="коммерческая" />
           </Form.Item>
 
-          {/* Причина обязательна: она уходит в запись операции, в причину аннулирования старого
-            листа и в новый лист (Р16, Р35) — и через два месяца отвечает на вопрос, почему за один
-            день в журнале два номера. */}
+          {/* The reason is mandatory: it goes into the operation record, into the cancellation
+            reason of the old sheet and into the new sheet (R16, R35), and two months later it
+            answers why the journal has two numbers for one day. */}
           <FormGrid.Full>
             <Form.Item
               name="reason"

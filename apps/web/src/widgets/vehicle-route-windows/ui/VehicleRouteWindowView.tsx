@@ -1,7 +1,6 @@
-import { EditOutlined, PlusOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { EditOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import { Alert, Button, Descriptions, Space, Tag, Typography } from 'antd';
 import {
-  LINEAR_DAY_DOOR_MESSAGE,
   ROUTE_FROZEN_MESSAGE,
   routePurposeLabels,
   type VehicleRouteDto,
@@ -10,13 +9,14 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { useAuth } from '@entities/session';
-import { tripsCountLabel, vehicleRequestViewLink } from '@entities/vehicle-request';
+import { vehicleRequestViewLink } from '@entities/vehicle-request';
 import { blockerMessage, canOpenRoute } from '@entities/vehicle-route';
 import { PrintWaybillButton } from '@entities/waybill';
 import { useRouteModal } from '@features/route-modal';
 import { formatDateOnly } from '@shared/lib';
-import { AutoSelect, EntityLink, ViewModal } from '@shared/ui';
+import { EntityLink, ViewModal } from '@shared/ui';
 import type { VehicleRouteWindowController } from '../model/useVehicleRouteWindow';
+import { RouteAddRequestBlock } from './RouteAddRequestBlock';
 import { RoutePointsBlock } from './RoutePointsBlock';
 import { RouteRequestRow } from './RouteRequestRow';
 import { RouteTaskRowsBlock } from './RouteTaskRowsBlock';
@@ -26,11 +26,20 @@ import { VehicleRouteTransferCorrectionModal } from './VehicleRouteTransferCorre
 interface Props {
   routeId: string | null;
   onClose: () => void;
+  /**
+   * Open the header edit (day, driver, header fields). A separate window rather than inputs here:
+   * the card answers "what route is this and what to do with it", and inputs amid the composition
+   * would turn it into a form.
+   */
   onEdit?: (route: VehicleRouteDto) => void;
   state: VehicleRouteWindowController;
 }
 
-/** Present a route card while its controller owns data and commands. */
+/**
+ * Route card presentation; useVehicleRouteWindow owns data and commands (see there for the freeze
+ * and visit-order invariants). The nested correction windows are mounted here so the route stays
+ * visible behind them.
+ */
 export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Props) {
   const { can } = useAuth();
   const { openRequest, openRoutesList } = useRouteModal();
@@ -76,6 +85,21 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
       footer={
         route && (
           <Space wrap>
+            {/* The door to the route list: the tab people used to reach it by is gone (ADR 0120),
+                and the card is one of its three replacements (section 3.3 of
+                docs/vehicle-routes-modal-plan.md). The route day is always passed: coming from a
+                route of the day before yesterday, a list left on its own period would show neither
+                it nor its day neighbours, and the neighbours are why people leave the card ("what
+                else is this vehicle doing").
+
+                On the left rather than next to "Issue waybill": that one spends a form number, and a
+                navigation button shoulder to shoulder with it would compete for the click with an
+                irreversible action.
+
+                The right is asked by its own call although the card cannot open without it (the URL
+                host drops ?route=). The button leads to the LIST, closed by the same canOpenRoute,
+                and deducing "the card is open, so the list is allowed" would be a rule that holds
+                only until the first change of access conditions. */}
             {canOpenRoute(can) && (
               <Button
                 icon={<UnorderedListOutlined />}
@@ -85,6 +109,9 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
                 Все маршруты
               </Button>
             )}
+            {/* Route edit uses the same right as everything else in the card: the day is moved and the
+                driver changed on the morning of that day, which is the most common reason to open
+                the card. */}
             {onEdit && (
               <Button
                 icon={<EditOutlined />}
@@ -95,6 +122,9 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
                 Редактировать
               </Button>
             )}
+            {/* A cancelled waybill cannot be printed (canPrintWaybill), and the button does not even
+                mention it: the route is already unfrozen, and the talk here must be about the new
+                form, not the written-off number. */}
             {route.waybill && route.waybill.status !== 'cancelled' && (
               <PrintWaybillButton
                 waybillId={route.waybill.id}
@@ -120,6 +150,7 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
               <Button
                 danger
                 disabled={!waybillEditable}
+                // A disabled button explains itself, otherwise it reads as broken.
                 title={
                   route.waybill.status === 'cancelled'
                     ? 'Лист уже аннулирован'
@@ -161,9 +192,13 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
             <Descriptions.Item label="Водитель">
               {route.driverName || <Tag color="orange">не назначен</Tag>}
             </Descriptions.Item>
+            {/* A relocation's task is not a composition but two lines "from -> to" (migration 0082). */}
             {relocation && (
               <Descriptions.Item label={routePurposeLabels[route.purpose]}>
                 {route.moveFrom} → {route.moveTo}
+                {/* The relocation's request uses the same transition as a freight route's
+                    composition: a relocation has no composition at all, and this line is the only
+                    way from it to the request the equipment is moved for. */}
                 {sourceRequest && (
                   <>
                     {' · по заявке '}
@@ -196,6 +231,9 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
           {!frozen && readiness && !readiness.ok && (relocation || route.requests.length > 0) && (
             <Alert type="warning" showIcon title={readiness.reason} />
           )}
+          {/* Driver document gaps are shown before "Issue waybill", not in the confirmation:
+              assigning another person is easier while the form is not spent yet. A frozen route
+              stays silent: its waybill is printed, and it is too late to talk about empty columns. */}
           {!frozen && driverGaps && (
             <Alert
               type="warning"
@@ -205,6 +243,9 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
             />
           )}
 
+          {/* Visit order and the form task exist only for a freight route: a relocation moves one
+              unit of equipment for one request, has no points, and its task is printed from the
+              route itself ("from -> to" in the header, migration 0082). */}
           {!relocation && assembly && (
             <>
               <RoutePointsBlock
@@ -225,8 +266,16 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
             </>
           )}
 
+          {/* The composition is how work is added to and removed from the route. It no longer sets
+              the order: task rows are printed in point order (R11), and the arrows moved there.
+              What stays here is the request's own: its state, ticket and the retroactive transfer
+              door. */}
           {!relocation && (
             <div>
+              {/* The counter is just the request count, without "of seven": paper is measured by task
+                  rows, not requests (R11), and a request with six trips takes six of seven rows
+                  while staying one entry here. Capacity is named by the "Waybill task" block, where
+                  printed rows are counted. */}
               <Typography.Title level={5}>Заявки рейса ({route.requests.length})</Typography.Title>
               {route.requests.length === 0 && (
                 <Typography.Paragraph type="secondary">
@@ -243,6 +292,10 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
                     frozen={frozen}
                     busy={detach.isPending}
                     onDetach={() => detach.mutate(item.requestId)}
+                    // Readiness uses the same rule as route correction: the server asks it for both
+                    // routes, and the button must not promise what the endpoint refuses. A disabled
+                    // one explains itself: with a closed request in the composition the transfer
+                    // becomes a joint job (R38).
                     onTransfer={
                       correction
                         ? {
@@ -260,68 +313,22 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
           )}
 
           {canAddRequest && (
-            <Space orientation="vertical" size={4} style={{ width: '100%' }}>
-              <Space.Compact style={{ width: '100%' }}>
-                <AutoSelect
-                  style={{ width: '100%' }}
-                  value={adding}
-                  onChange={(value) => setAdding(value as string)}
-                  options={free.map((request) => ({
-                    value: request.id,
-                    label: [
-                      request.requestType === 'freight_transport'
-                        ? [
-                            request.displayNumber,
-                            request.trips[0] &&
-                              `${request.trips[0].fromLocation} → ${request.trips[0].toLocation}`,
-                            request.trips.length > 1 && tripsCountLabel(request.trips.length),
-                          ]
-                            .filter(Boolean)
-                            .join(' · ')
-                        : request.displayNumber,
-                      request.vehicleTypeId !== route.vehicleTypeId
-                        ? `заказан ${request.vehicleTypeName}`
-                        : null,
-                      request.route
-                        ? `из ${request.route.displayNumber}, строка ${request.route.position}`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' · '),
-                  }))}
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder={
-                    free.length > 0
-                      ? 'Заявка в работе — свободная или из другого рейса'
-                      : 'Подходящих заявок на эту дату нет'
-                  }
-                  disabled={free.length === 0}
-                />
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  loading={attach.isPending}
-                  disabled={!adding}
-                  onClick={() => adding && attach.mutate(adding)}
-                >
-                  {candidate?.route ? 'Перенести' : 'Добавить'}
-                </Button>
-              </Space.Compact>
-              {candidate?.route && candidate.assignment?.vehicleId !== route.vehicleId && (
-                <Typography.Text type="warning">
-                  {candidate.displayNumber} поедет машиной этого рейса — {route.vehicleLabel}
-                </Typography.Text>
-              )}
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {LINEAR_DAY_DOOR_MESSAGE}
-              </Typography.Text>
-            </Space>
+            <RouteAddRequestBlock
+              route={route}
+              adding={adding}
+              attach={attach}
+              candidate={candidate}
+              free={free}
+              setAdding={setAdding}
+            />
           )}
         </Space>
       )}
       {!route && isFetching && <Typography.Text type="secondary">Загружаем рейс…</Typography.Text>}
 
+      {/* The correction window lies over the card so the route being fixed stays visible behind
+          it: composition, waybill number and day. Its own window rather than card fields, because
+          its action has a different price. */}
       <VehicleRouteCorrectionModal
         route={correcting ? (route ?? null) : null}
         onClose={() => setCorrecting(false)}
@@ -330,6 +337,9 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
           afterChange(updated);
         }}
       />
+      {/* Retroactive transfer (R30) has its own window because it burns two numbers at once and
+          must name both before the click. It opens from the source side: the ticket is seen where
+          it stands. */}
       <VehicleRouteTransferCorrectionModal
         route={transferring ? (route ?? null) : null}
         request={transferring}

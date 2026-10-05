@@ -1,16 +1,18 @@
 /**
- * Рейс машины на дату: состав заявок, порядок объезда и выписка путевого листа с собранного
- * рейса. Снаружи берут `@entities/vehicle-route` — внутренние модули слайса не видны, и
- * перестроить его можно, не трогая потребителей.
+ * A vehicle's route for a date: request composition, stop order and issuing a waybill from the
+ * assembled route. Consumers import `@entities/vehicle-route` only — the slice's internal modules
+ * are hidden, so it can be restructured without touching consumers.
  *
- * Ручки, ключи запросов и правило чтения закреплённых прицепов лежат вместе не ради порядка в
- * дереве: все трое говорят об одном ответе. Подсказку `GET /vehicle-routes/suggest` спрашивают
- * пять окон заведения рейса, её же ключом они делят кэш, и прицепы приходят её полем `hitched` —
- * разъедься эти три вещи по разным местам, и окна начали бы читать один ответ по-разному.
+ * Endpoints, query keys and the rule for reading hitched trailers sit together not for tree
+ * tidiness: all three describe one response. The `GET /vehicle-routes/suggest` hint is requested
+ * by five route-creation windows, they share its cache by its key, and trailers arrive in its
+ * `hitched` field — if these three things drifted apart, the windows would start reading the same
+ * response differently.
  *
- * `issueWaybill` рождает путевой лист, но `@entities/waybill` слайсу не нужен и импортироваться не
- * может: журнал листов — сосед по слою, а ручка отвечает рейсом целиком, без единого типа оттуда.
- * Выписанный лист берут по своему адресу — тем и держится граница.
+ * `issueWaybill` creates a waybill, yet this slice neither needs nor may import
+ * `@entities/waybill`: the waybill journal is a same-layer neighbour, and the endpoint answers
+ * with the whole route without a single type from there. The issued waybill is fetched at its own
+ * address — that is what keeps the boundary intact.
  */
 export { vehicleRouteKeys, vehicleTypesForTrailerKey } from './api/keys';
 export { vehicleRoutesApi } from './api/vehicleRoutesApi';
@@ -38,9 +40,10 @@ export {
 } from './model/hitchedTrailers';
 
 /*
- * Право перейти к рейсу по его номеру (ADR 0120). Оно здесь, а не у списков, которые этот номер
- * печатают: рейс открывается окном из пяти разных мест, и условие показа ссылки обязано быть у них
- * общим с условием, по которому окно открывается адресом.
+ * The right to navigate to a route by its number (ADR 0120). It lives here, not in the lists that
+ * print the number: the route opens as a window from five different places, and the condition for
+ * showing the link must be shared by all of them and match the condition under which the window
+ * opens by URL.
  */
 export { canOpenRoute, vehicleRouteLink } from './model/links';
 export { trailerTripBody, type TrailerTripInput } from './model/trailerTrip';

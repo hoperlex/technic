@@ -5,19 +5,21 @@ import { isApiError } from '@shared/api';
 import { WaybillWarningList } from '@entities/waybill';
 
 /**
- * Рукопожатие выписки в портале (Р21, Р21а плана `docs/route-trips-plan.md`): разбор отказа 409
- * `waybill_ack_required` и окно, в котором человек читает предупреждения до расхода номера бланка.
+ * The portal side of the issuing handshake (R21, R21a of plan `docs/route-trips-plan.md`): parsing
+ * the 409 `waybill_ack_required` refusal and the window in which the person reads the warnings
+ * before a blank number is spent.
  *
- * Своим модулем, а не блоком карточки рейса, потому что путей выпуска номера оказалось пять, а не
- * четыре: пятый — ручная выдача недельного ЭСМ-2 у линейного заказа (`VehicleEsm2Modal`), где рейса
- * нет вовсе. Второе такое же окно разошлось бы с первым на первой же правке текста — и человек
- * читал бы про несгораемый расход бланка в одном месте портала и не читал в другом.
+ * A module of its own rather than a block of the route card, because there turned out to be five
+ * paths that issue a number, not four: the fifth is the manual issue of a weekly ESM-2 for a
+ * linear order (`VehicleEsm2Modal`), where there is no route at all. A second copy of the window
+ * would drift from the first on the first text edit, and the person would read about the
+ * irreversible spending of a blank in one place of the portal and not in another.
  *
- * Вынесены ровно две вещи — разбор тела отказа и само окно, — потому что общего у двух путей ровно
- * столько. Тела отказов у них разные: `WaybillAckRequiredDetails` называет рейс, а
- * `Esm2AckRequiredDetails` — заявку и неделю, рейса у недельного листа не существует. Совпадают в
- * них отпечаток и список, то есть в точности то, что окно читает. Повтор запроса остаётся у
- * вызывающего: тело выписки знает только та мутация, которая его отправляла.
+ * Exactly two things are extracted, the refusal body parser and the window itself, because that is
+ * all the two paths have in common. Their refusal bodies differ: `WaybillAckRequiredDetails` names
+ * a route, while `Esm2AckRequiredDetails` names a request and a week, since a weekly sheet has no
+ * route. What they share is the fingerprint and the list, which is exactly what the window reads.
+ * The retry stays with the caller: only the mutation that sent the issuing body knows it.
  *
  * The assignment doors (history repair, period) answer the same 409 code with a different body: a
  * per-sheet `issues` list instead of one fingerprint, because one command there issues several
@@ -25,19 +27,19 @@ import { WaybillWarningList } from '@entities/waybill';
  * `@features/vehicle-assignment`, and only the warning list itself (`@entities/waybill`) is shared.
  */
 
-/** Что окно читает из отказа: общая часть обоих тел — прочитанный набор и его отпечаток. */
+/** What the window reads from the refusal: the part common to both bodies, set and fingerprint. */
 export interface WaybillAckDetails {
-  /** `sha256` набора, посчитанный сервером; возвращается ему нетронутым. */
+  /** `sha256` of the set, computed by the server; sent back to it untouched. */
   fingerprint: string;
   warnings: WaybillWarning[];
 }
 
 /**
- * Тот ли это отказ, ради которого заведено окно подтверждения (Р21).
+ * Whether this is the refusal the confirmation window exists for (R21).
  *
- * Проверяется не только код, но и форма тела: `details` приходит транспортом как `unknown` — знать
- * ручки ему нечем, — и старый сервер, отвечающий этим кодом без списка, обязан привести к обычному
- * сообщению об ошибке, а не к пустому окну «подтвердите ничего».
+ * Both the code and the body shape are checked: the transport delivers `details` as `unknown` (it
+ * has no way to know the endpoint), and an older server answering with this code but without the
+ * list must lead to a regular error message, not to an empty "confirm nothing" window.
  */
 export function ackRequiredDetails(e: unknown): WaybillAckDetails | null {
   if (!isApiError(e) || e.code !== WAYBILL_ACK_REQUIRED_CODE) return null;
@@ -49,16 +51,19 @@ export function ackRequiredDetails(e: unknown): WaybillAckDetails | null {
 }
 
 /**
- * Окно подтверждения предупреждений: что именно подтверждают — списком, а не одной строкой.
+ * The warning confirmation window: what exactly is being confirmed, as a list rather than a single
+ * line.
  *
- * Повтором распоряжается вызывающий, и отпечаток приходит к нему готовым полем `acknowledge`:
- * повторить обязано **то же тело**, которое сервер уже принял, с одним добавленным подтверждением.
- * У выписки задним числом ключ идемпотентности считается по всему телу (`correctionFingerprint`), и
- * тело, собранное заново из полей формы, сервер встретил бы «это не повтор» вместо листа.
+ * The caller owns the retry, and the fingerprint reaches it as a ready `acknowledge` field: the
+ * retry must send **the same body** the server has already received, with one added
+ * acknowledgement. For backdated issuing the idempotency key is computed over the whole body
+ * (`correctionFingerprint`), and the server would answer a body rebuilt from the form fields with
+ * "this is not a retry" instead of a sheet.
  *
- * Бумагу окно не называет намеренно: у рейса это его номер, у недельного листа — заявка и неделя, и
- * оба видны за окном, из которого его открыли. Общим остаётся то, ради чего окно и заведено, —
- * список предупреждений и цена нажатия.
+ * The window deliberately does not name the paper: for a route it is the route number, for a
+ * weekly sheet the request and the week, and both are visible behind the window it was opened
+ * from. What stays common is what the window exists for: the warning list and the cost of the
+ * press.
  */
 export function confirmWaybillWarnings(
   modal: ModalApi,
@@ -80,12 +85,13 @@ export function confirmWaybillWarnings(
     ),
     okText: 'Выписать всё равно',
     cancelText: 'Отмена',
-    // Отпечаток возвращается сервером нетронутым: он относится к тому набору, который человек
-    // сейчас прочитал, и подтверждает именно его.
+    // The fingerprint goes back to the server untouched: it refers to the set the person has just
+    // read and confirms exactly that set.
     //
-    // Отказ повтора гасится здесь намеренно: показать его — дело `onError` вызывающего, а окно
-    // обязано закрыться. Иначе второй 409 (набор успел измениться) повесил бы новое окно поверх
-    // старого — два списка предупреждений об одной бумаге, и непонятно, какой из них свежий.
+    // A failed retry is swallowed here on purpose: showing it is the caller's `onError` job, and
+    // the window must close. Otherwise a second 409 (the set changed in the meantime) would stack
+    // a new window over the old one: two warning lists about one paper, with no telling which is
+    // fresh.
     onOk: () => retry({ fingerprint: details.fingerprint }).catch(() => undefined),
   });
 }

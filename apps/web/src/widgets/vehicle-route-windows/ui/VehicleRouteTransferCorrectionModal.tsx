@@ -17,35 +17,39 @@ import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-rout
 import { formatDateOnly } from '@shared/lib';
 
 /**
- * Перенос заявки между рейсами прошедших дней (ADR 0101 п. 14, Р30): «оформили средой, а ехали
- * вторником».
+ * Moving a request between routes of past days (ADR 0101 item 14, R30): "filed for Wednesday, but
+ * driven on Tuesday".
  *
- * Отдельное окно от обычного переноса (`VehicleRouteTransferModal`), и не ради удобства, а потому
- * что цена действий разная. Обычный перенос двигает **план**: рейсы ещё не стали документами, и
- * стоит он ничего. Здесь оба рейса уже отработали и оба выписали бумагу — перенос списывает **два**
- * номера строгой отчётности и выписывает взамен два новых из хвоста серии (Р10). Поэтому окно
- * обязано назвать оба сгорающих номера **до** нажатия (§5 п. 2 плана), спросить причину и объяснить,
- * что заявка поедет машиной приёмника.
+ * A window separate from the regular transfer (`VehicleRouteTransferModal`), not for convenience
+ * but because the actions cost different things. A regular transfer moves the **plan**: the routes
+ * are not documents yet, and it costs nothing. Here both routes have already been driven and both
+ * have issued paper: the transfer cancels **two** strict-reporting numbers and issues two new ones
+ * from the tail of the series instead (R10). So the window must name both numbers that will burn
+ * **before** the press (plan section 5 item 2), ask for a reason and explain that the request will
+ * travel by the target route's vehicle.
  *
- * Последствия и блокировки считает сервер тем же чтением, каким их показывает окно коррекции рейса
- * (`GET /vehicle-routes/:id/correction`) — по разу на каждую сторону. Второй расчёт в портале
- * разошёлся бы с первым, и окно обещало бы не то, что произойдёт.
+ * Consequences and blockers are computed by the server with the same read the route correction
+ * window uses (`GET /vehicle-routes/:id/correction`), once per side. A second calculation in the
+ * portal would drift from the first, and the window would promise something other than what
+ * actually happens.
  */
 
-/** Сколько дней вокруг дня источника предлагать в приёмники. */
+/** How many days around the source day to offer as targets. */
 const NEIGHBOURHOOD_DAYS = 7;
 
 interface Props {
-  /** Рейс-источник; `null` — окно закрыто. */
+  /** Source route; `null` means the window is closed. */
   route: VehicleRouteDto | null;
-  /** Переносимый талон источника. */
+  /** The source's ticket being transferred. */
   request: VehicleRouteRequestDto | null;
   onClose: () => void;
   /**
-   * Перенос удался: обе стороны пришли из ответа — списки и карточки после этого не те же.
+   * The transfer succeeded: both sides come from the response, and lists and cards are no longer
+   * the same after this.
    *
-   * С точками у обеих: перенос раскладывает ездки заявки в приёмнике и чистит опустевшие остановки
-   * в источнике (§7), и карточка кладёт ответ в кэш как есть.
+   * Both come with route points: the transfer lays out the request's trips in the target and
+   * cleans up emptied stops in the source (section 7), and the card puts the response into the
+   * cache as is.
    */
   onDone: (result: { target: VehicleRouteDto; source: VehicleRouteDto }) => void;
 }
@@ -57,28 +61,30 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
   const targetId = Form.useWatch('routeId', form);
 
   /**
-   * Ключ идемпотентности (Р31) и версии обоих рейсов фиксируются на **открытие** окна, а не на
-   * попытку отправки. Отпечаток команды сервер считает со всего тела целиком, включая версии:
-   * повтор после обрыва связи обязан прислать ровно то, что прислал в первый раз, — тело,
-   * пересобранное со свежей версией, это уже другая команда, и ответом на неё будет 409, а не
-   * прежний результат.
+   * The idempotency key (R31) and the versions of both routes are fixed when the window **opens**,
+   * not on each submission attempt. The server computes the command fingerprint over the whole
+   * body, versions included: a retry after a dropped connection must send exactly what was sent
+   * the first time. A body rebuilt with a fresh version is a different command, and the answer to
+   * it is 409 rather than the earlier result.
    */
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
   useEffect(() => {
     if (!route) return;
     setOperationId(crypto.randomUUID());
     form.setFieldsValue({ routeId: undefined, reason: '' });
-    // Зависимости — только идентификаторы рейса и заявки: следи эффект за объектами целиком, ключ
-    // операции перескакивал бы на каждом обновлении карточки, а он обязан держаться неизменным всё
-    // время, пока окно открыто (иначе повтор ушёл бы под новым ключом и сжёг вторую пару номеров).
+    // The only dependencies are the route and request ids: if the effect tracked the whole
+    // objects, the operation key would reset on every card refresh, while it must stay unchanged
+    // for as long as the window is open (otherwise a retry would go out under a new key and burn
+    // a second pair of numbers).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route?.id, request?.requestId, form]);
 
   /**
-   * Куда переносить: рейсы соседних дней. Окно недели с обеих сторон — это и есть предмет операции
-   * («ехали не тем днём, каким оформили»), а весь журнал рейсов в выпадающем списке был бы не
-   * подсказкой, а вторым списком рейсов. Свободная строка задания не фильтруется сервером: сколько
-   * их у бланка, решает его форма (ADR 0068), и считает это портал тем же правилом.
+   * Where to transfer: routes of neighbouring days. A one-week window on each side is exactly the
+   * subject of the operation ("driven on a different day than filed"), while the whole route
+   * journal in a dropdown would be not a hint but a second route list. A free task line is not
+   * filtered by the server: how many lines a blank has is decided by its form (ADR 0068), and the
+   * portal counts it with the same rule.
    */
   const { data: candidates, isFetching } = useQuery({
     queryKey: vehicleRouteKeys.transferCandidates(route?.id),
@@ -99,7 +105,8 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
       (candidates?.items ?? []).filter(
         (r: VehicleRouteDto) =>
           r.id !== route?.id &&
-          // Перегон талонов заказчиков не несёт: там едет одна заявка-основание (ADR 0057).
+          // A relocation carries no customer tickets: only its single basis request rides on it
+          // (ADR 0057).
           r.purpose === 'freight' &&
           r.requests.length < routeRequestCapacity(r.formCode),
       ),
@@ -108,10 +115,10 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
   const target = options.find((r) => r.id === targetId) ?? null;
 
   /*
-   * Цена операции — с обеих сторон и тем же чтением, что у окна коррекции рейса. Спрашивается по
-   * рейсу, а не одним запросом на пару: правила коррекции считаются для каждого рейса отдельно (у
-   * них разные дни, а значит и разная глубина, Р37), и одна ручка на две стороны означала бы третий
-   * набор тех же правил.
+   * The cost of the operation, on both sides and with the same read as the route correction
+   * window. It is requested per route rather than with one request per pair: correction rules are
+   * evaluated for each route separately (they have different days and therefore different depth,
+   * R37), and a single endpoint for both sides would mean a third copy of the same rules.
    */
   const sourcePreview = useQuery({
     queryKey: vehicleRouteKeys.correctionPreview(route?.id),
@@ -124,9 +131,9 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
     enabled: !!targetId,
   });
 
-  /** Что мешает переносу здесь и сейчас: отказать может любая из сторон (Р3, Р13, Р37). */
+  /** What blocks the transfer right now: either side may refuse (R3, R13, R37). */
   const blocking = sourcePreview.data?.blocking ?? targetPreview.data?.blocking ?? null;
-  /** Источник опустеет — второго листа ему не выпишут (Р22), и сказать это надо до нажатия. */
+  /** The source will become empty and gets no second sheet (R22); say so before the press. */
   const emptiesSource = (sourcePreview.data?.requests.length ?? 0) <= 1;
 
   const transfer = useMutation({
@@ -134,8 +141,8 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
       vehicleRoutesApi.transferCorrection(target!.id, {
         operationId,
         version: target!.version,
-        // Источник — парой «кто + версия»: версии нумеруются в каждом рейсе отдельно, и сервер
-        // сверяет обе, потому что жжёт оба номера.
+        // The source is sent as an "id + version" pair: versions are numbered per route, and the
+        // server checks both because it burns both numbers.
         source: { routeId: route!.id, version: route!.version },
         requestId: request!.requestId,
         reason,
@@ -148,8 +155,8 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
       );
       qc.setQueryData(vehicleRouteKeys.detail(result.target.id), result.target);
       qc.setQueryData(vehicleRouteKeys.detail(result.source.id), result.source);
-      // Журнал листов, заявки и гараж после переноса показывают другое: два списанных номера, новые
-      // номера и другую машину дня.
+      // After a transfer the sheet journal, requests and the garage show something else: two
+      // cancelled numbers, new numbers and a different vehicle for the day.
       await Promise.all([
         qc.invalidateQueries({ queryKey: waybillKeys.root }),
         qc.invalidateQueries({ queryKey: vehicleRequestKeys.root }),
@@ -189,9 +196,9 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
     >
       <Form form={form} layout="vertical" onFinish={submit}>
         <FormGrid>
-          {/* Отказ любой из сторон (Р3, Р13): состав обоих рейсов обязан быть в работе, потому что
-            новые листы печатают задание по всему составу. Чинит это другой человек — окно называет
-            какой. */}
+          {/* A refusal from either side (R3, R13): the composition of both routes must be in
+            progress, because the new sheets print the task for the whole composition. Someone else
+            has to fix that; the window names who. */}
           {blocking && (
             <FormGrid.Full>
               <Alert
@@ -229,7 +236,8 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
                     r.vehicleLabel,
                     r.driverName || 'водитель не назначен',
                     `${r.requests.length} из ${routeRequestCapacity(r.formCode)} заявок`,
-                    // Номер листа приёмника — часть цены: он сгорит вместе с номером источника.
+                    // The target's sheet number is part of the cost: it burns together with the
+                    // source's number.
                     r.waybill && r.waybill.status !== 'cancelled'
                       ? `лист ${r.waybill.number}`
                       : 'листа нет',
@@ -248,8 +256,9 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
             </Form.Item>
           </FormGrid.Full>
 
-          {/* Оба сгорающих номера — до нажатия (§5 п. 2 плана). Пока приёмник не выбран, названа
-            половина цены, и это честнее, чем молчать: номер источника сгорит в любом случае. */}
+          {/* Both burning numbers are shown before the press (plan section 5 item 2). Until a
+            target is chosen, half of the cost is named, which is more honest than silence: the
+            source's number burns in any case. */}
           <FormGrid.Full>
             <Alert
               type="warning"
@@ -292,8 +301,9 @@ export function VehicleRouteTransferCorrectionModal({ route, request, onClose, o
             />
           </FormGrid.Full>
 
-          {/* Причина обязательна: она уходит в запись операции и печатается во все четыре листа —
-            в оба списанных как причина аннулирования, в оба новых как причина коррекции (Р16, Р35). */}
+          {/* The reason is mandatory: it goes into the operation record and is printed on all four
+            sheets: on both cancelled ones as the cancellation reason, on both new ones as the
+            correction reason (R16, R35). */}
           <FormGrid.Full>
             <Form.Item
               name="reason"

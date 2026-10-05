@@ -1,9 +1,21 @@
 import { Form, Input } from 'antd';
 import { formatDateOnly } from '@shared/lib';
 
-/** Collect the durable audit reason for an operation performed on an elapsed date. */
+/**
+ * Standalone backdate reason (ADR 0101) for operations without request-term consequences: past
+ * ESM-2 issue, relocation and past order-day planning. It becomes the durable audit explanation in
+ * waybill_corrections.
+ *
+ * Kept apart from VehicleBackdateFields (request editor) because these operations need none of its
+ * term, shift, ESM-2-week or route-mismatch queries.
+ *
+ * The field is named reason to match all three request bodies; request editing uses backdateReason
+ * instead, to tell it apart from the request comment. Do not rename one to the other: the server
+ * would receive the reason under the wrong key and reject the backdated operation.
+ */
 export function BackdateReasonField({
   effectiveDate,
+  /** Concise operation-specific consequence shown below the reason. */
   consequence,
   placeholder,
 }: {

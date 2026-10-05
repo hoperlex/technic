@@ -5,10 +5,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   communicationKindOptions,
   DEFAULT_COMMUNICATION_KIND,
-  DRIVER_CATEGORY_MISMATCH_HINT,
-  DRIVER_WORKED_ON_VEHICLE_HINT,
-  driverDocumentGapsHint,
-  driverWorkedOnVehicle,
   isRelocationPurpose,
   isRouteEditable,
   minRequestDateKey,
@@ -19,7 +15,6 @@ import {
   type VehicleRouteDto,
   WAYBILL_CORRECTION_DAYS,
 } from '@technic/contracts';
-import { driverKeys, driversApi } from '@entities/driver';
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
@@ -28,27 +23,29 @@ import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-rout
 import { trailerTripBody } from '@entities/vehicle-route';
 import { TrailerFields } from '@features/vehicle-route-trailer';
 import { BackdateReasonField } from '@features/backdated-operation';
+import { useRouteEditDrivers } from '../model/useRouteEditDrivers';
 
 /**
- * Правка рейса: день, водитель, реквизиты выезда, комментарий, а у перегона — «откуда — куда».
+ * Route edit: day, driver, departure details, comment and, for a relocation, "from -> to".
  *
- * До сих пор в карточке рейса менялся только состав: водителя ставили при переводе заявки в
- * работу, а перепутанный день чинили пересборкой рейса заново. Между тем правят рейс каждое утро —
- * человек заболел, машина не вышла, выезд сдвинулся на день.
+ * The route card used to change only the composition: the driver was set when a request was taken
+ * into work, and a wrong day was fixed by rebuilding the route. Meanwhile routes are edited every
+ * morning: someone fell ill, a vehicle did not go out, departure moved by a day.
  *
- * Дата переносит рейс вместе с заявками (сервер, `moveRouteToDate`): день рейса и день подачи —
- * одно и то же событие с двух сторон. Что именно переедет, окно называет до нажатия: диспетчер
- * должен видеть, что двигает не только строку рейса.
+ * The date moves the route together with its requests (server, moveRouteToDate): the route day and
+ * the delivery day are one event seen from two sides. The window names what will move before the
+ * click: the dispatcher must see they move more than the route row.
  *
- * Выписанный лист правку запрещает целиком (`isRouteEditable`): бумага уже у водителя, и запись,
- * разошедшаяся с ней, хуже отсутствия записи (ADR 0037 п. 9).
+ * An issued waybill forbids editing entirely (isRouteEditable): the paper is with the driver, and a
+ * record diverging from it is worse than no record (ADR 0037 item 9).
  *
- * Задним числом (ADR 0101 п. 4 и 6, Р29) окно спрашивает причину **только за дату**. Водитель,
- * реквизиты и комментарий прошлого рейса правятся как правились: пока листа нет, рейс —
- * планировочная запись, и права за её правку не спрашивает и сервер. Перенос дня — другое: вместе
- * с рейсом переезжает подача его заявок, то есть двигается календарь заказчика. Правило одно с
- * сервером (`movedRouteDateKey` плюс `minRequestDateKey`), потому что расходиться им нельзя: форма
- * не должна ни просить причину там, где ручка её не ждёт, ни отправлять то, чему ответят 403.
+ * Retroactively (ADR 0101 items 4 and 6, R29) the window asks a reason ONLY for the date. Driver,
+ * details and comment of a past route are edited as before: until there is a waybill the route is a
+ * planning record, and the server asks no right for editing it either. Moving the day is different:
+ * the delivery of its requests moves with the route, i.e. the customer's calendar moves. The rule
+ * is shared with the server (movedRouteDateKey plus minRequestDateKey) because they must not
+ * diverge: the form must neither ask a reason where the endpoint does not expect one nor send what
+ * will be answered with 403.
  */
 
 const DATE = 'YYYY-MM-DD';
@@ -67,15 +64,15 @@ interface FormValues {
   comment: string;
   moveFrom?: string;
   moveTo?: string;
-  /** Причина переноса дня в прошлое: спрашивается ровно тогда, когда её спросит сервер. */
+  /** Reason for moving the day into the past: asked exactly when the server will ask it. */
   reason?: string;
 }
 
 interface Props {
-  /** null — окно закрыто. */
+  /** null means the window is closed. */
   route: VehicleRouteDto | null;
   onClose: () => void;
-  /** Рейс изменился: списки маршрутов и заявок после этого не те же. */
+  /** The route changed: route and request lists are stale after this. */
   onSaved: (route: VehicleRouteDto) => void;
 }
 
@@ -99,18 +96,19 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
       trailer2Model: route.trailer2Model,
       trailer2RegNumber: route.trailer2RegNumber,
       garageNumber: route.garageNumber,
-      // Пустая графа рейса открывается умолчанием: поле стало обязательным, и рейс, заведённый до
-      // списка, иначе не дал бы сохранить ни смену водителя, ни перенос дня, пока кто-то не
-      // выберет вид сообщения руками. Подставлять здесь нечем рисковать: листа у правимого рейса
-      // нет вовсе (`isRouteEditable`), бумаги с пустой графой на руках тоже — переписать нечего.
+      // An empty route field opens with the default: the field became mandatory, and a route
+      // created before the list existed would otherwise block saving both a driver change and a day
+      // move until someone picks the communication kind by hand. Defaulting here risks nothing: an
+      // editable route has no waybill at all (isRouteEditable), so there is no paper with an empty
+      // column to rewrite.
       communicationKind: route.communicationKind || DEFAULT_COMMUNICATION_KIND,
       transportationKind: route.transportationKind,
       comment: route.comment,
       moveFrom: route.moveFrom,
       moveTo: route.moveTo,
     });
-    // Зависимость — сам рейс: перерисовка после сохранения приходит новым объектом с новыми
-    // значениями, и поля обязаны встать на них.
+    // The dependency is the route itself: a re-render after saving brings a new object with new
+    // values, and the fields must follow them.
   }, [route, form]);
 
   const routeDate = Form.useWatch('routeDate', form);
@@ -119,30 +117,31 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
   const on = (routeDate ?? (route ? dayjs(route.routeDate) : null))?.format(DATE);
 
   const today = moscowDateKeyOf(new Date());
-  /** Нижняя граница календаря в трёх режимах (Р37); `null` — границы нет (`correctBeyondLimit`). */
+  /** Lower calendar bound in three modes (R37); null means no bound (correctBeyondLimit). */
   const backdateFloor = minRequestDateKey(undefined, {
     correct: can('waybills.correct'),
     beyondLimit: can('waybills.correctBeyondLimit'),
   });
   /**
-   * Эффективная дата переноса — та же более ранняя из двух, по которой спросит право сервер.
-   * `null` — день не двигают вовсе, и заднего числа в правке нет.
+   * Effective date of the move: the earlier of the two, by which the server checks the right. null
+   * means the day is not moved and the edit has no backdating.
    */
   const movedKey = route ? movedRouteDateKey(route.routeDate, routeDate?.format(DATE)) : null;
-  /** Перенос задевает прошедший день: причина обязательна и здесь, и на сервере. */
+  /** The move touches a past day: the reason is mandatory here and on the server. */
   const backdated = movedKey !== null && movedKey < today;
   /**
-   * Дата заперта целиком: собственный день рейса уже за границей глубины, а более ранней из двух
-   * дат он и останется — значит любой перенос сервер отклонит (403 без права, 422 за пределом).
-   * Прочие поля при этом правятся: рейс без листа — планировочная запись (ADR 0101 п. 6).
+   * The date is locked entirely: the route's own day is already beyond the depth limit and will
+   * stay the earlier of the two dates, so the server rejects any move (403 without the right, 422
+   * beyond the limit). Other fields stay editable: a route without a waybill is a planning record
+   * (ADR 0101 item 6).
    */
   const moveLocked = !!route && backdateFloor !== null && route.routeDate < backdateFloor;
 
   /**
-   * Прицепы, закреплённые за машиной рейса (план `docs/vehicle-trailers-plan.md`, §4.2.2). Графы
-   * рейса окно берёт из самого рейса, а закрепление знает только сервер — за ним и идём той же
-   * подсказкой, что зовут окна заведения. Рейсы и графы прошлого рейса из ответа здесь не нужны:
-   * правка описывает рейс, который уже есть.
+   * Trailers pinned to the route's vehicle (docs/vehicle-trailers-plan.md, section 4.2.2). The
+   * window takes the route's own fields from the route, while only the server knows the pinning, so
+   * it is fetched by the same suggestion the create windows use. Routes and previous-route fields
+   * of the answer are not needed: the edit describes a route that already exists.
    */
   const { data: suggestion } = useQuery({
     queryKey: vehicleRouteKeys.suggest(route?.vehicleId, on),
@@ -150,33 +149,13 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
     enabled: !!route && !!on,
   });
 
-  /**
-   * Кто может сесть за эту машину в этот день. Список подсказывает — пригодные первыми, с
-   * пометками о категории и документах (ADR 0064), — но сам никого не выбирает: за руль человека
-   * сажает диспетчер.
-   */
-  const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: driverKeys.available({ vehicleId: route?.vehicleId, on, withTrailer }),
-    queryFn: () => driversApi.available({ vehicleId: route!.vehicleId, on: on!, withTrailer }),
-    enabled: !!route && !!on,
+  const { driverOptions, driversLoading } = useRouteEditDrivers({
+    vehicleId: route?.vehicleId,
+    on,
+    withTrailer,
   });
 
-  const driverOptions = (selection?.drivers ?? []).map((d) => ({
-    value: d.personId,
-    label: [
-      d.fullName,
-      d.categories.join(', '),
-      // Документ подписан по должности человека (ADR 0095): «без номера ВУ» у машиниста
-      // экскаватора отправило бы искать не ту бумагу.
-      driverDocumentGapsHint(d.gaps, d.credentialTypeCode),
-      d.matchesRequiredCategory ? null : DRIVER_CATEGORY_MISMATCH_HINT,
-      driverWorkedOnVehicle(d) ? DRIVER_WORKED_ON_VEHICLE_HINT : null,
-    ]
-      .filter(Boolean)
-      .join(' · '),
-  }));
-
-  /** Выписанный лист замораживает рейс целиком: правки отклоняет и портал, и сервер. */
+  /** An issued waybill freezes the route entirely: the portal and the server both reject edits. */
   const frozen = !!route && !isRouteEditable(route.waybill?.status ?? null);
 
   const save = useMutation({
@@ -193,8 +172,8 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
         },
         comment: v.comment ?? '',
         ...(relocation ? { moveFrom: v.moveFrom, moveTo: v.moveTo } : {}),
-        // Причина уходит только с переносом в прошлое: на обычной правке сервер её не спрашивает, и
-        // отправленная «на всякий случай» она означала бы задний ход там, где его нет.
+        // The reason is sent only with a move into the past: a regular edit is not asked for it by
+        // the server, and one sent "just in case" would mean backdating where there is none.
         ...(backdated ? { reason: v.reason } : {}),
       }),
     onSuccess: (updated) => {
@@ -206,13 +185,15 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
   });
 
   /**
-   * Перенос дня спрашивается отдельно: вместе с рейсом переедет подача его заявок, а это уже не
-   * запись в плане, а изменение того, на когда заказчик ждёт машину. Заявки называются поимённо —
-   * «двигаю рейс» и «двигаю четыре чужих заказа» это разные решения.
+   * A day move is confirmed separately: the delivery of its requests moves with the route, which is
+   * no longer a plan entry but a change of when the customer expects the vehicle. Requests are
+   * named one by one: "move the route" and "move four other people's orders" are different
+   * decisions.
    */
   const submit = (v: FormValues) => {
-    // Заморозку проверяем и здесь: окно открывают из двух мест, и лист мог быть выписан, пока оно
-    // висело открытым. Сервер откажет тем же правилом — но сказать об этом лучше до запроса.
+    // The freeze is checked here too: the window opens from two places, and the waybill may have
+    // been issued while it hung open. The server refuses by the same rule, but it is better said
+    // before the request.
     if (frozen) {
       message.error(ROUTE_FROZEN_MESSAGE);
       return;
@@ -261,8 +242,9 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
             label="Дата рейса"
             rules={[{ required: true, message: 'Укажите дату' }]}
             extra={
-              // Запертую дату объясняем той же причиной, по какой откажет сервер: без права — «нет
-              // права», с правом, но глубже предела — «это к администратору» (Р37).
+              // A locked date is explained by the reason the server would refuse with: without the
+              // right, "no right"; with the right but beyond the limit, "ask an administrator"
+              // (R37).
               moveLocked
                 ? can('waybills.correct')
                   ? `Рейс старше ${WAYBILL_CORRECTION_DAYS} дней — его дату переносит администратор`
@@ -277,17 +259,18 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
               style={{ width: '100%' }}
               inputReadOnly={isMobile}
               disabled={moveLocked}
-              // Правило одно с сервером (`backdateGuard`): портал не предлагает того, что ручка
-              // отклонит, и не запирает того, что она примет.
+              // One rule with the server (backdateGuard): the portal neither offers what the
+              // endpoint rejects nor locks what it accepts.
               disabledDate={(d) => backdateFloor !== null && d.format(DATE) < backdateFloor}
             />
           </Form.Item>
 
-          {/* Причина появляется вместе с прошедшим днём — там же, где выбрали дату. Поле общее с
-            прочими дверями заднего числа, у которых цену перечислять нечего: номера бланков перенос
-            не жжёт (действующий лист его и не пустит), последствие у него одно — переехавшая подача
-            заявок, и о ней говорит подтверждение переноса. Объяснение уходит в аудит правки: своей
-            строки в журнале коррекций у переноса нет. */}
+          {/* The reason appears together with a past day, next to where the date is chosen. The
+              field is shared with other backdating doors that have no price to list: a move
+              burns no form numbers (an active waybill would block it anyway); its only
+              consequence is the moved delivery of requests, which the move confirmation names.
+              The explanation goes into the edit audit: a move has no correction-log row of its
+              own. */}
           {backdated && (
             <FormGrid.Full>
               <BackdateReasonField
@@ -314,8 +297,8 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
             />
           </Form.Item>
 
-          {/* Задание перегона: у грузового рейса его собирает состав, и сервер такие поля не
-            примет. */}
+          {/* The relocation task: a freight route gets it from its composition, and the server
+              rejects these fields for it. */}
           {relocation && (
             <>
               <Form.Item
@@ -341,9 +324,10 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
             </>
           )}
 
-          {/* Реквизиты выезда: от рейса к рейсу они те же и правятся раз в сезон — но правятся
-            здесь, а не пересборкой рейса. У формы № 3 граф прицепа нет вовсе (ADR 0071), поэтому
-            прицеп спрашивается только там, где он печатается. */}
+          {/* Departure details are the same route after route and change once a season, but
+              they are edited here rather than by rebuilding the route. Form No. 3 has no
+              trailer fields at all (ADR 0071), so the trailer is asked only where it is
+              printed. */}
           {route?.formCode !== 'leg3' && (
             <TrailerFields
               key={route?.id}
@@ -356,11 +340,12 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
               hitched={suggestion?.hitched}
               vehicleId={route?.vehicleId}
               vehicleTypeId={route?.vehicleTypeId}
-              // Свои графы рейса закрепление не вытесняет: рейс уже описал прицеп, и переписать
-              // его значило бы подменить запись, которую открыли править. Пустые графы при стоящей
-              // галочке — подставит: рейс сказал «с прицепом», но не сказал, с каким (Р20).
+              // Pinning does not override the route's own fields: the route already described its
+              // trailer, and rewriting it would replace the record opened for editing. Empty fields
+              // with the checkbox set are filled: the route said "with trailer" but not which one
+              // (R20).
               keepOwnGraphs
-              // Барьер готовности формы (Р21): графы рейса, с которыми блок сверяет форму.
+              // Form readiness barrier (R21): the route fields the block compares the form with.
               record={route}
             />
           )}
@@ -368,11 +353,12 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
           <Form.Item name="garageNumber" label="Гаражный номер">
             <Input placeholder="Из справочника техники, если пусто" />
           </Form.Item>
-          {/* Список, а не строка: значение печатается в графе бланка 4-П и формы № 3, и три
-            написания одного слова превращают журнал листов в несверяемый. Ни крестика, ни пункта
-            «не выбрано»: обязательность просили на уровне UI, и очистить графу окном нельзя.
-            Значение старого рейса, в набор не попавшее, остаётся в списке своим пунктом
-            (`communicationKindOptions`) — правка дня рейса не должна уносить чужую графу. */}
+          {/* A list, not free text: the value is printed in a column of the 4-P and form No. 3,
+              and three spellings of one word make the waybill journal impossible to reconcile.
+              No clear button and no "not chosen" item: the field was requested as mandatory at
+              UI level, and the window cannot empty it. An old route's value outside the set
+              stays in the list as its own item (communicationKindOptions): editing a route's
+              day must not wipe someone else's column. */}
           <Form.Item
             name="communicationKind"
             label="Вид сообщения"

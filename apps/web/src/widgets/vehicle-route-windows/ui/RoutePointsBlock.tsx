@@ -27,43 +27,43 @@ import { RoutePointEditModal } from './RoutePointEditModal';
 import { RoutePointSplitModal } from './RoutePointSplitModal';
 
 /**
- * Порядок объезда: как машина едет по дню (§4.3 плана `docs/route-trips-plan.md`).
+ * Stop order: how the vehicle moves through the day (section 4.3 of `docs/route-trips-plan.md`).
  *
- * До этого блока карточка показывала **состав** — список заявок, — и стрелки переставляли заявки.
- * Это отвечало на вопрос «что везём», но не на вопрос дня диспетчера: «куда машина заедет и в каком
- * порядке». Разница перестала быть косметической, как только у заявки появились ездки: две ездки
- * `A→B` и `A→C` грузятся за один заезд, а в списке заявок это две строки, и объединить их взглядом
- * нельзя. С печатью по строкам задания (Р11) состав вдобавок перестал задавать порядок бумаги —
- * его задают точки.
+ * Before this block the card showed the **composition** — a list of requests — and the arrows
+ * reordered requests. That answered "what are we carrying" but not the dispatcher's question of
+ * the day: "where will the vehicle stop and in what order". The difference stopped being cosmetic
+ * once requests gained trips: two trips `A→B` and `A→C` are loaded in one visit, yet in the request
+ * list they are two lines that cannot be combined at a glance. With printing by task rows (R11),
+ * the composition also stopped defining the paper order — points define it.
  *
- * Поэтому переставляются здесь **точки** (`PUT /:id/points/order`), а не заявки. Серверный мост,
- * выводивший порядок точек из порядка состава (Р14а), с этого момента порталу не нужен: он держал
- * окно между печатью по точкам и этой карточкой.
+ * Hence this block reorders **points** (`PUT /:id/points/order`), not requests. The server bridge
+ * that derived point order from composition order (R14a) is no longer needed by the portal from
+ * here on: it covered the window between printing by points and this card.
  *
- * Выписанный лист замораживает список целиком (Р15): бумага у водителя, и запись, разошедшаяся с
- * ней, хуже отсутствия записи. Подсказки при этом гаснут тоже — предлагать действие, которого
- * нельзя сделать, значит обещать несуществующую дверь.
+ * An issued waybill freezes the whole list (R15): the paper is with the driver, and a record that
+ * diverges from it is worse than no record. The hints go dark too — offering an action that cannot
+ * be performed promises a door that does not exist.
  */
 
 interface Props {
   route: VehicleRouteDto;
-  /** Строки задания, блокеры и подсказки — посчитанные один раз на всю карточку. */
+  /** Task rows, blockers and hints — computed once for the whole card. */
   assembly: RouteAssembly;
   frozen: boolean;
-  /** Рейс после правки: карточка кладёт его в кэш и гасит списки. */
+  /** The route after an edit: the card puts it into the cache and invalidates the lists. */
   onChanged: (route: VehicleRouteDto) => void;
-  /** Отказ словами — вместе с перечиткой рейса на конфликте версии; общий на всю карточку. */
+  /** A refusal in words, plus a route re-read on a version conflict; shared by the whole card. */
   onFail: (e: unknown) => void;
 }
 
 export function RoutePointsBlock({ route, assembly, frozen, onChanged, onFail }: Props) {
-  /** Точка, открытая на правку адреса и времени; `null` — окно закрыто. */
+  /** The point opened for address and time editing; `null` — the window is closed. */
   const [editing, setEditing] = useState<VehicleRoutePointDto | null>(null);
-  /** Точка, которую разносят надвое. */
+  /** The point being split in two. */
   const [splitting, setSplitting] = useState<VehicleRoutePointDto | null>(null);
 
-  // Запасное пустое значение — по той же причине, что и в `assembleRoute`: ключ кэша один на
-  // карточку и список, а точки отдают не все двери сервера.
+  // Empty fallback for the same reason as in `assembleRoute`: the cache key is shared by the card
+  // and the list, and not every server endpoint returns points.
   const points = [...(route.points ?? [])].sort((a, b) => a.position - b.position);
 
   const reorder = useMutation({
@@ -82,7 +82,7 @@ export function RoutePointsBlock({ route, assembly, frozen, onChanged, onFail }:
 
   const busy = reorder.isPending || merge.isPending;
 
-  /** Сдвиг остановки: порядок уходит на сервер целиком — он переписывает позиции одним заходом. */
+  /** Moves a stop: the full order goes to the server, which rewrites positions in one pass. */
   const move = (index: number, delta: number) => {
     const ids = points.map((point) => point.id);
     const target = index + delta;
@@ -91,15 +91,15 @@ export function RoutePointsBlock({ route, assembly, frozen, onChanged, onFail }:
     reorder.mutate(ids);
   };
 
-  /** Группа совмещения, в которую входит точка; `null` — совмещать её не с чем. */
+  /** The merge group the point belongs to; `null` — there is nothing to merge it with. */
   const mergeHintOf = (pointId: string): PointMergeHint | null =>
     assembly.merges.find((hint) => hint.pointIds.includes(pointId)) ?? null;
 
   /**
-   * Отказы над списком — все, кроме непоместившейся строки: та стоит у своей точки (Р11б), потому
-   * что чинят её правкой **адреса точки**, а не состава. Водитель отсюда тоже не называется — о нём
-   * говорит готовность выписки над кнопкой, и второе сообщение о том же читалось бы как второй
-   * пробел.
+   * Refusals above the list — all except the overflowing row: that one sits at its point (R11b)
+   * because it is fixed by editing **the point's address**, not the composition. The driver is not
+   * named here either — the issue-readiness line above the button covers it, and a second message
+   * about the same thing would read as a second gap.
    */
   const listBlockers = assembly.blockers.filter(
     (blocker) => blocker.code !== 'required_fields_overflow' && blocker.code !== 'no_driver',
@@ -126,9 +126,9 @@ export function RoutePointsBlock({ route, assembly, frozen, onChanged, onFail }:
               title={blockerMessage(blocker, assembly)}
             />
           ))}
-        {/* Подсказка совмещения (Р9а): точки одного адреса. Автоматически не склеивается ничего —
-          решение «это один заезд» принимает человек: у него данные о том, поместится ли всё в кузов
-          и пустят ли машину по одному пропуску. */}
+        {/* Merge hint (R9a): points with the same address. Nothing is merged automatically — the
+          decision "this is one visit" is the person's: they know whether everything fits in the
+          truck body and whether the vehicle will be let in on a single pass. */}
         {!frozen &&
           assembly.merges.map((hint) => (
             <Alert
@@ -190,13 +190,13 @@ export function RoutePointsBlock({ route, assembly, frozen, onChanged, onFail }:
 }
 
 /**
- * Остановка списком: номер, адрес, время, ответственные — и под ними роли, то есть что здесь
- * делают со строками задания.
+ * A stop as a list item: number, address, time, contacts — and below them the roles, i.e. what is
+ * done here with the task rows.
  *
- * Ответственные стоят **над** ролями, а не в каждой роли: приехав, водитель звонит человеку, а не
- * ездке, и двое встречающих на одной точке (Р9а) — это свойство остановки. Порядок их задан
- * правилом (`pointContacts`), тем же, которым они печатаются в графе «заказчик, телефон» (Р11а), —
- * карточка их не пересортировывает.
+ * Contacts sit **above** the roles rather than in each role: on arrival the driver calls a person,
+ * not a trip, and two people meeting the vehicle at one point (R9a) is a property of the stop.
+ * Their order is set by a rule (`pointContacts`), the same one that prints them in the
+ * «заказчик, телефон» (customer, phone) column (R11a) — the card does not re-sort them.
  */
 function RoutePointRow({
   point,
@@ -242,8 +242,9 @@ function RoutePointRow({
           <strong>{point.location}</strong>
           {point.arrivalTime && <Tag color="blue">{point.arrivalTime}</Tag>}
         </Space>
-        {/* Ответственные: имя и номер тем же видом, каким их печатает бланк (`routeContactsLabel`)
-          — их читают и набирают, и два написания одного номера сбивают с толку. */}
+        {/* Contacts: name and number in the same format the form prints them
+          (`routeContactsLabel`) — people read and dial them, and two spellings of one number
+          confuse. */}
         {point.contacts.map((contact) => (
           <div key={`${contact.name}:${contact.phone}`}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -251,8 +252,8 @@ function RoutePointRow({
             </Typography.Text>
           </div>
         ))}
-        {/* Двое встречающих — не ошибка, а следствие совмещения (Р9а), и бланк напечатает обоих.
-          Сказать об этом надо здесь: человек, совместивший точки, иначе узнал бы это с бумаги. */}
+        {/* Two contacts are not an error but a result of merging (R9a), and the form prints both.
+          It must be said here: whoever merged the points would otherwise learn it from paper. */}
         {point.contacts.length > 1 && (
           <Tag color="warning">{point.contacts.length} ответственных — в лист пойдут все</Tag>
         )}
@@ -266,8 +267,9 @@ function RoutePointRow({
             </Typography.Text>
           </div>
         )}
-        {/* Непечатаемая строка видна при сборке, а не при выписке (Р11а), и ведёт туда, где чинят:
-          в правку адреса **этой** точки — печатается он, а не поле ездки (Р11б). */}
+        {/* An unprintable row is visible during assembly, not at issue time (R11a), and leads to
+          where it is fixed: the address edit of **this** point — the point's address is what gets
+          printed, not the trip's field (R11b). */}
         {!frozen &&
           blockers.map((blocker) => (
             <Alert
@@ -310,12 +312,12 @@ function RoutePointRow({
             disabled={busy}
             onClick={onEdit}
           />
-          {/* «Совместить» стоит у точки, а не только в подсказке: подсказку прочитали и закрыли
-            глазами, а свести две остановки хотят, стоя на одной из них. Действие то же самое —
-            вся группа одного адреса разом.
+          {/* «Совместить» (merge) sits at the point, not only in the hint: the hint gets read and
+            dismissed, while people want to combine two stops while looking at one of them. The
+            action is the same — the whole same-address group at once.
 
-            Обёртка `<span>` — не украшение: выключенная кнопка мышиных событий не отдаёт, и
-            подсказка на ней не показалась бы, то есть выключенная кнопка молчала бы о причине. */}
+            The `<span>` wrapper is not decoration: a disabled button emits no mouse events, so its
+            tooltip would never show, and the disabled button would stay silent about why. */}
           <span
             title={
               mergeHint
@@ -352,7 +354,7 @@ function RoutePointRow({
   );
 }
 
-/** Роль на точке: что делают со строкой задания и куда она едет дальше. */
+/** A role on a point: what is done with the task row and where it goes next. */
 function PointActionLine({ action }: { action: RoutePointAction }) {
   const pair = actionPairLabel(action);
   return (
@@ -361,17 +363,17 @@ function PointActionLine({ action }: { action: RoutePointAction }) {
         <Typography.Text style={{ fontSize: 13 }}>{actionLabel(action)}</Typography.Text>
         {pair && (
           <Typography.Text
-            // Ездка, у которой второй конец не разложен, не «предупреждение оформления»: по такой
-            // строке бумагу не напечатать, и выписка ответит `rows_unplaced`.
+            // A trip whose other end is not laid out is not a "formatting warning": such a row
+            // cannot be printed, and the issue will answer `rows_unplaced`.
             type={action.kind === 'freight' && action.pairPosition === 0 ? 'danger' : 'secondary'}
             style={{ fontSize: 12 }}
           >
             {pair}
           </Typography.Text>
         )}
-        {/* Расхождение адреса (Р10): точка держит свой снимок, а в заявке адрес с тех пор поправили.
-          Печатается адрес **точки** (Р11б), и подтверждают это при выписке предупреждением
-          `address_mismatch` — здесь о нём говорят заранее, пока правка ещё дешева. */}
+        {/* Address mismatch (R10): the point keeps its own snapshot, and the request's address has
+          been edited since. The **point's** address is printed (R11b), and the issue confirms this
+          with the `address_mismatch` warning — here it is surfaced early, while a fix is cheap. */}
         {action.addressMismatch && (
           <Tooltip title="В заявке адрес этой строки задания другой. В бланк пойдёт адрес точки — поправьте его, если ехать надо по заявке.">
             <Tag color="warning">адрес ездки изменился</Tag>

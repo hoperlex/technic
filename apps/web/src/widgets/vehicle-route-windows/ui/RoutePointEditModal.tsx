@@ -17,19 +17,19 @@ import { vehicleRouteErrorMessage as errorMessage } from '@entities/vehicle-rout
 import { pointRoleInputOf } from '@entities/vehicle-route';
 
 /**
- * Правка остановки: адрес, план прибытия и записка водителю (§4.3 плана
+ * Stop editing: address, planned arrival and a note for the driver (section 4.3 of
  * `docs/route-trips-plan.md`).
  *
- * Состав ролей здесь не правится, хотя ручка принимает его целиком. Роли переезжают между точками
- * своими действиями — «совместить» и «разнести» (Р9а), — и они же отвечают на вопрос, который
- * человек на самом деле задаёт: «это один заезд или два». Список чекбоксов «что здесь делаем»
- * рядом с адресом позволял бы снять с точки последнюю роль, то есть удалить остановку правкой
- * адреса, — а точка без задания не заводится и не остаётся (Р13). Поэтому роли уходят на сервер
- * теми же, что пришли: правка адреса — это правка адреса.
+ * The role set is not edited here, even though the endpoint accepts it in full. Roles move between
+ * points through their own actions — «совместить» (merge) and «разнести» (split) (R9a) — and those
+ * actions answer the question people actually ask: "is this one visit or two". A "what we do here"
+ * checkbox list next to the address would let someone remove a point's last role, i.e. delete the
+ * stop through an address edit — and a point without a task is neither created nor kept (R13).
+ * So roles go back to the server exactly as they came: an address edit is just an address edit.
  *
- * Адрес требуется верифицированным (ADR 0006, Р11б): именно он печатается в бланк и именно по нему
- * поедет машина. Легаси-строка, доставшаяся точке от бэкфила, при этом остаётся читаемой — жёсткая
- * модель действует на запись, а не на чтение, — но сохранить её обратно нельзя, и это намеренно.
+ * The address must be verified (ADR 0006, R11b): it is what gets printed on the form and where the
+ * vehicle will actually go. A legacy string the point inherited from the backfill stays readable —
+ * the strict model applies to writes, not reads — but it cannot be saved back, deliberately.
  */
 
 interface PointValues {
@@ -40,7 +40,7 @@ interface PointValues {
 }
 
 interface Props {
-  /** `null` — окно закрыто; рейс нужен целиком: у правки точки версия рейса, а не точки (Р16). */
+  /** `null` — window closed; the whole route is needed: point edits use the route version (R16). */
   route: VehicleRouteDto | null;
   point: VehicleRoutePointDto | null;
   onClose: () => void;
@@ -48,12 +48,13 @@ interface Props {
 }
 
 /**
- * Время остановки необязательно (`arrivalTimeSchema`), но заполненное обязано быть временем.
+ * Stop time is optional (`arrivalTimeSchema`), but when filled in it must be a valid time.
  *
- * Своим правилом, а не `optionalWorkTimeRule`: та вдобавок запирает время в рабочее окно, а
- * остановка в маршруте бывает и до его начала — машина выходит из гаража затемно, и ночная погрузка
- * на карьере это не ошибка ввода. Сервер рабочего окна у точки тоже не спрашивает, и запретить
- * здесь то, что он примет, значило бы врать человеку о правилах.
+ * A rule of its own rather than `optionalWorkTimeRule`: that one also locks the time into the
+ * working-hours window, while a route stop can come before it starts — the vehicle leaves the
+ * garage before dawn, and a night loading at the quarry is not an input error. The server does not
+ * check the working window for a point either, and forbidding here what it accepts would lie to
+ * the person about the rules.
  */
 const arrivalTimeRule = {
   validator(_rule: unknown, value: string | undefined) {
@@ -68,9 +69,9 @@ export function RoutePointEditModal({ route, point, onClose, onSaved }: Props) {
   const { message } = App.useApp();
   const [form] = Form.useForm<PointValues>();
 
-  // Форма живёт дольше одной точки: окно открывают из разных строк списка подряд, а `FormModal`
-  // разметку между открытиями не сбрасывает. Поэтому поля перезаряжаются самой точкой — иначе во
-  // второй остановке оказался бы адрес первой.
+  // The form outlives a single point: the window is opened from different list rows in a row, and
+  // `FormModal` does not reset its markup between openings. So the fields are reloaded from the
+  // point itself — otherwise the second stop would show the first stop's address.
   useEffect(() => {
     if (!point) return;
     form.setFieldsValue({
@@ -84,10 +85,11 @@ export function RoutePointEditModal({ route, point, onClose, onSaved }: Props) {
   const save = useMutation({
     mutationFn: (v: PointValues) => {
       /*
-       * Роли берутся из **сегодняшнего** состояния точки, а не из того снимка, с которым окно
-       * открывали: карточка перечитывает рейс сама (правка заявки поднимает его версию, Р18), и
-       * пока форма заполнена, состав точки мог измениться. Отправь снимок — и «поправил время»
-       * молча отменило бы чужое совмещение, потому что состав ролей уходит целиком.
+       * Roles are taken from the point's **current** state, not from the snapshot the window was
+       * opened with: the card re-reads the route by itself (a request edit bumps its version, R18),
+       * and while the form was being filled in, the point's roles may have changed. Sending the
+       * snapshot would make "fixed the time" silently undo someone else's merge, because the role
+       * set is sent in full.
        */
       const current = (route!.points ?? []).find((p) => p.id === point!.id) ?? point!;
       return vehicleRoutesApi.points.update(route!.id, point!.id, {
@@ -95,7 +97,7 @@ export function RoutePointEditModal({ route, point, onClose, onSaved }: Props) {
         address: v.address!,
         arrivalTime: v.arrivalTime ?? '',
         comment: (v.comment ?? '').trim(),
-        // Роли уходят прежними: правка адреса не распоряжается тем, что на точке происходит.
+        // Roles are sent unchanged: an address edit has no say over what happens at the point.
         roles: current.actions.map(pointRoleInputOf),
         version: route!.version,
       });
@@ -120,10 +122,10 @@ export function RoutePointEditModal({ route, point, onClose, onSaved }: Props) {
       <Form<PointValues> form={form} layout="vertical" onFinish={(v) => save.mutate(v)}>
         <FormGrid>
           <FormGrid.Full>
-            {/* Адрес точки — снимок, а не ссылка на ездку (Р10): на остановке сходятся ездки разных
-              заявок, и «адрес ездки» у неё неоднозначен. Правка здесь не трогает заявку — и
-              наоборот: заявка, у которой адрес поправили после сборки, помечает свою роль
-              расхождением. */}
+            {/* The point's address is a snapshot, not a reference to a trip (R10): trips of
+              different requests meet at a stop, so "the trip's address" is ambiguous there. An
+              edit here does not touch the request — and vice versa: a request whose address was
+              edited after assembly marks its role with a mismatch. */}
             <AddressField
               name="location"
               label="Адрес остановки"
@@ -144,9 +146,10 @@ export function RoutePointEditModal({ route, point, onClose, onSaved }: Props) {
             <TimeInput />
           </Form.Item>
           <FormGrid.Full>
-            {/* Записка про эту остановку, а не про заявку: «звонить с ворот», «пропуск у
-              весовщика». В бланк она не идёт — там графы под неё нет, — но доезжает до водителя
-              заданием: письмом и кабинетом `/driver` (§8 плана). */}
+            {/* A note about this stop, not about the request: «звонить с ворот» (call from the
+              gate), «пропуск у весовщика» (pass is with the weigher). It does not go on the form —
+              there is no column for it — but it reaches the driver as part of the task: by email
+              and in the `/driver` cabinet (plan section 8). */}
             <Form.Item name="comment" label="Записка водителю">
               <Input.TextArea
                 rows={2}
