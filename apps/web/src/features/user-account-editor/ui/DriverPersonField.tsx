@@ -17,34 +17,35 @@ import {
 } from '@entities/user-account';
 
 /**
- * Выбор работника для учётки водителя (ADR 0102, Р30) — своим файлом, а не блоком внутри
- * `UsersTab`: у поля своя выдача с сервера, своя сверка с карточкой и своя галочка подтверждения,
- * и лежать это должно там же, где живёт, — иначе форма учётки прирастает третьим разговором
- * поверх ролей, области и писем.
+ * Employee picker for a driver account (ADR 0102, R30), in its own file rather than a block inside
+ * `UsersTab`: the field has its own server results, its own reconciliation with the employee card
+ * and its own confirmation checkbox, and these belong where they live; otherwise the account form
+ * grows a third conversation on top of roles, area and mail.
  *
- * Портал кандидатов **предлагает, но не выбирает**: личность заявителя система не подтверждает
- * (Р32), и вся тяжесть проверки лежит на администраторе. Отсюда и устройство поля — оно
- * показывает, чем именно совпал каждый кандидат, а расхождение ФИО выносит отдельной строкой с
- * галочкой: молчаливая привязка отдала бы заявителю чужие задания вместе с телефонами заказчиков.
+ * The portal **suggests candidates but does not choose**: the system does not verify the
+ * applicant's identity (R32), so the whole burden of checking lies with the admin. Hence the
+ * field's design: it shows exactly what each candidate matched on, and puts a name mismatch on a
+ * separate line with a checkbox, because a silent binding would hand the applicant someone else's
+ * jobs along with customers' phone numbers.
  */
 
-/** Приметы учётки: ими ищут работника и с ними же его сверяют. */
+/** Account traits: used both to search for the employee and to reconcile with them. */
 export interface DriverAccountFacts {
-  /** `null` — учётку только заводят: подсказка идёт по набранному в форме ФИО. */
+  /** `null` — the account is being created: the hint searches by the name typed in the form. */
   id: string | null;
   lastName: string;
   firstName: string;
   middleName: string;
   phone: string;
   email: string;
-  /** Уже привязанный работник: поле обязано показывать имя, а не идентификатор. */
+  /** Already bound employee: the field must show a name, not an identifier. */
   person: UserPersonRefDto | null;
 }
 
 /**
- * Приметы учётки для подсказки кандидатов. ФИО и телефон поле дочитывает из формы вживую —
- * администратор правит их в том же окне, — а здесь лежит то, чего в форме нет: сама учётка и уже
- * привязанный работник.
+ * Account traits for the candidate hint. The field reads name and phone live from the form, since
+ * the admin edits them in the same window; this holds what the form lacks: the account itself and
+ * the already bound employee.
  */
 export const personFactsOf = (u: UserAccountDto | null): DriverAccountFacts => ({
   id: u?.id ?? null,
@@ -57,9 +58,9 @@ export const personFactsOf = (u: UserAccountDto | null): DriverAccountFacts => (
 });
 
 /**
- * Архивная учётка водителя без живой карточки работника (Р8): восстановление такой требует выбрать
- * человека тем же действием — живой учётки без него не бывает, и «вернуть, а починить потом»
- * упёрлось бы в CHECK базы.
+ * An archived driver account without a live employee card (R8): restoring it requires picking the
+ * person in the same action, because a live account cannot exist without one, and "restore now,
+ * fix later" would hit the database CHECK.
  */
 export const restoreNeedsPerson = (u: UserAccountDto): boolean =>
   isPersonScopedRole(u.role) && (!u.person || !!u.person.deletedAt);
@@ -71,16 +72,16 @@ const matchLabels: Record<PersonCandidateMatch, string> = {
 };
 
 /**
- * Одно ли это имя — тем же правилом, что на сервере: без регистра и лишних пробелов. Разойдись
- * они, и форма просила бы подтверждения там, где сервер его не ждёт (или наоборот молчала бы
- * ровно перед отказом).
+ * Whether two names are the same, by the same rule as the server: case-insensitive, ignoring extra
+ * whitespace. If the rules diverged, the form would ask for confirmation where the server does not
+ * expect it (or, conversely, stay silent right before a rejection).
  */
 const sameName = (a: string, b: string): boolean =>
   a.trim().toLocaleLowerCase('ru') === b.trim().toLocaleLowerCase('ru');
 
 const isBlank = (v: string): boolean => v.trim() === '';
 
-/** Строка кандидата: имя, чем совпал, должность и номер — по ним и узнают своего работника. */
+/** Candidate line: name, match reasons, job title and phone, which is how the admin recognizes the employee. */
 function candidateLabel(p: {
   fullName: string;
   phone: string;
@@ -102,9 +103,9 @@ function candidateLabel(p: {
 }
 
 /**
- * Что портал перенесёт молча при привязке (Р31): пусто с одной стороны — заполняется из другой,
- * заполнено с обеих и различается — не трогается. Показывается заранее, а не постфактум: перенос
- * идёт без спроса, и увидеть его администратор должен до нажатия «Сохранить».
+ * What the portal will copy silently on binding (R31): empty on one side is filled from the other,
+ * filled on both and different is left alone. Shown beforehand rather than after the fact: the
+ * copy happens without asking, so the admin must see it before pressing "Save".
  */
 function fillNotice(account: DriverAccountFacts, person: PersonCandidateDto): string | null {
   const toAccount: string[] = [];
@@ -113,8 +114,8 @@ function fillNotice(account: DriverAccountFacts, person: PersonCandidateDto): st
   if (isBlank(account.phone) && !isBlank(person.phone)) toAccount.push('телефон');
   if (!isBlank(account.middleName) && isBlank(person.middleName)) toPerson.push('отчество');
   if (!isBlank(account.phone) && isBlank(person.phone)) toPerson.push('телефон');
-  // Адрес переносится только в карточку: на `persons.email` шлёт письма рассылка «Задание
-  // водителю», и пустой адрес там означает, что задание не уйдёт вовсе.
+  // Email is copied only into the card: the "driver job" mailing sends to `persons.email`, and an
+  // empty address there means the job is never sent at all.
   if (isBlank(person.email)) toPerson.push('почту');
   const parts = [
     toAccount.length > 0 ? `в учётку из карточки — ${toAccount.join(', ')}` : '',
@@ -124,10 +125,10 @@ function fillNotice(account: DriverAccountFacts, person: PersonCandidateDto): st
 }
 
 interface FieldProps {
-  /** Форма учётки: поле читает из неё выбранного работника, а пишет туда же, где остальные поля. */
+  /** Account form: the field reads the chosen employee from it and writes alongside the other fields. */
   form: FormInstance;
   account: DriverAccountFacts;
-  /** Имя поля с идентификатором работника — у формы учётки и у окна восстановления оно одно. */
+  /** Name of the employee id field; the account form and the restore window use the same one. */
   name?: string;
 }
 
@@ -135,10 +136,11 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
   const [search, setSearch] = useState('');
   const term = search.trim();
   /*
-   * ФИО и телефон дочитываются из формы вживую: администратор правит их в том же окне, и подсказка
-   * с расхождением обязаны следовать за набранным, а не за тем, что лежало в базе до правки.
-   * Подписка живёт здесь, а не в форме учётки: иначе каждая буква перерисовывала бы вкладку вместе
-   * с таблицей. В окне восстановления этих полей нет — там остаются значения самой учётки.
+   * Name and phone are read live from the form: the admin edits them in the same window, and the
+   * hint and the mismatch check must follow what is typed, not what was in the database before.
+   * The subscription lives here rather than in the account form, otherwise every keystroke would
+   * re-render the tab together with the table. The restore window has no such fields, so the
+   * account's own values remain there.
    */
   const account: DriverAccountFacts = {
     ...base,
@@ -149,9 +151,9 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
     email: Form.useWatch<string | undefined>('email', form) ?? base.email,
   };
   /*
-   * Пока ничего не набрали, ищем по приметам самой заявки: у заведённой учётки это делает сервер
-   * (телефон, адрес, похожее ФИО), а у новой примет на сервере ещё нет — подставляем ФИО, которое
-   * администратор только что набрал в форме.
+   * Until something is typed, search by the request's own traits: for an existing account the
+   * server does this (phone, email, similar name), while a new one has no traits on the server yet,
+   * so we pass the name the admin has just typed in the form.
    */
   const typedName = [account.lastName, account.firstName].filter(Boolean).join(' ').trim();
   const query = term || (account.id ? '' : typedName);
@@ -170,10 +172,10 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
       label: candidateLabel(c),
       title: c.fullName,
     }));
-    // Привязанный работник добавляется, если его нет в выдаче: подсказка отвечает на «кого
-    // выбрать», а поле обязано показать и того, кто уже выбран, — иначе на месте имени осталась
-    // бы строка идентификатора. Уволенного не добавляем: сервер его всё равно не примет, и
-    // предлагать выбор, который закончится отказом, незачем.
+    // The bound employee is added if missing from the results: the hint answers "whom to pick",
+    // but the field must also show who is already picked, otherwise an id string would appear in
+    // place of the name. A dismissed employee is not added: the server would reject them anyway,
+    // and there is no point offering a choice that ends in a rejection.
     const bound = account.person?.deletedAt ? null : account.person;
     if (bound && !list.some((o) => o.value === bound.id)) {
       list.unshift({ value: bound.id, label: candidateLabel(bound), title: bound.fullName });
@@ -182,9 +184,10 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
   }, [candidates, account.person]);
 
   /*
-   * Выбранный кандидат помнится отдельно, а не ищется каждый раз в текущей выдаче: следующий
-   * набранный запрос выдачу меняет, и выбранный из неё пропал бы вместе с разбором расхождения —
-   * галочка «это один человек» снялась бы молча, а отказ пришёл бы уже с сервера.
+   * The picked candidate is remembered separately rather than looked up in the current results each
+   * time: the next typed query changes the results, and the picked one would vanish along with the
+   * mismatch check, so the "same person" checkbox would be cleared silently and the rejection would
+   * come from the server instead.
    */
   const [picked, setPicked] = useState<PersonCandidateDto | null>(null);
   const selected: PersonCandidateDto | null =
@@ -194,9 +197,9 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
       ? { ...account.person, jobTitle: '', matchedBy: [] }
       : null);
   /*
-   * Расхождение разбирается только у нового выбора. У связи, которая уже стоит, сверка не
-   * повторяется и на сервере: после привязки владелец ФИО — справочник (Р31), и спрашивать
-   * подтверждение при каждом сохранении карточки значило бы приучить ставить галочку не глядя.
+   * A mismatch is checked only for a new choice. For an existing binding the server does not
+   * re-check either: after binding the directory owns the name (R31), and asking for confirmation on
+   * every save would train admins to tick the checkbox without looking.
    */
   const changed = !!selected && selected.id !== account.person?.id;
   const nameMismatch =
@@ -205,8 +208,8 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
       !sameName(selected.firstName, account.firstName));
   const notice = changed ? fillNotice(account, selected) : null;
 
-  // Снятая привязка снимает и подтверждение: галочка, пережившая смену работника, подтверждала бы
-  // расхождение, которого администратор не видел, — и делала бы это молча.
+  // Losing the mismatch also clears the confirmation: a checkbox that survived a change of employee
+  // would confirm a mismatch the admin never saw, and do so silently.
   useEffect(() => {
     if (!nameMismatch) form.setFieldValue('confirmNameMismatch', false);
   }, [nameMismatch, form]);
@@ -223,12 +226,12 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
         <Select
           showSearch
           allowClear
-          // Отбор идёт на сервере: справочник целиком порталу не отдаётся, и фильтровать здесь
-          // нечего — своим фильтром список молча резал бы то, что сервер уже нашёл.
+          // Filtering happens on the server: the full directory is never sent to the portal, so a
+          // local filter would silently cut what the server has already found.
           filterOption={false}
           onSearch={setSearch}
-          // Свой обработчик не подменяет форменный: `Form.Item` вызывает оба, и поле формы
-          // заполняется как обычно, а здесь остаётся сам кандидат — с ФИО для сверки.
+          // This handler does not replace the form's: `Form.Item` calls both, so the form field is
+          // set as usual, and here we keep the candidate itself, with the name for reconciliation.
           onChange={(value: string | undefined) =>
             setPicked(candidates.find((c) => c.id === value) ?? null)
           }
@@ -245,9 +248,9 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
       </Form.Item>
       {notice ? <Alert type="info" showIcon style={{ marginBottom: 16 }} title={notice} /> : null}
       {nameMismatch ? (
-        // Отдельной строкой, а не одной из ошибок поля: смена фамилии — обычное дело, случайный
-        // однофамилец — редкое, и различить их может только человек. Сервер без этой галочки
-        // привязку не выполнит (Р30), а факт подтверждения уходит в аудит.
+        // A separate line rather than one of the field's errors: a surname change is common, an
+        // accidental namesake is rare, and only a human can tell them apart. The server refuses
+        // the binding without this checkbox (R30), and the confirmation is recorded in the audit.
         <Form.Item
           name="confirmNameMismatch"
           valuePropName="checked"
@@ -269,7 +272,7 @@ export function DriverPersonField({ form, account: base, name = 'personId' }: Fi
 }
 
 interface RestoreProps {
-  /** Учётка из архива; `null` — окно закрыто. */
+  /** Archived account; `null` means the window is closed. */
   account: DriverAccountFacts | null;
   onCancel: () => void;
   onSubmit: (body: RestoreUserBody) => void;
@@ -277,12 +280,12 @@ interface RestoreProps {
 }
 
 /**
- * Восстановление архивной учётки водителя (Р8).
+ * Restoring an archived driver account (R8).
  *
- * Отдельное окно, а не тихий запрос, потому что у водителя восстановление — это привязка заново:
- * `person_id` архивной учётки мог обнулиться вместе с удалённым работником, а живая без него
- * невозможна (CHECK `users_driver_person_check`). Вслепую такую учётку не вернуть — и спросить
- * человека нужно до того, как сервер ответит отказом.
+ * A separate window rather than a silent request, because for a driver restoring means binding
+ * again: the archived account's `person_id` may have been nulled along with the deleted employee,
+ * and a live account cannot exist without it (CHECK `users_driver_person_check`). Such an account
+ * cannot be restored blindly, and the person must be asked before the server rejects the request.
  */
 export function DriverRestoreModal({ account, onCancel, onSubmit, confirmLoading }: RestoreProps) {
   const [form] = Form.useForm<RestoreUserBody>();

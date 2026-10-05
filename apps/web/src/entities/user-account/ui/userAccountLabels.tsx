@@ -14,30 +14,30 @@ import {
 import { hasExternalEmail } from '../model/registrationApproval';
 
 /**
- * Как учётка называется на экране: роль с надстройками, адрес с пометкой, уточнение из заявки и
- * подпись под выбором роли.
+ * How an account is labelled on screen: role with add-ons, email with a marker, the request detail
+ * and the note under the role picker.
  *
- * Отдельным файлом, потому что каждую из этих подписей читают в двух местах сразу — в колонке
- * таблицы и в карточке строки на телефоне, в списке и в карточке заявки. Разъедься они, одна и та
- * же учётка называлась бы на телефоне иначе, чем на десктопе, и различие читалось бы как разница в
- * данных. Своего представления о ролях здесь нет: цвета, подписи и переезды ролей берутся из
- * контрактов.
+ * A separate file because each of these labels is read in two places at once: the table column and
+ * the row card on a phone, the list and the request card. If they diverged, the same account would
+ * be named differently on a phone than on desktop, and the difference would read as a difference in
+ * data. There is no local notion of roles here: colors, labels and role migrations come from the
+ * contracts.
  */
 
 /**
- * Подпись под выбором роли — ровно у двух ролей реформы, и обе не украшение.
+ * Note under the role picker, for exactly two roles of the reform, and neither is decoration.
  *
- * «Площадка» (ADR 0112) доступна администратору с этапа 4б — раньше, чем на неё переведут штаб,
- * руководителя строительства и коменданта, — и выбранная сегодня даёт вывоз мусора с оргтехникой,
- * но **не** заказ техники: он приезжает полномочием. Без подписи это выглядит как «урезанный штаб»
- * и объясняется отказом на первой же заявке.
+ * "Site" (ADR 0112) is available to admins from stage 4b, before HQ staff, construction managers and
+ * site superintendents are moved onto it, and chosen today it gives waste removal and office
+ * equipment but **not** vehicle ordering, which arrives as a grant. Without the note it looks like a
+ * "trimmed-down HQ" and gets explained by a rejection on the very first request.
  *
- * Упраздняемая роль (ADR 0113) остаётся в списке только у той учётки, которая на ней стоит, и
- * подпись объясняет, почему её не предлагают остальным: перевод поедет отдельным выкатом, а до
- * него роль работает как работала.
+ * A role being retired (ADR 0113) stays in the list only for the account that already has it, and
+ * the note explains why it is not offered to others: the migration ships as a separate release, and
+ * until then the role works as before.
  *
- * У остальных ролей подписи нет намеренно: их состав прав никуда не переезжает, и подсказка там
- * означала бы, что переезжает.
+ * Other roles intentionally have no note: their permission set is not moving anywhere, and a hint
+ * there would imply that it is.
  */
 export function roleNote(role: Role | undefined): string | undefined {
   if (role === 'site') {
@@ -50,24 +50,26 @@ export function roleNote(role: Role | undefined): string | undefined {
 }
 
 /**
- * Роль, надстройки и бизнес-профиль оргтехники одной ячейкой (ADR 0086; план профилей оргтехники,
- * Р7). Надстройка дополняет роль, а не заменяет её, поэтому стоит рядом с тегом роли, а не вместо
- * него: «Штаб» с оргтехникой и «Штаб» без неё различаются только этим тегом. Отдельная колонка не
- * годится — она стояла бы пустой почти у всех, а читают надстройку всегда вместе с ролью.
+ * Role, add-ons and the office-equipment business profile in one cell (ADR 0086; office-equipment
+ * profiles plan, R7). An add-on supplements the role rather than replacing it, so it sits next to
+ * the role tag, not instead of it: "HQ" with office equipment and "HQ" without differ only by this
+ * tag. A separate column would not work: it would be empty for almost everyone, and the add-on is
+ * always read together with the role.
  *
- * ПРОФИЛЬ СЧИТАЕТСЯ ПО КОДАМ ВЫДАННЫХ НАБОРОВ (`officeEquipmentProfilesOf`), а не по правам и не по
- * надстройкам (Р9). Права ответили бы иначе и хуже: набор, собранный администратором с тем же
- * составом, подписался бы «Оператором», а половина профиля ИТ — полным профилем. Надстройки же
- * знают только про два системных набора и уходят на шаге 1e ADR 0106 — подпись пережила бы шаг
- * молча, пропав у половины людей.
+ * THE PROFILE IS DERIVED FROM THE CODES OF GRANTED SETS (`officeEquipmentProfilesOf`), not from
+ * permissions and not from add-ons (R9). Permissions would answer differently and worse: a set an
+ * admin assembled with the same contents would be labelled "Operator", and half of the IT profile
+ * would show as the full profile. Add-ons know only about two system sets and go away at step 1e of
+ * ADR 0106, so the label would survive that step silently while vanishing for half the people.
  *
- * Соответствие «профиль → коды» живёт РЕЕСТРОМ КОНТРАКТОВ, одним на форму, подпись и документацию:
- * вторая такая таблица здесь разошлась бы с формой выдачи, и список показывал бы один профиль там,
- * где окно учётки выдавало другой.
+ * The "profile -> codes" mapping lives in the CONTRACTS REGISTRY, one for the form, the label and
+ * the docs: a second such table here would drift from the grant form, and the list would show one
+ * profile where the account window granted another.
  *
- * «Сервисного центра» здесь не бывает и быть не должно: он выражен парой «роль `operator` + тип
- * контрагента `service`» (Р11), и обе половины уже стоят в строке своими колонками — тег повторил
- * бы их третий раз, а на учётке без контрагента соврал бы.
+ * There is no "Service center" tag here and there must not be: it is expressed by the pair "role
+ * `operator` + counterparty type `service`" (R11), and both halves already appear in the row as their
+ * own columns, so a tag would repeat them a third time and would lie on an account with no
+ * counterparty.
  */
 export function roleTags(u: UserAccountDto) {
   if (!u.role) return '—';
@@ -89,34 +91,34 @@ export function roleTags(u: UserAccountDto) {
 }
 
 /**
- * Уточнение из заявки — свободный текст, а не ссылка на справочник: список объектов
- * неаутентифицированному не отдаётся (ADR 0034), сопоставляет его администратор.
+ * The request detail is free text, not a directory reference: the object list is not served to
+ * unauthenticated users (ADR 0034), so the admin does the matching.
  *
- * Строк здесь **две сразу**, а не первая подошедшая: комментарий теперь пишут при любом пожелании,
- * а не только у «Другого», и вернись отсюда одно уточнение — сотрудник отдела, дописавший «системный
- * администратор», выглядел бы обычным сотрудником отдела. Именно ради этой приписки комментарий и
- * открыли всем: узкой должности своего пожелания в перечне нет.
+ * There are **two lines at once** here, not the first that fits: a comment is now written for any
+ * wish, not only for "Other", and if only one detail were returned, a department employee who added
+ * "system administrator" would look like an ordinary department employee. The comment was opened to
+ * everyone precisely for such notes: a narrow position has no wish of its own in the list.
  *
- * Склейка тем же ` · `, каким карточка заявки соединяет пожелание, уточнение и пометку о почте:
- * строка попадает в тот же ряд, и второй разделитель читался бы как разница в смысле.
+ * Joined with the same ` · ` the request card uses between the wish, the detail and the mail marker:
+ * the string lands in the same row, and a second separator would read as a difference in meaning.
  */
 export function requestedDetailText(u: UserAccountDto): string | undefined {
   if (!u.requestedRole) return undefined;
   const detail = registrationRequestDetail[u.requestedRole];
   const parts = [
-    // Объект и отдел — одна колонка на два вопроса, и различает их только пожелание.
+    // Object and department share one column for two questions; only the wish tells them apart.
     detail === 'object' && u.requestedObject ? `Объект: ${u.requestedObject}` : undefined,
     detail === 'department' && u.requestedObject ? `Отдел: ${u.requestedObject}` : undefined,
     detail === 'company' && u.requestedCompany ? `Компания: ${u.requestedCompany}` : undefined,
-    // Без оглядки на пожелание: у «Другого» это единственное, по чему заявку вообще можно
-    // рассмотреть, у остальных — то, чего в перечне должностей не нашлось. Пусто — писать было
-    // нечего либо заявка подана до того, как комментарий стал обязательным (миграция 0139).
+    // Regardless of the wish: for "Other" this is the only basis for reviewing the request at all,
+    // for the rest it is what the position list lacked. Empty means there was nothing to write, or
+    // the request predates the comment becoming mandatory (migration 0139).
     u.requestedComment ? `Комментарий: ${u.requestedComment}` : undefined,
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
-/** Адрес заявки вместе с пометкой о чужом домене — одинаково в списке и в карточке на телефоне. */
+/** Request email with the external-domain marker, identical in the list and in the phone card. */
 export function emailCell(u: UserAccountDto) {
   if (!hasExternalEmail(u)) return u.email;
   return (

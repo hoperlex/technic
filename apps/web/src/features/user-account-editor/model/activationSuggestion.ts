@@ -1,51 +1,51 @@
 import type { CounterpartyType } from '@technic/contracts';
 
 /**
- * Подбор области по свободному тексту заявки на регистрацию (план «пожелание при регистрации
- * называет должность и заполняет форму активации», §3.7).
+ * Matches an area from the free text of a registration request (plan "the registration wish names
+ * the position and fills the activation form", §3.7).
  *
- * Объект, отдел и компанию заявитель называет строкой: справочники неаутентифицированному не
- * отдаются (ADR 0034), и выбрать запись ему нечем. Запись выбирает администратор при активации, а
- * подбор — вся помощь, которую портал вправе оказать: он либо подставляет одну запись, либо
- * предлагает несколько, но не выбирает за человека.
+ * The applicant names the object, department and company as plain text: directories are not served
+ * to unauthenticated users (ADR 0034), so they have nothing to pick a record from. The admin picks
+ * the record at activation, and matching is all the help the portal may give: it either prefills a
+ * single record or suggests several, but never chooses on the person's behalf.
  *
- * Отдельным файлом, а не внутри формы, по той же причине, что и остальные правила этого экрана:
- * считается оно над тремя справочниками сразу — объекты, отделы, контрагенты, — и проверяется
- * значениями, а не кликами по разметке. Разложенное по обработчикам полей, оно превратилось бы в
- * три похожих куска, расходящихся в первую же правку.
+ * A separate file rather than part of the form, for the same reason as the other rules of this
+ * screen: it computes over three directories at once (objects, departments, counterparties) and is
+ * verified by values, not by clicking markup. Spread across field handlers, it would turn into three
+ * similar chunks that drift apart on the first edit.
  *
- * Порога похожести здесь нет и не будет — ни своего, ни `pg_trgm`: справочники маленькие, а
- * подсказка, которая угадывает, отдаёт администратору чужой объект молча — заполненное поле с
- * правдоподобным названием никто не перепроверяет. Сервер так подсказывает только по людям
- * (`DriverPersonField`), где справочник велик и выбор всё равно остаётся за человеком.
+ * There is no similarity threshold here and there will be none, neither our own nor `pg_trgm`:
+ * directories are small, and a hint that guesses silently hands the admin someone else's object,
+ * since nobody double-checks a filled field with a plausible name. The server suggests this way only
+ * for people (`DriverPersonField`), where the directory is large and the choice stays with a human.
  */
 
 /**
- * Запись справочника глазами подбора: **структура, а не подпись**.
+ * A directory record as matching sees it: **structure, not a label**.
  *
- * Готовая подпись списка сюда не годится. У отдела она уже склеена запросом в `код — имя`
- * (`departmentOptionsQuery`), и разобрать её обратно нельзя: первое же название с тире разделилось
- * бы не по тому тире и дало бы подбору выдуманное имя. Поэтому исходные поля приходят вторым
- * наблюдателем того же запроса (`departmentRecordsQuery`), а подбор о том, как запись выглядит на
- * экране, не знает вовсе.
+ * A ready-made list label does not work here. For a department it is already joined by the query
+ * into `code — name` (`departmentOptionsQuery`) and cannot be split back: the first name containing
+ * a dash would split on the wrong dash and feed matching an invented name. So the raw fields come
+ * from a second observer of the same query (`departmentRecordsQuery`), and matching knows nothing
+ * about how a record looks on screen.
  */
 export interface MatchRecord {
   id: string;
   name: string;
-  /** Код объекта или отдела; у контрагента кода нет. */
+  /** Object or department code; counterparties have no code. */
   code?: string;
-  /** ИНН контрагента. */
+  /** Counterparty INN (taxpayer number). */
   inn?: string;
-  /** Тип контрагента (ADR 0038); строкой — вокабуляр типов подбору знать незачем. */
+  /** Counterparty type (ADR 0038); a plain string because matching has no need for the type vocabulary. */
   type?: string;
 }
 
-/** Чем совпало: подпись уходит в баннер формы — «объект „С-12 — ЖК Северный“ (совпал по названию)». */
+/** What it matched on: the label goes into the form banner, «объект „С-12 — ЖК Северный“ (совпал по названию)». */
 export type MatchReason = 'code' | 'inn' | 'name';
 
 /**
- * Подписи причин совпадения. Отдельной картой, а не строкой в баннере: причину показывают там же,
- * где строку кандидатов, и два места, пишущие «по названию» врозь, разошлись бы словами.
+ * Match reason labels. A separate map rather than inline banner text: the reason is shown next to
+ * the candidate line too, and two places spelling "by name" independently would drift in wording.
  */
 export const matchReasonLabels: Record<MatchReason, string> = {
   code: 'по коду',
@@ -54,41 +54,41 @@ export const matchReasonLabels: Record<MatchReason, string> = {
 };
 
 /**
- * Ответ подбора — три исхода, а не запись с массивом кандидатов рядом.
+ * The matching result has three outcomes, not a record with a candidate array beside it.
  *
- * «Подставили» и «предложили» взаимоисключающи по правилу (§3.7): подстановка бывает только при
- * единственном точном совпадении, а кандидаты — только когда его нет. Представление, в котором
- * выразимо и то и другое разом, форма обязана была бы разбирать при каждом чтении, а невозможное
- * состояние в нём всё равно осталось бы выразимым.
+ * "Prefilled" and "suggested" are mutually exclusive by rule (§3.7): a prefill happens only on a
+ * single exact match, and candidates only when there is none. A representation able to express both
+ * at once would force the form to untangle it on every read, and the impossible state would remain
+ * expressible anyway.
  */
 export type AreaSuggestion =
   | { kind: 'match'; record: MatchRecord; reason: MatchReason }
   | { kind: 'candidates'; records: MatchRecord[] }
   | { kind: 'none' };
 
-/** Не нашли ничего: строки кандидатов нет вовсе — пустая подсказка хуже её отсутствия. */
+/** Nothing found: no candidate line at all, since an empty hint is worse than none. */
 export const NO_SUGGESTION: AreaSuggestion = { kind: 'none' };
 
 /**
- * Больше трёх кандидатов — это уже не подсказка под полем, а второй список рядом с выпадающим, и
- * читать его администратор перестанет: искать в нём столько же работы, сколько в самом справочнике.
+ * More than three candidates is no longer a hint under a field but a second list next to the
+ * dropdown, and the admin will stop reading it: searching it is as much work as the directory itself.
  */
 const MAX_CANDIDATES = 3;
 
 /**
- * Организационно-правовые формы, которые в наименовании ничего не различают: «ООО „Ромашка“» и
- * «Ромашка» — одна организация, и заявитель пишет то одно, то другое.
+ * Legal entity forms that distinguish nothing in a name: «ООО „Ромашка“» and «Ромашка» are the same
+ * organization, and applicants write it either way.
  */
 const LEGAL_FORMS = new Set(['ооо', 'оао', 'зао', 'пао', 'нао', 'ао', 'ип']);
 
 /**
- * Нормализация — одна на обе стороны сравнения: справочник приводится к тому же виду, что и текст
- * заявки, иначе сравнивались бы разные написания одного и того же.
+ * One normalization for both sides of the comparison: the directory is brought to the same form as
+ * the request text, otherwise different spellings of the same thing would be compared.
  *
- * Пунктуация и тире становятся пробелом (а не исчезают): без этого шага «ЖК Северный-2» и «ЖК
- * Северный 2» разошлись бы, а склей мы их без пробела — «Северный2» перестал бы совпадать с обоими.
- * Символы стёрты заодно с пунктуацией: Unicode относит к ним, например, «+», и слово через него не
- * должно слипаться с соседним.
+ * Punctuation and dashes become a space rather than disappearing: without this «ЖК Северный-2» and
+ * «ЖК Северный 2» would differ, and gluing them without a space would make «Северный2» match
+ * neither. Symbols are erased along with punctuation: Unicode classifies e.g. "+" as one, and a word
+ * joined by it must not stick to its neighbour.
  */
 function normalize(text: string): string {
   return text
@@ -101,13 +101,13 @@ function normalize(text: string): string {
 }
 
 /**
- * То же плюс снятие организационно-правовой формы — **только у контрагентов**: у объекта и отдела
- * таких приставок не бывает, а «АО» в их названии было бы частью имени.
+ * Same as above plus stripping the legal form, **for counterparties only**: objects and departments
+ * never carry such prefixes, and an "АО" in their name would be part of the name.
  *
- * Форма снимается **отдельным словом с краю**, а не подстрокой, и это не придирка: `«каоленит»` без
- * подстроки `ао` превращается в `«кленит»` — чужое имя, которое уверенно совпадёт с чужой записью.
- * До пустой строки не срезаем: организация, названная одной лишь формой, — это её имя, а не отсутствие
- * имени.
+ * The form is stripped **as a separate word at an edge**, not as a substring, and this is not
+ * pedantry: `«каоленит»` without the substring `ао` becomes `«кленит»`, a bogus name that would
+ * confidently match someone else's record. We never strip down to an empty string: an organization
+ * named by its legal form alone has that as its name, not a missing name.
  */
 function prepare(text: string, stripLegalForm: boolean): string {
   const normalized = normalize(text);
@@ -119,12 +119,12 @@ function prepare(text: string, stripLegalForm: boolean): string {
 }
 
 /**
- * Подбор по уровням: код или ИНН, затем точное имя, затем кандидаты по вхождению.
+ * Tiered matching: code or INN, then exact name, then candidates by substring.
  *
- * Единственность проверяется **на каждом уровне отдельно**, и неединственный уровень не
- * останавливает подбор, а уступает следующему. Два одинаковых имени поэтому дают не подстановку, а
- * кандидатов: выбрать за администратора между двумя «Северными» портал не может, но показать оба и
- * дать нажать — может.
+ * Uniqueness is checked **at each tier separately**, and a non-unique tier does not stop matching
+ * but yields to the next one. Two identical names therefore produce candidates, not a prefill: the
+ * portal cannot choose between two "Severny" records for the admin, but it can show both and let
+ * them click.
  */
 function suggest(
   text: string | null | undefined,
@@ -135,10 +135,9 @@ function suggest(
   if (!query) return NO_SUGGESTION;
 
   /*
-   * Уровень 1. Код спрашивается у объекта и отдела, ИНН — у контрагента, но ветвление здесь по
-   * тексту заявки, а не по справочнику: десять или двенадцать цифр и ничего больше — это ИНН, всё
-   * остальное — код. Записи, у которых спрошенного поля нет, не совпадают ни с чем и отсеиваются
-   * сами.
+   * Tier 1. Code applies to objects and departments, INN to counterparties, but the branch is on the
+   * request text, not the directory: ten or twelve digits and nothing else is an INN, anything else
+   * is a code. Records lacking the queried field match nothing and drop out on their own.
    */
   const digits = query.replace(/\s/gu, '');
   const looksLikeInn = /^(?:\d{10}|\d{12})$/u.test(digits);
@@ -150,7 +149,7 @@ function suggest(
     return { kind: 'match', record: onlyIdentified, reason: looksLikeInn ? 'inn' : 'code' };
   }
 
-  // Уровень 2: точное имя — обе стороны прошли одну и ту же нормализацию.
+  // Tier 2: exact name; both sides went through the same normalization.
   const named = records.map((record) => ({ record, name: prepare(record.name, stripLegalForm) }));
   const sameName = named.filter((n) => n.name === query);
   const [onlySameName] = sameName;
@@ -159,13 +158,13 @@ function suggest(
   }
 
   /*
-   * Уровень 3: вхождение в любую сторону — заявитель пишет и короче названия («Северный» вместо «ЖК
-   * Северный-2»), и длиннее («ЖК Северный, корпус 2»). Запись без имени вовсе (одна пунктуация в
-   * названии) отброшена: пустая строка входит во что угодно и утащила бы в кандидаты весь
-   * справочник.
+   * Tier 3: substring in either direction, since applicants write both shorter than the name
+   * («Северный» for «ЖК Северный-2») and longer («ЖК Северный, корпус 2»). A record with no name at
+   * all (only punctuation in it) is dropped: an empty string is contained in anything and would pull
+   * the whole directory into the candidates.
    *
-   * Порядок кандидатов — порядок справочника, отсортированного по наименованию; ранжировать их «по
-   * качеству совпадения» значило бы завести тот самый порог похожести, которого здесь нет.
+   * Candidate order is the directory order, sorted by name; ranking them "by match quality" would
+   * mean introducing exactly the similarity threshold this module refuses to have.
    */
   const candidates = named.filter(
     (n) => n.name !== '' && (n.name.includes(query) || query.includes(n.name)),
@@ -175,8 +174,8 @@ function suggest(
 }
 
 /**
- * Подбор подразделения — объекта или отдела: заявка пишет их в одно поле, и различаются они только
- * справочником, из которого пришли записи (§3.4).
+ * Matches a subdivision, i.e. an object or a department: the request stores both in one field, and
+ * they differ only by the directory the records came from (§3.4).
  */
 export function suggestSubdivision(
   text: string | null | undefined,
@@ -186,18 +185,19 @@ export function suggestSubdivision(
 }
 
 /**
- * Подбор контрагента — **только внутри ожидаемого типа** (`expectedCounterpartyType` пожелания).
+ * Matches a counterparty **only within the expected type** (the wish's `expectedCounterpartyType`).
  *
- * Три внешних пожелания ведут в одну роль `operator`, а что учётка исполняет, решает тип
- * контрагента (ADR 0038). «Ромашка» среди арендодателей и «Ромашка» среди сервисных компаний — две
- * разные организации, и подбор без типа выдал бы учётке не тот модуль, причём молча.
+ * Three external wishes lead to the single role `operator`, and what the account actually does is
+ * decided by the counterparty type (ADR 0038). «Ромашка» among lessors and «Ромашка» among service
+ * companies are two different organizations, and matching without the type would give the account
+ * the wrong module, silently.
  *
- * Тип — обязательный довод, а не настройка с умолчанием: умолчание «искать среди всех» и есть эта
- * ошибка, только записанная как забытый параметр. `null` (пожелание про компанию не спрашивает)
- * оставляет поле администратору: подставлять нечего и не из чего.
+ * The type is a required argument, not an option with a default: a default of "search everywhere" is
+ * exactly this bug, just written as a forgotten parameter. `null` (the wish does not ask about a
+ * company) leaves the field to the admin: there is nothing to prefill and nothing to prefill from.
  *
- * Сам список в поле формы этим не сужается — администратор вправе решить, что заявитель ошибся
- * должностью, и выбрать организацию другого типа руками.
+ * This does not narrow the list in the form field itself: the admin may decide the applicant chose
+ * the wrong position and pick an organization of another type by hand.
  */
 export function suggestCounterparty(
   text: string | null | undefined,

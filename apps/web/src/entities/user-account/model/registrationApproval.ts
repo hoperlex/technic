@@ -6,26 +6,26 @@ import {
 } from '@technic/contracts';
 
 /**
- * Заявка на регистрацию глазами формы: когда её считают рассмотренной и что сказать про письмо.
+ * A registration request as the form sees it: when it counts as reviewed and what to say about mail.
  *
- * Отдельным файлом, потому что это правило, а не разметка, и повторяется оно в шести местах экрана:
- * очередь заявок, чекбокс письма, объявленное серверу намерение, две проверки формы и сообщение об
- * успехе. Правило при этом общее с сервером — тот же предикат он считает по строке под блокировкой
- * и отвечает 400, если портал решил иначе, — и разъехаться этим шести местам нельзя. Собранные
- * вместе, они читаются как одно условие, а не как шесть похожих выражений в разных концах файла.
+ * A separate file because this is a rule, not markup, and it recurs in six places on the screen:
+ * the request queue, the mail checkbox, the intent declared to the server, two form validations and
+ * the success message. The rule is shared with the server, which computes the same predicate on the
+ * locked row and answers 400 if the portal decided otherwise, so these six places must never
+ * diverge. Kept together, they read as one condition rather than six similar expressions scattered
+ * across the file.
  */
 
-/** Заявка на регистрацию: человек зарегистрировался сам, роли ему ещё не назначили. */
+/** A registration request: the person signed up on their own and has no role assigned yet. */
 export const isPendingRegistration = (u: UserAccountDto) => !u.isActive && !u.role;
 
 /**
- * Эта правка выводит заявку из очереди: у нерассмотренной заявки появляются роль и активность
- * разом. Условие одно на две вещи — на объявленное серверу намерение `approveRegistration` и на
- * чекбокс письма, — и разойтись им нельзя: тот же предикат сервер считает по строке под
- * блокировкой и отвечает 400, если портал решил иначе.
+ * This edit takes the request out of the queue: an unreviewed request gets a role and activation at
+ * once. One condition drives two things, the intent `approveRegistration` declared to the server and
+ * the mail checkbox, and they must not diverge: the server computes the same predicate on the locked
+ * row and answers 400 if the portal decided otherwise.
  *
- * Выполнимо оно ровно однажды: после рассмотрения роль у учётки уже есть, и заявкой она быть
- * перестаёт.
+ * It can hold exactly once: after review the account already has a role and stops being a request.
  */
 export const approvesRegistration = (
   record: UserAccountDto | null,
@@ -34,10 +34,10 @@ export const approvesRegistration = (
 ) => !!record && isPendingRegistration(record) && !!role && !!isActive;
 
 /**
- * Спрашивать ли в форме про письмо о выданном доступе. У новой учётки повод — сама активность:
- * звать человека в портал, который его не пустит, хуже молчания. У существующей повод один —
- * рассмотрение заявки: у повторной активации и смены роли заявку рассмотрели однажды и давно, и
- * «вам открыт доступ» действующему сотруднику было бы ложью.
+ * Whether the form asks about the access-granted email. For a new account the trigger is activation
+ * itself: inviting someone into a portal that will not let them in is worse than silence. For an
+ * existing account the only trigger is reviewing the request: on reactivation or a role change the
+ * request was reviewed once, long ago, and "your access is open" to a current employee would be a lie.
  */
 export const asksAboutMail = (
   record: UserAccountDto | null,
@@ -46,8 +46,8 @@ export const asksAboutMail = (
 ) => (record ? approvesRegistration(record, role, isActive) : !!isActive);
 
 /**
- * Сообщение об успехе вместе с судьбой письма. Молча проглотить неотправку нельзя: администратор
- * уходит уверенным, что человека предупредили, — а выключенная почта означает ровно обратное.
+ * Success message together with the email's fate. A failed send must not be swallowed silently: the
+ * admin would leave believing the person was notified, while disabled mail means exactly the opposite.
  */
 export function withMailOutcome(done: string, notified: MailOutcome, sent: string): string {
   if (notified === 'queued') return `${done}, ${sent}`;
@@ -56,17 +56,18 @@ export function withMailOutcome(done: string, notified: MailOutcome, sent: strin
 }
 
 /**
- * Заявку рассматривают целиком: роль назначается вместе с активацией. Половинчатое состояние
- * («роль есть, доступа нет») не значит ничего, кроме недоделанной работы, и сервер такую правку
- * отвергает 400 — форма лишь не доводит до впустую нажатой кнопки.
+ * A request is reviewed as a whole: the role is assigned together with activation. A half state
+ * ("has a role, no access") means nothing but unfinished work, and the server rejects such an edit
+ * with 400; the form merely saves the admin from pressing the button in vain.
  */
 export const HALF_APPROVAL =
   'Заявку рассматривают целиком: назначьте роль и включите „Активен“ — или оставьте заявку в очереди';
 
 /**
- * Заявка, поданная с адреса вне домена компании (ADR 0090). Только у нерассмотренных: у активной
- * учётки адрес уже принят решением администратора, и пометка на ней осталась бы висеть навсегда,
- * ничего не решая, — а у операторов чужой адрес и вовсе в порядке вещей и признаком не считается.
+ * A request filed from an address outside the company domain (ADR 0090). Only for unreviewed ones:
+ * on an active account the address has already been accepted by the admin, and the marker would
+ * hang there forever deciding nothing; for operators an external address is normal anyway and is
+ * not treated as a signal.
  */
 export const hasExternalEmail = (u: UserAccountDto) =>
   isPendingRegistration(u) && isExternalRegistrationEmail(u);

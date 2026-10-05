@@ -30,69 +30,71 @@ import {
 import type { UserFormValues } from './types';
 
 /**
- * Заполнение формы рассмотрения заявки по пожеланию заявителя (план «пожелание при регистрации
- * называет должность и заполняет форму активации», §3.5–§3.8): автомат инициализации полей,
- * кандидаты подбора под полем и вторая строка баннера — о том, что заполнено.
+ * Prefills the registration-review form from the applicant's wish (plan "the registration wish
+ * names the position and fills the activation form", §3.5–§3.8): the field-initialization state
+ * machine, the match candidates under a field, and the banner's second line about what was filled.
  *
- * Отдельным файлом от `UsersTab` по тому же доводу, что `userGrantsModel` и `registrationApproval`:
- * это расчёт, а не разметка. «Какой источник приехал, что он предлагает и было ли поле тронуто» —
- * ответы на эти вопросы проверяются значениями, а не кликами по полям, а разложенные по трём
- * обработчикам полей они превратились бы в три похожих куска, расходящихся в первую же правку;
- * однократность подстановки при этом пришлось бы держать в голове у каждого из трёх.
+ * Kept out of `UsersTab` for the same reason as `userGrantsModel` and `registrationApproval`: this
+ * is computation, not markup. "Which source has arrived, what does it suggest, was the field
+ * touched" are answered by values, not by clicking fields; spread across three field handlers they
+ * would become three similar chunks that drift apart on the first edit, and each of the three would
+ * have to remember the fill-once rule on its own.
  *
- * Разметки здесь ровно две мелочи — строка кандидатов и баннер, — и живут они с расчётом не по
- * недосмотру: обе целиком описываются тем, что посчитал автомат, и в форме от них остаётся одно
- * имя. Разложенная по трём полям области, строка кандидатов была бы тремя копиями одной строки.
+ * The only markup here is two small pieces, the candidate line and the banner, and they live with
+ * the computation deliberately: both are fully described by what the state machine computed, and
+ * the form only sees one name for each. Spread over the three area fields, the candidate line would
+ * be three copies of the same line.
  *
- * Прав здесь не выдаётся и заявок не одобряется: «Активен» не подставляется никогда (§3.5), а
- * подставленное уходит на сервер только вместе с одобрением (§3.6) — тело собирает сама форма.
- * Подстановка — предложение экрана, а не значение заявки.
+ * Nothing here grants permissions or approves requests: "Active" is never prefilled (§3.5), and
+ * prefilled values reach the server only together with an approval (§3.6), since the form builds
+ * the request body itself. A prefill is the screen's suggestion, not a value of the request.
  */
 
-/** Поля области, которые заполняет подбор: у каждого свой справочник и своя подпись в баннере. */
+/** Area fields filled by matching: each has its own directory and its own label in the banner. */
 export type ActivationAreaField = 'constructionObjectIds' | 'departmentIds' | 'counterpartyId';
 
-/** Поля, которых касается подстановка: три поля области плюс роль. */
+/** Fields the prefill touches: the three area fields plus the role. */
 type FilledField = 'role' | ActivationAreaField;
 
 export interface ActivationControl {
   /**
-   * Коды наборов, предложенных пожеланием, — в поле полномочий (§3.6). Пусто у обычной учётки и у
-   * заведения новой: подставлять не с чего.
+   * Codes of the grant sets suggested by the wish, for the grants field (§3.6). Empty for a regular
+   * account and when creating a new one: there is nothing to prefill from.
    */
   grantCodes: readonly string[];
-  /** Строка кандидатов под полем области; `undefined` — подсказки нет вовсе (§3.7). */
+  /** Candidate line under an area field; `undefined` means no hint at all (§3.7). */
   hint: (field: ActivationAreaField) => ReactNode;
-  /** Справка о заявке: что заявитель указал и что по этому заполнено. `null` — пожелания нет. */
+  /** Request summary: what the applicant stated and what was filled from it. `null` — no wish. */
   banner: ReactNode;
 }
 
 /**
- * Отказ одобрить заявку, пока каталог полномочий не дочитан (§3.6).
+ * Refusal to approve a request while the grants catalog is still loading (§3.6).
  *
- * Барьер стоит именно на одобрении, а не на всей форме: молчание о полномочиях безвредно, пока
- * роль не назначается, — но с подставленной ролью «Сохранить» выдало бы доступ с ролью и **без**
- * предложенных наборов, причём молча. Прочие правки заявки (ФИО, телефон) через него проходят.
+ * The barrier sits on approval, not on the whole form: silence about grants is harmless while no
+ * role is being assigned, but with a prefilled role "Save" would grant access with the role and
+ * **without** the suggested sets, and silently. Other edits to the request (name, phone) pass.
  */
 const CATALOG_NOT_READY =
   'Список полномочий ещё загружается — дождитесь его: иначе заявка будет одобрена с ролью, но без предложенных наборов';
 
 /**
- * Что не так с полем роли — одним ответом на оба правила рассмотрения заявки.
+ * What is wrong with the role field, as a single answer covering both request-review rules.
  *
- * Правил два, и оба про одно решение, поэтому и место у них одно (§3.6): заявку рассматривают
- * целиком (`HALF_APPROVAL` — роль без активации и активация без роли равно недоделаны) и одобряют
- * не раньше, чем дочитан каталог полномочий (`CATALOG_NOT_READY`). Второе появилось вместе с
- * подстановкой: пока каталог не пришёл, поле полномочий молчит в теле запроса, и одобренная в этом
- * окне заявка получила бы роль **без** предложенных наборов, причём молча.
+ * There are two rules and both concern one decision, so they live in one place (§3.6): a request is
+ * reviewed as a whole (`HALF_APPROVAL` — a role without activation and activation without a role are
+ * equally unfinished), and it is approved no earlier than the grants catalog has loaded
+ * (`CATALOG_NOT_READY`). The second rule came with prefilling: until the catalog arrives the grants
+ * field is absent from the request body, and a request approved in that window would get the role
+ * **without** the suggested sets, silently.
  *
- * Роли без каталога барьера не знают вовсе (`grants.shown === false`): поля полномочий у водителя и
- * у своей учётки нет по построению, и ждать нечего. Прочие правки заявки — ФИО, телефон — проходят
- * при любом состоянии каталога: они полномочий не касаются, а запирать окно ради поля, которого у
- * половины ролей нет, значило бы платить за подстановку теми правками, что делались и раньше.
+ * Roles without a catalog never hit the barrier (`grants.shown === false`): a driver and one's own
+ * account have no grants field by construction, so there is nothing to wait for. Other request edits
+ * (name, phone) pass in any catalog state: they do not touch grants, and locking the window for a
+ * field half the roles lack would make prefilling cost the edits that always worked before.
  *
- * Здесь, а не в `registrationApproval`: там живёт общий с сервером предикат рассмотрения, а это —
- * правило экрана, у которого второй половины на сервере нет.
+ * Lives here rather than in `registrationApproval`: that module holds the review predicate shared
+ * with the server, while this is a screen rule with no server-side counterpart.
  */
 export function roleIssue(
   record: UserAccountDto | null,
@@ -103,24 +105,24 @@ export function roleIssue(
   if (approvesRegistration(record, role, isActive) && grants.shown && !grants.ready)
     return CATALOG_NOT_READY;
   if (role) return undefined;
-  // У заявки роль ждёт решения, а не заполнения: оставить её в очереди — законный исход.
+  // For a request the role awaits a decision, not input: leaving it in the queue is a valid outcome.
   if (!record || !isPendingRegistration(record)) return 'Выберите роль';
   return isActive ? HALF_APPROVAL : undefined;
 }
 
 /**
- * Роль, под ключом которой лежит каталог, когда подставлять нечего. `driver` годится потому, что
- * поля полномочий у неё не бывает никогда: чужого ответа под этим ключом не окажется.
+ * Role used as the catalog key when there is nothing to prefill. `driver` works because it never
+ * has a grants field, so no foreign response can end up cached under this key.
  */
 const NO_CATALOG_ROLE: Role = 'driver';
 
 /**
- * Что уже сделано и для какой заявки (§3.5, правила 1 и 2).
+ * What has already been done, and for which request (§3.5, rules 1 and 2).
  *
- * Ключ — `record.id`: открыли другую заявку — умолчания первой не протекают во вторую, закрыли и
- * открыли ту же — подстановка считается заново. Признаков три, а не один: источники приезжают
- * врозь — пожелание вместе с окном, справочники когда ответят, — и поздний ответ второго
- * справочника не переписывает уже применённое.
+ * Keyed by `record.id`: opening another request keeps the first one's defaults from leaking into
+ * it, while closing and reopening the same one recomputes the prefill. There are three flags rather
+ * than one because the sources arrive separately (the wish with the window, directories whenever
+ * they respond), and a late response from the second directory must not overwrite what was applied.
  */
 interface Progress {
   key: string | null;
@@ -129,42 +131,43 @@ interface Progress {
   counterparty: boolean;
 }
 
-/** Что подстановка действительно сделала: этим и только этим говорит вторая строка баннера. */
+/** What the prefill actually did: the banner's second line reports this and only this. */
 interface Applied {
   role: Role | null;
-  /** Готовыми кусками строки — «объект «С-12 — ЖК Северный» (совпал по названию)». */
+  /** Ready-made line fragments, e.g. «объект «С-12 — ЖК Северный» (совпал по названию)». */
   areas: string[];
 }
 
 const NOTHING_APPLIED: Applied = { role: null, areas: [] };
 
 interface Params {
-  /** Окно открыто: закрытое считается «заявку не рассматривают», и подстановка сбрасывается. */
+  /** Window is open; a closed one means "request not under review" and resets the prefill. */
   open: boolean;
-  /** Правимая учётка; заявкой её делает `isPendingRegistration`, а не сам факт правки. */
+  /** Account being edited; `isPendingRegistration` makes it a request, not the fact of editing. */
   record: UserAccountDto | null;
   form: FormInstance<UserFormValues>;
-  /** Объекты и контрагенты — те же списки, что форма показывает в своих полях. */
+  /** Objects and counterparties: the same lists the form shows in its own fields. */
   objects: readonly MatchRecord[] | undefined;
   counterparties: readonly MatchRecord[] | undefined;
 }
 
-/** Как запись называется в списке: код и наименование, если код есть, — иначе одно наименование. */
+/** How a record is shown in a list: code and name when there is a code, otherwise just the name. */
 const recordLabel = (record: MatchRecord): string =>
   record.code ? `${record.code} — ${record.name}` : record.name;
 
-/** Кусок баннера о подставленной области: чем совпало — обязательная его часть (§3.7). */
+/** Banner fragment about a prefilled area: what it matched on is a mandatory part (§3.7). */
 const areaText = (kind: string, record: MatchRecord, reason: keyof typeof matchReasonLabels) =>
   `${kind} «${recordLabel(record)}» (совпал ${matchReasonLabels[reason]})`;
 
 /**
- * Записать умолчание в поле — только в пустое и не тронутое (§3.5, правило 3).
+ * Writes a default into a field, but only an empty and untouched one (§3.5, rule 3).
  *
- * «Тронуто» спрашивается у формы (`isFieldTouched`), а не сравнением значений: администратор,
- * вернувший поле к прежнему значению руками, всё равно принял решение, и поздний ответ справочника
- * его не отменяет. Пустота у списка — нулевая длина: «выбрано ничего» и `[]` здесь одно и то же.
+ * "Touched" is asked of the form (`isFieldTouched`) rather than inferred by comparing values: an
+ * admin who manually returned a field to its previous value still made a decision, and a late
+ * directory response must not undo it. For a list, empty means zero length: "nothing selected" and
+ * `[]` are the same here.
  *
- * Отвечает, подставила ли: баннер говорит о произведённом действии, а не о том, что могло бы быть.
+ * Returns whether it filled the field: the banner reports an action taken, not one that might be.
  */
 function fill(
   form: FormInstance<UserFormValues>,
@@ -180,8 +183,8 @@ function fill(
 }
 
 /**
- * Кандидаты под полем — только под пустым: подсказка «похоже на» рядом с уже выбранной записью
- * спорит с самим выбором, а нажатие в ней переписало бы решение администратора молча.
+ * Candidates are shown only under an empty field: a "looks like" hint next to an already chosen
+ * record argues with the choice itself, and clicking it would silently overwrite the admin's decision.
  */
 function hintsFor(
   suggestion: AreaSuggestion,
@@ -203,9 +206,9 @@ function hintsFor(
 }
 
 /**
- * Вторая строка баннера — **в прошедшем времени** (§3.8): она описывает произведённое действие, а
- * не текущее состояние формы, и остаётся правдой после того, как администратор поправит роль.
- * «Подставлено: роль Площадка» при выбранной другой роли стало бы ложью на экране.
+ * The banner's second line is in the **past tense** (§3.8): it describes an action taken, not the
+ * current form state, and stays true after the admin corrects the role. "Prefilled: role Site" while
+ * a different role is selected would be a lie on screen.
  */
 function filledText(applied: Applied, grantNames: string[]): string | undefined {
   const parts = [
@@ -222,17 +225,18 @@ function filledText(applied: Applied, grantNames: string[]): string | undefined 
 export function useActivationDefaults(params: Params): ActivationControl {
   const { open, record, form, objects, counterparties } = params;
   /*
-   * Отделы — исходными полями (`code` и `name` врозь), а не подписями списка: разобрать склеенное
-   * «код — имя» обратно нельзя, первое же наименование с тире разделилось бы не по тому тире
-   * (§3.7). Второй наблюдатель того же запроса — ключ общий с выпадающим списком формы, лишнего
-   * похода на сервер не возникает. Объекты и контрагенты приходят доводом: их форма держит сама.
+   * Departments come as raw fields (`code` and `name` separately), not as list labels: a joined
+   * "code — name" cannot be split back, since the first name containing a dash would split on the
+   * wrong dash (§3.7). This is a second observer of the same query, sharing the key with the form's
+   * dropdown, so no extra server round trip occurs. Objects and counterparties are passed in as
+   * params because the form holds them itself.
    */
   const { data: departments } = useQuery(departmentRecordsQuery());
 
-  /** Заявка на рассмотрении — единственное, с чего есть что подставлять (§3.5). */
+  /** A request under review is the only thing there is anything to prefill from (§3.5). */
   const request = open && record && isPendingRegistration(record) ? record : null;
   const defaults = activationDefaultsFor(request?.requestedRole);
-  // Объект и отдел — одно поле заявки на два справочника, и различает их только пожелание (§3.4).
+  // Object and department share one request field across two directories; only the wish tells them apart (§3.4).
   const detail = request?.requestedRole ? registrationRequestDetail[request.requestedRole] : 'none';
   const subdivisionField =
     detail === 'object'
@@ -260,9 +264,9 @@ export function useActivationDefaults(params: Params): ActivationControl {
   );
 
   /*
-   * Ход подстановки — ссылкой, а не состоянием: признаки ставятся и читаются внутри одного прохода
-   * эффекта, и перерисовка на каждый из них означала бы лишний круг ровно там, где мы правим форму.
-   * Итог же — состоянием: о нём рассказывает баннер.
+   * Prefill progress is a ref, not state: flags are set and read within one effect pass, and a
+   * re-render per flag would add an extra cycle exactly where we are editing the form. The outcome,
+   * however, is state, because the banner reports it.
    */
   const done = useRef<Progress>({
     key: null,
@@ -281,9 +285,9 @@ export function useActivationDefaults(params: Params): ActivationControl {
     if (!request) return;
 
     /*
-     * Роль: источник — само пожелание, приезжает вместе с окном. Признак ему всё равно нужен —
-     * иначе подстановка повторялась бы на каждый ответ любого справочника, возвращая роль,
-     * которую администратор к тому времени уже стёр.
+     * Role: its source is the wish itself, which arrives with the window. It still needs a flag,
+     * otherwise the prefill would repeat on every directory response and bring back a role the
+     * admin has already cleared by then.
      */
     if (!done.current.role) {
       done.current.role = true;
@@ -291,7 +295,7 @@ export function useActivationDefaults(params: Params): ActivationControl {
       if (role && fill(form, 'role', role)) setApplied((was) => ({ ...was, role }));
     }
 
-    // Объект или отдел: до ответа своего справочника ждём — пустой список не «не совпало».
+    // Object or department: wait for its directory to respond, since an empty list is not "no match".
     if (!done.current.subdivision && subdivisionField && subdivisionRecords) {
       done.current.subdivision = true;
       if (subdivision.kind === 'match' && fill(form, subdivisionField, [subdivision.record.id])) {
@@ -301,7 +305,7 @@ export function useActivationDefaults(params: Params): ActivationControl {
       }
     }
 
-    // Контрагент: тот же порядок, но искать его позволено только внутри ожидаемого типа (§3.3).
+    // Counterparty: same order, but matching is allowed only within the expected type (§3.3).
     if (!done.current.counterparty && counterparties) {
       done.current.counterparty = true;
       if (counterparty.kind === 'match' && fill(form, 'counterpartyId', counterparty.record.id)) {
@@ -321,11 +325,11 @@ export function useActivationDefaults(params: Params): ActivationControl {
   ]);
 
   /*
-   * Имена наборов — из каталога, а не из таблицы умолчаний: имя набора правится выкатом, и
-   * источник правды остаётся за базой (§3.8). Читается он **вторым наблюдателем** запроса поля
-   * полномочий (`enabled: false`): подпись в баннере — не повод идти на сервер, здесь читается то,
-   * что уже спросило поле. Ключ — по подставленной роли: строка баннера в прошедшем времени, и
-   * смена роли администратором её не переписывает.
+   * Grant set names come from the catalog, not from the defaults table: a set's name changes with a
+   * release, and the database stays the source of truth (§3.8). It is read by a **second observer**
+   * of the grants field's query (`enabled: false`): a banner label is no reason to hit the server,
+   * so this only reads what the field already requested. Keyed by the prefilled role: the banner
+   * line is in the past tense, and the admin changing the role does not rewrite it.
    */
   const catalogRole = applied.role ?? NO_CATALOG_ROLE;
   const catalog = useQuery({
@@ -341,7 +345,7 @@ export function useActivationDefaults(params: Params): ActivationControl {
   const departmentIds = Form.useWatch('departmentIds', form);
   const counterpartyId = Form.useWatch('counterpartyId', form);
 
-  /** Подставить кандидата нажатием: портал предлагает, но не выбирает (§3.7). */
+  /** A candidate is applied only on click: the portal suggests but does not choose (§3.7). */
   const choose = (field: ActivationAreaField, id: string) =>
     form.setFieldValue(field, field === 'counterpartyId' ? id : [id]);
   const currentValue: Record<ActivationAreaField, string | string[] | null | undefined> = {
@@ -364,10 +368,10 @@ export function useActivationDefaults(params: Params): ActivationControl {
       ),
     banner: record?.requestedRole ? (
       /*
-       * Одним баннером, двумя строками (§3.8): второй рядом превратил бы верх формы в два абзаца
-       * до первого поля. Пожелание печатается `requestRoleTitle`, а не прямым обращением к
-       * словарю: в день упразднения пожелания словарь ответил бы `undefined` в строке заявки,
-       * которую уже не переписать.
+       * One banner with two lines (§3.8): a second banner next to it would turn the top of the form
+       * into two paragraphs before the first field. The wish is printed via `requestRoleTitle`
+       * rather than a direct dictionary lookup: once the wish is retired, the dictionary would
+       * answer `undefined` in a request line that can no longer be rewritten.
        */
       <Alert
         type="info"
@@ -376,8 +380,8 @@ export function useActivationDefaults(params: Params): ActivationControl {
         title={[
           `При регистрации указал: ${requestRoleTitle(record.requestedRole)}`,
           requestedDetailText(record),
-          // Тот же признак, что и пометкой в списке (ADR 0090): решение принимается в этом окне,
-          // и увиденное в списке к этому моменту уже забыто.
+          // Same flag as the list marker (ADR 0090): the decision is made in this window, and what
+          // was seen in the list has been forgotten by now.
           hasExternalEmail(record) ? 'Адрес внешней почты' : undefined,
         ]
           .filter(Boolean)
