@@ -41,6 +41,8 @@ export function DriverLicenseModal({
   onSubmit,
   onCredentialTypeChange,
 }: Props) {
+  // What the replacement checkbox removes: every document of the selected kind, not only the
+  // current one.
   const previous = (record?.licenses ?? []).filter(
     (license) => license.credentialTypeCode === credentialType,
   );
@@ -60,7 +62,9 @@ export function DriverLicenseModal({
             ? 'Прежнее удостоверение останется в карточке — по нему объясняются листы прошлых лет. Убрать его нужно, только если его там быть не должно.'
             : 'Прежнее удостоверение останется в карточке: по нему объясняются листы прошлых лет.'}
         </Typography.Paragraph>
-        {/* The type drives both the category dictionary and the document created by this form. */}
+        {/* The kind comes first: it drives both the category dictionary below and which paper the
+            person will hold. It is preset from the job title but not locked — a truck-crane
+            operator holds a driver license in the HR data (ADR 0095). */}
         <Form.Item label="Вид документа">
           <Select
             value={credentialType}
@@ -83,7 +87,9 @@ export function DriverLicenseModal({
         <Form.Item name="expiresOn" label="Действительно до">
           <DatePicker style={{ width: '100%' }} format="DD.MM.YYYY" />
         </Form.Item>
-        {/* A driver license without categories grants nothing; staff imports may omit tractor ones. */}
+        {/* Categories are required only for a driver license: without them it permits nothing.
+            Tractor credentials never carry categories in the staff import, and requiring a letter
+            that has nowhere to come from would make the document impossible to create. */}
         <Form.Item
           name="categoryIds"
           label={`Категории ${credentialTypeShortLabels[credentialType]}`}
@@ -95,7 +101,11 @@ export function DriverLicenseModal({
             placeholder={credentialType === 'driver_license' ? 'B, C, CE' : 'B, C, D, E'}
           />
         </Form.Item>
-        {/* Only administrators may destroy history, and the control is useless without history. */}
+        {/* Administrator-only (records.purge) and only when there is something to remove: on a
+            card without a document of this kind it would promise an action that never happens.
+            It exists where history gets in the way — a reissued credential often keeps the same
+            series and number, which the previous record still holds, so without removal the
+            replacement fails on a taken number. */}
         {canDelete && previous.length > 0 && (
           <Form.Item name="deletePrevious" valuePropName="checked">
             <Checkbox>

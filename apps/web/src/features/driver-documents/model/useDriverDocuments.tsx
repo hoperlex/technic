@@ -34,13 +34,24 @@ export interface DriverDocumentsController {
   node: ReactNode;
 }
 
-/** Own document replacement, verification, revocation and correction commands. */
+/**
+ * Own document replacement, verification, revocation and correction commands. The presentation of
+ * the documents themselves lives in the driver entity (documentsBlock and the column helpers); this
+ * feature owns the requests and the dialogs behind them.
+ */
 export function useDriverDocuments({ canWrite, canDelete }: Options): DriverDocumentsController {
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const [record, setRecord] = useState<DriverDto | null>(null);
+  // The credential kind is state next to the form, not a form field: the modal opens with the kind
+  // derived from the job title while the form is not mounted yet, and a value put into an unmounted
+  // antd form before its first render is lost. Changing the kind also clears the chosen categories
+  // (see onCredentialTypeChange below).
   const [credentialType, setCredentialType] = useState<CredentialTypeCode>('driver_license');
   const [form] = Form.useForm<DriverLicenseFormValues>();
+  // Server refusals for the document mark the field instead of a toast (ADR 0094). Introduced for a
+  // taken number: it answers validation_error with field «number», and the hint belongs where the
+  // value is edited — otherwise the user searches the dialog for what the portal already knows.
   const blockers = useFormBlockers(form);
   const categoryOptions = useLicenseCategoryOptions(credentialType);
 
@@ -49,6 +60,9 @@ export function useDriverDocuments({ canWrite, canDelete }: Options): DriverDocu
     void queryClient.invalidateQueries({ queryKey: garageKeys.root });
   };
 
+  // The kind defaults from the job title: an excavator operator gets a tractor credential nine
+  // times out of ten. The choice stays open because a truck-crane operator holds a driver license in the
+  // HR data, and not every job title is known to the mapping (ADR 0095).
   const open = (driver: DriverDto, type = requiredCredentialType(driver.jobTitle)) => {
     setRecord(driver);
     setCredentialType(type);
@@ -76,6 +90,10 @@ export function useDriverDocuments({ canWrite, canDelete }: Options): DriverDocu
     },
   });
 
+  // Removing a document from the card is not revocation: revocation says «the document existed and
+  // stopped being valid», removal says «it should not be here» (a typo in the number, a foreign
+  // import row, a duplicate of the same credential). It also frees the series and number: while the
+  // stray document stays in the card, the real one with the same number cannot be created at all.
   const remove = useMutation({
     mutationFn: ({ driver, license }: { driver: DriverDto; license: DriverLicenseDto }) =>
       driversApi.deleteLicense(driver.id, license.id),
@@ -87,7 +105,8 @@ export function useDriverDocuments({ canWrite, canDelete }: Options): DriverDocu
   });
 
   const verify = useMutation({
-    // A credential id is mandatory: one person can have two kinds and several historical records.
+    // The document is addressed by id, not as «the driver's current one»: a person holds two kinds,
+    // and «current» without a kind would put the verification mark on the wrong paper.
     mutationFn: ({
       driver,
       license,
@@ -184,7 +203,8 @@ export function useDriverDocuments({ canWrite, canDelete }: Options): DriverDocu
         onSubmit={(values) => add.mutate(values)}
         onCredentialTypeChange={(nextType) => {
           setCredentialType(nextType);
-          // Category ids belong to one credential dictionary and cannot cross the type boundary.
+          // Chosen categories are dictionary records of the previous kind: the new document has no
+          // such records, and they would reach the server as a refusal instead of a new credential.
           form.setFieldValue('categoryIds', []);
         }}
       />

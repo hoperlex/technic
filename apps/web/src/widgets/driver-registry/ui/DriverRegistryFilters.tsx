@@ -55,10 +55,19 @@ export function useDriverRegistryFilters<P extends DriverFilterParams>({
   setCategory,
 }: DriverFiltersDeps<P>) {
   /**
-   * Completeness, job title and category answer independent registry questions. Job title also
-   * selects the relevant credential type (ADR 0095); category remains advisory rather than an
-   * assignment gate (ADR 0055). The filter reuses the form dictionary so equal letters from driver
-   * and tractor credentials can never be mixed.
+   * Document set, job title and category are three separate questions to the directory.
+   *
+   * Document set: the waybill prints SNILS, the credential number and its issue date, and half the
+   * work in the directory is filling in whoever lacks something; the opposite value — «who can
+   * close trips» — is asked just as often. Job title came with the second credential kind
+   * (ADR 0095): operators' paperwork is checked separately from drivers', and irrelevant columns
+   * get in the way. Category appeared when it stopped narrowing the selection for a vehicle (ADR 0055):
+   * «who can drive a tractor unit» is asked here, and it cannot be counted by eye.
+   *
+   * The category is labelled by letter with description — the same list as in the card form,
+   * because people search by the letter printed in the credential. The list belongs to the kind
+   * named by the job title: letters coincide across kinds, and a shared list would offer a category
+   * the selected people cannot have.
    */
   const filters = (
     <Space wrap>

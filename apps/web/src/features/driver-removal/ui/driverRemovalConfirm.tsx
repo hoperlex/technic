@@ -8,17 +8,29 @@ import { isApiError } from '@shared/api';
 import { formatDateOnly } from '@shared/lib';
 
 /**
- * Driver removal confirmation handshake (ADR 0190). The portal confirms a concrete consequence
- * list rather than a general intention, because active orders keep printing the removed person's
- * identity on already established paper flows.
+ * Driver removal confirmation handshake (docs/adr/0190-person-soft-removal.md, item 5). Built like
+ * the waybill acknowledgement handshake and for the same reason: the portal shows the price of the
+ * action before it and confirms a concrete consequence list, not a general intention.
  *
- * Both dialogs intentionally consume rejected promises. A known
- * `driver_removal_ack_required` response has already been rendered by the mutation error handler;
- * rethrowing it keeps the Ant dialog open and can stack two consequence lists. Unknown errors never
- * reach these callbacks and remain visible as messages.
+ * Why it exists: cards used to be removed silently regardless of active orders. The person stayed
+ * printed on issued waybills, the portal kept issuing paper in their name, and it surfaced only at
+ * the next weekly extension as a refusal nobody could explain (prod, 14.09.2026).
+ *
+ * Both dialogs intentionally swallow the rejected promise. A 409 driver_removal_ack_required is
+ * half of the handshake, not a failure: the mutation's onError has already shown the list, so the
+ * refusal has been read. Returning the rejection to antd leaves the dialog open (a second one would
+ * stack on top — two order lists about one person) and produces an unhandled rejection, which goes
+ * to the console in a browser and fails the whole file in a test run. Swallowing is safe exactly
+ * that far: an unknown code is shown by onError as a toast and never opens a dialog.
  */
 
-/** First step: ordinary soft-removal confirmation before the server computes consequences. */
+/**
+ * First step: the ordinary directory confirmation, without a list. It lives next to the second
+ * dialog because both are steps of one action — the second opens on exactly the refusal the first
+ * returns; split across files, the swallowing rule would have to be written twice. The request
+ * itself stays with the caller: the first attempt has no body, and the caller knows whom it
+ * removes.
+ */
 export function confirmDriverRemovalStart(
   modal: ModalApi,
   driver: { fullName: string },
@@ -54,8 +66,13 @@ function sheetsLabel(n: number): string {
 }
 
 /**
- * Consequence dialog. Sheet counts come from the server paper plan because weeks and forms are not
- * interchangeable. The caller retries the same command with the exact displayed fingerprint.
+ * Consequence dialog: the list of orders and the price of removal.
+ *
+ * The sheet count arrives computed by the server paper plan, including a pending extension (step R7
+ * of the machinist-card-removal plan): weeks ahead and forms are different numbers — a week
+ * legitimately holds two sheets, and a rental unit may have no paper at all. A dialog that tells HR
+ * a wrong number is worse than one without a number. The caller owns the retry: it resends the same
+ * request, for which the server computed the list, with the exact displayed fingerprint.
  */
 export function confirmDriverRemoval(
   modal: ModalApi,

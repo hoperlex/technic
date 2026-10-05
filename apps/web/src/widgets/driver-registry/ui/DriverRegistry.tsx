@@ -33,9 +33,12 @@ export function DriverRegistry({ canSeeArchive, ...actions }: Props) {
   return (
     <PageTableLayout
       filters={filters}
+      // On a phone the directory is read as cards; search and sorting live in the panel (ADR 0042).
       mobile={{
         search: {
           value: model.params.search,
+          // One field searches everything the card shows: the placeholder lists exactly what the
+          // server parses, otherwise users never try a phone number there.
           placeholder: 'ФИО, СНИЛС или контакты',
           onChange: (search) => model.setParams((current) => ({ ...current, search, page: 1 })),
         },
@@ -56,6 +59,9 @@ export function DriverRegistry({ canSeeArchive, ...actions }: Props) {
       }}
       extra={
         actions.canWrite ? (
+          // The HR file import moved to «Администрирование → Обмен справочниками» (ADR 0073): one
+          // format and one entry point for all directories. Single-record creation stays here for
+          // the dispatcher who has no exchange rights.
           <Button type="primary" icon={<PlusOutlined />} onClick={actions.create}>
             Добавить водителя
           </Button>

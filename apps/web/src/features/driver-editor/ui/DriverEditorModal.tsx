@@ -31,6 +31,7 @@ interface Props {
   onSubmit: (values: DriverFormValues) => void;
 }
 
+// SNILS is typed the way it is printed; the checksum catches a single mistyped digit.
 const snilsRules = [
   { required: true, message: 'Обязательное поле' },
   {
@@ -78,6 +79,7 @@ export function DriverEditorModal({
           name="snils"
           label="СНИЛС"
           rules={snilsRules}
+          // Printed on the waybill — without it the waybill is invalid (Mintrans order No. 390).
           extra="Обязательный реквизит путевого листа"
         >
           <Input placeholder="112-233-445 95" />
@@ -90,7 +92,8 @@ export function DriverEditorModal({
           name="email"
           label="Email"
           normalize={normalizeEmail}
-          // Validate on blur because a partially typed address is almost always invalid.
+          // Validate on blur, like the phone: a partially typed address is almost always invalid,
+          // and a red field while typing tells the user nothing.
           validateTrigger="onBlur"
           rules={[
             () => ({
@@ -113,7 +116,9 @@ export function DriverEditorModal({
 
         {!record && (
           <>
-            {/* New records start as drivers; tractor credentials are added after staff import. */}
+            {/* A new person is created as a driver (createDriverSchema), so the credential kind is
+                not asked here: the job title comes from HR, not from this form (ADR 0095). A
+                tractor credential is added as a second step through «Новое удостоверение». */}
             <Typography.Title level={5}>Водительское удостоверение</Typography.Title>
             <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
               Без документа водитель не попадёт в выбор при переводе заявки в работу.

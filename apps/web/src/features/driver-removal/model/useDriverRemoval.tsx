@@ -14,7 +14,12 @@ export interface DriverRemovalController {
   remove: (record: DriverDto) => void;
 }
 
-/** Own the two-step soft-removal handshake and its affected cache roots. */
+/**
+ * Own the two-step soft-removal handshake and its affected cache roots. The first attempt goes
+ * without a body: a person without orders is removed in one click. With links the server answers
+ * 409 with the consequence list; the portal shows it and retries with the fingerprint of that very
+ * list.
+ */
 export function useDriverRemoval(): DriverRemovalController {
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
@@ -39,7 +44,8 @@ export function useDriverRemoval(): DriverRemovalController {
         message.error(errorMessage(error));
         return;
       }
-      // A changed list produces a new fingerprint and simply opens an updated confirmation.
+      // The list may change while the dialog is open: the retry carries the new fingerprint, the
+      // server checks it again, and the dialog simply re-renders.
       confirmDriverRemoval(modal, details, ({ fingerprint }) =>
         mutation.mutateAsync({ id: targetId.current, fingerprint }),
       );

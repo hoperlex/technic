@@ -28,13 +28,22 @@ export interface DriverEditorController {
   node: ReactNode;
 }
 
-/** Own the driver card form and the create/update command. */
+/**
+ * Own the driver card form and the create/update command (ADR 0037, ADR 0095).
+ *
+ * A new card is created together with its driver license: a driver without a document is not
+ * offered when a request is moved into work and silently disappears from that form, so the document
+ * is asked for right away rather than «some day later».
+ */
 export function useDriverEditor({ documentActions }: Options): DriverEditorController {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<DriverDto | null>(null);
   const [form] = Form.useForm<DriverFormValues>();
+  // The create form asks only for a driver license: the job title is not chosen here, and a new
+  // person is created as a driver (createDriverSchema). A tractor credential is added as a second
+  // step through the «Новое удостоверение» dialog, where the kind is asked explicitly.
   const driverLicenseOptions = useLicenseCategoryOptions('driver_license');
 
   const create = () => {
@@ -93,7 +102,10 @@ export function useDriverEditor({ documentActions }: Options): DriverEditorContr
       message.success('Сохранено');
       void queryClient.invalidateQueries({ queryKey: driverKeys.root });
       void queryClient.invalidateQueries({ queryKey: garageKeys.root });
-      // Driver identity is copied into a linked account, which has its own cache root.
+      // The card owns the name and the phone, so the server copies both into the live account of
+      // the same person — under its own cache root, not covered by driverKeys.root. Without this
+      // the «Пользователи» tab and every account picker keep the old name. Of the directory's doors
+      // only this one writes to users: purging refuses while a live account points at the person.
       void queryClient.invalidateQueries({ queryKey: userAccountKeys.root });
       setOpen(false);
     },

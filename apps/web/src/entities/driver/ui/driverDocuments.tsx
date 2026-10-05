@@ -22,7 +22,8 @@ import {
 import { textColumn } from '@shared/ui';
 
 /**
- * Shared document presentation for registry columns, mobile cards and the person editor.
+ * Shared document presentation for registry columns, mobile cards and the person editor (ADR 0095).
+ * Requests and dialogs live in the driver-documents feature; this module only shows the papers.
  *
  * Every helper either receives a credential type explicitly or derives it from the job title via
  * `requiredCredentialType` (ADR 0095). This prevents an equal category letter on driver and tractor
@@ -32,14 +33,22 @@ import { textColumn } from '@shared/ui';
 /** Registry validity is always evaluated against today's date. */
 const today = () => dayjs().format('YYYY-MM-DD');
 
-/** The server returns newest records first, while credential kinds share one history array. */
+/**
+ * The current document of a kind is the first of its kind: the server returns records newest first,
+ * while both kinds are mixed in one array (DriverDto.licenses).
+ */
 function currentDocument(d: DriverDto, type: CredentialTypeCode): DriverLicenseDto | undefined {
   return d.licenses.find((l) => l.credentialTypeCode === type);
 }
 
 /**
- * Return only waybill gaps not already expressed by the document cell itself. Labels retain the
- * required credential kind so a machinist is never sent to correct the wrong paper.
+ * What the waybill still lacks, among what the row has not said yet. «No current credential» and
+ * «series and number missing» are stated by the row in its own words and places, but an empty issue
+ * date is visible nowhere: the waybill then prints with an empty field, and a user who filtered an
+ * incomplete set must understand what exactly to fill in.
+ *
+ * The label names the required credential kind: an excavator operator is asked for a tractor
+ * certificate, and «driver license issue date» would send the user after the wrong paper.
  */
 function unsaidGaps(d: DriverDto): string[] {
   const type = requiredCredentialType(d.jobTitle);
@@ -49,8 +58,12 @@ function unsaidGaps(d: DriverDto): string[] {
 }
 
 /**
- * Render separate credential and category columns. Only the kind required by the job title reports
- * completeness gaps; an absent driver license on a tractor operator is a normal state.
+ * A column pair per credential kind: the document and its categories. A pair, not one cell, because
+ * categories are a separate question — «who has CE» (ADR 0055) — and glued to the number they were
+ * not findable by eye.
+ *
+ * Completeness gaps are reported only by the column of the kind the person is admitted by: an empty
+ * driver license on a loader operator is not a gap but the normal state of the card.
  */
 export function documentColumns(type: CredentialTypeCode): TableColumnType<DriverDto>[] {
   const short = credentialTypeShortLabels[type];
@@ -77,7 +90,8 @@ export function documentColumns(type: CredentialTypeCode): TableColumnType<Drive
           );
         }
         const defect = licenseDefect(license, today());
-        // Imported credentials may have no requisites; an explicit label avoids an orphan separator.
+        // Credentials from the staff import may have no requisites: without this branch the line
+        // would start with an orphan separator, and «not entered» would read as a layout glitch.
         const noRequisites = licenseRequisitesMissing(licenseNumberLabel(license));
         return (
           <Space orientation="vertical" size={0}>
@@ -123,7 +137,10 @@ export function documentColumns(type: CredentialTypeCode): TableColumnType<Drive
   ];
 }
 
-/** Mobile badges describe the credential required by the person's job title. */
+/**
+ * The state of the credential required by the job title, as the mobile card badge: an excavator
+ * operator is asked for a tractor certificate, and an empty driver license has no place on top.
+ */
 export function documentBadge(r: DriverDto): ReactNode {
   const type = requiredCredentialType(r.jobTitle);
   const license = currentDocument(r, type);
@@ -148,10 +165,16 @@ export function documentPrimary(r: DriverDto): ReactNode {
     : licenseNumberLabel(license);
 }
 
-/** Build mobile lines for the same visible credential kinds as the desktop columns. */
+/**
+ * Card lines about documents: one set per visible kind plus a shared tail about what the waybill
+ * lacks. The kinds are the same as the desktop columns — filtered by job title, only its own.
+ */
 export function documentCardLines(types: CredentialTypeCode[]): ((r: DriverDto) => ReactNode)[] {
   return [
-    // Category and expiry remain separate lines and name their credential kind (ADR 0055).
+    // Categories and expiry are separate lines per visible kind, as columns are on desktop
+    // (ADR 0055): people open the directory for categories, and glued to the number they got lost.
+    // The kind is named in the line itself: «Категории C, CE» alone cannot tell a driver from an
+    // operator.
     ...types.flatMap((type) => {
       const short = credentialTypeShortLabels[type];
       return [
@@ -169,7 +192,8 @@ export function documentCardLines(types: CredentialTypeCode[]): ((r: DriverDto) 
         },
       ];
     }),
-    // Cards have no empty cells, so completeness gaps must be named explicitly.
+    // What the waybill lacks, as a line: a card shows no empty cell, and a user who filtered an
+    // incomplete set must understand what exactly to fill in.
     (r: DriverDto) => unsaidGaps(r).join(' · ') || null,
   ];
 }
@@ -188,8 +212,11 @@ export interface DriverDocumentActions {
 }
 
 /**
- * Credential history grouped by kind. Empty groups stay visible, and commands sit beside their
- * exact record so verification or correction cannot target a different paper.
+ * Documents of one kind in the card: history plus commands on the current one.
+ *
+ * A block per kind rather than one list: commands belong to a specific document, and «Отметить
+ * проверенным» next to a mixed history would mark the wrong paper. An empty block is shown too —
+ * that is how a missing tractor certificate of an operator becomes visible.
  */
 export function documentsBlock(
   d: DriverDto,
@@ -214,7 +241,8 @@ export function documentsBlock(
           const defect = licenseDefect(l, today());
           return (
             <Space key={l.id} size={8} wrap>
-              {/* Imported records can lack categories, so the separator is conditional too. */}
+              {/* The separator appears only with categories: a document can lack them (requisites
+                  entered, set not yet), and a dangling dot would read as a truncated line. */}
               <span>
                 {i === 0 ? 'Действующее:' : 'Прежнее:'} {licenseNumberLabel(l)}
                 {licenseCategoriesLabel(l) ? ` · ${licenseCategoriesLabel(l)}` : ''}
@@ -228,7 +256,9 @@ export function documentsBlock(
                 <Typography.Text type="secondary">проверил {l.verifiedByName}</Typography.Text>
               )}
               {l.revokeReason && <Typography.Text type="danger">{l.revokeReason}</Typography.Text>}
-              {/* Correction belongs to each row because duplicates and historical typos are common. */}
+              {/* The button sits on each row, not in the shared action bar: the bar speaks about
+                  the current document, while the one removed is usually the stray one — a
+                  duplicate or a typo in an older record. */}
               {actions.canDelete && (
                 <Button
                   size="small"
