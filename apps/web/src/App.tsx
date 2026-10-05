@@ -10,6 +10,7 @@ import { AppLayout } from './app/layout';
 import { AppUpdateBanner } from '@widgets/app-update-banner';
 import { AsyncContent } from '@shared/ui';
 import { HomeRedirect, ProtectedRoute, RequirePermission, RequireSection } from '@app/routing';
+import { RouteModalProvider } from '@app/route-windows';
 import { AdministrationPage } from '@pages/admin';
 import {
   ChangePasswordPage,
@@ -24,7 +25,7 @@ import { DriverLayout, DriverPage, DriverReadingsPage } from '@pages/driver';
 import { GaragePage } from '@pages/garage';
 import { MechRequestsPage } from '@pages/mech';
 import { ServiceRequestsPage } from '@pages/service';
-import { RouteModalProvider, VehicleRequestsPage, WeeklyRequestPage } from '@pages/vehicle';
+import { VehicleRequestsPage, WeeklyRequestPage } from '@pages/vehicle';
 import { WasteRequestsPage } from '@pages/waste';
 import { WaybillsPage } from '@pages/waybills';
 
@@ -88,13 +89,12 @@ export default function App() {
               <Route path="assignment" element={<DriverPage />} />
             </Route>
           </Route>
-          {/* Окна рейса, списка рейсов и заявки (ADR 0120) — отдельным элементом маршрутизации над
-              всей веткой портала: рейс открывают из заявок, из гаража и из журнала листов, то есть
-              со страниц трёх разных разделов, и держатель его адреса обязан стоять выше их всех.
-              Здесь, а не в `AppLayout`: каркас лежит в `app`, а окна — внутри `pages/vehicle`, и
-              матрица границ пускает слой к слою только через публичный вход слайса, которого у
-              страниц нет. Заодно провайдер не попадает в кабинет водителя: у того свой контур, вне
-              этой ветки. */}
+          {/* Route, route-list and request windows (ADR 0120) are above the whole portal branch:
+              requests, the garage and the waybill journal all open them, so their URL owner must
+              outlive navigation between these three sections. App composes public widget/feature
+              entries and the page-owned request card; importing a page-owned provider here would
+              pull the vehicle section into the initial bundle. The driver cabinet keeps its own
+              shell outside this branch and must not receive these portal windows. */}
           <Route element={<RouteModalProvider />}>
             <Route element={<AppLayout />}>
               {/* Стартовая страница гейтом НЕ накрывается, и это условие устройства, а не

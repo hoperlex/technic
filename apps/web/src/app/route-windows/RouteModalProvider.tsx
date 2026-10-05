@@ -5,7 +5,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { ViewModal } from '@shared/ui';
 import { RouteModalHost, type RequestCardRenderProps } from '@widgets/route-modal-host';
 import { VehicleRouteWindows } from '@widgets/vehicle-route-windows';
-import { VehicleRequestViewModal } from './VehicleRequestViewModal';
+import { VehicleRequestViewModal } from '@pages/vehicle';
 
 function renderRequestCard(props: RequestCardRenderProps) {
   return <RequestViewById {...props} />;
@@ -14,9 +14,10 @@ function renderRequestCard(props: RequestCardRenderProps) {
 /*
  * Composition root of the URL-backed windows (ADR 0120), mounted above every portal page by
  * App.tsx. URL state lives in @features/route-modal, the route windows in
- * @widgets/vehicle-route-windows; only the read-only request card stays here, because the card is
- * bound to VehicleRequestDays, which is still owned by this page slice, and widgets may not import
- * pages (boundary matrix in docs/frontend-fsd-stage-2.md).
+ * @widgets/vehicle-route-windows. The request card comes through the vehicle page's public entry:
+ * it is bound to page-owned VehicleRequestDays, and widgets may not import pages (the boundary
+ * matrix in docs/frontend-fsd-stage-2.md). Keeping this composition in app lets all three caller
+ * sections share the URL host without making the vehicle section part of the initial bundle.
  */
 export function RouteModalProvider(): ReactElement {
   return (

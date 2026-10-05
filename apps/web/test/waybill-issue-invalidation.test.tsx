@@ -6,7 +6,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
-import { RouteModalProvider } from '../src/pages/vehicle/routeModal';
+import { RouteModalProvider } from '@app/route-windows';
 
 /**
  * Журнал путевых листов после выдачи листа из карточки рейса.

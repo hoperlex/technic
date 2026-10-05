@@ -8,7 +8,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { vehicleRequest } from './factories/vehicle';
-import { RouteModalProvider } from '../src/pages/vehicle/routeModal';
+import { RouteModalProvider } from '@app/route-windows';
 
 /**
  * Адресация окон рейса, списка рейсов и заявки (ADR 0120, план `docs/vehicle-routes-modal-plan.md`).
