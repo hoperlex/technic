@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Tabs } from 'antd';
+import { AsyncTabs } from '@shared/ui';
 import { useQueryClient } from '@tanstack/react-query';
 import type { UserAccountDto } from '@technic/contracts';
 import {
@@ -106,7 +106,7 @@ export function UsersTab() {
   return (
     <div style={{ height: '100%' }}>
       <UserAuditPathDrawer target={pathUser} onClose={() => setPathUser(null)} />
-      <Tabs
+      <AsyncTabs
         className="full-height-tabs"
         size="small"
         activeKey={tab}

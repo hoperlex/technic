@@ -16,7 +16,7 @@
   `apps/api/src/services/waste-request-vehicles.ts`,
   `apps/web/src/features/waste-request-completion/ui/WasteRequestCompletionModal.tsx`,
   `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`,
-  `apps/web/src/pages/waste/WasteRequestsPage.tsx`
+  `apps/web/src/pages/waste/WasteRequestsTab.tsx`
 
 ## Контекст
 

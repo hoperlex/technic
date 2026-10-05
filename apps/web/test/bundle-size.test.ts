@@ -25,7 +25,10 @@ interface Size {
 }
 interface Report {
   entry: Size;
-  routes: Record<string, Size & { embedded: boolean }>;
+  routes: Record<
+    string,
+    Size & { embedded: boolean; page: Size; tabs: Record<string, Size>; largestTab: string | null }
+  >;
   selected?: Size;
 }
 interface Fixture {
@@ -34,7 +37,10 @@ interface Fixture {
   budget: {
     requireDynamicRoutes: boolean;
     entryGzip: number;
-    routes: Record<string, { source: string; gzip: number }>;
+    routes: Record<
+      string,
+      { source: string; gzip: number; tabs?: { source: string; with?: string[]; gzip: number }[] }
+    >;
   };
 }
 
@@ -79,7 +85,78 @@ function runFixture(change: (fixture: Fixture) => void = () => undefined, args: 
   }
 }
 
+const TAB = 'src/pages/waste/WasteRequestsTab.tsx';
+const NESTED = 'src/widgets/audit/index.ts';
+function tabFixture(fixture: Fixture) {
+  fixture.manifest[TAB] = { file: 'tab.js', src: TAB, isDynamicEntry: true, imports: ['shared'] };
+  fixture.manifest[SOURCE]!.dynamicImports = [TAB];
+  fixture.files['tab.js'] = 'the actual first screen';
+  fixture.budget.routes.waste!.tabs = [{ source: TAB, gzip: 10000 }];
+}
+
 describe('машинный бюджет бандла', () => {
+  it('первый экран включает открытую вкладку и не считает общий чанк дважды', () => {
+    const result = runFixture(tabFixture, ['--route', 'waste']);
+    expect(result.status, result.stderr).toBe(0);
+    const route = result.report!.routes.waste!;
+    expect(route.page.files).toHaveLength(3);
+    expect(route.files).toHaveLength(4);
+    expect(route.gzip).toBe(route.page.gzip + gzipSync('the actual first screen').length);
+    expect(route.largestTab).toBe(TAB);
+    expect(result.report!.selected!.chunks).toContain(TAB);
+    expect(result.report!.selected!.gzip).toBe(route.gzip);
+  });
+
+  it('вложенная вкладка включает загруженного родителя даже без его статического импорта', () => {
+    const result = runFixture((fixture) => {
+      tabFixture(fixture);
+      fixture.manifest[NESTED] = { file: 'audit.js', src: NESTED, isDynamicEntry: true };
+      fixture.files['audit.js'] = 'nested audit screen';
+      fixture.budget.routes.waste!.tabs!.push({ source: NESTED, with: [TAB], gzip: 10000 });
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const route = result.report!.routes.waste!;
+    expect(route.largestTab).toBe(NESTED);
+    expect(route.chunks).toContain(TAB);
+    expect(route.chunks).toContain(NESTED);
+    expect(route.files).toHaveLength(5);
+  });
+
+  it.each(['absent', 'static', 'not-dynamic', 'missing-parent'])(
+    'не принимает %s корень вкладки',
+    (kind) => {
+      const result = runFixture((fixture) => {
+        tabFixture(fixture);
+        if (kind === 'absent') delete fixture.manifest[TAB];
+        if (kind === 'static') fixture.manifest[SOURCE]!.imports!.push(TAB);
+        if (kind === 'not-dynamic') fixture.manifest[TAB]!.isDynamicEntry = false;
+        if (kind === 'missing-parent') fixture.budget.routes.waste!.tabs![0]!.with = ['missing'];
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Вкладка waste не имеет отдельного динамического корня');
+    },
+  );
+
+  it('проверяет импорт соседнего раздела даже у вкладки, которая не самая большая', () => {
+    const result = runFixture((fixture) => {
+      tabFixture(fixture);
+      fixture.manifest[NESTED] = {
+        file: 'audit.js',
+        src: NESTED,
+        isDynamicEntry: true,
+        imports: ['other'],
+      };
+      fixture.files['audit.js'] = '';
+      fixture.manifest.other = { file: 'other.js', src: 'other-page', isDynamicEntry: true };
+      fixture.files['other.js'] = '';
+      fixture.budget.routes.other = { source: 'other-page', gzip: 10000 };
+      fixture.budget.routes.waste!.tabs!.push({ source: NESTED, gzip: 10000 });
+      fixture.files['tab.js'] = Array.from({ length: 500 }, (_, i) => `${i}:large`).join(' ');
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Маршрут waste статически загружает раздел other');
+  });
+
   it('обходит циклические синхронные импорты, не включает отложенный маршрут в entry', () => {
     const result = runFixture();
     expect(result.status, result.stderr).toBe(0);
@@ -171,8 +248,8 @@ describe('машинный бюджет бандла', () => {
           JSON.stringify(pathToFileURL(SCRIPT).href) +
           ';' +
           'process.stdout.write(JSON.stringify(budgetViolations(' +
-          '{entry:{gzip:101},routes:{waste:{gzip:201}}},' +
-          '{entryGzip:100,routes:{waste:{gzip:200}}})));',
+          '{entry:{gzip:101},routes:{waste:{gzip:201,tabs:{tab:{gzip:151}}}}},' +
+          '{entryGzip:100,routes:{waste:{gzip:200,tabs:[{source:"tab",gzip:150}]}}})));',
       ],
       { encoding: 'utf8' },
     );
@@ -180,6 +257,7 @@ describe('машинный бюджет бандла', () => {
     expect(JSON.parse(result.stdout)).toEqual([
       'entry: 101 > 100 байт gzip',
       'entry + waste: 201 > 200 байт gzip',
+      'entry + waste + tab: 151 > 150 байт gzip',
     ]);
   });
 
@@ -192,6 +270,11 @@ describe('машинный бюджет бандла', () => {
     for (const limit of Object.values(budget.routes)) {
       expect(limit.gzip).toBeGreaterThan(0);
       expect(existsSync(limit.source), limit.source).toBe(true);
+      for (const tab of limit.tabs ?? []) {
+        expect(tab.gzip).toBeGreaterThan(0);
+        for (const source of [tab.source, ...(tab.with ?? [])])
+          expect(existsSync(source), source).toBe(true);
+      }
     }
   });
 });

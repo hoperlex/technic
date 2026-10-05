@@ -17,6 +17,7 @@
 - Остальной API: [waste-request-vehicles.ts](../apps/api/src/services/waste-request-vehicles.ts), [waste-pricing.ts](../apps/api/src/services/waste-pricing.ts)
 - Web: [waste](../apps/web/src/pages/waste), [waste-request-feed](../apps/web/src/widgets/waste-request-feed), [waste-request-view](../apps/web/src/widgets/waste-request-view), [waste-request-editor](../apps/web/src/features/waste-request-editor), [waste-request-lifecycle](../apps/web/src/features/waste-request-lifecycle), [waste-operator-assignment](../apps/web/src/features/waste-operator-assignment), [waste-request-completion](../apps/web/src/features/waste-request-completion), [waste-request-comment](../apps/web/src/features/waste-request-comment), [waste-ticket-attach](../apps/web/src/features/waste-ticket-attach), [waste-request](../apps/web/src/entities/waste-request)
 - Тесты: `waste-request-*.db.test.ts`, `waste-tickets*.db.test.ts`, `waste-contracts.test.ts`
+- Композиция: [WasteRequestsPage](../apps/web/src/pages/waste/WasteRequestsPage.tsx) держит URL и права вкладок, [WasteRequestsTab](../apps/web/src/pages/waste/WasteRequestsTab.tsx) лениво собирает рабочий список, редактор, lifecycle и карточку.
 - Решения: [ADR 0009](adr/0009-waste-pricing.md), [ADR 0035](adr/0035-waste-fact-by-volume.md), [ADR 0135](adr/0135-waste-request-completed.md)
 
 ## Заказ ТС
@@ -216,6 +217,7 @@
 - Домен: `качество`
 - Источник истины: [check.mjs](../scripts/check.mjs), [check-docs.mjs](../scripts/check-docs.mjs), [quality.mjs](../apps/web/scripts/quality.mjs),
   [bundle-size.mjs](../apps/web/scripts/bundle-size.mjs), [bundle-budget.json](../apps/web/bundle-budget.json)
+- Замер загрузки: entry + page + выбранная вкладка (для вложенной — также родитель); отчёт маршрута берёт максимальный реальный первый экран, не пустую оболочку.
 - Разделы портала: —
 - API-маршруты: —
 - Остальной API: —

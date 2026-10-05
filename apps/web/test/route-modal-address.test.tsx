@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { Route, Routes, useLocation, useNavigate } from 'react-router';
 import { moscowDateKeyOf, type AuthUser, type VehicleRouteDto } from '@technic/contracts';
 import { useRouteModal } from '@features/route-modal';
@@ -146,6 +146,35 @@ function clickButton(label: string) {
   expect(button, `кнопка «${label}»`).toBeTruthy();
   fireEvent.click(button!);
 }
+
+describe('холодное URL-окно', () => {
+  it('закрывается до прихода кода, не воскресает и затем открывается тёплым модулем', async () => {
+    const http = mockHttp({
+      'GET /vehicle-routes': () => json(list([ROUTE])),
+      'GET /vehicles': () => json(emptyList()),
+      'GET /drivers': () => json(emptyList()),
+      'GET /vehicle-types': () => json(emptyList()),
+    });
+    renderScene('/vehicle-requests?tab=history&routes=1');
+    // First test in this module: the public provider has not loaded the window implementation.
+    // The closeable shell must exist synchronously, before either code or list data arrives.
+    expect(modalTitles()).toEqual(['Маршруты']);
+    const page = screen.getByTestId('address');
+    clickButton('Закрыть');
+    expect(address()).toBe('/vehicle-requests?tab=history');
+    await act(() => vi.dynamicImportSettled());
+    expect(modalTitles()).toEqual([]);
+    expect(screen.getByTestId('address')).toBe(page);
+    expect(http.countOf('GET /vehicle-routes')).toBe(0);
+
+    clickButton('проба: все маршруты');
+    expect(await screen.findByText('Р-12')).toBeDefined();
+    expect(address()).toContain('tab=history');
+    expect(address()).toContain('routes=1');
+    expect(http.countOf('GET /vehicle-routes')).toBe(1);
+    expect(screen.getByTestId('address')).toBe(page);
+  });
+});
 
 describe('адрес окон: запись, которой нет', () => {
   it('неверный или удалённый ?route= кончается сообщением и очисткой адреса', async () => {

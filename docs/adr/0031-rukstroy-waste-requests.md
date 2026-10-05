@@ -5,7 +5,7 @@
   недоступен целиком — там заказчик со стороны объекта штаб»)
 - Связано: [ADR 0021](0021-permissions-model.md) (модель прав),
   [ADR 0010](0010-counterparties.md) (оператор вывоза),
-  `packages/contracts/src/permissions.ts`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
+  `packages/contracts/src/permissions.ts`, `apps/web/src/pages/waste/WasteRequestsTab.tsx`,
   `apps/api/test/access-matrix.test.ts`, `apps/api/test/permissions.test.ts`
 
 ## Контекст

@@ -6,7 +6,7 @@
 - Связано: `packages/contracts/src/enums.ts`, `packages/contracts/src/waste-requests.ts`,
   `packages/contracts/src/waste-tariffs.ts`, `apps/api/src/routes/waste-requests.ts`,
   `apps/api/src/routes/waste-tariffs.ts`, `apps/api/src/services/waste-pricing.ts`,
-  `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
+  `apps/web/src/pages/waste/WasteRequestsTab.tsx`,
   `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`,
   `apps/api/drizzle/0041_container_types_lineup.sql`
 

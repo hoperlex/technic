@@ -7,6 +7,7 @@ export * from './ActionSheet';
 export * from './actionMenu';
 export * from './AutoSelect';
 export * from './AsyncContent';
+export * from './AsyncTabs';
 export * from './CheckboxPicker';
 export * from './columns';
 export * from './DataTable';

@@ -1,65 +1,89 @@
-import { Tabs } from 'antd';
+import { lazy } from 'react';
+import { AsyncTabs } from '@shared/ui';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { ObjectsTab } from './ObjectsTab';
-import { DepartmentsTab } from './DepartmentsTab';
-import { CounterpartiesTab } from './CounterpartiesTab';
-import { WarehousesTab } from './WarehousesTab';
-import { MechModelsTab } from './MechModelsTab';
-import { ContainerTypesTab } from './ContainerTypesTab';
-import { WasteTariffsTab } from './WasteTariffsTab';
-import { VehicleTypesTab } from './VehicleTypesTab';
-import { VehicleSpecsTab } from './VehicleSpecsTab';
-import { VehiclesTab } from './VehiclesTab';
-import { TrailersTab } from './TrailersTab';
-import { OfficeEquipmentTab } from './OfficeEquipmentTab';
-import { DriversTab } from './DriversTab';
+
+const ObjectsTab = lazy(() =>
+  import('./ObjectsTab').then((module) => ({ default: module.ObjectsTab })),
+);
+const DepartmentsTab = lazy(() =>
+  import('./DepartmentsTab').then((module) => ({ default: module.DepartmentsTab })),
+);
+const CounterpartiesTab = lazy(() =>
+  import('./CounterpartiesTab').then((module) => ({ default: module.CounterpartiesTab })),
+);
+const WarehousesTab = lazy(() =>
+  import('./WarehousesTab').then((module) => ({ default: module.WarehousesTab })),
+);
+const MechModelsTab = lazy(() =>
+  import('./MechModelsTab').then((module) => ({ default: module.MechModelsTab })),
+);
+const ContainerTypesTab = lazy(() =>
+  import('./ContainerTypesTab').then((module) => ({ default: module.ContainerTypesTab })),
+);
+const WasteTariffsTab = lazy(() =>
+  import('./WasteTariffsTab').then((module) => ({ default: module.WasteTariffsTab })),
+);
+const VehicleTypesTab = lazy(() =>
+  import('./VehicleTypesTab').then((module) => ({ default: module.VehicleTypesTab })),
+);
+const VehicleSpecsTab = lazy(() =>
+  import('./VehicleSpecsTab').then((module) => ({ default: module.VehicleSpecsTab })),
+);
+const VehiclesTab = lazy(() =>
+  import('./VehiclesTab').then((module) => ({ default: module.VehiclesTab })),
+);
+const TrailersTab = lazy(() =>
+  import('./TrailersTab').then((module) => ({ default: module.TrailersTab })),
+);
+const OfficeEquipmentTab = lazy(() =>
+  import('./OfficeEquipmentTab').then((module) => ({ default: module.OfficeEquipmentTab })),
+);
+const DriversTab = lazy(() =>
+  import('./DriversTab').then((module) => ({ default: module.DriversTab })),
+);
 
 export function DirectoriesPage() {
-  // Вкладок восемь-девять: на телефоне они прокручиваются, и компактный размер оставляет им
-  // больше места. Последняя — «Водители» — появляется по собственному праву: в карточке
-  // персональные данные, и роли, которым открыты справочники, доступа к ним не получают
-  // (ADR 0037).
+  // The long tab strip scrolls on phones; compact tabs leave more room. The last tab, Drivers,
+  // requires its own permission because its cards contain personal data: directory access alone
+  // must not expose it (ADR 0037).
   const isMobile = useIsMobile();
   const { can } = useAuth();
   const qc = useQueryClient();
   /**
-   * Переключение вкладки — это «покажи, как сейчас»: скрытая вкладка не размонтируется, поэтому по
-   * возвращении она показала бы кэш, набранный до правок на соседней. Здесь это заметнее, чем
-   * где-либо ещё: справочники ссылаются друг на друга, и сервер приклеивает поля соседа к списку —
-   * у техники это названия типа и категории, у прайса объём контейнера, по которому считают
-   * стоимость. Переименовал тип на одной вкладке, вернулся на другую — там старое название, и
-   * висит оно до перезагрузки страницы, а не десять секунд.
+   * Switching tabs means "show it as it is now": hidden tabs stay mounted and would otherwise
+   * show cache from before work on a neighbour. Directories reference each other, and the server
+   * embeds neighbouring fields in lists: vehicle type/category names and tariff container volumes.
+   * Renaming a type then returning to the vehicle list would leave the old name until reload,
+   * not merely for a short polling interval.
    *
-   * Гасится весь кэш, а не корень открываемой вкладки: перечислять, чьи поля попали в чей список,
-   * пришлось бы вручную и заново после каждой правки сервера — забытая связь и есть тот самый
-   * дефект. Дорого это не обходится: перезапрашивается только показанное — сама вкладка и каркас,
-   * остальное лишь помечается устаревшим до своего открытия.
+   * Invalidate the whole cache, not just the destination root: manually enumerating embedded
+   * relationships after every server change would recreate the defect as soon as one is missed.
+   * This does not eagerly fetch every directory: active observers refetch, while inactive queries
+   * are only marked stale until they are used again.
    */
   const refreshOnSwitch = () => void qc.invalidateQueries();
   /**
-   * Раздел открывают два права (Р7): `directories.write` — на весь набор справочников,
-   * `officeEquipment.write` — на одну вкладку. Поэтому основной набор собирается условием, а не
-   * стоит безусловно: ответственный за оргтехнику, у которого второго права нет, не должен
-   * получить объекты, контрагентов и прайс вывоза заодно с принтерами.
+   * Two permissions open this section (R7): directories.write exposes all directories, while
+   * officeEquipment.write exposes one tab. The main group must therefore stay conditional:
+   * an equipment manager without directories.write must not get sites, counterparties and waste
+   * tariffs along with printers.
    */
   const canDirectories = can('directories.write');
   /**
-   * Вкладка «Оргтехника» открывается тому, кому есть что на ней делать, а не тому, чьё право
-   * исторически стояло в этом условии первым.
+   * Office equipment opens for anyone with work to do there, not just the permission that
+   * happened to be the first historical condition.
    *
-   * Работ на вкладке теперь три, и права у них разные (план расходников, Р10): парк техники ведут
-   * по `officeEquipment.write`, весь набор справочников — по `directories.write`, а номенклатуру
-   * картриджей и правку их остатка — по своим двум правам. Ведут номенклатуру окном «Картриджи и
-   * тонеры», которое живёт только здесь, и без этой строки человек с новым набором до своей работы
-   * не дошёл бы вовсе — кнопка внутри вкладки ему открыта, а самой вкладки в разделе нет.
+   * Three jobs have different permissions (consumables plan, R10): equipment management uses
+   * officeEquipment.write, all directories use directories.write, and consumable nomenclature
+   * and stock adjustment have their own permissions. Their cartridge/toner window exists only
+   * here; omitting these grants would leave an allowed button inside an inaccessible tab.
    *
-   * Наполовину пустой вкладка при этом не откроется: оба права номенклатуры требуют
-   * `officeEquipment.read` (`grants.ts`), а объекты и отделы для отборов читаются общим
-   * `directories.read`, который есть у всех ролей. Править парк вкладка ему тоже не даст —
-   * «Добавить технику», окна типов и моделей и действия строк спрашивают `officeEquipment.write`
-   * сами, а не выводятся из факта, что вкладка открылась.
+   * The tab still has readable data: both consumable grants require officeEquipment.read
+   * (grants.ts), and filter sites/departments use directories.read, shared by all roles.
+   * Opening the tab does not grant equipment edits: creation, type/model windows and row actions
+   * each check officeEquipment.write themselves.
    */
   const canOfficeEquipment =
     can('officeEquipment.write') ||
@@ -70,19 +94,19 @@ export function DirectoriesPage() {
     ...(canDirectories
       ? [
           { key: 'objects', label: 'Объекты', children: <ObjectsTab /> },
-          // Отделы — вторая ось области (ADR 0040): офисные подразделения рядом с площадками.
+          // Departments are the second scope axis (ADR 0040), beside construction sites.
           { key: 'departments', label: 'Отделы', children: <DepartmentsTab /> },
           { key: 'counterparties', label: 'Контрагенты', children: <CounterpartiesTab /> },
-          // Склады идут сразу за контрагентами: склад существует только у поставщика (ADR 0051),
-          // и заводят их одного за другим — сначала контрагента, потом его адреса.
+          // Warehouses follow counterparties: only suppliers own them (ADR 0051), and creation
+          // follows the same order, first the counterparty and then its addresses.
           { key: 'warehouses', label: 'Склады', children: <WarehousesTab /> },
-          // Модели малой механизации (план `docs/mechanization-models-directory-plan.md`) —
-          // такой же простой справочник-таблица, как типы контейнеров, и стоит он перед ними, а
-          // не между ними и прайсом вывоза: две вкладки вывоза мусора читают одну за другой.
+          // Small-equipment models (docs/mechanization-models-directory-plan.md) are another
+          // simple directory table. Keep them before container types, not between types and
+          // tariffs: the two waste-related tabs are read together.
           { key: 'mech-models', label: 'Модели механизации', children: <MechModelsTab /> },
           { key: 'types', label: 'Типы контейнеров', children: <ContainerTypesTab /> },
-          // Отдельной вкладки «Типы мусора» нет (ADR 0017): тип заводится и правится здесь же,
-          // в прайсе, — сам по себе, без цены, он ничего не значит.
+          // There is no separate waste-types tab (ADR 0017): types are managed in the tariff
+          // matrix because a type without a price has no independent use.
           {
             key: 'waste-tariffs',
             label: 'Стоимость вывоза мусора',
@@ -91,14 +115,14 @@ export function DirectoriesPage() {
           { key: 'vehicle-types', label: 'Типы ТС', children: <VehicleTypesTab /> },
           { key: 'vehicle-specs', label: 'ТТХ', children: <VehicleSpecsTab /> },
           { key: 'vehicles', label: 'Техника', children: <VehiclesTab /> },
-          // Прицепы — сразу за техникой: их читают с ней рядом, а живут они своей таблицей,
-          // потому что прицеп не единица техники (план `docs/vehicle-trailers-plan.md`, Р7).
+          // Trailers follow vehicles for joint reading, but live in their own table: a trailer
+          // is not a vehicle (docs/vehicle-trailers-plan.md, R7).
           { key: 'vehicle-trailers', label: 'Прицепы', children: <TrailersTab /> },
         ]
       : []),
-    // Оргтехника (ADR 0085) — сразу за техникой: два парка рядом, и ведут их одни и те же люди.
-    // Своё право на вкладку (Р7): `directories.read` есть у всех ролей, а карточка единицы
-    // рассказывает и про её обслуживание, — поэтому вкладка собирается условием выше.
+    // Office equipment (ADR 0085) follows vehicles: the same people manage both fleets.
+    // It needs its own gate (R7): directories.read belongs to all roles, but these cards also
+    // disclose service history, so use the explicit condition above.
     ...(canOfficeEquipment
       ? [{ key: 'office-equipment', label: 'Оргтехника', children: <OfficeEquipmentTab /> }]
       : []),
@@ -108,10 +132,10 @@ export function DirectoriesPage() {
   ];
   return (
     <div style={{ height: '100%' }}>
-      <Tabs
+      <AsyncTabs
         className="full-height-tabs"
-        // Первая доступная, а не жёстко «Объекты»: у кого их нет, тому вкладка по несуществующему
-        // ключу открыла бы пустое место вместо содержимого.
+        // Pick the first available tab, not a fixed Objects key: a missing key would leave an
+        // empty body for users who cannot access sites.
         defaultActiveKey={items[0]?.key}
         onChange={refreshOnSwitch}
         size={isMobile ? 'small' : undefined}

@@ -10,7 +10,7 @@
   `apps/api/src/routes/waste-requests.ts`, `apps/api/src/db/schema.ts`,
   `apps/web/src/entities/waste-request/model/presentation.ts`,
   `apps/web/src/features/waste-request-completion/ui/WasteRequestCompletionModal.tsx`,
-  `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
+  `apps/web/src/pages/waste/WasteRequestsTab.tsx`,
   миграции `0090`, `0091`
 
 ## Контекст

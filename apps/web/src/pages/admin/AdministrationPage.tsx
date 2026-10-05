@@ -1,42 +1,53 @@
-import { Tabs } from 'antd';
+import { lazy } from 'react';
+import { AsyncTabs } from '@shared/ui';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '@entities/session';
-import { UsersTab } from './UsersTab';
-import { AccessTab } from './AccessTab';
-import { MailingsTab } from './MailingsTab';
-import { DirectoryTransferTab } from './DirectoryTransferTab';
-import { ManualsTab } from './ManualsTab';
-import { ExportsTab } from './ExportsTab';
+
+const UsersTab = lazy(() => import('./UsersTab').then((module) => ({ default: module.UsersTab })));
+const AccessTab = lazy(() =>
+  import('./AccessTab').then((module) => ({ default: module.AccessTab })),
+);
+const MailingsTab = lazy(() =>
+  import('./MailingsTab').then((module) => ({ default: module.MailingsTab })),
+);
+const DirectoryTransferTab = lazy(() =>
+  import('./DirectoryTransferTab').then((module) => ({ default: module.DirectoryTransferTab })),
+);
+const ManualsTab = lazy(() =>
+  import('./ManualsTab').then((module) => ({ default: module.ManualsTab })),
+);
+const ExportsTab = lazy(() =>
+  import('./ExportsTab').then((module) => ({ default: module.ExportsTab })),
+);
 
 export function AdministrationPage() {
-  // Компактная полоса вкладок на телефоне — как в справочниках: на 360 px обычная съедает
-  // высоту, которой не хватает списку.
+  // Compact phone tabs match directories: at 360 px the regular strip takes height the list needs.
   const isMobile = useIsMobile();
   const { can } = useAuth();
   const qc = useQueryClient();
   /**
-   * То же, что в справочниках: скрытая вкладка не размонтируется, и по возвращении показала бы
-   * кэш. Здесь связи между вкладками прямые — выданное на «Пользователях» право видно в витрине
-   * прав, а импорт справочником меняет то, что показывают все остальные разделы.
+   * As in directories, hidden tabs stay mounted and would show stale cache on return. These
+   * relationships are direct: grants issued on Users appear in Access, and directory imports
+   * change data shown throughout the portal.
    */
   const refreshOnSwitch = () => void qc.invalidateQueries();
-  // Вкладки — по правам, а не по роли: рассылками занимается тот, кто отвечает за оповещения, и
-  // это не обязательно тот же человек, который выдаёт доступы.
+  // Gate tabs by permission, not role: notification management and access management need not
+  // belong to the same person.
   const items = [
     ...(can('users.manage')
       ? [{ key: 'users', label: 'Пользователи', children: <UsersTab /> }]
       : []),
-    // Витрина прав (`docs/permissions-tab-plan.md`) стоит рядом с учётками и открыта тем же
-    // правом: доступ выдают на соседней вкладке, а здесь смотрят, что из этого вышло. Своего
-    // права у неё нет — действий в ней нет тоже.
+    // The access display (docs/permissions-tab-plan.md) shares the account-management grant:
+    // users issue access next door and inspect its result here. With no actions of its own,
+    // the display needs no separate permission.
     ...(can('users.manage') ? [{ key: 'access', label: 'Права', children: <AccessTab /> }] : []),
     ...(can('mailings.read')
       ? [{ key: 'mailings', label: 'Рассылки', children: <MailingsTab /> }]
       : []),
-    // Обмен справочниками файлом (ADR 0073) живёт здесь, а не на вкладках самих справочников:
-    // одно действие — одно место, и так оно покрывает в том числе справочники без своей вкладки
-    // (виды ТС, модели, категории квалификаций, привязки ТТХ).
+    // File-based directory exchange (ADR 0073) has one owner here, not an action on each
+    // directory tab. It also covers directories without tabs: vehicle kinds, models,
+    // qualification categories and specification bindings.
     ...(can('directories.export')
       ? [
           {
@@ -46,25 +57,24 @@ export function AdministrationPage() {
           },
         ]
       : []),
-    // Руководства пользователя (`docs/manuals-plan.md`) ведёт тот, кто их пишет, и это не
-    // обязательно администратор: право `manuals.manage` назначаемое и само по себе открывает
-    // страницу — оно входит в `ADMIN_PAGE_PERMISSIONS`, по которому живут все три гейта (§3.6).
+    // Manual authors need not be administrators (docs/manuals-plan.md): manuals.manage is
+    // assignable and independently opens this page through ADMIN_PAGE_PERMISSIONS, the common
+    // source for all three entry gates (§3.6).
     ...(can('manuals.manage')
       ? [{ key: 'manuals', label: 'Руководства', children: <ManualsTab /> }]
       : []),
-    // Служебные выгрузки — одна вкладка на все книги (`docs/analytics-summary-export-plan.md`,
-    // Р1): вид выбирается списком внутри, реестр живёт в самой вкладке. Прав у книг два и они
-    // независимы — ни одно не входит в ролевые наборы, и держатель любого из них должен попасть
-    // сюда; поэтому дверь открывает любое, а какая книга ему видна, решает реестр. Оба права
-    // входят в `ADMIN_PAGE_PERMISSIONS`, поэтому вкладка открывает раздел сама, как и
-    // «Руководства».
+    // Operational exports share one tab (docs/analytics-summary-export-plan.md, R1); its own
+    // registry selects the workbook. The two grants are independent and neither belongs to
+    // role bundles, so either must open the tab; its registry decides which books are visible.
+    // Both belong to ADMIN_PAGE_PERMISSIONS and independently open the section, just like
+    // manuals.manage.
     ...(can('vehicleReadings.export') || can('analytics.export')
       ? [{ key: 'exports', label: 'Выгрузки', children: <ExportsTab /> }]
       : []),
   ];
   return (
     <div style={{ height: '100%' }}>
-      <Tabs
+      <AsyncTabs
         className="full-height-tabs"
         size={isMobile ? 'small' : undefined}
         defaultActiveKey={items[0]?.key}

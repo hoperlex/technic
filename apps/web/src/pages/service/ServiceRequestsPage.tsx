@@ -1,35 +1,45 @@
+import { lazy } from 'react';
 import { useSearchParams } from 'react-router';
 import { serviceRequestKeys } from '@entities/service-request';
 import { useAuth } from '@entities/session';
 import { PageTabs } from '@shared/ui';
 import { canSeeArchiveTab } from '@entities/request';
-import { RequestsTab } from './RequestsTab';
-import { WarrantiesTab } from './WarrantiesTab';
-import { ServiceArchiveTab } from './ArchiveTab';
-import { EquipmentTab } from './EquipmentTab';
-import { ConsumablesTab } from './ConsumablesTab';
+
+const RequestsTab = lazy(() =>
+  import('./RequestsTab').then((module) => ({ default: module.RequestsTab })),
+);
+const WarrantiesTab = lazy(() =>
+  import('./WarrantiesTab').then((module) => ({ default: module.WarrantiesTab })),
+);
+const ServiceArchiveTab = lazy(() =>
+  import('./ArchiveTab').then((module) => ({ default: module.ServiceArchiveTab })),
+);
+const EquipmentTab = lazy(() =>
+  import('./EquipmentTab').then((module) => ({ default: module.EquipmentTab })),
+);
+const ConsumablesTab = lazy(() =>
+  import('./ConsumablesTab').then((module) => ({ default: module.ConsumablesTab })),
+);
 
 /**
- * Раздел «Орг.техника» (ADR 0085): заявки на обслуживание и сам парк.
+ * Office equipment (ADR 0085): service requests and the equipment fleet.
  *
- * Раздел открывают **два** права, а не одно (план `office-equipment-mail-and-history-plan.md`,
- * Р72): `serviceRequests.read` — тем, кто ведёт заявки, `officeEquipment.read` — тем, кто отвечает
- * за технику. У менеджера и диспетчера есть второе и нет первого, и до этой правки вкладка
- * «Техника» осталась бы за закрытой дверью — маршрут пускал только по праву заявок.
+ * Two independent grants open the section (office-equipment-mail-and-history-plan.md, R72):
+ * serviceRequests.read for request work and officeEquipment.read for equipment management.
+ * Managers and dispatchers have the latter but not the former; a request-only route gate would
+ * leave their equipment tab behind a closed door.
  *
- * Вкладки отвечают на разные вопросы: «что чинится сейчас» (заявки), «что ещё покрыто гарантией»
- * (реестр), «что было» (архив), «где что стоит» (техника) и «чего не хватает на складе»
- * (расходники). Каждая проверяет своё право сама: сервисной компании открыты заявки, но не парк —
- * реквизиты нужной ей единицы приходят снимком в самой заявке (Р7).
+ * Tabs answer different questions: current repairs, warranty coverage, history, equipment
+ * locations and stock needs. Each checks its own grant: a service contractor may read requests
+ * but not the fleet, since request snapshots already provide the equipment facts it needs (R7).
  *
- * Справочник оргтехники при этом остаётся в «Справочниках»: там карточку **ведут** — заводят,
- * правят, архивируют. Здесь её эксплуатируют. То же и у расходников: пятая вкладка (план
- * `docs/office-equipment-consumables-and-purchase-plan.md`, Р14) открыта тем же
- * `officeEquipment.read`, но заведения, правки и удаления позиций на ней нет — за ними в
- * «Справочники» → «Оргтехника» → «Картриджи и тонеры».
+ * Creation, editing and archiving remain in Directories; this section is for operation. The
+ * consumables tab likewise uses officeEquipment.read (consumables/purchase plan, R14) but does
+ * not create, edit or delete nomenclature: those actions stay in Directories → Office equipment
+ * → Cartridges and toners.
  *
- * ПЕРЕЧЕНЬ ВКЛАДОК ЖИВЁТ ЗДЕСЬ, а не в общем реестре разделов: реестр (ADR 0121) отвечает на
- * вопрос «какие разделы есть у портала», а из чего состоит раздел — дело самого раздела.
+ * This page owns its tab list. The section registry (ADR 0121) names portal sections, not their
+ * internal composition; copying these tabs into it would create a second owner.
  */
 const TABS = ['requests', 'warranties', 'archive', 'equipment', 'consumables'] as const;
 
@@ -39,8 +49,7 @@ export function ServiceRequestsPage() {
 
   const canRequests = can('serviceRequests.read');
   const canEquipment = can('officeEquipment.read');
-  // Условие показа архива спрашивается там же, где его спрашивает ссылка (`utils/links`):
-  // разойдись эти два места, ссылка вела бы на вкладку, которой у роли нет.
+  // Share the archive predicate with links, or a link could target a tab the user cannot see.
   const showArchive = canRequests && canSeeArchiveTab(can);
 
   const items = [
@@ -53,10 +62,9 @@ export function ServiceRequestsPage() {
     ...(showArchive ? [{ key: 'archive', label: 'Архив', children: <ServiceArchiveTab /> }] : []),
     ...(canEquipment ? [{ key: 'equipment', label: 'Техника', children: <EquipmentTab /> }] : []),
     /*
-     * «Расходники» открывает то же право, что и «Технику», — `officeEquipment.read` (Р14): склад
-     * картриджей ведут те же люди, что отвечают за парк, и второе право означало бы, что перечень
-     * позиций виден, а полка нет. Плановая закупка внутри вкладки закрыта своим правом
-     * (`officeEquipmentPurchases.manage`) и спрашивается там же, где показывается.
+     * Consumables share officeEquipment.read with equipment (R14): the same people manage the
+     * fleet and cartridge stock. A separate read grant would expose item names but hide their
+     * stock. Planned purchases inside the tab keep their own officeEquipmentPurchases.manage gate.
      */
     ...(canEquipment
       ? [{ key: 'consumables', label: 'Расходники', children: <ConsumablesTab /> }]
@@ -65,9 +73,9 @@ export function ServiceRequestsPage() {
 
   const raw = sp.get('tab') ?? '';
   /**
-   * Ссылка на недоступную вкладку ведёт на первую доступную, а не на жёсткое «Заявки»: адрес
-   * переживает смену роли, а у того, кому заявки закрыты, вкладка «Заявки» — это пустой экран с
-   * отказами в запросах.
+   * An unavailable tab falls back to the first accessible one, not a fixed Requests key: saved
+   * URLs survive role changes, and request-denied users would otherwise get an empty screen
+   * full of rejected API calls.
    */
   const tab =
     (TABS as readonly string[]).includes(raw) && items.some((i) => i.key === raw)

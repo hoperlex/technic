@@ -63,11 +63,11 @@ export function bundleReport(manifest, dist, budget, routeHint) {
   if (typeof budget.requireDynamicRoutes !== 'boolean')
     throw new Error('Нет политики корней маршрутов');
   const entry = measure(manifest, dist, entries);
+  const sourceRoots = (source) =>
+    Object.keys(manifest).filter((key) => (manifest[key].src ?? key) === source);
   const routes = {};
   for (const [id, limit] of Object.entries(budget.routes).sort(([a], [b]) => a.localeCompare(b))) {
-    const roots = Object.keys(manifest).filter(
-      (key) => (manifest[key].src ?? key) === limit.source,
-    );
+    const roots = sourceRoots(limit.source);
     const embedded = roots.length === 0 || roots.every((key) => entry.chunks.includes(key));
     if (
       budget.requireDynamicRoutes &&
@@ -79,10 +79,31 @@ export function bundleReport(manifest, dist, budget, routeHint) {
     }
     // Before route splitting, explicitly label the baseline as embedded instead of pretending
     // an absent route is a separate, zero-cost chunk. Later the budget forbids this state.
+    const page = measure(manifest, dist, [...entries, ...roots]);
+    const tabs = {};
+    for (const tab of limit.tabs ?? []) {
+      const tabRoots = [tab.source, ...(tab.with ?? [])].flatMap((source) => {
+        const found = sourceRoots(source);
+        if (
+          found.length === 0 ||
+          found.some((key) => !manifest[key].isDynamicEntry || page.chunks.includes(key))
+        ) {
+          throw new Error('Вкладка ' + id + ' не имеет отдельного динамического корня: ' + source);
+        }
+        return found;
+      });
+      tabs[tab.source] = measure(manifest, dist, [...entries, ...roots, ...tabRoots]);
+    }
+    // A lazy tab is part of the first screen too, not a free follow-up request. Report the
+    // largest real variant with its exact files/roots; nested tabs include their parent roots.
+    const largest = Object.entries(tabs).sort((a, b) => b[1].gzip - a[1].gzip)[0];
     routes[id] = {
       source: limit.source,
       embedded,
-      ...measure(manifest, dist, [...entries, ...roots]),
+      page,
+      tabs,
+      largestTab: largest?.[0] ?? null,
+      ...(largest?.[1] ?? page),
     };
   }
   if (budget.requireDynamicRoutes) {
@@ -91,8 +112,11 @@ export function bundleReport(manifest, dist, budget, routeHint) {
     for (const [id, route] of Object.entries(routes)) {
       for (const [otherId, other] of Object.entries(routes)) {
         if (id === otherId) continue;
-        const sectionRoots = other.roots.filter((root) => !entries.includes(root));
-        if (sectionRoots.some((root) => route.chunks.includes(root))) {
+        const sectionRoots = sourceRoots(other.source);
+        const variants = [route.page, ...Object.values(route.tabs)];
+        if (
+          variants.some((variant) => sectionRoots.some((root) => variant.chunks.includes(root)))
+        ) {
           throw new Error('Маршрут ' + id + ' статически загружает раздел ' + otherId);
         }
       }
@@ -107,12 +131,10 @@ export function bundleReport(manifest, dist, budget, routeHint) {
   const report = { entry, routes, dynamic };
   if (routeHint) {
     const needle = routeHint.toLowerCase();
-    const configured = Object.entries(budget.routes).find(
-      ([id]) => id.toLowerCase() === needle,
-    )?.[1];
+    const configured = Object.entries(routes).find(([id]) => id.toLowerCase() === needle);
     const roots = Object.keys(manifest).filter((key) =>
       configured
-        ? (manifest[key].src ?? key) === configured.source
+        ? (manifest[key].src ?? key) === configured[1].source
         : (manifest[key].src ?? key).toLowerCase().includes(needle),
     );
     // A typo or a route without a chunk must fail, never return a deceptively small entry total.
@@ -121,7 +143,11 @@ export function bundleReport(manifest, dist, budget, routeHint) {
         'Маршрут «' + routeHint + '» не совпал с manifest: опечатка или ещё нет своего чанка',
       );
     }
-    report.selected = { hint: routeHint, ...measure(manifest, dist, [...entries, ...roots]) };
+    report.selected = {
+      hint: routeHint,
+      scope: configured ? 'largest-first-screen' : 'diagnostic-root-closure',
+      ...(configured?.[1] ?? measure(manifest, dist, [...entries, ...roots])),
+    };
   }
   return report;
 }
@@ -136,6 +162,13 @@ export function budgetViolations(report, budget) {
   check('entry', report.entry.gzip, budget.entryGzip);
   for (const [id, limit] of Object.entries(budget.routes)) {
     check('entry + ' + id, report.routes[id].gzip, limit.gzip);
+    for (const tab of limit.tabs ?? []) {
+      check(
+        'entry + ' + id + ' + ' + tab.source,
+        report.routes[id].tabs[tab.source].gzip,
+        tab.gzip,
+      );
+    }
   }
   return errors;
 }

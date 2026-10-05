@@ -1,6 +1,12 @@
+import { lazy } from 'react';
 import type { VehicleRequestDto } from '@technic/contracts';
-import { VehicleRequestHistory } from '@widgets/vehicle-request-history';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
+
+const VehicleRequestHistory = lazy(() =>
+  import('@widgets/vehicle-request-history').then((module) => ({
+    default: module.VehicleRequestHistory,
+  })),
+);
 
 // No edit actions from the journal: a closed request is not edited.
 function renderRequest(request: VehicleRequestDto | null, onClose: () => void) {

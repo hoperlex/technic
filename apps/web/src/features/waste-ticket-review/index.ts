@@ -1,9 +1,13 @@
+import { lazy } from 'react';
+
 /**
- * Разбор талонов вывоза в карточке заявки и баннер состояния подсистемы (ADR 0114).
- * Снаружи берут `@features/waste-ticket-review`.
+ * Ticket review inside the request card and recognition status (ADR 0114).
+ * Keep the independent queue lazy here: the same public entry also serves card-only callers.
  */
 export { BlindCheckPanel } from './ui/BlindCheckPanel';
-export { BlindCheckQueue } from './ui/BlindCheckQueue';
+export const BlindCheckQueue = lazy(() =>
+  import('./ui/BlindCheckQueue').then((module) => ({ default: module.BlindCheckQueue })),
+);
 export { TicketCell } from './ui/TicketCell';
 export { TicketFormModal } from './ui/TicketFormModal';
 export { TicketRecognitionBanner } from './ui/TicketRecognitionBanner';

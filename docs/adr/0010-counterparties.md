@@ -10,7 +10,7 @@
   `apps/api/src/routes/users.ts`, `apps/api/src/lib/access.ts`,
   `apps/api/src/services/object-operators.ts`,
   `apps/web/src/pages/directories/CounterpartiesTab.tsx`,
-  `apps/web/src/pages/directories/ObjectsTab.tsx`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`
+  `apps/web/src/pages/directories/ObjectsTab.tsx`, `apps/web/src/pages/waste/WasteRequestsTab.tsx`
 
 ## Контекст
 

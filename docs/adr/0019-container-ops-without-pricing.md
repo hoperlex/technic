@@ -4,7 +4,7 @@
 - Уточняет: [ADR 0009](0009-waste-pricing.md) (пп. 5, 6)
 - Связано: `packages/contracts/src/waste-tariffs.ts`, `packages/contracts/src/waste-requests.ts`,
   `apps/api/src/routes/waste-requests.ts`, `apps/api/src/services/waste-pricing.ts`,
-  `apps/api/src/db/schema.ts`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`,
+  `apps/api/src/db/schema.ts`, `apps/web/src/pages/waste/WasteRequestsTab.tsx`,
   `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`
 
 ## Контекст

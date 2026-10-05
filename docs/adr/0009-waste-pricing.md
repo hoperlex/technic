@@ -4,7 +4,7 @@
 - Связано: `apps/api/drizzle/0021_waste_tariffs.sql`, `apps/api/src/db/schema.ts`,
   `packages/contracts/src/waste-tariffs.ts`, `apps/api/src/services/waste-pricing.ts`,
   `apps/api/src/routes/waste-types.ts`, `apps/api/src/routes/waste-tariffs.ts`,
-  `apps/api/src/routes/waste-requests.ts`, `apps/web/src/pages/waste/WasteRequestsPage.tsx`
+  `apps/api/src/routes/waste-requests.ts`, `apps/web/src/pages/waste/WasteRequestsTab.tsx`
 
 ## Контекст
 

@@ -1,3 +1,4 @@
+import { lazy } from 'react';
 import { Button, DatePicker, Space } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -6,24 +7,32 @@ import { useIsMobile } from '@shared/lib';
 import { garageKeys } from '@entities/garage';
 import { useAuth } from '@entities/session';
 import { PageTabs } from '@shared/ui';
-import { GarageVehiclesTab } from './GarageVehiclesTab';
-import { GarageDriversTab } from './GarageDriversTab';
-import { ReadingsTab } from './ReadingsTab';
-import { AutoPartsTab } from './AutoPartsTab';
 import { readingsSub } from './readingsAddress';
 
+const GarageVehiclesTab = lazy(() =>
+  import('./GarageVehiclesTab').then((module) => ({ default: module.GarageVehiclesTab })),
+);
+const GarageDriversTab = lazy(() =>
+  import('./GarageDriversTab').then((module) => ({ default: module.GarageDriversTab })),
+);
+const ReadingsTab = lazy(() =>
+  import('./ReadingsTab').then((module) => ({ default: module.ReadingsTab })),
+);
+const AutoPartsTab = lazy(() =>
+  import('./AutoPartsTab').then((module) => ({ default: module.AutoPartsTab })),
+);
+
 /**
- * Гараж (ADR 0076): чем заняты собственная техника и водители в конкретный день.
+ * Garage (ADR 0076): the daily occupation of owned vehicles and drivers.
  *
- * **День общий у обеих вкладок и живёт на странице**, а не внутри них: смотрят один и тот же день
- * с двух сторон — «чем занята машина» и «кто за рулём», — и переключение вкладки, сбрасывающее
- * дату на сегодня, ломало бы ровно этот переход. Отсюда же адрес: `?tab=` и `?date=` переживают
- * перезагрузку и уходят ссылкой тому, кого зовут посмотреть на завтрашний день.
+ * The page owns one shared day for both snapshot tabs: vehicle occupation and who is driving
+ * answer two sides of the same question. Resetting to today on a tab switch would break that
+ * comparison. The tab/date URL parameters survive reloads and can be sent to someone looking
+ * at the same future day.
  *
- * Вкладок при этом четыре, и день среза — свойство первых двух, а не страницы целиком. У
- * «Показаний» свой период (ADR 0103), у «Автозапчастей» — свой период чеков (план
- * `docs/auto-part-receipts-plan.md`, §8), и дня среза у неё нет вовсе. Ключ `?date=` обе эти
- * вкладки переживают нетронутым — возврат на «Технику» показывает тот же день, с которого ушли.
+ * There are four tabs, but the snapshot day belongs only to the first two. Readings has its own
+ * period (ADR 0103), as do receipt-based auto parts (docs/auto-part-receipts-plan.md, §8).
+ * Both preserve ?date= untouched, so returning to Vehicles shows the day the user left.
  */
 
 const DATE = 'YYYY-MM-DD';
@@ -35,8 +44,8 @@ export function GaragePage() {
   const { can } = useAuth();
   const [sp, setSp] = useSearchParams();
 
-  // Сводка по показаниям — данные модуля показаний, и открывает их его собственное право: срез дня
-  // видят все, кому положен гараж, а цифры машин — только те, кому положены показания (Р34).
+  // Readings belong to their own permission: everyone admitted to Garage sees the daily snapshot,
+  // but only reading-authorized users see vehicle measurements (R34).
   const canReadReadings = can('vehicleReadings.read');
 
   const raw = sp.get('tab') ?? '';
@@ -44,40 +53,37 @@ export function GaragePage() {
     (TABS as readonly string[]).includes(raw) && (raw !== 'readings' || canReadReadings);
   const tab = known ? raw : 'vehicles';
 
-  // Умолчание — сегодня, и считается оно по часам браузера только для первого показа: отобранные
-  // строки всё равно относятся к дню, который вернул сервер (`onDate`).
+  // The browser's today is only the initial default; returned rows still belong to the server's
+  // onDate snapshot.
   const rawDate = sp.get('date') ?? '';
   const parsed = dayjs(rawDate, DATE, true);
   const day = parsed.isValid() ? parsed : dayjs();
 
   /**
-   * Подвкладка «Показаний» (Р1). Страница читает её только затем, чтобы не потерять при шаге по
-   * дням: саму полосу подвкладок и переключение рисует вкладка «Показания» — там же, где живут
-   * остальные ключи предмета (период, открытая карточка машины, открытый отчёт).
+   * Readings owns its sub-tab strip and selection (R1), alongside period, vehicle-card and report
+   * keys. The page only reads the sub-key to preserve it while stepping through days.
    */
   const sub = readingsSub(sp);
 
   const go = (patch: { tab?: string; date?: dayjs.Dayjs }) => {
-    // Параметры переписываются поверх текущих, а не задаются списком: у показаний в адресе живут
-    // свои ключи (`sub`, `from`, `to`, `vehicle`), и полная замена стирала бы период при каждом
-    // шаге по дням — то есть при возврате на вкладку показывала бы уже не тот отрезок.
+    // Patch existing parameters rather than replacing them: readings owns sub/from/to/vehicle,
+    // and replacing the query would erase its period on every day step, changing the interval
+    // shown when the user returns.
     const next = new URLSearchParams(sp);
     const nextTab = patch.tab ?? tab;
     next.set('tab', nextTab);
     next.set('date', (patch.date ?? day).format(DATE));
-    // Подвкладка называется в адресе только там, где она есть: на «Технике» ключ `sub` отвечал бы
-    // на вопрос, которого вкладке не задают.
+    // Name a sub-tab only where one exists; on Vehicles the sub key would describe no real control.
     if (nextTab === 'readings') next.set('sub', sub);
     else next.delete('sub');
 
-    // Перебор дней — не история переходов: «назад» должно возвращать на предыдущий экран, а не
-    // отматывать по одному дню всё, что пролистали.
+    // Day browsing is not navigation history: Back returns to the previous screen instead of
+    // replaying every inspected day. The existing tab switch shares this replace policy.
     setSp(next, { replace: true });
   };
 
   /**
-   * Управление днём: стрелки на соседние сутки и «Сегодня». Смотрят чаще всего завтра и сегодня,
-   * и попадать в календарь ради соседнего дня незачем.
+   * Day arrows and Today avoid opening a calendar for the most common adjacent-day comparison.
    */
   const dayControls = (
     <Space size={4}>
@@ -105,9 +111,9 @@ export function GaragePage() {
   );
 
   /**
-   * Управление днём отдано вкладкам, а не строке вкладок: место справа от них занято сводкой
-   * (`TabsExtra`), и второй `tabBarExtraContent` затёр бы её слот. Вкладка ставит день рядом со
-   * своей сводкой — там же, где он уезжает под вкладки на телефоне.
+   * Tabs own the day controls because TabsExtra already uses the strip's right-hand slot for
+   * summary counts; another tabBarExtraContent would overwrite it. Each tab puts the day beside
+   * its summary, with both moving below the strip on phones.
    */
   const items = [
     {
@@ -120,8 +126,8 @@ export function GaragePage() {
       label: 'Водители',
       children: <GarageDriversTab date={day.format(DATE)} dayControls={dayControls} />,
     },
-    // Своего дня у показаний нет — у обеих подвкладок период (ADR 0103, Р27, Р29), поэтому органы
-    // управления днём сюда не едут: он остаётся у двух вкладок, которые отвечают именно про день.
+    // Both readings sub-tabs use periods, not a snapshot day (ADR 0103, R27, R29). Day controls
+    // therefore stay with the two tabs that actually answer a daily question.
     ...(canReadReadings
       ? [
           {
@@ -132,18 +138,16 @@ export function GaragePage() {
         ]
       : []),
     /*
-     * Чеки на автозапчасти (план `docs/auto-part-receipts-plan.md`, Р1). Четвёртая вкладка, после
-     * «Показаний»; ключ адреса и подпись остались прежними — раздел «Автозапчасти» никуда не
-     * девался, сменился его предмет: вместо остатка на складе портал показывает купленное по
-     * чекам. Ссылки вида `?tab=parts` из переписки и закладок ведут туда же, куда вели.
+     * Auto-part receipts are the fourth tab after Readings (docs/auto-part-receipts-plan.md, R1).
+     * Its URL key and label stay unchanged: the subject became receipt purchases rather than
+     * warehouse stock, but existing ?tab=parts bookmarks and messages must still reach it.
      *
-     * Дня среза у вкладки нет и здесь, но причина другая, чем у склада: у чеков свой период (§8),
-     * и общий календарь страницы отвечал бы не на тот вопрос — суммы смотрят за месяц и за год, а
-     * не на дату.
+     * Receipts have their own period (§8): amounts are read over months or years, not on a
+     * snapshot date, so the common day picker would ask the wrong question here.
      *
-     * Своего права у вкладки нет: чеки читают все, кому виден гараж (Р5) — ответить «покупали ли
-     * на эту машину» должен и диспетчер, и менеджер. Правами закрыты действия внутри
-     * (`autoParts.manage` — ведение, `autoParts.delete` — удаление), а не сам список.
+     * No separate tab grant: anyone admitted to Garage may read receipts (R5), since both
+     * dispatchers and managers need to know whether parts were bought for a vehicle. Only
+     * actions require autoParts.manage or autoParts.delete; the list itself does not.
      */
     { key: 'parts', label: 'Автозапчасти', children: <AutoPartsTab /> },
   ];
