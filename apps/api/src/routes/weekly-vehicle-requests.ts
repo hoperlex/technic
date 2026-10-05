@@ -153,6 +153,9 @@ const suggestionQuerySchema = z.object({
 const creators = alias(users, 'weekly_creators');
 const updaters = alias(users, 'weekly_updaters');
 const approvers = alias(users, 'weekly_approvers');
+// Автор разворота (ADR 0218) — своим алиасом: у аннулированной заполнены и виза, и разворот, и
+// одним join'ом два имени не прочитать.
+const annullers = alias(users, 'weekly_annullers');
 const historyActors = alias(users, 'weekly_history_actors');
 /** Заказ-основание строки `extend`/`leave`. */
 const sourceRequests = alias(vehicleRequests, 'weekly_source_requests');
@@ -186,6 +189,10 @@ const weeklySelect = {
   status: weeklyVehicleRequests.status,
   comment: weeklyVehicleRequests.comment,
   cancelReason: weeklyVehicleRequests.cancelReason,
+  annulledBy: weeklyVehicleRequests.annulledBy,
+  annulledByName: annullers.fullName,
+  annulledAt: weeklyVehicleRequests.annulledAt,
+  annulReason: weeklyVehicleRequests.annulReason,
   approvedBy: weeklyVehicleRequests.approvedBy,
   approvedByName: approvers.fullName,
   approvedAt: weeklyVehicleRequests.approvedAt,
@@ -205,7 +212,8 @@ function headerQuery() {
     .innerJoin(constructionObjects, eq(weeklyVehicleRequests.objectId, constructionObjects.id))
     .innerJoin(creators, eq(weeklyVehicleRequests.createdBy, creators.id))
     .leftJoin(updaters, eq(weeklyVehicleRequests.updatedBy, updaters.id))
-    .leftJoin(approvers, eq(weeklyVehicleRequests.approvedBy, approvers.id));
+    .leftJoin(approvers, eq(weeklyVehicleRequests.approvedBy, approvers.id))
+    .leftJoin(annullers, eq(weeklyVehicleRequests.annulledBy, annullers.id));
 }
 
 type HeaderRow = Awaited<ReturnType<typeof headerQuery>>[number];
@@ -496,6 +504,10 @@ function toDto(header: HeaderRow, items: WeeklyRequestItemDto[]): WeeklyVehicleR
     status: header.status,
     comment: header.comment,
     cancelReason: header.cancelReason,
+    annulledBy: header.annulledBy,
+    annulledByName: header.annulledByName,
+    annulledAt: header.annulledAt ? header.annulledAt.toISOString() : null,
+    annulReason: header.annulReason,
     approvedBy: header.approvedBy,
     approvedByName: header.approvedByName,
     approvedAt: header.approvedAt ? header.approvedAt.toISOString() : null,

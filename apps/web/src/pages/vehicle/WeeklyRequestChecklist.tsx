@@ -13,7 +13,7 @@ import {
 } from '@technic/contracts';
 import type { WeeklyRequestHistoryEntryDto } from '@entities/weekly-request';
 import { EntityLink } from '@shared/ui';
-import { formatDateTime, useIsMobile } from '@shared/lib';
+import { formatDateOnly, formatDateTime, useIsMobile } from '@shared/lib';
 import { waybillLink } from '@entities/waybill';
 import { vehicleRequestLink } from '@entities/vehicle-request';
 import { ItemWarnings } from './weeklyShared';
@@ -162,6 +162,12 @@ export function WeeklyRequestChecklist({
       width: 200,
       render: (_v, r) => <DocumentCell cell={r.relocation} can={can} />,
     },
+    {
+      key: 'reversal',
+      title: 'Обратный ход',
+      width: 260,
+      render: (_v, r) => <ReversalCell row={r} />,
+    },
   ];
 
   const summary = (
@@ -207,6 +213,9 @@ export function WeeklyRequestChecklist({
               <div className="list-card__line">
                 Перегон: <DocumentCell cell={row.relocation} can={can} />
               </div>
+              <div className="list-card__line">
+                Обратный ход: <ReversalCell row={row} />
+              </div>
               {!!row.skipReason && (
                 <div className="list-card__line">
                   <Typography.Text type="danger">{row.skipReason}</Typography.Text>
@@ -232,6 +241,40 @@ export function WeeklyRequestChecklist({
       />
     </div>
   );
+}
+
+/**
+ * Чем развернуть эту строку — и что мешает (ADR 0218 решение 4).
+ *
+ * Состояние считает сервер тем же предикатом, которым считает команда аннулирования: в строке
+ * чек-листа нет ни статуса заказа, ни его эффективного конца, ни ожидающего отъезда, ни недель,
+ * решивших позже. Портал только показывает ответ — второе описание правила разошлось бы с первым
+ * молча, и подпись обещала бы ход, которым команда откажет.
+ */
+function ReversalCell({ row }: { row: WeeklyDocumentRowDto }) {
+  const reversal = row.reversal;
+  if (!reversal) return <Typography.Text type="secondary">—</Typography.Text>;
+  if (reversal.state === 'reverted') {
+    return (
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {reversal.reason || 'Разворачивать нечего'}
+      </Typography.Text>
+    );
+  }
+  if (reversal.state === 'blocked') {
+    return (
+      <Typography.Text type="danger" style={{ fontSize: 12 }}>
+        {reversal.reason}
+      </Typography.Text>
+    );
+  }
+  const text =
+    reversal.reverse === 'shorten_to' && reversal.shortenTo
+      ? `Срок вернётся к ${formatDateOnly(reversal.shortenTo)}`
+      : reversal.reverse === 'cancel'
+        ? 'Заказ будет отменён'
+        : 'Решение об отъезде перестанет действовать';
+  return <Tag color="green">{text}</Tag>;
 }
 
 /**

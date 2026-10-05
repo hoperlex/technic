@@ -1,6 +1,6 @@
 import { Alert, Button, Space } from 'antd';
 import type { WeeklyItemCounts, WeeklyVehicleRequestDto } from '@technic/contracts';
-import { formatDateOnly } from '@shared/lib';
+import { formatDateOnly, formatDateTime } from '@shared/lib';
 import { weeklyOverdueWord } from './weeklyShared';
 
 /**
@@ -74,6 +74,21 @@ export function WeeklyRequestBanners(props: Props) {
       )}
       {request.status === 'cancelled' && (
         <Alert type="warning" showIcon title={`Заявка снята: ${request.cancelReason}`} />
+      )}
+      {/* Аннулированная (ADR 0218) — своя плашка, а не та же, что у снятой: у снятой следствий не
+          было, а здесь виза была и её развернули. Состав ниже остаётся читаемым: он и объясняет,
+          что именно развернули. */}
+      {request.status === 'annulled' && (
+        <Alert
+          type="warning"
+          showIcon
+          title={`Заявка аннулирована: ${request.annulReason}`}
+          description={
+            request.annulledAt
+              ? `${formatDateTime(request.annulledAt)}${request.annulledByName ? `, ${request.annulledByName}` : ''}. Сроки заказов возвращены, порождённые заказы отменены — что именно развернули, видно в составе и в истории`
+              : 'Сроки заказов возвращены, порождённые заказы отменены — что именно развернули, видно в составе и в истории'
+          }
+        />
       )}
       {/* Черновик дожил до своей недели, а прошлое читающему закрыто — права нет вовсе либо не
           хватает его глубины: подать и завизировать нельзя, отменить можно всегда (§8). Одного 422

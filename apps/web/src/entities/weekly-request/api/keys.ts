@@ -33,6 +33,11 @@ export const weeklyRequestKeys = createQueryKeys('weekly-vehicle-requests', {
    */
   correction: (id: string | undefined) => [id, 'correction'],
   /**
+   * Что развернёт аннулирование (ADR 0218) — тем же приёмом, что `correction`: окно живёт и
+   * закрытым, запрос тогда выключен, а ключ всё равно собирается.
+   */
+  annul: (id: string | undefined) => [id, 'annul'],
+  /**
    * Срез площадки при любой паре «объект + неделя» — префикс для гашения.
    *
    * Нужен потому, что гасят срез не по своей паре: отказ применения (422) перечитывает его, чтобы

@@ -3,7 +3,10 @@ import { App, Card, Input, Skeleton } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router';
 import {
+  type AnnulWeeklyRequestBody,
+  isWeeklyRequestApplied,
   isWeeklyRequestEditable,
+  weeklyAnnulPermission,
   type WeeklyCorrectionBody,
   weeklyWeekEffectiveDate,
 } from '@technic/contracts';
@@ -18,6 +21,7 @@ import { weeklyRequestErrorMessage as errorMessage } from '@entities/weekly-requ
 import { useWeeklyComposition } from './weeklyComposition';
 import { WeeklyRequestActions } from './WeeklyRequestActions';
 import { WeeklyRequestBanners } from './WeeklyRequestBanners';
+import { WeeklyRequestAnnulModal } from './WeeklyRequestAnnulModal';
 import { WeeklyRequestConductModal } from './WeeklyRequestConductModal';
 import { WeeklyRequestComposition, WeeklyRequestLeaving } from './WeeklyRequestComposition';
 import { WeeklyRequestHeader, WeeklyRequestNotOpened } from './WeeklyRequestFrame';
@@ -71,6 +75,8 @@ export function WeeklyRequestPage() {
   const [reasonMode, setReasonMode] = useState<'cancel' | 'reject' | null>(null);
   /** Открыто окно проведения просроченной недели задним числом (ADR 0101). */
   const [conducting, setConducting] = useState(false);
+  /** Открыто окно аннулирования применённой недели (ADR 0218). */
+  const [annulling, setAnnulling] = useState(false);
 
   const requestQuery = useQuery({
     queryKey: weeklyRequestKeys.detail(id),
@@ -100,10 +106,12 @@ export function WeeklyRequestPage() {
     staleTime: 5 * 60_000,
   });
 
+  // Чек-лист живёт и у аннулированной: её строки объясняют, что развернули, и показываются в
+  // режиме чтения (ADR 0218 решение 9).
   const documentsQuery = useQuery({
     queryKey: weeklyRequestKeys.documents(id),
     queryFn: () => weeklyRequestsApi.documents(id),
-    enabled: !!id && status === 'applied',
+    enabled: !!id && !!status && isWeeklyRequestApplied(status),
   });
   const historyQuery = useQuery({
     queryKey: weeklyRequestKeys.history(id),
@@ -247,6 +255,24 @@ export function WeeklyRequestPage() {
     onSuccess: () => {
       setReasonMode(null);
       message.success('Заявка снята');
+      invalidate();
+    },
+    onError,
+  });
+
+  const annulMut = useMutation({
+    mutationFn: (body: AnnulWeeklyRequestBody) => weeklyRequestsApi.annul(request!.id, body),
+    onSuccess: (result) => {
+      setAnnulling(false);
+      clearApplyError();
+      const parts = [
+        result.shortened.length > 0 ? `сроков возвращено: ${result.shortened.length}` : null,
+        result.cancelled.length > 0 ? `заказов отменено: ${result.cancelled.length}` : null,
+        result.esm2.cancelled > 0 ? `листов аннулировано: ${result.esm2.cancelled}` : null,
+      ].filter((part) => part !== null);
+      message.success(
+        parts.length > 0 ? `Неделя аннулирована — ${parts.join(', ')}` : 'Неделя аннулирована',
+      );
       invalidate();
     },
     onError,
@@ -400,6 +426,16 @@ export function WeeklyRequestPage() {
         onConduct={() => setConducting(true)}
         onReject={() => setReasonMode('reject')}
         onCancel={() => setReasonMode('cancel')}
+        onAnnul={
+          // Кнопка показывается по дешёвой проверке — статус и право субъекта хотя бы по одной
+          // ветви; цену и запреты называет окно, спросив сервер при открытии. Ветвь права тут
+          // неизвестна (она зависит от снимаемых дней), поэтому спрашиваются оба случая: что
+          // именно потребуется, решит предпросмотр.
+          status === 'applied' &&
+          [...weeklyAnnulPermission(false), ...weeklyAnnulPermission(true)].some(can)
+            ? () => setAnnulling(true)
+            : null
+        }
       />
 
       {/* Окно проведения задним числом: цену операции спрашивают у сервера тем же кодом, которым
@@ -410,6 +446,15 @@ export function WeeklyRequestPage() {
         onClose={() => setConducting(false)}
         onConduct={(correction) => approveMut.mutate({ approved: true, comment: '', correction })}
         pending={approveMut.isPending}
+      />
+
+      {/* Окно аннулирования: цену развёрнутого спрашивают у сервера тем же кодом, которым он её
+          исполнит (ADR 0218), а причину и листы к перевыписке — у человека. */}
+      <WeeklyRequestAnnulModal
+        request={annulling ? request : null}
+        onClose={() => setAnnulling(false)}
+        onAnnul={(body) => annulMut.mutate(body)}
+        pending={annulMut.isPending}
       />
 
       <ReasonModal

@@ -544,12 +544,20 @@ export function VehicleRequestViewModal({
                 key: 'weeklyOrigin',
                 label: 'Создан по недельной заявке',
                 children: (
-                  <EntityLink
-                    to={weeklyRequestPath(weekly.origin.weeklyRequestId)}
-                    title="Открыть недельную заявку"
-                  >
-                    {formatWeeklyRequestNumber(weekly.origin.weeklyRequestNum)}
-                  </EntityLink>
+                  <>
+                    <EntityLink
+                      to={weeklyRequestPath(weekly.origin.weeklyRequestId)}
+                      title="Открыть недельную заявку"
+                    >
+                      {formatWeeklyRequestNumber(weekly.origin.weeklyRequestNum)}
+                    </EntityLink>
+                    {/* Состояние недели — рядом с номером (ADR 0218): «создан по НЗ-12» и
+                        «создан по НЗ-12 (аннулирована)» разные утверждения, и второе объясняет,
+                        почему заказ отменён. */}
+                    {weekly.origin.weeklyRequestStatus === 'annulled' && (
+                      <Typography.Text type="secondary"> (аннулирована)</Typography.Text>
+                    )}
+                  </>
                 ),
               },
             ]
@@ -574,7 +582,8 @@ export function VehicleRequestViewModal({
                           {formatWeeklyRequestNumber(e.weeklyRequestNum)}
                         </EntityLink>{' '}
                         <Typography.Text type="secondary">
-                          ({weeklyWeekLabel(e.weekStart)})
+                          ({weeklyWeekLabel(e.weekStart)}
+                          {e.weeklyRequestStatus === 'annulled' ? ', аннулирована' : ''})
                         </Typography.Text>
                       </span>
                     ))}

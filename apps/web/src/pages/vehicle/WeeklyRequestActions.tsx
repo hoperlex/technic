@@ -54,6 +54,12 @@ interface Props {
   onConduct: () => void;
   onReject: () => void;
   onCancel: () => void;
+  /**
+   * Аннулировать применённую неделю; `null` — кнопки нет (заявка не применена либо права нет ни по
+   * одной ветви). Признаком, а не булевым полем рядом с обработчиком: два поля на одно условие
+   * разошлись бы при первой правке.
+   */
+  onAnnul: (() => void) | null;
 }
 
 export function WeeklyRequestActions(props: Props) {
@@ -142,6 +148,15 @@ export function WeeklyRequestActions(props: Props) {
         {props.editable && (
           <Button danger onClick={props.onCancel}>
             Снять заявку
+          </Button>
+        )}
+        {/* Аннулирование применённой недели (ADR 0218). Кнопка показывается по статусу и праву, а
+            цену и запреты называет окно: их считает сервер тем же кодом, которым исполнит, и
+            предпросмотр для этого ходит за планом истории и бумаги по каждой строке — платить это
+            за каждый показ карточки незачем. */}
+        {props.onAnnul && (
+          <Button danger onClick={props.onAnnul}>
+            Аннулировать неделю
           </Button>
         )}
       </Space>

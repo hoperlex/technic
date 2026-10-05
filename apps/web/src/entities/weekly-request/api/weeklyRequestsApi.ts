@@ -1,7 +1,9 @@
 import type {
+  AnnulWeeklyRequestBody,
   ApproveWeeklyRequestBody,
   CreateWeeklyRequestBody,
   UpdateWeeklyRequestBody,
+  WeeklyAnnulPreviewDto,
   WeeklyApplyResultDto,
   WeeklyCorrectionPreviewDto,
   WeeklyRequestDocumentsDto,
@@ -57,6 +59,16 @@ export interface WeeklyRequestHistoryEntryDto {
  * подача заявки тем, кто её и визирует, применяет её сразу же (Р8) — и «сколько строк прошло»
  * отвечает только применение. У отказа и снятия итога нет вовсе, поэтому `apply` бывает `null`.
  */
+/** Что аннулирование развернуло — им окно рассказывает об итоге, а список обновляет карточку. */
+export interface WeeklyAnnulResultDto {
+  weeklyRequestId: string;
+  status: 'annulled';
+  shortened: { requestId: string; displayNumber: string; dateTo: string }[];
+  cancelled: { requestId: string; displayNumber: string }[];
+  released: number;
+  esm2: { cancelled: number; issued: number };
+}
+
 export interface WeeklyDecisionResultDto {
   request: WeeklyVehicleRequestDto;
   apply: WeeklyApplyResultDto | null;
@@ -119,6 +131,32 @@ export const weeklyRequestsApi = {
    */
   correctionPreview: (id: string) =>
     apiFetch<WeeklyCorrectionPreviewDto>(`/weekly-vehicle-requests/${id}/correction`),
+  /**
+   * Что развернёт аннулирование этой недели (ADR 0218): какие листы ЭСМ-2 сгорят, какие
+   * подрежутся, какие отработанные придётся назвать поимённо, какие запланированные решения
+   * погаснут и какие дни уйдут из рейсов.
+   *
+   * Считает это сервер тем же кодом, которым будет исполнять, и возвращает отпечаток последствий —
+   * его окно присылает обратно. Расчёта у портала своего нет: разойдись они, окно обещало бы не
+   * то, что произойдёт.
+   *
+   * Запрашивается **при нажатии**, а не при открытии карточки: расчёт строит план истории и бумаги
+   * по каждой продлённой строке, и платить это за каждый показ карточки незачем.
+   */
+  annulPreview: (id: string) =>
+    apiFetch<WeeklyAnnulPreviewDto>(`/weekly-vehicle-requests/${id}/annul`),
+  /**
+   * Аннулировать применённую неделю. Тело несёт причину, версию шапки и отпечатки — последствий и
+   * перечня гасимых решений; у ветви коррекции ещё ключ операции и названные к перевыписке листы.
+   *
+   * Повтор с тем же `operationId` — не ошибка, а ответ на обрыв связи: сервер возвращает прежний
+   * результат, ничего не двигая второй раз. Ключ придумывает окно до отправки и держит неизменным.
+   */
+  annul: (id: string, body: AnnulWeeklyRequestBody) =>
+    apiFetch<WeeklyAnnulResultDto>(`/weekly-vehicle-requests/${id}/annul`, {
+      method: 'POST',
+      body,
+    }),
   /** Чек-лист готовности недели (§5 шаг 6) — экран, ради которого модуль и делается. */
   documents: (id: string) =>
     apiFetch<WeeklyRequestDocumentsDto>(`/weekly-vehicle-requests/${id}/documents`),

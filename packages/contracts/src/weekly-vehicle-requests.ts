@@ -1169,6 +1169,15 @@ export interface WeeklyVehicleRequestDto {
   cancelReason: string;
 
   /**
+   * Разворот применённой заявки (ADR 0218): кто аннулировал, когда и почему. Заполнено ровно у
+   * аннулированной — CHECK схемы держит полную развилку, а не три «или».
+   */
+  annulledBy: string | null;
+  annulledByName: string | null;
+  annulledAt: string | null;
+  annulReason: string;
+
+  /**
    * Виза руководителя строительства. Заполнена ровно у применённой заявки: виза и применение —
    * одно событие (Р6), и «завизирована, но не применена» физически невозможно.
    */
