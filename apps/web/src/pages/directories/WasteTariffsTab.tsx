@@ -8,7 +8,7 @@ import { WasteTariffRegistry } from '@widgets/waste-tariff-registry';
 
 /** Compose tariff-grid reading with independent price and waste-type actions. */
 export function WasteTariffsTab() {
-  // Permanent removal (ADR 0060) remains distinct from the ordinary isActive lifecycle because
+  // Permanent removal (docs/adr/0060-directory-record-purge.md) remains distinct from the ordinary isActive lifecycle because
   // historical request snapshots can still refer to a deactivated tariff or waste type.
   const purgeTariff = usePurgeAction({
     subject: 'цену',

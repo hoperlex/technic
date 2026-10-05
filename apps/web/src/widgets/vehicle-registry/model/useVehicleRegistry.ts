@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { counterpartyActiveVehicleLessorsQuery } from '@entities/counterparty';
 import {
   rentalVehicleStatusOptions,
   vehicleKeys,
@@ -34,18 +34,9 @@ export function useVehicleRegistry() {
     .map((type) => ({ value: type.id, label: type.name }));
 
   // Lessors are pure counterparty records; they have no portal accounts of their own.
-  const { data: lessorsData, isLoading: lessorsLoading } = useQuery({
-    queryKey: counterpartyKeys.activeVehicleLessorOptions(),
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        type: 'vehicle_lessor',
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
-  });
+  const { data: lessorsData, isLoading: lessorsLoading } = useQuery(
+    counterpartyActiveVehicleLessorsQuery(),
+  );
   const lessorOptions = (lessorsData?.items ?? []).map((lessor) => ({
     value: lessor.id,
     label: lessor.name,

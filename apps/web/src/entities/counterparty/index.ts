@@ -9,6 +9,9 @@
  */
 export { counterpartiesApi } from './api/counterpartiesApi';
 export { counterpartyKeys } from './api/keys';
-export { counterpartyOperatorGridQuery } from './api/queries';
+export {
+  counterpartyActiveVehicleLessorsQuery,
+  counterpartyOperatorGridQuery,
+} from './api/queries';
 export { counterpartyTypeOptions } from './model/options';
 export { counterpartyErrorMessage } from './model/errorMessage';

@@ -190,8 +190,9 @@ export function CounterpartyFormFields({
         name="isActive"
         label="Активен"
         valuePropName="checked"
-        // An inactive lessor cannot own active offers (ADR 0018 §15): deactivation switches every
-        // offer off, while reactivation restores only those not independently disabled.
+        // An inactive lessor cannot own active offers (ADR 0018 §15, a database CHECK): deactivation
+        // switches every offer off, while reactivation restores only those not independently
+        // disabled (§14).
         extra={
           watchType === 'vehicle_lessor'
             ? 'Деактивация выключит всю технику этого арендодателя, активация — вернёт ровно её (позиции, выключенные вручную, останутся выключенными)'

@@ -18,3 +18,22 @@ export const counterpartyOperatorGridQuery = () =>
         type: 'operator',
       }),
   });
+
+/**
+ * Active vehicle lessors for the fleet filter and the vehicle form. One carrier for the key and its
+ * request: two components asking the same key with different requests would silently share
+ * whichever answer arrived first.
+ */
+export const counterpartyActiveVehicleLessorsQuery = () =>
+  queryOptions({
+    queryKey: counterpartyKeys.activeVehicleLessorOptions(),
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        type: 'vehicle_lessor',
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });

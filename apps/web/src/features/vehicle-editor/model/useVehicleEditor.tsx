@@ -10,7 +10,7 @@ import {
   parseVehicleClassificationKey,
   rentalActivationBlockReason,
 } from '@technic/contracts';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { counterpartyActiveVehicleLessorsQuery } from '@entities/counterparty';
 import { garageKeys } from '@entities/garage';
 import {
   vehicleErrorMessage as errorMessage,
@@ -55,18 +55,9 @@ export function useVehicleEditor(): VehicleEditorController {
 
   const { groups: classificationGroups, loading: classificationsLoading } =
     useVehicleClassifications();
-  const { data: lessorsData, isLoading: lessorsLoading } = useQuery({
-    queryKey: counterpartyKeys.activeVehicleLessorOptions(),
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        type: 'vehicle_lessor',
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
-  });
+  const { data: lessorsData, isLoading: lessorsLoading } = useQuery(
+    counterpartyActiveVehicleLessorsQuery(),
+  );
   const activeLessorOptions = (lessorsData?.items ?? []).map((lessor) => ({
     value: lessor.id,
     label: lessor.name,
@@ -184,10 +175,11 @@ export function useVehicleEditor(): VehicleEditorController {
         message.warning(unhitchedNotice(unhitchedTrailers, 'этой правкой'), 8);
       }
       void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
-      // The trailer registry has its own root and embeds the tractor in each row. This edit can
-      // both change that embedded card and release its hitches (retirement or form No. 3). Dropping
-      // only vehicleKeys.root would leave the registry and card slots showing an old tractor or
-      // a hitch the server has already released.
+      // The trailer registry has its own root and embeds the tractor in each row (hitchedVehicle).
+      // This edit can both change that embedded card and release its hitches on the server
+      // (releaseHitchesOfVehicle, on retirement or a move to form No. 3). Dropping only
+      // vehicleKeys.root would leave the registry and the card's trailer slots showing an old
+      // tractor or a hitch the server has already released.
       void queryClient.invalidateQueries({ queryKey: trailerKeys.root });
       void queryClient.invalidateQueries({ queryKey: garageKeys.root });
       setOpen(false);

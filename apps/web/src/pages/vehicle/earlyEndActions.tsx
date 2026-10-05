@@ -12,7 +12,9 @@ import { VehicleEarlyEndApproveModal } from './VehicleEarlyEndApproveModal';
  * Stage 4 debt: remove this adapter together with the lifecycle renderer ports after the history
  * dialogs and their shared consequence helpers have owners below widgets. Moving only the dialog
  * would create a feature-to-feature dependency on assignment. Both pages already use the same
- * early-end action renderer and stale-reason reader; only dialog composition remains here.
+ * early-end action renderer and stale-reason reader; only dialog composition remains here. The
+ * approval dialog is still injected twice (here and in useVehicleRequestOperations): until the
+ * adapter goes, any change to how it is composed must be made in both places.
  */
 export function useEarlyEnd() {
   return useVehicleRequestEarlyEnd({

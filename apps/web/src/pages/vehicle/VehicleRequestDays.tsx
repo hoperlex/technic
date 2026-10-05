@@ -37,8 +37,9 @@ import { VehicleDayRouteModal } from '@widgets/vehicle-route-windows';
  * prohibit a batch: it takes the assigned vehicle and skips conflicting days with a reason rather
  * than moving them.
  *
- * The week window, reads and planning commands form their own block. Keeping them inside the
- * request card made that card exceed its size budget and hid a separate planning workflow.
+ * A file of its own, not a block of the request card: the card sits right at its length limit,
+ * while this table — with its week window, three queries and two mutations — is a self-contained
+ * planning workflow.
  */
 
 interface Props {

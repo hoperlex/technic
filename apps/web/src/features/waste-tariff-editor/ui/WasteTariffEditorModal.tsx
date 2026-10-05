@@ -44,6 +44,11 @@ interface Option {
   label: string;
 }
 
+/**
+ * Permanent removal (docs/adr/0060-directory-record-purge.md) lives in the modal footer because grid
+ * rows carry no actions: the open modal names the subject — the price card removes a price, the
+ * waste type card removes a type.
+ */
 export interface PurgeControl {
   allowed: boolean;
   pending: boolean;

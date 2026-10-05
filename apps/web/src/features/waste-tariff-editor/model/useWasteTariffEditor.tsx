@@ -34,6 +34,8 @@ export function useWasteTariffEditor(purge: PurgeControl): WasteTariffEditorCont
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<WasteTariffDto | null>(null);
   const [form] = Form.useForm<WasteTariffFormValues>();
+  // Form option lists include inactive records on purpose: a price may predate a deactivation, and
+  // editing it must show the saved waste or container type, not an empty field or a raw id.
   const { data: wasteTypesData, isLoading: wasteTypesLoading } = useQuery(
     wasteTypeOptionsQuery({ pricedOnly: false }),
   );
@@ -117,6 +119,8 @@ export function useWasteTariffEditor(purge: PurgeControl): WasteTariffEditorCont
     setOpen(true);
   };
 
+  // Saving a price never reprices issued requests: each request keeps a snapshot of the tariff it
+  // was priced with (ADR 0009), so only new requests see the change.
   const save = useMutation({
     mutationFn: (values: WasteTariffFormValues) => {
       const common = {
