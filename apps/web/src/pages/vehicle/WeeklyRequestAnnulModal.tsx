@@ -92,197 +92,203 @@ export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: 
   return (
     <FormModal
       open={!!request}
-      title={`Аннулировать неделю ${request?.displayNumber ?? ''}`}
+      title={
+        request
+          ? `${request.displayNumber} · аннулировать неделю`
+          : 'Аннулирование недельной заявки'
+      }
       okText="Аннулировать"
-      okButtonProps={{ danger: true, disabled: !preview?.allowed }}
+      okDanger
+      okDisabled={!preview?.allowed}
       confirmLoading={pending}
       onCancel={onClose}
-      form={form}
-      onSubmit={submit}
+      onSubmit={() => form.submit()}
       width={720}
     >
-      {previewQuery.isPending && <Skeleton active paragraph={{ rows: 6 }} />}
+      <Form<FormValues> form={form} layout="vertical" onFinish={submit}>
+        {previewQuery.isPending && <Skeleton active paragraph={{ rows: 6 }} />}
 
-      {preview && !preview.allowed && (
-        <Alert
-          type="error"
-          showIcon
-          style={{ marginBottom: 16 }}
-          title="Аннулировать нельзя"
-          description={preview.blockedReason}
-        />
-      )}
-
-      {preview && (
-        <>
-          {/* Ветвь — первой строкой: «задним числом» меняет и право, и цену, и человек обязан
-              увидеть это раньше перечня строк. */}
+        {preview && !preview.allowed && (
           <Alert
-            type={preview.backdated ? 'warning' : 'info'}
+            type="error"
             showIcon
             style={{ marginBottom: 16 }}
-            title={
-              preview.backdated ? 'Операция идёт задним числом' : 'Снимаемые дни ещё не наступили'
-            }
-            description={
-              <ul style={{ margin: 0, paddingInlineStart: 20 }}>
-                {preview.effectiveDate && (
-                  <li>
-                    Первый снимаемый день — {formatDateOnly(preview.effectiveDate)}
-                    {preview.backdated ? ', он уже прошёл' : ', он ещё впереди'}.
-                  </li>
-                )}
-                {preview.requiresOperation && (
-                  <li>
-                    Причина и ключ операции останутся в журнале коррекций вместе с вашим именем:
-                    через месяцы по ним объяснят, почему неделю развернули.
-                  </li>
-                )}
-                {preview.paper.cancel + preview.paper.reissue > 0 && (
-                  <li>
-                    Листы ЭСМ-2 будут аннулированы: {preview.paper.cancel} без замены,{' '}
-                    {preview.paper.reissue} с перевыпиской. Списанный номер не возвращается.
-                  </li>
-                )}
-                {preview.paper.trim > 0 && (
-                  <li>
-                    Листов с подрезкой периода: {preview.paper.trim}
-                    {preview.paper.trimmedTo
-                      ? ` — по ${formatDateOnly(preview.paper.trimmedTo)}`
-                      : ''}
-                    . Номер у них не горит.
-                  </li>
-                )}
-                {preview.shifts.length > 0 && (
-                  <li>
-                    Снимутся незаполненные смены за {preview.shifts.length} дн.:{' '}
-                    {preview.shifts.map(formatDateOnly).join(', ')}.
-                  </li>
-                )}
-                {preview.linearDays.detachable.length > 0 && (
-                  <li>
-                    Дни уйдут из рейсов:{' '}
-                    {preview.linearDays.detachable.map(formatDateOnly).join(', ')}.
-                  </li>
-                )}
-                {preview.pendingWeeks.length > 0 && (
-                  <li>
-                    По тем же заказам собираются недели {preview.pendingWeeks.join(', ')} — их
-                    строки после разворота придётся пересобрать: срок заказа изменится.
-                  </li>
-                )}
-              </ul>
-            }
+            title="Аннулировать нельзя"
+            description={preview.blockedReason}
           />
+        )}
 
-          {/* Строки состава — перечнем с ходом и причиной: отказ и окно называют препятствие
-              одними словами, потому что текст один и приходит с сервера. */}
-          <Typography.Paragraph strong style={{ marginBottom: 8 }}>
-            Что будет со строками
-          </Typography.Paragraph>
-          <ul style={{ margin: '0 0 16px', paddingInlineStart: 20 }}>
-            {preview.items.map((item) => (
-              <li key={item.itemId} style={{ marginBottom: 4 }}>
-                <Tag color={STATE_TAGS[item.state].color}>{STATE_TAGS[item.state].text}</Tag>
-                {item.displayNumber ? `${item.displayNumber} · ` : ''}
-                {weeklyItemKindLabels[item.kind]}
-                {item.reverse === 'shorten_to' && item.shortenTo
-                  ? ` — срок вернётся к ${formatDateOnly(item.shortenTo)}`
-                  : item.reverse === 'cancel'
-                    ? ' — заказ будет отменён'
-                    : item.reverse === 'release_leave'
-                      ? ' — решение об отъезде перестанет действовать'
-                      : ''}
-                {item.reason ? ` — ${item.reason}` : ''}
-              </li>
-            ))}
-          </ul>
-
-          {preview.blockers.length > 0 && (
+        {preview && (
+          <>
+            {/* Ветвь — первой строкой: «задним числом» меняет и право, и цену, и человек обязан
+              увидеть это раньше перечня строк. */}
             <Alert
-              type="error"
+              type={preview.backdated ? 'warning' : 'info'}
               showIcon
               style={{ marginBottom: 16 }}
-              title="Факты работы на снимаемых днях"
+              title={
+                preview.backdated ? 'Операция идёт задним числом' : 'Снимаемые дни ещё не наступили'
+              }
               description={
                 <ul style={{ margin: 0, paddingInlineStart: 20 }}>
-                  {preview.blockers.map((blocker, index) => (
-                    <li key={`${blocker.code}-${blocker.itemId}-${index}`}>
-                      {blocker.message}
-                      {blocker.dates.length > 0
-                        ? `: ${blocker.dates.map(formatDateOnly).join(', ')}`
+                  {preview.effectiveDate && (
+                    <li>
+                      Первый снимаемый день — {formatDateOnly(preview.effectiveDate)}
+                      {preview.backdated ? ', он уже прошёл' : ', он ещё впереди'}.
+                    </li>
+                  )}
+                  {preview.requiresOperation && (
+                    <li>
+                      Причина и ключ операции останутся в журнале коррекций вместе с вашим именем:
+                      через месяцы по ним объяснят, почему неделю развернули.
+                    </li>
+                  )}
+                  {preview.paper.cancel + preview.paper.reissue > 0 && (
+                    <li>
+                      Листы ЭСМ-2 будут аннулированы: {preview.paper.cancel} без замены,{' '}
+                      {preview.paper.reissue} с перевыпиской. Списанный номер не возвращается.
+                    </li>
+                  )}
+                  {preview.paper.trim > 0 && (
+                    <li>
+                      Листов с подрезкой периода: {preview.paper.trim}
+                      {preview.paper.trimmedTo
+                        ? ` — по ${formatDateOnly(preview.paper.trimmedTo)}`
                         : ''}
+                      . Номер у них не горит.
                     </li>
-                  ))}
+                  )}
+                  {preview.shifts.length > 0 && (
+                    <li>
+                      Снимутся незаполненные смены за {preview.shifts.length} дн.:{' '}
+                      {preview.shifts.map(formatDateOnly).join(', ')}.
+                    </li>
+                  )}
+                  {preview.linearDays.detachable.length > 0 && (
+                    <li>
+                      Дни уйдут из рейсов:{' '}
+                      {preview.linearDays.detachable.map(formatDateOnly).join(', ')}.
+                    </li>
+                  )}
+                  {preview.pendingWeeks.length > 0 && (
+                    <li>
+                      По тем же заказам собираются недели {preview.pendingWeeks.join(', ')} — их
+                      строки после разворота придётся пересобрать: срок заказа изменится.
+                    </li>
+                  )}
                 </ul>
               }
             />
-          )}
 
-          {preview.cancelGroups.length > 0 && (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 16 }}
-              title="Погаснут запланированные решения"
-              description={
-                <ul style={{ margin: 0, paddingInlineStart: 20 }}>
-                  {preview.cancelGroups.map((group, index) => (
-                    <li key={`${group.effectiveDate}-${index}`}>
-                      {group.title} ({group.dimensions.join(', ')}) — с{' '}
-                      {formatDateOnly(group.effectiveDate)}. Их придётся завести заново, если
-                      решение остаётся в силе.
-                    </li>
-                  ))}
-                </ul>
-              }
-            />
-          )}
+            {/* Строки состава — перечнем с ходом и причиной: отказ и окно называют препятствие
+              одними словами, потому что текст один и приходит с сервера. */}
+            <Typography.Paragraph strong style={{ marginBottom: 8 }}>
+              Что будет со строками
+            </Typography.Paragraph>
+            <ul style={{ margin: '0 0 16px', paddingInlineStart: 20 }}>
+              {preview.items.map((item) => (
+                <li key={item.itemId} style={{ marginBottom: 4 }}>
+                  <Tag color={STATE_TAGS[item.state].color}>{STATE_TAGS[item.state].text}</Tag>
+                  {item.displayNumber ? `${item.displayNumber} · ` : ''}
+                  {weeklyItemKindLabels[item.kind]}
+                  {item.reverse === 'shorten_to' && item.shortenTo
+                    ? ` — срок вернётся к ${formatDateOnly(item.shortenTo)}`
+                    : item.reverse === 'cancel'
+                      ? ' — заказ будет отменён'
+                      : item.reverse === 'release_leave'
+                        ? ' — решение об отъезде перестанет действовать'
+                        : ''}
+                  {item.reason ? ` — ${item.reason}` : ''}
+                </li>
+              ))}
+            </ul>
 
-          {/* Листы отработанных недель — поимённо, а не общей галочкой: в одной неделе законно
+            {preview.blockers.length > 0 && (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginBottom: 16 }}
+                title="Факты работы на снимаемых днях"
+                description={
+                  <ul style={{ margin: 0, paddingInlineStart: 20 }}>
+                    {preview.blockers.map((blocker, index) => (
+                      <li key={`${blocker.code}-${blocker.itemId}-${index}`}>
+                        {blocker.message}
+                        {blocker.dates.length > 0
+                          ? `: ${blocker.dates.map(formatDateOnly).join(', ')}`
+                          : ''}
+                      </li>
+                    ))}
+                  </ul>
+                }
+              />
+            )}
+
+            {preview.cancelGroups.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                title="Погаснут запланированные решения"
+                description={
+                  <ul style={{ margin: 0, paddingInlineStart: 20 }}>
+                    {preview.cancelGroups.map((group, index) => (
+                      <li key={`${group.effectiveDate}-${index}`}>
+                        {group.title} ({group.dimensions.join(', ')}) — с{' '}
+                        {formatDateOnly(group.effectiveDate)}. Их придётся завести заново, если
+                        решение остаётся в силе.
+                      </li>
+                    ))}
+                  </ul>
+                }
+              />
+            )}
+
+            {/* Листы отработанных недель — поимённо, а не общей галочкой: в одной неделе законно
               живут листы двух машин, и «переписать все прошлые» сожгло бы не тот номер. */}
-          {preview.unlockableCount > 0 && (
+            {preview.unlockableCount > 0 && (
+              <Form.Item
+                name="unlockWaybillIds"
+                label="Листы ЭСМ-2 к перевыписке"
+                extra={
+                  preview.unlockable
+                    ? 'Отмеченные номера будут аннулированы, взамен выпишутся новые — следующими по серии. Неотмеченный лист запирает свои дни, и неделя не аннулируется'
+                    : 'Номера бланков показываются тому, кто ведёт журнал листов. Отметить их может диспетчер'
+                }
+              >
+                {preview.unlockable ? (
+                  <Checkbox.Group
+                    style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+                    options={preview.unlockable.map((sheet) => ({
+                      value: sheet.waybillId,
+                      label: `${sheet.displayNumber} · № ${sheet.number} · ${formatDateOnly(sheet.periodFrom)} – ${formatDateOnly(sheet.periodTo)}`,
+                    }))}
+                  />
+                ) : (
+                  <Typography.Text type="secondary">
+                    Отработанных листов на снимаемых днях: {preview.unlockableCount}
+                  </Typography.Text>
+                )}
+              </Form.Item>
+            )}
+
+            {/* Причина обязательна всегда, а не только у ветви коррекции: она объясняет сам
+              документ — почему эту неделю развернули, — и остаётся в его шапке. */}
             <Form.Item
-              name="unlockWaybillIds"
-              label="Листы ЭСМ-2 к перевыписке"
+              name="reason"
+              label="Причина аннулирования"
+              rules={[{ required: true, message: 'Укажите причину' }]}
               extra={
-                preview.unlockable
-                  ? 'Отмеченные номера будут аннулированы, взамен выпишутся новые — следующими по серии. Неотмеченный лист запирает свои дни, и неделя не аннулируется'
-                  : 'Номера бланков показываются тому, кто ведёт журнал листов. Отметить их может диспетчер'
+                preview.requiresOperation
+                  ? 'Останется в шапке заявки и в журнале коррекций, а также в листах, переоформленных этой операцией'
+                  : 'Останется в шапке заявки и в её истории'
               }
             >
-              {preview.unlockable ? (
-                <Checkbox.Group
-                  style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
-                  options={preview.unlockable.map((sheet) => ({
-                    value: sheet.waybillId,
-                    label: `${sheet.displayNumber} · № ${sheet.number} · ${formatDateOnly(sheet.periodFrom)} – ${formatDateOnly(sheet.periodTo)}`,
-                  }))}
-                />
-              ) : (
-                <Typography.Text type="secondary">
-                  Отработанных листов на снимаемых днях: {preview.unlockableCount}
-                </Typography.Text>
-              )}
+              <Input.TextArea rows={2} maxLength={2000} showCount />
             </Form.Item>
-          )}
-
-          {/* Причина обязательна всегда, а не только у ветви коррекции: она объясняет сам
-              документ — почему эту неделю развернули, — и остаётся в его шапке. */}
-          <Form.Item
-            name="reason"
-            label="Причина аннулирования"
-            rules={[{ required: true, message: 'Укажите причину' }]}
-            extra={
-              preview.requiresOperation
-                ? 'Останется в шапке заявки и в журнале коррекций, а также в листах, переоформленных этой операцией'
-                : 'Останется в шапке заявки и в её истории'
-            }
-          >
-            <Input.TextArea rows={2} maxLength={2000} showCount />
-          </Form.Item>
-        </>
-      )}
+          </>
+        )}
+      </Form>
     </FormModal>
   );
 }
