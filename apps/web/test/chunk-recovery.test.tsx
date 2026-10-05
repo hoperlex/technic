@@ -46,7 +46,7 @@ describe('восстановление загрузки чанка', () => {
     }
     renderWithUser(<Harness />);
 
-    const recovery = await screen.findByRole('alertdialog', {
+    const recovery = await screen.findByRole('alert', {
       name: 'Не удалось загрузить часть портала',
     });
     expect(screen.getByText('Каркас портала')).toBeDefined();
@@ -69,12 +69,12 @@ describe('восстановление загрузки чанка', () => {
     const event = new Event('vite:preloadError', { cancelable: true });
     fireEvent(window, event);
     expect(event.defaultPrevented).toBe(true);
-    expect(
-      screen.getByRole('alertdialog', { name: 'Не удалось загрузить часть портала' }),
-    ).toBeDefined();
+    expect(screen.getByRole('alert', { name: 'Не удалось загрузить часть портала' })).toBeDefined();
     expect(reloadPage).not.toHaveBeenCalled();
     fireEvent(window, new Event('vite:preloadError', { cancelable: true }));
-    expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+    expect(
+      screen.getAllByRole('alert', { name: 'Не удалось загрузить часть портала' }),
+    ).toHaveLength(1);
     expect(reloadPage).not.toHaveBeenCalled();
   });
 
@@ -117,7 +117,7 @@ describe('восстановление загрузки чанка', () => {
     const draft = (await screen.findByLabelText('Черновик прогретого раздела')) as HTMLInputElement;
     fireEvent.change(draft, { target: { value: 'Изменённый черновик' } });
     fireEvent.click(screen.getByRole('button', { name: 'Переключить вкладку' }));
-    const recovery = await screen.findByRole('alertdialog', {
+    const recovery = await screen.findByRole('alert', {
       name: 'Не удалось загрузить часть портала',
     });
     expect(draft.value).toBe('Изменённый черновик');
@@ -125,13 +125,18 @@ describe('восстановление загрузки чанка', () => {
     expect(loadLeaf).toHaveBeenCalledTimes(1);
     expect(reloadPage).not.toHaveBeenCalled();
     expect(within(recovery).queryByRole('button', { name: 'Позже' })).toBeNull();
+    // A chunk failure must not mask the document: the open draft stays editable (decision
+    // 06.10.2026); only a server version refusal (426) blocks the screen.
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+    fireEvent.change(draft, { target: { value: 'Дописанный после отказа' } });
+    expect(draft.value).toBe('Дописанный после отказа');
 
     // Remounting a failed lazy leaf cannot repair its cached rejection or discard the parent draft.
     fireEvent.click(screen.getByRole('button', { name: 'Переключить вкладку' }));
     fireEvent.click(screen.getByRole('button', { name: 'Переключить вкладку' }));
     expect(loadSection).toHaveBeenCalledTimes(1);
     expect(loadLeaf).toHaveBeenCalledTimes(1);
-    expect(draft.value).toBe('Изменённый черновик');
+    expect(draft.value).toBe('Дописанный после отказа');
     expect(reloadPage).not.toHaveBeenCalled();
     fireEvent.click(within(recovery).getByRole('button', { name: /Обновить страницу/u }));
     expect(reloadPage).toHaveBeenCalledTimes(1);
@@ -152,6 +157,7 @@ describe('восстановление загрузки чанка', () => {
     );
     expect(screen.getByText('Не удалось открыть экран')).toBeDefined();
     expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.queryByRole('alert', { name: 'Не удалось загрузить часть портала' })).toBeNull();
     expect(hasChunkLoadFailure()).toBe(false);
     expect(reloadPage).not.toHaveBeenCalled();
   });

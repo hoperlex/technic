@@ -16,9 +16,14 @@ import { reloadPage, useIsMobile, useVersionCheck } from '@shared/lib';
 //
 // A 426 client_upgrade_required is mandatory (ADR 0146 decision 7): the document is below
 // MIN_CLIENT_CONTRACT, so neither this nor later requests can work. "Later" would outlive both
-// releases. A failed chunk also requires a reload: React caches the rejected import, and retrying
-// it cannot recover the document. It is not labelled as a server refusal; offline loading can
-// produce the same failure as a deployment that removed an old asset.
+// releases, and the screen is blocked: nothing the user types can be saved anyway.
+//
+// A failed chunk also requires a reload — React caches the rejected import, and retrying it cannot
+// recover that screen — but it does NOT block the document (user decision 06.10.2026). The API
+// still answers, and the failure is as often a network blip as a deployment that removed an old
+// asset; a full-screen mask would cost the person an open, unsaved form. So the banner cannot be
+// dismissed, stays above modals, and leaves forms usable: the person saves and reloads themselves.
+// It is not labelled as a server refusal.
 //
 // One component owns all update modes: an optional offer beneath a mandatory reload would imply
 // a choice that no longer exists.
@@ -38,8 +43,8 @@ export function AppUpdateBanner() {
   const driverCabinet = pathname === '/driver' || pathname.startsWith('/driver/');
 
   // Mandatory recovery takes precedence over both a release offer and its previous dismissal.
-  if (upgradeRequired || chunkLoadFailed) {
-    const title = upgradeRequired ? 'Портал обновился' : 'Не удалось загрузить часть портала';
+  if (upgradeRequired) {
+    const title = 'Портал обновился';
     return (
       <div
         role="alertdialog"
@@ -66,15 +71,53 @@ export function AppUpdateBanner() {
           description={
             <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
               <Typography.Text>
-                {upgradeRequired
-                  ? 'Эта вкладка работает на устаревшей версии, и продолжать на ней нельзя: сервер отвечает на её запросы отказом. Обновите страницу — портал откроется заново.'
-                  : 'Не удалось загрузить экран после обновления портала или сбоя сети. Проверьте подключение и обновите страницу — портал откроется заново.'}
+                Эта вкладка работает на устаревшей версии, и продолжать на ней нельзя: сервер
+                отвечает на её запросы отказом. Обновите страницу — портал откроется заново.
               </Typography.Text>
               {/* A broken document cannot defer recovery; no automatic reload discards a form. */}
               <Button type="primary" icon={<ReloadOutlined />} onClick={reloadPage}>
                 Обновить страницу
               </Button>
             </Space>
+          }
+        />
+      </div>
+    );
+  }
+
+  if (chunkLoadFailed) {
+    const title = 'Не удалось загрузить часть портала';
+    return (
+      <div
+        role="alert"
+        aria-label={title}
+        style={{
+          position: 'fixed',
+          insetInline: 0,
+          top: 8,
+          display: 'flex',
+          justifyContent: 'center',
+          // Above modals (1000) so an open form still shows the reason, but without a mask and with
+          // pointer events only on the banner itself: the form below stays usable.
+          zIndex: 1100,
+          pointerEvents: 'none',
+          paddingInline: 12,
+        }}
+      >
+        <Alert
+          type="warning"
+          showIcon
+          style={{
+            maxWidth: 640,
+            pointerEvents: 'auto',
+            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)',
+          }}
+          title={title}
+          description="Портал обновился или ненадолго пропала сеть. Сохраните то, что заполняете, и обновите страницу."
+          action={
+            <Button size="small" type="primary" icon={<ReloadOutlined />} onClick={reloadPage}>
+              Обновить страницу
+            </Button>
           }
         />
       </div>
