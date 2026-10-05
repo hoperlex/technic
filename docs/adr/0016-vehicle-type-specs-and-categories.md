@@ -9,7 +9,10 @@
   `apps/api/src/routes/vehicle-categories.ts`, `apps/api/src/routes/vehicle-types.ts`,
   `apps/web/src/pages/directories/VehicleSpecsTab.tsx`,
   `apps/web/src/pages/directories/VehicleTypesTab.tsx`,
-  `apps/web/src/pages/directories/VehicleTypeCardDrawer.tsx`
+  `apps/web/src/widgets/vehicle-type-card/ui/VehicleTypeCardDrawer.tsx`,
+  `apps/web/src/features/vehicle-type-spec-management/VehicleTypeSpecsSection.tsx`,
+  `apps/web/src/features/vehicle-category-management/VehicleTypeCategoriesSection.tsx`,
+  `apps/web/src/features/vehicle-spec-editor/model/useVehicleSpecEditor.tsx`
 
 ## Контекст
 
