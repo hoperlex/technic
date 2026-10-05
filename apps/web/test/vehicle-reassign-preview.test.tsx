@@ -175,8 +175,9 @@ function renderModal(
   return { http, onSubmit };
 }
 
-/** Нажать «Сменить технику» — то есть спросить у сервера, чем это кончится. */
-function pressChange(): void {
+/** A cold fallback cannot submit; wait for the actual assignment form before asking the preview. */
+async function pressChange(): Promise<void> {
+  await screen.findByLabelText('Машинист');
   fireEvent.click(screen.getByRole('button', { name: 'Сменить технику' }));
 }
 
@@ -196,7 +197,7 @@ function payloadOf(onSubmit: ComponentProps<typeof VehicleAssignModal>['onSubmit
 describe('последствия смены техники', () => {
   it('первое нажатие показывает цену действия, а технику не меняет', async () => {
     const { onSubmit } = renderModal({ preview: LOUD });
-    pressChange();
+    await pressChange();
 
     // Бумага: что сгорит — номером, что выпишется — вместе с составом. Одних границ недели мало:
     // «выпишется лист за 10–16 августа» не отвечает на вопрос, чьей машиной и чьей фамилией.
@@ -220,7 +221,7 @@ describe('последствия смены техники', () => {
 
   it('подтверждение уносит отпечаток последствий', async () => {
     const { onSubmit } = renderModal({ preview: LOUD });
-    pressChange();
+    await pressChange();
     await screen.findByText(/Сгорит № 260604-646-00000004897/);
 
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить смену' }));
@@ -232,7 +233,7 @@ describe('последствия смены техники', () => {
 
   it('говорить не о чем — команда уходит сразу, но с отпечатком', async () => {
     const { onSubmit, http } = renderModal();
-    pressChange();
+    await pressChange();
 
     // Второго экрана нет: пустое «ничего не произойдёт, нажмите ещё раз» приучает нажимать не
     // читая, и тогда экран не работает в тот единственный раз, когда сказать ему есть что.
@@ -246,7 +247,7 @@ describe('последствия смены техники', () => {
     // изменился, не тронув заявку вовсе.
     const onSubmit = vi.fn().mockRejectedValueOnce(STALE).mockResolvedValue(undefined);
     const { http } = renderModal({ preview: LOUD, onSubmit });
-    pressChange();
+    await pressChange();
     await screen.findByText(/Сгорит № 260604-646-00000004897/);
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить смену' }));
 
@@ -269,7 +270,7 @@ describe('последствия смены техники', () => {
     const { onSubmit } = renderModal({
       previewResponse: () => apiError(404, { code: 'not_found', message: 'Not Found' }),
     });
-    pressChange();
+    await pressChange();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     expect(payloadOf(onSubmit).previewFingerprint).toBeUndefined();
@@ -279,7 +280,7 @@ describe('последствия смены техники', () => {
     const { onSubmit } = renderModal({
       preview: assignmentPreview({ blockedShiftDays: [{ date: '2026-08-12', hours: 8 }] }),
     });
-    pressChange();
+    await pressChange();
 
     await screen.findByText('Сменить технику нельзя: дни уже подписаны объектом');
     // Выход назван прямо: подпись снимает не смена техники, а коррекция задним числом.
@@ -314,7 +315,7 @@ describe('смена техники: предупреждения по выпи�
 
   it('показывает лист с предупреждением и шлёт подпись только после галочки', async () => {
     const { onSubmit } = renderModal({ preview: warned(SNILS, 'fp-warn-1') });
-    pressChange();
+    await pressChange();
 
     await screen.findByText('Листы выпишутся с предупреждениями');
     expect(
@@ -337,7 +338,7 @@ describe('смена техники: предупреждения по выпи�
 
   it('без предупреждений не спрашивает галочки и подписей не шлёт', async () => {
     const { onSubmit } = renderModal({ preview: LOUD });
-    pressChange();
+    await pressChange();
     await screen.findByText(/Сгорит № 260604-646-00000004897/);
     expect(screen.queryByText('Листы выпишутся с предупреждениями')).toBeNull();
 
@@ -362,7 +363,7 @@ describe('смена техники: предупреждения по выпи�
         return json(previews === 1 ? warned(SNILS, 'fp-warn-1') : warned(LICENSE, 'fp-warn-2'));
       },
     });
-    pressChange();
+    await pressChange();
     fireEvent.click(await screen.findByRole('checkbox', { name: TICK }));
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить смену' }));
 

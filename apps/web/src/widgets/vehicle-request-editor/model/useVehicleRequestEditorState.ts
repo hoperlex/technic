@@ -31,7 +31,7 @@ import {
   type FormValues,
 } from '@features/vehicle-request-editor';
 import { withSavedOption } from '@shared/lib';
-import { useFileEditor, type EditorFile } from '../ui/editorFields';
+import { useFileEditor, type EditorFile } from './useFileEditor';
 import { requestTypeChangeHandler } from './requestTypeChange';
 import { useRequestEditorCalendar } from './useRequestEditorCalendar';
 

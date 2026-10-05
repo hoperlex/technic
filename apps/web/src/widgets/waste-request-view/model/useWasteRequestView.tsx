@@ -9,7 +9,7 @@ import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { useWasteRequestComment } from '@features/waste-request-comment';
 import { useWasteTicketAttach } from '@features/waste-ticket-attach';
 import { useOpenedRecord } from '@shared/lib';
-import { WasteRequestView } from '../ui/WasteRequestView';
+import { DeferredWasteRequestView as WasteRequestView } from '../ui/DeferredWasteRequestView';
 
 interface Input {
   active: boolean;

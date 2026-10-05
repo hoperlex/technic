@@ -67,6 +67,7 @@ interface Case {
   onSubmit?: (v: unknown) => void | Promise<unknown>;
   selection?: DriverSelectionDto;
   routes?: RouteMap;
+  closeAfterSubmit?: boolean;
 }
 
 function renderAssign({
@@ -75,6 +76,7 @@ function renderAssign({
   onSubmit = async () => {},
   selection = driverSelection([DRIVER, MACHINIST_OPTION]),
   routes = {},
+  closeAfterSubmit = false,
 }: Case = {}) {
   const http = mockHttp({
     'GET /vehicles': () =>
@@ -86,15 +88,26 @@ function renderAssign({
     [BATCH]: () => json(dayBatchResult({ issued: 3 })),
     ...routes,
   });
-  const { queryClient } = renderWithUser(
-    <VehicleAssignModal
-      request={request}
-      mode={mode}
-      confirmLoading={false}
-      onCancel={() => {}}
-      onSubmit={onSubmit}
-    />,
-  );
+  function Harness() {
+    const [open, setOpen] = useState(true);
+    return (
+      <VehicleAssignModal
+        request={open ? request : null}
+        mode={mode}
+        confirmLoading={false}
+        onCancel={() => {}}
+        onSubmit={
+          closeAfterSubmit
+            ? async (command) => {
+                await onSubmit(command);
+                setOpen(false);
+              }
+            : onSubmit
+        }
+      />
+    );
+  }
+  const { queryClient } = renderWithUser(<Harness />);
   return { http, queryClient };
 }
 
@@ -291,6 +304,16 @@ describe('причина заднего числа в окне перевода 
 
 /** The days door plans only an order already in work with its machine, hence the order (ADR 0207). */
 describe('порядок: сначала перевод в работу, потом пачка', () => {
+  it('ленивый владелец сохраняет отчёт пачки после закрытия формы успешным переводом', async () => {
+    const onSubmit = vi.fn(async () => {});
+    const { http } = renderAssign({ onSubmit, closeAfterSubmit: true });
+    await readyToTake();
+    takeIntoWork();
+    expect(await screen.findByText('Выписка 4-П на период: что получилось')).toBeDefined();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(http.countOf(BATCH)).toBe(1);
+    expect(http.lastCall(BATCH)?.path).toBe(`/vehicle-requests/${ORDER.id}/days/batch`);
+  });
   it('пачка ждёт ответа перевода и уходит только после него', async () => {
     let finish!: () => void;
     const onSubmit = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
@@ -413,3 +436,4 @@ describe('тело пачки и следы после неё', () => {
     );
   });
 });
+import { useState } from 'react';

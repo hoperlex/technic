@@ -1,2 +1,2 @@
-export { VehicleRequestViewModal } from './ui/VehicleRequestViewModal';
+export { DeferredVehicleRequestView as VehicleRequestViewModal } from './ui/DeferredVehicleRequestView';
 export type { VehicleRequestViewModalProps } from './model/types';

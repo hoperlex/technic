@@ -4,12 +4,20 @@ import {
   type VehicleRequestViewModalProps,
 } from '@widgets/vehicle-request-view';
 import { weeklyRequestPath } from '@entities/weekly-request';
-import { VehicleRequestDays } from './VehicleRequestDays';
+import { AsyncContent } from '@shared/ui';
+
+const VehicleRequestDays = lazy(() =>
+  import('./VehicleRequestDays').then((module) => ({ default: module.VehicleRequestDays })),
+);
 
 type Props = Omit<VehicleRequestViewModalProps, 'renderDays' | 'weeklyRequestPath'>;
 
 function renderDays(request: SpecialEquipmentRequestDto, readOnly: boolean | undefined) {
-  return <VehicleRequestDays request={request} readOnly={readOnly} />;
+  return (
+    <AsyncContent>
+      <VehicleRequestDays request={request} readOnly={readOnly} />
+    </AsyncContent>
+  );
 }
 
 /** Bind the reusable request card to vehicle-page work-day and weekly-request routes. */
@@ -18,3 +26,4 @@ export function VehicleRequestViewModal(props: Props) {
     <VehicleRequestView {...props} renderDays={renderDays} weeklyRequestPath={weeklyRequestPath} />
   );
 }
+import { lazy } from 'react';

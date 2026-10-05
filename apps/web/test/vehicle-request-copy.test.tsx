@@ -293,7 +293,7 @@ function renderTab(
   return http;
 }
 
-/** Открыть карточку заявки так, как её открывает человек: нажатием на строку списка. */
+/** The title is also in the cold fallback; wait for the card's own footer before its actions. */
 async function openCard(displayNumber: string) {
   fireEvent.click(await screen.findByText(displayNumber));
   await waitFor(() =>
@@ -303,6 +303,7 @@ async function openCard(displayNumber: string) {
       ),
     ).toBe(true),
   );
+  await waitFor(() => expect(button('Закрыть')).toBeDefined());
 }
 
 /** Кнопка по видимой подписи — их в окне несколько, и целимся именно в текст. */
@@ -322,6 +323,7 @@ async function openCopy(displayNumber: string) {
   await waitFor(() =>
     expect(screen.getByText(new RegExp(`по образцу ${displayNumber}`))).toBeDefined(),
   );
+  await screen.findByLabelText('Тип заявки');
 }
 
 /** Значение текстового поля формы по его подписи: то, что человек в поле видит. */
@@ -389,7 +391,7 @@ describe('копия заявки на технику', () => {
     expect(screen.getByText(/Вложения не переносятся/)).toBeDefined();
 
     expect(selectedValue('Объект/отдел')).toContain('ЖК Северный');
-    expect(selectedValue('Тип/категория ТС')).toContain('г/п 25 т');
+    await waitFor(() => expect(selectedValue('Тип/категория ТС')).toContain('г/п 25 т'));
     expect(fieldValue('Ответственный на объекте')).toBe('Петров П. П.');
     expect(fieldValue('Комментарий (планируемые задачи)')).toBe('разгрузка плит');
     // Срок 05.08–07.08 давно прошёл: начало встаёт на первый доступный день, а конец уезжает на

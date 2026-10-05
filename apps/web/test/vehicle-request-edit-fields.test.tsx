@@ -168,6 +168,7 @@ describe('форма правки заявки на ТС: поля заявки,
     fireEvent.click(document.querySelectorAll('.anticon-edit')[0]!.closest('button')!);
 
     await waitFor(() => expect(screen.getByText('Заявка ТС-601')).toBeDefined());
+    await screen.findByLabelText('Тип заявки');
     expect(formLabels()).toEqual(
       expect.arrayContaining([
         'Объект/отдел',
@@ -186,6 +187,7 @@ describe('форма правки заявки на ТС: поля заявки,
     fireEvent.click(document.querySelectorAll('.anticon-edit')[1]!.closest('button')!);
 
     await waitFor(() => expect(screen.getByText('Заявка ТС-602')).toBeDefined());
+    await screen.findByLabelText('Тип заявки');
     const labels = formLabels();
     // Поле одно на обе оси (Р2): ни «Объекта», ни «Отдела» по отдельности в форме больше нет.
     expect(labels).toContain('Объект/отдел');
@@ -215,7 +217,7 @@ describe('смена назначенной техники (ADR 0048)', () => {
     // Видно, с чего меняем: смена начинается с вопроса «на что», а ответ на «с чего» должен
     // стоять перед глазами.
     // Подпись машины та же, что в списке и карточке (`assignmentTitle`): у собственной это госномер.
-    expect(screen.getByText(/Сейчас назначена: .*Е646СК799/)).toBeDefined();
+    expect(await screen.findByText(/Сейчас назначена: .*Е646СК799/)).toBeDefined();
     // Срок согласован при переводе в работу и здесь не правится (ADR 0048 п. 4).
     const labels = formLabels();
     expect(labels).not.toContain('Фактическая дата подачи');

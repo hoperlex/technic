@@ -93,11 +93,12 @@ function renderTab(role: 'dispatcher' | 'manager' = 'dispatcher') {
   return http;
 }
 
-/** Открыть правку строки заявки: у карточки и у строки это одна и та же форма. */
+/** Row and card share the editor; its synchronous title does not mean lazy fields are ready. */
 async function openEdit(displayNumber: string): Promise<void> {
   const row = (await screen.findByText(displayNumber)).closest('tr')!;
   fireEvent.click(row.querySelector('.anticon-edit')!.closest('button')!);
   await waitFor(() => expect(screen.getByText(`Заявка ${displayNumber}`)).toBeDefined());
+  await screen.findByLabelText('Дата начала');
 }
 
 /**

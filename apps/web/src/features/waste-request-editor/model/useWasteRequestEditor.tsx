@@ -22,7 +22,7 @@ import {
 } from '@entities/waste-request';
 import { MOSCOW_TZ } from '@shared/config';
 import { useFormBlockers } from '@shared/ui';
-import { WasteRequestEditorModal } from '../ui/WasteRequestEditorModal';
+import { DeferredWasteRequestEditor as WasteRequestEditorModal } from '../ui/DeferredWasteRequestEditor';
 import type {
   WasteRequestEditorController,
   WasteRequestEditorFile,
