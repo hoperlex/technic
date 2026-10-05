@@ -2287,14 +2287,55 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       const item = preview.json().items[0];
       expect(item.state).toBe('reverted');
       expect(item.reverse).toBe('none');
-      // Разворачивать нечего — и это отказ по существу, а не «строка мешает».
+      /*
+       * Разворачивать уже нечего, но закрыть документ — можно и нужно (решение 4 ADR 0218).
+       * Первая реализация отвечала здесь 422 «Разворачивать нечего», и человек, начавший разбор
+       * руками, не мог его закончить: неделя навсегда оставалась «Применённой» и держала пару
+       * «объект + неделя». Тест прежде закреплял ровно эту ошибку.
+       */
+      expect(preview.json().allowed, preview.body).toBe(true);
       const res = await annul(ctx.admin.auth, weekly.id, {
-        reason: 'Проверка',
+        reason: 'Срок вернули досрочным завершением, закрываем неделю',
         version: applied.version,
         fingerprint: preview.json().fingerprint,
       });
-      expect(res.statusCode, res.body).toBe(422);
-      expect(res.body).toContain('Разворачивать нечего');
+      expect(res.statusCode, res.body).toBe(200);
+      expect((await weeklyRow(weekly.id))?.status).toBe('annulled');
+      // Срок не трогался второй раз: он уже был возвращён руками.
+      expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
+    }, 60_000);
+
+    it('порождённый заказ, отменённый руками, не мешает закрыть неделю', async () => {
+      const objectId = await freshObject();
+      const classification = ctx.ownVehicles[0]!;
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [newItem(classification, W1, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+      const createdId = (await itemRows(weekly.id))[0]!.created_request_id!;
+      // Ровно случай со снимка экрана заказчика: единственная строка — порождённый заказ, и его
+      // уже отменили поштучно.
+      const created = await orderDto(createdId);
+      const cancelled = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${createdId}/status`,
+        ctx.admin.auth,
+        { status: 'cancelled', comment: 'Не та неделя', version: created.version },
+      );
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+
+      const preview = await annulPreview(ctx.admin.auth, weekly.id);
+      expect(preview.json().allowed, preview.body).toBe(true);
+      expect(preview.json().items[0].state).toBe('reverted');
+      const res = await annul(ctx.admin.auth, weekly.id, {
+        reason: 'Завизировали не ту неделю',
+        version: applied.version,
+        fingerprint: preview.json().fingerprint,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      expect((await weeklyRow(weekly.id))?.status).toBe('annulled');
     }, 60_000);
 
     it('пропущенная строка следствий не имеет и неделю не запирает', async () => {

@@ -18,6 +18,7 @@ import {
   weeklyAnnulEffectiveDate,
   weeklyAnnulHeaderBlocker,
   weeklyAnnulNeedsSiteScope,
+  weeklyItemHadEffect,
   WEEKLY_ANNUL_CORRECTION_REQUIRED_MESSAGE,
   waybillDisplayNumber,
   weeklyWeekLabel,
@@ -677,7 +678,13 @@ export function weeklyAnnulPreviewDto(
   const hasRight = canAnnulWeeklyRequest(params.subject, plan.backdated);
   const needsScope = weeklyAnnulNeedsSiteScope(params.subject, plan.backdated);
   const blockedItems = plan.items.filter((item) => plan.states.get(item.id)?.state === 'blocked');
-  const reversible = plan.items.filter((item) => plan.states.get(item.id)?.state === 'reversible');
+  /*
+   * Считаются строки, у которых следствия **были**, а не только те, что ещё предстоит развернуть
+   * (решение 4 ADR 0218). Неделя, след которой уже убрали поштучно, обязана закрываться: иначе
+   * документ навсегда остаётся «Применённым», держит пару «объект + неделя», и человек, начавший
+   * разбор руками, не может его закончить ничем.
+   */
+  const hadEffects = plan.items.some((item) => weeklyItemHadEffect(item.result));
 
   const blockedReason = !hasRight
     ? plan.backdated
@@ -691,9 +698,9 @@ export function weeklyAnnulPreviewDto(
           ? `Строк, которые нельзя развернуть: ${blockedItems.length} — разберите их поштучно`
           : plan.blockers.length > 0
             ? plan.blockers[0]!.message
-            : reversible.length === 0
-              ? 'Разворачивать нечего: следствий у этой недели не осталось'
-              : null));
+            : hadEffects
+              ? null
+              : 'Закрывать нечего: ни одна строка этой недели не применилась'));
 
   const dtoItems: WeeklyAnnulItemDto[] = plan.items.map((item) => {
     const state = plan.states.get(item.id);
