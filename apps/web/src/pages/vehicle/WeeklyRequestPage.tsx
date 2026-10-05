@@ -3,10 +3,8 @@ import { App, Card, Input, Skeleton } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router';
 import {
-  type AnnulWeeklyRequestBody,
   isWeeklyRequestApplied,
   isWeeklyRequestEditable,
-  weeklyAnnulPermission,
   type WeeklyCorrectionBody,
   weeklyWeekEffectiveDate,
 } from '@technic/contracts';
@@ -15,14 +13,13 @@ import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
 import { useAuth } from '@entities/session';
-import { ReasonModal } from '@shared/ui';
 import { useVehicleClassifications } from '@entities/vehicle-type';
 import { weeklyRequestErrorMessage as errorMessage } from '@entities/weekly-request';
 import { useWeeklyComposition } from './weeklyComposition';
 import { WeeklyRequestActions } from './WeeklyRequestActions';
 import { WeeklyRequestBanners } from './WeeklyRequestBanners';
-import { WeeklyRequestAnnulModal } from './WeeklyRequestAnnulModal';
-import { WeeklyRequestConductModal } from './WeeklyRequestConductModal';
+import { useWeeklyAnnul } from './useWeeklyAnnul';
+import { WeeklyRequestDialogs } from './WeeklyRequestDialogs';
 import { WeeklyRequestComposition, WeeklyRequestLeaving } from './WeeklyRequestComposition';
 import { WeeklyRequestHeader, WeeklyRequestNotOpened } from './WeeklyRequestFrame';
 import { WeeklyRequestNewItems } from './WeeklyRequestNewItems';
@@ -36,7 +33,6 @@ import {
   lastRejectionComment,
   WEEKLY_LEAVE_CONFIRM,
   weeklyPageWeekState,
-  weeklyReasonText,
 } from './weeklyRequestPageState';
 import {
   hasStatus,
@@ -75,8 +71,6 @@ export function WeeklyRequestPage() {
   const [reasonMode, setReasonMode] = useState<'cancel' | 'reject' | null>(null);
   /** Открыто окно проведения просроченной недели задним числом (ADR 0101). */
   const [conducting, setConducting] = useState(false);
-  /** Открыто окно аннулирования применённой недели (ADR 0218). */
-  const [annulling, setAnnulling] = useState(false);
 
   const requestQuery = useQuery({
     queryKey: weeklyRequestKeys.detail(id),
@@ -106,8 +100,7 @@ export function WeeklyRequestPage() {
     staleTime: 5 * 60_000,
   });
 
-  // Чек-лист живёт и у аннулированной: её строки объясняют, что развернули, и показываются в
-  // режиме чтения (ADR 0218 решение 9).
+  // Чек-лист живёт и у аннулированной: её строки объясняют, что развернули (ADR 0218 решение 9).
   const documentsQuery = useQuery({
     queryKey: weeklyRequestKeys.documents(id),
     queryFn: () => weeklyRequestsApi.documents(id),
@@ -154,6 +147,11 @@ export function WeeklyRequestPage() {
     setApplyError(null);
     setSkipReasons(new Map());
   };
+  /** Сделано и записано: объяснения прошлого отказа ни к чему, связанные выдачи устарели. */
+  const settled = () => {
+    clearApplyError();
+    invalidate();
+  };
 
   const onError = (e: unknown) => {
     if (hasStatus(e, 409)) {
@@ -188,9 +186,8 @@ export function WeeklyRequestPage() {
   const saveMut = useMutation({
     mutationFn: saveComposition, // cache-write: delegated — calls the update API when dirty.
     onSuccess: () => {
-      clearApplyError();
+      settled();
       message.success('Состав сохранён');
-      invalidate();
     },
     onError,
   });
@@ -206,11 +203,10 @@ export function WeeklyRequestPage() {
       });
     },
     onSuccess: (res) => {
-      clearApplyError();
+      settled();
       message.success(
         res.apply ? `Неделя применена: строк ${res.apply.applied}` : 'Заявка подана на визу',
       );
-      invalidate();
     },
     onError,
   });
@@ -238,9 +234,8 @@ export function WeeklyRequestPage() {
     onSuccess: (res, v) => {
       setReasonMode(null);
       setConducting(false);
-      clearApplyError();
+      settled();
       message.success(decisionMessage(res, v.approved, !!v.correction));
-      invalidate();
     },
     onError,
   });
@@ -260,23 +255,8 @@ export function WeeklyRequestPage() {
     onError,
   });
 
-  const annulMut = useMutation({
-    mutationFn: (body: AnnulWeeklyRequestBody) => weeklyRequestsApi.annul(request!.id, body),
-    onSuccess: (result) => {
-      setAnnulling(false);
-      clearApplyError();
-      const parts = [
-        result.shortened.length > 0 ? `сроков возвращено: ${result.shortened.length}` : null,
-        result.cancelled.length > 0 ? `заказов отменено: ${result.cancelled.length}` : null,
-        result.esm2.cancelled > 0 ? `листов аннулировано: ${result.esm2.cancelled}` : null,
-      ].filter((part) => part !== null);
-      message.success(
-        parts.length > 0 ? `Неделя аннулирована — ${parts.join(', ')}` : 'Неделя аннулирована',
-      );
-      invalidate();
-    },
-    onError,
-  });
+  /** Аннулирование применённой недели (ADR 0218) — своим модулем: страница и без него плотная. */
+  const annul = useWeeklyAnnul({ request, onSettled: settled, onError });
 
   // Своей вкладки у недельных заявок больше нет: они строки общего списка «Заказ автотехники», и
   // «Назад» возвращает туда — в список, заранее суженный до недельных, а не в общую выдачу, где
@@ -426,44 +406,19 @@ export function WeeklyRequestPage() {
         onConduct={() => setConducting(true)}
         onReject={() => setReasonMode('reject')}
         onCancel={() => setReasonMode('cancel')}
-        onAnnul={
-          // Кнопка показывается по дешёвой проверке — статус и право субъекта хотя бы по одной
-          // ветви; цену и запреты называет окно, спросив сервер при открытии. Ветвь права тут
-          // неизвестна (она зависит от снимаемых дней), поэтому спрашиваются оба случая: что
-          // именно потребуется, решит предпросмотр.
-          status === 'applied' &&
-          [...weeklyAnnulPermission(false), ...weeklyAnnulPermission(true)].some(can)
-            ? () => setAnnulling(true)
-            : null
-        }
+        onAnnul={annul.onOpen}
       />
 
-      {/* Окно проведения задним числом: цену операции спрашивают у сервера тем же кодом, которым
-          он её исполнит, а причину и листы к перевыписке — у человека (ADR 0101). Мутация осталась
-          на странице: проведение — это та же виза, и разбор её отказов должен быть один. */}
-      <WeeklyRequestConductModal
-        request={conducting ? request : null}
-        onClose={() => setConducting(false)}
+      <WeeklyRequestDialogs
+        annul={annul}
+        conducting={conducting ? request : null}
+        reasonMode={reasonMode}
+        conductPending={approveMut.isPending}
+        reasonPending={approveMut.isPending || cancelMut.isPending}
+        onConductClose={() => setConducting(false)}
         onConduct={(correction) => approveMut.mutate({ approved: true, comment: '', correction })}
-        pending={approveMut.isPending}
-      />
-
-      {/* Окно аннулирования: цену развёрнутого спрашивают у сервера тем же кодом, которым он её
-          исполнит (ADR 0218), а причину и листы к перевыписке — у человека. */}
-      <WeeklyRequestAnnulModal
-        request={annulling ? request : null}
-        onClose={() => setAnnulling(false)}
-        onAnnul={(body) => annulMut.mutate(body)}
-        pending={annulMut.isPending}
-      />
-
-      <ReasonModal
-        open={reasonMode !== null}
-        {...weeklyReasonText(reasonMode === 'reject')}
-        danger
-        confirmLoading={approveMut.isPending || cancelMut.isPending}
-        onCancel={() => setReasonMode(null)}
-        onSubmit={(reason) =>
+        onReasonClose={() => setReasonMode(null)}
+        onReasonSubmit={(reason) =>
           reasonMode === 'reject'
             ? approveMut.mutate({ approved: false, comment: reason })
             : cancelMut.mutate(reason)

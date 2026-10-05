@@ -54,7 +54,7 @@ import { useRouteModal } from '@features/route-modal';
 import { vehicleRequestCardFooter } from './VehicleRequestCardFooter';
 import { VehicleRequestDays } from './VehicleRequestDays';
 import { VehicleShiftsView } from './VehicleShiftsView';
-import { weeklyRequestPath } from './weeklyShared';
+import { WeeklyRequestRef } from './weeklyShared';
 
 /**
  * Карточка заявки на технику: поля только на чтение и история событий (ADR 0015). Открывается
@@ -543,22 +543,9 @@ export function VehicleRequestViewModal({
               {
                 key: 'weeklyOrigin',
                 label: 'Создан по недельной заявке',
-                children: (
-                  <>
-                    <EntityLink
-                      to={weeklyRequestPath(weekly.origin.weeklyRequestId)}
-                      title="Открыть недельную заявку"
-                    >
-                      {formatWeeklyRequestNumber(weekly.origin.weeklyRequestNum)}
-                    </EntityLink>
-                    {/* Состояние недели — рядом с номером (ADR 0218): «создан по НЗ-12» и
-                        «создан по НЗ-12 (аннулирована)» разные утверждения, и второе объясняет,
-                        почему заказ отменён. */}
-                    {weekly.origin.weeklyRequestStatus === 'annulled' && (
-                      <Typography.Text type="secondary"> (аннулирована)</Typography.Text>
-                    )}
-                  </>
-                ),
+                // Состояние недели — рядом с номером (ADR 0218): «создан по НЗ-12» и «создан по
+                // НЗ-12 (аннулирована)» разные утверждения, и второе объясняет отмену заказа.
+                children: <WeeklyRequestRef {...weekly.origin} />,
               },
             ]
           : []),
@@ -574,18 +561,11 @@ export function VehicleRequestViewModal({
                 children: (
                   <Space size={12} wrap>
                     {weekly.extensions.map((e) => (
-                      <span key={`${e.weeklyRequestId}-${e.weekStart}`}>
-                        <EntityLink
-                          to={weeklyRequestPath(e.weeklyRequestId)}
-                          title="Открыть недельную заявку"
-                        >
-                          {formatWeeklyRequestNumber(e.weeklyRequestNum)}
-                        </EntityLink>{' '}
-                        <Typography.Text type="secondary">
-                          ({weeklyWeekLabel(e.weekStart)}
-                          {e.weeklyRequestStatus === 'annulled' ? ', аннулирована' : ''})
-                        </Typography.Text>
-                      </span>
+                      <WeeklyRequestRef
+                        key={`${e.weeklyRequestId}-${e.weekStart}`}
+                        {...e}
+                        note={weeklyWeekLabel(e.weekStart)}
+                      />
                     ))}
                   </Space>
                 ),

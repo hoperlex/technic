@@ -12,10 +12,11 @@ import {
   type WeeklyItemWarning,
   type WeeklyPreviousWeekDto,
   type WeeklyRequestItemDto,
+  type WeeklyRequestStatus,
   weeklyWeekLabel,
 } from '@technic/contracts';
 import { weeklyRequestsApi } from '@entities/weekly-request';
-import { FormModal } from '@shared/ui';
+import { EntityLink, FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
 import { useAuth, useObjectScope } from '@entities/session';
 import { weeklyRequestErrorMessage as errorMessage } from '@entities/weekly-request';
@@ -307,4 +308,35 @@ export function useWeeklyRequestCreate(): {
     pending: mut.isPending,
     node,
   };
+}
+
+/**
+ * Ссылка на недельную заявку с её состоянием — для карточки заказа (ADR 0218).
+ *
+ * «Создан по НЗ-12» и «Создан по НЗ-12 (аннулирована)» — разные утверждения, и второе объясняет,
+ * почему заказ отменён. Подпись собирается здесь, а не в карточке, потому что спрашивают её два
+ * места — основание и список продлений, — и второй пересказ разошёлся бы с первым.
+ */
+export function WeeklyRequestRef(props: {
+  /**
+   * Поля приходят **именами DTO** (`weeklyRequestStatus`, а не `status`): так ссылка принимает и
+   * основание заказа, и строку списка продлений россыпью, без мапперa, который был бы третьим
+   * описанием одной и той же тройки полей.
+   */
+  weeklyRequestId: string;
+  weeklyRequestNum: number;
+  weeklyRequestStatus: WeeklyRequestStatus;
+  /** Подпись в скобках после номера: у продлений это неделя, у основания её нет. */
+  note?: string;
+}) {
+  const annulled = props.weeklyRequestStatus === 'annulled';
+  const suffix = [props.note, annulled ? 'аннулирована' : null].filter((v) => v).join(', ');
+  return (
+    <span>
+      <EntityLink to={weeklyRequestPath(props.weeklyRequestId)} title="Открыть недельную заявку">
+        {formatWeeklyRequestNumber(props.weeklyRequestNum)}
+      </EntityLink>
+      {suffix ? <Typography.Text type="secondary"> ({suffix})</Typography.Text> : null}
+    </span>
+  );
 }
