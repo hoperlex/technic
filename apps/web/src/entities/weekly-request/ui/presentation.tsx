@@ -47,7 +47,12 @@ export function WeeklyStatusTag({ status }: { status: WeeklyRequestStatus }) {
   );
 }
 
-/** Render contract-owned row warnings, keeping rental notices visually neutral. */
+/**
+ * Row warnings as ready text from the contracts (`itemWarnings`): the same text appears in the
+ * form, in the approval queue and in the API answer, so it is never rephrased here. Rental is
+ * neutral grey and everything else orange: "the lessor keeps ESM-2" is the normal order of things,
+ * not a gap (R19).
+ */
 export function WeeklyItemWarnings({ warnings }: { warnings: WeeklyItemWarning[] }) {
   if (warnings.length === 0) return null;
   return (
