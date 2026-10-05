@@ -98,13 +98,13 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
   /**
    * Customer of the edited request (K7): the reference and label come from the record itself, not
    * from the live directory. The object may be closed or the department disbanded while the request
-   * still points at it; the field is mandatory, and without a saved option the edit would start with
-   * an empty customer. Exactly one half of the column pair is filled (CHECK), and the cost target
-   * arrives in the DTO, computed by the same `costTargetOf` as on the server.
+   * still points at it; the field is mandatory, and without a saved option the edit would start
+   * with an empty customer. Exactly one half of the column pair is filled (CHECK), and the cost
+   * target arrives in the DTO, computed by the same `costTargetOf` as on the server.
    *
-   * `open &&` is load-bearing (R3a): a closed dialog still holds the previous edit's record, and its
-   * option added to the list would break the "single option" count by which creation auto-fills the
-   * customer. A kind cancelled by the type (a department for on-site equipment, ADR 0091) is
+   * `open &&` is load-bearing (R3a): a closed dialog still holds the previous edit's record, and
+   * its option added to the list would break the "single option" count by which creation auto-fills
+   * the customer. A kind cancelled by the type (a department for on-site equipment, ADR 0091) is
    * filtered by the picker itself: the rule about the field's composition lives with the
    * composition (R4, K8).
    */
@@ -114,13 +114,14 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     : null;
   /**
    * The form customer — groups, lock, single option and saved value as one answer (R3). Spread out,
-   * they would diverge: the lock is computed over both groups at once, and the saved value must land
-   * in its own group.
+   * they would diverge: the lock is computed over both groups at once, and the saved value must
+   * land in its own group.
    */
   const customer = useRequestCustomerOptions({
     // On-site equipment knows no departments (R4): the "Departments" group is absent, and a
     // department already in the field is removed by the form (K8). Objects follow the place axis
-    // (ADR 0201): a department role is offered its sites — the ones the server accepts the order on.
+    // (ADR 0201): a department role is offered its sites — the ones the server accepts the order
+    // on.
     objects: isSpecial ? 'place' : 'scope',
     departments: isSpecial ? 'none' : 'scope',
     saved: savedCustomer,
@@ -163,7 +164,8 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
    *
    * The vehicle kind is looked up in the classification directory by the request's own position.
    * The position may be missing — switched off, or the request predates categories — and then
-   * conversion is closed: the server would not accept that position anyway (`resolveClassification`).
+   * conversion is closed: the server would not accept that position anyway
+   * (`resolveClassification`).
    */
   const recordKindCode = record
     ? (classificationByKey.get(classificationKeyOf(record))?.kindCode ?? null)
@@ -186,15 +188,16 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     canOrderVehicleRequestType(user, otherRequestType);
 
   /**
-   * Trips of the edited request (R1, R2 of `docs/route-trips-plan.md`); `null` — an on-site order is
-   * edited or a new request is created. From them the trip list learns each row's previous state:
-   * its number ("ТС-40/2", R13a) and the R2a exemptions — an unverified address and an empty contact
-   * do not block the edit while untouched. A row without a saved pair is new and fully strict.
+   * Trips of the edited request (R1, R2 of `docs/route-trips-plan.md`); `null` — an on-site order
+   * is edited or a new request is created. From them the trip list learns each row's previous
+   * state: its number ("ТС-40/2", R13a) and the R2a exemptions — an unverified address and an empty
+   * contact do not block the edit while untouched. A row without a saved pair is new and fully
+   * strict.
    */
   const recordTrips = record?.requestType === 'freight_transport' ? record.trips : null;
-  // Whether cargo is required. A passenger car (form No. 3) carries people, and demanding "volume or
-  // weight" would make the requester invent a number. Same rule as the server, asked by the waybill
-  // form of the ordered type, not by its code.
+  // Whether cargo is required. A passenger car (form No. 3) carries people, and demanding "volume
+  // or weight" would make the requester invent a number. Same rule as the server, asked by the
+  // waybill form of the ordered type, not by its code.
   const classificationKey = Form.useWatch('classificationKey', form);
   const cargoRequired = isCargoAmountRequired(
     (classificationKey ? classificationByKey.get(classificationKey)?.waybillFormCode : null) ??
@@ -257,10 +260,12 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     setCopy(null);
     resetWindow();
     // Site staff create requests only for their site, department staff only from their department:
-    // the customer is filled when the account has a single option, and the field is then locked. The
-    // form sets it, not the field: a disabled `AutoSelect` deliberately does not fill itself (R3a, K6).
+    // the customer is filled when the account has a single option, and the field is then locked.
+    // The form sets it, not the field: a disabled `AutoSelect` deliberately does not fill itself
+    // (R3a, K6).
     if (customer.soleCustomerKey) form.setFieldsValue({ customerKey: customer.soleCustomerKey });
-    // A department has one request type — fill it so the field does not ask a choice that does not exist.
+    // A department has one request type — fill it so the field does not ask a choice that does not
+    // exist.
     if (requestTypeOptions.length === 1) {
       form.setFieldsValue({ requestType: requestTypeOptions[0]!.value });
     }
@@ -281,9 +286,9 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     setOpen(true);
   };
   /**
-   * Request copy (ADR 0173): the same form, but as a creation, not an edit — `record` stays empty and
-   * saving goes to `create`. What is carried over is decided by `copyFormValues`. Attachments are not
-   * carried (`files.reset([])`): a file belongs to at most one request.
+   * Request copy (ADR 0173): the same form, but as a creation, not an edit — `record` stays empty
+   * and saving goes to `create`. What is carried over is decided by `copyFormValues`. Attachments
+   * are not carried (`files.reset([])`): a file belongs to at most one request.
    */
   const openCopy = (request: VehicleRequestDto) => {
     const today = moscowDateKeyOf(new Date());
@@ -310,9 +315,9 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
    * Copy a request (ADR 0173) — any request except an archived one: the action does not look at the
    * source status at all (ADR 0206). It repeats the order, not the record's state — same type, same
    * object, same composition — and the server does not ask about status either: the copy is an
-   * ordinary creation. Its gates are those of "New request": the create permission and the account's
-   * type corridor — a department may order only freight, and a copy of an on-site order would be
-   * refused by the server.
+   * ordinary creation. Its gates are those of "New request": the create permission and the
+   * account's type corridor — a department may order only freight, and a copy of an on-site order
+   * would be refused by the server.
    */
   const canCopy = (request: VehicleRequestDto) =>
     !request.deletedAt &&

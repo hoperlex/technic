@@ -64,8 +64,8 @@ export function driverOption(driver: DriverOptionDto): { label: string; value: s
 
 /**
  * Machinist list row — shorter than the driver's, and not for economy. It has no category and no
- * document gaps because the ESM-2 form does not print those boxes (ADR 0095, decision V1): "category
- * mismatch" under a machine that has no categories would name a nonexistent discrepancy.
+ * document gaps because the ESM-2 form does not print those boxes (ADR 0095, decision V1):
+ * "category mismatch" under a machine that has no categories would name a nonexistent discrepancy.
  */
 export function machinistOption(driver: DriverDto): { label: string; value: string } {
   return {
@@ -148,10 +148,10 @@ export function plannedEsm2Weeks(input: {
  * empty. The name is needed exactly for that: an empty field means "not changed", and without a
  * name it would read as "no machinist".
  *
- * The form of the latest week is taken, not the first one found: an ordinary order has one machinist
- * for all weeks (reconciliation rewrites diverging ones), and names differ only where the past is no
- * longer touched — in worked weeks. Cancelled forms do not count: they tell how the request was run
- * before, while the text under the field is about now.
+ * The form of the latest week is taken, not the first one found: an ordinary order has one
+ * machinist for all weeks (reconciliation rewrites diverging ones), and names differ only where the
+ * past is no longer touched — in worked weeks. Cancelled forms do not count: they tell how the
+ * request was run before, while the text under the field is about now.
  */
 export function currentMachinistName(waybills: RequestWaybillDto[] | undefined): string | null {
   return (
@@ -180,8 +180,8 @@ export function currentMachinistName(waybills: RequestWaybillDto[] | undefined):
  *
  * A linear order is a third conversation: there is no "request machinist" at all — one is named
  * for each week separately (ADR 0100 decision 6), and an empty field leaves each week its own
- * person, not a common one. Naming one person is still possible: reconciliation then brings unworked
- * weeks to them — exactly what it does for an ordinary order.
+ * person, not a common one. Naming one person is still possible: reconciliation then brings
+ * unworked weeks to them — exactly what it does for an ordinary order.
  */
 export function machinistFieldExtra(input: {
   currentMachinist: string | null;
@@ -210,9 +210,9 @@ export function machinistFieldExtra(input: {
 
 /**
  * What is wrong with the selected driver's category: the vehicle requires one, the person holds
- * others. The mark in the list row is not enough — it is read while choosing and forgotten — and the
- * decision to seat the person stays with the dispatcher (ADR 0055, ADR 0064): the portal forbids
- * nothing but must name both sides of the discrepancy.
+ * others. The mark in the list row is not enough — it is read while choosing and forgotten — and
+ * the decision to seat the person stays with the dispatcher (ADR 0055, ADR 0064): the portal
+ * forbids nothing but must name both sides of the discrepancy.
  *
  * Both sides name the document type (ADR 0095): the vehicle requirement refers to a category of any
  * document type, and "C required, C held" would otherwise read as a portal bug.
@@ -241,8 +241,8 @@ export function driverCategoryNote(
  * in hand.
  *
  * Gaps are named together with the form: an empty box in 4-P and in form No. 3 are different boxes,
- * and "does this concern me" must be clear without leaving the dialog. A relocation's form is always
- * 4-P (migration 0082); a route's form is the one bound to the selected vehicle's type.
+ * and "does this concern me" must be clear without leaving the dialog. A relocation's form is
+ * always 4-P (migration 0082); a route's form is the one bound to the selected vehicle's type.
  */
 export function driverGapsNote(
   driver: DriverOptionDto | undefined,
@@ -285,9 +285,9 @@ export function joinedRouteDriverExtra(route: VehicleRouteDto | null): string | 
  *
  * The composition is named request by request, not as a count. A route travels as one task, and its
  * driver is one for all requests: the change affects other people's orders. The route list shows
- * only "3 of 7 requests", not whose, and "changed the driver of my request" would turn out to change
- * it for the neighbours. Request numbers give what a counter does not: whom to call if the decision
- * is disputed.
+ * only "3 of 7 requests", not whose, and "changed the driver of my request" would turn out to
+ * change it for the neighbours. Request numbers give what a counter does not: whom to call if the
+ * decision is disputed.
  *
  * Shown while the route is an existing one, not only once a name is chosen: the composition matters
  * while the person is still being chosen — otherwise the consequence would be learned after the

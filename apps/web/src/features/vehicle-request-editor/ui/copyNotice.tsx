@@ -16,7 +16,8 @@ const HEAD_TAIL: Record<RequestStatus, string> = {
   done: ' — она остаётся выполненной',
   completed: '',
   // A copy does not reopen a cancelled request: a new request with its own number is created and
-  // the old refusal stays a refusal. It must be said in words — "create the same" reads as "restore".
+  // the old refusal stays a refusal. It must be said in words — "create the same" reads as
+  // "restore".
   cancelled: ' — копия не возобновляет отменённую',
 };
 
@@ -75,7 +76,8 @@ function termText(from: Dayjs, to: Dayjs | null): string {
  * A shift has two reasons, named separately. Not only the past moves dates: a term entirely ahead
  * that does not reach the first available day moves by the same shift — for a requester that day
  * is tomorrow, and after 15:00 the day after tomorrow (ADR 0104). Telling them about an "elapsed
- * term" for an order starting tomorrow would be false exactly where the proposed dates are explained.
+ * term" for an order starting tomorrow would be false exactly where the proposed dates are
+ * explained.
  */
 function termLine(r: VehicleRequestDto, minDate: Dayjs, today: string): string {
   if (r.requestType === 'special_equipment') {

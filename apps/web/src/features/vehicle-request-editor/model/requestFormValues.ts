@@ -61,8 +61,8 @@ export interface FormValues {
 /**
  * A complete fill of the form: every field of `FormValues` is named, even when the answer is
  * "nothing". `Partial<FormValues>` let a branch forget a new field silently, and a forgotten field
- * is not an empty one only by luck of `resetFields`. Here a new field fails the build in each of the
- * four branches below until it says what an edit and a copy carry over, if anything.
+ * is not an empty one only by luck of `resetFields`. Here a new field fails the build in each of
+ * the four branches below until it says what an edit and a copy carry over, if anything.
  *
  * Mapped over `Required<FormValues>` rather than with `-?`: that modifier also strips the explicit
  * `| undefined`, and "this field is deliberately empty" could not be written at all.
@@ -216,8 +216,8 @@ export function copyTermPlan(
     return { kind: 'remainder', dateFrom: floor, dateTo: to };
   }
   // Calendar-day arithmetic: `diff(…, 'day')` subtracts the offset difference and `add(n, 'day')`
-  // moves the day number. Raw milliseconds in a zone with DST would give 2.96 days instead of three,
-  // and a copy of a three-day order would become a two-day one for that browser.
+  // moves the day number. Raw milliseconds in a zone with DST would give 2.96 days instead of
+  // three, and a copy of a three-day order would become a two-day one for that browser.
   const shift = Math.max(0, floor.diff(from.startOf('day'), 'day'));
   return {
     kind: shift === 0 ? 'ahead' : 'shifted',

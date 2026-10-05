@@ -16,9 +16,9 @@ export interface TrailerTripInput {
  * details along.
  *
  * The second trailer goes on equal terms with the first. Before this was extracted, the assignment
- * dialog asked for it (after inheriting from the previous route) and **lost it on submit**: the body
- * had two keys, and the route left with half its composition without a word. Built in one place for
- * all route dialogs, that mistake has nowhere to come back from.
+ * dialog asked for it (after inheriting from the previous route) and **lost it on submit**: the
+ * body had two keys, and the route left with half its composition without a word. Built in one
+ * place for all route dialogs, that mistake has nowhere to come back from.
  */
 export function trailerTripBody(input: TrailerTripInput): {
   trailer1Model: string;

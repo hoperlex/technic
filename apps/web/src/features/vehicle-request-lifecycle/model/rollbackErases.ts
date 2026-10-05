@@ -26,9 +26,9 @@ export function rollbackErases(
 ): string[] {
   const items: string[] = [];
   if (request.assignment) {
-    // Rates in the same text as the list row: they were agreed for this request (ADR 0027), and what
-    // is erased with the vehicle is the agreement, not a directory row. A rented vehicle without
-    // rates names the lessor: the agreement was with them, and they are the one to call.
+    // Rates in the same text as the list row: they were agreed for this request (ADR 0027), and
+    // what is erased with the vehicle is the agreement, not a directory row. A rented vehicle
+    // without rates names the lessor: the agreement was with them, and they are the one to call.
     const detail = assignmentRateLabel(request.assignment) || request.assignment.lessorName;
     items.push(
       `Назначенная техника: ${assignmentTitle(request.assignment)}${detail ? ` — ${detail}` : ''}`,

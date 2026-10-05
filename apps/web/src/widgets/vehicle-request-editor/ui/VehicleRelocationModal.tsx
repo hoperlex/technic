@@ -88,9 +88,10 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
   const on = routeDate?.format('YYYY-MM-DD');
 
   /*
-   * Past relocation dates are legitimate operationally — the equipment left on Friday and is entered
-   * on Monday — but since ADR 0101 (item 4) such a route needs the permission and an explanation:
-   * both doors to the past share one rule, and the route-side door has asked for a reason for long.
+   * Past relocation dates are legitimate operationally — the equipment left on Friday and is
+   * entered on Monday — but since ADR 0101 (item 4) such a route needs the permission and an
+   * explanation: both doors to the past share one rule, and the route-side door has asked for a
+   * reason for long.
    */
   const past = !!on && on < moscowDateKeyOf(new Date());
 
@@ -190,7 +191,8 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
           </Form.Item>
 
           {/* Relocation places use suggestions or known sites (ADR 0069), without strict
-              verification because bases, parking lots, and repair bays may not have postal addresses. */}
+              verification because bases, parking lots, and repair bays may not have postal
+              addresses. */}
           <AddressField
             name="moveFrom"
             label="Откуда"

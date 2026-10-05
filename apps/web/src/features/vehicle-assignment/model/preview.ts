@@ -3,8 +3,8 @@ import { isApiError } from '@shared/api';
 
 /**
  * The vehicle-change preview contract on the client: the cost of a change read by the person
- * **before** the click (wave 4a of `docs/assignment-periods-plan.md`, §7) — which ESM-2 numbers burn
- * and which are issued, which site signatures drop, which days the machinist lacks.
+ * **before** the click (wave 4a of `docs/assignment-periods-plan.md`, §7) — which ESM-2 numbers
+ * burn and which are issued, which site signatures drop, which days the machinist lacks.
  *
  * Nothing is computed here: everything comes ready from the server
  * (`POST /vehicle-requests/:id/assignment/preview`), computed by the same planner that will then

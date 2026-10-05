@@ -13,7 +13,10 @@ import { formatDateOnly } from '@shared/lib';
  */
 export interface DayBatchFormValues {
   dayBatchDriverId?: string;
-  /** The checkbox of the take-into-work dialog; the batch dialog has none — there it is the whole dialog. */
+  /**
+   * The checkbox of the take-into-work dialog; the batch dialog has none — there it is the whole
+   * dialog.
+   */
   dayBatchEnabled?: boolean;
   /** Whether to issue waybills or only place days into routes (asked in the batch dialog). */
   dayBatchIssue?: boolean;
@@ -39,9 +42,9 @@ export function dayBatchBody(values: DayBatchFormValues, operationId: string): D
   return {
     driverPersonId: values.dayBatchDriverId!,
     /*
-     * The field was not asked — so waybills are wanted. That is how the take-into-work dialog works:
-     * its checkbox says "issue 4-P for the whole period", and a split "routes first, paper later"
-     * contradicts it. Only the batch dialog, where missed days are collected, asks about it.
+     * The field was not asked — so waybills are wanted. That is how the take-into-work dialog
+     * works: its checkbox says "issue 4-P for the whole period", and a split "routes first, paper
+     * later" contradicts it. Only the batch dialog, where missed days are collected, asks about it.
      */
     issueWaybills: values.dayBatchIssue ?? true,
     // An empty reason goes as an absent key, not an empty string: "no explanation given" and "the
@@ -67,7 +70,8 @@ export function dayBatchBody(values: DayBatchFormValues, operationId: string): D
  *
  * - `portionHint`: a term longer than one portion is not a ban but a promise of a remainder (ADR
  *   0207 decision 11): the batch takes the first `DAY_BATCH_LIMIT` unplanned days and a repeated
- *   click collects the rest. Refusing the whole term would cut a quarter-long order off the button —
+ *   click collects the rest. Refusing the whole term would cut a quarter-long order off the button
+ * —
  *   the very case it was asked for. The remainder named here is an upper bound: the portal does not
  *   know how many days already sit in routes (the batch skips them and they take no place in the
  *   portion); the exact remainder comes with the answer (`remaining`) and the report repeats it in

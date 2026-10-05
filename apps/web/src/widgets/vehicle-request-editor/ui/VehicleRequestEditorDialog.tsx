@@ -217,9 +217,10 @@ export function VehicleRequestEditorDialog({ confirmLoading, onFinish, state }: 
                   />
                 </FormGrid.Full>
               )}
-              {/* Request trips (§4.1): cargo, addresses and contacts of both ends. With one trip the
-                  block looks and fills exactly like the pre-plan form — same fields in the same
-                  grid cells; it expands into a list with "+ trip" and "repeat N times" on demand. */}
+              {/* Request trips (§4.1): cargo, addresses and contacts of both ends. With one trip
+                  the block looks and fills exactly like the pre-plan form — same fields in the same
+                  grid cells; it expands into a list with "+ trip" and "repeat N times" when
+                  asked. */}
               <RequestTripsBlock
                 savedTrips={state.recordTrips}
                 expanded={state.tripsExpanded}

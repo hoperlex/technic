@@ -115,7 +115,8 @@ export function tripNeedsList(t: VehicleRequestTripDto): boolean {
  * trip becomes six, and six vehicles in a shift follow a schedule rather than arriving together;
  * here the same order is repeated on another day, and "first at 8:00, second at 14:00" is exactly
  * what is copied. The day is not part of `scheduledTime` (hours and minutes only), so moving the
- * copy's delivery carries the time along and cannot break the day boundary (`tripsOutOfRequestDay`).
+ * copy's delivery carries the time along and cannot break the day boundary
+ * (`tripsOutOfRequestDay`).
  */
 export function copyTrip(t: VehicleRequestTripDto): TripFormValue {
   const copy = tripToForm(t);

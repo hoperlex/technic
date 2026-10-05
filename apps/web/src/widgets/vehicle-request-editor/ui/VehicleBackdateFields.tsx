@@ -54,8 +54,8 @@ export function VehicleBackdateFields({ record, next, effectiveDate }: Props) {
    * them. Only the shift list itself knows which days go: the request summary answers with
    * "approved / pending" counts, not dates.
    *
-   * Same query key as the shift dialog and the request card: it is the same table, and fetching it a
-   * second time is pointless.
+   * Same query key as the shift dialog and the request card: it is the same table, and fetching it
+   * a second time is pointless.
    */
   const { data: shifts } = useQuery({
     queryKey: vehicleRequestKeys.shifts(record?.id),
@@ -85,8 +85,8 @@ export function VehicleBackdateFields({ record, next, effectiveDate }: Props) {
    * form). The portal must say it before the click, or the person writes a reason and gets 422.
    *
    * Computed only for requests whose forms the portal maintains itself (`auto`). For a linear order
-   * the set of weeks is defined by already issued forms (ADR 0100 §5), which the form does not have;
-   * there the server supplies the line by refusing.
+   * the set of weeks is defined by already issued forms (ADR 0100 §5), which the form does not
+   * have; there the server supplies the line by refusing.
    */
   if (record?.requestType === 'special_equipment' && term) {
     const mode = esm2Mode({

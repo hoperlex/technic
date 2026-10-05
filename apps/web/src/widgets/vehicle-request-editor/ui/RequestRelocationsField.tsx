@@ -21,7 +21,8 @@ import { formatDateOnly } from '@shared/lib';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
 
 /**
- * Request relocations shown inside the editor: delivery to and pickup from the site (migration 0082).
+ * Request relocations shown inside the editor: delivery to and pickup from the site (migration
+ * 0082).
  *
  * Relocations are maintained here because they are corrected exactly when the request itself is
  * opened: the equipment went on a carrier, the date moved, the pickup was created on the wrong
@@ -111,8 +112,8 @@ export function RequestRelocationsField({ request }: Props) {
             <Tag color={route.purpose === 'delivery' ? 'blue' : 'gold'}>
               {routePurposeShortLabels[route.purpose]}
             </Tag>
-            {/* The link and the delete button are siblings, not nested: `EntityLink` suppresses only
-                its own navigation (`preventDefault` on a plain left click) and lets the event
+            {/* The link and the delete button are siblings, not nested: `EntityLink` suppresses
+                only its own navigation (`preventDefault` on a plain left click) and lets the event
                 bubble, so nesting would let one click reach `confirmRemove` or vice versa. Without
                 route access the number stays plain text. */}
             <EntityLink

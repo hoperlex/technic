@@ -32,7 +32,8 @@ export function retypeErases(request: VehicleRequestDto, dropsApproval: boolean)
     } else {
       for (const trip of request.trips) {
         // The trip number both names the trip and keeps lines distinct: rows produced by "repeat
-        // N times" (§4.1) share addresses and cargo to the character, and the list is keyed by line.
+        // N times" (§4.1) share addresses and cargo to the character, and the list is keyed by
+        // line.
         const cargo = tripCargoLabel(trip);
         items.push(
           `Ездка ${trip.num}: ${trip.fromLocation} → ${trip.toLocation}${cargo ? ` · ${cargo}` : ''}`,

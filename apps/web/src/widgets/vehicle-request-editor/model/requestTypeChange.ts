@@ -34,7 +34,8 @@ export function requestTypeChangeHandler({ classificationByKey, customer, form, 
       form.resetFields(['classificationKey']);
     }
     // The unloading contact lives on the **first** trip (R2): it becomes the single one for the
-    // whole order if the request is converted to on-site equipment; other trips have their own ends.
+    // whole order if the request is converted to on-site equipment; other trips have their own
+    // ends.
     const trips: TripFormValue[] | undefined = form.getFieldValue('trips');
     if (next === 'special_equipment') {
       // On-site equipment has no department customer (R4): the form, not the picker, removes a

@@ -60,9 +60,9 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
    * A term change waiting for its door: the request, the new term and the form values to be saved
    * right after (wave 4a of `docs/assignment-periods-plan.md`).
    *
-   * State, not a flag inside the mutation: a dialog stands between "pressed Save" and "confirmed the
-   * consequences", and the form values must survive it — the form has already run its rules, and
-   * asking them again would be a second pass over the same fields.
+   * State, not a flag inside the mutation: a dialog stands between "pressed Save" and "confirmed
+   * the consequences", and the form values must survive it — the form has already run its rules,
+   * and asking them again would be a second pass over the same fields.
    */
   const [periodSave, setPeriodSave] = useState<PendingPeriodSave | null>(null);
 
@@ -72,8 +72,8 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
    * The portal does not forbid such an edit: request and route are edited by different people at
    * different times, and forbidding it would demand fixing the route before learning of the
    * mismatch. Staying silent is wrong too — the route stays on the old day and the waybill would
-   * print a task that no longer exists that day. So the dialog names the mismatch and leads to where
-   * it is fixed: the route card, where the route day moves together with its requests.
+   * print a task that no longer exists that day. So the dialog names the mismatch and leads to
+   * where it is fixed: the route card, where the route day moves together with its requests.
    */
   const warnRouteDateMismatch = (saved: VehicleRequestDto) => {
     if (saved.requestType !== 'freight_transport' || !saved.route) return;
@@ -92,8 +92,8 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
       okText: 'Понятно',
       // The navigation button sits next to the explanation, otherwise the person closes the dialog
       // and searches for the route by hand, and half the mismatches stay unnoticed. The route opens
-      // as a window over the list (ADR 0120): leaving the list would take away the very request just
-      // edited, together with its filters and page.
+      // as a window over the list (ADR 0120): leaving the list would take away the very request
+      // just edited, together with its filters and page.
       ...(routeLink
         ? {
             cancelText: `Открыть маршрут ${route.displayNumber}`,
@@ -179,7 +179,8 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
       const customerBody = pair.departmentId
         ? { departmentId: pair.departmentId }
         : { objectId: pair.objectId! };
-      // No time given -> Moscow midnight plus a flag: the request is "for the date", without an hour.
+      // No time given -> Moscow midnight plus a flag: the request is "for the date", without an
+      // hour.
       const time = normalizeTimeInput(values.scheduledTime ?? '');
       const scheduledAt = dayjs
         .tz(`${values.scheduledDate!.format('YYYY-MM-DD')} ${time ?? '00:00'}`, MOSCOW_TZ)
@@ -223,10 +224,10 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
         });
       }
       /*
-       * An edit sends the full list (§7): a row with `id` overwrites an existing trip, a row without
-       * one creates a new trip, and a trip missing from the list is soft-deleted (R13a). Numbers are
-       * not reused: the next trip gets the next free number, and "ТС-40/2" from an issued waybill
-       * stays forever the trip that was printed.
+       * An edit sends the full list (§7): a row with `id` overwrites an existing trip, a row
+       * without one creates a new trip, and a trip missing from the list is soft-deleted (R13a).
+       * Numbers are not reused: the next trip gets the next free number, and "ТС-40/2" from an
+       * issued waybill stays forever the trip that was printed.
        *
        * The R2a exemptions are kept by the assembly itself (`editTripBody`): address metadata goes
        * as is, down to `null`, and the server demands verification only for the changed field.
@@ -282,10 +283,11 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
   };
 
   /**
-   * Conversion is confirmed, an ordinary save is not. Changing the type does not just change values:
-   * the previous type's fields disappear with its detail, and an approval set by someone other than
-   * the editor goes too. The list comes from the request itself (`retypeErases`), not general words:
-   * the person must see what will cease to exist before the click, not in the history afterwards.
+   * Conversion is confirmed, an ordinary save is not. Changing the type does not just change
+   * values: the previous type's fields disappear with its detail, and an approval set by someone
+   * other than the editor goes too. The list comes from the request itself (`retypeErases`), not
+   * general words: the person must see what will cease to exist before the click, not in the
+   * history afterwards.
    */
   const submit = (values: FormValues) => {
     const { record } = state;

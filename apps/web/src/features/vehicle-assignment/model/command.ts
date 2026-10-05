@@ -18,14 +18,18 @@ import { MOSCOW_TZ } from '@shared/config';
  * machinist dialog: the dialog is form state (ownership branches, defaults, field resets when the
  * request changes), and here live the rules of talking to the door. The body is built **once**: the
  * consequence preview is requested with it and the confirmation sends it, and a second assembly
- * would drift from the first on the first new field — and with it the fingerprint the server uses to
- * check what was promised to the person.
+ * would drift from the first on the first new field — and with it the fingerprint the server uses
+ * to check what was promised to the person.
  *
  * The form fields are described here too: both the body assembly and the dialog know their names,
- * and they must not diverge — a field the assembly does not know would silently not reach the server.
+ * and they must not diverge — a field the assembly does not know would silently not reach the
+ * server.
  */
 
-/** Select value for "create a new route": an empty string is indistinguishable from "not chosen yet". */
+/**
+ * Select value for "create a new route": an empty string is indistinguishable from "not chosen
+ * yet".
+ */
 export const NEW_ROUTE = 'new';
 
 export interface AssignFormValues {
@@ -33,7 +37,9 @@ export interface AssignFormValues {
   /** On-site equipment: the work term. */
   dateFrom?: Dayjs | null;
   dateTo?: Dayjs | null;
-  /** Freight: delivery date and time (`HH:mm`); an empty time means delivery without an exact hour. */
+  /**
+   * Freight: delivery date and time (`HH:mm`); an empty time means delivery without an exact hour.
+   */
   scheduledDate?: Dayjs | null;
   scheduledTime?: string;
   lessorId?: string;
@@ -64,7 +70,10 @@ export interface AssignFormValues {
    */
   machinistId?: string;
   // ── Backdated correction (ADR 0101, R8): only when changing the vehicle of a running request ──
-  /** The vehicle changes not "from today" but because the wrong one was recorded: another plate worked. */
+  /**
+   * The vehicle changes not "from today" but because the wrong one was recorded: another plate
+   * worked.
+   */
   correctionEnabled?: boolean;
   correctionReason?: string;
   /** ESM-2 forms of worked weeks to reissue: addressed one by one, not "all past ones". */
@@ -132,8 +141,8 @@ export function reassignRequestBody(
 }
 
 /**
- * The actual term as the API accepts it. The delivery time is assembled in Moscow time — the zone of
- * both the request and the waybill; an empty time means delivery "on the date", as when creating
+ * The actual term as the API accepts it. The delivery time is assembled in Moscow time — the zone
+ * of both the request and the waybill; an empty time means delivery "on the date", as when creating
  * the request.
  */
 export function assignScheduleOf(

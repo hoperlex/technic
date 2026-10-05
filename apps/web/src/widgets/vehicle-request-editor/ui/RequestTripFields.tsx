@@ -19,7 +19,10 @@ import { TimeInput, optionalWorkTimeRule } from '@entities/request';
  * `useWatch`) and need the whole path, so the trip list is kept as plain values, not `Form.List`.
  */
 
-/** A trip is a pair of endpoints, each with its own address and contact: different people load and receive. */
+/**
+ * A trip is a pair of endpoints, each with its own address and contact: different people load and
+ * receive.
+ */
 type Side = 'from' | 'to';
 
 const SIDE_LABELS: Record<Side, { address: string; required: string; responsible: string }> = {
@@ -182,8 +185,9 @@ export function RequestTripFields({
         <TripEnd index={index} side="from" saved={saved} suggestObjectIds={suggestObjectIds} />
         <TripEnd index={index} side="to" saved={saved} suggestObjectIds={suggestObjectIds} />
         {detailed && (
-          // The trip note is the first thing the printed form drops (R11a), yet the driver needs it:
-          // "sand, call an hour ahead". The request comment about the whole order cannot replace it.
+          // The trip note is the first thing the printed form drops (R11a), yet the driver needs
+          // it: "sand, call an hour ahead". The request comment about the whole order cannot
+          // replace it.
           <Form.Item name={['trips', index, 'comment']} label="Примечание к ездке">
             <Input.TextArea
               rows={2}

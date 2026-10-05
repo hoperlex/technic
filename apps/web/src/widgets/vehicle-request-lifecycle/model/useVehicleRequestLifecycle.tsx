@@ -79,8 +79,9 @@ export function useVehicleRequestLifecycle({
   const [cancelTarget, setCancelTarget] = useState<VehicleRequestDto | null>(null);
   /**
    * The request being returned from work to "new" (`transitionResetsWork`). Separate from the
-   * cancellation: the reason dialog is shared, but the list of what gets erased is its own and shows
-   * what exactly this request loses. Mixed into one state, the dialog would not know what to show.
+   * cancellation: the reason dialog is shared, but the list of what gets erased is its own and
+   * shows what exactly this request loses. Mixed into one state, the dialog would not know what to
+   * show.
    */
   const [rollbackTarget, setRollbackTarget] = useState<VehicleRequestDto | null>(null);
   // Taking into work means choosing the vehicle and rates (ADR 0027): the assignment travels with
@@ -369,11 +370,11 @@ export function useVehicleRequestLifecycle({
           open={!!rollbackTarget}
           subject={rollbackTarget ? `№ ${rollbackTarget.displayNumber}` : ''}
           erases={rollbackTarget ? rollbackErases(rollbackTarget, rollbackRelocations ?? []) : []}
-          // A flag of the request itself, not of its route (ADR 0207). An on-site order has no route
-          // of its own — the paperwork hangs on day routes and relocations — so `route.hasWaybill`
-          // always answered "no waybill": the dialog opened, the person typed a reason and hit 409.
-          // Relocations are not checked separately: the flag already covers them
-          // (`activeWaybillOfRequest`), and a second check would copy the server rule.
+          // A flag of the request itself, not of its route (ADR 0207). An on-site order has no
+          // route of its own — the paperwork hangs on day routes and relocations — so
+          // `route.hasWaybill` always answered "no waybill": the dialog opened, the person typed a
+          // reason and hit 409. Relocations are not checked separately: the flag already covers
+          // them (`activeWaybillOfRequest`), and a second check would copy the server rule.
           blocker={rollbackTarget?.hasActiveWaybill ? ROLLBACK_WAYBILL_MESSAGE : null}
           confirmLoading={status.isPending}
           onCancel={() => setRollbackTarget(null)}
