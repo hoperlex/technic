@@ -85,7 +85,13 @@ export function assignmentLessorOptions(
     .sort((left, right) => left.label.localeCompare(right.label, 'ru'));
 }
 
-/** Name a vehicle together with the facts that distinguish it in the assignment picker. */
+/**
+ * Picker row: the vehicle label plus what distinguishes one unit from another. Type and category
+ * are the first difference within a kind, so an own vehicle shows its classifier position next to
+ * the model, not instead of it. A mismatch with the ordered position is spelled out in the row with
+ * its direction ("larger", "smaller than ordered"): whether this machine fits is decided by the
+ * person — by the model name and what they know about it.
+ */
 export function assignmentVehicleOptionLabel(
   vehicle: VehicleDto,
   substitution: ReturnType<typeof vehicleSubstitutionOf>,
@@ -93,6 +99,8 @@ export function assignmentVehicleOptionLabel(
   const title = vehicleLabel(vehicle);
   const extra = [
     vehicle.ownership === 'own' ? vehicle.modelName : null,
+    // A category name already contains the type (ADR 0016 §11); without a category the type names
+    // itself.
     vehicle.categoryName ?? vehicle.typeName,
     vehicleSubstitutionHint(substitution),
     assignmentRateLabel(vehicle) || null,
@@ -139,6 +147,11 @@ export function assignmentVehicleOptions(input: {
     }));
 }
 
+/**
+ * How an empty vehicle list is explained. Empty means empty in the whole fleet: the list is not
+ * narrowed by type or kind (ADR 0064), so there is nothing to promise about finding equipment
+ * elsewhere.
+ */
 export function emptyAssignmentVehicleText(input: {
   isFetching: boolean;
   lessorId?: string;
@@ -212,6 +225,9 @@ export function assignmentRouteModel(input: {
           formCode,
         })
       : { formCode: null, reason: null };
+  // A vehicle of another type prints another form. Named on its own line: changing the document
+  // is not a formatting detail — form No. 3 has neither customer coupons nor trailer boxes — and
+  // the dispatcher must learn it before the click, not when issuing the waybill.
   const formChange =
     input.isFreight &&
     input.selected &&
@@ -236,12 +252,19 @@ export function assignmentDriverLookup(input: {
   withTrailer: boolean;
 }): { needed: boolean; on?: string; withTrailer: boolean } {
   return {
+    // Both route branches ask for the driver (ADR 0048) — new and existing — plus the relocation.
+    // The existing branch used to be excluded, and the list did not load at all: there was nothing
+    // to replace.
     needed: input.needsRoute || input.wantsDelivery,
     on: input.needsRoute
       ? (input.joinedRoute?.routeDate ?? input.tripDate)
       : input.wantsDelivery
         ? input.deliveryDate?.format('YYYY-MM-DD')
         : undefined,
+    // The trailer the required category is measured by. A new route names it right here with a
+    // checkbox; an existing route has its own. Asking the list by the form's checkbox would measure
+    // someone else's route by a box it does not have — and a driver without "E" would look fit for
+    // a coupling.
     withTrailer: input.joinedRoute ? input.joinedRoute.withTrailer : input.withTrailer,
   };
 }
@@ -290,24 +313,36 @@ export function assignmentBlockers(
   return {
     [context.requestType === 'special_equipment' ? 'dateFrom' : 'scheduledDate']:
       !context.reassign && !context.schedule && 'Укажите фактическую дату',
+    // The machinist is required where weekly ESM-2 forms are issued: without one the form is
+    // invalid. The server answers by the same rule — it also sees whose vehicle it is. A linear
+    // request issues no forms at this moment and has no requirement (ADR 0100 decision 5).
     machinistId:
       context.machinistRequired &&
       !values.machinistId &&
       'Выберите машиниста — на него выписываются путевые листы ЭСМ-2',
     vehicleId: !values.vehicleId && 'Выберите технику',
+    // A rental is a counterparty's invoice: a request in work without a rate would mean the price
+    // is found out later.
     pricePerHour:
       context.isRental &&
       values.pricePerHour == null &&
       values.pricePerShift == null &&
       'Укажите стоимость аренды — за час или за смену',
+    // A relocation goes from somewhere to somewhere with someone: empty boxes make a waybill one
+    // cannot drive by. Each box speaks for itself: "fill in the relocation" does not say what is
+    // missing.
     deliveryDate: context.wantsDelivery && !values.deliveryDate && 'Укажите дату перегона',
     deliveryDriverId:
       context.wantsDelivery && !values.deliveryDriverId && 'Выберите водителя перегона',
     deliveryFrom:
       context.wantsDelivery && !values.deliveryFrom?.trim() && 'Укажите, откуда идёт техника',
     deliveryTo: context.wantsDelivery && !values.deliveryTo?.trim() && 'Укажите, куда идёт техника',
+    // A backdated operation passes only with an explanation: it stays in the correction journal and
+    // is printed on both forms (ADR 0101, R35). The server answers by the same rule — 422.
     correctionReason:
       context.correctionEnabled && !values.correctionReason?.trim() && 'Укажите причину коррекции',
+    // The driver is required exactly where a waybill is issued: a rental's driver is the lessor's,
+    // and the portal does not track them.
     driverPersonId:
       context.needsRoute &&
       values.routeId === NEW_ROUTE &&

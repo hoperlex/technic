@@ -8,11 +8,17 @@ export interface TrailerTripInput {
 }
 
 /**
- * Build the route trip fragment from trailer fields.
+ * Build the route trip fragment from trailer fields, with the same rules in every dialog.
  *
- * Trailer details must disappear together with the checkbox. Ant Design preserves hidden form
- * fields, so copying values directly could send a trailer that the user has already disabled.
- * Keeping this conversion in the route entity also prevents the five route forms from drifting.
+ * Trailer details go only together with the trailer itself: without it the server rejects them
+ * ("trailer details are not printed without a trailer on the route"), and the route may still hold
+ * them from last time (Ant Design also keeps hidden form fields) — removing the trailer takes its
+ * details along.
+ *
+ * The second trailer goes on equal terms with the first. Before this was extracted, the assignment
+ * dialog asked for it (after inheriting from the previous route) and **lost it on submit**: the body
+ * had two keys, and the route left with half its composition without a word. Built in one place for
+ * all route dialogs, that mistake has nowhere to come back from.
  */
 export function trailerTripBody(input: TrailerTripInput): {
   trailer1Model: string;
