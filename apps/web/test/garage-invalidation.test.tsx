@@ -9,6 +9,7 @@ import { objectDto } from './factories/waste';
 import {
   approvedVehicleRequest,
   classification,
+  rollbackPreview,
   vehicleFeed,
   vehicleSummary,
 } from './factories/vehicle';
@@ -58,7 +59,10 @@ function renderTab() {
     'GET /vehicle-classifications': () => json(list([classification()])),
     // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
     'GET /vehicles': () => json(emptyList()),
-    'GET /vehicle-requests/:id/relocations': () => json([]),
+    // Что снимет возврат, считает сервер (ADR 0211): окно спрашивает это при открытии, и без
+    // ответа оно не отпустит нажатие. Сценарию важно лишь, что окно открылось и отпустило.
+    'POST /vehicle-requests/:id/rollback/preview': () =>
+      json(rollbackPreview({ assignment: true })),
     'PATCH /vehicle-requests/:id/status': ({ params, body }) =>
       json(
         approvedVehicleRequest({
@@ -109,6 +113,8 @@ describe('срез гаража после смены статуса заказ�
 
     // Возврат спрашивает причину: работу стирает подтверждение, а не промах по пункту меню.
     expect(await screen.findByText('Возврат заявки в «Новую»')).toBeDefined();
+    // Пока последствия не пришли, кнопка показывает ожидание и нажатие не уходит.
+    await screen.findByText('Заявка вернётся в состояние только что заведённой');
     const reason = document.querySelector('textarea');
     expect(reason, 'поле причины').toBeTruthy();
     fireEvent.change(reason!, { target: { value: 'Заказчик перенёс работы' } });

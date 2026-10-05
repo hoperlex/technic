@@ -10,6 +10,7 @@ import type {
   VehicleFeedListDto,
   VehicleFeedRow,
   VehicleRequestAssignmentDto,
+  VehicleRequestRollbackPreviewDto,
   VehicleRequestRouteDto,
   RepairPreviewDto,
   VehicleRequestDto,
@@ -689,6 +690,32 @@ export function dayBatchResult(
     skipped: 0,
     failed: 0,
     remaining: 0,
+    ...overrides,
+  };
+}
+
+/**
+ * Answer of `POST /vehicle-requests/:id/rollback/preview` (ADR 0211) — what the return to «Новая»
+ * erases, as the server computes it.
+ *
+ * Empty by default, every list and counter: a scenario that cares about a consequence names it,
+ * and a factory that handed out a vehicle, routes and sheets nobody asked for would let a window
+ * pass the test by printing them from the request DTO — the very defect the preview ended.
+ */
+export function rollbackPreview(
+  overrides: Partial<VehicleRequestRollbackPreviewDto> = {},
+): VehicleRequestRollbackPreviewDto {
+  return {
+    blockers: [],
+    assignment: false,
+    completion: false,
+    routes: { detach: [], frozen: [] },
+    relocations: { drop: [], keep: [] },
+    shifts: [],
+    earlyEnd: null,
+    esm2: { cancelCount: 0, keepCount: 0, sheets: { cancel: [], keep: [] } },
+    dropsLinearFreeze: false,
+    fingerprint: 'rollback-fp',
     ...overrides,
   };
 }
