@@ -1057,6 +1057,11 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/weekly-vehicle-requests/:id/status': {
     payload: { status: 'cancelled', reason: 'техника не понадобилась', version: 0 },
   },
+  // Аннулирование (ADR 0218): страж ослаблен до чтения, право по ветви спрашивает обработчик — как
+  // у визы. Тело обязано пройти схему, иначе до стража дело не доходит и проверка меряет 400.
+  'POST /api/v1/weekly-vehicle-requests/:id/annul': {
+    payload: { reason: 'завизировали не ту неделю', version: 0, fingerprint: 'preview' },
+  },
   'GET /api/v1/weekly-vehicle-requests/suggestion': {
     query: `objectId=${OBJECT_ID}&weekStart=${FUTURE_DATE}`,
     selfRefusal: 'не ведёт недельные заявки',

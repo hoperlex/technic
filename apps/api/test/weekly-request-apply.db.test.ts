@@ -2129,6 +2129,362 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
    * стороны, идемпотентность по ключу операции и бумага — та, которую без контекста коррекции
    * сверка за прошедшую неделю не выписала бы вовсе.
    */
+
+  // ── Аннулирование применённой недели (ADR 0218) ──
+  /*
+   * ЗАЧЕМ ЭТИ СЦЕНАРИИ НА БАЗЕ. Аннулирование разворачивает ровно то, что применение сделало с
+   * чужими сущностями: сроки заказов, их версии, бланки строгой отчётности и порождённые заказы.
+   * Контрактным тестом видно только разбор строки; расходятся же здесь код, схема и сверка ЭСМ-2 —
+   * и ценой расхождения будет либо половинный разворот, либо сгоревший номер, которого никто не
+   * просил.
+   */
+  describe('аннулирование применённой недели', () => {
+    function annulPreview(auth: Auth, id: string) {
+      return inject('GET', `/api/v1/weekly-vehicle-requests/${id}/annul`, auth);
+    }
+    function annul(auth: Auth, id: string, body: Record<string, unknown>) {
+      return inject('POST', `/api/v1/weekly-vehicle-requests/${id}/annul`, auth, body);
+    }
+    /** Аннулировать по показанному предпросмотру: отпечатки берутся из него, как это делает окно. */
+    async function annulByPreview(
+      id: string,
+      version: number,
+      extra: Record<string, unknown> = {},
+    ) {
+      const preview = await annulPreview(ctx.admin.auth, id);
+      expect(preview.statusCode, preview.body).toBe(200);
+      const p = preview.json();
+      return {
+        preview: p,
+        res: await annul(ctx.admin.auth, id, {
+          reason: 'Завизировали не ту неделю',
+          version,
+          fingerprint: p.fingerprint,
+          ...(p.cancelGroupsFingerprint
+            ? { cancelGroupsFingerprint: p.cancelGroupsFingerprint }
+            : {}),
+          ...(p.requiresOperation
+            ? { correction: { operationId: randomUUID(), unlockWaybillIds: [] } }
+            : {}),
+          ...extra,
+        }),
+      };
+    }
+
+    it('разворачивает продление, отменяет порождённый заказ и освобождает пару «объект + неделя»', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const leaving = await makeOrder({ objectId });
+      const classification = ctx.ownVehicles[0]!;
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END), leaveItem(leaving), newItem(classification, W1, W1_END)],
+      });
+      const { approval } = await submitAndApprove(weekly);
+      expect(approval.statusCode, approval.body).toBe(200);
+      const applied = approval.json().request as WeeklyDto;
+      const items = await itemRows(weekly.id);
+      const createdId = items.find((i) => i.kind === 'new')!.created_request_id!;
+      expect(createdId).not.toBeNull();
+      // Срок действительно уехал вперёд — иначе разворачивать было бы нечего.
+      expect((await orderDto(order.id)).dateTo).toBe(W1_END);
+
+      const { preview, res } = await annulByPreview(weekly.id, applied.version);
+      expect(preview.allowed, JSON.stringify(preview)).toBe(true);
+      // Снимаемые дни ещё впереди: ветвь обычная, журнал коррекций не нужен.
+      expect(preview.backdated).toBe(false);
+      expect(preview.requiresOperation).toBe(false);
+      expect(res.statusCode, res.body).toBe(200);
+
+      // 1. Срок вернулся к снимку.
+      expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
+      // 2. Порождённый заказ отменён, а не удалён: у него свой номер и своя история.
+      const created = await orderDto(createdId);
+      expect(created.status).toBe('cancelled');
+      // 3. Шапка хранит визу и момент применения — ими объясняется, откуда взялись продления.
+      const row = await weeklyRow(weekly.id);
+      expect(row?.status).toBe('annulled');
+      expect(row?.approved_by).not.toBeNull();
+      expect(row?.applied_at).not.toBeNull();
+      // 4. Строки состава не переписаны: по ним отвечают, что именно развернули.
+      const after = await itemRows(weekly.id);
+      expect(after.map((i) => i.result).sort()).toEqual(['created', 'extended', 'left']);
+      // 5. Переход записан той же транзакцией, с причиной.
+      const history = await historyRows(weekly.id);
+      const transition = history.find((h) => h.to_status === 'annulled');
+      expect(transition?.from_status).toBe('applied');
+      expect(transition?.comment).toBe('Завизировали не ту неделю');
+      // 6. Пара «объект + неделя» свободна: ту же неделю собирают заново.
+      const again = await inject('POST', '/api/v1/weekly-vehicle-requests', ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [],
+      });
+      expect(again.statusCode, again.body).toBe(201);
+    }, 60_000);
+
+    it('решение «уезжает» снимается шапкой: соседняя неделя снова продлевает тот же заказ', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [leaveItem(order)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+
+      // Пока решение действует, соседняя неделя продлить этот заказ не даёт.
+      const blocked = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W2,
+        items: [],
+      });
+      const refused = await inject(
+        'PATCH',
+        `/api/v1/weekly-vehicle-requests/${blocked.id}`,
+        ctx.admin.auth,
+        { items: [extendItem(order, W2_END)], version: blocked.version },
+      );
+      expect(refused.statusCode, refused.body).toBe(422);
+      expect(refused.body).toContain('Уезжает по');
+
+      const { res } = await annulByPreview(weekly.id, applied.version);
+      expect(res.statusCode, res.body).toBe(200);
+      /*
+       * После разворота решения «уезжает» больше нет — `loadLeftBy` отбирает только применённые
+       * недели. Проверяется именно исчезновение ЭТОЙ причины, а не успех правки: заказ кончается
+       * на текущей неделе, и для W2 он всё равно негоден по сроку («кончился больше недели
+       * назад»). Требуй тест 200 — он проверял бы границу срока, а не снятое решение.
+       */
+      const after = await inject(
+        'PATCH',
+        `/api/v1/weekly-vehicle-requests/${blocked.id}`,
+        ctx.admin.auth,
+        { items: [extendItem(order, W2_END)], version: blocked.version },
+      );
+      expect(after.body).not.toContain('Уезжает по');
+    }, 60_000);
+
+    it('строка, развёрнутая руками, аннулирование не запирает', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+
+      // Срок возвращён прямым путём — так же, как это сделало бы досрочное завершение: строка
+      // становится «уже развёрнута», а не «блокирована: срок изменился».
+      await ctx.db.execute(sql`
+        UPDATE special_equipment_request_details SET date_to = ${order.effectiveDateTo}
+        WHERE request_id = ${order.id}`);
+
+      const preview = await annulPreview(ctx.admin.auth, weekly.id);
+      expect(preview.statusCode, preview.body).toBe(200);
+      const item = preview.json().items[0];
+      expect(item.state).toBe('reverted');
+      expect(item.reverse).toBe('none');
+      // Разворачивать нечего — и это отказ по существу, а не «строка мешает».
+      const res = await annul(ctx.admin.auth, weekly.id, {
+        reason: 'Проверка',
+        version: applied.version,
+        fingerprint: preview.json().fingerprint,
+      });
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.body).toContain('Разворачивать нечего');
+    }, 60_000);
+
+    it('пропущенная строка следствий не имеет и неделю не запирает', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const second = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END), extendItem(second, W1_END)],
+      });
+      const pending = (await submitWeekly(ctx.admin.auth, weekly.id, weekly.version)).json()
+        .request as WeeklyDto;
+      // Второй заказ отменяют между подачей и визой: его строка станет `skipped`.
+      const cancelled = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${second.id}/status`,
+        ctx.admin.auth,
+        { status: 'cancelled', comment: 'Отказались', version: second.version },
+      );
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      const approval = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
+      expect(approval.statusCode, approval.body).toBe(200);
+      const applied = approval.json().request as WeeklyDto;
+      expect((await itemRows(weekly.id)).some((i) => i.result === 'skipped')).toBe(true);
+
+      const { preview, res } = await annulByPreview(weekly.id, applied.version);
+      const skipped = preview.items.find(
+        (i: { reverse: string; state: string }) => i.state === 'reverted',
+      );
+      expect(skipped?.reverse).toBe('none');
+      expect(res.statusCode, res.body).toBe(200);
+      expect((await weeklyRow(weekly.id))?.status).toBe('annulled');
+    }, 60_000);
+
+    it('блокирует строку, заказ которой взяли в работу, назвав её причину', async () => {
+      const objectId = await freshObject();
+      const classification = ctx.ownVehicles[0]!;
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [newItem(classification, W1, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+      const createdId = (await itemRows(weekly.id))[0]!.created_request_id!;
+
+      // Порождённый заказ визируют и берут в работу: следствие недели перестало быть «Новой».
+      const createdDto = await orderDto(createdId);
+      const approvedOrder = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${createdId}/status`,
+        ctx.admin.auth,
+        {
+          status: 'confirmed',
+          comment: '',
+          version: createdDto.version,
+          assignment: {
+            vehicleId: ctx.ownVehicles.pop()!.id,
+            pricePerHour: null,
+            pricePerShift: null,
+            shiftHours: null,
+            driverPersonId: ctx.personId,
+          },
+          schedule: { requestType: 'special_equipment', dateFrom: W1, dateTo: W1_END },
+        },
+      );
+      expect(approvedOrder.statusCode, approvedOrder.body).toBe(200);
+
+      const preview = await annulPreview(ctx.admin.auth, weekly.id);
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect(preview.json().allowed).toBe(false);
+      expect(preview.json().items[0].state).toBe('blocked');
+      const res = await annul(ctx.admin.auth, weekly.id, {
+        reason: 'Проверка',
+        version: applied.version,
+        fingerprint: preview.json().fingerprint,
+      });
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.body).toContain('Порождённый заказ уже в статусе');
+    }, 60_000);
+
+    it('блокирует строку, заказ которой тронут позже применённой неделей', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const first = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const firstApplied = (await submitAndApprove(first)).approval.json().request as WeeklyDto;
+      /*
+       * Вторая неделя решает по тому же заказу позже — и решает «уезжает», а не продление.
+       * Продлением она сдвинула бы срок, и строка первой недели упёрлась бы в более раннюю
+       * причину («срок изменился после недели»): проверялась бы не та граница.
+       */
+      const second = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W2,
+        items: [leaveItem(order)],
+      });
+      const secondApproval = await submitAndApprove(second);
+      expect(secondApproval.approval.statusCode, secondApproval.approval.body).toBe(200);
+
+      const preview = await annulPreview(ctx.admin.auth, first.id);
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect(preview.json().allowed).toBe(false);
+      const res = await annul(ctx.admin.auth, first.id, {
+        reason: 'Проверка',
+        version: firstApplied.version,
+        fingerprint: preview.json().fingerprint,
+      });
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.body).toContain('применённой позже');
+    }, 60_000);
+
+    it('отвечает 409 на устаревший отпечаток и на устаревшую версию', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+
+      const stale = await annul(ctx.admin.auth, weekly.id, {
+        reason: 'Проверка',
+        version: applied.version,
+        fingerprint: 'отпечаток-из-прошлого',
+      });
+      expect(stale.statusCode, stale.body).toBe(409);
+
+      const preview = await annulPreview(ctx.admin.auth, weekly.id);
+      const badVersion = await annul(ctx.admin.auth, weekly.id, {
+        reason: 'Проверка',
+        version: applied.version + 5,
+        fingerprint: preview.json().fingerprint,
+      });
+      expect(badVersion.statusCode, badVersion.body).toBe(409);
+    }, 60_000);
+
+    it('повтор команды упирается в версию: второго разворота не происходит', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+      const preview = await annulPreview(ctx.admin.auth, weekly.id);
+      const body = {
+        reason: 'Проверка',
+        version: applied.version,
+        fingerprint: preview.json().fingerprint,
+      };
+      const first = await annul(ctx.admin.auth, weekly.id, body);
+      expect(first.statusCode, first.body).toBe(200);
+      const again = await annul(ctx.admin.auth, weekly.id, body);
+      // Не 200 «как будто сделали ещё раз»: шапка уже не `applied`, и это конфликт состояния.
+      expect([409, 422]).toContain(again.statusCode);
+      expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
+    }, 60_000);
+
+    it('читатель без права получает предпросмотр с отказом, а команда отвечает 403', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+
+      const preview = await annulPreview(ctx.observer.auth, weekly.id);
+      // Понять, почему кнопка недоступна, должен и тот, кто аннулировать не вправе: ответ лежит в
+      // теле, а не в 403 маршрута.
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect(preview.json().allowed).toBe(false);
+      expect(preview.json().blockedReason).toContain('Аннулировать');
+
+      const res = await annul(ctx.observer.auth, weekly.id, {
+        reason: 'Проверка',
+        version: applied.version,
+        fingerprint: preview.json().fingerprint,
+      });
+      expect(res.statusCode, res.body).toBe(403);
+    }, 60_000);
+  });
+
   describe('проведение просроченной недели задним числом', () => {
     /** Заявка на текущую (уже начавшуюся) неделю с одной строкой продления — предмет проведения. */
     async function overdueWeekly(): Promise<{ weekly: WeeklyDto; order: Order; objectId: string }> {
