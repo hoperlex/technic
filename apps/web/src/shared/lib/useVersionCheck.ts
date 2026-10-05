@@ -1,16 +1,32 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { hasChunkLoadFailure, onChunkLoadFailure, requireChunkReload } from './chunkRecovery';
 
 const POLL_INTERVAL_MS = 10 * 60_000;
 
-// latestBuildId = buildId из /version.json, если он ОТЛИЧАЕТСЯ от вшитого __BUILD_ID__
-// (иначе null). Опрос продолжается всегда: новый релиз обновит latestBuildId,
-// даже если предыдущий пользователь отложил обновление кнопкой «Позже».
-// Проверка: на mount, при возврате видимости/фокуса вкладки и раз в ~10 минут.
-export const useVersionCheck = (): { latestBuildId: string | null } => {
+// Keep polling after a dismissal: a later release must still offer its own update. Only an id
+// different from this document's embedded build is published; check on mount, focus and visibility
+// return as well as every ten minutes, since a sleeping tab can outlive several deployments.
+export const useVersionCheck = (): { latestBuildId: string | null; chunkLoadFailed: boolean } => {
   const [latestBuildId, setLatestBuildId] = useState<string | null>(null);
+  const chunkLoadFailed = useSyncExternalStore(
+    onChunkLoadFailure,
+    hasChunkLoadFailure,
+    hasChunkLoadFailure,
+  );
 
   useEffect(() => {
-    if (import.meta.env.DEV) return; // в dev version.json не эмитится
+    // Vite emits this before rejecting a preload. Suppress the unhandled rejection and retain a
+    // sticky signal even if lazy() subsequently sees a different error after the cancelled event.
+    const onPreloadError = (event: Event) => {
+      event.preventDefault();
+      requireChunkReload();
+    };
+    window.addEventListener('vite:preloadError', onPreloadError);
+    return () => window.removeEventListener('vite:preloadError', onPreloadError);
+  }, []);
+
+  useEffect(() => {
+    if (import.meta.env.DEV) return; // The development server does not emit version.json.
 
     let cancelled = false;
     let inFlight = false;
@@ -28,7 +44,7 @@ export const useVersionCheck = (): { latestBuildId: string | null } => {
           setLatestBuildId((prev) => (prev === id ? prev : id));
         }
       } catch {
-        // offline / 404 / невалидный JSON — игнорируем
+        // Offline, 404 or invalid JSON is not evidence of a newer release.
       } finally {
         inFlight = false;
       }
@@ -51,5 +67,5 @@ export const useVersionCheck = (): { latestBuildId: string | null } => {
     };
   }, []);
 
-  return { latestBuildId };
+  return { latestBuildId, chunkLoadFailed };
 };

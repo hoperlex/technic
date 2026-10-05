@@ -1,11 +1,12 @@
 /**
- * Публичный вход сегмента: элементы интерфейса, не знающие правил портала. Снаружи берут
- * `@shared/ui`, а не отдельные модули внутри — так линт границ отличает пользование от залезания
- * внутрь, а перестроить компонент можно, не трогая тех, кто им пользуется.
+ * Public entry for UI foundations that do not own portal rules. External consumers use
+ * @shared/ui so boundary lint rejects private access and components can be restructured without
+ * changing their callers.
  */
 export * from './ActionSheet';
 export * from './actionMenu';
 export * from './AutoSelect';
+export * from './AsyncContent';
 export * from './CheckboxPicker';
 export * from './columns';
 export * from './DataTable';

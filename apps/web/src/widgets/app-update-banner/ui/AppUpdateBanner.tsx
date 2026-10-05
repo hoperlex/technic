@@ -3,58 +3,53 @@ import { Alert, Button, Space, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useLocation } from 'react-router';
 import { isClientUpgradeRequired, onClientUpgradeRequired } from '@shared/api';
-import { useIsMobile } from '@shared/lib';
-import { useVersionCheck } from '@shared/lib';
+import { reloadPage, useIsMobile, useVersionCheck } from '@shared/lib';
 
-// Ненавязчивый баннер о новой версии приложения. Перезагрузку инициирует пользователь,
-// чтобы не терять заполненные формы. zIndex ниже модалок AntD (1000) — во время
-// заполнения формы баннер прячется за маской модалки и не отвлекает.
+// Reload is initiated by the user so filled forms are not lost. The optional banner stays below
+// AntD modals (1000), behind their mask, to avoid distracting someone filling a form.
 //
-// Кроме кабинета водителя: там «Позже» нет, и это не мелочь оформления (план
-// driver-readings-first, Р13 п. 3). Устаревшая вкладка кабинета пишет черновик показаний в
-// хранилище браузера сама, без сети, — и пишет его в прежнем формате: цена отложенного обновления
-// здесь не «страница постарела», а расхождение форматов введённого, которое потом разбирает
-// человек переносом чисел. Открытой формы, ради которой «Позже» и заведено, в кабинете при этом
-// нет: показания живут в черновике и переживают перезагрузку целиком, а на телефоне в кабине
-// откладывать обновление второй раз всё равно некому.
+// The driver cabinet has no "Later" (driver-readings-first, R13 item 3). A stale cabinet writes
+// local reading drafts without a network request, in its old format: postponing an update can
+// create incompatible data that someone must reconcile manually. There is no unsaved form to
+// protect here; readings survive a reload in the draft, and no second person in the cab will
+// come back to accept the dismissed update.
 //
-// Второй режим того же компонента — ТРЕБОВАНИЕ обновиться, а не предложение (ADR 0146, решение 7).
-// Его включает отказ сервера `426 client_upgrade_required`: сборка вкладки ниже пола
-// `MIN_CLIENT_CONTRACT`, и работать она уже не будет — ни этот запрос, ни следующие. Отменить его
-// нечем, и это ровно то, чего не умеет баннер выше: «Позже» пережило бы оба выпуска.
+// A 426 client_upgrade_required is mandatory (ADR 0146 decision 7): the document is below
+// MIN_CLIENT_CONTRACT, so neither this nor later requests can work. "Later" would outlive both
+// releases. A failed chunk also requires a reload: React caches the rejected import, and retrying
+// it cannot recover the document. It is not labelled as a server refusal; offline loading can
+// produce the same failure as a deployment that removed an old asset.
 //
-// Оба режима держит один компонент, потому что говорят они об одном («страница устарела») и
-// показываться вместе не должны: предложение под требованием читалось бы как выбор, которого нет.
+// One component owns all update modes: an optional offer beneath a mandatory reload would imply
+// a choice that no longer exists.
 export function AppUpdateBanner() {
-  const { latestBuildId } = useVersionCheck();
+  const { latestBuildId, chunkLoadFailed } = useVersionCheck();
   const [dismissedBuildId, setDismissedBuildId] = useState<string | null>(null);
   const isMobile = useIsMobile();
   const { pathname } = useLocation();
-  // Требование живёт вне дерева React — его ставит транспорт, отвечая на чужой запрос, — поэтому
-  // подпиской, а не состоянием. Третий аргумент нужен серверному рендеру и стоит того же:
-  // состояние модуля от способа отрисовки не зависит.
+  // Transport can signal a refusal outside React, while answering another component's request.
+  // Subscribe to the store instead of copying its state; SSR observes the same module snapshot.
   const upgradeRequired = useSyncExternalStore(
     onClientUpgradeRequired,
     isClientUpgradeRequired,
     isClientUpgradeRequired,
   );
-  // Ровно ветка кабинета, а не всё, что начинается с этих букв: `startsWith('/driver')` накрыл бы
-  // и будущий раздел портала вроде «/drivers», где открытая форма стоит дороже свежей вкладки.
+  // Match the cabinet branch, not a prefix like /drivers, where an open form may justify deferral.
   const driverCabinet = pathname === '/driver' || pathname.startsWith('/driver/');
 
-  // Требование сильнее предложения: пока сервер отказывает по версии, обычный баннер не
-  // показывается вовсе.
-  if (upgradeRequired) {
+  // Mandatory recovery takes precedence over both a release offer and its previous dismissal.
+  if (upgradeRequired || chunkLoadFailed) {
+    const title = upgradeRequired ? 'Портал обновился' : 'Не удалось загрузить часть портала';
     return (
       <div
         role="alertdialog"
         aria-modal="true"
-        aria-label="Портал обновился"
+        aria-label={title}
         style={{
           position: 'fixed',
           inset: 0,
-          // Выше модалок AntD (1000) и выше баннера (900): требование обязано накрывать и открытую
-          // форму — работать в ней всё равно больше нельзя, каждый её запрос получит тот же отказ.
+          // Cover existing modals (1000) and the optional banner (900): the current document
+          // cannot continue safely, including an already-open form.
           zIndex: 2000,
           display: 'flex',
           alignItems: 'center',
@@ -67,20 +62,16 @@ export function AppUpdateBanner() {
           type="warning"
           showIcon
           style={{ maxWidth: 520, boxShadow: '0 8px 32px rgba(0, 0, 0, 0.25)' }}
-          title="Портал обновился"
+          title={title}
           description={
             <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
               <Typography.Text>
-                Эта вкладка работает на устаревшей версии, и продолжать на ней нельзя: сервер
-                отвечает на её запросы отказом. Обновите страницу — портал откроется заново.
+                {upgradeRequired
+                  ? 'Эта вкладка работает на устаревшей версии, и продолжать на ней нельзя: сервер отвечает на её запросы отказом. Обновите страницу — портал откроется заново.'
+                  : 'Не удалось загрузить экран после обновления портала или сбоя сети. Проверьте подключение и обновите страницу — портал откроется заново.'}
               </Typography.Text>
-              {/* Единственное действие. Кнопки «Позже» здесь нет и быть не может: откладывать
-                  нечего — вкладка уже не работает. */}
-              <Button
-                type="primary"
-                icon={<ReloadOutlined />}
-                onClick={() => window.location.reload()}
-              >
+              {/* A broken document cannot defer recovery; no automatic reload discards a form. */}
+              <Button type="primary" icon={<ReloadOutlined />} onClick={reloadPage}>
                 Обновить страницу
               </Button>
             </Space>
@@ -90,7 +81,7 @@ export function AppUpdateBanner() {
     );
   }
 
-  // Показываем, только если это новый релиз, который пользователь ещё не откладывал.
+  // A dismissal belongs to one release, never to all future updates.
   if (!latestBuildId || latestBuildId === dismissedBuildId) return null;
 
   return (
@@ -99,14 +90,13 @@ export function AppUpdateBanner() {
       style={{
         position: 'fixed',
         insetInline: 0,
-        // На мобильном внизу стоит навигация (ADR 0030): баннер садится над ней, иначе кнопка
-        // «Обновить» (а в портале и «Позже») оказалась бы под панелью разделов.
+        // Stay above mobile navigation (ADR 0030), otherwise it would cover the update actions.
         bottom: isMobile ? 'calc(56px + var(--safe-bottom) + 8px)' : 16,
         display: 'flex',
         justifyContent: 'center',
         zIndex: 900,
         pointerEvents: 'none',
-        // Узкий экран: баннеру нужны поля, иначе он ложится вплотную к краям.
+        // Narrow screens need margins so the banner does not touch both viewport edges.
         ...(isMobile ? { paddingInline: 12 } : {}),
       }}
     >
@@ -117,12 +107,7 @@ export function AppUpdateBanner() {
         style={{ pointerEvents: 'auto', boxShadow: '0 4px 16px rgba(0, 0, 0, 0.15)' }}
         action={
           <Space>
-            <Button
-              size="small"
-              type="primary"
-              icon={<ReloadOutlined />}
-              onClick={() => window.location.reload()}
-            >
+            <Button size="small" type="primary" icon={<ReloadOutlined />} onClick={reloadPage}>
               Обновить
             </Button>
             {!driverCabinet && (

@@ -1,9 +1,10 @@
 /**
- * Публичный вход сегмента: хуки и утилиты, не знающие правил портала. Снаружи берут `@shared/lib`,
- * а не отдельные модули внутри — так линт границ отличает пользование от залезания внутрь.
+ * Public entry for hooks and utilities that do not own portal rules. External consumers use
+ * @shared/lib so boundary lint can distinguish the supported contract from private module access.
  */
 export * from './avatar';
 export * from './calendarDays';
+export * from './chunkRecovery';
 export * from './dayBounds';
 export * from './dayjs';
 export * from './monthText';

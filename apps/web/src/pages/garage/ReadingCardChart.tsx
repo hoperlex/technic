@@ -1,25 +1,23 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, useState } from 'react';
 import { Segmented, Space, Spin, Typography } from 'antd';
+import { AsyncContent } from '@shared/ui';
 import type { ReadingMonthRow, ReadingTotals } from '@technic/contracts';
 import { LOWER_BOUND_HINT, decimal, isLowerBound, monthLabel, monthShort } from './readingNumbers';
 import type { ChartPoint } from './ReadingMonthsBars';
 
 /**
- * Помесячная динамика столбиками с переключателем счётчика (план «Показания техники», Р17, §7).
+ * Monthly dynamics with a meter selector (equipment readings plan, R17, §7).
  *
- * Таблица выше отвечает на «сколько именно», диаграмма — на «как шло»: провал в июле и ровный ряд
- * с одним всплеском выглядят в столбцах чисел одинаково, а на столбиках различаются с одного
- * взгляда. Переключатель, а не три диаграммы рядом: величины несопоставимы (километры, моточасы и
- * литры на одной оси дали бы ложное сравнение), а вопрос за раз задают один.
+ * The table gives exact amounts; bars reveal a dip or an isolated spike at a glance. Use a
+ * selector rather than three adjacent plots: kilometres, engine hours and litres are not
+ * comparable on one axis, and the reader asks about one measure at a time.
  *
- * **`recharts` грузится отдельным чанком** (Р17) и живёт целиком в
- * [ReadingMonthsBars](./ReadingMonthsBars.tsx). Здесь его нет ни одной строкой — только
- * `lazy`-импорт и тип точки ряда, который стирается при сборке. Цена библиотеки платится тем, кто
- * открыл карточку, а не каждым, кто зашёл на портал: водителю в кабине с телефона она не нужна
- * вовсе.
+ * Recharts stays in a separate chunk (R17), wholly inside ReadingMonthsBars. This module has only
+ * a lazy import and an erased point type: only people opening the card pay for the library, not
+ * everyone entering the portal, especially drivers using phones in the cab.
  *
- * Переключатель стоит **снаружи** ленивой границы намеренно: он и подпись видны сразу, до того как
- * чанк доехал, и заполнитель занимает место только самой картинки — блок не прыгает.
+ * Keep the selector outside the async boundary so it and the heading appear before the chunk.
+ * Only the plot gets a fixed-height placeholder, preventing a layout jump while loading.
  */
 
 const CHART_HEIGHT = 280;
@@ -27,20 +25,20 @@ const CHART_HEIGHT = 280;
 type MetricKey = 'distanceKm' | 'engineHours' | 'fuelFilledLiters';
 
 interface Metric {
-  /** Подпись переключателя — с единицей: «Пробег, км» отвечает и на «в чём ось». */
+  /** Include the unit so the selector also explains the plot's axis. */
   label: string;
   unit: string;
   digits: number;
   value: (row: ReadingTotals) => number | null;
   /**
-   * Разрывы **своей** цепочки. У топлива их нет и быть не может: литры — не разность соседних
-   * снимков, а сумма заправок за смены, и сброшенный одометр их не уменьшает. Ноль здесь — не
-   * заглушка, а утверждение: заниженным заправленное от разрыва ряда не становится.
+   * Gaps belong to this meter's chain. Fuel is a sum of fills, not a difference between readings,
+   * so resetting the odometer cannot reduce it. Zero is a domain assertion, not a placeholder:
+   * meter gaps never make the filled amount a lower bound.
    */
   gaps: (row: ReadingTotals) => number;
 }
 
-/** Порядок в переключателе — тот же, что в таблице выше: пробег, наработка, топливо. */
+/** Match the table's order: distance, engine hours, fuel. */
 const METRIC_ORDER: MetricKey[] = ['distanceKm', 'engineHours', 'fuelFilledLiters'];
 
 const METRICS: Record<MetricKey, Metric> = {
@@ -71,14 +69,13 @@ const ReadingMonthsBars = lazy(() =>
   import('./ReadingMonthsBars').then((m) => ({ default: m.ReadingMonthsBars })),
 );
 
-/** Почему у месяца прочерк вместо столбика — словами, а не «нет данных». */
+/** Missing pairs are not a zero; explain what the dash cannot tell the reader. */
 const NO_PAIRS_NOTE =
   'Пар снимков в месяце не осталось: считать не по чему. Это не ноль — про то, ездила машина или ' +
   'стояла, месяц не говорит.';
 
 /**
- * Точка ряда — вся разметка чисел делается здесь, до передачи в диаграмму: рисующий модуль про
- * правила показаний ничего не знает и знать не должен.
+ * Format points before passing them to the plot: the drawing module must not own reading rules.
  */
 function pointOf(row: ReadingMonthRow, metric: Metric): ChartPoint {
   const value = metric.value(row);
@@ -88,7 +85,7 @@ function pointOf(row: ReadingMonthRow, metric: Metric): ChartPoint {
     label: monthShort(row.month),
     full: monthLabel(row.month),
     value,
-    // Столбика у месяца без чисел нет — нет и подписи над ним; его место помечает прочерк под осью.
+    // A missing value has no bar or value label; a dash below the axis marks its position.
     text: value === null ? '' : `${lowerBound ? '≥ ' : ''}${decimal(value, metric.digits)}`,
     lowerBound,
     note: value === null ? NO_PAIRS_NOTE : lowerBound ? LOWER_BOUND_HINT : null,
@@ -99,7 +96,7 @@ export function ReadingCardChart({ months }: { months: readonly ReadingMonthRow[
   const [metricKey, setMetricKey] = useState<MetricKey>('distanceKm');
   const metric = METRICS[metricKey];
 
-  // Месяцев нет — нет и динамики. Пустые оси на месте диаграммы обещали бы данные, которых нет.
+  // Empty axes would promise a history that does not exist.
   if (months.length === 0) return null;
 
   const points = months.map((row) => pointOf(row, metric));
@@ -116,7 +113,7 @@ export function ReadingCardChart({ months }: { months: readonly ReadingMonthRow[
           options={METRIC_ORDER.map((key) => ({ value: key, label: METRICS[key].label }))}
         />
       </Space>
-      <Suspense
+      <AsyncContent
         fallback={
           <div
             style={{
@@ -139,9 +136,9 @@ export function ReadingCardChart({ months }: { months: readonly ReadingMonthRow[
           digits={metric.digits}
           height={CHART_HEIGHT}
         />
-      </Suspense>
-      {/* Легенда объясняет ровно те знаки, которые на диаграмме сейчас есть: подпись про штриховку
-          под ровным рядом без разрывов — шум, который перестают читать. */}
+      </AsyncContent>
+      {/* Explain only marks present in this plot; a hatching legend beneath an unbroken series
+          would be noise the reader learns to ignore. */}
       {hasEmpty || hasGaps ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {hasEmpty

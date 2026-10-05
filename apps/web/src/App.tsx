@@ -1,4 +1,4 @@
-import { Suspense, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { Spin } from 'antd';
 import { Navigate, Route, Routes } from 'react-router';
 import {
@@ -8,6 +8,7 @@ import {
 } from '@technic/contracts';
 import { AppLayout } from './app/layout';
 import { AppUpdateBanner } from '@widgets/app-update-banner';
+import { AsyncContent } from '@shared/ui';
 import { HomeRedirect, ProtectedRoute, RequirePermission, RequireSection } from '@app/routing';
 import { AdministrationPage } from '@pages/admin';
 import {
@@ -66,18 +67,17 @@ export default function App() {
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/change-password" element={<ChangePasswordPage />} />
-          {/* Кабинет водителя — ВНЕ `AppLayout`: у него нет ни боковой панели, ни разделов, ни
-              нижней навигации. Это второй контур портала, а не ещё одна его страница, поэтому
-              ветку ему собирают руками — свой каркас и своя index-страница. Общее с разделами
-              каркаса у него ровно одно, условие входа, и потому гейт тот же `RequireSection`:
-              роль вместе с правом описана строкой реестра, а не отдельным компонентом. */}
+          {/* The driver cabinet is outside AppLayout: no sidebar, sections or bottom navigation.
+              It is a second portal shell with its own layout and index, so its branch is composed
+              explicitly. Only the entry condition is shared: RequireSection reads the role and
+              permission from the registry instead of duplicating them in another guard. */}
           <Route element={<RequireSection id="driver-cabinet" />}>
             <Route
               path="/driver"
               element={
-                <Suspense fallback={<Spin style={{ margin: '40vh auto', display: 'block' }} />}>
+                <AsyncContent fallback={<Spin style={{ margin: '40vh auto', display: 'block' }} />}>
                   <DriverLayout />
-                </Suspense>
+                </AsyncContent>
               }
             >
               {/* Кабинет открывается формой показаний, а не заданием (план driver-readings-first,
