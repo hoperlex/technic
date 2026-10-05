@@ -24,6 +24,12 @@ export type {
  * предикат архива, общий трём модулям заявок, — разбор у самого `model/links.ts`.
  */
 export { vehicleRequestDateRules } from './model/dateRules';
+/*
+ * The copy gate and the address of the copy form (ADR 0206). Two screens ask them — the order list,
+ * which opens the form in place, and the closed-order journal, which leads to it by link; the
+ * reasoning lives in `model/copyAccess.ts`.
+ */
+export { canCopyVehicleRequest, vehicleRequestCopyLink } from './model/copyAccess';
 export { vehicleRequestErrorMessage } from './model/errorMessage';
 export { vehicleRequestLink, vehicleRequestViewLink } from './model/links';
 export { vehicleRequestTermLabel } from './model/termLabel';

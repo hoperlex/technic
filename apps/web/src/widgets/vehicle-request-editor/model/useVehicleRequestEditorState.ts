@@ -17,6 +17,7 @@ import {
 } from '@technic/contracts';
 import { departmentPlatformQuery } from '@entities/department';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
+import { canCopyVehicleRequest } from '@entities/vehicle-request';
 import {
   classificationKeyOf,
   useVehicleClassifications,
@@ -334,11 +335,11 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
    * ordinary creation. Its gates are those of "New request": the create permission and the
    * account's type corridor — a department may order only freight, and a copy of an on-site order
    * would be refused by the server.
+   *
+   * The gate lives in the entity slice: the closed-order journal asks the same one before it links
+   * here, and a second copy of it would offer the copy on one screen and hide it on the other.
    */
-  const canCopy = (request: VehicleRequestDto) =>
-    !request.deletedAt &&
-    can('vehicleRequests.create') &&
-    requestTypeOptions.some((option) => option.value === request.requestType);
+  const canCopy = (request: VehicleRequestDto) => canCopyVehicleRequest(can, user, request);
 
   return {
     backdated,

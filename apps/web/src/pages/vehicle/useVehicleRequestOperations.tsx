@@ -1,6 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
+import { App } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
-import { type SpecialEquipmentRequestDto, type VehicleRequestDto } from '@technic/contracts';
+import {
+  type SpecialEquipmentRequestDto,
+  VEHICLE_REQUEST_COPY_PARAM,
+  type VehicleRequestDto,
+} from '@technic/contracts';
 import { useAuth } from '@entities/session';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { vehicleRouteLink } from '@entities/vehicle-route';
@@ -33,6 +38,7 @@ type OperationActions = Omit<VehicleRequestFeedActions, 'createWeekly' | 'openWe
  */
 export function useVehicleRequestOperations() {
   const { can } = useAuth();
+  const { message } = App.useApp();
   const queryClient = useQueryClient();
   // The route and the route list open as windows over this list (ADR 0120): "where does this
   // request go" no longer costs leaving the screen together with its filters and page.
@@ -73,6 +79,41 @@ export function useVehicleRequestOperations() {
     renderEarlyEndApproveModal: (props) => <VehicleEarlyEndApproveModal {...props} />,
     renderEarlyEndModal: (props) => <VehicleEarlyEndModal {...props} />,
   });
+
+  /**
+   * The source named in the address (`?tab=requests&copy=<id>`): the closed-order journal carries no
+   * create form of its own, so its card sends the reader here with the sample named in the URL.
+   *
+   * The request is fetched by id rather than taken from the list: a closed order is in another tab
+   * under another filter, and this tab may not hold its row at all. The parameter is then dropped
+   * from the address — left in place it would reopen the form on every "back", and a forwarded link
+   * is a request to open the form once, not a state of the list.
+   */
+  const copyLink = useOpenedRecord<VehicleRequestDto>({
+    active: useActiveTabKey() === 'requests',
+    param: VEHICLE_REQUEST_COPY_PARAM,
+    notFoundMessage: 'Заявка для копии не найдена или недоступна',
+    queryKey: (id) => vehicleRequestKeys.detail(id),
+    fetch: (id) => vehicleRequestsApi.get(id),
+  });
+  const copySource = copyLink.record;
+  // The gate is the same one the button asks (`canCopy`): the address is not a second door into the
+  // form, and a link that outlived the right it was built with says so in words rather than opening
+  // a form whose save the server would refuse.
+  const openCopyFromLink = useEffectEvent((_id: string | null) => {
+    if (!copySource) return;
+    copyLink.clear();
+    if (!requestEditor.canCopy(copySource)) {
+      message.error(
+        copySource.deletedAt
+          ? 'Заявка в архиве: её сначала восстанавливают, а потом повторяют'
+          : 'Заявку этого типа вам заводить не положено — повторить её нельзя',
+      );
+      return;
+    }
+    requestEditor.openCopy(copySource);
+  });
+  useEffect(() => openCopyFromLink(copySource?.id ?? null), [copySource?.id]);
 
   const reassignment = assignmentModel.useVehicleReassignment();
   // Machinist change within the term and "composition by dates" (`docs/assignment-periods-plan.md`,
