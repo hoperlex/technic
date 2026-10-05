@@ -413,10 +413,13 @@ const FORM_ESM2: Blank = {
     H11: '{{driver_fio}}',
     BE11: '{{object_code}}',
     /*
-     * «Период работы: с __ по __ месяца __ года __» — фактические дни недели, а не понедельник с
-     * воскресеньем. Клетка «по» состоит из двух ячеек: `BJ11` не размечается, иначе число
-     * печатается вторым рядом с первым («09 99»). Месяц один на графу — у недели через границу
-     * месяца туда идёт «08–09» (объединение BK11:BO11 шириной 13 знаков это держит).
+     * "Work period: from __ to __, month __, year __" carries the actual days worked, not Monday
+     * and Sunday. The "to" box spans two cells under its header (BI10:BJ10), so the value is
+     * merged across BI11:BJ11 (see `merge` below): placed in BI11 alone it was centred in the
+     * narrow left half and printed hugging the left edge of the box. `BJ11` must not get a
+     * placeholder of its own, or the day prints twice side by side ("09 09"). The month is one
+     * per box: a week crossing a month boundary prints "08–09", which the 13-character merge
+     * BK11:BO11 fits.
      */
     BH11: '{{period_from_day}}',
     BI11: '{{period_to_day}}',
@@ -516,20 +519,26 @@ const FORM_ESM2: Blank = {
    */
   unmerge: ['AI4:AJ4'],
   /*
-   * Номер (AM2:BE3) и дата (BH2:BT3) занимают ту же пару строк, что заголовок «ПУТЕВОЙ ЛИСТ»
-   * (T2:AL3): кегль 18 pt в одну строку шапки не встаёт, а высотой строки его не поднять —
-   * высота общая на весь лист и раздвинула бы соседние графы вместе с «Формой по ОКУД».
+   * The number (AM2:BE3) and the date (BH2:BO3) occupy the same pair of rows as the "ПУТЕВОЙ
+   * ЛИСТ" title (T2:AL3): 18 pt type does not fit one header row, and the row height cannot be
+   * raised because it is shared across the sheet and would stretch the neighbouring boxes,
+   * including "Форма по ОКУД".
    *
-   * Между ними стоит подпись «от» (BF2:BG3) — оба новых объединения обходят её, не пересекаясь
-   * ни с ней, ни с «Формой по ОКУД» (BU3): книгу с наездом Excel чинит молча сам.
+   * The "от" label (BF2:BG3) sits between them; both merges avoid it and "Форма по ОКУД" (BU3),
+   * because Excel silently repairs a workbook with overlapping merges by dropping them.
    *
-   * Правый край объединения даты — BO, а не BT, хотя до «Формы по ОКУД» пусто до BT
-   * включительно. Подпись прижата вправо и переполняет пустые клетки слева от себя, а
-   * объединение режет чужой текст по своей границе (тем же вышло «нс» из «строительной машины»,
-   * см. `unmerge`): накрыв BP3…BT3, объединение оставляло от подписи «КУД». Пять свободных
-   * клеток под неё — то, что бланк отвёл ей и до разметки; дате хватает восьми оставшихся.
+   * The date merge ends at BO, not BT, even though the cells up to BT are empty. The "Форма по
+   * ОКУД" label is right-aligned and overflows into the empty cells to its left, and a merge
+   * clips foreign text at its edge (the same way "строительной машины" was cut to "нс", see
+   * `unmerge`): covering BP3..BT3 left only "КУД" of the label. Eight cells are enough for the
+   * date.
+   *
+   * BI11:BJ11 is the "to" day of the work period: its header (BI10:BJ10) spans two cells, and
+   * the value centres under the header only when it spans the same two. The vertical rules of
+   * the box survive the merge because they belong to the neighbours: BH11 draws the right edge
+   * of "from", BK11 the left edge of the month.
    */
-  merge: ['AM2:BE3', 'BH2:BO3'],
+  merge: ['AM2:BE3', 'BH2:BO3', 'BI11:BJ11'],
   // Переполнение расходится от той клетки, где текст лежит, — а лежал он правее середины, и
   // подзаголовок вставал не под «ПУТЕВОЙ ЛИСТ», а сдвинутым вправо. AC4 — клетка, чья середина
   // приходится на середину заголовка (объединение T2:AL3).
