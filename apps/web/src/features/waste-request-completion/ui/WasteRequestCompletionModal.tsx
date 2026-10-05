@@ -21,13 +21,22 @@ import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-reques
 import { WasteRequestCompletionFields } from './WasteRequestCompletionFields';
 
 /**
- * Completion submits evidence atomically with the status change. Waste removal records volume and
- * cost (ADR 0035), scrap removal records weight (ADR 0067), and container operations carry no fact
- * quantity. Tickets are mandatory and belong to the request-wide pool (ADR 0020, ADR 0024).
+ * Completion submits evidence atomically with the status change, not after it:
+ *  - waste removal records hauled volume and cost (ADR 0035). Volume is typed by hand from the
+ *    ticket and the weighbridge receipt. Vehicles are not asked: removal is priced by the truck
+ *    kind (ADR 0022), and which trucks hauled the volume does not affect the calculation;
+ *  - scrap removal records one weight in tonnes (ADR 0067), with no estimate and no cost: the price
+ *    list is in roubles per m3 for a "waste type x equipment" pair and cannot apply to tonnes;
+ *  - container operations carry only a ticket: one trip, nothing hauled to measure (ADR 0013).
  *
- * A calculated cost is only a starting point: the operator invoice may include delivery or partial
- * loading, so a manual amount remains valid and its difference is made visible. Missing pricing is
- * likewise not a blocker because completed work must still be recorded.
+ * Cost starts as "volume x price list" and stays freely editable: the operator invoice includes
+ * delivery and partial loads, and the amount must match the invoice, not the formula. A manual
+ * difference is shown as a hint so it is noticed rather than slipping through. A missing price is
+ * not a blocker either: the work is done, and the amount is simply typed in.
+ *
+ * A ticket is mandatory in every case (ADR 0020) and since ADR 0024 belongs to the request-wide
+ * pool: the operator hands over the paper as one batch per completion. The comment becomes an event
+ * in the request history.
  */
 interface Props {
   /** A null request closes the modal. */
@@ -43,13 +52,21 @@ interface Props {
 }
 
 interface FormValues {
-  /** Entered manually so OCR does not validate a ticket date against its own extracted value. */
+  /**
+   * Actual removal day (ADR 0114, R19). Typed by hand and never prefilled from recognition: a value
+   * copied from the ticket would be checked against itself, and the "ticket date vs removal day"
+   * check would stop meaning anything.
+   */
   removedOn?: Dayjs | null;
   volumeM3?: number | null;
   weightTons?: number | null;
   totalCost?: number | null;
   comment?: string;
-  /** Synthetic field that anchors the missing-ticket form error while files stay in local state. */
+  /**
+   * Placeholder field for tickets: the files live in modal state, but the "no ticket" rejection
+   * must be shown by the form like any other field error (ADR 0094). Its value is never read and
+   * never sent; the form only needs a name to attach the error to.
+   */
   ticketIds?: string;
 }
 
@@ -73,8 +90,11 @@ export function WasteRequestCompletionModal({
   const byWeight = factUnit === 'weight_tons';
 
   /**
-   * Prefer the request price snapshot (ADR 0009). Legacy requests without one resolve the same
-   * truck-kind tariff that the server uses during completion (ADR 0022, ADR 0026).
+   * The basis price is the request's own snapshot: the request was issued at it, and later price
+   * list edits do not rewrite an issued request (ADR 0009). Requests older than pricing have no
+   * snapshot; for them the price list is resolved by the truck kind through the same endpoint the
+   * server prices with, because the lookup rule must be one on both sides (ADR 0022, ADR 0026). The
+   * server picks the completion price in the same order.
    */
   const wasteTypeId = request?.wasteTypeId ?? null;
   const operatorId = request?.operatorCounterpartyId ?? null;
@@ -92,8 +112,10 @@ export function WasteRequestCompletionModal({
   /** A minimum price is provisional because no operator was assigned (ADR 0026). */
   const priceIsMinimum = request?.pricePerM3 == null && !!tariffResult?.tariff?.isMinimum;
 
-  // Reusing the modal must reset drafts between requests. A repeated completion starts from the
-  // previous fact, while a first completion starts from planned volume for ticket verification.
+  // The modal is reused for different requests, so fields reset when the target changes rather than
+  // on unmount. A repeated completion (after an administrator rollback) opens on the previous fact:
+  // usually one number is corrected, not everything retyped. A first completion prefills the
+  // planned volume, which is then confirmed or corrected from the ticket.
   const targetId = request?.id ?? null;
   const fillForRequest = useEffectEvent((_id: string | null) => {
     if (!request) return;
@@ -111,7 +133,8 @@ export function WasteRequestCompletionModal({
       comment: '',
     });
   });
-  // Depend on identity rather than object reference so a cache refresh cannot erase the draft.
+  // Depend on the request id, not the object: a re-render of the same request (a list invalidation
+  // after a neighbouring action) arrives as a new object and would erase what was already typed.
   useEffect(() => fillForRequest(targetId), [targetId]);
 
   const volumeM3 = Form.useWatch('volumeM3', form);
@@ -136,7 +159,7 @@ export function WasteRequestCompletionModal({
     form.setFieldsValue({ totalCost: value == null ? null : calcWasteFactCost(value, pricePerM3) });
   };
 
-  /** Remove uploads that never reached a request so they do not become orphaned objects. */
+  /** Remove uploads that never reached a request at once, or they would linger in S3 unowned. */
   const discardUploads = () => {
     tickets.forEach((f) => void filesApi.remove(f.id).catch(() => {}));
     setTickets([]);
@@ -147,7 +170,8 @@ export function WasteRequestCompletionModal({
     try {
       const uploaded = await filesApi.upload(file);
       setTickets((prev) => [...prev, uploaded]);
-      // The synthetic ticket field cannot clear its own error when local file state changes.
+      // A ticket is attached, so the rejection clears now: the placeholder field is never edited
+      // through its value and would not learn about the upload by itself (ADR 0094).
       form.setFields([{ name: 'ticketIds', errors: [] }]);
     } catch (e) {
       message.error(errorMessage(e));
@@ -201,7 +225,8 @@ export function WasteRequestCompletionModal({
     ) {
       return;
     }
-    // Submit exactly one fact unit. Scrap has no monetary calculation (ADR 0067).
+    // Exactly one quantity is sent: the one this request type is measured in. Cost goes only with
+    // volume: scrap has no cost at all, and the server rejects the field if sent (ADR 0067).
     const removedOn = v.removedOn ? v.removedOn.format('YYYY-MM-DD') : null;
     const completion: CompleteWasteRequestInput | null = byVolume
       ? { volumeM3: v.volumeM3!, totalCost: v.totalCost ?? null, removedOn }
@@ -216,7 +241,7 @@ export function WasteRequestCompletionModal({
   };
 
   const noTicketYet = !!request && request.tickets.length + tickets.length === 0;
-  /** A plan/fact difference is advisory because payment follows the actual removal. */
+  /** A plan/fact difference is a hint, not a block: the request is a plan, payment follows fact. */
   const volumeDiff =
     request?.volumeM3 != null && volumeM3 != null && volumeM3 > 0
       ? Math.round((volumeM3 - request.volumeM3) * 1000) / 1000
@@ -233,6 +258,8 @@ export function WasteRequestCompletionModal({
       width={880}
     >
       {request && (
+        // Fact on the left, tickets on the right: they are attached while looking at the entered
+        // volume. Phones get one column in the same order.
         <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
           <WasteRequestCompletionFields
             beforeUploadTicket={beforeUploadTicket}

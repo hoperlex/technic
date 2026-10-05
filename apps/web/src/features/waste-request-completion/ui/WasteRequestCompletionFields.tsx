@@ -55,6 +55,9 @@ export function WasteRequestCompletionFields({
         </Typography.Paragraph>
       </FormGrid.Full>
 
+      {/* Scrap is reported as one weight (ADR 0067): no estimate, no cost, no comparison with the
+          plan, because the request carries none. The single field takes the full row because there
+          is nothing to put beside it. */}
       {byWeight && (
         <FormGrid.Full>
           <Form.Item
@@ -63,6 +66,8 @@ export function WasteRequestCompletionFields({
             rules={[
               { required: true, message: 'Укажите вес' },
               {
+                // Three decimals is what the database stores: extra digits would be rejected by the
+                // server only after submit.
                 validator: (_rule, value: number | undefined) =>
                   value == null || Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-6
                     ? Promise.resolve()
@@ -78,12 +83,16 @@ export function WasteRequestCompletionFields({
 
       {byVolume && (
         <>
+          {/* Volume and cost sit in adjacent cells because they are checked against each other. */}
           <Form.Item
             name="volumeM3"
             label="Вывезено, м³"
             rules={[
               { required: true, message: 'Укажите объём' },
               {
+                // Volume is weighed, so fractions are normal, but not unbounded: three decimals is
+                // what the database stores, and extra digits would be rejected by the server only
+                // after submit.
                 validator: (_rule, value: number | undefined) =>
                   value == null || Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-6
                     ? Promise.resolve()
@@ -136,6 +145,8 @@ export function WasteRequestCompletionFields({
                   введённая
                 </Typography.Text>
               )}
+              {/* The request was issued as a plan and payment follows the fact: a different amount
+                  is not an error, but the user must see it before pressing "Done". */}
               {totalCost != null && request.amount != null && totalCost !== request.amount && (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   Заявка оформлена на {formatMoney(request.amount)} — закрытие сохранит{' '}
@@ -152,8 +163,14 @@ export function WasteRequestCompletionFields({
         </>
       )}
 
+      {/* Tickets are the request-wide pool (ADR 0024): paper for the whole completion, not split by
+          vehicle. Tickets attached by a previous completion stay on the request and are listed
+          here so the same scans are not uploaded twice. */}
       <FormGrid.Full>
         <Form.Item label="Талоны" style={{ marginBottom: 16 }}>
+          {/* Placeholder field: tickets live in modal state, but the rejection must appear where
+              other field errors do. noStyle hands the error to the outer "Талоны" item, so scroll
+              and flash find it like any other field (ADR 0094). */}
           <Form.Item name="ticketIds" noStyle>
             <Input type="hidden" />
           </Form.Item>
@@ -166,6 +183,10 @@ export function WasteRequestCompletionFields({
             </div>
           )}
           <Space size={8} wrap>
+            {/* Camera capture only on phones (ADR 0030): the ticket is signed on site and
+                photographed there. capture is a browser hint, not a guarantee that the camera
+                opens, so the ordinary upload stays beside it. The type restriction applies to this
+                button only; the neighbouring upload never had one. */}
             {isMobile && (
               <Upload
                 showUploadList={false}
@@ -199,6 +220,8 @@ export function WasteRequestCompletionFields({
             </div>
           )}
         </Form.Item>
+        {/* The completion comment is a request history event, not a request field: it describes
+            this particular completion (what was not fully hauled, who received it). */}
         <Form.Item name="comment" label="Комментарий" style={{ marginBottom: 0 }}>
           <Input.TextArea
             rows={2}
