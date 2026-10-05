@@ -2141,6 +2141,30 @@ export function canOrderVehicleRequestType(
 }
 
 /**
+ * May this account take a copy of the order — "Завести такую же" (ADR 0173 §2, ADR 0206 §1).
+ *
+ * Three conditions and no status among them: a copy touches the source with no request at all, so
+ * it is the **create** form that is being opened, and only the create gates apply — the right, the
+ * account's corridor of request kinds (a department without places would be led to a server
+ * refusal, ADR 0201), and the archive, where a withdrawn record carries no actions whatsoever
+ * (ADR 0070).
+ *
+ * Lives here because two screens ask it: the order list, whose card opens the form in place, and
+ * the closed-order journal, whose card links to that form by address (`vehicleRequestCopyPath`).
+ * A second copy of the rule would show the button on one screen and hide it on the other.
+ */
+export function canCopyVehicleRequest(
+  subject: ScopedSubject | null | undefined,
+  request: { requestType: VehicleRequestType; deletedAt?: string | null },
+): boolean {
+  if (request.deletedAt) return false;
+  return (
+    can(subject, 'vehicleRequests.create') &&
+    canOrderVehicleRequestType(subject, request.requestType)
+  );
+}
+
+/**
  * Роли с собственным коридором статусов: право «менять статус» у них есть, но не на весь
  * рабочий цикл. Таблица, а не исключение в коде: следующая такая роль добавляется строкой.
  */

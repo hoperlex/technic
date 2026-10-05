@@ -142,3 +142,27 @@ export const VEHICLE_ON_SITE_PATH = '/vehicle-requests?tab=on-site';
  * чтобы ключ пережил разбор и сборку адреса, которые пустое значение теряют.
  */
 export const VEHICLE_ROUTES_PATH = '/vehicle-requests?routes=1';
+
+/**
+ * URL parameter naming the request a copy is taken from: `?tab=requests&copy=<id>`.
+ *
+ * One constant for both sides. The closed-order journal builds the link and the order list reads
+ * it; were the two names written separately, "Завести такую же" would land on a tab that does not
+ * recognize the parameter and the copy form would silently fail to open.
+ */
+export const VEHICLE_REQUEST_COPY_PARAM = 'copy';
+
+/**
+ * Path to the create form prefilled from an existing order ("Завести такую же", ADR 0206): the
+ * **first** tab of the section with the source named in the address.
+ *
+ * Its own key instead of the shared `open`, because `open` shows a card for reading while this one
+ * opens the create form — one key with two meanings would diverge silently. An address rather than
+ * an action in place, because the section has exactly one create form and it lives in the order
+ * list: the closed-order journal shows a read-only card and carries no form of its own. Window
+ * state therefore stays in the address — the link can be forwarded, and "back" leaves the form for
+ * wherever the reader came from.
+ */
+export function vehicleRequestCopyPath(requestId: string): string {
+  return `/vehicle-requests?tab=requests&${VEHICLE_REQUEST_COPY_PARAM}=${requestId}`;
+}
