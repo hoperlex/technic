@@ -195,7 +195,6 @@ export function ServiceRequestForm({
     user?.phone,
   ]);
 
-  // cache-write: delegated — submitServiceRequest selects create or update from the form state.
   const mutation = useMutation({
     mutationFn: (values: Values) => {
       // Обе половины пары, а не одна: у заявки без аппарата заказчиком бывает и площадка, и её

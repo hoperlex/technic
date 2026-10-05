@@ -158,7 +158,7 @@ export function useWeeklyRequestWorkspace() {
     });
   };
   const saveMutation = useMutation({
-    mutationFn: saveComposition, // cache-write: delegated — calls the update API when dirty.
+    mutationFn: saveComposition,
     onSuccess: () => {
       clearApplyError();
       message.success('Состав сохранён');

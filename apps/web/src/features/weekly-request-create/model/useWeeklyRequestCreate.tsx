@@ -1,14 +1,16 @@
 import { useState, type ReactNode } from 'react';
 import { App, Form, Select, type SelectProps } from 'antd';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { formatWeeklyRequestNumber } from '@technic/contracts';
 import { objectOptionsQuery } from '@entities/object';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { useAuth, useObjectScope } from '@entities/session';
 import {
   pastWeekSelectOptions,
   weeklyBackdateAccess,
   weeklyRequestErrorMessage,
+  weeklyRequestKeys,
   weeklyRequestPath,
   weeklyRequestsApi,
   weekSelectOptions,
@@ -38,6 +40,7 @@ export function useWeeklyRequestCreate(): {
   node: ReactNode;
 } {
   const { message } = App.useApp();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { can } = useAuth();
   const [form] = Form.useForm<{ objectId: string; weekStart: string }>();
@@ -84,8 +87,14 @@ export function useWeeklyRequestCreate(): {
     onSuccess: (result) => {
       setOpen(false);
       if (result.existed) message.info('Заявка на эту неделю уже собирается — открываем её');
-      else if (result.num) {
-        message.success(`Заведена заявка ${formatWeeklyRequestNumber(result.num)}`);
+      else {
+        // A new draft is a row of the shared vehicle request feed and a document of the weekly
+        // root. Navigation alone refreshed neither: within the 10 s staleTime a dispatcher going
+        // back to the feed did not see the week they had just created. An existing week changed
+        // nothing on the server, so it drops nothing.
+        void queryClient.invalidateQueries({ queryKey: weeklyRequestKeys.root });
+        void queryClient.invalidateQueries({ queryKey: vehicleRequestKeys.root });
+        if (result.num) message.success(`Заведена заявка ${formatWeeklyRequestNumber(result.num)}`);
       }
       void navigate(weeklyRequestPath(result.id));
     },

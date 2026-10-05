@@ -11,9 +11,11 @@
  * WHAT IS CHECKED. `writes-nothing-dropped` catches a writer that touches no cache.
  * `home-root-missed` catches a writer that drops another root but misses the slice owning the API
  * handle. `unknown-write` catches a mutation whose HTTP verb is unknown or whose writer arrives as
- * a value without a local `cache-write: delegated — reason` marker. The first two rules require a
- * fully resolved mutation; blaming application code for scanner uncertainty would get the check
- * disabled. The third rule prevents that uncertainty from making the check green.
+ * a value without a local `cache-write: delegated — reason` marker, and a mutation that reads a
+ * known handle but also calls a value the scan cannot open. `cache-effect-unproven` catches a writer
+ * whose cache effect the scan cannot see at all. The first two rules require a fully resolved
+ * mutation; blaming application code for scanner uncertainty would get the check disabled. The last
+ * two rules prevent that uncertainty from making the check green.
  *
  * ЧЕМ ОПРАВДАНО МОЛЧАНИЕ. Первая очередь была 28 мест, и ни одно не оказалось дефектом — это были
  * четыре разных вида законного молчания, и каждый пришлось назвать, иначе правило сняли бы целиком:
@@ -576,6 +578,28 @@ function followCall(name, call, ctx, acc, hops, seen) {
       return;
     }
     /*
+     * The RESULT OF A PORTAL HOOK: `const invalidate = useServiceChatInvalidate()`. The hook is a
+     * registered helper, and its body contains the function it returns, so the helper's effects are
+     * this call's effects. Over-approximate on purpose — a hook returning one of several closures
+     * is credited with all of their drops — which is the optimistic direction the header already
+     * names for whole-root matching, and far better than leaving the mutation unresolved.
+     */
+    const hookCall = fn && ts.isCallExpression(fn) ? unwrap(fn.expression) : undefined;
+    if (hookCall && ts.isIdentifier(hookCall) && /^use[A-Z]/.test(hookCall.text)) {
+      const hook = ctx.helpers.resolve(hookCall.text);
+      if (hook === null) {
+        acc.why.add(`helper-name-declared-twice:${hookCall.text}`);
+        return;
+      }
+      if (hook) {
+        hook.roots.forEach((r) => acc.roots.add(r));
+        hook.why.forEach((w) => acc.why.add(w));
+        (hook.handsUp ?? []).forEach((h) => acc.handsUp.add(h));
+        if (hook.wholeCache) acc.wholeCache = true;
+        return;
+      }
+    }
+    /*
      * A local name that is called but is not a function this walk can open: almost always the result
      * of a hook — `const invalidate = useReceiptInvalidation()` — or a destructured handle. Such a
      * value drops the cache as often as not, and RETURNING SILENTLY HERE WAS THE WORST FAILURE THIS
@@ -640,6 +664,20 @@ function declaresNoCacheEffect(sf, node) {
 }
 
 /**
+ * `cache-invalidation: opaque — <reason>`: the mutation does drop the cache, through a path this
+ * scan cannot read (a key list RETURNED by a function, for instance). It excuses rule 4 only — the
+ * site stays in `unresolved` and in the printed count — and, unlike the no-cache marker, a reason is
+ * mandatory: the marker turns "nothing visible" into "visible to a reader", and only the reason
+ * says where to look.
+ */
+function declaresOpaqueCacheEffect(sf, ...nodes) {
+  return nodes.some(
+    (node) =>
+      !!node && /cache-invalidation:\s*opaque\s*[—-]\s*\S/.test(sf.text.slice(node.pos, node.end)),
+  );
+}
+
+/**
  * A generic mutation can receive its writer as a value (`run`, `purge`, `task.run`). The scanner
  * cannot recover the API handle from that value, so the declaration must carry the fact locally.
  * A reason is mandatory: unlike the older no-cache marker, this marker changes the safety verdict
@@ -659,9 +697,62 @@ function isCallbackName(name) {
   return /^on[A-Z]/.test(name);
 }
 
-/** Every API handle a body reaches, with the HTTP verb the registry knows for it. */
-function collectApiCalls(node, ctx, out) {
+/**
+ * Every API handle a body reaches, with the HTTP verb the registry knows for it.
+ *
+ * Calls by bare name are FOLLOWED: a function declared in the same file, or a portal-wide helper,
+ * is opened and its handles count as this body's. Without that, `mutationFn: saveComposition` (a
+ * local function around `weeklyRequestsApi.update`) reached no handle and could only be excused by
+ * a `cache-write: delegated` marker, which also switched off rule 2 for a write the scan could see.
+ *
+ * A call this walk cannot open goes to `opaque` instead of vanishing. That is the second half of the
+ * fix: `async () => { await thingApi.get(); return run(); }` used to come out as "reads one handle,
+ * writes nothing" — fully resolved, so neither rule 1 nor rule 3 looked at it, while `run` (a
+ * parameter, a destructured prop, a hook result) could be any write at all. Opaque means: a local
+ * value that is not a function, a name declared twice, a name that is neither local nor imported (a
+ * parameter or a destructured binding), or a name imported from inside `src` that is not a known
+ * helper. Names imported from packages (`dayjs`, `@technic/contracts`) are not opaque: they never
+ * reach the portal API, and counting them would bury the signal under every formatter call.
+ */
+function collectApiCalls(node, ctx, out, opaque = new Set(), hops = 0, seen = new Set()) {
   if (!node) return;
+  if (hops > MAX_HOPS) {
+    opaque.add('<helper-chain-too-deep>');
+    return;
+  }
+  const follow = (name) => {
+    if (seen.has(name)) return;
+    const local = ctx.bindings.get(name);
+    if (local === null) {
+      opaque.add(name);
+      return;
+    }
+    if (local) {
+      const fn = unwrap(local);
+      if (
+        fn &&
+        (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn) || ts.isFunctionDeclaration(fn))
+      )
+        collectApiCalls(fn.body, ctx, out, opaque, hops + 1, new Set([...seen, name]));
+      else opaque.add(name);
+      return;
+    }
+    const helper = ctx.helpers.node(name);
+    if (helper === null) {
+      opaque.add(name);
+      return;
+    }
+    if (helper) {
+      const { node: fn, ctx: helperCtx } = helper;
+      collectApiCalls(fn.body ?? fn, helperCtx, out, opaque, hops + 1, new Set([...seen, name]));
+      return;
+    }
+    // Neither local nor in the API-reach table. Not imported at all means a parameter or a
+    // destructured binding — a value handed in from outside, which is exactly the hidden writer this
+    // walk exists to catch. Imported from a package or from a portal file that reaches no API
+    // handle means it cannot write.
+    if (ctx.imports && !ctx.imports.has(name) && !GLOBAL_CALLS.has(name)) opaque.add(name);
+  };
   const visit = (n) => {
     if (ts.isCallExpression(n)) {
       const callee = unwrap(n.expression);
@@ -669,7 +760,7 @@ function collectApiCalls(node, ctx, out) {
         const owner = unwrap(callee.expression);
         if (owner && ts.isIdentifier(owner) && /Api$/.test(owner.text))
           out.add(`${owner.text}.${callee.name.text}`);
-      }
+      } else if (callee && ts.isIdentifier(callee)) follow(callee.text);
     }
     // `purge: driversApi.purge` — a handle passed by reference, never called on the spot.
     if (ts.isPropertyAccessExpression(n)) {
@@ -679,8 +770,49 @@ function collectApiCalls(node, ctx, out) {
     }
     ts.forEachChild(n, visit);
   };
-  visit(node);
-  void ctx;
+  // `mutationFn: saveComposition` — the body IS a name; open it like a call.
+  const bare = unwrap(node);
+  if (bare && ts.isIdentifier(bare)) follow(bare.text);
+  else visit(node);
+}
+
+/** Callable globals a mutation body uses that are neither imported nor declared. */
+const GLOBAL_CALLS = new Set([
+  'Promise',
+  'Number',
+  'String',
+  'Boolean',
+  'Array',
+  'Object',
+  'Date',
+  'JSON',
+  'Math',
+  'Error',
+  'encodeURIComponent',
+  'setTimeout',
+  'clearTimeout',
+  'structuredClone',
+  'fetch',
+  'Blob',
+  'URL',
+  'FormData',
+]);
+
+/** Local names a file imports, with the module each came from. */
+function collectImports(sf) {
+  const imports = new Map();
+  for (const stmt of sf.statements) {
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+    const from = stmt.moduleSpecifier.text;
+    const clause = stmt.importClause;
+    if (!clause) continue;
+    if (clause.name) imports.set(clause.name.text, from);
+    const named = clause.namedBindings;
+    if (named && ts.isNamedImports(named))
+      for (const el of named.elements) imports.set(el.name.text, from);
+    else if (named && ts.isNamespaceImport(named)) imports.set(named.name.text, from);
+  }
+  return imports;
 }
 
 export const __internals = { resolveRoots, collectCacheEffects, collectApiCalls };
@@ -783,6 +915,7 @@ function readUseMutation(call, options, owner, ctx, mutationFnRanges) {
   const line = lineOf(ctx.sf, call);
   const acc = emptyAcc();
   const handles = new Set();
+  const opaque = new Set();
   const handlers = [];
   let delegatedReason;
 
@@ -792,7 +925,7 @@ function readUseMutation(call, options, owner, ctx, mutationFnRanges) {
     const fn = optionProp(options, 'mutationFn');
     if (fn) {
       mutationFnRanges.push([fn.pos, fn.end]);
-      collectApiCalls(fn, ctx, handles);
+      collectApiCalls(fn, ctx, handles, opaque);
       if (handles.size === 0) {
         delegatedReason = delegatedWriteReason(ctx.sf, owner?.decl, call);
         if (!delegatedReason) acc.why.add('mutationFn-reaches-no-named-api-handle');
@@ -835,11 +968,20 @@ function readUseMutation(call, options, owner, ctx, mutationFnRanges) {
   const { writes, reads, unknown } = classifyWrites(handles, ctx);
   unknown.forEach((h) => acc.why.add(`api-handle-of-an-unknown-verb:${h}`));
   if (delegatedReason) writes.push('<delegated> WRITE');
+  /*
+   * Handles were found, none of them writes, and the body also calls something this walk could not
+   * open. "Read-only" is then a guess, not a finding: the opaque call may be the write. Reported as
+   * an unknown write (rule 3) so the mutation cannot pass as a resolved reader. Where at least one
+   * write is visible the opaque calls do not matter — rules 1 and 2 already apply to the mutation.
+   */
+  if (handles.size > 0 && writes.length === 0 && !delegatedReason)
+    [...opaque].sort().forEach((name) => acc.why.add(`mutationFn-calls-an-opaque-value:${name}`));
 
   return {
     declaredNoop:
       declaresNoCacheEffect(ctx.sf, call) ||
       (!!owner?.decl && declaresNoCacheEffect(ctx.sf, owner.decl)),
+    declaredOpaque: declaresOpaqueCacheEffect(ctx.sf, call, owner?.decl),
     id: `${ctx.rel}:${line}:${hint}`,
     file: ctx.rel,
     line,
@@ -1008,6 +1150,7 @@ function buildMap() {
   const rootOwners = new Map();
   const unresolved = [];
   const parsed = new Map();
+  const reaching = new Map();
 
   // Pass 1: portal-wide tables. Every file is read; only the ones that can hold a declaration or a
   // mutation are parsed, and only the ones that can hold a mutation are kept.
@@ -1019,7 +1162,10 @@ function buildMap() {
     const declares =
       /createQueryKeys|Api\s*=\s*\{|=\s*\[\s*['"`]/.test(code) || /\/api\//.test(rel(file));
     const acts = /useMutation/.test(code) || CACHE_MENTION.test(code);
-    if (!declares && !acts) continue;
+    // A file that calls a portal API handle can hold a function a mutation calls by name; it is
+    // read for the API-reach table below even when it neither declares nor acts.
+    const reachesApi = /\b[A-Za-z]+Api\.[A-Za-z]+/.test(code);
+    if (!declares && !acts && !reachesApi) continue;
 
     const sf = parseSource(code, file);
     if (sf.parseDiagnostics?.length)
@@ -1030,6 +1176,7 @@ function buildMap() {
       harvestApi(sf, file, objects, unresolved);
     }
     if (acts) parsed.set(file, sf);
+    if (reachesApi) reaching.set(file, sf);
   }
 
   // Spreads are followed only now: a slice API may be assembled from parts declared in files read
@@ -1061,13 +1208,46 @@ function buildMap() {
       helperCache.set(name, value);
       return value;
     },
+    /**
+     * A function that may reach a portal API handle, for the write walk (`collectApiCalls`).
+     *
+     * A separate table from the cache-effect helpers on purpose: it is read from every file that
+     * mentions an `…Api.` handle, and adding those names to the table above would turn resolved
+     * helpers into "declared twice" all over the portal. A portal name absent here lives in a file
+     * that reaches no API handle, so it cannot be the hidden write — pure body builders such as
+     * `repairBody` stay out of the opaque set.
+     */
+    node(name) {
+      return apiReachNodes.get(name);
+    },
   };
 
   const contexts = new Map();
   for (const [file, sf] of parsed) {
-    const ctx = { rel: rel(file), sf, bindings: collectBindings(sf), keys, api, helpers };
+    const ctx = {
+      rel: rel(file),
+      sf,
+      bindings: collectBindings(sf),
+      imports: collectImports(sf),
+      keys,
+      api,
+      helpers,
+    };
     contexts.set(file, ctx);
     registerHelpers(sf, ctx, helperNodes);
+  }
+  const apiReachNodes = new Map();
+  for (const [file, sf] of reaching) {
+    const ctx = contexts.get(file) ?? {
+      rel: rel(file),
+      sf,
+      bindings: collectBindings(sf),
+      imports: collectImports(sf),
+      keys,
+      api,
+      helpers,
+    };
+    registerHelpers(sf, ctx, apiReachNodes);
   }
 
   // Pass 3: the mutations themselves.
@@ -1181,7 +1361,8 @@ function classifyUnresolved(why) {
     why === 'declared-hook-reaches-no-named-api-handle' ||
     why === 'mutation-without-a-mutationFn' ||
     why === 'useMutation-options-are-not-an-object-literal' ||
-    why.startsWith('api-handle-of-an-unknown-verb:')
+    why.startsWith('api-handle-of-an-unknown-verb:') ||
+    why.startsWith('mutationFn-calls-an-opaque-value:')
   )
     return 'unknown-write';
   if (
@@ -1298,6 +1479,45 @@ function ruleUnknownWrite(map) {
     }));
 }
 
+/**
+ * RULE 4 — a mutation writes, the scan sees NO cache effect at all, and something in its handlers
+ * could not be opened.
+ *
+ * Rule 1 skips such a mutation (its evidence is incomplete), and the unresolved reason is only a
+ * `cache-effect` limitation, which used to be printed and nothing more. That combination let the
+ * check grow greener by understanding less: when Stage 3 wave 12 started passing the vehicle-type
+ * card's invalidation into its features as an `invalidate` prop, six writers that had dropped five
+ * roots became "unresolved, drops nothing" and the run stayed green.
+ *
+ * A mutation that drops at least one root, drops the whole cache, or hands the update to its caller
+ * is not this rule's business: some effect is proven, and the unresolved part is a partial view.
+ * A delegated write (`cache-write: delegated`) is excluded too — its call site is read separately as
+ * an `invalidate`-option hook and carries the effect. Everything else must either become readable
+ * (teach the scanner, or keep the drop inside the slice that writes), say
+ * `cache-invalidation: none — reason` next to the mutation, or — when the drop is real but
+ * unreadable — `cache-invalidation: opaque — reason`.
+ */
+function ruleCacheEffectUnproven(map) {
+  return map.mutations
+    .filter(
+      (m) =>
+        m.writes.some((w) => w !== '<delegated> WRITE') &&
+        !m.declaredNoop &&
+        !m.declaredOpaque &&
+        !m.wholeCache &&
+        m.invalidates.length === 0 &&
+        m.handsUp.length === 0 &&
+        m.unresolved.some((why) => classifyUnresolved(why) === 'cache-effect'),
+    )
+    .map((m) => ({
+      rule: 'cache-effect-unproven',
+      at: `${m.file}:${m.line}`,
+      what: `${m.name} пишет ${m.writes.join(', ')}, а эффект на кэш не виден (${m.unresolved
+        .filter((why) => classifyUnresolved(why) === 'cache-effect')
+        .join(', ')})`,
+    }));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Entry point.
 // ---------------------------------------------------------------------------------------------
@@ -1313,6 +1533,7 @@ const findings = [
   ...ruleWritesNothingDropped(map),
   ...ruleHomeRootMissed(map),
   ...ruleUnknownWrite(map),
+  ...ruleCacheEffectUnproven(map),
 ].sort((a, b) => a.rule.localeCompare(b.rule) || a.at.localeCompare(b.at));
 
 const t = map.totals;
