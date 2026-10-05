@@ -329,11 +329,16 @@ describe('адрес окон: заявка уступает место рейс
     // Заявка открыта сама по себе — так на неё приходят из журнала листов и из занятости гаража.
     expect(await screen.findByText('Заявка Т-42')).toBeDefined();
 
-    const link = [...document.querySelectorAll<HTMLAnchorElement>('a.entity-link')].find(
-      (el) => el.textContent === 'Р-12',
-    );
-    expect(link, 'ссылка на рейс в карточке заявки').toBeTruthy();
-    fireEvent.click(link!);
+    // The route link sits in a card section that loads on first open (wave 18): wait for it
+    // instead of reading the DOM in the same tick as the card title.
+    const link = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLAnchorElement>('a.entity-link')].find(
+        (el) => el.textContent === 'Р-12',
+      );
+      expect(found, 'ссылка на рейс в карточке заявки').toBeTruthy();
+      return found!;
+    });
+    fireEvent.click(link);
 
     /*
      * Рейс встал **вместо** заявки, а не под неё: положи мы его под открытую заявку — окно
