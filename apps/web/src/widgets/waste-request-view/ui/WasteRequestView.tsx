@@ -38,16 +38,26 @@ export interface WasteRequestViewProps {
   onClose: () => void;
   /** Omitted when role, status or archive state forbids editing. */
   onEdit?: (r: WasteRequestDto) => void;
-  /** Omitted when this role or request state cannot edit the executor comment. */
+  /** Omitted when this role cannot edit the executor comment or the request is already closed. */
   onSaveOperatorComment?: (r: WasteRequestDto, operatorComment: string) => void;
   savingOperatorComment?: boolean;
   /**
-   * Roll a completed request back to Done (ADR 0135). The action belongs beside its evidence and
-   * history because terminal requests are absent from the working-list status menu.
+   * Roll a completed request back to Done (ADR 0135). Omitted when there is no such move: the
+   * status is not terminal, the rollback permission is missing, or the request is archived.
+   *
+   * The button lives here, not in the journal row: the journal answers "what happened", while the
+   * rollback is a decision about one request, taken after looking at its tickets and history. The
+   * status menu exists only in the working list, which never shows completed requests (ADR 0135
+   * section 5), so without this button they would have no way back at all.
    */
   onRollbackToDone?: (r: WasteRequestDto) => void;
   rollingBack?: boolean;
-  /** Attach late tickets beside existing evidence to avoid uploading the same scan twice. */
+  /**
+   * Attach tickets to a completed request (ADR 0189). Omitted without the status permission, in the
+   * wrong state, or for an archived request. It lives in the card rather than the list row: tickets
+   * are attached after seeing which paper is already on the request, otherwise the same scan would
+   * arrive twice.
+   */
   onAddTickets?: (r: WasteRequestDto, ticketFileIds: string[]) => void;
   addingTickets?: boolean;
   /** A ticket-column entry scrolls directly to review (ADR 0195). */
@@ -68,7 +78,8 @@ export function WasteRequestView({
   addingTickets,
   focus,
 }: WasteRequestViewProps) {
-  // External executors may complete work but cannot inspect recognition diagnostics (ADR 0114).
+  // Ticket review permission (ADR 0114, R25). It also controls remarks and the attempt log: an
+  // external executor may complete a request but not review its own paper.
   const { can } = useAuth();
   const canReviewTickets = can('wasteRequests.ticketReview');
   const ticketsRef = useScrollIntoViewWhen<HTMLDivElement>(focus === 'tickets', request?.id);
@@ -79,7 +90,9 @@ export function WasteRequestView({
     enabled: !!request,
   });
 
-  // Legacy container requests can retain prices, so visibility follows stored data as well as type.
+  // The volume / waste type / cost block follows the stored data, not only the request type: only
+  // removal is priced (ADR 0019), but replacements and removals created before that decision kept
+  // their price, and hiding it would lose the history of amounts.
   const priced =
     request != null && (isPricedRequestType(request.requestType) || request.amount != null);
   const rows = useMemo(
@@ -129,7 +142,7 @@ export function WasteRequestView({
           label: 'Оператор вывоза',
           children: request.operatorName ?? 'не назначен',
         },
-        // The arriving operator needs the site contact, not only its address.
+        // Who receives the truck on site (migration 0062): the arriving operator calls this phone.
         {
           key: 'responsible',
           label: 'Ответственный',
@@ -137,7 +150,10 @@ export function WasteRequestView({
             <ResponsibleValue name={request.responsibleName} phone={request.responsiblePhone} />
           ),
         },
-        // Only container operations still own a container subject (ADR 0022, ADR 0067).
+        // A container is the subject only of container operations: removal orders a volume and
+        // names no equipment (ADR 0022), and scrap has no volume either (ADR 0067). Older removal
+        // requests still store a type, but a row about it would describe a field this request type
+        // no longer has.
         ...(usesContainerType(request.requestType)
           ? [
               {
@@ -178,7 +194,9 @@ export function WasteRequestView({
                 label: 'Стоимость',
                 children:
                   request.amount == null ? (
-                    // Name a missing tariff explicitly so it cannot be read as a free service.
+                    // The request was created when the price list had no price for this waste type
+                    // (ADR 0046). A dash would read as "not filled in", so the reason is named.
+                    // Requests older than pricing have no waste type either: nothing to say there.
                     request.wasteTypeId == null ? (
                       '—'
                     ) : (
@@ -204,7 +222,9 @@ export function WasteRequestView({
               },
             ]
           : []),
-        // Completion is actual quantity and cost; legacy vehicle composition stays in history.
+        // Completion fact (ADR 0035): what was hauled and what it cost. Its amount is what the
+        // request actually cost; the price above is the plan for the requested volume. Legacy
+        // vehicle composition is not lifted here: it stays in history, at its completion event.
         ...(request.completion
           ? [
               {
@@ -283,7 +303,9 @@ export function WasteRequestView({
       footer={[
         ...(request && onRollbackToDone
           ? [
-              // This rollback erases nothing, but confirmation makes the list transition explicit.
+              // A confirmation rather than a reason modal: this rollback erases nothing (ADR 0135
+              // section 6), so there is nothing to explain, but the request leaves the journal for
+              // the working list and the user must know that before clicking.
               <Popconfirm
                 key="rollback"
                 title="Вернуть заявку в «Выполнена»?"

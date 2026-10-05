@@ -32,8 +32,14 @@ export function useWasteRequestView({
   onEdit,
 }: Input): WasteRequestViewController {
   const { can } = useAuth();
+  // The card is a separate read-only window: the table has no room for the author, price per m3
+  // or vehicles, and a specific request cannot be examined without them (ADR 0012).
   const [record, setRecord] = useState<WasteRequestDto | null>(null);
+  // How the card was opened: tickets means the ticket column cross (ADR 0195), scroll to review.
   const [focus, setFocus] = useState<'tickets' | null>(null);
+  // The request named in the URL, e.g. a link from the on-site list. It is fetched by id: the same
+  // request may sit on another page or under another filter, and searching the loaded list would
+  // open the card only some of the time.
   const opened = useOpenedRecord<WasteRequestDto>({
     active,
     queryKey: (id) => wasteRequestKeys.detail(id),
@@ -42,11 +48,15 @@ export function useWasteRequestView({
   const viewed = record ?? opened.record;
   const comment = useWasteRequestComment(setRecord);
   const tickets = useWasteTicketAttach(setRecord);
+  // Executor note (ADR 0053): written by its operator and by those who run the request.
   const canComment = can('wasteRequests.operatorComment');
+  // Status management also unlocks adding tickets to a completed request (ADR 0189): whoever
+  // closes the request brings the paper, and there is no separate permission for it.
   const canChangeStatus = can('wasteRequests.status');
 
   const close = () => {
     setRecord(null);
+    // Otherwise the next ordinary row click, for another purpose, would scroll to tickets again.
     setFocus(null);
     opened.clear();
   };
@@ -63,6 +73,8 @@ export function useWasteRequestView({
         setFocus('tickets');
       },
     },
+    // Editing from the card uses the same editor as the list, and only when this role may modify
+    // the request; the executor note is edited in the card itself, since an operator has no editor.
     node: (
       <WasteRequestView
         request={viewed}
@@ -75,6 +87,8 @@ export function useWasteRequestView({
             : undefined
         }
         savingOperatorComment={comment.pending}
+        // Late tickets (ADR 0189): the permission is the completion one, and the acceptance window
+        // is the contract predicate the server answers with (wasteTicketsAttachable).
         onAddTickets={
           canChangeStatus && viewed && !viewed.deletedAt && wasteTicketsAttachable(viewed.status)
             ? tickets.attach
