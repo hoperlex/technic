@@ -9,7 +9,8 @@
   `apps/api/src/routes/objects.ts`, `apps/api/src/routes/waste-requests.ts`,
   `apps/api/src/routes/users.ts`, `apps/api/src/lib/access.ts`,
   `apps/api/src/services/object-operators.ts`,
-  `apps/web/src/pages/directories/CounterpartiesTab.tsx`,
+  `apps/web/src/widgets/counterparty-registry/ui/CounterpartyRegistry.tsx`,
+  `apps/web/src/features/counterparty-editor/ui/CounterpartyFormFields.tsx`,
   `apps/web/src/pages/directories/ObjectsTab.tsx`, `apps/web/src/pages/waste/WasteRequestsTab.tsx`
 
 ## Контекст

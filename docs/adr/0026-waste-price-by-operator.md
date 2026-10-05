@@ -9,8 +9,9 @@
   `packages/contracts/src/waste-tariffs.ts`, `apps/api/src/services/waste-pricing.ts`,
   `apps/api/src/routes/waste-tariffs.ts`, `apps/api/src/routes/waste-requests.ts`,
   `apps/api/src/routes/counterparties.ts`,
-  `apps/web/src/pages/directories/WasteTariffsTab.tsx`,
-  `apps/web/src/pages/directories/wasteTariffGrid.ts`
+  `apps/web/src/entities/waste-tariff/model/grid.ts`,
+  `apps/web/src/widgets/waste-tariff-registry/ui/WasteTariffRegistry.tsx`,
+  `apps/web/src/features/waste-tariff-editor/model/useWasteTariffEditor.tsx`
 
 ## Контекст
 

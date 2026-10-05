@@ -5,7 +5,9 @@
 - Связано: `apps/api/drizzle/0036_waste_type_name_key.sql`,
   `packages/contracts/src/waste-tariffs.ts`, `apps/api/src/services/waste-types.ts`,
   `apps/api/src/routes/waste-types.ts`, `apps/api/src/routes/waste-tariffs.ts`,
-  `apps/web/src/pages/directories/WasteTariffsTab.tsx`, `apps/web/src/pages/directories/DirectoriesPage.tsx`,
+  `apps/web/src/features/waste-type-editor/model/useWasteTypeEditor.tsx`,
+  `apps/web/src/features/waste-tariff-editor/model/useWasteTariffEditor.tsx`,
+  `apps/web/src/pages/directories/DirectoriesPage.tsx`,
   `apps/web/src/pages/waste/WasteRequestsTab.tsx`
 
 ## Контекст

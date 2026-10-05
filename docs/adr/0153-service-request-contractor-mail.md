@@ -6,7 +6,7 @@
   [service-requests.ts](../../apps/api/src/routes/service-requests.ts) (три места постановки письма
   и ручка согласования объёма работ), [module-mail.ts](../../packages/contracts/src/module-mail.ts),
   карточка контрагента —
-  [CounterpartiesTab.tsx](../../apps/web/src/pages/directories/CounterpartiesTab.tsx), Excel-обмен —
+  [CounterpartyFormFields.tsx](../../apps/web/src/features/counterparty-editor/ui/CounterpartyFormFields.tsx), Excel-обмен —
   [org.ts](../../apps/api/src/services/directory-transfer/defs/org.ts);
   `apps/api/test/service-request-mail.db.test.ts`
 - Связано: [ADR 0085](0085-office-equipment-module.md) (сервисная компания — исполнитель
