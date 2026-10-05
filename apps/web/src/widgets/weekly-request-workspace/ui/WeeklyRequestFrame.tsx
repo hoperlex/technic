@@ -5,7 +5,16 @@ import { weeklyRequestErrorMessage as errorMessage } from '@entities/weekly-requ
 import { WeeklyStatusTag } from '@entities/weekly-request';
 import { hasApiStatus } from '../model/apiError';
 
-/** Static document framing shared by loaded and unavailable weekly-request states. */
+/*
+ * Framing of the weekly request page: the header with number and status, and the screen of a
+ * request that did not open. Both know nothing about composition assembly; they need only the
+ * request and "where to go".
+ *
+ * Both speak about one thing: how a document NOT being edited looks. The header answers "which week
+ * is this and in what state", the refusal screen "why it is not visible and what to do next". There
+ * is no dead end in either case: a vanished request names its reason (deleted together with its
+ * site), and the button returns to the list instead of leaving an empty page.
+ */
 
 /** Identify the document by number, week, status, site and author. */
 export function WeeklyRequestHeader({
@@ -36,7 +45,11 @@ export function WeeklyRequestHeader({
   );
 }
 
-/** Distinguish a deleted site draft from a transport failure and always offer a way back. */
+/**
+ * The request did not open. A vanished one differs from a connection failure and is labelled with
+ * the reason: unapplied weekly requests of a retired site are deleted with it, and "the request did
+ * not open" on such a link would send people looking for a bug where there is none.
+ */
 export function WeeklyRequestNotOpened({
   error,
   onLeave,

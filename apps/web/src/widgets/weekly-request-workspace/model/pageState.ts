@@ -15,10 +15,26 @@ import type {
 } from '@entities/weekly-request';
 import { weeklyToday } from '@entities/weekly-request';
 
+/*
+ * How the weekly request page answers the week state and the approval outcome: derived predicates
+ * and wordings, without a line of markup. Kept apart from the workspace hook because these are
+ * rules with no state and no queries, computed from the date, the right and the server answer.
+ *
+ * No predicate is derived anew here. Past depth, this week's approval right and overdueness are
+ * computed by contracts (weeklyWeekBlocker, weeklyApprovalPermission, isWeeklyWeekOverdue), the
+ * same ones the server uses in its checks: a second rule list on the client would either lock what
+ * the endpoint accepts or offer what it refuses.
+ */
+
 /**
- * Describe rejection, normal approval, backdated conduct and an idempotent retry distinctly.
- * For conduct, an empty `apply` means the previous request already completed the operation; it is
- * neither a zero-row failure nor a second application (ADR 0101 R31).
+ * What the screen says about a completed decision. A function rather than a ladder of conditions
+ * in onSuccess: there are four cases now (rejection, regular approval, backdated conduct and its
+ * retry).
+ *
+ * The retry must be told apart. For conduct an empty apply means not "no row applied" but "the
+ * previous request already performed this operation" (ADR 0101 R31): the connection dropped, the
+ * person clicked again, and nobody moved the terms a second time. A generic "Week applied" would
+ * read as a second portion of work here, and "0 rows" as a refusal.
  */
 export function decisionMessage(
   res: WeeklyDecisionResultDto,
@@ -35,11 +51,11 @@ export function decisionMessage(
   return `${what}: строк ${res.apply.applied}, пропущено ${res.apply.skipped}`;
 }
 
-/** What the workspace needs to decide which actions remain available for this week. */
+/** What the page knows about the request's week: open or not, overdue or not, who approves it. */
 export interface WeeklyPageWeekState {
   /** Why composition and submission are blocked; `null` means the week is open. */
   weekBlocker: string | null;
-  /** Nearest future week offered as the recovery path for an overdue draft. */
+  /** The nearest week a next request is created for (the way out of an overdue draft). */
   nextWeek: string | undefined;
   overdue: boolean;
   approvesOwn: boolean;
@@ -48,14 +64,31 @@ export interface WeeklyPageWeekState {
 }
 
 /**
- * Derive every week-dependent action from contract predicates. A backdate-capable account may
- * conduct an overdue week within its correction depth; others may still cancel it. Auto-approval
- * remains limited to a future week and an object-scoped role, while rejection keeps the ordinary
- * site approval permission because it changes no historical work.
+ * The week state of this request in one computation, because all six values answer one question:
+ * what can no longer be done with this week, and what still can.
+ *
+ * A week the draft outlived is closed, but not for everyone (ADR 0101): for a holder of the past
+ * right it opens within that right's depth, with no refusal at all. Without the right it is the old
+ * dead end, only with a way out in words: submitting and approving are impossible, cancelling is
+ * always possible (section 8). Depth and bounds are computed by the same weeklyWeekBlocker with the
+ * same access argument the server uses in all five of its checks.
+ *
+ * Auto-approval on submit is only for an object-scoped role (R12); an administrator does not get
+ * it. An overdue week has it for nobody (approvesOwnWeeklyRequest): conducting needs a reason and
+ * an operation key that the submit body does not carry, so such a request goes to approval, where
+ * they are asked.
+ *
+ * The approval right for THIS week: weeklyRequests.approve for a future one, the past right for an
+ * overdue one. The contract chooses (weeklyApprovalPermission), the same way the server does; our
+ * own "if overdue then..." would drift from it on the first rule change.
+ *
+ * The rejection right ignores the week and stays as it was: rejection moves nothing in the past, it
+ * returns the request to draft, and giving it to the dispatcher would hand them the decision
+ * whether the site needs the equipment, exactly what they do not decide.
  */
 export function weeklyPageWeekState(input: {
   weekStart: string;
-  /** Applied and cancelled documents no longer have editable composition to block. */
+  /** The composition is still assembled: an applied or cancelled request has no week to lock. */
   composable: boolean;
   isPending: boolean;
   backdate: BackdateAccess;
@@ -78,7 +111,10 @@ export function weeklyPageWeekState(input: {
   };
 }
 
-/** Surface the last rejection in the document itself, not only in its history. */
+/**
+ * The rejection reason is shown on top of the request itself, not only in history (section 5 step
+ * 5).
+ */
 export function lastRejectionComment(
   entries: WeeklyRequestHistoryEntryDto[] | undefined,
 ): string | null {
@@ -89,7 +125,11 @@ export function lastRejectionComment(
   );
 }
 
-/** Name the exact work lost when leaving an unsaved composition. */
+/**
+ * Leaving the page with an unsaved composition (section 9). Concrete text rather than a vague
+ * "there are changes": exactly what the person just did by hand will be lost (row decisions and
+ * added equipment), and they must be able to name it before pressing "Leave".
+ */
 export const WEEKLY_LEAVE_CONFIRM = {
   title: 'Уйти, не сохранив состав?',
   content: 'Решения по строкам и добавленная техника не сохранятся.',
@@ -98,7 +138,11 @@ export const WEEKLY_LEAVE_CONFIRM = {
   cancelText: 'Остаться',
 };
 
-/** Rejection returns its reason to the author; cancellation records it only in history. */
+/**
+ * Reason dialog labels: rejecting and cancelling are different actions and promise different
+ * things. A rejection reason returns to the author in a visible place of the request, a
+ * cancellation reason stays history; the person must understand whom they are writing to.
+ */
 export function weeklyReasonText(reject: boolean): {
   title: string;
   label: string;

@@ -21,11 +21,18 @@ function hasStatus(error: unknown, status: number): boolean {
 }
 
 /**
- * Open an existing draft or create an empty weekly request before navigating to its workspace.
- * Both entry points use this command so a uniqueness race never strands the user on an error.
+ * The "Weekly request" entry shared by both buttons (weekly requests tab and "On site" tab). A
+ * request is never created blindly: the composition suggestion is asked first, and if a draft for
+ * this "object + week" pair already exists the portal opens it (R3). UNIQUE would not allow a
+ * second request anyway, and an "already exists" refusal with no way to open it is a dead end
+ * resolved only through an administrator.
+ *
+ * The composition is not carried over at creation: the draft is created empty and the page
+ * recomputes the suggestion itself, so what arrives checked is what really stands on site today.
  */
 export function useWeeklyRequestCreate(): {
   open: () => void;
+  /** Create (or open) a request for the named week without asking: "create for next week". */
   openWeek: (objectId: string, weekStart: string) => void;
   pending: boolean;
   node: ReactNode;
@@ -41,8 +48,12 @@ export function useWeeklyRequestCreate(): {
   const weeks = weekSelectOptions();
   const backdate = weeklyBackdateAccess(can);
   const pastWeeks = pastWeekSelectOptions(backdate);
-  // Past weeks are deliberately separated and shown first: choosing one consumes correction
-  // authority and may burn waybill numbers, so it must not look like an adjacent future week.
+  /*
+   * The past goes ABOVE the future as a separate group with a telling title: the list is read top
+   * to bottom like a calendar, and a past week must look like a different kind of action, not an
+   * adjacent row. There is no group at all when there is no past: an empty "past" header would tell
+   * the site about a right it will not have.
+   */
   const weekOptions: SelectProps['options'] =
     pastWeeks.length === 0
       ? weeks
@@ -61,8 +72,9 @@ export function useWeeklyRequestCreate(): {
         const created = await weeklyRequestsApi.create({ ...values, items: [] });
         return { id: created.id, existed: false, num: created.num };
       } catch (error) {
-        // A competing creator may win after the suggestion request. Resolve that conflict to the
-        // winner's document instead of presenting a dead-end uniqueness error.
+        // A race of two assemblers: while the suggestion was asked, a neighbour created the
+        // request. The refusal here means "open that one", not an error, so the suggestion is asked
+        // again for exactly that.
         if (!hasStatus(error, 409)) throw error;
         const current = await weeklyRequestsApi.suggestion(values);
         if (!current.existingRequestId) throw error;
@@ -104,9 +116,11 @@ export function useWeeklyRequestCreate(): {
             options={objectOptions}
           />
         </Form.Item>
-        {/* Past weeks are available only through the contract-owned backdate permission pair.
-            No past week is selected by default because that choice requires an explicit audit
-            reason and can invalidate issued waybill numbers. */}
+        {/* Weeks are future ones (R2); past weeks only for someone with the past right (ADR 0101):
+            the equipment worked a week while the extension has no base document, and fixing that
+            belongs to the same dispatcher who corrects paperwork retroactively. The past is never
+            the default: the portal does not make for a person a decision that costs a burnt form
+            (ADR 0083). */}
         <Form.Item
           name="weekStart"
           label="Неделя"

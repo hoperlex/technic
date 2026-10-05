@@ -3,44 +3,57 @@ import type { WeeklyItemCounts, WeeklyVehicleRequestDto } from '@technic/contrac
 import { formatDateOnly } from '@shared/lib';
 import { weeklyOverdueWord } from '@entities/weekly-request';
 
-/** Explain both the blocker and the recovery path for every non-routine weekly state. */
+/**
+ * Weekly request states in words (section 9). Each is easy to reduce to a faceless notice, and then
+ * the person does not know what to do: "the week has started" without an offered way out leaves the
+ * draft at a dead end, and "apply failed" without per-row reasons makes them reconcile the list
+ * with the table by eye.
+ *
+ * An overdue week now has two different states, separated not by the right to a button but by the
+ * answer to "what do I do with this" (ADR 0101). For a holder of the past right the week is open
+ * and the banner names the conduct price. For others the week stays closed, but it is no longer a
+ * dead end: there is a way out, and it is calling someone who will conduct it.
+ */
 
-/** Without backdate authority, escalation to an operator remains an alternative to cancellation. */
+/** No past right: the way out is calling someone who has it, not only cancelling. */
 const NO_RIGHT_HINT =
   'Провести неделю задним числом может тот, у кого есть право коррекции, — диспетчер или ' +
   'администратор. Если техника действительно отработала эти дни, попросите его подать и провести ' +
   'заявку: сроки продлятся, а на прошедшие недели выпишутся листы ЭСМ-2. Если не отработала — ' +
   'снимите заявку и заведите её на следующую неделю.';
 
-/** Beyond the correction depth, an administrator must conduct the week (ADR 0101 R37). */
+/**
+ * The right exists but the depth is short: beyond 30 days it is the administrator's job (ADR 0101
+ * R37).
+ */
 const DEPTH_HINT =
   'Такую давность проводит администратор: попросите его завизировать заявку — сроки продлятся, а ' +
   'на прошедшие недели выпишутся листы ЭСМ-2. Либо снимите её и заведите неделю заново.';
 
 interface Props {
   request: WeeklyVehicleRequestDto;
-  /** The rejection reason remains visible in the document, not only in history. */
+  /** The approver's rejection reason, shown on top of the request itself, not only in history. */
   rejection: string | null;
-  /** Why this account cannot submit the week; `null` means it is open. */
+  /** Why this account cannot submit for this week; null means the week is open to it. */
   weekBlocker: string | null;
-  /** The week has started or elapsed. */
+  /** The week has started or passed (isWeeklyWeekOverdue). */
   overdue: boolean;
-  /** Whether this account has ordinary backdate authority. */
+  /** Whether the account has the past right (waybills.correct): it tells the two refusals apart. */
   canPast: boolean;
-  /** Conduct's effective date, the target week's Sunday. */
+  /** Effective conduct date, the Sunday of the week (weeklyWeekEffectiveDate). */
   effectiveDate: string;
-  /** Composition is still editable and this account may update it. */
+  /** The composition is still edited (draft/pending) and the account may edit it. */
   editable: boolean;
   composable: boolean;
-  /** Conduct is requested during approval, not submission. */
+  /** The request awaits approval: conduct is asked at approval, not at submission. */
   isPending: boolean;
-  /** Whole-application failure with its server explanation. */
+  /** Whole-apply refusal ('no row is applicable' with reasons); null means there was none. */
   applyError: string | null;
   counts: WeeklyItemCounts;
-  /** Orders without a decision are intentionally omitted from the command. */
+  /** Vehicles without a decision: they will not enter the composition. */
   undecided: number;
   onCancel: () => void;
-  /** Create the next week's request; `null` when unavailable. */
+  /** Create the next week's request; null when the account may not. */
   onNextWeek: (() => void) | null;
   nextWeekPending: boolean;
 }
@@ -50,7 +63,8 @@ export function WeeklyRequestBanners(props: Props) {
   const total = counts.extend + counts.new + counts.leave;
   const allLeaving = total > 0 && counts.extend === 0 && counts.new === 0;
 
-  // The banner stack owns its spacing so callers compose it as one stable block.
+  // The banner stack keeps its own spacing: outside it is one block, and inserting it into the
+  // flow as separate elements would hand the layout to the caller.
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {request.status === 'draft' && props.rejection && (
@@ -64,8 +78,10 @@ export function WeeklyRequestBanners(props: Props) {
       {request.status === 'cancelled' && (
         <Alert type="warning" showIcon title={`Заявка снята: ${request.cancelReason}`} />
       )}
-      {/* An overdue draft remains cancellable and names who can conduct it; a 422 alone would
-          explain the refusal without giving the user a recovery path. */}
+      {/* The draft outlived its week and the past is closed to the reader (no right at all, or not
+          enough depth): submitting and approving are impossible, cancelling always possible
+          (section 8). A 422 from the API alone is not enough: it explains the refusal, not the way
+          out, and the way out now exists and is not only cancelling. */}
       {props.weekBlocker && (
         <Alert
           type="error"
@@ -73,8 +89,9 @@ export function WeeklyRequestBanners(props: Props) {
           title={props.weekBlocker}
           description={
             <>
-              {/* Missing authority escalates to an operator; exhausted depth escalates further to
-                  an administrator whose correction access has no date boundary. */}
+              {/* Two refusals, not one, and they call different people. No past right at all: call
+                  the dispatcher. The right exists but depth is short: the reader is the dispatcher,
+                  and the one to call has no limit (ADR 0101 R37). */}
               {props.overdue && <div>{props.canPast ? DEPTH_HINT : NO_RIGHT_HINT}</div>}
               <Space size={8} wrap style={{ marginTop: 8 }}>
                 {props.editable && (
@@ -82,7 +99,9 @@ export function WeeklyRequestBanners(props: Props) {
                     Отменить заявку
                   </Button>
                 )}
-                {/* Recompute the next week's suggestion instead of copying a stale composition. */}
+                {/* The composition is not carried over: next week's request is created with a
+                    recomputed suggestion, since part of the equipment left during the overdue week
+                    anyway (section 9). */}
                 {props.onNextWeek && (
                   <Button loading={props.nextWeekPending} onClick={props.onNextWeek}>
                     Создать на следующую неделю
@@ -93,8 +112,10 @@ export function WeeklyRequestBanners(props: Props) {
           }
         />
       )}
-      {/* For an authorized operator this is a cost disclosure, not a blocker; the single command
-          remains in the action bar to avoid two apparently different conduct buttons. */}
+      {/* The week is overdue but open to the reader by the past right: not a refusal but a price.
+          The action stays in the bottom bar: it is one per screen, and a second identical button in
+          the banner would make people guess how they differ. The banner answers another question:
+          what it will cost. */}
       {!props.weekBlocker && props.overdue && composable && (
         <Alert
           type="warning"

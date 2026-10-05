@@ -3,9 +3,19 @@ import type { WeeklyItemCounts } from '@technic/contracts';
 import { weeklyCountsText } from '@entities/weekly-request';
 
 /**
- * Keep totals and commands pinned below a long composition. Approval and rejection deliberately
- * use separate capabilities: an overdue week is conducted by a backdate-capable operator, while
- * the site approver may still reject it because rejection changes no historical work (ADR 0101).
+ * Action bar of the weekly request, pinned to the page bottom (section 5 step 1): the composition
+ * is long, and the totals with buttons must not scroll past its end.
+ *
+ * The totals sit left of the buttons and next to the irreversibility warning: "Submit and approve"
+ * moves order terms and issues waybills in the same transaction (R6), and what is being approved
+ * must be read before the click, not after.
+ *
+ * Approval and rejection are split by TWO flags, not one "has approval right" (ADR 0101). For an
+ * overdue week these are different people: only a holder of the past right (dispatcher,
+ * administrator) may conduct it, while the site's construction manager may still reject it, because
+ * rejection moves nothing in the past, it returns the request to draft. Merging them back into one
+ * flag would offer one person a button the endpoint answers with 403 and take from another a
+ * rejection it accepts.
  */
 
 interface Props {
@@ -13,11 +23,11 @@ interface Props {
   /** The document remains composable and the account may edit it. */
   editable: boolean;
   isDraft: boolean;
-  /** Submission immediately approves an object-scoped approver's own site. */
+  /** Approval applies the request at once: the construction manager's own site (R8). */
   approvesOwn: boolean;
   /**
-   * Permission to approve this exact week: ordinary approval for the future, backdate authority
-   * after the week starts.
+   * Right to approve THIS week, with the request awaiting it: weeklyRequests.approve for a future
+   * week, the past right for an overdue one (weeklyApprovalPermission).
    */
   canApproveWeek: boolean;
   /** Rejection retains ordinary site approval authority because it moves no historical work. */
@@ -27,7 +37,8 @@ interface Props {
   /** An empty composition has nothing to submit. */
   empty: boolean;
   /**
-   * This account cannot submit or approve the week; cancellation remains available as an exit.
+   * The week is closed for this account: submitting and approving are impossible, cancelling is
+   * always possible (section 8). For a holder of the past right the flag is lifted: no dead end.
    */
   blockedByWeek: boolean;
   /** Incomplete additional rows must block submission instead of disappearing silently. */
@@ -68,7 +79,8 @@ export function WeeklyRequestActions(props: Props) {
             </Typography.Text>
           </div>
         )}
-        {/* Explain why rejection is present without approval so the action set does not look broken. */}
+        {/* A lone "Reject" button without approval next to it reads as a broken screen: the panel
+            that lacks approval must say where it went. */}
         {props.overdue && props.canReject && !props.canApproveWeek && (
           <div>
             <Typography.Text type="warning" style={{ fontSize: 12 }}>
@@ -101,7 +113,9 @@ export function WeeklyRequestActions(props: Props) {
             {props.approvesOwn ? 'Подать и завизировать' : 'Подать'}
           </Button>
         )}
-        {/* Backdated approval must disclose its audit reason and irreversible waybill effects. */}
+        {/* An overdue week is approved through a window, not a click: reason, waybills to reissue
+            and the operation price are asked before the first form number burns (ADR 0101). The
+            button is red: it takes forms away and moves the past rather than saving. */}
         {props.canApproveWeek && props.overdue && (
           <Button danger type="primary" disabled={blocked} onClick={props.onConduct}>
             Провести задним числом
@@ -122,7 +136,9 @@ export function WeeklyRequestActions(props: Props) {
             Отклонить
           </Button>
         )}
-        {/* Cancellation remains available before application even when the week itself is blocked. */}
+        {/* A request can always be cancelled until applied (plan section 8): overdueness does not
+            apply to cancelling, neither on the server nor here. The former !blockedByWeek locked
+            exactly the exit the overdue-week banner offered. */}
         {props.editable && (
           <Button danger onClick={props.onCancel}>
             Снять заявку

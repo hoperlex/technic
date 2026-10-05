@@ -18,16 +18,25 @@ import { waybillLink } from '@entities/waybill';
 import { vehicleRequestLink } from '@entities/vehicle-request';
 
 /**
- * Readiness answers what remains after approval: assignment, order approval, ESM-2 and relocation.
- * Rental paperwork is neutral because the lessor owns it; marking it missing would make every
- * rental week appear permanently incomplete.
+ * Week readiness checklist (section 5 step 6), the screen the module exists for. It answers not
+ * "what was approved" but "what of the approved is not ready yet": is a vehicle assigned, is the
+ * generated order approved, is the week's ESM-2 issued, is the relocation arranged.
+ *
+ * Rented equipment shows a neutral "the lessor keeps it" rather than a red "not issued" (R19): the
+ * portal issues no documents for it at all, and a week with rentals would otherwise look forever
+ * unfinished.
  */
 
 type Can = (permission: Permission) => boolean;
 
 /**
- * Link every printable sheet for readers with waybill access. A month boundary may split one week
- * into two ESM-2 sheets, so linking only the first would hide half the required paperwork.
+ * Document cell: state as a tag and ready text from contracts. The print link is shown only with
+ * waybills.read (section 5 step 6): the site office sees number and state, but the form journal is
+ * not opened to it for one button. Printing lives in the journal itself, which is where the link
+ * leads.
+ *
+ * A link per number, not to the first one (ADR 0142): a week where a month ends has two ESM-2
+ * waybills, and one "Print" button would send the person to print half the week's paper.
  */
 function DocumentCell({ cell, can }: { cell: WeeklyDocumentCellDto; can: Can }) {
   const prints =
@@ -53,7 +62,7 @@ function DocumentCell({ cell, can }: { cell: WeeklyDocumentCellDto; can: Can }) 
   );
 }
 
-/** Show today's vehicle label and mark divergence from the approved snapshot separately. */
+/** The row's vehicle: today's label, with divergence from the snapshot as a separate mark (R14). */
 function VehicleCell({ row }: { row: WeeklyDocumentRowDto }) {
   return (
     <div style={{ lineHeight: 1.35 }}>
@@ -71,8 +80,8 @@ function ApprovalCell({ row }: { row: WeeklyDocumentRowDto }) {
   if (row.kind === 'leave' || row.result === 'skipped') {
     return <Typography.Text type="secondary">—</Typography.Text>;
   }
-  // A later material edit may revoke approval on the generated order; week approval alone does
-  // not guarantee that the vehicle will be dispatched.
+  // Approval of the generated order may drop later: a material edit by someone without the approval
+  // right removes it (R8). Without this column "week approved" would read as "everything goes".
   return row.approved ? (
     <Tag color="green" style={{ marginInlineEnd: 0 }}>
       есть
@@ -114,7 +123,9 @@ export function WeeklyRequestChecklist({
   const rows = documents.rows;
 
   const orderLink = (row: WeeklyDocumentRowDto) =>
-    // The checklist has no generated-order status, so use the common permission-aware list link.
+    // The checklist does not know the generated order's status, while the link must lead where the
+    // order is shown: while the week is worked it is in the request list. The right is asked by the
+    // shared vehicleRequestLink, which also closes the link for roles not entitled to the list.
     row.requestId ? vehicleRequestLink(can, { id: row.requestId, status: 'confirmed' }) : null;
 
   const columns: TableColumnType<WeeklyDocumentRowDto>[] = [
@@ -223,7 +234,10 @@ export function WeeklyRequestChecklist({
   );
 }
 
-/** Preserve the warnings the author saw, including rental ownership and pre-week date context. */
+/**
+ * Rows of the applied request with their warnings, the same text the author saw: it explains why
+ * rentals have no portal waybills and where days before the week start came from in the term.
+ */
 export function WeeklyRequestAgreed({ items }: { items: WeeklyRequestItemDto[] }) {
   return (
     <>
@@ -245,7 +259,7 @@ export function WeeklyRequestAgreed({ items }: { items: WeeklyRequestItemDto[] }
   );
 }
 
-/** Translate either a status transition or a composition edit into a history label. */
+/** What a history event means to a person: a status transition or a composition edit (R17). */
 function historyTitle(entry: WeeklyRequestHistoryEntryDto): string {
   if (entry.event === 'status') {
     const to = entry.toStatus ? weeklyRequestStatusLabels[entry.toStatus] : '—';
@@ -255,7 +269,11 @@ function historyTitle(entry: WeeklyRequestHistoryEntryDto): string {
   return entry.event === 'items_changed' ? 'Состав изменён' : 'Строка снята';
 }
 
-/** Composition edits have their own history because rows may change without a status transition. */
+/**
+ * Request history: statuses and composition edits. Its own rather than the shared vehicle-request
+ * history: the composition changes without transitions too (draft edits, rows removed when an
+ * order is deleted for good), and such an event must explain the vanished row.
+ */
 export function WeeklyRequestHistory({
   entries,
 }: {

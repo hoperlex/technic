@@ -7,14 +7,17 @@ import type { VehicleClassificationGroup } from '@entities/vehicle-type';
 import type { WeeklyNewRow } from '../model/compositionState';
 
 /**
- * Additional demand names a classification, dates, contact and optional delivery. It deliberately
- * does not name a fleet vehicle because dispatch selects one with access to availability.
+ * The "Needed additionally" block (section 5 step 3): a regular request row cut down to a week:
+ * classifier position, term within the week, the receiving contact and optional delivery.
+ *
+ * The row does not name a concrete vehicle: the dispatcher picks it when taking the request into
+ * work, because the site does not see the fleet and does not know its occupancy (R5).
  */
 
 const DATE = 'YYYY-MM-DD';
 const { RangePicker } = DatePicker;
 
-/** Label a field without implying that composition rows belong to an antd Form. */
+/** Field caption: composition rows are not an antd form, so there is no Form.Item to build. */
 function Field({ label, width, children }: { label: string; width: number; children: ReactNode }) {
   return (
     <div style={{ flex: `1 1 ${width}px`, minWidth: Math.min(width, 220) }}>
@@ -28,9 +31,9 @@ function Field({ label, width, children }: { label: string; width: number; child
 
 interface Props {
   rows: WeeklyNewRow[];
-  /** Contract-owned reason why the server would reject this row. */
+  /** Why the row would be refused, by the same predicate as the server (newItemBlocker). */
   issues: Map<string, string>;
-  /** Row-level application failures such as retired classification or site. */
+  /** Per-row apply refusal reasons (section 9): "vehicle type retired", "object retired". */
   skipReasons: Map<string, string>;
   weekStart: string;
   weekEnd: string;
@@ -44,7 +47,8 @@ interface Props {
 
 export function WeeklyRequestNewItems(props: Props) {
   const { rows, editable, weekStart, weekEnd } = props;
-  // Keep dates inside the target week, matching both the database check and `newItemBlocker`.
+  // The row term stays within Mon-Sun of its week: the database CHECK and newItemBlocker hold the
+  // same limit, the form just does not offer what would be refused anyway.
   const outsideWeek = (d: dayjs.Dayjs) => {
     const key = d.format(DATE);
     return key < weekStart || key > weekEnd;
@@ -126,7 +130,7 @@ export function WeeklyRequestNewItems(props: Props) {
                 />
               </Field>
               <Field label="Телефон" width={200}>
-                {/* Use the portal-wide masked phone input (ADR 0066). */}
+                {/* The same masked input as every contact field of the portal (ADR 0066). */}
                 <PhoneInput
                   disabled={!editable}
                   value={row.responsiblePhone}

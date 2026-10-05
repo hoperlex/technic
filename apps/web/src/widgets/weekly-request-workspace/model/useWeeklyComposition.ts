@@ -31,6 +31,7 @@ export interface WeeklyComposition {
   counts: WeeklyItemCounts;
   /** Orders without a decision may be submitted, but the action bar must disclose their count. */
   undecided: number;
+  /** Why a new row is unfit: row key -> text. */
   issues: Map<string, string>;
   items: UpdateWeeklyRequestBody['items'];
   dirty: boolean;
@@ -39,17 +40,23 @@ export interface WeeklyComposition {
 const EMPTY_COMPOSITION: WeeklyCompositionState = { rows: [], decisions: {}, newRows: [] };
 
 /**
- * Own the editable composition and a default-free server snapshot. Rebuild only after the request
- * version or suggestion membership changes; an ordinary render must never erase user edits.
+ * The composition in page state. Rebuilt when the request version changes (composition saved,
+ * applied, rejected) or the suggestion membership changes: then the screen must show what lies on
+ * the server. An ordinary re-render never touches the user's edits.
  */
 export function useWeeklyComposition(
   request: WeeklyVehicleRequestDto | undefined,
   suggestion: WeeklySuggestionDto | undefined,
   classifications: Map<string, VehicleClassificationDto>,
-  /** Wait for the suggestion so saved rows are not briefly and incorrectly marked stale. */
+  /**
+   * Whether the suggestion has arrived. Building before it is not allowed: saved rows would be
+   * "lost" for a second, and an edit started in that second would be wiped by the rebuild.
+   */
   ready: boolean,
 ): WeeklyComposition {
   const [state, setState] = useState<WeeklyCompositionState>(EMPTY_COMPOSITION);
+  // The server composition without defaults, kept in state: a snapshot taken before the
+  // classifier loaded would lose the new rows.
   const [initial, setInitial] = useState<WeeklyCompositionState>(EMPTY_COMPOSITION);
   const [comment, setComment] = useState('');
   const sourceKey = request
@@ -118,7 +125,8 @@ export function useWeeklyComposition(
       ? weeklyNewRowIssues(state.newRows, request, classifications, weeklyToday())
       : new Map<string, string>(),
     items,
-    // Compare serialized commands, not transient controls, so toggling back is clean again.
+    // Unsaved changes compare what will be sent to the server, not form state: toggling a decision
+    // there and back must not count as an edit.
     dirty:
       JSON.stringify(items) !== JSON.stringify(savedItems) ||
       (request ? comment !== request.comment : false),

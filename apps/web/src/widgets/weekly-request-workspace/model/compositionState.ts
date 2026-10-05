@@ -11,10 +11,22 @@ import {
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 
-/** A decision for an order already present on the construction site. */
+/*
+ * The weekly request composition in the user's hands: a decision for each vehicle standing on site
+ * and the list of what is needed additionally (section 5 steps 2-4).
+ *
+ * Logic is kept apart from markup on purpose: the rule "an unchecked box is a 'leaves' row, not a
+ * missing row" (R10) and the rule "a row without a decision is not sent" are needed by three blocks
+ * and the action bar alike, and split across components they would drift in behaviour.
+ *
+ * The composition goes to the server whole (the array is rewritten), so here too it is assembled
+ * whole from two sources: the portal suggestion (what stands on site) and already saved rows.
+ */
+
+/** Decision for a standing vehicle: stays until a date, leaves, or not decided yet. */
 export interface WeeklyOrderDecision {
   kind: 'extend' | 'leave' | null;
-  /** The extension end date; empty when the server did not offer a valid extension. */
+  /** Extension end date, meaningful only for "stays". Empty: there is nothing to extend it with. */
   dateTo: string;
 }
 
@@ -22,22 +34,36 @@ export interface WeeklyOrderDecision {
 export interface WeeklyOrderRow {
   requestId: string;
   displayNumber: string;
+  /** "Экскаватор-погрузчик · JCB 3CX · А123АА (аренда)". */
   title: string;
+  /** The order's effective term end now; the extension is counted from it. */
   effectiveDateTo: string;
-  /** `null` means that extending this order is not a valid choice. */
+  /**
+   * Default extension date, the Sunday of the week; null means there is nothing to extend (see
+   * extendBlockedReason). Exactly null, not "today" and not Sunday: if the form filled in a date
+   * the server immediately rejects, "Stays" would become available again.
+   */
   suggestedDateTo: string | null;
-  /** Server-owned explanation of why extension is unavailable. */
+  /**
+   * Why "Stays" is unavailable for this vehicle; null means available. Computed by the server with
+   * the same predicate it later refuses with (extendBlocker); the rule is not repeated here.
+   */
   extendBlockedReason: string | null;
   warnings: WeeklyItemWarning[];
-  /** A saved row whose source order no longer belongs to the current suggestion. */
+  /**
+   * The row remains from the previous composition while its order is gone from the suggestion
+   * (cancelled, closed, taken away). The reason is shown in the row: dropping it silently would
+   * change the document's composition without explanation.
+   */
   staleReason: string | null;
-  /** Saved item id used to attach row-level 422 errors. */
+  /** Saved row id: per-row 422 refusal reasons arrive keyed by it (section 9). */
   itemId: string | null;
 }
 
-/** An additional vehicle classification requested for the target week. */
+/** A "needed additionally" row of the form: classifier position, term and contact. */
 export interface WeeklyNewRow {
   key: string;
+  /** Classifier position key "type:category" (ADR 0028). */
   classificationKey?: string;
   dateFrom: string;
   dateTo: string;
@@ -46,6 +72,7 @@ export interface WeeklyNewRow {
   deliveryNeeded: boolean;
   deliveryFrom: string;
   comment: string;
+  /** Saved row id, for per-row refusal reasons. */
   itemId: string | null;
 }
 
@@ -55,6 +82,7 @@ export interface WeeklyCompositionState {
   newRows: WeeklyNewRow[];
 }
 
+// Order label in a composition row: what was ordered and which vehicle stands on it.
 function orderTitle(order: WeeklySuggestionOrderDto): string {
   const classification = vehicleClassificationLabel({
     typeName: order.vehicleTypeName,
@@ -65,7 +93,14 @@ function orderTitle(order: WeeklySuggestionOrderDto): string {
   return `${classification}${vehicle}${rental}`;
 }
 
-/** Keep saved rows visible when their source order disappears from a refreshed suggestion. */
+/**
+ * A composition row whose order did not come in the suggestion, built from what the row itself
+ * remembers.
+ *
+ * suggestionKnown tells whether there was a suggestion at all: it is not asked for an applied
+ * request or for a role without the right to create weeks, and declaring every row lost there would
+ * be a lie.
+ */
 function staleRow(
   item: WeeklyRequestItemDto,
   reason: string | null,
@@ -78,8 +113,8 @@ function staleRow(
     title: item.currentVehicleLabel ?? '—',
     effectiveDateTo: lastDate,
     suggestedDateTo: item.dateTo ?? lastDate,
-    // The source order is absent, so only the server-provided stale reason may forbid it; the
-    // client must not invent a second extension rule.
+    // The order is not in the suggestion, so there is nobody to ask about extension validity, and
+    // forbidding "Stays" here on our own is not allowed: the row's reason is already staleReason.
     extendBlockedReason: null,
     warnings: item.warnings,
     staleReason: suggestionKnown
@@ -89,7 +124,7 @@ function staleRow(
   };
 }
 
-/** Start an additional row with the whole target week selected. */
+/** An empty "needed additionally" row: the default term is the whole week (section 5 step 3). */
 export function emptyWeeklyNewRow(weekStart: string, weekEnd: string): WeeklyNewRow {
   return {
     key: `new-${Math.random().toString(36).slice(2)}`,
@@ -105,8 +140,14 @@ export function emptyWeeklyNewRow(weekStart: string, weekEnd: string): WeeklyNew
 }
 
 /**
- * Overlay saved decisions on the current site suggestion. Defaults belong only to the editable
- * state; the saved-state snapshot must stay default-free so dirty detection remains truthful.
+ * Initial state: the portal suggestion with already saved decisions laid over it.
+ *
+ * The default comes from the suggestion (included): a week is more often extended than cut, but a
+ * vehicle with nothing to extend (its term already runs to Sunday) arrives WITHOUT a decision: only
+ * "Leaves" is available to it, and "keep it further" is decided by next week's request.
+ *
+ * withDefaults: the screen is built with defaults, the saved-composition snapshot without them, so
+ * dirty detection compares against what is really on the server.
  */
 export function buildWeeklyCompositionState(
   request: WeeklyVehicleRequestDto,
@@ -141,11 +182,14 @@ export function buildWeeklyCompositionState(
     const savedKind = savedItem && savedItem.kind !== 'new' ? savedItem.kind : null;
     decisions[order.requestId] = {
       kind: savedKind ?? (withDefaults && !savedItem && order.included ? 'extend' : null),
-      // Never invent a date when the server offered none; that would re-enable an invalid choice.
+      // A date the server did not offer is not invented: for a vehicle whose term already runs to
+      // Sunday the field stays empty, and "Stays" is not offered to it at all.
       dateTo: savedItem?.dateTo ?? order.suggestedDateTo ?? '',
     };
   }
 
+  // Saved rows missing from the suggestion: the order was cancelled, closed or left. The row stays
+  // visible with a reason, otherwise the document's composition would change silently.
   for (const item of request.items) {
     if (!item.sourceRequestId || decisions[item.sourceRequestId]) continue;
     rows.push(
@@ -178,7 +222,7 @@ export function buildWeeklyCompositionState(
   return { rows, decisions, newRows };
 }
 
-/** Serialize only explicit decisions because an unchecked order means “not decided”, not leave. */
+/** The composition in the request body: rows without a decision are not sent at all. */
 export function serializeWeeklyComposition(
   state: WeeklyCompositionState,
   classifications: Map<string, VehicleClassificationDto>,
@@ -214,7 +258,11 @@ export function serializeWeeklyComposition(
   return items;
 }
 
-/** Reuse the server contract's blocker so the form never develops a second validation rule. */
+/**
+ * Why a new row would be refused, by the same predicate the server checks (newItemBlocker). The
+ * check sits in the form not instead of the server's but before it: a retired vehicle type must be
+ * learned before approval, not by a refusal at it.
+ */
 export function weeklyNewRowIssues(
   rows: WeeklyNewRow[],
   request: WeeklyVehicleRequestDto,
@@ -237,7 +285,8 @@ export function weeklyNewRowIssues(
       issues.set(row.key, 'Выберите тип или категорию техники');
       continue;
     }
-    // The query returns active options only; category presence is encoded by the option itself.
+    // Positions are queried active, so a retired one cannot be here; category presence is seen from
+    // the position itself: a type with categories is not listed as a separate classifier row.
     const blocker = newItemBlocker(
       {
         vehicleTypeId: classification.vehicleTypeId,

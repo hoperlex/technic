@@ -1,7 +1,15 @@
 import type { WeeklyRequestItemDto } from '@technic/contracts';
 import { isApiError } from '@shared/api';
 
-/** Map either item ids or indexed API field paths back to the saved weekly-request rows. */
+/**
+ * Per-row refusal reasons from a 422 "applied to no row" answer (section 9). They cannot be shown
+ * in one toast: specific rows must be fixed, and the person must see which ones without matching
+ * the list against the table by eye.
+ *
+ * The server keys a reason either by the row itself (its id) or by its place in the sent array
+ * (items.3, the path zod uses for fields). Both are parsed: the endpoint is written by another
+ * stream, and relying on one spelling would lose reasons silently.
+ */
 export function weeklySkipReasonsFromError(
   error: unknown,
   items: WeeklyRequestItemDto[],

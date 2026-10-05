@@ -25,33 +25,50 @@ import {
   weeklyPageWeekState,
 } from './pageState';
 
-/** Own weekly-request queries, mutations and navigation while the view only composes UI blocks. */
+/**
+ * Weekly request page state: composition assembly and the applied week's card (section 5 steps
+ * 1-6). Queries, mutations and navigation live here; the view only composes UI blocks.
+ *
+ * A separate page with an address rather than a modal: three composition blocks, history and
+ * documents do not fit a modal, and a link to the week must be shareable.
+ *
+ * An overdue week shows THREE different states, all computed by contracts rather than page
+ * expressions (ADR 0101): a future week as before; an overdue one for someone allowed to conduct
+ * the past, open, with the operation price in the banner and the conduct window; an overdue one for
+ * someone who is not, closed but not a dead end: the banner names whom to call. A second list of
+ * these rules on the client would offer a button the endpoint refuses or lock what it accepts.
+ */
 export function useWeeklyRequestWorkspace() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { message, modal } = App.useApp();
   const { user, can } = useAuth();
+  // What the account may do retroactively: this pair opens the week or keeps it closed.
   const backdate = weeklyBackdateAccess(can);
   const create = useWeeklyRequestCreate();
+  // Per-row apply refusal reasons (section 9): kept until the next attempt.
   const [skipReasons, setSkipReasons] = useState<Map<string, string>>(new Map());
+  // Whole-apply refusal: "no row is applicable" with the list of reasons (R9).
   const [applyError, setApplyError] = useState<string | null>(null);
   const [reasonMode, setReasonMode] = useState<'cancel' | 'reject' | null>(null);
+  // The window conducting an overdue week retroactively is open (ADR 0101).
   const [conducting, setConducting] = useState(false);
 
   const requestQuery = useQuery({
     queryKey: weeklyRequestKeys.detail(id),
     queryFn: () => weeklyRequestsApi.get(id),
     enabled: !!id,
-    // A deleted request is the final answer for this route, not a transient retry condition.
+    // A vanished request is not refetched: 404 here is an answer, not a connection failure (section
+    // 9).
     retry: false,
   });
   const request = requestQuery.data;
   const status = request?.status;
   const composable = !!request && isWeeklyRequestEditable(request.status);
   const editable = composable && can('weeklyRequests.update');
-  // Applied requests use their frozen saved composition; querying the live site suggestion would
-  // incorrectly compare historical decisions with today's fleet.
+  // The suggestion is asked only where the composition is still assembled: an applied request's
+  // composition is frozen, and today's site slice has nothing to do with it.
   const suggestionEnabled = composable && can('weeklyRequests.create');
   const suggestionQuery = useQuery({
     queryKey: weeklyRequestKeys.suggestion(request?.objectId, request?.weekStart),
@@ -61,7 +78,9 @@ export function useWeeklyRequestWorkspace() {
         weekStart: request!.weekStart,
       }),
     enabled: suggestionEnabled,
-    // Do not refresh under an editor: a background suggestion change would erase local decisions.
+    // The site slice is not recomputed by itself during assembly, otherwise a background refresh
+    // would wipe the person's edits. That the composition may be stale is said by the apply
+    // refusal (R14).
     staleTime: 5 * 60_000,
   });
   const documentsQuery = useQuery({
@@ -82,6 +101,11 @@ export function useWeeklyRequestWorkspace() {
     !suggestionEnabled || suggestionQuery.isFetched,
   );
 
+  /*
+   * Unsaved changes on leaving the page (section 9). Closing the browser tab and the "Back to list"
+   * button are intercepted; the portal has no general navigation blocker because useBlocker works
+   * only in a data router, and the app runs on BrowserRouter.
+   */
   useEffect(() => {
     if (!composition.dirty) return;
     const onBeforeUnload = (event: BeforeUnloadEvent) => event.preventDefault();
@@ -91,11 +115,15 @@ export function useWeeklyRequestWorkspace() {
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: weeklyRequestKeys.root });
-    // Applying a week changes order periods, ESM-2 sheets and garage occupancy in one command.
+    // Applying moves order terms and creates new orders, so the vehicle request list is stale too.
+    // Extending a term reissues the order's ESM-2 (extendSpecialEquipmentPeriod ->
+    // syncEsm2Waybills), so the waybill journal and garage occupancy are stale after approval.
     void queryClient.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     void queryClient.invalidateQueries({ queryKey: waybillKeys.root });
     void queryClient.invalidateQueries({ queryKey: garageKeys.root });
   };
+  // A successful action clears the previous refusal's explanations: they were about the old
+  // composition.
   const clearApplyError = () => {
     setApplyError(null);
     setSkipReasons(new Map());
@@ -107,15 +135,19 @@ export function useWeeklyRequestWorkspace() {
       return;
     }
     if (hasApiStatus(error, 422) && request) {
+      // The server lists reasons in the message itself and per row where it can name them as
+      // fields. Both are taken: the banner explains the whole refusal, rows say what to fix.
       setApplyError(weeklyRequestErrorMessage(error));
       const reasons = weeklySkipReasonsFromError(error, request.items);
       if (reasons.size > 0) setSkipReasons(reasons);
-      // Refresh the suggestion so orders that disappeared receive a row-level stale reason.
+      // The site slice is reread: a row whose order was cancelled or closed gets its own reason in
+      // the composition, so nobody has to reconcile the list with the table by eye.
       void queryClient.invalidateQueries({ queryKey: weeklyRequestKeys.suggestions() });
     }
     message.error(weeklyRequestErrorMessage(error));
   };
 
+  // The composition is sent whole; version is a lock token, not a column value.
   const saveComposition = async () => {
     if (!request) throw new Error('Заявка не загружена');
     if (!composition.dirty) return request;
@@ -134,7 +166,8 @@ export function useWeeklyRequestWorkspace() {
     },
     onError,
   });
-  // Submission saves first so the reviewed document can never differ from the visible draft.
+  // Submitting saves the composition in the same move: submitting one thing and approving another
+  // is the worst that can happen to a document whose approval applies terms (R6).
   const submitMutation = useMutation({
     mutationFn: async () => {
       const saved = await saveComposition();
@@ -152,12 +185,16 @@ export function useWeeklyRequestWorkspace() {
     },
     onError,
   });
-  // Ordinary approval and backdated conduct share one API command and therefore one conflict and
-  // row-error handler. Splitting them would duplicate the same cache and version protocol.
+  // Approval, rejection and conducting an overdue week are one mutation because the endpoint is one
+  // (ADR 0101): conducting is the same approval with a correction block attached. Split into two
+  // mutations, the page would get two 409/422 handlers for one action.
   const approveMutation = useMutation({
     mutationFn: async (value: {
       approved: boolean;
       comment: string;
+      /**
+       * Correction block, only for approving an overdue week; the endpoint rejects it otherwise.
+       */
       correction?: WeeklyCorrectionBody;
     }) => {
       const saved = value.approved ? await saveComposition() : request!;
@@ -192,11 +229,16 @@ export function useWeeklyRequestWorkspace() {
     onError,
   });
 
+  // Weekly requests no longer have their own tab: they are rows of the shared vehicle-order list,
+  // and "Back" returns there narrowed to weekly ones, not to the full list where the document just
+  // left would have to be searched among orders.
   const leave = () => void navigate('/vehicle-requests?tab=requests&kind=weekly');
   const goBack = () => {
     if (!composition.dirty) return leave();
     modal.confirm({ ...WEEKLY_LEAVE_CONFIRM, onOk: leave });
   };
+  // What can no longer be done with this week and what still can (ADR 0101), in one contract-based
+  // computation.
   const weekState = request
     ? weeklyPageWeekState({
         weekStart: request.weekStart,

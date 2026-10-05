@@ -1,7 +1,8 @@
 /**
- * Недельная заявка на технику (ADR 0085): документ-основание над заказами ТС — площадка заказывает
- * не машину на срок, а неделю целиком. Слайс держит ключи запросов и сами ручки; страницы берут их
- * отсюда напрямую — общего реестра ручек, через который они шли прежде, больше нет.
+ * Weekly vehicle request (docs/adr/0085-weekly-vehicle-request.md): a base document above vehicle
+ * orders; the site orders a whole week rather than a vehicle for a term. The slice holds query
+ * keys, endpoints and the shared weekly vocabulary; pages take them from here directly, since the
+ * common endpoint registry they used to go through no longer exists.
  */
 export { weeklyRequestKeys } from './api/keys';
 export { weeklyRequestsApi } from './api/weeklyRequestsApi';

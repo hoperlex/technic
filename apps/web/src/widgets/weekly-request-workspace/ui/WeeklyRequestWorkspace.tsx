@@ -103,7 +103,8 @@ export function WeeklyRequestWorkspace() {
             </Card>
           )}
 
-          {/* Applied and cancelled documents show the frozen outcome rather than disabled inputs. */}
+          {/* An applied or cancelled request is history: the composition is shown as what it
+              became, not as inputs that would accept nothing anyway (R13). */}
           {!composable && (
             <Card size="small" title="Состав">
               <WeeklyRequestAgreed items={request.items} />
@@ -156,6 +157,10 @@ export function WeeklyRequestWorkspace() {
         onCancel={() => workspace.setReasonMode('cancel')}
       />
 
+      {/* Retroactive conduct window: the operation price is asked from the server by the same code
+          that will execute it, the reason and waybills to reissue from the person (ADR 0101). The
+          mutation stays in the workspace hook: conducting is the same approval, and its refusals
+          must have one handler. */}
       <WeeklyRequestConductModal
         request={workspace.conducting ? request : null}
         onClose={() => workspace.setConducting(false)}

@@ -10,11 +10,19 @@ import { formatDateOnly, useIsMobile } from '@shared/lib';
 import { WeeklyItemWarnings, weeklyPreviousText } from '@entities/weekly-request';
 import type { WeeklyOrderDecision, WeeklyOrderRow } from '../model/compositionState';
 
-/** Each on-site order has an explicit stay/leave decision; unchecked is not equivalent to leave. */
+/**
+ * "Stays" and "Leaves" blocks (section 5 steps 2 and 4): a decision for each vehicle standing on
+ * site. An unchecked box is not a missing row but a decision to leave (R10), so the choice here is
+ * between two explicit options rather than a checkbox: an empty composition caused by unchecked
+ * rows must not read as "no decision was made".
+ */
 
 const DATE = 'YYYY-MM-DD';
 
-/** Show only a positive extension span because an extension cannot shorten an order. */
+/**
+ * Extension span in words: "+7 дн.". Zero is not shown: an extension always lengthens the term
+ * (R4).
+ */
 function gainLabel(from: string, to: string): string | null {
   const days = dateKeySpan(shiftDateKey(from, 1), to);
   return days > 0 ? `+${days} дн.` : null;
@@ -31,8 +39,13 @@ interface RowProps {
 }
 
 /**
- * Use the server-owned `extendBlockedReason` instead of recreating eligibility in the form. An
- * order already running through Sunday can only be kept by the next week's document.
+ * Decision for a vehicle: stays or leaves. An empty value means "not decided".
+ *
+ * "Stays" is disabled by the server's reason (extendBlockedReason), not by a form condition of our
+ * own: the predicate is one for the portal and the API (R4), and a second description here would
+ * drift, showing the site an option that always refuses. There is exactly one live case: a term
+ * running to the week's Sunday, with nothing to extend inside the week; "keep it further" is
+ * decided by next week.
  */
 function DecisionControl({ row, decision, editable, onChange }: RowProps) {
   const blocked = row.extendBlockedReason;
@@ -46,7 +59,9 @@ function DecisionControl({ row, decision, editable, onChange }: RowProps) {
       options={[
         {
           label: blocked ? (
-            // The tooltip names the supported next-week path instead of only stating the blocker.
+            // The tooltip explains not only the prohibition but the way out: next week's request
+            // picks this order up as usual, which is a core function of the weekly document, not a
+            // workaround.
             <Tooltip
               title={`${blocked}. Чтобы оставить дальше — соберите заявку на следующую неделю`}
             >
@@ -65,9 +80,10 @@ function DecisionControl({ row, decision, editable, onChange }: RowProps) {
   );
 }
 
-/** Extension may end on any target-week day strictly after the current end. */
+/** "Extend to": any day of the week, but strictly after the current term end (R4). */
 function ExtendDateControl({ row, decision, editable, weekStart, weekEnd, onChange }: RowProps) {
-  // Do not offer a date when every target-week value would be rejected.
+  // Nothing to extend, so nothing to choose a date from: the only day that would fit here would be
+  // rejected by the server at once.
   if (row.extendBlockedReason) return <Typography.Text type="secondary">—</Typography.Text>;
   if (decision.kind !== 'extend') return <Typography.Text type="secondary">—</Typography.Text>;
   const min = row.effectiveDateTo > weekStart ? shiftDateKey(row.effectiveDateTo, 1) : weekStart;
@@ -80,7 +96,8 @@ function ExtendDateControl({ row, decision, editable, weekStart, weekEnd, onChan
         format="DD.MM.YYYY"
         allowClear={false}
         disabled={!editable}
-        // Shortening belongs to the separately approved early-end flow (ADR 0044).
+        // An extension cannot shorten the term: that is early end, with its own approval (ADR
+        // 0044). The form's lower bound is the same day as the server predicate's.
         disabledDate={(d) => {
           const key = d.format(DATE);
           return key < min || key > weekEnd;
@@ -97,12 +114,13 @@ function ExtendDateControl({ row, decision, editable, weekStart, weekEnd, onChan
   );
 }
 
-/** Keep warnings, stale-source context and application failures attached to their row. */
+/** What a row tells the person: warnings, a vanished order, the apply refusal reason. */
 function RowNotes({ row, skipReason }: RowProps) {
   return (
     <div style={{ lineHeight: 1.35 }}>
       <WeeklyItemWarnings warnings={row.warnings} />
-      {/* Repeat the blocker as text because touch users cannot rely on a hover tooltip. */}
+      {/* The extension ban is explained here, not only in the button tooltip: there is no hover on
+          a phone, and the vehicle decision still has to be made. */}
       {row.extendBlockedReason && (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {row.extendBlockedReason}. Чтобы оставить дальше — соберите заявку на следующую неделю
@@ -118,7 +136,7 @@ interface Props {
   rows: WeeklyOrderRow[];
   decisions: Record<string, WeeklyOrderDecision>;
   setDecision: (requestId: string, patch: Partial<WeeklyOrderDecision>) => void;
-  /** Row-level application failures keyed by saved composition item id. */
+  /** Per-row apply refusal reasons (section 9), keyed by the composition item id. */
   skipReasons: Map<string, string>;
   weekStart: string;
   weekEnd: string;
@@ -127,8 +145,13 @@ interface Props {
 }
 
 /**
- * Put previous-week continuity before decisions and name every dropped order with its reason, so
- * a missing familiar vehicle cannot silently turn into a duplicate additional request.
+ * The previous-week report as a line ABOVE the composition (section 3 item 4 of the "composition
+ * selection" plan).
+ *
+ * On top rather than at the end because it is read before decisions: every next request tries to
+ * extend all positions of the previous one, and the site office's first question is "did everything
+ * agreed a week ago make it here". Dropped orders are named with a reason: otherwise the loss of a
+ * familiar vehicle goes unnoticed and the site adds a second row for it.
  */
 function PreviousWeekNote({ suggestion }: { suggestion: WeeklySuggestionDto | undefined }) {
   const previous = suggestion?.previous;
@@ -142,7 +165,10 @@ function PreviousWeekNote({ suggestion }: { suggestion: WeeklySuggestionDto | un
   );
 }
 
-/** Explain orders outside this week's decision scope without mixing them into editable rows. */
+/**
+ * Vehicles ordered for longer than a week and orders unfit for the composition, in one note
+ * (section 7).
+ */
 function SuggestionNotes({ suggestion }: { suggestion: WeeklySuggestionDto | undefined }) {
   const beyond: WeeklySuggestionOrderDto[] = suggestion?.beyond ?? [];
   const blocked = suggestion?.blocked ?? [];
@@ -183,7 +209,8 @@ export function WeeklyRequestComposition(props: Props) {
   if (props.rows.length === 0) {
     return (
       <div>
-        {/* Continuity matters most when a non-empty previous week yields no current rows. */}
+        {/* The previous-week report is shown here too: an empty composition after a non-empty
+            previous week is exactly when the explanation is needed most. */}
         <PreviousWeekNote suggestion={props.suggestion} />
         <Typography.Text type="secondary">
           На площадке нет техники, срок которой кончается на этой неделе, — состав собирается из
@@ -224,7 +251,7 @@ export function WeeklyRequestComposition(props: Props) {
   ];
 
   if (isMobile) {
-    // Six decision columns cannot remain legible at the mobile width (ADR 0030).
+    // On a phone rows become cards (ADR 0030): none of them fits a six-column table at 360 px.
     return (
       <div className="list-cards">
         <PreviousWeekNote suggestion={props.suggestion} />
@@ -274,9 +301,12 @@ export function WeeklyRequestComposition(props: Props) {
 }
 
 /**
- * Leaving rows are both document decisions and dispatch reminders. Pickup stays in the ordinary
- * order card because site roles cannot issue relocation documents; a guaranteed 403 button here
- * would be misleading.
+ * The "Leaves" block (section 5 step 4): departure decisions as a separate list, part of the weekly
+ * document and at the same time a task for the dispatcher to arrange the pickup.
+ *
+ * There is deliberately no "Arrange pickup" button: issuing a relocation is closed to site roles by
+ * rights, and a button that always refuses is worse than none (R10). Pickup is arranged in the
+ * order's own card, where delivery is created too.
  */
 export function WeeklyRequestLeaving({
   rows,
