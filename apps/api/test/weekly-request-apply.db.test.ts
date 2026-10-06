@@ -2586,6 +2586,251 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
     }, 60_000);
   });
 
+  // ── Return of an applied week for re-approval (ADR 0219) ──
+  /*
+   * WHY ON THE DATABASE. The return runs the annulment engine and then rewrites what the engine
+   * deliberately keeps: the header loses the approval and the rows lose their results. Both are
+   * guarded by CHECKs of the schema, and the point of the command — the second approval applies the
+   * week again — is only provable by running that approval over the reset rows.
+   */
+  describe('возврат применённой недели на согласование', () => {
+    function returnPreview(auth: Auth, id: string) {
+      return inject('GET', `/api/v1/weekly-vehicle-requests/${id}/return`, auth);
+    }
+    function returnWeek(auth: Auth, id: string, body: Record<string, unknown>) {
+      return inject('POST', `/api/v1/weekly-vehicle-requests/${id}/return`, auth, body);
+    }
+    /** Return by the shown preview: fingerprints come from it, as the window does. */
+    async function returnByPreview(auth: Auth, id: string, version: number) {
+      const preview = await returnPreview(auth, id);
+      expect(preview.statusCode, preview.body).toBe(200);
+      const p = preview.json();
+      return {
+        preview: p,
+        res: await returnWeek(auth, id, {
+          reason: 'Забыли экскаватор',
+          version,
+          fingerprint: p.fingerprint,
+          ...(p.cancelGroupsFingerprint
+            ? { cancelGroupsFingerprint: p.cancelGroupsFingerprint }
+            : {}),
+          ...(p.requiresOperation
+            ? { correction: { operationId: randomUUID(), unlockWaybillIds: [] } }
+            : {}),
+        }),
+      };
+    }
+
+    it('диспетчер возвращает неделю: следствия развёрнуты, строки сброшены, виза снята — и неделю визируют заново', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const leaving = await makeOrder({ objectId });
+      const classification = ctx.ownVehicles[0]!;
+      const items = [
+        extendItem(order, W1_END),
+        leaveItem(leaving),
+        newItem(classification, W1, W1_END),
+      ];
+      const weekly = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W1, items });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+      const firstCreated = (await itemRows(weekly.id)).find(
+        (i) => i.kind === 'new',
+      )!.created_request_id!;
+      expect((await orderDto(order.id)).dateTo).toBe(W1_END);
+
+      const { preview, res } = await returnByPreview(
+        ctx.dispatcher.auth,
+        weekly.id,
+        applied.version,
+      );
+      expect(preview.allowed, JSON.stringify(preview)).toBe(true);
+      // The removed days are still ahead: ordinary branch, no journal row.
+      expect(preview.backdated).toBe(false);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().status).toBe('pending');
+
+      // 1. Consequences reversed exactly as annulment does.
+      expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
+      expect((await orderDto(firstCreated)).status).toBe('cancelled');
+      // 2. The header awaits approval again and holds no approval: the lifecycle CHECKs bind it to
+      //    the applied states.
+      const header = await weeklyRow(weekly.id);
+      expect(header?.status).toBe('pending');
+      expect(header?.approved_by).toBeNull();
+      expect(header?.applied_at).toBeNull();
+      // 3. The rows are back to the pre-approval shape, so the next approval can apply them.
+      const reset = await itemRows(weekly.id);
+      expect(reset.map((i) => i.result)).toEqual(['pending', 'pending', 'pending']);
+      expect(reset.every((i) => i.previous_date_to === null && i.created_request_id === null)).toBe(
+        true,
+      );
+      // 4. What the rows lost lives in the history event, written by the same transaction.
+      const event = await ctx.db.execute<{ comment: string; payload: Record<string, unknown> }>(sql`
+        SELECT comment, payload FROM weekly_vehicle_request_history
+        WHERE weekly_request_id = ${weekly.id} AND from_status = 'applied' AND to_status = 'pending'`);
+      expect(event.rows).toHaveLength(1);
+      expect(event.rows[0]!.comment).toBe('Забыли экскаватор');
+      expect(event.rows[0]!.payload.returned).toBe(true);
+      expect(event.rows[0]!.payload.items).toHaveLength(3);
+      expect((event.rows[0]!.payload.approval as { approvedBy: string }).approvedBy).toBeTruthy();
+
+      // 5. The site adds the forgotten unit while the week awaits approval, and the construction
+      //    manager approves it again: the ordinary apply runs over the reset rows.
+      const forgotten = ctx.ownVehicles[1]!;
+      const edited = await inject(
+        'PATCH',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}`,
+        ctx.shtab.auth,
+        { items: [...items, newItem(forgotten, W1, W1_END)], version: header!.version },
+      );
+      expect(edited.statusCode, edited.body).toBe(200);
+      const again = await approveWeekly(
+        ctx.rukstroy.auth,
+        weekly.id,
+        (edited.json() as WeeklyDto).version,
+      );
+      expect(again.statusCode, again.body).toBe(200);
+      expect((await weeklyRow(weekly.id))?.status).toBe('applied');
+      expect((await orderDto(order.id)).dateTo).toBe(W1_END);
+      const reapplied = await itemRows(weekly.id);
+      const created = reapplied.filter((i) => i.kind === 'new').map((i) => i.created_request_id);
+      expect(created).toHaveLength(2);
+      // New orders, not the cancelled one revived: its number and history stay as they were.
+      expect(created).not.toContain(firstCreated);
+      expect(created.every((id) => id !== null)).toBe(true);
+    }, 90_000);
+
+    it('руководитель строительства и наблюдатель вернуть не могут: предпросмотр объясняет, команда отказывает', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+
+      for (const auth of [ctx.rukstroy.auth, ctx.observer.auth]) {
+        const preview = await returnPreview(auth, weekly.id);
+        expect(preview.statusCode, preview.body).toBe(200);
+        expect(preview.json().allowed).toBe(false);
+        expect(preview.json().blockedReason).toContain('диспетчер или администратор');
+        const res = await returnWeek(auth, weekly.id, {
+          reason: 'Проверка',
+          version: applied.version,
+          fingerprint: preview.json().fingerprint,
+        });
+        expect(res.statusCode, res.body).toBe(403);
+      }
+      expect((await weeklyRow(weekly.id))?.status).toBe('applied');
+    }, 60_000);
+
+    it('возвращают только применённую неделю: поданная и аннулированная отвечают отказом', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const pending = (await submitWeekly(ctx.admin.auth, weekly.id, weekly.version)).json()
+        .request as WeeklyDto;
+      const notYet = await returnPreview(ctx.dispatcher.auth, weekly.id);
+      expect(notYet.json().blockedReason).toContain('ещё не завизирована');
+      const refused = await returnWeek(ctx.dispatcher.auth, weekly.id, {
+        reason: 'Проверка',
+        version: pending.version,
+        fingerprint: notYet.json().fingerprint,
+      });
+      expect(refused.statusCode, refused.body).toBe(422);
+
+      const approval = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
+      const applied = approval.json().request as WeeklyDto;
+      const annulPreview = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}/annul`,
+        ctx.admin.auth,
+      );
+      const annulled = await inject(
+        'POST',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}/annul`,
+        ctx.admin.auth,
+        {
+          reason: 'Не та неделя',
+          version: applied.version,
+          fingerprint: annulPreview.json().fingerprint,
+        },
+      );
+      expect(annulled.statusCode, annulled.body).toBe(200);
+      // Reviving an annulled week is refused: annulment freed the "object + week" pair.
+      const preview = await returnPreview(ctx.dispatcher.auth, weekly.id);
+      expect(preview.json().blockedReason).toContain('аннулирована');
+      const res = await returnWeek(ctx.dispatcher.auth, weekly.id, {
+        reason: 'Проверка',
+        version: applied.version + 1,
+        fingerprint: preview.json().fingerprint,
+      });
+      expect(res.statusCode, res.body).toBe(422);
+    }, 60_000);
+
+    it('порождённый заказ в работе запирает возврат, и отказ говорит о возврате, а не об аннулировании', async () => {
+      const objectId = await freshObject();
+      const classification = ctx.ownVehicles[0]!;
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [newItem(classification, W1, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+      const createdId = (await itemRows(weekly.id))[0]!.created_request_id!;
+      const createdDto = await orderDto(createdId);
+      const confirmed = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${createdId}/status`,
+        ctx.admin.auth,
+        {
+          status: 'confirmed',
+          comment: '',
+          version: createdDto.version,
+          assignment: {
+            vehicleId: ctx.ownVehicles.pop()!.id,
+            pricePerHour: null,
+            pricePerShift: null,
+            shiftHours: null,
+            driverPersonId: ctx.personId,
+          },
+          schedule: { requestType: 'special_equipment', dateFrom: W1, dateTo: W1_END },
+        },
+      );
+      expect(confirmed.statusCode, confirmed.body).toBe(200);
+
+      const preview = await returnPreview(ctx.dispatcher.auth, weekly.id);
+      expect(preview.json().allowed).toBe(false);
+      const res = await returnWeek(ctx.dispatcher.auth, weekly.id, {
+        reason: 'Проверка',
+        version: applied.version,
+        fingerprint: preview.json().fingerprint,
+      });
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().message).toContain('Вернуть неделю на согласование нельзя');
+      expect(res.json().message).toContain('сначала закройте или откатите его');
+      expect((await weeklyRow(weekly.id))?.status).toBe('applied');
+    }, 60_000);
+
+    it('журнал коррекций принимает свой вид операции возврата', async () => {
+      // The correction branch writes `weekly_return`; the CHECK of migration 0358 must admit it,
+      // or the first backdated return dies with 23514 after every check has passed.
+      const operationId = randomUUID();
+      await ctx.db.execute(sql`
+        INSERT INTO waybill_corrections (operation_id, fingerprint, kind, reason, actor_user_id)
+        VALUES (${operationId}, 'fp', 'weekly_return', 'Проверка вида', ${ctx.dispatcher.id})`);
+      const row = await ctx.db.execute<{ kind: string }>(
+        sql`SELECT kind FROM waybill_corrections WHERE operation_id = ${operationId}`,
+      );
+      expect(row.rows[0]?.kind).toBe('weekly_return');
+    }, 60_000);
+  });
+
   describe('проведение просроченной недели задним числом', () => {
     /** Заявка на текущую (уже начавшуюся) неделю с одной строкой продления — предмет проведения. */
     async function overdueWeekly(): Promise<{ weekly: WeeklyDto; order: Order; objectId: string }> {
@@ -2944,7 +3189,7 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         ctx.admin.auth,
       );
       expect(purged.statusCode, purged.body).toBe(409);
-      expect(purged.json().message).toContain('применённых недельных заявок');
+      expect(purged.json().message).toContain('применённых и аннулированных недельных заявок');
       // Строка на месте: факт, объясняющий, откуда взялось продление, не затирается.
       expect(await itemRows(weekly.id)).toHaveLength(1);
 
