@@ -7,7 +7,9 @@ import {
   type WeeklyAnnulPreviewDto,
   type WeeklyReversalResultDto,
 } from '@technic/contracts';
+import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
+import { weeklyVehicleRequests } from '../db/schema';
 import { writeAudit } from '../lib/audit';
 import {
   assertWeeklyRequestScope,
@@ -272,14 +274,14 @@ export async function runWeeklyReversal(
 
   /*
    * A repeat after a dropped connection: `perform` was not called, so there is no result of this
-   * request. The answer is built from the state the first attempt left (ADR 0101 decision 9) — the
-   * status — and marked `repeated`: the counters cannot be rebuilt from the state, they stay in the
-   * week history and the operation journal, and empty counters without the mark would read as
-   * "nothing was reversed".
+   * request. The answer is rebuilt from the current state (ADR 0101 decision 9), as the approval
+   * route does: the header status is read now — the week may have been approved or rejected again
+   * since — and the answer is marked `repeated`. The counters cannot be rebuilt from the state;
+   * empty counters without the mark would read as "nothing was reversed".
    */
   const outcome: WeeklyReversalResultDto = result ?? {
     weeklyRequestId: draft.header.id,
-    status: spec.resultStatus,
+    status: await currentStatus(draft.header.id),
     shortened: [],
     cancelled: [],
     released: 0,
@@ -304,4 +306,14 @@ export async function runWeeklyReversal(
     },
   });
   return outcome;
+}
+
+/** The header status as it is now — the state a repeat answers with. */
+async function currentStatus(weeklyId: string): Promise<WeeklyReversalResultDto['status']> {
+  const [row] = await db
+    .select({ status: weeklyVehicleRequests.status })
+    .from(weeklyVehicleRequests)
+    .where(eq(weeklyVehicleRequests.id, weeklyId));
+  if (!row) throw err.notFound('Недельная заявка не найдена');
+  return row.status;
 }

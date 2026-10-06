@@ -63,8 +63,9 @@ export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit,
 
   /**
    * The idempotency key is invented **before** sending and kept while the window is open on this
-   * request: a repeat after a dropped connection must return the earlier result, not reverse the
-   * week a second time and burn a second form number.
+   * request: a repeat after a dropped connection must be recognized by the server as the same
+   * operation — answered with `repeated`, nothing moved — not reverse the week a second time and
+   * burn a second form number.
    *
    * The key is always prepared but sent only in the correction branch: whether an operation is
    * needed is decided by the server (`requiresOperation`), and the request body need not guess.

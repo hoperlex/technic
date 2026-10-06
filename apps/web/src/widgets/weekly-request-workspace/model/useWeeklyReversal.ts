@@ -55,10 +55,10 @@ export function useWeeklyReversal(params: {
         result.esm2.cancelled > 0 ? `листов аннулировано: ${result.esm2.cancelled}` : null,
       ].filter((part) => part !== null);
       // A repeat after a dropped connection carries no counters (ADR 0101 decision 9): the first
-      // attempt did the work, and its numbers are in the week history.
+      // attempt did the work, and the server only confirms that nothing was moved again.
       message.success(
         result.repeated
-          ? `${texts.done} — запрос повторён, итог первой попытки в истории недели`
+          ? `${texts.done} — запрос уже был выполнен, повторно ничего не изменено`
           : parts.length > 0
             ? `${texts.done} — ${parts.join(', ')}`
             : texts.done,

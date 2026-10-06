@@ -151,6 +151,36 @@ describe('возврат применённой недели на согласо
     expect(sent).toEqual({ reason: 'Забыли экскаватор', version: 7, fingerprint: 'fp-return' });
   });
 
+  it('строка, развёрнутая руками, помечена в окне возврата как уходящая из состава', async () => {
+    const undone = preview({
+      items: [
+        {
+          itemId: 'wi-1',
+          kind: 'extend',
+          title: 'Экскаватор (продление)',
+          requestId: 'vr-1',
+          displayNumber: 'ТС-42',
+          state: 'reverted',
+          reason: 'Срок заказа уже возвращён',
+          reverse: 'none',
+          shortenTo: null,
+          hadEffect: true,
+        },
+      ],
+    });
+    mockHttp({
+      ...routes(week()),
+      'GET /weekly-vehicle-requests/:id/return': () => json(undone),
+    });
+    renderPage(dispatcher);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Вернуть на согласование' }));
+    const dialog = await screen.findByRole('dialog');
+    // The tag comes from the contract predicate the server drops the row by.
+    await within(dialog).findByText('уйдёт из состава');
+    expect(within(dialog).getByText(/уйдут из состава/)).toBeTruthy();
+  });
+
   it('руководитель строительства возврата не видит, а аннулирование у него остаётся', async () => {
     mockHttp(routes(week()));
     renderPage(rukstroy);

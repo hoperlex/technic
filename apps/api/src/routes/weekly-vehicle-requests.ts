@@ -2071,10 +2071,11 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
   // (`WEEKLY_ANNUL_SPEC`, `WEEKLY_RETURN_SPEC`): rights, wording, and what happens to the header and
   // the rows after the shared reversal.
   //
-  // The previews are guarded by reading the card, not by the command right (ADR 0116 item 12):
-  // whoever may not run the command still has to understand why the button is unavailable, and the
-  // answer lies in `allowed` and `blockedReason`. Locks are not taken (ADR 0211 decision 1) — the
-  // command is protected by the fingerprint.
+  // The previews are guarded by reading the card, not by the command right (ADR 0116 item 12): why
+  // the command refuses now — header, blocked rows, worked facts — is a property of the week, and
+  // the answer lies in `allowed` and `blockedReason` rather than in a 403. A lessor is the exception
+  // (403 in `previewWeeklyReversal`): the plan lists the site's whole fleet. Locks are not taken
+  // (ADR 0211 decision 1) — the command is protected by the fingerprint.
   r.get(
     '/:id/annul',
     { ...auth, schema: { params: idParams, response: { 200: weeklyAnnulPreviewResponseSchema } } },

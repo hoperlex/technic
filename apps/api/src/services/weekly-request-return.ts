@@ -198,7 +198,6 @@ async function applyWeeklyReturn(
  */
 export const WEEKLY_RETURN_SPEC: WeeklyReversalSpec = {
   kind: 'weekly_return',
-  resultStatus: 'pending',
   auditAction: 'weekly_request.return',
   canRun: (subject) => canReturnWeeklyRequest(subject),
   needsSiteScope: () => false,

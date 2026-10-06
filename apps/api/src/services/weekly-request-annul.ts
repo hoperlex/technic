@@ -96,13 +96,12 @@ import { annulStates, type AnnulStateRow } from './weekly-request-annul-state';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 /**
- * Кто читает план. Предпросмотр зовёт расчёт **вне транзакции** (ADR 0211 решение 1): блокировок
- * он не берёт, и транзакция ему не нужна — а боевая ручка приходит со своей, потому что ей нужны и
- * блокировки, и запись.
+ * Who reads the plan. The preview takes no locks (ADR 0211 decision 1) and reads in its own read
+ * transaction; the command comes with its writing one, because it needs both locks and writes.
  */
 type Reader = Tx | typeof db;
 
-/** Шапка заявки, прочитанная под блокировкой: ровно то, что нужно разбору и записи. */
+/** The request header read under the lock: exactly what the plan and the write need. */
 interface LockedHeader {
   id: string;
   num: number;
@@ -113,7 +112,7 @@ interface LockedHeader {
   version: number;
 }
 
-/** Строка состава под блокировкой — поля, которые читают разбор и запись. */
+/** A composition row under the lock — the fields the plan and the write read. */
 interface LockedItem {
   id: string;
   kind: 'extend' | 'new' | 'leave';
@@ -128,7 +127,7 @@ interface LockedItem {
   createdRequestNum: number | null;
 }
 
-/** Расчёт сокращения по одной строке `extend` — вместе со сроками, которыми его считали. */
+/** The shortening plan of one `extend` row — together with the terms it was computed from. */
 interface ExtendPlan {
   item: LockedItem;
   requestId: string;
@@ -136,17 +135,17 @@ interface ExtendPlan {
   termBefore: AssignmentTerm;
   termAfter: AssignmentTerm;
   shorten: ShortenTermPlan;
-  /** Неподтверждённые смены на снимаемых днях: их удалит исполнение. */
+  /** Unconfirmed shifts on the removed days: the execution deletes them. */
   droppedShiftDates: string[];
 }
 
-/** Что аннулирование сделает — посчитанное до первой записи и подтверждаемое отпечатком. */
+/** What the reversal will do — computed before the first write and confirmed by a fingerprint. */
 export interface WeeklyAnnulPlan {
   header: LockedHeader;
   items: LockedItem[];
   states: Map<string, AnnulStateRow>;
   extend: ExtendPlan[];
-  /** Строки `new`, порождённые заказы которых надо отменить. */
+  /** `new` rows whose created orders are to be cancelled. */
   cancelOrders: { item: LockedItem; requestId: string }[];
   blockers: WeeklyAnnulBlockerDto[];
   effectiveDate: string | null;
@@ -164,23 +163,23 @@ export interface WeeklyAnnulPlan {
   asOf: string;
 }
 
-/** Параметры расчёта: блокировки берёт только боевая ручка, предпросмотр читает снимок. */
+/** Plan parameters: only the command takes locks, the preview reads a snapshot. */
 export interface PlanWeeklyAnnulParams {
   weeklyId: string;
   asOf: string;
   /**
-   * Брать ли `FOR UPDATE`. Предпросмотр читает **без** блокировок намеренно (ADR 0211 решение 1):
-   * `FOR UPDATE` на время просмотра остановил бы работу диспетчеров ради вопроса «что будет,
-   * если», а боевую ручку защищает отпечаток, а не блокировка.
+   * Whether to take `FOR UPDATE`. The preview reads **without** locks on purpose (ADR 0211
+   * decision 1): `FOR UPDATE` for the time of viewing would stop the dispatchers' work for the sake
+   * of "what if", and the command is protected by the fingerprint, not by a lock.
    */
   locked: boolean;
-  /** Листы, названные человеком к перевыписке; у предпросмотра пусто. */
+  /** Sheets the person named for reissue; empty for the preview. */
   unlockWaybillIds?: readonly string[];
 }
 
 const ITEM_TITLE_FALLBACK = 'Техника';
 
-/** Подпись строки — тем же текстом, что в чек-листе: «Экскаватор (продление)». */
+/** The row label — the same text as in the checklist: "Экскаватор (продление)". */
 function titleOf(item: LockedItem): string {
   const suffix = item.kind === 'extend' ? 'продление' : item.kind === 'new' ? 'новая' : 'уезжает';
   return `${item.vehicleTypeName ?? ITEM_TITLE_FALLBACK} (${suffix})`;
@@ -196,12 +195,13 @@ function displayNumberOf(item: LockedItem): string | null {
 }
 
 /**
- * Прочитать шапку и состав; под блокировкой — в каноническом порядке захвата.
+ * Read the header and the composition; under the lock — in the canonical capture order.
  *
- * Рейсы берутся **раньше** строк заказов (ADR 0050 п. 12) и одним запросом на все заказы состава:
- * так же их берёт однозаказная дверь канона, и встречный порядок двух команд дал бы взаимный
- * клинч. Применение недели явных блокировок рейсов не берёт вовсе — они ложатся неявно правками
- * сверки дней, — поэтому клинч с ним возможен и разрешается повтором, а не порядком.
+ * Routes are taken **before** the order rows (ADR 0050 item 12) and in one query for all orders of
+ * the composition: the single-order canon door takes them the same way, and opposite orders of two
+ * commands would deadlock. The week apply takes no explicit route locks at all — they fall
+ * implicitly with the day reconciliation edits — so a deadlock with it is possible and is resolved
+ * by a retry, not by the order.
  */
 async function lockPlanRows(
   tx: Reader,
@@ -240,8 +240,8 @@ async function lockPlanRows(
     .where(eq(weeklyVehicleRequestItems.weeklyRequestId, header.id))
     .orderBy(asc(weeklyVehicleRequestItems.position));
 
-  // Номера заказов и подпись типа — отдельным чтением по собранным идентификаторам: `leftJoin`
-  // размножил бы строку состава на каждый действующий лист заказа, а номер нужен ровно один.
+  // Order numbers by a separate read over the collected ids: a `leftJoin` would multiply a
+  // composition row by every live sheet of the order, while exactly one number is needed.
   const orderIds = [...new Set(items.map(orderIdOf).filter((v): v is string => v !== null))];
   const nums = new Map<string, number>();
   if (orderIds.length > 0) {
@@ -259,7 +259,7 @@ async function lockPlanRows(
   }));
 
   if (params.locked && orderIds.length > 0) {
-    // Рейсы — первыми и по возрастанию id (ADR 0050 п. 12), затем строки заказов тем же порядком.
+    // Routes first and by ascending id (ADR 0050 item 12), then the order rows in the same order.
     await tx.execute(sql`
       select r.id from vehicle_routes r
       where r.source_request_id = any(${sql.raw(`array['${orderIds.join("','")}']::uuid[]`)})
@@ -278,11 +278,11 @@ async function lockPlanRows(
 }
 
 /**
- * Недели в работе по тем же заказам: после разворота их снимок `expected_date_to` разойдётся со
- * сроком, и при визе строки станут `skipped` («срок изменился после подачи»).
+ * Weeks in progress on the same orders: after the reversal their `expected_date_to` snapshot will
+ * differ from the term, and at approval their rows become `skipped` ("term changed after submit").
  *
- * Не блокировка, а предупреждение: чужой черновик не вправе запирать исправление ошибочной визы, а
- * узнать о нём человек обязан до нажатия, а не из чужой жалобы через неделю.
+ * A warning, not a blocker: someone else's draft must not lock the correction of a wrong approval,
+ * but the person must learn about it before the click, not from a complaint a week later.
  */
 async function loadPendingWeeks(
   tx: Reader,
@@ -307,7 +307,7 @@ async function loadPendingWeeks(
   return rows.map((row) => formatWeeklyRequestNumber(row.num));
 }
 
-/** Напечатанные номера названных листов — для окна и для отказа по чужому листу. */
+/** Printed numbers of the named sheets — for the window and for the refusal on a foreign sheet. */
 async function loadSheetPreviews(
   tx: Reader,
   unlocks: { waybillId: string; requestId: string; requestNum: number }[],
@@ -363,7 +363,8 @@ export async function planWeeklyAnnul(
   const { header, items } = await lockPlanRows(tx, params);
   const headerBlocker = weeklyAnnulHeaderBlocker(header);
 
-  // Неприменённую разбирать нечего: следствий у неё не было, и `applied_at` пуст по построению.
+  // An unapplied week has nothing to plan: it had no consequences, and `applied_at` is empty by
+  // construction.
   if (!isWeeklyRequestApplied(header.status) || !header.appliedAt) {
     return {
       header,
@@ -443,9 +444,10 @@ export async function planWeeklyAnnul(
     const termBefore: AssignmentTerm = { dateFrom: detail.dateFrom, dateTo: detail.dateTo };
     const termAfter: AssignmentTerm = { dateFrom: detail.dateFrom, dateTo: previousDateTo };
     /*
-     * Исход самой команды над сроком — внешним эффектом, тем же расчётом, что у двери досрочного
-     * завершения: границу «сегодня и вперёд — обычная работа» считает `movedRequestDateKey`, а не
-     * константа. Напиши мы здесь `outcome: 'none'`, утверждение о ветви проверяло бы само себя.
+     * The outcome of the command over the term, as an external effect — the same computation as
+     * at the early-end door: the boundary "today and later is ordinary work" is computed by
+     * `movedRequestDateKey`, not a constant. Writing `outcome: 'none'` here would make the branch
+     * claim check itself.
      */
     const movedDate = movedRequestDateKey(
       { dateFrom: termBefore.dateFrom, dateTo: termBefore.dateTo },
@@ -461,9 +463,9 @@ export async function planWeeklyAnnul(
           ? null
           : { effectiveDate: movedDate, outcome: movedDate < params.asOf ? 'crew' : 'none' },
       /*
-       * Субъект допустимости дней — как у досрочного завершения: статус остаётся прежним и
-       * настоящим («В работе»), заказ продолжает работать по укороченному сроку. Отработанные дни
-       * не удерживаются: аннулирование снимает ровно те дни, которые добавила неделя.
+       * The day-eligibility subject is as at the early end: the status stays the current one ("in
+       * work"), and the order keeps working on the shortened term. Worked days are not retained:
+       * the reversal removes exactly the days the week added.
        */
       linearDays: {
         eligibilitySubject: {
@@ -473,16 +475,16 @@ export async function planWeeklyAnnul(
           deletedAt: null,
           dateFrom: termAfter.dateFrom,
           dateTo: termAfter.dateTo,
-          // Принадлежность машины допустимость дней не решает — её читает `linearDaysBlocker`
-          // только у арендной техники, у которой линейных дней не бывает вовсе. Расчёт сокращения
-          // всё равно требует поле явно, и `null` здесь означает «не спрашиваем», а не «арендная».
+          // Ownership does not decide day eligibility — `linearDaysBlocker` reads it only for
+          // rented vehicles, which have no linear days at all. The shortening plan still requires
+          // the field explicitly, and `null` here means "not asked", not "rented".
           ownership: null,
         },
         retainCompletedDays: false,
       },
     });
 
-    // Факты работы на снимаемых днях — то, что право прошлого не открывает (ADR 0218 решение 3).
+    // Facts of work on the removed days — what the past right does not open (ADR 0218 decision 3).
     const removedFrom = shiftDateKey(previousDateTo, 1);
     const removedTo = orderEffectiveDateTo({
       dateFrom: termBefore.dateFrom,
@@ -519,8 +521,8 @@ export async function planWeeklyAnnul(
       });
     }
 
-    // Отработанные листы: названный перевыпишется, неназванный — отказ. Разблокировка адресная и
-    // сама в стороны не растёт (ADR 0116 п. 11).
+    // Worked sheets: a named one is reissued, an unnamed one refuses. Unlocking is addressed and
+    // never grows sideways by itself (ADR 0116 item 11).
     const notNamed = shorten.requiredUnlockIds.filter((id) => !named.has(id));
     if (notNamed.length > 0) {
       blockers.push({
@@ -541,9 +543,9 @@ export async function planWeeklyAnnul(
     }
 
     for (const group of shorten.cancelGroupsPreview) {
-      // Дата вступления лежит в строках группы, а не в самой группе: гашение групповое, и у
-      // решения о паре «машина + машинист» строк две, с одной и той же датой. Берётся первая по
-      // порядку — он уже отсортирован расчётом.
+      // The effective date lives in the group rows, not in the group: cancelling is per group, and
+      // a decision on the "vehicle + machinist" pair has two rows with one date. The first by order
+      // is taken — the plan has already sorted them.
       const effectiveDate = group.rows[0]?.effectiveDate ?? params.asOf;
       cancelGroups.push({
         effectiveDate,
@@ -558,12 +560,12 @@ export async function planWeeklyAnnul(
     cancelGroupTargets.push(...shorten.cancelGroups);
     for (const issue of shorten.issues) {
       issues.push({
-        // Ключ пересчитывается по порядку в ответе недели: у каждой строки состава свой план, и
-        // `issueKey` расчёта нумерует листы внутри одного заказа — два заказа дали бы один ключ
-        // дважды, и подпись человека ушла бы не к тому листу.
+        // The key is renumbered by order in the week's answer: every composition row has its own
+        // plan, and the plan's `issueKey` numbers sheets within one order — two orders would give
+        // one key twice, and the person's acknowledgement would go to the wrong sheet.
         issueKey: issues.length,
-        // Виды замечаний, а не их текст (ADR 0211 решение 3): вид говорит, **что** не в порядке, и
-        // молчит о том, у кого.
+        // Warning kinds, not their text (ADR 0211 decision 3): the kind says WHAT is wrong and is
+        // silent about whose it is.
         codes: [...new Set(issue.warnings.map((warning) => warning.facts.code))],
         warningFingerprint: issue.warningFingerprint,
       });
@@ -632,9 +634,10 @@ export async function planWeeklyAnnul(
     shifts: [...new Set(droppedShifts)].sort(),
     pendingWeeks,
     /*
-     * Отпечаток — по **содержанию** последствий (ADR 0211 решение 4): строки с их ходом, бумага,
-     * гасимые группы, дни и смены. Между просмотром и нажатием это меняется, не тронув версию
-     * заявки: по заказу выписали лист, появился черновик смены, неделя стала отработанной.
+     * The fingerprint covers the **content** of the consequences (ADR 0211 decision 4): rows with
+     * their moves, paper, cancelled groups, days and shifts. Between the preview and the click
+     * these change without touching the request version: a sheet was issued for an order, a shift
+     * draft appeared, the week became worked.
      */
     fingerprint: fingerprintOf({
       weeklyId: header.id,
@@ -665,11 +668,6 @@ export async function planWeeklyAnnul(
 export interface WeeklyReversalSpec {
   /** Correction-journal kind: the journal must tell the two operations apart. */
   kind: 'weekly_annul' | 'weekly_return';
-  /**
-   * Header status after the command. A repeat by operation key does not run `apply`, so its answer
-   * takes the status from here and the counters from the operation's payload in the journal.
-   */
-  resultStatus: WeeklyReversalResultDto['status'];
   auditAction: 'weekly_request.annul' | 'weekly_request.return';
   /** Whether the subject holds the right of this branch. */
   canRun: (subject: Principal, backdated: boolean) => boolean;
@@ -1106,7 +1104,6 @@ async function applyWeeklyAnnul(
  */
 export const WEEKLY_ANNUL_SPEC: WeeklyReversalSpec = {
   kind: 'weekly_annul',
-  resultStatus: 'annulled',
   auditAction: 'weekly_request.annul',
   canRun: (subject, backdated) => canAnnulWeeklyRequest(subject, backdated),
   needsSiteScope: (subject, backdated) => weeklyAnnulNeedsSiteScope(subject, backdated),

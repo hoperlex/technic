@@ -2046,17 +2046,20 @@ export const weeklyAnnulPreviewResponseSchema = z
  */
 export interface WeeklyReversalResultDto {
   weeklyRequestId: string;
-  /** `annulled` after annulment, `pending` after a return for re-approval. */
-  status: Extract<WeeklyRequestStatus, 'annulled' | 'pending'>;
+  /**
+   * The header status: `annulled` after annulment, `pending` after a return for re-approval. A
+   * repeat by operation key answers with the status as it is now, which may have moved on since.
+   */
+  status: WeeklyRequestStatus;
   shortened: { requestId: string; displayNumber: string; dateTo: string }[];
   cancelled: { requestId: string; displayNumber: string }[];
   released: number;
   esm2: { cancelled: number; issued: number };
   /**
    * A repeat by operation key after a dropped connection: the first attempt did the work, and this
-   * answer is built from the state it left (ADR 0101 decision 9) — the status, not the counters,
-   * which cannot be rebuilt from the state and stay in the week history and the operation journal.
-   * Absent on a first run, so empty counters never read as "nothing was reversed" by mistake.
+   * answer is rebuilt from the current state (ADR 0101 decision 9) — the status, not the counters,
+   * which the state cannot give back. Absent on a first run, so empty counters never read as
+   * "nothing was reversed" by mistake.
    */
   repeated?: true;
 }
