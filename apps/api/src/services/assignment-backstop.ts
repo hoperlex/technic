@@ -113,6 +113,7 @@ export type AssignmentBackstopDoor =
   | 'work_period'
   | 'weekly_apply'
   | 'weekly_annul'
+  | 'weekly_return'
   | 'completion';
 
 interface DoorSpec {
@@ -143,6 +144,10 @@ const DOORS: Record<AssignmentBackstopDoor, DoorSpec> = {
   // спросили бы. Пробелы машиниста спрашиваются, как у всех: перевыписанные листы накрывают
   // ровно те дни, о которых история молчит.
   weekly_annul: { title: 'Аннулирование недельной заявки', opensTerm: false },
+  // Return of a weekly request for re-approval (ADR 0219): the same reversal as annulment, so the
+  // same answers — it removes days rather than opening them, tail decisions are not asked, machinist
+  // gaps are. Its own door only so that the refusal names the command the person actually ran.
+  weekly_return: { title: 'Возврат недельной заявки на согласование', opensTerm: false },
   // Закрытие фактической датой (Р1 плана `docs/vehicle-request-actual-end-date-plan.md`): дверь
   // сокращает срок и потому переписывает бумагу — пробелы машиниста у неё спрашиваются, как у
   // всех. Новых дней она не открывает никогда (факт не бывает позже утверждённого срока, Р15),

@@ -1062,6 +1062,11 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/weekly-vehicle-requests/:id/annul': {
     payload: { reason: 'завизировали не ту неделю', version: 0, fingerprint: 'preview' },
   },
+  // Return for re-approval (ADR 0219): the guard carries the right, the body must pass the schema
+  // so the check measures the guard and not a 400.
+  'POST /api/v1/weekly-vehicle-requests/:id/return': {
+    payload: { reason: 'забыли экскаватор', version: 0, fingerprint: 'preview' },
+  },
   'GET /api/v1/weekly-vehicle-requests/suggestion': {
     query: `objectId=${OBJECT_ID}&weekStart=${FUTURE_DATE}`,
     selfRefusal: 'не ведёт недельные заявки',

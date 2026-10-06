@@ -1574,6 +1574,18 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['weeklyRequests.read'],
   },
+  // Preview of the return for re-approval (ADR 0219) — under reading the card, as the annulment
+  // preview: whoever may not return the week still has to see why the button is unavailable.
+  'GET /api/v1/weekly-vehicle-requests/:id/return': {
+    kind: 'permissions',
+    allOf: ['weeklyRequests.read'],
+  },
+  // The return itself has one right in both branches, so no handler-side exception is needed: the
+  // guard carries it.
+  'POST /api/v1/weekly-vehicle-requests/:id/return': {
+    kind: 'permissions',
+    allOf: ['weeklyRequests.read', 'waybills.correct'],
+  },
   'GET /api/v1/weekly-vehicle-requests/:id/documents': {
     kind: 'permissions',
     allOf: ['weeklyRequests.read'],
