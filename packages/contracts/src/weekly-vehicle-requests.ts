@@ -332,14 +332,18 @@ export function weeklyWeekBlocker(
 // ── Статусы, виды строк и результаты применения ──
 
 /**
- * Жизненный цикл документа: собирается → ждёт визы → завизирована и применена. Отдельного
- * «применить» нет: виза применяет заявку той же транзакцией (Р6), поэтому `applied` — это ровно
- * «завизирована», а состояния «виза есть, а сроки не сдвинулись» не существует.
+ * Document lifecycle: composed → awaiting approval → approved and applied. There is no separate
+ * "apply": approval applies the request in the same transaction (R6), so `applied` means exactly
+ * "approved", and a state "approved, yet no term moved" does not exist.
  *
- * Терминальных состояний два, и путать их нельзя (ADR 0218): `cancelled` — «снята до визы,
- * следствий не было», `annulled` — «виза была, следствия развёрнуты обратно». Порядок значений
- * повторяет порядок enum'а базы (`annulled` перед `cancelled`, миграция `0354`): по нему идёт
- * `ORDER BY status`, и разойдись они — список сортировался бы не так, как обещает словарь.
+ * One edge goes back (ADR 0219): `applied → pending`, the return for re-approval. It reverses every
+ * consequence and clears the approval, so the invariant above holds on both sides of it — a
+ * returned week is an ordinary pending one, and its next approval applies it from scratch.
+ *
+ * Two states are terminal and must not be confused (ADR 0218): `cancelled` is "withdrawn before
+ * approval, no consequences", `annulled` is "approved, consequences reversed". The order of values
+ * repeats the database enum (`annulled` before `cancelled`, migration `0354`): `ORDER BY status`
+ * follows it, and diverging orders would sort the list differently from what the dictionary says.
  */
 export const WEEKLY_REQUEST_STATUSES = [
   'draft',
@@ -382,13 +386,14 @@ export const weeklyRequestStatusColors: Record<WeeklyRequestStatus, string> = {
 };
 
 /**
- * Правится ли **состав**. До визы — да, любым, у кого есть право в своей области; после — заявка
- * становится историей: состав применённой и аннулированной не меняется ничем.
+ * Whether the **composition** may be edited. Before approval — yes, by anyone holding the right in
+ * their scope; after it the request is history: an applied or annulled composition never changes.
  *
- * С ADR 0218 это больше не значит «после визы ничего не сделать»: применённую неделю
- * разворачивают аннулированием (`weeklyAnnulItemState`, `weeklyAnnulPermission`), и оно трогает
- * **следствия**, а не строки. Строки остаются с прежними результатами намеренно: по ним отвечают
- * «что решили и что отменили», а состояние документа сказано шапкой.
+ * Since ADR 0218 this no longer means "nothing can be done after approval". Annulment reverses the
+ * **consequences** and keeps the rows with their results: they answer "what was decided and what
+ * was undone", and the document state is told by the header. The return for re-approval
+ * (ADR 0219) reverses the same consequences but resets the rows to `pending`, because the week is
+ * approved again and its rows must be applicable; the previous results go to the history event.
  */
 export function isWeeklyRequestEditable(status: WeeklyRequestStatus): boolean {
   return status === 'draft' || status === 'pending';
@@ -2021,3 +2026,71 @@ export const weeklyAnnulPreviewResponseSchema = z
     asOf: dateOnlySchema,
   })
   .strict() satisfies z.ZodType<WeeklyAnnulPreviewDto>;
+
+/**
+ * What a reversal of an applied week did — the answer of both commands that run the annulment
+ * engine (ADR 0218 annulment, ADR 0219 return for re-approval). One shape on both sides: the portal
+ * reports the result in numbers, and a second copy of the type there drifted from the server once
+ * already.
+ */
+export interface WeeklyReversalResultDto {
+  weeklyRequestId: string;
+  /** `annulled` after annulment, `pending` after a return for re-approval. */
+  status: Extract<WeeklyRequestStatus, 'annulled' | 'pending'>;
+  shortened: { requestId: string; displayNumber: string; dateTo: string }[];
+  cancelled: { requestId: string; displayNumber: string }[];
+  released: number;
+  esm2: { cancelled: number; issued: number };
+}
+
+// ── Return of an applied week for re-approval (ADR 0219) ──
+//
+// The dispatcher finds that the applied week lacks equipment the site needs. The week goes back to
+// "awaiting approval": its consequences are reversed by the annulment engine, its rows are reset to
+// the pre-approval state, the site adds what was forgotten, and the construction manager approves
+// it again through the ordinary apply. Nothing of the first approval survives in the orders, so the
+// second approval cannot double an extension or a created order.
+
+/**
+ * The right that returns a week, in both branches (survey 06.10.2026, R3). It is the dispatcher's
+ * tool: the site manager already has rejection before approval and annulment after it, while the
+ * return burns form numbers and rewrites paper, which is the work of whoever keeps the forms.
+ *
+ * Unlike annulment (`weeklyAnnulPermission`), the branch does not change the right, so there is no
+ * site scope to ask: `waybills.correct` has none. The depth of the past is still a separate
+ * verdict of `checkBackdate`, exactly as for every other backdated entry.
+ */
+export const WEEKLY_RETURN_PERMISSION = 'waybills.correct' satisfies Permission;
+
+export function canReturnWeeklyRequest(subject: AccessSubject | null | undefined): boolean {
+  return can(subject, WEEKLY_RETURN_PERMISSION);
+}
+
+/**
+ * Why this header cannot be returned for re-approval — text, or `null` when it can.
+ *
+ * Only an applied week has anything to return. An annulled one is refused rather than revived:
+ * annulment freed the "object + week" pair, a new request may already occupy it, and the partial
+ * unique index would reject the revived one at the very transition.
+ */
+export function weeklyReturnHeaderBlocker(header: { status: WeeklyRequestStatus }): string | null {
+  if (header.status === 'applied') return null;
+  if (header.status === 'annulled') {
+    return 'Заявка аннулирована — вернуть её на согласование нельзя, неделю собирают заново';
+  }
+  if (header.status === 'cancelled') return 'Заявка снята: возвращать на согласование нечего';
+  return 'Заявка ещё не завизирована — она и так ждёт визы или собирается';
+}
+
+/**
+ * Body of the return command — the annulment body as it is (reason, header version, both
+ * fingerprints, acknowledgements, operation block). The command runs the same plan and confirms the
+ * same consequences, and a second schema of the same fields would drift at the first edit.
+ */
+export const returnWeeklyRequestSchema = annulWeeklyRequestSchema;
+export type ReturnWeeklyRequestInput = AnnulWeeklyRequestInput;
+export type ReturnWeeklyRequestBody = AnnulWeeklyRequestBody;
+
+/** Refusal without an operation key where one is required; names both the cause and the remedy. */
+export const WEEKLY_RETURN_CORRECTION_REQUIRED_MESSAGE =
+  'Возврат на согласование трогает прошедшие дни либо гасит запланированные решения — нужен ключ операции: она уйдёт в журнал коррекций вместе с причиной и вашим именем';
