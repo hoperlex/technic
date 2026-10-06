@@ -34,11 +34,11 @@
     },
     "vehicle-requests": {
       "source": "src/pages/vehicle/VehicleRequestsPage.tsx",
-      "gzip": 657085,
+      "gzip": 657101,
       "tabs": [
         {
           "source": "src/pages/vehicle/VehicleRequestsTab.tsx",
-          "gzip": 657085
+          "gzip": 657101
         },
         {
           "source": "src/pages/vehicle/VehicleRequestsOnSiteTab.tsx",

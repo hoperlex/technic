@@ -76,17 +76,23 @@ export function VehicleRequestFeed({
           sortOrder: list.sortOrder,
           onChange: list.onSortChange,
         },
-        // The only round phone button is the order: a weekly request is assembled at a desk, its
-        // composition is edited line by line, which is not phone work.
+        // The only round phone button is the order. The weekly request is still reachable from a
+        // phone: a role whose weekly request is its main entry point would otherwise have no way to
+        // start one there, and the desktop extra slot is not rendered on phones at all.
         primaryAction: rights.canCreate
           ? { label: 'Создать заявку', icon: <PlusOutlined />, onClick: actions.create }
           : undefined,
-        // Routes sit next to "Фильтры" on a phone: the desktop extra slot is not rendered there,
-        // and the round button is taken by the order. A second round button would read as one
-        // more "create" rather than a jump into another list.
-        secondaryActions: rights.showRoutes
-          ? [{ label: 'Маршруты', icon: <NodeIndexOutlined />, onClick: actions.openRoutes }]
-          : undefined,
+        // Routes and the weekly request sit next to "Фильтры" on a phone: the round button is taken
+        // by the order, and a second round button would read as one more "create" rather than a
+        // jump into another list.
+        secondaryActions: [
+          ...(rights.showRoutes
+            ? [{ label: 'Маршруты', icon: <NodeIndexOutlined />, onClick: actions.openRoutes }]
+            : []),
+          ...(rights.canCreateWeekly
+            ? [{ label: 'Заявка на неделю', icon: <PlusOutlined />, onClick: actions.createWeekly }]
+            : []),
+        ],
       }}
     >
       {/* The summary sits at tab level, above filters and buttons: it is about the whole list. */}

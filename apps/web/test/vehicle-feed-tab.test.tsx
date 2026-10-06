@@ -4,6 +4,7 @@ import { useLocation } from 'react-router';
 import type { VehicleDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
+import { MOBILE_VIEWPORT } from './viewport';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
@@ -415,6 +416,21 @@ describe('лента «Заказ автотехники»: недельная �
     renderTab({}, authUser({ role: 'observer' }));
     expect(await screen.findByText('НЗ-12')).toBeDefined();
     expect(screen.queryByRole('button', { name: /Заявка на неделю/ })).toBeNull();
+  });
+
+  it('на телефоне кнопка «Заявка на неделю» стоит в панели списка — десктопного слота там нет', async () => {
+    mockHttp({
+      'GET /vehicle-requests/feed': () => json(vehicleFeed([ORDER], [WEEKLY])),
+      'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: 1 })),
+      'GET /objects': () => json(list([objectDto()])),
+      'GET /departments': () => json(emptyList()),
+      'GET /vehicle-classifications': () => json(list([classification()])),
+      'GET /vehicles': () => json(list([OWN_VEHICLE, RENTAL_VEHICLE])),
+    });
+    renderWithUser(<VehicleRequestsTab />, { user: SHTAB, viewport: MOBILE_VIEWPORT });
+    expect(await screen.findByText('НЗ-12')).toBeDefined();
+    expect(document.querySelector('.ant-table')).toBeNull();
+    expect(screen.getByRole('button', { name: /Заявка на неделю/ })).toBeDefined();
   });
 });
 
