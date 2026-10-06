@@ -328,7 +328,9 @@ export async function switchTab(queryClient: QueryClient, name: string): Promise
   await settle(queryClient);
 }
 
-/** Labels of the section's tabs, in strip order. */
+/** Labels of the section's own tab strip, in order; strips nested inside a tab are left out. */
 export function tabLabels(): string[] {
-  return [...document.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent ?? '');
+  const page = document.querySelector('.ant-tabs');
+  const tabs = page?.querySelectorAll(':scope > .ant-tabs-nav [role="tab"]') ?? [];
+  return [...tabs].map((tab) => tab.textContent ?? '');
 }
