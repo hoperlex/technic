@@ -1861,11 +1861,11 @@ export interface WeeklyAnnulPreviewDto {
   backdated: boolean;
   /** Нужны ли ключ операции и причина в журнале: ветвь коррекции **или** гасимые группы. */
   requiresOperation: boolean;
-  /** Нижняя граница глубины субъекта; `null` — предела нет (`waybills.correctBeyondLimit`). */
+  /** The subject's depth floor; `null` — no limit (`waybills.correctBeyondLimit`). */
   correctionFloor: string | null;
   /** Whether this subject may run the command: branch right, scope, header and no blocker. */
   allowed: boolean;
-  /** Почему нельзя — в том же порядке, в каком откажет команда; `null` — можно. */
+  /** Why not — in the order the command would refuse; `null` — allowed. */
   blockedReason: string | null;
   items: WeeklyAnnulItemDto[];
   /** Препятствия, которые знает только план: подпись дня, заморозка, незваный лист. */

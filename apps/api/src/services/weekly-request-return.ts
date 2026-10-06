@@ -147,7 +147,6 @@ async function applyWeeklyReturn(
     comment: params.reason,
     payload: {
       ...weeklyReversalPayload(plan, effects, params.correctionId),
-      returned: true,
       approval: approval
         ? {
             approvedBy: approval.approvedBy,

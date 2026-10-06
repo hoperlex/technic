@@ -8219,10 +8219,10 @@ export const waybillCorrections = pgTable(
       // это обязано читаться одной операцией, иначе «что сделали задним числом» отвечается
       // полусотней строк, которые нечем связать.
       | 'day_batch'
-      // Аннулирование применённой недельной заявки (миграция 0356, ADR 0218). Свой вид, а не
-      // `weekly`: тот двигает сроки состава вперёд и выписывает бумагу, а этот двигает их назад
-      // и бумагу гасит. Одно слово на два противоположных события отвечало бы одинаково там, где
-      // спрашивают разное.
+      // Annulment of an applied weekly request (migration 0356, ADR 0218). Not `weekly`: that one
+      // moves the composition's terms forward and issues paper, this one moves them back and
+      // cancels paper. One word for two opposite events would answer alike where different things
+      // are asked.
       | 'weekly_annul'
       // Return of an applied weekly request for re-approval (migration 0358, ADR 0219). Not
       // `weekly_annul`: the paper reversal is the same, but the week is approved again afterwards,

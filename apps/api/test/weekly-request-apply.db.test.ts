@@ -2671,7 +2671,7 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         WHERE weekly_request_id = ${weekly.id} AND from_status = 'applied' AND to_status = 'pending'`);
       expect(event.rows).toHaveLength(1);
       expect(event.rows[0]!.comment).toBe('Забыли экскаватор');
-      expect(event.rows[0]!.payload.returned).toBe(true);
+      expect(event.rows[0]!.payload.reset).toBe(3);
       expect(event.rows[0]!.payload.items).toHaveLength(3);
       expect((event.rows[0]!.payload.approval as { approvedBy: string }).approvedBy).toBeTruthy();
 
@@ -2908,20 +2908,23 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
                   released: saved.released,
                   esm2: saved.esm2,
                 })}::jsonb)`);
-      const eventsBefore = (await historyRows(weekly.id)).length;
-
-      const repeat = await inject('POST', url, ctx.dispatcher.auth, body);
-      // Not 422 "not approved yet": the key is recognized before the branch is read from the state.
-      expect(repeat.statusCode, repeat.body).toBe(200);
-      // The person who retried sees the result they missed — the counters of the first attempt.
-      expect(repeat.json()).toEqual(saved);
-      expect(saved.shortened).toHaveLength(1);
-      // And nothing moved a second time.
-      expect((await historyRows(weekly.id)).length).toBe(eventsBefore);
-      expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
-      await ctx.db.execute(
-        sql`DELETE FROM waybill_corrections WHERE operation_id = ${operationId}`,
-      );
+      try {
+        const eventsBefore = (await historyRows(weekly.id)).length;
+        const repeat = await inject('POST', url, ctx.dispatcher.auth, body);
+        // Not 422 "not approved yet": the key is recognized before the branch is read from the
+        // state. The CHECK of migration 0358 admitting `weekly_return` is proven by the insert.
+        expect(repeat.statusCode, repeat.body).toBe(200);
+        // The person who retried sees the result they missed — the counters of the first attempt.
+        expect(repeat.json()).toEqual(saved);
+        expect(saved.shortened).toHaveLength(1);
+        // And nothing moved a second time.
+        expect((await historyRows(weekly.id)).length).toBe(eventsBefore);
+        expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
+      } finally {
+        await ctx.db.execute(
+          sql`DELETE FROM waybill_corrections WHERE operation_id = ${operationId}`,
+        );
+      }
     }
 
     it('повтор по ключу операции после выполненного возврата отвечает итогом первой попытки', async () => {
@@ -2971,23 +2974,6 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         expect(res.body).not.toContain(foreignOrder.displayNumber);
       }
     }, 90_000);
-
-    it('журнал коррекций принимает свой вид операции возврата', async () => {
-      // The correction branch writes `weekly_return`; the CHECK of migration 0358 must admit it,
-      // or the first backdated return dies with 23514 after every check has passed.
-      const operationId = randomUUID();
-      await ctx.db.execute(sql`
-        INSERT INTO waybill_corrections (operation_id, fingerprint, kind, reason, actor_user_id)
-        VALUES (${operationId}, 'fp', 'weekly_return', 'Проверка вида', ${ctx.dispatcher.id})`);
-      const row = await ctx.db.execute<{ kind: string }>(
-        sql`SELECT kind FROM waybill_corrections WHERE operation_id = ${operationId}`,
-      );
-      expect(row.rows[0]?.kind).toBe('weekly_return');
-      // The base is shared by the whole file: a journal row with no operation behind it is removed.
-      await ctx.db.execute(
-        sql`DELETE FROM waybill_corrections WHERE operation_id = ${operationId}`,
-      );
-    }, 60_000);
   });
 
   describe('проведение просроченной недели задним числом', () => {

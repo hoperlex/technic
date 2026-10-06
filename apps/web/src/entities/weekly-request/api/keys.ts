@@ -33,8 +33,8 @@ export const weeklyRequestKeys = createQueryKeys('weekly-vehicle-requests', {
    */
   correction: (id: string | undefined) => [id, 'correction'],
   /**
-   * Что развернёт аннулирование (ADR 0218) — тем же приёмом, что `correction`: окно живёт и
-   * закрытым, запрос тогда выключен, а ключ всё равно собирается.
+   * What annulment would reverse (ADR 0218) — the same way as `correction`: the window lives while
+   * closed too, the query is then disabled, and the key is still built.
    */
   annul: (id: string | undefined) => [id, 'annul'],
   /** What the return for re-approval would reverse (ADR 0219) — the same lifecycle as `annul`. */

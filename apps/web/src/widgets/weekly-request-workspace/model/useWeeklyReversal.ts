@@ -3,9 +3,9 @@ import { App } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import {
   type AnnulWeeklyRequestBody,
-  canAnnulWeeklyRequest,
-  canReturnWeeklyRequest,
+  WEEKLY_RETURN_PERMISSION,
   weeklyAnnulHeaderBlocker,
+  weeklyAnnulPermission,
   weeklyReturnHeaderBlocker,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
@@ -36,7 +36,7 @@ export function useWeeklyReversal(params: {
   const [open, setOpen] = useState(false);
   // The right and the message are taken here rather than passed in: this is the hook, and extra
   // parameters would mean the page decides what the hook decides.
-  const { user } = useAuth();
+  const { can } = useAuth();
   const { message } = App.useApp();
   const texts = WEEKLY_REVERSAL_TEXTS[params.intent];
 
@@ -60,13 +60,13 @@ export function useWeeklyReversal(params: {
     onError: params.onError,
   });
 
-  // Both halves of availability are the contract predicates the server asks: the header rule and
-  // the right. A status comparison or a permission list here would be a second copy of either.
-  // Annulment's branch is known only to the server, so its button follows either branch's right.
+  // Rights come from the server via `useAuth` (access model §10); which permission each command
+  // needs, and which headers it accepts, come from the contracts — the same carriers the server
+  // asks. Annulment's branch is known only to the server, so its button follows either branch.
   const allowedByRight =
     params.intent === 'annul'
-      ? canAnnulWeeklyRequest(user, false) || canAnnulWeeklyRequest(user, true)
-      : canReturnWeeklyRequest(user);
+      ? [...weeklyAnnulPermission(false), ...weeklyAnnulPermission(true)].some(can)
+      : can(WEEKLY_RETURN_PERMISSION);
   const headerBlocker =
     params.intent === 'annul' ? weeklyAnnulHeaderBlocker : weeklyReturnHeaderBlocker;
   const available = !!params.request && headerBlocker(params.request) === null && allowedByRight;

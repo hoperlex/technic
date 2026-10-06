@@ -176,7 +176,7 @@ describe('возврат применённой недели на согласо
         event: 'status',
         fromStatus: 'applied',
         toStatus: 'pending',
-        payload: { returned: true },
+        payload: {},
         changedByName: 'Диспетчер Д.Д.',
         changedAt: '2026-10-06T09:00:00.000Z',
         comment: 'Забыли экскаватор',

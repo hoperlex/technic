@@ -248,6 +248,8 @@ export async function runWeeklyReversal(
         perform: async (tx, record) => {
           const done = await reverseInTx(tx, record.id);
           result = done;
+          // Which orders the operation touched, many-to-many: the order card asks "what was done
+          // to this order in the past" on every opening. The only place this link is written.
           await linkCorrectionRequests(tx, record.id, [
             ...done.shortened.map((row) => row.requestId),
             ...done.cancelled.map((row) => row.requestId),

@@ -2068,7 +2068,8 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
   // ── Reversal of an applied week: annulment (ADR 0218) and return for re-approval (ADR 0219) ──
   //
   // Both commands run one engine (`weekly-request-reversal.ts`) and differ by their description
-  // (`WEEKLY_ANNUL_SPEC`, `WEEKLY_RETURN_SPEC`): rights, wording and what happens to the header.
+  // (`WEEKLY_ANNUL_SPEC`, `WEEKLY_RETURN_SPEC`): rights, wording, and what happens to the header and
+  // the rows after the shared reversal.
   //
   // The previews are guarded by reading the card, not by the command right (ADR 0116 item 12):
   // whoever may not run the command still has to understand why the button is unavailable, and the

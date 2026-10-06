@@ -138,11 +138,11 @@ const DOORS: Record<AssignmentBackstopDoor, DoorSpec> = {
   early_end_decision: { title: 'Виза досрочного завершения', opensTerm: false },
   work_period: { title: 'Правка срока работ', opensTerm: true },
   weekly_apply: { title: 'Применение недельной заявки', opensTerm: true },
-  // Аннулирование недельной заявки (ADR 0218): дверь **сокращает** сроки состава, то есть снимает
-  // дни, а не открывает их, — решения по хвосту с неё не спрашивают по той же причине, что и с
-  // досрочного завершения: гашение хвостовой группы само создаёт то расхождение, о котором
-  // спросили бы. Пробелы машиниста спрашиваются, как у всех: перевыписанные листы накрывают
-  // ровно те дни, о которых история молчит.
+  // Annulment of a weekly request (ADR 0218): the door SHORTENS the composition's terms, removing
+  // days rather than opening them, so tail decisions are not asked — for the same reason as at the
+  // early end: cancelling the tail group itself creates the divergence they would be asked about.
+  // Machinist gaps are asked, as everywhere: reissued sheets cover exactly the days the history is
+  // silent about.
   weekly_annul: { title: 'Аннулирование недельной заявки', opensTerm: false },
   // Return of a weekly request for re-approval (ADR 0219): the same reversal as annulment, so the
   // same answers — it removes days rather than opening them, tail decisions are not asked, machinist

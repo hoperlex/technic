@@ -27,7 +27,6 @@ import {
 import type { db } from '../db/client';
 import {
   specialEquipmentRequestDetails,
-  vehicleRequestCorrections,
   vehicleRequests,
   vehicleRequestStatusHistory,
   waybills,
@@ -666,8 +665,8 @@ export interface WeeklyReversalSpec {
   /** Correction-journal kind: the journal must tell the two operations apart. */
   kind: 'weekly_annul' | 'weekly_return';
   /**
-   * Header status after the command — the answer to a repeat by operation key, which has no result
-   * of its own and is rebuilt from the state the command leaves.
+   * Header status after the command. A repeat by operation key does not run `apply`, so its answer
+   * takes the status from here and the counters from the operation's payload in the journal.
    */
   resultStatus: WeeklyReversalResultDto['status'];
   auditAction: 'weekly_request.annul' | 'weekly_request.return';
@@ -684,7 +683,10 @@ export interface WeeklyReversalSpec {
   /** Refusal for a week none of whose rows was ever applied. */
   nothingToReverse: string;
   correctionRequired: string;
-  /** The header write that follows the reversal; the reversal itself is `reverseWeeklyEffects`. */
+  /**
+   * The command's execution under the locks: it runs the shared reversal (`reverseWeeklyEffects`)
+   * and then writes what is its own — the header, the rows and the history events.
+   */
   apply: (tx: Tx, params: WeeklyReversalParams) => Promise<WeeklyReversalResultDto>;
 }
 
@@ -1014,23 +1016,6 @@ export async function reverseWeeklyEffects(
   const released = plan.items.filter(
     (item) => plan.states.get(item.id)?.reverse === 'release_leave',
   ).length;
-
-  // Which orders the operation touched — many-to-many: the card asks "what was done to this order
-  // in the past" on every opening.
-  if (params.correctionId) {
-    const touched = [
-      ...new Set([
-        ...plan.extend.map((row) => row.requestId),
-        ...plan.cancelOrders.map((row) => row.requestId),
-      ]),
-    ];
-    if (touched.length > 0) {
-      await tx
-        .insert(vehicleRequestCorrections)
-        .values(touched.map((requestId) => ({ correctionId: params.correctionId!, requestId })))
-        .onConflictDoNothing();
-    }
-  }
 
   return { shortened, cancelled, released, esm2: { cancelled: esm2Cancelled, issued: esm2Issued } };
 }
