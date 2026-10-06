@@ -16,9 +16,10 @@ import type { DefaultOptions } from '@tanstack/react-query';
 export const QUERY_PROFILE = {
   LIVE: {
     /**
-     * A mount within ten seconds of the last load reuses the data, a later one refetches. Nothing
-     * else refreshes this class: what a colleague changed shows up on the next mount after the
-     * term, so a longer term hides it longer. The user's own mutations invalidate regardless.
+     * A mount within ten seconds of the last load reuses the data, a later one refetches. Apart
+     * from the user's own mutations, which invalidate regardless of the term, and a reconnect,
+     * nothing else refreshes this class: what a colleague changed shows up on the next mount after
+     * the term, so a longer term hides it longer.
      */
     staleTime: 10_000,
     /** The library default, written out: an unobserved entry keeps its data for five minutes. */
