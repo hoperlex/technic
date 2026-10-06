@@ -14,19 +14,20 @@ import {
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 
 /**
- * Журнал путевых листов после смены статуса заказа техники.
+ * The waybill journal after a vehicle order changes status.
  *
- * Смена статуса не только двигает заявку: сервер тут же сводит заново её ЭСМ-2 (ADR 0037) — та же
- * ручка `PATCH /vehicle-requests/:id/status` пишет в таблицу листов через сервис `waybill-esm2`.
- * Вкладка же гасила в кэше только заявки и рейсы, поэтому открытый следом журнал показывал
- * состояние до перехода. Со стороны фронта такую связь не видно вовсе — она есть только в
- * транзакции сервера, и потому стережётся тестом.
+ * A status change does more than move the request: the server rebuilds its ESM-2 right away
+ * (ADR 0037) — the same `PATCH /vehicle-requests/:id/status` writes to the waybill table through
+ * the `waybill-esm2` service. The tab, however, invalidated only requests and routes, so the
+ * journal opened next showed the state before the transition. The front end cannot see this link
+ * at all — it exists only in the server's transaction — so a test guards it.
  *
- * Проверяется пометка кэша, а не перерисовка журнала. Причина в подмене, на которой такой тест
- * обычно и обманывает: у тестового `QueryClient` `staleTime` равен нулю, поэтому журнал
- * перезапросился бы при открытии сам — и сценарий «перешли и увидели свежее» проходил бы даже с
- * невыполненной инвалидацией. В приложении `staleTime` десять секунд, и как раз в это окно
- * диспетчер видит устаревший журнал.
+ * The check reads the cache mark rather than re-rendering the journal, because the mark is the
+ * whole fix: an invalidated entry is refetched on the next mount however young it is, while an
+ * unmarked one is shown from the cache for the ten seconds of the LIVE term — exactly the window
+ * in which the dispatcher saw a stale journal. The test client keeps that term
+ * (`createTestQueryClient`); a client that let everything go stale at once used to make "went
+ * there and saw fresh data" pass even with the invalidation missing.
  */
 
 /** Заявка в работе: у неё уже есть машина и место в рейсе — значит есть и путевой лист. */

@@ -10,7 +10,6 @@ import {
   type DriverReportDto,
 } from '@technic/contracts';
 import { MOSCOW_TZ } from '@shared/config';
-import { QueryClient } from '@tanstack/react-query';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
@@ -172,8 +171,6 @@ function renderCabinet(
      * оставляет одну шапку: её ссылки от содержимого страницы не зависят вовсе (Р5).
      */
     body?: ReactNode;
-    /** Клиент запросов: сценариям про возврат в приложение нужен с настройками портала. */
-    queryClient?: QueryClient;
   } = {},
 ) {
   const entriesFor = options.entriesFor ?? (() => [routeEntry, esm2Entry]);
@@ -201,22 +198,10 @@ function renderCabinet(
       user: driver,
       viewport: options.viewport,
       route: options.route ?? '/driver/assignment',
-      queryClient: options.queryClient,
     },
   );
   return { ...rendered, http };
 }
-
-/**
- * Клиент запросов с настройками портала: глобально `refetchOnWindowFocus: false` и свой срок
- * свежести ([main.tsx](../src/main.tsx)). Общий тестовый клиент их не повторяет — у него всё
- * стухает сразу и обновляется по фокусу само, — и проверка «кабинет читает по возврату» прошла бы
- * на любых настройках самого кабинета, ничего не проверив.
- */
-const portalDefaults = (): QueryClient =>
-  new QueryClient({
-    defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: 10_000 } },
-  });
 
 /** Сколько раз спросили задание за конкретный день: календарь и строка долга ходят одной ручкой. */
 const assignmentCalls = (http: HttpMock, date: string): number =>
@@ -305,11 +290,12 @@ describe('кабинет водителя: задание на дату', () => 
       ),
     );
     /*
-     * Проверяется показанное, а не последний запрос. Нового запроса за вчера может не быть вовсе:
-     * три прошедших дня минуту назад прочла строка долга в шапке, кэш у них с этой страницей общий
-     * (Р8), и пока ответ свеж (`cabinetRead`), второго чтения того же самого портал не делает.
-     * Прежняя проверка «последним ушёл запрос за вчера» держалась на том, что у тестового клиента
-     * своего срока свежести нет, — то есть проверяла настройку теста, а не поведение кабинета.
+     * What is checked is the screen, not the last request. There may be no new request for
+     * yesterday at all: the debt line in the header read the three past days a moment ago, it
+     * shares the cache with this page (R8), and while that answer is fresh (`cabinetRead`) the
+     * portal does not read the same thing twice. An earlier check, "the last request was for
+     * yesterday", held only while the test client let everything go stale at once — it tested the
+     * test's settings, not the cabinet.
      */
     expect(await screen.findByText(`Рейс ${yesterday}`)).toBeDefined();
     expect(
@@ -328,7 +314,13 @@ describe('кабинет водителя: задание на дату', () => 
   });
 
   it('возврат в приложение перечитывает задание показанного дня', async () => {
-    const { http } = renderCabinet({ queryClient: portalDefaults() });
+    /*
+     * The test client is the portal's own (`createTestQueryClient`): focus refetch is off for the
+     * whole portal and data stays fresh for ten seconds. A refetch on return can therefore come
+     * only from the cabinet's own read options; on a client that refetched on focus by itself the
+     * check would pass whatever the cabinet asked for.
+     */
+    const { http } = renderCabinet();
     expect(await screen.findByText('Рейс Р-142')).toBeDefined();
     const before = assignmentCalls(http, today);
 
@@ -347,11 +339,7 @@ describe('кабинет водителя: задание на дату', () => 
   it('строка долга обновляется по возврату — но не по тому дню, который открыт', async () => {
     // Тело каркаса не нужно: проверяются запросы самой шапки (П4). Открыт вчерашний день —
     // именно тот, по которому со страницы показаний уходят `open` и `submit`.
-    const { http } = renderCabinet({
-      route: `/driver?date=${yesterday}`,
-      body: null,
-      queryClient: portalDefaults(),
-    });
+    const { http } = renderCabinet({ route: `/driver?date=${yesterday}`, body: null });
     await waitFor(() => expect(reportCalls(http, dayBefore)).toBe(1));
     const shownBefore = reportCalls(http, yesterday);
 

@@ -15,19 +15,20 @@ import {
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 
 /**
- * Срез гаража после смены статуса заказа техники.
+ * The garage slice after a vehicle order changes status.
  *
- * Своих таблиц у гаража нет — день собирается сервером из техники, рейсов, листов и заказов
- * (ADR 0076), поэтому его кэш устаревает от чужих правок. Возврат заявки в «Новую» снимает машину:
- * в гараже она обязана стать свободной. Вкладка же гасила заявки, рейсы и журнал листов, а корень
- * `['garage']` не гасил вообще никто — единственным обновлением среза было переключение вкладки на
- * самой странице гаража. Диспетчер, снявший машину и вернувшийся к срезу быстрее `staleTime`
- * (десять секунд), видел её занятой.
+ * The garage has no tables of its own — the server builds the day from vehicles, routes, waybills
+ * and orders (ADR 0076), so its cache goes stale from edits made elsewhere. Returning a request to
+ * "New" releases the vehicle: in the garage it has to become free. The tab, however, invalidated
+ * requests, routes and the waybill journal, while the `['garage']` root was invalidated by nobody —
+ * the only refresh of the slice was switching tabs on the garage page itself. A dispatcher who
+ * released a vehicle and came back to the slice within `staleTime` (ten seconds) saw it busy.
  *
- * Проверяется пометка кэша, а не перерисовка среза, — по той же причине, что в
- * `waybills-invalidation`: у тестового `QueryClient` `staleTime` равен нулю, поэтому гараж
- * перезапросился бы при открытии сам, и сценарий «перешли и увидели свежее» прошёл бы даже с
- * невыполненной инвалидацией.
+ * The check reads the cache mark rather than re-rendering the slice, for the same reason as in
+ * `waybills-invalidation`: the mark is the whole fix. An invalidated entry is refetched on the next
+ * mount however young it is, and an unmarked one is shown from the cache for the ten seconds of the
+ * LIVE term — the test client keeps that term too (`createTestQueryClient`). Mounting the garage
+ * page on top would add its requests, not evidence.
  */
 
 /** Заявка в работе: у неё есть машина и место в рейсе — в срезе дня эта машина занята. */

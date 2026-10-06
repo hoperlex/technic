@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { QueryClient } from '@tanstack/react-query';
 import { officeEquipmentKeys } from '@entities/office-equipment';
+import { createTestQueryClient } from './render';
 
 /**
  * КЭШ СЕЛЕКТОРА ПРЕДМЕТА ЗАЯВКИ НЕ ПЕРЕСЕКАЕТСЯ С КЭШЕМ ОБЫЧНОЙ КАРТОЧКИ (план
@@ -21,7 +21,7 @@ const EQUIPMENT_ID = 'e1111111-1111-4111-8111-111111111111';
 
 describe('ключи выбора предмета заявки', () => {
   const seed = () => {
-    const client = new QueryClient();
+    const client = createTestQueryClient();
     client.setQueryData(officeEquipmentKeys.detail(EQUIPMENT_ID), 'карточка справочника');
     client.setQueryData(officeEquipmentKeys.selectorPicked(EQUIPMENT_ID), 'проекция селектора');
     client.setQueryData(officeEquipmentKeys.options('SN-1'), 'выдача справочника');

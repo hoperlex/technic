@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { QueryClient } from '@tanstack/react-query';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type {
   AuthUser,
@@ -820,24 +819,19 @@ describe('вкладка «Оргтехника» на телефоне', () => 
 });
 
 /**
- * Матрица Р14, направление «расходник → модели». В §9 закреплено обратное («модель → справочник
- * техники»), а это осталось без проверки — и без гашения тоже.
+ * Matrix R14, the "consumable → models" direction. §9 pins down the opposite one ("model →
+ * equipment directory"), while this one was left without a check — and without invalidation.
  *
- * Форма расходника всегда шлёт полный набор `modelIds`, то есть любое сохранение потенциально
- * меняет привязку; удаление уносит привязки каскадом. А в окне моделей на этой связи стоят сразу
- * два ответа: «удаляема ли модель» (`isUsed`) и срез «без расходника» (Р15).
+ * The consumable form always sends the full `modelIds` set, so any save may change the binding;
+ * a deletion takes the bindings away by cascade. And the models window has two answers resting on
+ * this binding: whether a model can be deleted (`isUsed`) and the "no consumable" slice (R15).
  *
- * Дефект невидим глазом на тестовом клиенте, поэтому проверка идёт с ПРОДОВЫМ сроком годности: с
- * нулевым перечень перезапрашивался бы при каждом открытии сам, и пропущенное гашение осталось бы
- * незамеченным до продакшена.
+ * The defect is invisible to the eye, and a test client that let everything go stale at once
+ * hid it too: the list refetched on every opening by itself. The test client is the portal's own
+ * (`createTestQueryClient`, ten seconds of freshness), so the models window opened again right
+ * after the edit shows exactly what production shows — the old answer, unless the edit
+ * invalidated it.
  */
-
-/** Тот же срок годности, что у портала (`src/main.tsx`): без него проверка ничего не значит. */
-function productionLikeClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 10_000 }, mutations: { retry: false } },
-  });
-}
 
 /** Кнопка вкладки, а не заголовок окна: надписи у них совпадают. */
 function openWindow(label: string): void {
@@ -897,10 +891,7 @@ describe('матрица Р14: правка расходника и окно м�
         return json(consumableDto());
       },
     });
-    renderWithUser(<OfficeEquipmentTab />, {
-      user: OPERATOR,
-      queryClient: productionLikeClient(),
-    });
+    renderWithUser(<OfficeEquipmentTab />, { user: OPERATOR });
 
     openWindow('Модели аппаратов');
     await waitFor(() => expect(modelDeleteButton().disabled).toBe(false), { timeout: 5000 });

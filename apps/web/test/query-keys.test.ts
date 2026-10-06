@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { QueryClient } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
 import { createQueryKeys } from '@shared/api';
+import { createTestQueryClient } from './render';
 
 /**
  * Фабрика ключей запросов. Имена здесь синтетические: фабрика лежит в shared и не должна знать ни
@@ -85,7 +86,7 @@ describe('createQueryKeys', () => {
    */
   describe('инвалидация по префиксу', () => {
     const seed = () => {
-      const client = new QueryClient();
+      const client = createTestQueryClient();
       client.setQueryData(sampleKeys.detail('s-1'), 'карточка 1');
       client.setQueryData(sampleKeys.detail('s-2'), 'карточка 2');
       client.setQueryData(sampleKeys.list({ page: 1 }), 'список');
@@ -144,7 +145,7 @@ describe('createQueryKeys', () => {
   });
 
   it('ключ пригоден как queryKey без приведения типов', () => {
-    const client = new QueryClient();
+    const client = createTestQueryClient();
     // Проверка типов, а не поведения: `setQueryData` принимает `readonly unknown[]`, и если бы
     // фабрика теряла форму ключа, здесь бы упал `tsc`, а не этот expect.
     client.setQueryData(sampleKeys.list({ page: 1 }), 'значение');

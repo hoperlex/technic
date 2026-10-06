@@ -7,17 +7,19 @@ import { emptyList } from './factories/common';
 import { DirectoriesPage } from '../src/pages/directories';
 
 /**
- * Переключение вкладки справочников обновляет то, что покажет.
+ * Switching a directories tab refreshes what it is about to show.
  *
- * Скрытая вкладка `Tabs` не размонтируется, поэтому по возвращении она показывает кэш, набранный
- * до правок на соседней. Для справочников это больнее, чем для прочих разделов: они ссылаются
- * друг на друга, и сервер приклеивает поля соседа к списку — у техники названия типа и категории,
- * у прайса объём контейнера, по которому считают стоимость. Пока обновления не было, переименовал
- * тип на одной вкладке — и на другой видишь старое название до перезагрузки страницы, а не
- * десять секунд `staleTime`.
+ * A hidden `Tabs` pane is not unmounted, so on return it shows the cache gathered before the edits
+ * made on its neighbour. Directories suffer from it more than other sections: they refer to each
+ * other, and the server glues a neighbour's fields into the list — type and category names for
+ * vehicles, the container volume the price is computed by for the price list. Before the refresh
+ * existed, a type renamed on one tab kept its old name on another until the page was reloaded, not
+ * for the ten seconds of `staleTime`.
  *
- * Проверяется пометка кэша, а не перерисовка: у тестового `QueryClient` `staleTime` равен нулю,
- * поэтому вкладка перезапросила бы данные и сама.
+ * The check reads the cache mark rather than a re-render: the probe key has no observer, so the
+ * mark is all an invalidation can do to it, and it is what makes the next mount refetch however
+ * young the entry is. Without it the test client, which keeps the LIVE term
+ * (`createTestQueryClient`), would show the entry from the cache like production does.
  */
 
 /** Посторонний запрос в кэше: он и показывает, что обновление задевает не только свою вкладку. */

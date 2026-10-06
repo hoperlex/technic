@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { App } from 'antd';
 import type { WasteRequestDto } from '@technic/contracts';
 import { RequestHistoryTable, type HistoryRow } from '../src/entities/request-history';
 import { WasteRequestCompletionModal } from '@features/waste-request-completion';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport } from './viewport';
+import { createTestQueryClient } from './render';
 
 /**
  * Экраны, у которых на телефоне своя раскладка (ADR 0030): история заявки и окно выполнения.
@@ -98,7 +99,7 @@ describe('выполнение заявки на вывоз', () => {
   function renderModal() {
     const onSubmit = vi.fn();
     render(
-      <QueryClientProvider client={new QueryClient()}>
+      <QueryClientProvider client={createTestQueryClient()}>
         <App>
           <WasteRequestCompletionModal
             request={request}

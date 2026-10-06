@@ -523,19 +523,20 @@ describe('линейный день в составе рейса', () => {
 });
 
 /**
- * Срез гаража после правки дня линейного заказа (ADR 0131).
+ * The garage slice after a linear order's day is edited (ADR 0131).
  *
- * Заготовка — рейс без состава и без выписанного листа — из среза дня ушла: занятость машины и
- * назначенность водителя следуют теперь не из факта существования рейса, а из того, есть ли по
- * нему куда ехать. Значит состав рейса решает, видна ли работа в срезе, — а планирование дней
- * состав как раз и меняет: поставленный день наполняет рейс, снятый опустошает, и опустевший рейс
- * без листа пропадает из среза целиком. Обе двери обязаны погасить кэш гаража: своих таблиц у него
- * нет, чужие корни (`['vehicle-requests']`, `['vehicle-routes']`) до `['garage']` не достают.
+ * A blank — a route with no stops and no issued waybill — left the day slice: a vehicle being busy
+ * and a driver being assigned now follow not from the route existing but from it having somewhere
+ * to go. So the route's stops decide whether the work shows in the slice — and day planning is
+ * exactly what changes them: a placed day fills the route, a removed one empties it, and an emptied
+ * route without a waybill drops out of the slice entirely. Both doors have to invalidate the garage
+ * cache: it has no tables of its own, and the other roots (`['vehicle-requests']`,
+ * `['vehicle-routes']`) do not reach `['garage']`.
  *
- * Проверяется пометка кэша, а не перерисовка среза, — по той же причине, что в
- * `garage-invalidation`: у тестового `QueryClient` `staleTime` равен нулю, поэтому гараж
- * перезапросился бы при открытии сам, и сценарий «перешли и увидели свежее» прошёл бы даже с
- * невыполненной инвалидацией.
+ * The check reads the cache mark rather than re-rendering the slice, for the same reason as in
+ * `garage-invalidation`: the mark is the whole fix. An invalidated entry is refetched on the next
+ * mount however young it is, and an unmarked one is shown from the cache for the ten seconds of the
+ * LIVE term, which the test client keeps as well (`createTestQueryClient`).
  */
 describe('срез гаража после правки дня', () => {
   /** Вкладка «Техника» гаража на день среза: день и фильтры приходят внутри параметров. */

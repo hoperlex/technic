@@ -133,9 +133,10 @@ describe('кэш показаний: один корень на модуль', (
     await waitFor(() => expect(http.countOf(STATS)).toBe(1));
 
     /*
-     * Гараж открыт до приёма и лежит в кэше свежим. Проверяется пометка кэша, а не перерисовка
-     * среза, — по той же причине, что в `garage-invalidation`: у тестового `QueryClient`
-     * `staleTime` равен нулю, и открытая вкладка перезапросилась бы сама.
+     * The garage was opened before the intake and sits in the cache fresh. The check reads the
+     * cache mark rather than a re-render, as in `garage-invalidation`: within the LIVE term,
+     * which the test client keeps too (`createTestQueryClient`), the mark alone decides whether
+     * the next mount refetches the slice.
      */
     const garageKey = garageKeys.vehicles({ on: DAY });
     queryClient.setQueryData(garageKey, { items: [], total: 0, onDate: DAY });

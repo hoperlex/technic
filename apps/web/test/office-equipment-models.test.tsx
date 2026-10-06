@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { QueryClient } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
 import type { AuthUser, OfficeEquipmentDto, OfficeEquipmentModelDto } from '@technic/contracts';
 import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
@@ -286,14 +286,14 @@ describe('поле «Модель» в карточке техники', () => {
 });
 
 /**
- * Матрица Р14, вторая сторона: тронули карточку техники — устарел счётчик «В парке» в окне
- * моделей (Р12: он посчитан по живым и активным карточкам области смотрящего).
+ * Matrix R14, the other side: an edited equipment card makes the "In the fleet" count in the
+ * models window stale (R12: it is counted over live and active cards in the viewer's scope).
  *
- * Дыра, ради которой проверка и заведена, невидима глазом на тестовом клиенте: правка карточки
- * гасила только корень техники, окно моделей открывалось со вчерашним числом — и держало его
- * ровно `staleTime`, то есть первые десять секунд после правки. Проверка поэтому идёт на клиенте
- * с ПРОДОВЫМ сроком годности: с нулевым перечень перезапрашивался бы при каждом открытии сам, и
- * пропущенное гашение осталось бы незамеченным до продакшена.
+ * The hole this check guards is invisible to the eye: the card edit invalidated only the equipment
+ * root, and the models window opened with the old count and kept it for exactly `staleTime`, the
+ * first ten seconds after the edit. A test client that let everything go stale at once hid it as
+ * well — the list refetched on every opening by itself. The test client is the portal's own
+ * (`createTestQueryClient`), so a missing invalidation shows here as the old count.
  */
 
 const TYPE_MFU = typeDto('oet-1', 'mfp', 'МФУ', 1);
@@ -321,13 +321,6 @@ function equipmentDto(): OfficeEquipmentDto {
     updatedAt: '2026-08-01T09:00:00.000Z',
     deletedAt: null,
   };
-}
-
-/** Тот же срок годности, что у портала (`src/main.tsx`): без него проверка ничего не значит. */
-function productionLikeClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: 10_000 }, mutations: { retry: false } },
-  });
 }
 
 /** Окно моделей среди прочих окон узнаётся по подписи счётчика — она в нём одна такая. */
@@ -390,7 +383,7 @@ describe('счётчик «В парке» и матрица инвалидац�
       },
       'PATCH /office-equipment/:id': () => json(equipmentDto()),
     });
-    renderWithUser(<OfficeEquipmentTab />, { user: OPERATOR, queryClient: productionLikeClient() });
+    renderWithUser(<OfficeEquipmentTab />, { user: OPERATOR });
 
     await screen.findByText('0012345', { exact: false });
     openModelsWindow();

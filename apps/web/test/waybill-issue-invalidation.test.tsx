@@ -9,23 +9,26 @@ import { emptyList } from './factories/common';
 import { RouteModalProvider } from '@app/route-windows';
 
 /**
- * Журнал путевых листов после выдачи листа из карточки рейса.
+ * The waybill journal after a waybill is issued from the route card.
  *
- * Лист рождается ручкой рейса (`POST /vehicle-routes/:id/waybill`), а печатают его из журнала — и
- * диспетчер идёт туда сразу же, следом за выдачей. Гасились в кэше рейсы и заявки, но не журнал,
- * поэтому лист, только что выписанный, там не появлялся: `staleTime` в приложении десять секунд,
- * и это ровно то время, за которое переходят на соседний экран.
+ * The waybill is born by the route endpoint (`POST /vehicle-routes/:id/waybill`) but printed from
+ * the journal — and the dispatcher goes there right after issuing it. The cache invalidated routes
+ * and requests but not the journal, so a waybill just issued did not show up there: `staleTime` is
+ * ten seconds, exactly the time it takes to move to the next screen.
  *
- * Как и у смены статуса заказа, проверяется пометка кэша, а не перерисовка журнала: у тестового
- * `QueryClient` `staleTime` равен нулю, поэтому журнал перезапросился бы при открытии сам — и
- * сценарий «перешли и увидели свежее» проходил бы даже с невыполненной инвалидацией.
+ * As with the order status change (`waybills-invalidation`), the check reads the cache mark
+ * rather than re-rendering the journal: the mark is the whole fix. An invalidated entry is
+ * refetched on the next mount however young it is, and an unmarked one is shown from the cache
+ * for the ten seconds of the LIVE term, which the test client keeps as well
+ * (`createTestQueryClient`).
  *
- * Карточку открывает провайдер окон (ADR 0120), и поднимается он здесь целиком — вместе с разбором
- * адреса. Раньше сцену держала вкладка «Маршруты», которой больше нет, а сама карточка о журнале
- * не знает и знать не должна: она сообщает о перемене (`onChanged`), а гасит ключи тот, кто эти
- * окна держит. Подставь тесту свой `onChanged` — он проверял бы собственную заглушку, и настоящая
- * инвалидация могла бы пропасть незамеченной. Отсюда и адрес: рейс назван в нём (`?route=`), как
- * его называет ссылка из строки заявки, из гаража и из журнала листов.
+ * The card is opened by the window provider (ADR 0120), and it is mounted here whole, together with
+ * parsing the address. The scene used to belong to the "Routes" tab, which is gone, and the card
+ * itself does not and must not know about the journal: it reports a change (`onChanged`), and the
+ * keys are invalidated by whoever holds these windows. Hand the test its own `onChanged`, and it
+ * would check its own stub while the real invalidation could vanish unnoticed. Hence the address:
+ * the route is named in it (`?route=`), the way the links from a request row, the garage and the
+ * waybill journal name it.
  */
 
 /**
