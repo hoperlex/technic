@@ -8224,6 +8224,10 @@ export const waybillCorrections = pgTable(
       // и бумагу гасит. Одно слово на два противоположных события отвечало бы одинаково там, где
       // спрашивают разное.
       | 'weekly_annul'
+      // Return of an applied weekly request for re-approval (migration 0358, ADR 0219). Not
+      // `weekly_annul`: the paper reversal is the same, but the week is approved again afterwards,
+      // so the gap in numbering is followed by a second operation on the same document.
+      | 'weekly_return'
     >(),
     reason: text('reason').notNull(),
     /**
@@ -8259,7 +8263,7 @@ export const waybillCorrections = pgTable(
     // числом» отвечается одним словом на два разных события.
     kindCheck: check(
       'waybill_corrections_kind_check',
-      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail', 'day_batch', 'weekly_annul')`,
+      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail', 'day_batch', 'weekly_annul', 'weekly_return')`,
     ),
     // Снимок обязателен ровно у тех видов, что заведены историей назначения: у остальных его нет и
     // быть не может — миграция их не переписывала.
