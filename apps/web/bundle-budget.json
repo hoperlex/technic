@@ -34,23 +34,23 @@
     },
     "vehicle-requests": {
       "source": "src/pages/vehicle/VehicleRequestsPage.tsx",
-      "gzip": 657103,
+      "gzip": 657423,
       "tabs": [
         {
           "source": "src/pages/vehicle/VehicleRequestsTab.tsx",
-          "gzip": 657103
+          "gzip": 657423
         },
         {
           "source": "src/pages/vehicle/VehicleRequestsOnSiteTab.tsx",
-          "gzip": 599327
+          "gzip": 599646
         },
         {
           "source": "src/widgets/vehicle-request-history/index.ts",
-          "gzip": 578288
+          "gzip": 578590
         },
         {
           "source": "src/pages/vehicle/VehicleRequestsArchiveTab.tsx",
-          "gzip": 573265
+          "gzip": 573567
         }
       ]
     },
@@ -116,7 +116,7 @@
       "tabs": [
         {
           "source": "src/pages/directories/ObjectsTab.tsx",
-          "gzip": 575833
+          "gzip": 576135
         },
         {
           "source": "src/pages/directories/DepartmentsTab.tsx",
@@ -144,7 +144,7 @@
         },
         {
           "source": "src/pages/directories/VehicleTypesTab.tsx",
-          "gzip": 590094
+          "gzip": 590399
         },
         {
           "source": "src/pages/directories/VehicleSpecsTab.tsx",
