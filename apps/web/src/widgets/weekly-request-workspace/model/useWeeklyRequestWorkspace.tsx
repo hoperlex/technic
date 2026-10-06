@@ -21,11 +21,12 @@ import {
 import { useVehicleClassifications } from '@entities/vehicle-type';
 import { useWeeklyRequestCreate } from '@features/weekly-request-create';
 import { useWeeklyComposition } from './useWeeklyComposition';
-import { useWeeklyAnnul } from './useWeeklyAnnul';
+import { useWeeklyReversal } from './useWeeklyReversal';
 import { hasApiStatus } from './apiError';
 import {
   decisionMessage,
   lastRejectionComment,
+  lastReturn,
   WEEKLY_LEAVE_CONFIRM,
   weeklyPageWeekState,
 } from './pageState';
@@ -169,8 +170,12 @@ export function useWeeklyRequestWorkspace() {
       version: request.version,
     });
   };
-  /** Annulment of an applied week (ADR 0218) — its own module: the workspace is dense enough. */
-  const annul = useWeeklyAnnul({ request, onSettled: settled, onError });
+  /**
+   * Reversals of an applied week — annulment (ADR 0218) and return for re-approval (ADR 0219) — in
+   * their own module: the workspace is dense enough, and both share the engine and the window.
+   */
+  const annul = useWeeklyReversal({ intent: 'annul', request, onSettled: settled, onError });
+  const returning = useWeeklyReversal({ intent: 'return', request, onSettled: settled, onError });
 
   const saveMutation = useMutation({
     mutationFn: saveComposition,
@@ -267,6 +272,7 @@ export function useWeeklyRequestWorkspace() {
 
   return {
     annul,
+    returning,
     request,
     requestQuery,
     status,
@@ -293,6 +299,7 @@ export function useWeeklyRequestWorkspace() {
     goBack,
     weekState,
     rejection: lastRejectionComment(historyQuery.data),
+    returned: lastReturn(historyQuery.data),
     can,
   };
 }

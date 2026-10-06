@@ -8,7 +8,9 @@ import type {
   WeeklyCorrectionPreviewDto,
   WeeklyRequestDocumentsDto,
   WeeklyRequestStatus,
+  ReturnWeeklyRequestBody,
   WeeklyRequestStatusBody,
+  WeeklyReversalResultDto,
   WeeklySuggestionDto,
   WeeklyVehicleRequestDto,
 } from '@technic/contracts';
@@ -59,16 +61,6 @@ export interface WeeklyRequestHistoryEntryDto {
  * подача заявки тем, кто её и визирует, применяет её сразу же (Р8) — и «сколько строк прошло»
  * отвечает только применение. У отказа и снятия итога нет вовсе, поэтому `apply` бывает `null`.
  */
-/** Что аннулирование развернуло — им окно рассказывает об итоге, а список обновляет карточку. */
-export interface WeeklyAnnulResultDto {
-  weeklyRequestId: string;
-  status: 'annulled';
-  shortened: { requestId: string; displayNumber: string; dateTo: string }[];
-  cancelled: { requestId: string; displayNumber: string }[];
-  released: number;
-  esm2: { cancelled: number; issued: number };
-}
-
 export interface WeeklyDecisionResultDto {
   request: WeeklyVehicleRequestDto;
   apply: WeeklyApplyResultDto | null;
@@ -153,7 +145,22 @@ export const weeklyRequestsApi = {
    * результат, ничего не двигая второй раз. Ключ придумывает окно до отправки и держит неизменным.
    */
   annul: (id: string, body: AnnulWeeklyRequestBody) =>
-    apiFetch<WeeklyAnnulResultDto>(`/weekly-vehicle-requests/${id}/annul`, {
+    apiFetch<WeeklyReversalResultDto>(`/weekly-vehicle-requests/${id}/annul`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * What the return for re-approval would reverse (ADR 0219) — the same plan as annulment, with
+   * the rights and wording of the return.
+   */
+  returnPreview: (id: string) =>
+    apiFetch<WeeklyAnnulPreviewDto>(`/weekly-vehicle-requests/${id}/return`),
+  /**
+   * Return an applied week to "awaiting approval". Same body as annulment, same idempotency: a
+   * repeat with the same `operationId` returns the earlier result and moves nothing again.
+   */
+  returnToApproval: (id: string, body: ReturnWeeklyRequestBody) =>
+    apiFetch<WeeklyReversalResultDto>(`/weekly-vehicle-requests/${id}/return`, {
       method: 'POST',
       body,
     }),

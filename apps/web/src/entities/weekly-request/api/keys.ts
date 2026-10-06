@@ -37,6 +37,8 @@ export const weeklyRequestKeys = createQueryKeys('weekly-vehicle-requests', {
    * закрытым, запрос тогда выключен, а ключ всё равно собирается.
    */
   annul: (id: string | undefined) => [id, 'annul'],
+  /** What the return for re-approval would reverse (ADR 0219) — the same lifecycle as `annul`. */
+  returnPreview: (id: string | undefined) => [id, 'return'],
   /**
    * Срез площадки при любой паре «объект + неделя» — префикс для гашения.
    *

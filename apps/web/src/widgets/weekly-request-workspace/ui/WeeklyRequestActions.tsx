@@ -1,6 +1,7 @@
 import { Button, Space, Typography } from 'antd';
 import type { WeeklyItemCounts } from '@technic/contracts';
 import { weeklyCountsText } from '@entities/weekly-request';
+import { WEEKLY_REVERSAL_TEXTS } from '../model/reversalTexts';
 
 /**
  * Action bar of the weekly request, pinned to the page bottom (section 5 step 1): the composition
@@ -60,6 +61,11 @@ interface Props {
    * fields for one condition drift apart at the first edit.
    */
   onAnnul: (() => void) | null;
+  /**
+   * Return an applied week for re-approval (ADR 0219); `null` — no button: the week is not applied
+   * or the viewer is neither dispatcher nor administrator.
+   */
+  onReturn: (() => void) | null;
 }
 
 export function WeeklyRequestActions(props: Props) {
@@ -154,9 +160,17 @@ export function WeeklyRequestActions(props: Props) {
             the price and the refusals are named by the window, which asks the server — the preview
             builds a history and paper plan per extended row, and paying that on every card view
             would be waste. */}
+        {/* The return comes first: it is the milder reversal — the week stays alive and is
+            approved again — and the dispatcher looking for "add the forgotten unit" should not
+            reach for annulment by habit. */}
+        {props.onReturn && (
+          <Button danger onClick={props.onReturn}>
+            {WEEKLY_REVERSAL_TEXTS.return.action}
+          </Button>
+        )}
         {props.onAnnul && (
           <Button danger onClick={props.onAnnul}>
-            Аннулировать неделю
+            {WEEKLY_REVERSAL_TEXTS.annul.action}
           </Button>
         )}
       </Space>

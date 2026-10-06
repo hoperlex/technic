@@ -2060,7 +2060,7 @@ export interface WeeklyReversalResultDto {
  * site scope to ask: `waybills.correct` has none. The depth of the past is still a separate
  * verdict of `checkBackdate`, exactly as for every other backdated entry.
  */
-export const WEEKLY_RETURN_PERMISSION = 'waybills.correct' satisfies Permission;
+export const WEEKLY_RETURN_PERMISSION: Permission = 'waybills.correct';
 
 export function canReturnWeeklyRequest(subject: AccessSubject | null | undefined): boolean {
   return can(subject, WEEKLY_RETURN_PERMISSION);
