@@ -318,8 +318,17 @@ export const TABBED_SECTIONS: readonly TabbedSection[] = [
   },
 ];
 
-/** Opens a tab of the section the way a user does and waits until the screen is quiet. */
+/**
+ * Opens a tab of the section the way a user does and waits until the screen is quiet. The tab is
+ * found by its text within the tab role, not by a role query: with the shell and several tabs
+ * mounted, computing accessible names over the whole document takes seconds per call.
+ */
 export async function switchTab(queryClient: QueryClient, name: string): Promise<void> {
-  fireEvent.click(screen.getByRole('tab', { name }));
+  fireEvent.click(screen.getByText(name, { selector: '[role="tab"]' }));
   await settle(queryClient);
+}
+
+/** Labels of the section's tabs, in strip order. */
+export function tabLabels(): string[] {
+  return [...document.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent ?? '');
 }

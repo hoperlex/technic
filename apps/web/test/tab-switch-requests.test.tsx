@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { screen } from '@testing-library/react';
 import { settle } from './query';
 import {
   TABBED_SECTIONS,
@@ -7,6 +6,7 @@ import {
   mountSection,
   requestsSince,
   switchTab,
+  tabLabels,
   type TabbedSection,
 } from './section-requests';
 
@@ -163,6 +163,6 @@ describe('запросы на смену вкладки раздела', () => {
     const only = TABBED_SECTIONS.find((section) => section.neighbour === null)!;
     const { queryClient } = mountSection(only.page, only.section, only.user, { shell: true });
     await settle(queryClient);
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([only.first]);
+    expect(tabLabels()).toEqual([only.first]);
   });
 });
