@@ -1,19 +1,33 @@
 import type { ReactNode } from 'react';
+import { fireEvent, screen } from '@testing-library/react';
 import { Route, Routes } from 'react-router';
 import type { QueryClient } from '@tanstack/react-query';
 import { type AuthUser, type PortalShellSectionId, SHELL_SECTIONS } from '@technic/contracts';
 import { AsyncContent } from '@shared/ui';
 import { AppLayout } from '../src/app/layout';
+import { AdministrationPage } from '../src/pages/admin';
+import { DirectoriesPage } from '../src/pages/directories';
+import { GaragePage } from '../src/pages/garage';
+import { MechRequestsPage } from '../src/pages/mech';
+import { ServiceRequestsPage } from '../src/pages/service';
+import { VehicleRequestsPage } from '../src/pages/vehicle';
+import { WasteRequestsPage } from '../src/pages/waste';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { settle } from './query';
 import type { Viewport } from './viewport';
 import { emptyList, list } from './factories/common';
 import { garageVehicle, garageVehicleList, garageVehiclesSummary } from './factories/garage';
+import { authUser } from './factories/auth';
 import { account } from './factories/grants';
 import { mechRequest, mechSummary } from './factories/mech';
 import { officeEquipmentUnit } from './factories/officeEquipment';
-import { SERVICE_COUNTERPARTY, serviceRequest } from './factories/service';
+import {
+  SERVICE_COUNTERPARTY,
+  serviceInHouseExecutor,
+  serviceOperator,
+  serviceRequest,
+} from './factories/service';
 import {
   classification,
   fleetVehicle,
@@ -46,8 +60,13 @@ import { waybill } from './factories/waybill';
  * the list a second time (`usePruneMissingFilters`).
  */
 
-export const NORTH = objectDto({ id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' });
-export const SOUTH = objectDto({ id: 'obj-2', code: 'ОБ-2', name: 'ЖК Южный' });
+/*
+ * Sites carry their waste operators: the sites tab of Directories renders them in a column, and a
+ * site without the field would throw there and leave the tab to the error boundary — measured as
+ * a screen that asked nothing more, not as the screen the user sees.
+ */
+export const NORTH = objectDto({ id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный', operators: [] });
+export const SOUTH = objectDto({ id: 'obj-2', code: 'ОБ-2', name: 'ЖК Южный', operators: [] });
 export const LESSOR = operator({ id: 'cp-lessor', name: 'СтройАренда', type: 'mech_lessor' });
 const COUNTERPARTIES = [operator(), LESSOR, operator({ ...SERVICE_COUNTERPARTY, type: 'service' })];
 
@@ -98,6 +117,41 @@ export function sectionRoutes(user: AuthUser): RouteMap {
   };
 }
 
+/**
+ * What the shell asks on its own: the release notes for everyone (ADR 0077) and the two office
+ * equipment badges for those with a step in a request (ADR 0085, ADR 0141). The registration
+ * badge (`/users/pending-count`) is among the section routes: Administration asks it too.
+ */
+const SHELL_ROUTES: RouteMap = {
+  'GET /releases': () => json([]),
+  'GET /service-requests/waiting-count': () => json({ count: 0 }),
+  'GET /service-requests/unread-count': () => json({ count: 0 }),
+};
+
+/**
+ * Tabs a measurement visits after the first screen. They answer empty: a tab switch and a return
+ * to the browser tab refetch what is mounted, and none of these tabs asks more for a row it shows.
+ */
+export const VISITED_TAB_ROUTES: RouteMap = {
+  'GET /waste-requests/present': () => json(emptyList()),
+  'GET /vehicle-requests/on-site': () => json({ ...emptyList(), onDate: '2026-10-06' }),
+  'GET /vehicle-requests/on-site/summary': () =>
+    json({
+      total: 0,
+      objects: 0,
+      arrivedToday: 0,
+      leavingToday: 0,
+      earlyEndPending: 0,
+      shiftsPending: 0,
+    }),
+  'GET /service-requests/warranties': () => json(emptyList()),
+  'GET /office-equipment-consumables': () => json(emptyList()),
+  'GET /office-equipment-models': () => json(emptyList()),
+  'GET /garage/drivers': ({ query }) => json({ ...emptyList(), onDate: query.get('on') ?? '' }),
+  'GET /garage/drivers/summary': ({ query }) =>
+    json({ total: 0, free: 0, assigned: 0, documentsIncomplete: 0, onDate: query.get('on') ?? '' }),
+};
+
 /** The section's address comes from the shell registry, the only owner of section paths. */
 export function sectionPath(id: PortalShellSectionId): string {
   const section = SHELL_SECTIONS.find((candidate) => candidate.id === id);
@@ -128,7 +182,11 @@ export function mountSection(
   user: AuthUser,
   options: MountSectionOptions = {},
 ): ReturnType<typeof renderWithUser> & { http: HttpMock } {
-  const http = mockHttp({ ...sectionRoutes(user), ...options.routes });
+  const http = mockHttp({
+    ...sectionRoutes(user),
+    ...(options.shell ? SHELL_ROUTES : {}),
+    ...options.routes,
+  });
   const path = sectionPath(section);
   const body = <AsyncContent>{page}</AsyncContent>;
   const result = renderWithUser(
@@ -151,10 +209,10 @@ export function mountSection(
   return { ...result, http };
 }
 
-/** Requests logged since `from` (an index into the log), sorted by method and path. */
-export function requestsSince(http: HttpMock, from = 0): string[] {
+/** Requests logged from index `from` up to `to` (the end by default), sorted by method and path. */
+export function requestsSince(http: HttpMock, from = 0, to?: number): string[] {
   return http.calls
-    .slice(from)
+    .slice(from, to)
     .map((call) => `${call.method} ${call.path}`)
     .sort();
 }
@@ -169,4 +227,99 @@ export async function firstScreen(
   const { http, queryClient } = mountSection(page, section, user, options);
   await settle(queryClient);
   return requestsSince(http);
+}
+
+/**
+ * A section with tabs, the role that opens it and the two tabs a measurement walks between: the
+ * first tab of that role and its neighbour. Roles are those of the first-screen table (§1).
+ */
+export interface TabbedSection {
+  title: string;
+  page: ReactNode;
+  section: PortalShellSectionId;
+  user: AuthUser;
+  first: string;
+  neighbour: string | null;
+}
+
+export const TABBED_SECTIONS: readonly TabbedSection[] = [
+  {
+    title: 'Вывоз мусора, диспетчер (№1)',
+    page: <WasteRequestsPage />,
+    section: 'waste',
+    user: authUser(),
+    first: 'Заявки',
+    neighbour: 'На объекте',
+  },
+  {
+    title: 'Заказ ТС, диспетчер (№3)',
+    page: <VehicleRequestsPage />,
+    section: 'vehicle-requests',
+    user: authUser(),
+    first: 'Заказ автотехники',
+    neighbour: 'На объекте',
+  },
+  {
+    title: 'Механизация, диспетчер (№7)',
+    page: <MechRequestsPage />,
+    section: 'mechanization',
+    user: authUser(),
+    first: 'Заявки',
+    neighbour: 'В аренде',
+  },
+  {
+    title: 'Орг.техника, ИТ-служба (№8)',
+    page: <ServiceRequestsPage />,
+    section: 'office-equipment',
+    user: serviceInHouseExecutor(),
+    first: 'Заявки',
+    neighbour: 'Гарантии',
+  },
+  {
+    title: 'Орг.техника, диспетчер (№9)',
+    page: <ServiceRequestsPage />,
+    section: 'office-equipment',
+    user: authUser(),
+    first: 'Техника',
+    neighbour: 'Расходники',
+  },
+  {
+    title: 'Гараж, диспетчер (№6)',
+    page: <GaragePage />,
+    section: 'garage',
+    user: authUser(),
+    first: 'Техника',
+    neighbour: 'Водители',
+  },
+  {
+    title: 'Справочники, directories.write (№10)',
+    page: <DirectoriesPage />,
+    section: 'directories',
+    user: authUser(),
+    first: 'Объекты',
+    neighbour: 'Отделы',
+  },
+  {
+    // Without `directories.write` the equipment tab is the only one: there is nothing to switch to.
+    title: 'Справочники, только officeEquipment.write (№11)',
+    page: <DirectoriesPage />,
+    section: 'directories',
+    user: serviceOperator(),
+    first: 'Оргтехника',
+    neighbour: null,
+  },
+  {
+    title: 'Администрирование, администратор (№12)',
+    page: <AdministrationPage />,
+    section: 'admin',
+    user: authUser({ role: 'admin' }),
+    first: 'Пользователи',
+    neighbour: 'Права',
+  },
+];
+
+/** Opens a tab of the section the way a user does and waits until the screen is quiet. */
+export async function switchTab(queryClient: QueryClient, name: string): Promise<void> {
+  fireEvent.click(screen.getByRole('tab', { name }));
+  await settle(queryClient);
 }
