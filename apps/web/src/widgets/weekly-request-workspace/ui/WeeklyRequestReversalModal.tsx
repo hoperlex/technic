@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   type AnnulWeeklyRequestBody,
   weeklyItemKindLabels,
+  weeklyReturnDropsItem,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { weeklyRequestKeys, weeklyRequestsApi } from '@entities/weekly-request';
@@ -48,6 +49,8 @@ const STATE_TAGS = {
   reverted: { color: 'default', text: 'уже развёрнута' },
   blocked: { color: 'red', text: 'нельзя развернуть' },
 } as const;
+/** A row undone by hand before the return leaves the composition (ADR 0219). */
+const DROPPED_TAG = { color: 'orange', text: 'уйдёт из состава' } as const;
 
 export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit, pending }: Props) {
   const [form] = Form.useForm<FormValues>();
@@ -146,6 +149,13 @@ export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit,
               description={
                 <ul style={{ margin: 0, paddingInlineStart: 20 }}>
                   {texts.outcome && <li>{texts.outcome}</li>}
+                  {intent === 'return' && preview.items.some(weeklyReturnDropsItem) && (
+                    <li>
+                      Строки, уже развёрнутые вручную, уйдут из состава: повторная виза не должна
+                      применить их снова. Технику площадка увидит в предложении состава и решит
+                      заново.
+                    </li>
+                  )}
                   {preview.effectiveDate && (
                     <li>
                       Первый снимаемый день — {formatDateOnly(preview.effectiveDate)}
@@ -201,21 +211,27 @@ export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit,
               Что будет со строками
             </Typography.Paragraph>
             <ul style={{ margin: '0 0 16px', paddingInlineStart: 20 }}>
-              {preview.items.map((item) => (
-                <li key={item.itemId} style={{ marginBottom: 4 }}>
-                  <Tag color={STATE_TAGS[item.state].color}>{STATE_TAGS[item.state].text}</Tag>
-                  {item.displayNumber ? `${item.displayNumber} · ` : ''}
-                  {weeklyItemKindLabels[item.kind]}
-                  {item.reverse === 'shorten_to' && item.shortenTo
-                    ? ` — срок вернётся к ${formatDateOnly(item.shortenTo)}`
-                    : item.reverse === 'cancel'
-                      ? ' — заказ будет отменён'
-                      : item.reverse === 'release_leave'
-                        ? ' — решение об отъезде перестанет действовать'
-                        : ''}
-                  {item.reason ? ` — ${item.reason}` : ''}
-                </li>
-              ))}
+              {preview.items.map((item) => {
+                const tag =
+                  intent === 'return' && weeklyReturnDropsItem(item)
+                    ? DROPPED_TAG
+                    : STATE_TAGS[item.state];
+                return (
+                  <li key={item.itemId} style={{ marginBottom: 4 }}>
+                    <Tag color={tag.color}>{tag.text}</Tag>
+                    {item.displayNumber ? `${item.displayNumber} · ` : ''}
+                    {weeklyItemKindLabels[item.kind]}
+                    {item.reverse === 'shorten_to' && item.shortenTo
+                      ? ` — срок вернётся к ${formatDateOnly(item.shortenTo)}`
+                      : item.reverse === 'cancel'
+                        ? ' — заказ будет отменён'
+                        : item.reverse === 'release_leave'
+                          ? ' — решение об отъезде перестанет действовать'
+                          : ''}
+                    {item.reason ? ` — ${item.reason}` : ''}
+                  </li>
+                );
+              })}
             </ul>
 
             {preview.blockers.length > 0 && (

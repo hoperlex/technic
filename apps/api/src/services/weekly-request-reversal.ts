@@ -10,13 +10,18 @@ import {
 } from '@technic/contracts';
 import { db } from '../db/client';
 import { writeAudit } from '../lib/audit';
-import { assertWeeklyRequestScope, managesWeeklyRequestObject } from '../lib/access';
+import {
+  assertWeeklyRequestScope,
+  managesWeeklyRequestObject,
+  seesWholeWeeklyRequest,
+} from '../lib/access';
 import { err } from '../lib/errors';
 import type { Principal } from '../auth/principal';
 import {
   backdateAccessOf,
   backdateOrThrow,
   checkBackdate,
+  findCorrection,
   linkCorrectionRequests,
   runCorrection,
 } from './waybill-correction';
@@ -57,6 +62,15 @@ export async function previewWeeklyReversal(
   spec: WeeklyReversalSpec,
 ): Promise<WeeklyAnnulPreviewDto> {
   await assertWeeklyRequestReadable(p, weeklyId);
+  /*
+   * The plan lists every row with its order number, the pending weeks of the same orders and the
+   * titles of cancelled decisions. A lessor reads the week narrowed to their own rows (the card and
+   * the history are trimmed for them), and this answer would hand over the site's whole fleet next
+   * to them. A lessor never runs a reversal, so there is nothing for them to explain here either.
+   */
+  if (!seesWholeWeeklyRequest(p)) {
+    throw err.forbidden('Предпросмотр разворота недели арендодателю не открывается');
+  }
   // One moment for the whole answer: midnight between two `new Date()` calls would give the window
   // today from one boundary and yesterday from the other.
   const now = new Date();
@@ -186,7 +200,17 @@ export async function runWeeklyReversal(
   let repeated = false;
   let result: WeeklyReversalResultDto | null = null;
 
-  if (draft.requiresOperation) {
+  /*
+   * A repeat of an operation already done is recognized BEFORE the branch is read from the state —
+   * the approval route does the same (R31 ADR 0101). The first attempt takes the week out of
+   * `applied`, so the unlocked plan of the repeat says "nothing to reverse, no operation needed",
+   * and without this check a retry after a dropped connection would end in 422 on work its own
+   * first request has done. A found key sends the command to `runCorrection`, which checks the
+   * author and the fingerprint and returns the earlier outcome without calling `perform`.
+   */
+  const prior = body.correction ? await findCorrection(db, body.correction.operationId) : undefined;
+
+  if (draft.requiresOperation || prior) {
     assertReversalOperation(draft, body, spec.correctionRequired);
     const correction = body.correction!;
     const done = await runCorrection(

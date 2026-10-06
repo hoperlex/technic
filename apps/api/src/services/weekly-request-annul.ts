@@ -743,6 +743,7 @@ export function weeklyReversalPreviewDto(
       reason: state?.reason ?? '',
       reverse: state?.reverse ?? 'none',
       shortenTo: state?.shortenTo ?? null,
+      hadEffect: weeklyItemHadEffect(item.result),
     };
   });
 

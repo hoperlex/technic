@@ -1789,6 +1789,12 @@ export interface WeeklyAnnulItemDto {
   reverse: WeeklyAnnulReversal;
   /** Дата, к которой вернётся срок (`shorten_to`); `null` у остальных ходов. */
   shortenTo: string | null;
+  /**
+   * Whether the row had consequences at the approval (`weeklyItemHadEffect`). Together with
+   * `state = 'reverted'` it tells "undone by hand" from "never applied" — the return for
+   * re-approval (ADR 0219) drops the first kind from the composition and keeps the second.
+   */
+  hadEffect: boolean;
 }
 
 /** Лист ЭСМ-2 в ответе предпросмотра — номер показывается только держателю `waybills.read`. */
@@ -1962,6 +1968,7 @@ export const weeklyAnnulPreviewResponseSchema = z
           reason: z.string(),
           reverse: z.enum(WEEKLY_ANNUL_REVERSALS),
           shortenTo: dateOnlySchema.nullable(),
+          hadEffect: z.boolean(),
         })
         .strict(),
     ),
@@ -2080,6 +2087,21 @@ export function weeklyReturnHeaderBlocker(header: { status: WeeklyRequestStatus 
   }
   if (header.status === 'cancelled') return 'Заявка снята: возвращать на согласование нечего';
   return 'Заявка ещё не завизирована — она и так ждёт визы или собирается';
+}
+
+/**
+ * Whether the return drops this row from the composition: its consequence existed and was already
+ * undone by hand — an early end back to the snapshot, a created order cancelled or archived.
+ *
+ * Kept, such a row would be applied again by the next approval and silently overturn the manual
+ * decision: the extension of an order the dispatcher deliberately ended would come back. Dropped,
+ * it leaves the decision to the site, which sees the unit again in the composition suggestion.
+ */
+export function weeklyReturnDropsItem(item: {
+  state: WeeklyAnnulState;
+  hadEffect: boolean;
+}): boolean {
+  return item.state === 'reverted' && item.hadEffect;
 }
 
 /**

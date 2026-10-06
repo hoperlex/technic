@@ -77,6 +77,7 @@ function preview(over: Partial<WeeklyAnnulPreviewDto> = {}): WeeklyAnnulPreviewD
         reason: '',
         reverse: 'shorten_to',
         shortenTo: shiftDateKey(WEEK, -1),
+        hadEffect: true,
       },
     ],
     blockers: [],

@@ -1,7 +1,10 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import {
   canReturnWeeklyRequest,
+  formatVehicleRequestNumber,
   formatWeeklyRequestNumber,
+  weeklyItemHadEffect,
+  weeklyReturnDropsItem,
   WEEKLY_RETURN_CORRECTION_REQUIRED_MESSAGE,
   weeklyReturnHeaderBlocker,
   weeklyWeekLabel,
@@ -92,6 +95,28 @@ export async function applyWeeklyReturn(
     .returning({ id: weeklyVehicleRequests.id });
   if (!bumped) throw err.conflict();
 
+  /*
+   * Rows whose consequence was already undone by hand leave the composition (`weeklyReturnDropsItem`).
+   * Reset to `pending`, an extension the dispatcher ended back to the snapshot would pass the next
+   * approval again — its `expected_date_to` equals the snapshot by construction — and a created
+   * order cancelled by hand would be created anew. The unit itself is not lost: the composition
+   * suggestion offers it to the site again, and the site decides afresh.
+   */
+  const dropped = plan.items.filter((item) =>
+    weeklyReturnDropsItem({
+      state: plan.states.get(item.id)?.state ?? 'reverted',
+      hadEffect: weeklyItemHadEffect(item.result),
+    }),
+  );
+  if (dropped.length > 0) {
+    await tx.delete(weeklyVehicleRequestItems).where(
+      inArray(
+        weeklyVehicleRequestItems.id,
+        dropped.map((item) => item.id),
+      ),
+    );
+  }
+
   const rows = await tx
     .update(weeklyVehicleRequestItems)
     .set({
@@ -134,8 +159,32 @@ export async function applyWeeklyReturn(
         orderId: item.sourceRequestId ?? item.createdRequestId,
       })),
       reset: rows.length,
+      dropped: dropped.map((item) => item.id),
     },
   });
+  if (dropped.length > 0) {
+    // The composition changed without the site's edit, so it is told by its own event, in the
+    // shape the purge cleanup writes (`weekly-request-cleanup.ts`).
+    await tx.insert(weeklyVehicleRequestHistory).values({
+      weeklyRequestId: plan.header.id,
+      event: 'item_dropped',
+      changedBy: actor.id,
+      comment: 'Строки уже развёрнуты вручную до возврата на согласование',
+      payload: {
+        dropped: dropped.length,
+        items: dropped.map((item) => ({
+          itemId: item.id,
+          kind: item.kind,
+          position: item.position,
+          reason: plan.states.get(item.id)?.reason ?? '',
+          displayNumber:
+            (item.sourceRequestNum ?? item.createdRequestNum) === null
+              ? null
+              : formatVehicleRequestNumber((item.sourceRequestNum ?? item.createdRequestNum)!),
+        })),
+      },
+    });
+  }
 
   return { weeklyRequestId: plan.header.id, status: 'pending', ...effects };
 }

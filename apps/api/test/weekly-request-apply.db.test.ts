@@ -2817,6 +2817,108 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       expect((await weeklyRow(weekly.id))?.status).toBe('applied');
     }, 60_000);
 
+    it('строка, развёрнутая руками, уходит из состава и повторной визой не применяется', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const classification = ctx.ownVehicles[0]!;
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END), newItem(classification, W1, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+      // The term was returned to the snapshot by hand — as an early end would do it.
+      await ctx.db.execute(sql`
+        UPDATE special_equipment_request_details SET date_to = ${order.effectiveDateTo}
+        WHERE request_id = ${order.id}`);
+
+      const { preview, res } = await returnByPreview(
+        ctx.dispatcher.auth,
+        weekly.id,
+        applied.version,
+      );
+      const extendRow = preview.items.find((i: { kind: string }) => i.kind === 'extend');
+      expect(extendRow?.state).toBe('reverted');
+      expect(extendRow?.hadEffect).toBe(true);
+      expect(res.statusCode, res.body).toBe(200);
+
+      // Only the created-order row stays; the undone extension is gone and explained by an event.
+      const rows = await itemRows(weekly.id);
+      expect(rows.map((i) => i.kind)).toEqual(['new']);
+      const dropped = (await historyRows(weekly.id)).filter((h) => h.event === 'item_dropped');
+      expect(dropped).toHaveLength(1);
+
+      // The construction manager approves again: the manual early end is not overturned.
+      const header = await weeklyRow(weekly.id);
+      const again = await approveWeekly(ctx.rukstroy.auth, weekly.id, header!.version);
+      expect(again.statusCode, again.body).toBe(200);
+      expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
+    }, 90_000);
+
+    it('повтор по ключу операции после выполненного возврата отвечает прежним итогом', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
+      const operationId = randomUUID();
+      const preview = (await returnPreview(ctx.dispatcher.auth, weekly.id)).json();
+      const body = {
+        reason: 'Обрыв связи на возврате',
+        version: applied.version,
+        fingerprint: preview.fingerprint,
+        correction: { operationId, unlockWaybillIds: [] as string[] },
+      };
+      const done = await returnWeek(ctx.dispatcher.auth, weekly.id, {
+        reason: body.reason,
+        version: body.version,
+        fingerprint: body.fingerprint,
+      });
+      expect(done.statusCode, done.body).toBe(200);
+      /*
+       * The first attempt is simulated as committed under this key: a backdated return writes the
+       * journal row and the reversal in one transaction, so a found row means the work is done. The
+       * fingerprint is computed exactly as `runCorrection` does it for this body.
+       */
+      const { correctionFingerprint } = await import('../src/services/waybill-correction');
+      await ctx.db.execute(sql`
+        INSERT INTO waybill_corrections (operation_id, fingerprint, kind, reason, actor_user_id)
+        VALUES (${operationId},
+                ${correctionFingerprint({ kind: 'weekly_return', target: weekly.id, body })},
+                'weekly_return', ${body.reason}, ${ctx.dispatcher.id})`);
+      const eventsBefore = (await historyRows(weekly.id)).length;
+
+      const repeat = await returnWeek(ctx.dispatcher.auth, weekly.id, body);
+      // Not 422 "not approved yet": the key is recognized before the state is read.
+      expect(repeat.statusCode, repeat.body).toBe(200);
+      expect(repeat.json().status).toBe('pending');
+      expect((await historyRows(weekly.id)).length).toBe(eventsBefore);
+      expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
+    }, 60_000);
+
+    it('арендодателю предпросмотр разворота не открывается: в нём весь парк площадки', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      await submitAndApprove(weekly);
+      for (const path of ['return', 'annul']) {
+        const res = await inject(
+          'GET',
+          `/api/v1/weekly-vehicle-requests/${weekly.id}/${path}`,
+          ctx.lessor.auth,
+        );
+        // 403 when the card is readable to them, 404 when it is not: never a 200 with the plan.
+        expect([403, 404], res.body).toContain(res.statusCode);
+      }
+    }, 60_000);
+
     it('журнал коррекций принимает свой вид операции возврата', async () => {
       // The correction branch writes `weekly_return`; the CHECK of migration 0358 must admit it,
       // or the first backdated return dies with 23514 after every check has passed.

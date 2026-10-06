@@ -6,6 +6,7 @@ import {
   canAnnulWeeklyRequest,
   canReturnWeeklyRequest,
   returnWeeklyRequestSchema,
+  weeklyReturnDropsItem,
   weeklyReturnHeaderBlocker,
   createWeeklyRequestSchema,
   extendBlocker,
@@ -951,6 +952,13 @@ describe('возврат применённой недели на согласо
     expect(weeklyReturnHeaderBlocker({ status: 'pending' })).toContain('ещё не завизирована');
     expect(weeklyReturnHeaderBlocker({ status: 'draft' })).toContain('ещё не завизирована');
     expect(weeklyReturnHeaderBlocker({ status: 'cancelled' })).toContain('снята');
+  });
+
+  it('из состава уходит только строка, развёрнутая руками, а не неприменённая', () => {
+    expect(weeklyReturnDropsItem({ state: 'reverted', hadEffect: true })).toBe(true);
+    // A skipped row never applied: it stays and is re-evaluated by the next approval.
+    expect(weeklyReturnDropsItem({ state: 'reverted', hadEffect: false })).toBe(false);
+    expect(weeklyReturnDropsItem({ state: 'reversible', hadEffect: true })).toBe(false);
   });
 
   it('тело возврата — тело аннулирования: одна схема на одни и те же последствия', () => {
