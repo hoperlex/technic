@@ -388,7 +388,8 @@ export const weeklyRequestStatusColors: Record<WeeklyRequestStatus, string> = {
 
 /**
  * Whether the **composition** may be edited. Before approval — yes, by anyone holding the right in
- * their scope; after it the request is history: an applied or annulled composition never changes.
+ * their scope; after it the request is history: nobody edits an applied or annulled composition.
+ * The only change it sees is the return for re-approval below, which takes the week back first.
  *
  * Since ADR 0218 this no longer means "nothing can be done after approval". Annulment reverses the
  * **consequences** and keeps the rows with their results: they answer "what was decided and what
@@ -1592,16 +1593,18 @@ export function weeklyAnnulNeedsSiteScope(
 }
 
 /**
- * Были ли у строки следствия в заказах — то есть есть ли что закрывать документом.
+ * Whether the row had consequences in the orders — that is, whether the document has anything to
+ * close.
  *
- * Отвечает `result`, а не состояние обратного хода: «уже развёрнута» и «следствий не было» — два
- * разных ответа, которые `weeklyAnnulItemState` сводит в одно значение `reverted`. Первое означает,
- * что неделя сработала и её след убрали руками; второе — что строка не применялась вовсе
- * (`skipped`, `pending`), и закрывать по ней нечего.
+ * Answered by `result`, not by the reversal state: "already undone" and "never had consequences"
+ * are two different answers that `weeklyAnnulItemState` folds into one value, `reverted`. The first
+ * means the week worked and its trace was removed by hand; the second means the row never applied
+ * (`skipped`, `pending`), and there is nothing to close by it.
  *
- * Разница решает, можно ли аннулировать неделю (решение 4 ADR 0218): документ, все следствия
- * которого уже развёрнуты поштучно, обязан закрываться — иначе он навсегда остаётся «Применённой»
- * и держит пару «объект + неделя», а человек, начавший разбор руками, не может его закончить.
+ * The difference decides two things. Whether the week may be reversed at all (ADR 0218 decision
+ * 4): a document whose consequences were all undone row by row must still close, or it stays
+ * applied forever and holds the "object + week" pair. And, for the return (ADR 0219), which rows
+ * leave the composition (`weeklyReturnDropsItem`).
  */
 export function weeklyItemHadEffect(result: WeeklyRequestItemResult): boolean {
   return result === 'extended' || result === 'created' || result === 'left';
@@ -1743,11 +1746,12 @@ function weeklyAnnulLaterWeeksMessage(refs: { num: number }[]): string {
 }
 
 /**
- * Почему шапку аннулировать нельзя — текстом; `null` — можно.
+ * Why the header cannot be annulled — as text; `null` — it can. The return has its own rule,
+ * `weeklyReturnHeaderBlocker`.
  *
- * Спрашивается ровно статус: запись операции `weekly` у проведённой задним числом недели шапку
- * **не** запирает (решение 2), её следствия разворачивает ветвь коррекции тем же правом, которым
- * неделю провели.
+ * Only the status is asked: a `weekly` operation of a week conducted retroactively does **not**
+ * lock the header (ADR 0218 decision 2) — its consequences are reversed by the correction branch
+ * with the same right the week was conducted with.
  */
 export function weeklyAnnulHeaderBlocker(header: { status: WeeklyRequestStatus }): string | null {
   if (header.status === 'annulled') return 'Заявка уже аннулирована';
@@ -1758,14 +1762,14 @@ export function weeklyAnnulHeaderBlocker(header: { status: WeeklyRequestStatus }
 }
 
 /**
- * Эффективная дата операции — **первый снимаемый день**: `min(previous_date_to + 1)` по строкам,
- * которые аннулирование действительно сократит. `null` — срок не двигается вовсе (строк `extend`
- * к развороту нет), и прошлого операция не трогает.
+ * Effective date of a reversal (annulment or return) — the **first removed day**:
+ * `min(previous_date_to + 1)` over the rows the reversal actually shortens. `null` — no term moves
+ * at all (no `extend` row to reverse), and the operation does not touch the past.
  *
- * Воскресенье недели (приём проведения, ADR 0116 п. 7) здесь солгало бы в обе стороны: у недели,
- * чей первый снимаемый день ещё впереди, оно уже прошло бы, а у строки с «дырой» до понедельника —
- * наоборот, стояло бы позже реально переписываемого дня. Предмет у аннулирования — снимаемые дни,
- * и первый из них отвечает на вопрос «переписываем ли мы прошлое» точнее всякого другого.
+ * The week's Sunday (the conduct's way, ADR 0116 item 7) would lie both ways here: for a week whose
+ * first removed day is still ahead it would already be past, and for a row with a "gap" before
+ * Monday it would stand later than the day actually rewritten. The subject of a reversal is the
+ * removed days, and the first of them answers "are we rewriting the past" better than any other.
  */
 export function weeklyAnnulEffectiveDate(
   states: { reverse: WeeklyAnnulReversal; previousDateTo: string | null }[],
@@ -1783,7 +1787,10 @@ export function weeklyAnnulEffectiveDate(
 export interface WeeklyAnnulItemDto {
   itemId: string;
   kind: WeeklyRequestItemKind;
-  /** "Экскаватор (продление)" — the same text as in the checklist. */
+  /**
+   * The row label: the kind word after the type name ("Техника (продление)"). The plan does not
+   * read the type name, so the label falls back to "Техника"; the window labels rows by `kind`.
+   */
   title: string;
   requestId: string | null;
   displayNumber: string | null;

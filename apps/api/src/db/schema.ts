@@ -8257,10 +8257,10 @@ export const waybillCorrections = pgTable(
     payload: jsonb('payload').notNull().default({}),
   },
   (t) => ({
-    // `weekly` (миграция 0157) — проведение недельной заявки на просроченную неделю. Свой вид, а не
-    // `esm2`: у той операции предмет — бумага одной заявки, а здесь одним решением двигаются сроки
-    // целого состава, и в журнале эти две команды обязаны различаться — иначе «что делали задним
-    // числом» отвечается одним словом на два разных события.
+    // The list of operation kinds; the registry with reasons is the `$type` above. `weekly`
+    // (migration 0157) conducts an overdue weekly request, `weekly_annul` (0356) and
+    // `weekly_return` (0358) reverse an applied one: the journal must answer "what was done in the
+    // past" with a different word for each, or opposite events would read alike.
     kindCheck: check(
       'waybill_corrections_kind_check',
       sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail', 'day_batch', 'weekly_annul', 'weekly_return')`,

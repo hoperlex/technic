@@ -179,7 +179,11 @@ export interface PlanWeeklyAnnulParams {
 
 const ITEM_TITLE_FALLBACK = 'Техника';
 
-/** The row label — the same text as in the checklist: "Экскаватор (продление)". */
+/**
+ * The row label: the kind word after the type name. The plan does not read the type name
+ * (`vehicleTypeName` stays `null`), so it reads "Техника (продление)"; the window labels rows by
+ * `kind` and does not use this field.
+ */
 function titleOf(item: LockedItem): string {
   const suffix = item.kind === 'extend' ? 'продление' : item.kind === 'new' ? 'новая' : 'уезжает';
   return `${item.vehicleTypeName ?? ITEM_TITLE_FALLBACK} (${suffix})`;

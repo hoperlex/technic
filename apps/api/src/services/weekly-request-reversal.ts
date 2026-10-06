@@ -203,7 +203,7 @@ export async function runWeeklyReversal(
 
   /*
    * A repeat of an operation already done is recognized BEFORE the branch is read from the state —
-   * the approval route does the same (R31 ADR 0101). The first attempt takes the week out of
+   * the approval route does the same (ADR 0101 decision 9). The first attempt takes the week out of
    * `applied`, so the unlocked plan of the repeat says "nothing to reverse, no operation needed",
    * and without this check a retry after a dropped connection would end in 422 on work its own
    * first request has done. A found key sends the command to `runCorrection`, which checks the
@@ -229,12 +229,19 @@ export async function runWeeklyReversal(
         /*
          * The right is asked on EVERY attempt, the repeat included: silently answering someone
          * whose right was revoked between attempts leaks as much as running the operation without
-         * it. Depth is computed from the unlocked plan: on a repeat that plan belongs to a week
-         * already taken out of `applied`, has no effective date, and `today` stands in — so depth
-         * passes, and the depth that mattered was checked by the first attempt.
+         * it. It is the right of the branch the plan chose: an operation is also opened in the
+         * ordinary branch when only planned decisions are cancelled, and asking the past right
+         * there would refuse with 403 the site manager whom the preview told "allowed".
+         *
+         * Depth is asked only of a first attempt, as at the approval: a found key means the work is
+         * done, and depth recomputed now — the week may have been approved again in between —
+         * could refuse an answer to work already done.
          */
         authorize: () => {
-          if (!spec.canRun(p, true)) throw err.forbidden(spec.rightRefusal(true));
+          if (!spec.canRun(p, draft.backdated)) {
+            throw err.forbidden(spec.rightRefusal(draft.backdated));
+          }
+          if (prior) return false;
           return backdateOrThrow(
             checkBackdate({
               effectiveDate: draft.effectiveDate ?? today,

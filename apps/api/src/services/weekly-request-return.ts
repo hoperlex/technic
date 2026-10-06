@@ -166,8 +166,9 @@ async function applyWeeklyReturn(
     },
   });
   if (dropped.length > 0) {
-    // The composition changed without the site's edit, so it is told by its own event, in the
-    // shape the purge cleanup writes (`weekly-request-cleanup.ts`).
+    // The composition changed without the site's edit, so it is told by its own event — the same
+    // event kind the purge cleanup writes (`weekly-request-cleanup.ts`); the items carry the reason
+    // and the order number in addition to what the cleanup records.
     await tx.insert(weeklyVehicleRequestHistory).values({
       weeklyRequestId: plan.header.id,
       event: 'item_dropped',
