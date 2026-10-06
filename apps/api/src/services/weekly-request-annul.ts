@@ -349,11 +349,12 @@ async function loadSheetPreviews(
 }
 
 /**
- * Посчитать аннулирование целиком: что развернётся, что помешает и какой ценой.
+ * Compute a reversal of the week in full — for annulment and for the return alike: what will be
+ * reversed, what stands in the way and at what price.
  *
- * Транзакция приходит читающей у предпросмотра и пишущей у команды — расчёт **ничего не пишет** в
- * обоих случаях (ADR 0211 решение 1): первая запись идёт только после сверки отпечатка и
- * авторизации.
+ * The transaction is a reading one for the preview and a writing one for the command — the plan
+ * **writes nothing** in both cases (ADR 0211 decision 1): the first write comes only after the
+ * fingerprint check and the authorization.
  */
 export async function planWeeklyAnnul(
   tx: Reader,
@@ -796,7 +797,10 @@ export interface WeeklyReversalParams {
 }
 
 /** What the reversal did to the orders — the common part of both command results. */
-export type WeeklyReversalEffects = Omit<WeeklyReversalResultDto, 'weeklyRequestId' | 'status'>;
+type WeeklyReversalEffects = Omit<
+  WeeklyReversalResultDto,
+  'weeklyRequestId' | 'status' | 'repeated'
+>;
 
 /**
  * Reverse every consequence of the applied week: terms back to the snapshots, created orders
@@ -811,8 +815,11 @@ export type WeeklyReversalEffects = Omit<WeeklyReversalResultDto, 'weeklyRequest
 export async function reverseWeeklyEffects(
   tx: Tx,
   params: WeeklyReversalParams & {
-    /** Backstop door: the refusal names the command the person actually ran. */
-    door: 'weekly_annul' | 'weekly_return';
+    /**
+     * The command's journal kind; the backstop door bears the same name, so the refusal names the
+     * command the person actually ran.
+     */
+    kind: WeeklyReversalSpec['kind'];
     /** "НЗ-12 (week) <what the command did>: reason" — goes to sheets and order histories. */
     baseReason: string;
   },
@@ -828,7 +835,7 @@ export async function reverseWeeklyEffects(
   const verdicts: AssignmentBackstopVerdict[] = [];
   for (const row of plan.extend) {
     const verdict = await evaluateAssignmentBackstop(tx, {
-      door: params.door,
+      door: params.kind,
       requestId: row.requestId,
       asOf: plan.asOf,
       // The reversal opens no days, it removes them, and tail decisions are not asked: cancelling
@@ -838,7 +845,7 @@ export async function reverseWeeklyEffects(
     if (verdict) verdicts.push(verdict);
   }
   await applyAssignmentBackstop(tx, {
-    door: params.door,
+    door: params.kind,
     actor,
     verdicts,
     reason: baseReason,
@@ -1053,7 +1060,7 @@ async function applyWeeklyAnnul(
   const weeklyNumber = formatWeeklyRequestNumber(plan.header.num);
   const effects = await reverseWeeklyEffects(tx, {
     ...params,
-    door: 'weekly_annul',
+    kind: 'weekly_annul',
     baseReason: `Недельная заявка ${weeklyNumber} (${weekLabel}) аннулирована: ${params.reason}`,
   });
 

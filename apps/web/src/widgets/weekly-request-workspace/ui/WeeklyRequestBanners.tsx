@@ -2,6 +2,7 @@ import { Alert, Button, Space } from 'antd';
 import type { WeeklyItemCounts, WeeklyVehicleRequestDto } from '@technic/contracts';
 import { formatDateOnly, formatDateTime } from '@shared/lib';
 import { weeklyOverdueWord } from '@entities/weekly-request';
+import { WEEKLY_RETURN_OVERDUE_NOTE } from '../model/reversalTexts';
 
 /**
  * Weekly request states in words (section 9). Each is easy to reduce to a faceless notice, and then
@@ -86,8 +87,10 @@ export function WeeklyRequestBanners(props: Props) {
             <>
               {props.returned.reason}
               <br />
-              Сроки и порождённые заказы развёрнуты. Дополните состав — руководитель строительства
-              завизирует неделю заново.
+              Сроки и порождённые заказы развёрнуты.{' '}
+              {props.overdue
+                ? WEEKLY_RETURN_OVERDUE_NOTE
+                : 'Дополните состав — руководитель строительства завизирует неделю заново.'}
             </>
           }
         />

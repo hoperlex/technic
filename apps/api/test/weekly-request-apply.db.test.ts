@@ -2863,9 +2863,8 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
 
     /**
      * A repeat by operation key after the first attempt committed. The first attempt is simulated
-     * as committed under the key: a backdated reversal writes the journal row, its payload and the
-     * work in one transaction, so the row is written here with the payload the command would have
-     * saved — the counters of the real first answer. The fingerprint is computed exactly as
+     * as committed under the key: a backdated reversal writes the journal row and the work in one
+     * transaction, so a found row means the work is done. The fingerprint is computed exactly as
      * `runCorrection` does it. The real correction branch end to end is not exercised: a backdated
      * week needs orders whose term ended in the past, which the order API does not create.
      */
@@ -2893,30 +2892,30 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         fingerprint: body.fingerprint,
       });
       expect(first.statusCode, first.body).toBe(200);
+      expect(first.json().repeated).toBeUndefined();
       const kind = command === 'return' ? 'weekly_return' : 'weekly_annul';
       const { correctionFingerprint } = await import('../src/services/waybill-correction');
-      const saved = first.json();
+      // The insert also proves that the CHECK of migration 0358 admits `weekly_return`.
       await ctx.db.execute(sql`
-        INSERT INTO waybill_corrections
-          (operation_id, fingerprint, kind, reason, actor_user_id, payload)
+        INSERT INTO waybill_corrections (operation_id, fingerprint, kind, reason, actor_user_id)
         VALUES (${operationId},
                 ${correctionFingerprint({ kind, target: weekly.id, body })},
-                ${kind}, ${body.reason}, ${ctx.dispatcher.id},
-                ${JSON.stringify({
-                  shortened: saved.shortened,
-                  cancelled: saved.cancelled,
-                  released: saved.released,
-                  esm2: saved.esm2,
-                })}::jsonb)`);
+                ${kind}, ${body.reason}, ${ctx.dispatcher.id})`);
       try {
         const eventsBefore = (await historyRows(weekly.id)).length;
         const repeat = await inject('POST', url, ctx.dispatcher.auth, body);
         // Not 422 "not approved yet": the key is recognized before the branch is read from the
-        // state. The CHECK of migration 0358 admitting `weekly_return` is proven by the insert.
+        // state, and the answer is built from the state the first attempt left (ADR 0101 р. 9).
         expect(repeat.statusCode, repeat.body).toBe(200);
-        // The person who retried sees the result they missed — the counters of the first attempt.
-        expect(repeat.json()).toEqual(saved);
-        expect(saved.shortened).toHaveLength(1);
+        expect(repeat.json()).toEqual({
+          weeklyRequestId: weekly.id,
+          status: command === 'return' ? 'pending' : 'annulled',
+          shortened: [],
+          cancelled: [],
+          released: 0,
+          esm2: { cancelled: 0, issued: 0 },
+          repeated: true,
+        });
         // And nothing moved a second time.
         expect((await historyRows(weekly.id)).length).toBe(eventsBefore);
         expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
@@ -2927,11 +2926,11 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       }
     }
 
-    it('повтор по ключу операции после выполненного возврата отвечает итогом первой попытки', async () => {
+    it('повтор по ключу операции после выполненного возврата ничего не двигает и помечен повтором', async () => {
       await repeatAfterCommit('return');
     }, 60_000);
 
-    it('повтор по ключу операции после выполненного аннулирования отвечает итогом первой попытки', async () => {
+    it('повтор по ключу операции после выполненного аннулирования ничего не двигает и помечен повтором', async () => {
       await repeatAfterCommit('annul');
     }, 60_000);
 

@@ -61,7 +61,7 @@ async function applyWeeklyReturn(
   const weeklyNumber = formatWeeklyRequestNumber(plan.header.num);
   const effects = await reverseWeeklyEffects(tx, {
     ...params,
-    door: 'weekly_return',
+    kind: 'weekly_return',
     baseReason: `Недельная заявка ${weeklyNumber} (${weekLabel}) возвращена на согласование: ${params.reason}`,
   });
 

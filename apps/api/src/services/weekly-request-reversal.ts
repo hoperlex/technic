@@ -7,9 +7,7 @@ import {
   type WeeklyAnnulPreviewDto,
   type WeeklyReversalResultDto,
 } from '@technic/contracts';
-import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { waybillCorrections } from '../db/schema';
 import { writeAudit } from '../lib/audit';
 import {
   assertWeeklyRequestScope,
@@ -200,7 +198,6 @@ export async function runWeeklyReversal(
 
   let repeated = false;
   let result: WeeklyReversalResultDto | null = null;
-  let operationId: string | null = null;
 
   /*
    * A repeat of an operation already done is recognized BEFORE the branch is read from the state —
@@ -208,8 +205,7 @@ export async function runWeeklyReversal(
    * `applied`, so the unlocked plan of the repeat says "nothing to reverse, no operation needed",
    * and without this check a retry after a dropped connection would end in 422 on work its own
    * first request has done. A found key sends the command to `runCorrection`, which checks the
-   * author and the fingerprint and does not call `perform`; the answer is then read from the
-   * operation's own payload (`repeatedOutcome`).
+   * author and the fingerprint and does not call `perform`.
    */
   const prior = body.correction ? await findCorrection(db, body.correction.operationId) : undefined;
 
@@ -229,10 +225,11 @@ export async function runWeeklyReversal(
       },
       {
         /*
-         * The right is asked on EVERY attempt, the repeat included: silently returning the earlier
-         * result to someone whose right was revoked between attempts leaks as much as running the
-         * operation without it. Depth stays checked by the first attempt: the second one does no
-         * work, and recomputed tomorrow it would refuse a result already obtained.
+         * The right is asked on EVERY attempt, the repeat included: silently answering someone
+         * whose right was revoked between attempts leaks as much as running the operation without
+         * it. Depth is computed from the unlocked plan: on a repeat that plan belongs to a week
+         * already taken out of `applied`, has no effective date, and `today` stands in — so depth
+         * passes, and the depth that mattered was checked by the first attempt.
          */
         authorize: () => {
           if (!spec.canRun(p, true)) throw err.forbidden(spec.rightRefusal(true));
@@ -269,18 +266,26 @@ export async function runWeeklyReversal(
       },
     );
     repeated = done.repeated;
-    operationId = done.correction.id;
   } else {
     result = await db.transaction(async (tx) => reverseInTx(tx, null));
   }
 
-  const outcome: WeeklyReversalResultDto =
-    result ??
-    (await repeatedOutcome({
-      correctionId: operationId!,
-      weeklyRequestId: draft.header.id,
-      status: spec.resultStatus,
-    }));
+  /*
+   * A repeat after a dropped connection: `perform` was not called, so there is no result of this
+   * request. The answer is built from the state the first attempt left (ADR 0101 decision 9) — the
+   * status — and marked `repeated`: the counters cannot be rebuilt from the state, they stay in the
+   * week history and the operation journal, and empty counters without the mark would read as
+   * "nothing was reversed".
+   */
+  const outcome: WeeklyReversalResultDto = result ?? {
+    weeklyRequestId: draft.header.id,
+    status: spec.resultStatus,
+    shortened: [],
+    cancelled: [],
+    released: 0,
+    esm2: { cancelled: 0, issued: 0 },
+    repeated: true,
+  };
 
   // Audit on top and in addition: the week history is written in the same transaction (ADR 0085
   // item 16), while `writeAudit` does not fail the operation on a write error by design.
@@ -299,33 +304,4 @@ export async function runWeeklyReversal(
     },
   });
   return outcome;
-}
-
-/**
- * The answer to a repeat after a dropped connection: `perform` was not called, so the counters come
- * from the payload the first attempt saved with its operation — the same transaction that did the
- * work, so the payload describes exactly what was reversed. The person who retried sees the result
- * they missed, not an empty report of a command that did nothing.
- *
- * Missing fields fall back to empty values rather than failing the answer: the work is done either
- * way, and an older payload shape must not turn a successful repeat into an error.
- */
-async function repeatedOutcome(params: {
-  correctionId: string;
-  weeklyRequestId: string;
-  status: WeeklyReversalResultDto['status'];
-}): Promise<WeeklyReversalResultDto> {
-  const [row] = await db
-    .select({ payload: waybillCorrections.payload })
-    .from(waybillCorrections)
-    .where(eq(waybillCorrections.id, params.correctionId));
-  const saved = (row?.payload ?? {}) as Partial<WeeklyReversalResultDto>;
-  return {
-    weeklyRequestId: params.weeklyRequestId,
-    status: params.status,
-    shortened: saved.shortened ?? [],
-    cancelled: saved.cancelled ?? [],
-    released: saved.released ?? 0,
-    esm2: saved.esm2 ?? { cancelled: 0, issued: 0 },
-  };
 }

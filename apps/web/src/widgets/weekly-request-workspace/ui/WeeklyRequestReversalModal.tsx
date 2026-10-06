@@ -11,7 +11,11 @@ import {
 import { weeklyRequestKeys, weeklyRequestsApi } from '@entities/weekly-request';
 import { FormModal } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
-import { WEEKLY_REVERSAL_TEXTS, type WeeklyReversalIntent } from '../model/reversalTexts';
+import {
+  WEEKLY_RETURN_OVERDUE_NOTE,
+  WEEKLY_REVERSAL_TEXTS,
+  type WeeklyReversalIntent,
+} from '../model/reversalTexts';
 
 /**
  * Reversal of an applied week — annulment (ADR 0218) or return for re-approval (ADR 0219).
@@ -165,10 +169,7 @@ export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit,
                       </li>
                     )}
                   {intent === 'return' && isWeeklyWeekOverdue(preview.weekStart, preview.today) && (
-                    <li>
-                      Неделя уже началась: дополнить состав и провести её заново сможет только
-                      диспетчер или администратор.
-                    </li>
+                    <li>{WEEKLY_RETURN_OVERDUE_NOTE}</li>
                   )}
                   {preview.effectiveDate && (
                     <li>

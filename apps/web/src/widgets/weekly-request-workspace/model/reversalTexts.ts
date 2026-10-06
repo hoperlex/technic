@@ -63,3 +63,11 @@ export const WEEKLY_REVERSAL_TEXTS: Record<WeeklyReversalIntent, ReversalTexts> 
     done: 'Неделя возвращена на согласование',
   },
 };
+
+/**
+ * What a returned week that has already started needs: editing a started week and conducting it
+ * take the past right (ADR 0116), so the site and the construction manager can do neither. Said by
+ * the window before the return and by the banner after it — one text, so the two never disagree.
+ */
+export const WEEKLY_RETURN_OVERDUE_NOTE =
+  'Неделя уже началась: дополнить состав и провести её заново может только тот, у кого есть право коррекции задним числом.';

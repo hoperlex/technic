@@ -54,7 +54,15 @@ export function useWeeklyReversal(params: {
         result.cancelled.length > 0 ? `заказов отменено: ${result.cancelled.length}` : null,
         result.esm2.cancelled > 0 ? `листов аннулировано: ${result.esm2.cancelled}` : null,
       ].filter((part) => part !== null);
-      message.success(parts.length > 0 ? `${texts.done} — ${parts.join(', ')}` : texts.done);
+      // A repeat after a dropped connection carries no counters (ADR 0101 decision 9): the first
+      // attempt did the work, and its numbers are in the week history.
+      message.success(
+        result.repeated
+          ? `${texts.done} — запрос повторён, итог первой попытки в истории недели`
+          : parts.length > 0
+            ? `${texts.done} — ${parts.join(', ')}`
+            : texts.done,
+      );
       params.onSettled();
     },
     onError: params.onError,

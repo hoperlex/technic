@@ -142,8 +142,9 @@ export const weeklyRequestsApi = {
    * the correction branch adds the operation key and the sheets named for reissue.
    *
    * A repeat with the same `operationId` is not an error but the answer to a dropped connection:
-   * the server returns the counters of the first attempt from the operation's journal payload and
-   * moves nothing a second time. The window invents the key before sending and keeps it.
+   * the server moves nothing a second time and answers from the state the first attempt left, with
+   * `repeated: true` and no counters (ADR 0101 decision 9). The window invents the key before
+   * sending and keeps it.
    */
   annul: (id: string, body: AnnulWeeklyRequestBody) =>
     apiFetch<WeeklyReversalResultDto>(`/weekly-vehicle-requests/${id}/annul`, {
@@ -158,8 +159,7 @@ export const weeklyRequestsApi = {
     apiFetch<WeeklyAnnulPreviewDto>(`/weekly-vehicle-requests/${id}/return`),
   /**
    * Return an applied week to "awaiting approval". Same body as annulment, same idempotency: a
-   * repeat with the same `operationId` answers with the counters of the first attempt, read from
-   * the operation's journal payload, and moves nothing again.
+   * repeat with the same `operationId` moves nothing again and answers with `repeated: true`.
    */
   returnToApproval: (id: string, body: ReturnWeeklyRequestBody) =>
     apiFetch<WeeklyReversalResultDto>(`/weekly-vehicle-requests/${id}/return`, {

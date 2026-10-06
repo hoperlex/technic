@@ -62,8 +62,8 @@ interface Props {
    */
   onAnnul: (() => void) | null;
   /**
-   * Return an applied week for re-approval (ADR 0219); `null` — no button: the week is not applied
-   * or the viewer is neither dispatcher nor administrator.
+   * Return an applied week for re-approval (ADR 0219); `null` — no button: the contract header rule
+   * refuses the week or the viewer lacks the return right.
    */
   onReturn: (() => void) | null;
 }

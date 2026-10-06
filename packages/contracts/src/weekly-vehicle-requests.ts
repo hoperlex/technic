@@ -336,7 +336,8 @@ export function weeklyWeekBlocker(
  * "apply": approval applies the request in the same transaction (R6), so `applied` means exactly
  * "approved", and a state "approved, yet no term moved" does not exist.
  *
- * One edge goes back (ADR 0219): `applied → pending`, the return for re-approval. It reverses every
+ * The only edge out of `applied` back (ADR 0219) is `applied → pending`, the return for re-approval
+ * (rejection, `pending → draft`, happens before approval). It reverses every
  * consequence and clears the approval, so the invariant above holds on both sides of it — a
  * returned week is an ordinary pending one, and its next approval applies it from scratch.
  *
@@ -1850,16 +1851,16 @@ export interface WeeklyAnnulPreviewDto {
   weeklyRequestId: string;
   weekStart: string;
   weekLabel: string;
-  /** Сегодня по МСК: окно считает им всё то же, что сервер, и не спрашивает часы браузера. */
+  /** Today in Moscow: the window computes everything by it, as the server does, not by the browser clock. */
   today: string;
   /**
-   * Эффективная дата операции — первый снимаемый день; `null` — срок не двигается.
-   * Ею объясняется ветвь, и ею же считается глубина.
+   * Effective date of the operation — the first removed day; `null` — no term moves. It explains
+   * the branch, and the depth is measured by it.
    */
   effectiveDate: string | null;
-  /** Ветвь коррекции: вердикт того же `backdateGuard`, что решит на команде. */
+  /** Correction branch: the verdict of the same `backdateGuard` that decides on the command. */
   backdated: boolean;
-  /** Нужны ли ключ операции и причина в журнале: ветвь коррекции **или** гасимые группы. */
+  /** Whether an operation key and a journal reason are needed: correction branch OR cancelled groups. */
   requiresOperation: boolean;
   /** The subject's depth floor; `null` — no limit (`waybills.correctBeyondLimit`). */
   correctionFloor: string | null;
@@ -1868,26 +1869,26 @@ export interface WeeklyAnnulPreviewDto {
   /** Why not — in the order the command would refuse; `null` — allowed. */
   blockedReason: string | null;
   items: WeeklyAnnulItemDto[];
-  /** Препятствия, которые знает только план: подпись дня, заморозка, незваный лист. */
+  /** Obstacles only the plan knows: a signed day, a frozen day, an unnamed worked sheet. */
   blockers: WeeklyAnnulBlockerDto[];
   paper: WeeklyAnnulPaperDto;
   /**
-   * Листы отработанных недель, которые придётся назвать поимённо (`correction.unlockWaybillIds`,
-   * ADR 0116 п. 11). Номера — только держателю `waybills.read`; остальным `null`, и о том, что
-   * называть есть что, отвечает `unlockableCount`.
+   * Sheets of worked weeks that must be named one by one (`correction.unlockWaybillIds`, ADR 0116
+   * item 11). Numbers only for a `waybills.read` holder; `null` for others, and whether there is
+   * anything to name is answered by `unlockableCount`.
    */
   unlockable: WeeklyAnnulSheetDto[] | null;
   unlockableCount: number;
   cancelGroups: WeeklyAnnulCancelGroupDto[];
-  /** Отпечаток перечня гасимых групп; `null` — гасить нечего. */
+  /** Fingerprint of the cancelled groups list; `null` — nothing to cancel. */
   cancelGroupsFingerprint: string | null;
-  /** Предупреждения по выпускаемым листам — обезличенные, как у визы досрочного завершения. */
+  /** Warnings on the sheets to issue — depersonalized, as at the early-end approval. */
   issues: { issueKey: number; codes: string[]; warningFingerprint: string }[];
-  /** Дни линейных заказов, которые уйдут из рейсов. */
+  /** Days of linear orders that will leave routes. */
   linearDays: { detachable: string[]; frozen: string[] };
-  /** Черновики смен на снимаемых днях — их удалит команда. */
+  /** Shift drafts on the removed days — the command deletes them. */
   shifts: string[];
-  /** Недели в работе по тем же заказам: после разворота их строки станут «срок изменился». */
+  /** Weeks in progress on the same orders: after the reversal their rows become "term changed". */
   pendingWeeks: string[];
   fingerprint: string;
   asOf: string;
@@ -2051,6 +2052,13 @@ export interface WeeklyReversalResultDto {
   cancelled: { requestId: string; displayNumber: string }[];
   released: number;
   esm2: { cancelled: number; issued: number };
+  /**
+   * A repeat by operation key after a dropped connection: the first attempt did the work, and this
+   * answer is built from the state it left (ADR 0101 decision 9) — the status, not the counters,
+   * which cannot be rebuilt from the state and stay in the week history and the operation journal.
+   * Absent on a first run, so empty counters never read as "nothing was reversed" by mistake.
+   */
+  repeated?: true;
 }
 
 // ── Return of an applied week for re-approval (ADR 0219) ──
