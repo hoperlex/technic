@@ -393,7 +393,8 @@ export const weeklyRequestStatusColors: Record<WeeklyRequestStatus, string> = {
  * **consequences** and keeps the rows with their results: they answer "what was decided and what
  * was undone", and the document state is told by the header. The return for re-approval
  * (ADR 0219) reverses the same consequences but resets the rows to `pending`, because the week is
- * approved again and its rows must be applicable; the previous results go to the history event.
+ * approved again and its rows must be applicable; rows already undone by hand leave the composition
+ * (`weeklyReturnDropsItem`), and the previous results go to the history event.
  */
 export function isWeeklyRequestEditable(status: WeeklyRequestStatus): boolean {
   return status === 'draft' || status === 'pending';
@@ -1637,15 +1638,16 @@ export interface WeeklyAnnulOrder {
 }
 
 /**
- * Что аннулирование сделает со строкой и почему — текстом, как `extendBlocker`/`sourceItemBlocker`
- * (ADR 0085 п. 4): сервер отдаёт эту строку в предпросмотре и в 422, окно и чек-лист подписывают
- * ею строку. Второго описания в портале нет.
+ * What a reversal of the week — annulment (ADR 0218) or return for re-approval (ADR 0219) — does
+ * with a row and why, as text, like `extendBlocker`/`sourceItemBlocker` (ADR 0085 item 4): the
+ * server returns it in the preview and in the 422, and the window and the checklist label the row
+ * with it. The portal has no second description, so the wording names neither command.
  *
- * Наступившие дни строку **не блокируют** — они выбирают ветвь (решение 2). Блокируют факты
- * работы на снимаемых днях, но их знает только план (`WEEKLY_ANNUL_BLOCKERS`), и здесь их нет.
+ * Days that have come do **not** block a row — they choose the branch (ADR 0218 decision 2). Facts
+ * of work on the removed days do block, but only the plan knows them (`WEEKLY_ANNUL_BLOCKERS`).
  *
- * `order` равен `null` у строки, заказ которой снесли насовсем: такая строка следствий больше не
- * имеет, и разворачивать по ней нечего.
+ * `order` is `null` for a row whose order was deleted for good: such a row has no consequences any
+ * more, and there is nothing to reverse.
  */
 export function weeklyAnnulItemState(
   item: WeeklyAnnulItem,
@@ -1654,9 +1656,9 @@ export function weeklyAnnulItemState(
   const reverted = (reason: string) => ({ state: 'reverted', reason, reverse: 'none' }) as const;
   const blocked = (reason: string) => ({ state: 'blocked', reason, reverse: 'none' }) as const;
 
-  // Пропущенная строка следствий не имела вовсе: снимка у неё нет (`previous_date_to IS NULL`), и
-  // «эффективный конец равен снимку» на ней не вычислимо. В счёт «хотя бы одна обратима» такая
-  // строка не входит — разворачивать по ней нечего, но и запирать неделю ею нельзя.
+  // A skipped row never had consequences: it has no snapshot (`previous_date_to IS NULL`), and
+  // "the effective end equals the snapshot" cannot be computed for it. It does not count towards
+  // "at least one is reversible" — there is nothing to reverse, but it must not lock the week.
   if (item.result === 'skipped') {
     return reverted('Строка была пропущена при применении — следствий у неё нет');
   }
@@ -1681,8 +1683,8 @@ export function weeklyAnnulItemState(
   }
 
   if (item.kind === 'leave') {
-    // Решение «уезжает» снимается самой шапкой: `loadLeftBy` отбирает только применённые недели.
-    // Поэтому у строки нет своего «уже развёрнуто» — есть только рейс, который мешает.
+    // A "leaving" decision is released by the header itself: `loadLeftBy` selects applied weeks
+    // only. So the row has no "already undone" of its own — only a route that stands in the way.
     if (order?.pickupRoute) {
       return blocked(
         `Вывоз оформлен рейсом ${formatVehicleRouteNumber(order.pickupRoute.num)} на ` +
@@ -1692,16 +1694,16 @@ export function weeklyAnnulItemState(
     return { state: 'reversible', reason: '', reverse: 'release_leave' };
   }
 
-  // `extend`: снимок обязателен — его пишет применение той же транзакцией, что и срок.
+  // `extend`: the snapshot is mandatory — apply writes it in the same transaction as the term.
   const snapshot = item.previousDateTo;
   if (!snapshot) return reverted('Снимка срока у строки нет — разворачивать нечего');
   if (!order) return reverted('Заказ удалён из портала');
 
   const current = orderEffectiveDateTo(order);
-  // «Уже развёрнута» — **не позже** снимка, а не «равно ему»: досрочное завершение сокращает срок
-  // до любой даты от сегодня (ADR 0044 п. 5), то есть и ниже прежнего конца. Требуй мы равенства,
-  // строка с сокращённым руками сроком оказалась бы «блокирована: срок изменён», хотя следствие
-  // недели исчезло целиком.
+  // "Already undone" means **not later** than the snapshot, not "equal to it": an early end shortens
+  // the term to any date from today (ADR 0044 item 5), i.e. below the former end too. Requiring
+  // equality would mark a row shortened by hand "blocked: term changed", although the week's
+  // consequence is entirely gone.
   if (current <= snapshot) {
     return reverted(`Срок заказа уже возвращён: идёт до ${dayMonth(current)}`);
   }
@@ -1711,8 +1713,8 @@ export function weeklyAnnulItemState(
       `Заказ не в статусе «${requestStatusLabels.confirmed}» — сократите срок вручную`,
     );
   }
-  // Сверяется срок, а не версия: версия растёт от правки телефона ответственного (ADR 0085 п. 10),
-  // и строки выбрасывались бы из обратного хода по поводам, к решению не относящимся.
+  // The term is compared, not the version: the version grows from editing the contact phone
+  // (ADR 0085 item 10), and rows would drop out of the reversal for reasons unrelated to the decision.
   if (item.dateTo && current !== item.dateTo) {
     return blocked(
       `Срок заказа изменился после недели: неделя продлила до ${dayMonth(item.dateTo)}, ` +
@@ -1731,7 +1733,7 @@ export function weeklyAnnulItemState(
   return { state: 'reversible', reason: '', reverse: 'shorten_to' };
 }
 
-/** Один текст на оба вида строк: перечень недель, решивших по заказу позже нашей. */
+/** One text for both row kinds: the weeks that decided on the order later than ours. */
 function weeklyAnnulLaterWeeksMessage(refs: { num: number }[]): string {
   const list = refs.map((r) => formatWeeklyRequestNumber(r.num)).join(', ');
   return refs.length === 1
@@ -1776,7 +1778,7 @@ export function weeklyAnnulEffectiveDate(
   return earliest;
 }
 
-/** Строка предпросмотра: что аннулирование сделает с этой строкой состава. */
+/** A preview row: what the reversal (annulment or return) does with this composition row. */
 export interface WeeklyAnnulItemDto {
   itemId: string;
   kind: WeeklyRequestItemKind;
@@ -1860,7 +1862,7 @@ export interface WeeklyAnnulPreviewDto {
   requiresOperation: boolean;
   /** Нижняя граница глубины субъекта; `null` — предела нет (`waybills.correctBeyondLimit`). */
   correctionFloor: string | null;
-  /** Может ли этот субъект аннулировать: право по ветви, область, шапка и ни одной блокировки. */
+  /** Whether this subject may run the command: branch right, scope, header and no blocker. */
   allowed: boolean;
   /** Почему нельзя — в том же порядке, в каком откажет команда; `null` — можно. */
   blockedReason: string | null;
@@ -2110,8 +2112,11 @@ export function weeklyReturnDropsItem(item: {
  * same consequences, and a second schema of the same fields would drift at the first edit.
  */
 export const returnWeeklyRequestSchema = annulWeeklyRequestSchema;
-export type ReturnWeeklyRequestInput = AnnulWeeklyRequestInput;
 export type ReturnWeeklyRequestBody = AnnulWeeklyRequestBody;
+
+/** Refusal for a subject without the return right — one text for the route guard and the window. */
+export const WEEKLY_RETURN_RIGHT_MESSAGE =
+  'Вернуть применённую неделю на согласование может диспетчер или администратор';
 
 /** Refusal without an operation key where one is required; names both the cause and the remedy. */
 export const WEEKLY_RETURN_CORRECTION_REQUIRED_MESSAGE =

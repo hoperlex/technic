@@ -2,10 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   approveWeeklyRequestSchema,
   can,
-  annulWeeklyRequestSchema,
   canAnnulWeeklyRequest,
   canReturnWeeklyRequest,
-  returnWeeklyRequestSchema,
   weeklyReturnDropsItem,
   weeklyReturnHeaderBlocker,
   createWeeklyRequestSchema,
@@ -959,9 +957,5 @@ describe('возврат применённой недели на согласо
     // A skipped row never applied: it stays and is re-evaluated by the next approval.
     expect(weeklyReturnDropsItem({ state: 'reverted', hadEffect: false })).toBe(false);
     expect(weeklyReturnDropsItem({ state: 'reversible', hadEffect: true })).toBe(false);
-  });
-
-  it('тело возврата — тело аннулирования: одна схема на одни и те же последствия', () => {
-    expect(returnWeeklyRequestSchema).toBe(annulWeeklyRequestSchema);
   });
 });

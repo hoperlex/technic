@@ -15,6 +15,7 @@ import {
   annulWeeklyRequestSchema,
   returnWeeklyRequestSchema,
   WEEKLY_RETURN_PERMISSION,
+  WEEKLY_RETURN_RIGHT_MESSAGE,
   isWeeklyRequestEditable,
   isWeeklyRequestLive,
   WEEKLY_REQUEST_STATUSES,
@@ -99,8 +100,8 @@ import {
   weeklyItemsReadWhere,
 } from '../services/weekly-request-access';
 import { loadLeftBy } from '../services/weekly-request-blockers';
-// Состояние обратного хода строки — один модуль на чек-лист и на команду аннулирования
-// (ADR 0218 решение 4): правило «чем развернуть эту строку» не должно иметь второго носителя.
+// The reversal state of a row — one module for the checklist and for both reversal commands
+// (ADR 0218 decision 4, ADR 0219): "how to undo this row" must not have a second carrier.
 import { annulStates } from '../services/weekly-request-annul-state';
 import { WEEKLY_ANNUL_SPEC } from '../services/weekly-request-annul';
 import { WEEKLY_RETURN_SPEC } from '../services/weekly-request-return';
@@ -1101,10 +1102,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
     preHandler: [
       app.authenticate,
       app.requirePermission('weeklyRequests.read'),
-      app.requirePermission(
-        WEEKLY_RETURN_PERMISSION,
-        'Вернуть применённую неделю на согласование может диспетчер или администратор',
-      ),
+      app.requirePermission(WEEKLY_RETURN_PERMISSION, WEEKLY_RETURN_RIGHT_MESSAGE),
     ],
   };
   /*

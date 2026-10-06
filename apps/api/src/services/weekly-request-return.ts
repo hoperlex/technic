@@ -6,6 +6,7 @@ import {
   weeklyItemHadEffect,
   weeklyReturnDropsItem,
   WEEKLY_RETURN_CORRECTION_REQUIRED_MESSAGE,
+  WEEKLY_RETURN_RIGHT_MESSAGE,
   weeklyReturnHeaderBlocker,
   weeklyWeekLabel,
   type WeeklyReversalResultDto,
@@ -50,7 +51,7 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
  * from scratch and the shape CHECKs allow a snapshot only next to a result. What the first approval
  * did — who approved, when, and the result of every row — moves to the history event instead.
  */
-export async function applyWeeklyReturn(
+async function applyWeeklyReturn(
   tx: Tx,
   params: WeeklyReversalParams,
 ): Promise<WeeklyReversalResultDto> {
@@ -102,12 +103,15 @@ export async function applyWeeklyReturn(
    * order cancelled by hand would be created anew. The unit itself is not lost: the composition
    * suggestion offers it to the site again, and the site decides afresh.
    */
-  const dropped = plan.items.filter((item) =>
-    weeklyReturnDropsItem({
-      state: plan.states.get(item.id)?.state ?? 'reverted',
-      hadEffect: weeklyItemHadEffect(item.result),
-    }),
-  );
+  const dropped = plan.items.filter((item) => {
+    // A row without a computed state is kept: dropping is a decision about a known manual undo, and
+    // an unknown state must not delete a row of the composition.
+    const state = plan.states.get(item.id)?.state;
+    return (
+      state !== undefined &&
+      weeklyReturnDropsItem({ state, hadEffect: weeklyItemHadEffect(item.result) })
+    );
+  });
   if (dropped.length > 0) {
     await tx.delete(weeklyVehicleRequestItems).where(
       inArray(
@@ -194,13 +198,12 @@ export async function applyWeeklyReturn(
  * the site scope is never asked — the right has none.
  */
 export const WEEKLY_RETURN_SPEC: WeeklyReversalSpec = {
-  door: 'weekly_return',
   kind: 'weekly_return',
+  resultStatus: 'pending',
   auditAction: 'weekly_request.return',
   canRun: (subject) => canReturnWeeklyRequest(subject),
   needsSiteScope: () => false,
-  rightRefusal: () =>
-    'Вернуть применённую неделю на согласование может диспетчер или администратор',
+  rightRefusal: () => WEEKLY_RETURN_RIGHT_MESSAGE,
   scopeRefusal: '',
   headerBlocker: weeklyReturnHeaderBlocker,
   refusalLead: 'Вернуть неделю на согласование нельзя',

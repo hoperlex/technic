@@ -275,7 +275,7 @@ export async function runWeeklyReversal(
    */
   const outcome: WeeklyReversalResultDto = result ?? {
     weeklyRequestId: draft.header.id,
-    status: spec.kind === 'weekly_annul' ? 'annulled' : 'pending',
+    status: spec.resultStatus,
     shortened: [],
     cancelled: [],
     released: 0,

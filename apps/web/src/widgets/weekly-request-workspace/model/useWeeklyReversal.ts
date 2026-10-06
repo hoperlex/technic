@@ -4,7 +4,9 @@ import { useMutation } from '@tanstack/react-query';
 import {
   type AnnulWeeklyRequestBody,
   WEEKLY_RETURN_PERMISSION,
+  weeklyAnnulHeaderBlocker,
   weeklyAnnulPermission,
+  weeklyReturnHeaderBlocker,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { useAuth } from '@entities/session';
@@ -58,11 +60,16 @@ export function useWeeklyReversal(params: {
     onError: params.onError,
   });
 
-  const rights =
+  // Which headers the command accepts is the contract's header rule, the same one the server
+  // refuses with; a status comparison here would be a second copy of it.
+  const [rights, headerBlocker] =
     params.intent === 'annul'
-      ? [...weeklyAnnulPermission(false), ...weeklyAnnulPermission(true)]
-      : [WEEKLY_RETURN_PERMISSION];
-  const available = params.request?.status === 'applied' && rights.some(can);
+      ? [
+          [...weeklyAnnulPermission(false), ...weeklyAnnulPermission(true)],
+          weeklyAnnulHeaderBlocker,
+        ]
+      : [[WEEKLY_RETURN_PERMISSION], weeklyReturnHeaderBlocker];
+  const available = !!params.request && headerBlocker(params.request) === null && rights.some(can);
 
   return {
     /** Request for the window; `null` — the window is closed. */

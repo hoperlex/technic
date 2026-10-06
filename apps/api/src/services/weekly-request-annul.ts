@@ -500,7 +500,7 @@ export async function planWeeklyAnnul(
         message:
           `По заказу ${formatVehicleRequestNumber(item.sourceRequestNum ?? 0)} площадка уже ` +
           'подписала работу за снимаемые дни — эти дни закрывают фактической датой, а не ' +
-          'аннулированием недели',
+          'разворотом недели',
       });
     }
     const unapprovedDates = shiftRows
@@ -515,7 +515,7 @@ export async function planWeeklyAnnul(
         message:
           `По заказу ${formatVehicleRequestNumber(item.sourceRequestNum ?? 0)} на снимаемые дни ` +
           'выписан действующий путевой лист — он уже у водителя, и снять такой день ' +
-          'аннулированием нельзя',
+          'разворотом недели нельзя',
       });
     }
 
@@ -663,9 +663,13 @@ export async function planWeeklyAnnul(
  * one command promise what the other executes.
  */
 export interface WeeklyReversalSpec {
-  /** Backstop door and correction-journal kind: the journal must tell the two operations apart. */
-  door: 'weekly_annul' | 'weekly_return';
+  /** Correction-journal kind: the journal must tell the two operations apart. */
   kind: 'weekly_annul' | 'weekly_return';
+  /**
+   * Header status after the command — the answer to a repeat by operation key, which has no result
+   * of its own and is rebuilt from the state the command leaves.
+   */
+  resultStatus: WeeklyReversalResultDto['status'];
   auditAction: 'weekly_request.annul' | 'weekly_request.return';
   /** Whether the subject holds the right of this branch. */
   canRun: (subject: Principal, backdated: boolean) => boolean;
@@ -804,7 +808,8 @@ export type WeeklyReversalEffects = Omit<WeeklyReversalResultDto, 'weeklyRequest
 export async function reverseWeeklyEffects(
   tx: Tx,
   params: WeeklyReversalParams & {
-    door: WeeklyReversalSpec['door'];
+    /** Backstop door: the refusal names the command the person actually ran. */
+    door: 'weekly_annul' | 'weekly_return';
     /** "НЗ-12 (week) annulled: reason" — goes to sheets and to the history of every order. */
     baseReason: string;
   },
@@ -1052,7 +1057,7 @@ export function weeklyReversalPayload(
  * The rows keep their results and snapshots (ADR 0218 decision 9): they answer "what was decided
  * and what was undone", and the state of the document is told by the header.
  */
-export async function applyWeeklyAnnul(
+async function applyWeeklyAnnul(
   tx: Tx,
   params: WeeklyReversalParams,
 ): Promise<WeeklyReversalResultDto> {
@@ -1107,8 +1112,8 @@ export async function applyWeeklyAnnul(
  * scope — or the dispatcher's past right.
  */
 export const WEEKLY_ANNUL_SPEC: WeeklyReversalSpec = {
-  door: 'weekly_annul',
   kind: 'weekly_annul',
+  resultStatus: 'annulled',
   auditAction: 'weekly_request.annul',
   canRun: (subject, backdated) => canAnnulWeeklyRequest(subject, backdated),
   needsSiteScope: (subject, backdated) => weeklyAnnulNeedsSiteScope(subject, backdated),

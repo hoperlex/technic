@@ -3,6 +3,7 @@ import { Alert, Checkbox, Form, Input, Skeleton, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   type AnnulWeeklyRequestBody,
+  isWeeklyWeekOverdue,
   weeklyItemKindLabels,
   weeklyReturnDropsItem,
   type WeeklyVehicleRequestDto,
@@ -152,8 +153,21 @@ export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit,
                   {intent === 'return' && preview.items.some(weeklyReturnDropsItem) && (
                     <li>
                       Строки, уже развёрнутые вручную, уйдут из состава: повторная виза не должна
-                      применить их снова. Технику площадка увидит в предложении состава и решит
-                      заново.
+                      применить их снова. Продлеваемую технику площадка увидит в предложении
+                      состава; дополнительную, если она снова нужна, добавляют строкой заново.
+                    </li>
+                  )}
+                  {intent === 'return' &&
+                    preview.items.some((item) => item.reverse === 'cancel') && (
+                      <li>
+                        Отменённые заказы повторная виза заведёт заново по строкам недели: правки,
+                        сделанные в них после визы, не перенесутся.
+                      </li>
+                    )}
+                  {intent === 'return' && isWeeklyWeekOverdue(preview.weekStart, preview.today) && (
+                    <li>
+                      Неделя уже началась: дополнить состав и провести её заново сможет только
+                      диспетчер или администратор.
                     </li>
                   )}
                   {preview.effectiveDate && (
@@ -309,11 +323,7 @@ export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit,
               name="reason"
               label={texts.reasonLabel}
               rules={[{ required: true, message: 'Укажите причину' }]}
-              extra={
-                preview.requiresOperation
-                  ? 'Останется в шапке заявки и в журнале коррекций, а также в листах, переоформленных этой операцией'
-                  : texts.reasonStays
-              }
+              extra={preview.requiresOperation ? texts.reasonStaysOperation : texts.reasonStays}
             >
               <Input.TextArea rows={2} maxLength={2000} showCount />
             </Form.Item>

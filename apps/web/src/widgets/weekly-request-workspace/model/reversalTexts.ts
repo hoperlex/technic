@@ -21,6 +21,8 @@ interface ReversalTexts {
   reasonLabel: string;
   /** Where the reason stays when no journal operation is needed. */
   reasonStays: string;
+  /** Where the reason stays when the command writes a correction-journal operation. */
+  reasonStaysOperation: string;
   /** Refusal of an unnamed worked sheet, at the end of the sheet-list hint. */
   unnamedSheet: string;
   done: string;
@@ -37,6 +39,8 @@ export const WEEKLY_REVERSAL_TEXTS: Record<WeeklyReversalIntent, ReversalTexts> 
     outcome: null,
     reasonLabel: 'Причина аннулирования',
     reasonStays: 'Останется в шапке заявки и в её истории',
+    reasonStaysOperation:
+      'Останется в шапке заявки и в журнале коррекций, а также в листах, переоформленных этой операцией',
     unnamedSheet: 'Неотмеченный лист запирает свои дни, и неделя не аннулируется',
     done: 'Неделя аннулирована',
   },
@@ -46,12 +50,15 @@ export const WEEKLY_REVERSAL_TEXTS: Record<WeeklyReversalIntent, ReversalTexts> 
     emptyTitle: 'Возврат недельной заявки на согласование',
     okText: 'Вернуть на согласование',
     refusedTitle: 'Вернуть на согласование нельзя',
-    nothingLeft: 'Следствия уже развёрнуты — возврат только снимет визу',
+    nothingLeft:
+      'Следствия уже развёрнуты — возврат снимет визу и уберёт развёрнутые строки из состава',
     outcome:
       'Заявка вернётся в «Ждёт визы» без визы: площадка дополнит состав, руководитель ' +
       'строительства завизирует неделю заново — сроки продлятся и листы выпишутся снова, с новыми номерами.',
     reasonLabel: 'Причина возврата',
     reasonStays: 'Будет видна сверху в заявке и останется в её истории',
+    reasonStaysOperation:
+      'Будет видна сверху в заявке, останется в её истории и в журнале коррекций, а также в листах, переоформленных этой операцией',
     unnamedSheet: 'Неотмеченный лист запирает свои дни, и неделя не возвращается',
     done: 'Неделя возвращена на согласование',
   },

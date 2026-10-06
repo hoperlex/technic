@@ -2897,27 +2897,50 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       expect(repeat.json().status).toBe('pending');
       expect((await historyRows(weekly.id)).length).toBe(eventsBefore);
       expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
+      await ctx.db.execute(
+        sql`DELETE FROM waybill_corrections WHERE operation_id = ${operationId}`,
+      );
     }, 60_000);
 
     it('арендодателю предпросмотр разворота не открывается: в нём весь парк площадки', async () => {
       const objectId = await freshObject();
-      const order = await makeOrder({ objectId });
+      const mineOrder = await makeOrder({ objectId, ownership: 'rental' });
+      const foreignOrder = await makeOrder({ objectId, ownership: 'rental' });
+      // The lessor must be able to read the week, or the card check answers 404 before the new
+      // refusal is ever reached — and the test would pass without it. Their vehicle in the
+      // composition opens the week to them; the previous owner is restored by the cleanup.
+      const previous = await ctx.db.execute<{ lessor_id: string }>(sql`
+          SELECT lessor_id FROM vehicles WHERE id = ${mineOrder.vehicleId}`);
+      stampedLessors.push({
+        vehicleId: mineOrder.vehicleId,
+        lessorId: previous.rows[0]!.lessor_id,
+      });
+      await ctx.db.execute(sql`
+          UPDATE vehicles SET lessor_id = ${ctx.lessorCounterpartyId}
+          WHERE id = ${mineOrder.vehicleId}`);
       const weekly = await makeWeekly(ctx.admin.auth, {
         objectId,
         weekStart: W1,
-        items: [extendItem(order, W1_END)],
+        items: [extendItem(mineOrder, W1_END), extendItem(foreignOrder, W1_END)],
       });
       await submitAndApprove(weekly);
+
+      const card = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}`,
+        ctx.lessor.auth,
+      );
+      expect(card.statusCode, card.body).toBe(200);
       for (const path of ['return', 'annul']) {
         const res = await inject(
           'GET',
           `/api/v1/weekly-vehicle-requests/${weekly.id}/${path}`,
           ctx.lessor.auth,
         );
-        // 403 when the card is readable to them, 404 when it is not: never a 200 with the plan.
-        expect([403, 404], res.body).toContain(res.statusCode);
+        expect(res.statusCode, res.body).toBe(403);
+        expect(res.body).not.toContain(foreignOrder.displayNumber);
       }
-    }, 60_000);
+    }, 90_000);
 
     it('журнал коррекций принимает свой вид операции возврата', async () => {
       // The correction branch writes `weekly_return`; the CHECK of migration 0358 must admit it,
@@ -2930,6 +2953,10 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         sql`SELECT kind FROM waybill_corrections WHERE operation_id = ${operationId}`,
       );
       expect(row.rows[0]?.kind).toBe('weekly_return');
+      // The base is shared by the whole file: a journal row with no operation behind it is removed.
+      await ctx.db.execute(
+        sql`DELETE FROM waybill_corrections WHERE operation_id = ${operationId}`,
+      );
     }, 60_000);
   });
 
