@@ -38,9 +38,9 @@ export const driverCabinetKeys = createQueryKeys('driver-cabinet', {
 });
 
 /**
- * Сколько ответ кабинета считается свежим. Ровно столько же, сколько у портала вообще
- * ([main.tsx](../../main.tsx)), но своим числом: здесь оно держит не экономию запросов, а
- * сохранность ответа мутации (см. `cabinetRead`).
+ * How long a cabinet answer counts as fresh. The same as the portal's LIVE term
+ * (`shared/config/query.ts`), but a number of its own: here it guards not the request count but
+ * the mutation answer lying in the cache (see `cabinetRead`).
  */
 const CABINET_FRESH_MS = 10_000;
 

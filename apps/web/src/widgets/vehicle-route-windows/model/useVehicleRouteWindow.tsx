@@ -66,8 +66,8 @@ export function useVehicleRouteWindow({ routeId, onChanged }: Args) {
    * The route version is raised not only by its own doors: a request edit redistributes its trips
    * across points and raises the ROUTE version, so a card left in cache with yesterday's version
    * would get 409 on the first action, and the person would see "route changed" where they changed
-   * nothing. The shared ten-second freshness (staleTime in main.tsx) is not enough: a second passes
-   * between editing the request and returning to the card.
+   * nothing. The shared ten-second freshness (LIVE in shared/config/query.ts) is not enough: a
+   * second passes between editing the request and returning to the card.
    */
   const { data: route, isFetching } = useQuery({
     queryKey: vehicleRouteKeys.detail(routeId),
