@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { fireEvent, screen } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { QUERY_CLIENT_DEFAULTS, QUERY_PROFILE } from '@shared/config';
@@ -21,6 +21,14 @@ import {
  */
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/*
+ * Declared at module level, as the portal declares its page entries: the import runs on the first
+ * render of the test that needs it, so its modules are cold there however the file is ordered.
+ */
+const LazyOuter = lazy(() =>
+  import('./settle-probe/LazyOuter').then((m) => ({ default: m.LazyOuter })),
+);
 
 describe('тестовый клиент запросов', () => {
   it('совпадает с продовым во всём, кроме повторов запросов', () => {
@@ -64,6 +72,20 @@ describe('settle: экран затих', () => {
     expect(queryClient.isFetching()).toBe(0);
     // Read synchronously on purpose: after `settle` the screen has nothing left to wait for.
     expect(screen.getByText('two')).toBeDefined();
+  });
+
+  it('дожидается ленивой вкладки внутри ленивой страницы, чьи модули ещё не загружены', async () => {
+    const log: string[] = [];
+    const { queryClient } = renderWithUser(
+      <Suspense fallback={<div>page loading</div>}>
+        <LazyOuter log={log} />
+      </Suspense>,
+    );
+
+    await settle(queryClient);
+
+    expect(log).toEqual(['inner']);
+    expect(screen.getByText('loaded')).toBeDefined();
   });
 });
 

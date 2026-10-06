@@ -22,15 +22,26 @@ const MAX_SETTLE_ROUNDS = 20;
  * quiet with a request still to come. The same goes for a chunk that a response asks for. A round
  * therefore lets one macrotask pass and ends only when nothing new started meanwhile.
  *
+ * "Nothing new" means no query in flight **and** a screen the round left as the previous round
+ * did. Queries alone miss a chain of chunks: a section page is lazy and renders a lazy tab, and
+ * on a cold module cache the tab's import starts only when the page's chunk has arrived — at the
+ * end of a round, while no query is running yet, because the tab that asks has not loaded. The
+ * page replacing its fallback changes the screen, so one more round runs and its
+ * `dynamicImportSettled` waits for the tab. Without that the first test of a section in a worker
+ * measured an empty request log, and every later test of the same page a full one.
+ *
  * Needs real `setTimeout`: with faked timers the macrotask never runs. `freezeClock` fakes only
  * `Date` and is safe to combine with it.
  */
 export async function settle(queryClient: QueryClient): Promise<void> {
+  let previousScreen: string | null = null;
   for (let round = 0; round < MAX_SETTLE_ROUNDS; round += 1) {
     await act(() => vi.dynamicImportSettled());
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
-    if (queryClient.isFetching() === 0) return;
+    const screen = document.body.innerHTML;
+    if (queryClient.isFetching() === 0 && screen === previousScreen) return;
+    previousScreen = screen;
   }
   throw new Error(`the screen kept loading after ${MAX_SETTLE_ROUNDS} rounds`);
 }
