@@ -3,9 +3,9 @@ import { App } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import {
   type AnnulWeeklyRequestBody,
-  WEEKLY_RETURN_PERMISSION,
+  canAnnulWeeklyRequest,
+  canReturnWeeklyRequest,
   weeklyAnnulHeaderBlocker,
-  weeklyAnnulPermission,
   weeklyReturnHeaderBlocker,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
@@ -36,7 +36,7 @@ export function useWeeklyReversal(params: {
   const [open, setOpen] = useState(false);
   // The right and the message are taken here rather than passed in: this is the hook, and extra
   // parameters would mean the page decides what the hook decides.
-  const { can } = useAuth();
+  const { user } = useAuth();
   const { message } = App.useApp();
   const texts = WEEKLY_REVERSAL_TEXTS[params.intent];
 
@@ -60,16 +60,16 @@ export function useWeeklyReversal(params: {
     onError: params.onError,
   });
 
-  // Which headers the command accepts is the contract's header rule, the same one the server
-  // refuses with; a status comparison here would be a second copy of it.
-  const [rights, headerBlocker] =
+  // Both halves of availability are the contract predicates the server asks: the header rule and
+  // the right. A status comparison or a permission list here would be a second copy of either.
+  // Annulment's branch is known only to the server, so its button follows either branch's right.
+  const allowedByRight =
     params.intent === 'annul'
-      ? [
-          [...weeklyAnnulPermission(false), ...weeklyAnnulPermission(true)],
-          weeklyAnnulHeaderBlocker,
-        ]
-      : [[WEEKLY_RETURN_PERMISSION], weeklyReturnHeaderBlocker];
-  const available = !!params.request && headerBlocker(params.request) === null && rights.some(can);
+      ? canAnnulWeeklyRequest(user, false) || canAnnulWeeklyRequest(user, true)
+      : canReturnWeeklyRequest(user);
+  const headerBlocker =
+    params.intent === 'annul' ? weeklyAnnulHeaderBlocker : weeklyReturnHeaderBlocker;
+  const available = !!params.request && headerBlocker(params.request) === null && allowedByRight;
 
   return {
     /** Request for the window; `null` — the window is closed. */

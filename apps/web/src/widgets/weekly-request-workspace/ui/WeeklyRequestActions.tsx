@@ -156,13 +156,12 @@ export function WeeklyRequestActions(props: Props) {
             Снять заявку
           </Button>
         )}
-        {/* Annulment of an applied week (ADR 0218). The button appears by status and right alone;
-            the price and the refusals are named by the window, which asks the server — the preview
-            builds a history and paper plan per extended row, and paying that on every card view
-            would be waste. */}
-        {/* The return comes first: it is the milder reversal — the week stays alive and is
-            approved again — and the dispatcher looking for "add the forgotten unit" should not
-            reach for annulment by habit. */}
+        {/* Reversals of an applied week (ADR 0218 annulment, ADR 0219 return). The buttons appear
+            by the contract header rule and the right alone; the price and the refusals are named
+            by the window, which asks the server — the preview builds a history and paper plan per
+            extended row, and paying that on every card view would be waste. The return comes
+            first: it is the milder reversal — the week stays alive and is approved again — and the
+            dispatcher looking to add a forgotten unit should not reach for annulment by habit. */}
         {props.onReturn && (
           <Button danger onClick={props.onReturn}>
             {WEEKLY_REVERSAL_TEXTS.return.action}

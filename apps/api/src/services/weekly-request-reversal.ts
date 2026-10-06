@@ -1,6 +1,5 @@
 import {
   type AnnulWeeklyRequestInput,
-  BACKDATE_PERMISSION_MESSAGE,
   can,
   minRequestDateKey,
   moscowDateKeyOf,
@@ -8,7 +7,9 @@ import {
   type WeeklyAnnulPreviewDto,
   type WeeklyReversalResultDto,
 } from '@technic/contracts';
+import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
+import { waybillCorrections } from '../db/schema';
 import { writeAudit } from '../lib/audit';
 import {
   assertWeeklyRequestScope,
@@ -199,6 +200,7 @@ export async function runWeeklyReversal(
 
   let repeated = false;
   let result: WeeklyReversalResultDto | null = null;
+  let operationId: string | null = null;
 
   /*
    * A repeat of an operation already done is recognized BEFORE the branch is read from the state —
@@ -206,7 +208,8 @@ export async function runWeeklyReversal(
    * `applied`, so the unlocked plan of the repeat says "nothing to reverse, no operation needed",
    * and without this check a retry after a dropped connection would end in 422 on work its own
    * first request has done. A found key sends the command to `runCorrection`, which checks the
-   * author and the fingerprint and returns the earlier outcome without calling `perform`.
+   * author and the fingerprint and does not call `perform`; the answer is then read from the
+   * operation's own payload (`repeatedOutcome`).
    */
   const prior = body.correction ? await findCorrection(db, body.correction.operationId) : undefined;
 
@@ -232,7 +235,7 @@ export async function runWeeklyReversal(
          * work, and recomputed tomorrow it would refuse a result already obtained.
          */
         authorize: () => {
-          if (!spec.canRun(p, true)) throw err.forbidden(BACKDATE_PERMISSION_MESSAGE);
+          if (!spec.canRun(p, true)) throw err.forbidden(spec.rightRefusal(true));
           return backdateOrThrow(
             checkBackdate({
               effectiveDate: draft.effectiveDate ?? today,
@@ -264,23 +267,18 @@ export async function runWeeklyReversal(
       },
     );
     repeated = done.repeated;
+    operationId = done.correction.id;
   } else {
     result = await db.transaction(async (tx) => reverseInTx(tx, null));
   }
 
-  /*
-   * A repeat after a dropped connection: `perform` was not called and has no result of its own, so
-   * the answer is rebuilt from the current state, as conducting does. A snapshot of the DTO would
-   * rot at the first contract change, and a repeat must answer what a new request would answer.
-   */
-  const outcome: WeeklyReversalResultDto = result ?? {
-    weeklyRequestId: draft.header.id,
-    status: spec.resultStatus,
-    shortened: [],
-    cancelled: [],
-    released: 0,
-    esm2: { cancelled: 0, issued: 0 },
-  };
+  const outcome: WeeklyReversalResultDto =
+    result ??
+    (await repeatedOutcome({
+      correctionId: operationId!,
+      weeklyRequestId: draft.header.id,
+      status: spec.resultStatus,
+    }));
 
   // Audit on top and in addition: the week history is written in the same transaction (ADR 0085
   // item 16), while `writeAudit` does not fail the operation on a write error by design.
@@ -299,4 +297,33 @@ export async function runWeeklyReversal(
     },
   });
   return outcome;
+}
+
+/**
+ * The answer to a repeat after a dropped connection: `perform` was not called, so the counters come
+ * from the payload the first attempt saved with its operation — the same transaction that did the
+ * work, so the payload describes exactly what was reversed. The person who retried sees the result
+ * they missed, not an empty report of a command that did nothing.
+ *
+ * Missing fields fall back to empty values rather than failing the answer: the work is done either
+ * way, and an older payload shape must not turn a successful repeat into an error.
+ */
+async function repeatedOutcome(params: {
+  correctionId: string;
+  weeklyRequestId: string;
+  status: WeeklyReversalResultDto['status'];
+}): Promise<WeeklyReversalResultDto> {
+  const [row] = await db
+    .select({ payload: waybillCorrections.payload })
+    .from(waybillCorrections)
+    .where(eq(waybillCorrections.id, params.correctionId));
+  const saved = (row?.payload ?? {}) as Partial<WeeklyReversalResultDto>;
+  return {
+    weeklyRequestId: params.weeklyRequestId,
+    status: params.status,
+    shortened: saved.shortened ?? [],
+    cancelled: saved.cancelled ?? [],
+    released: saved.released ?? 0,
+    esm2: saved.esm2 ?? { cancelled: 0, issued: 0 },
+  };
 }

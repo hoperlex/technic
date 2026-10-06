@@ -10,6 +10,7 @@ import {
   shiftDateKey,
   weekStartKey,
   WEEKLY_CORRECTION_REQUIRED_MESSAGE,
+  WEEKLY_RETURN_RIGHT_MESSAGE,
 } from '@technic/contracts';
 import { runSeed, snilsOf } from './db-identity';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -2721,6 +2722,7 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
           fingerprint: preview.json().fingerprint,
         });
         expect(res.statusCode, res.body).toBe(403);
+        expect(res.json().message).toBe(WEEKLY_RETURN_RIGHT_MESSAGE);
       }
       expect((await weeklyRow(weekly.id))?.status).toBe('applied');
     }, 60_000);
@@ -2743,6 +2745,9 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         fingerprint: notYet.json().fingerprint,
       });
       expect(refused.statusCode, refused.body).toBe(422);
+      // The header rule refuses, not "nothing to return": the rows of a pending week had no effect
+      // either, and a code-only check would pass without the header rule.
+      expect(refused.json().message).toContain('ещё не завизирована');
 
       const approval = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
       const applied = approval.json().request as WeeklyDto;
@@ -2771,6 +2776,7 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         fingerprint: preview.json().fingerprint,
       });
       expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().message).toContain('аннулирована');
     }, 60_000);
 
     it('порождённый заказ в работе запирает возврат, и отказ говорит о возврате, а не об аннулировании', async () => {
@@ -2855,7 +2861,15 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
     }, 90_000);
 
-    it('повтор по ключу операции после выполненного возврата отвечает прежним итогом', async () => {
+    /**
+     * A repeat by operation key after the first attempt committed. The first attempt is simulated
+     * as committed under the key: a backdated reversal writes the journal row, its payload and the
+     * work in one transaction, so the row is written here with the payload the command would have
+     * saved — the counters of the real first answer. The fingerprint is computed exactly as
+     * `runCorrection` does it. The real correction branch end to end is not exercised: a backdated
+     * week needs orders whose term ended in the past, which the order API does not create.
+     */
+    async function repeatAfterCommit(command: 'return' | 'annul') {
       const objectId = await freshObject();
       const order = await makeOrder({ objectId });
       const weekly = await makeWeekly(ctx.admin.auth, {
@@ -2865,41 +2879,57 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       });
       const applied = (await submitAndApprove(weekly)).approval.json().request as WeeklyDto;
       const operationId = randomUUID();
-      const preview = (await returnPreview(ctx.dispatcher.auth, weekly.id)).json();
+      const url = `/api/v1/weekly-vehicle-requests/${weekly.id}/${command}`;
+      const preview = (await inject('GET', url, ctx.dispatcher.auth)).json();
       const body = {
-        reason: 'Обрыв связи на возврате',
+        reason: 'Обрыв связи на развороте',
         version: applied.version,
         fingerprint: preview.fingerprint,
         correction: { operationId, unlockWaybillIds: [] as string[] },
       };
-      const done = await returnWeek(ctx.dispatcher.auth, weekly.id, {
+      const first = await inject('POST', url, ctx.dispatcher.auth, {
         reason: body.reason,
         version: body.version,
         fingerprint: body.fingerprint,
       });
-      expect(done.statusCode, done.body).toBe(200);
-      /*
-       * The first attempt is simulated as committed under this key: a backdated return writes the
-       * journal row and the reversal in one transaction, so a found row means the work is done. The
-       * fingerprint is computed exactly as `runCorrection` does it for this body.
-       */
+      expect(first.statusCode, first.body).toBe(200);
+      const kind = command === 'return' ? 'weekly_return' : 'weekly_annul';
       const { correctionFingerprint } = await import('../src/services/waybill-correction');
+      const saved = first.json();
       await ctx.db.execute(sql`
-        INSERT INTO waybill_corrections (operation_id, fingerprint, kind, reason, actor_user_id)
+        INSERT INTO waybill_corrections
+          (operation_id, fingerprint, kind, reason, actor_user_id, payload)
         VALUES (${operationId},
-                ${correctionFingerprint({ kind: 'weekly_return', target: weekly.id, body })},
-                'weekly_return', ${body.reason}, ${ctx.dispatcher.id})`);
+                ${correctionFingerprint({ kind, target: weekly.id, body })},
+                ${kind}, ${body.reason}, ${ctx.dispatcher.id},
+                ${JSON.stringify({
+                  shortened: saved.shortened,
+                  cancelled: saved.cancelled,
+                  released: saved.released,
+                  esm2: saved.esm2,
+                })}::jsonb)`);
       const eventsBefore = (await historyRows(weekly.id)).length;
 
-      const repeat = await returnWeek(ctx.dispatcher.auth, weekly.id, body);
-      // Not 422 "not approved yet": the key is recognized before the state is read.
+      const repeat = await inject('POST', url, ctx.dispatcher.auth, body);
+      // Not 422 "not approved yet": the key is recognized before the branch is read from the state.
       expect(repeat.statusCode, repeat.body).toBe(200);
-      expect(repeat.json().status).toBe('pending');
+      // The person who retried sees the result they missed — the counters of the first attempt.
+      expect(repeat.json()).toEqual(saved);
+      expect(saved.shortened).toHaveLength(1);
+      // And nothing moved a second time.
       expect((await historyRows(weekly.id)).length).toBe(eventsBefore);
       expect((await orderDto(order.id)).dateTo).toBe(order.effectiveDateTo);
       await ctx.db.execute(
         sql`DELETE FROM waybill_corrections WHERE operation_id = ${operationId}`,
       );
+    }
+
+    it('повтор по ключу операции после выполненного возврата отвечает итогом первой попытки', async () => {
+      await repeatAfterCommit('return');
+    }, 60_000);
+
+    it('повтор по ключу операции после выполненного аннулирования отвечает итогом первой попытки', async () => {
+      await repeatAfterCommit('annul');
     }, 60_000);
 
     it('арендодателю предпросмотр разворота не открывается: в нём весь парк площадки', async () => {

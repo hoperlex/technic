@@ -204,7 +204,6 @@ export const WEEKLY_RETURN_SPEC: WeeklyReversalSpec = {
   canRun: (subject) => canReturnWeeklyRequest(subject),
   needsSiteScope: () => false,
   rightRefusal: () => WEEKLY_RETURN_RIGHT_MESSAGE,
-  scopeRefusal: '',
   headerBlocker: weeklyReturnHeaderBlocker,
   refusalLead: 'Вернуть неделю на согласование нельзя',
   nothingToReverse: 'Возвращать нечего: ни одна строка этой недели не применилась',

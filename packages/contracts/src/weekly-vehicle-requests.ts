@@ -1782,14 +1782,14 @@ export function weeklyAnnulEffectiveDate(
 export interface WeeklyAnnulItemDto {
   itemId: string;
   kind: WeeklyRequestItemKind;
-  /** «Экскаватор (продление)» — тем же текстом, что в чек-листе. */
+  /** "Экскаватор (продление)" — the same text as in the checklist. */
   title: string;
   requestId: string | null;
   displayNumber: string | null;
   state: WeeklyAnnulState;
   reason: string;
   reverse: WeeklyAnnulReversal;
-  /** Дата, к которой вернётся срок (`shorten_to`); `null` у остальных ходов. */
+  /** The date the term returns to (`shorten_to`); `null` for every other move. */
   shortenTo: string | null;
   /**
    * Whether the row had consequences at the approval (`weeklyItemHadEffect`). Together with
@@ -1838,12 +1838,13 @@ export interface WeeklyAnnulCancelGroupDto {
 }
 
 /**
- * Что сделает аннулирование — посчитанное сервером до первой правки и подтверждаемое отпечатком
- * (ADR 0211 решения 1, 4).
+ * What a reversal of the applied week — annulment (ADR 0218) or return for re-approval (ADR 0219)
+ * — will do, computed by the server before the first write and confirmed by a fingerprint
+ * (ADR 0211 decisions 1, 4). Both commands run the same plan, so the answer has one shape.
  *
- * Форма отвечает на три вопроса в том порядке, в каком их задаёт человек: можно ли вообще
- * (`allowed`, `blockedReason`), какой ценой (`paper`, `cancelGroups`, `shifts`, `linearDays`) и
- * что подписать (`fingerprint`, `cancelGroupsFingerprint`, `issues`).
+ * It answers three questions in the order a person asks them: is it possible at all (`allowed`,
+ * `blockedReason`), at what price (`paper`, `cancelGroups`, `shifts`, `linearDays`) and what to
+ * sign (`fingerprint`, `cancelGroupsFingerprint`, `issues`).
  */
 export interface WeeklyAnnulPreviewDto {
   weeklyRequestId: string;

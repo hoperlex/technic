@@ -676,7 +676,8 @@ export interface WeeklyReversalSpec {
   /** Whether the right came with a site scope that must be asked as well. */
   needsSiteScope: (subject: Principal, backdated: boolean) => boolean;
   rightRefusal: (backdated: boolean) => string;
-  scopeRefusal: string;
+  /** Refusal outside the site scope; only a command whose right has a scope needs it. */
+  scopeRefusal?: string;
   headerBlocker: (header: { status: LockedHeader['status'] }) => string | null;
   /** Lead of the refusal that lists blocked rows: "Аннулировать неделю нельзя". */
   refusalLead: string;
@@ -724,7 +725,7 @@ export function weeklyReversalPreviewDto(
   const blockedReason = !hasRight
     ? spec.rightRefusal(plan.backdated)
     : needsScope && !params.inSiteScope
-      ? spec.scopeRefusal
+      ? (spec.scopeRefusal ?? spec.rightRefusal(plan.backdated))
       : (params.depthRefusal ??
         headerBlocker ??
         (blockedItems.length > 0
@@ -802,15 +803,15 @@ export type WeeklyReversalEffects = Omit<WeeklyReversalResultDto, 'weeklyRequest
  * Called **after** the fingerprint check and the authorization, and under a journal operation when
  * the plan said `requiresOperation`. The mode gate, the locks and the fingerprint belong to the
  * caller: in the correction branch `runCorrection` stands between them, so this function opens no
- * transaction of its own. The header is the caller's too — that is the only thing in which
- * annulment and the return for re-approval differ.
+ * transaction of its own. The header and the rows are the caller's too: annulment keeps the rows
+ * with their results, the return resets or drops them (`WeeklyReversalSpec.apply`).
  */
 export async function reverseWeeklyEffects(
   tx: Tx,
   params: WeeklyReversalParams & {
     /** Backstop door: the refusal names the command the person actually ran. */
     door: 'weekly_annul' | 'weekly_return';
-    /** "НЗ-12 (week) annulled: reason" — goes to sheets and to the history of every order. */
+    /** "НЗ-12 (week) <what the command did>: reason" — goes to sheets and order histories. */
     baseReason: string;
   },
 ): Promise<WeeklyReversalEffects> {
