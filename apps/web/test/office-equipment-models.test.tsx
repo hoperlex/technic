@@ -4,6 +4,7 @@ import { QueryClient } from '@tanstack/react-query';
 import type { AuthUser, OfficeEquipmentDto, OfficeEquipmentModelDto } from '@technic/contracts';
 import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
+import { observedQueryKeys } from './query';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
@@ -52,14 +53,17 @@ function modelDto(over: Partial<OfficeEquipmentModelDto> = {}): OfficeEquipmentM
   };
 }
 
-function renderModels(models: OfficeEquipmentModelDto[], over: RouteMap = {}): HttpMock {
+function renderModels(
+  models: OfficeEquipmentModelDto[],
+  over: RouteMap = {},
+): HttpMock & { queryClient: QueryClient } {
   const http = mockHttp({
     'GET /office-equipment-models': () => json(list(models)),
     // Форма модели спрашивает характеристики типа (цветность печати); в этом окне их нет.
     'GET /office-equipment-types/:id/specs': () => json([]),
     ...over,
   });
-  renderWithUser(
+  const { queryClient } = renderWithUser(
     <OfficeEquipmentModelsModal
       open
       onClose={() => {}}
@@ -68,7 +72,7 @@ function renderModels(models: OfficeEquipmentModelDto[], over: RouteMap = {}): H
     />,
     { user: OPERATOR },
   );
-  return http;
+  return { ...http, queryClient };
 }
 
 /** Кнопка строки: подпись живёт в `aria-label` — подсказка antd появляется только по наведению. */
@@ -95,8 +99,13 @@ describe('окно моделей аппаратов', () => {
      * покрытия нет вовсе, и «покажи непокрытые» обязано быть вопросом к серверу.
      */
     const http = renderModels([modelDto()]);
+    const LIST = ['office-equipment-models', 'list'];
 
     await screen.findByText('Ricoh Aficio MP 201SPF');
+    const unfiltered = observedQueryKeys(http.queryClient, LIST);
+    expect(unfiltered).toHaveLength(1);
+    expect(http.lastCall('GET /office-equipment-models')!.query.get('coverage')).toBeNull();
+
     fireEvent.click(screen.getByRole('checkbox', { name: 'Без расходника' }));
     await waitFor(() =>
       expect(http.lastCall('GET /office-equipment-models')!.query.get('coverage')).toBe(
@@ -105,11 +114,14 @@ describe('окно моделей аппаратов', () => {
     );
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Без расходника' }));
-    // Снятый переключатель — «не фильтруй», а не «покажи покрытые»: обратного значения у
-    // параметра нет, и посланное пустое значение сервер отбил бы как недопустимое.
-    await waitFor(() =>
-      expect(http.lastCall('GET /office-equipment-models')!.query.get('coverage')).toBeNull(),
-    );
+    /*
+     * An unchecked switch means "do not filter", not "show the covered ones": the parameter has no
+     * opposite value, and an empty one the server would refuse as invalid. So the switch has to
+     * return to the very key the window opened with, whose request carried no `coverage`. While
+     * that entry is younger than the LIVE term, the production client shows it from the cache and
+     * sends nothing, so the return is read from the observed key, not from the request log.
+     */
+    await waitFor(() => expect(observedQueryKeys(http.queryClient, LIST)).toEqual(unfiltered));
   });
 
   it('удаление разрешено по isUsed, а не по счётчику своей области', async () => {

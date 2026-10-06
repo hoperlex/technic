@@ -9,6 +9,7 @@ import type {
 } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
+import { observedQueryKeys } from './query';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
@@ -220,6 +221,8 @@ describe('гараж: отбор по площадке и бланку', () => {
   it('снятый фильтр не оставляет за собой пустого ключа', async () => {
     const { http, queryClient } = renderPage('vehicles');
     await waitFor(() => expect(http.lastCall('GET /garage/vehicles')).toBeTruthy());
+    const unfiltered = observedQueryKeys(queryClient, ['garage', 'vehicles']);
+    expect(unfiltered).toHaveLength(1);
 
     await openFilter('Все объекты');
     await toggleOption('ЖК Северный');
@@ -229,8 +232,13 @@ describe('гараж: отбор по площадке и бланку', () => {
 
     // Тот же вариант вторым нажатием — снятие: набор становится пустым.
     await toggleOption('ЖК Северный');
+    /*
+     * The emptied set has to land on the very key the page started with. While that entry is
+     * younger than the LIVE term, the production client shows it from the cache and sends nothing,
+     * so the return is read from the key the tab observes, not from the request log.
+     */
     await waitFor(() =>
-      expect(http.lastCall('GET /garage/vehicles')!.query.has('objects')).toBe(false),
+      expect(observedQueryKeys(queryClient, ['garage', 'vehicles'])).toEqual(unfiltered),
     );
 
     /*

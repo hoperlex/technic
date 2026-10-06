@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import type { QueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router';
 import type { VehicleDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
+import { observedQueryKeys } from './query';
 import { MOBILE_VIEWPORT } from './viewport';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
@@ -100,7 +102,14 @@ function LocationProbe() {
   return <div data-testid="path">{location.pathname}</div>;
 }
 
-function renderTab(over: RouteMap = {}, user = SHTAB, route = '/vehicle-requests'): HttpMock {
+/** The feed's own family: the summary next to it lives under another one. */
+const FEED = ['vehicle-requests', 'feed'];
+
+function renderTab(
+  over: RouteMap = {},
+  user = SHTAB,
+  route = '/vehicle-requests',
+): HttpMock & { queryClient: QueryClient } {
   const http = mockHttp({
     'GET /vehicle-requests/feed': () => json(vehicleFeed([ORDER], [WEEKLY])),
     'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: 1 })),
@@ -112,7 +121,7 @@ function renderTab(over: RouteMap = {}, user = SHTAB, route = '/vehicle-requests
   });
   // Вкладка рисуется внутри `PageTabs`: сводка живёт на их уровне (`TabsExtra`), и без обёртки
   // экран остался бы без единственной цифры, ради которой у недельных заявок была своя вкладка.
-  renderWithUser(
+  const { queryClient } = renderWithUser(
     <>
       <PageTabs
         activeKey="requests"
@@ -122,7 +131,7 @@ function renderTab(over: RouteMap = {}, user = SHTAB, route = '/vehicle-requests
     </>,
     { user, route },
   );
-  return http;
+  return { ...http, queryClient };
 }
 
 /** Строка таблицы по номеру документа — искать её по индексу значило бы держаться за порядок. */
@@ -287,6 +296,9 @@ describe('лента «Заказ автотехники»: недельная �
   it('поиск по номеру уходит парой «вид документа + номер»', async () => {
     const http = renderTab();
     await screen.findByText('НЗ-12');
+    const unsearched = observedQueryKeys(http.queryClient, FEED);
+    expect(unsearched).toHaveLength(1);
+    expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('num')).toBeNull();
 
     search('НЗ-12');
     await waitFor(() => {
@@ -303,11 +315,15 @@ describe('лента «Заказ автотехники»: недельная �
       expect(call.query.get('kind')).toBeNull();
     });
 
-    // Пустой ввод снимает только номер: «не ищу конкретный документ» — не «покажи всё подряд».
+    /*
+     * An empty input drops only the number: "not looking for a particular document" is not "show
+     * everything". The kind was already dropped by the order number above, so the feed returns to
+     * the very key it opened with, whose request carried no `num`. While that entry is younger than
+     * the LIVE term, the production client shows it from the cache and sends nothing, so the
+     * return is read from the observed key, not from the request log.
+     */
     search('');
-    await waitFor(() =>
-      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('num')).toBeNull(),
-    );
+    await waitFor(() => expect(observedQueryKeys(http.queryClient, FEED)).toEqual(unsearched));
   });
 
   it('старый адрес вкладки недельных открывает список уже суженным до них', async () => {
@@ -475,9 +491,18 @@ describe('лента «Заказ автотехники»: набор пози�
   it('снятая позиция оставляет вторую, а снятые обе убирают параметр из запроса', async () => {
     const http = renderTab(CLASSIFICATIONS);
     await screen.findByText('Т-42');
+    const unfiltered = observedQueryKeys(http.queryClient, FEED);
+    expect(unfiltered).toHaveLength(1);
+    expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBeNull();
 
     await openFilter('Любой тип ТС');
     await toggleOption('Автокраны, г/п 25 т');
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBe(
+        'cvc-1',
+      ),
+    );
+    const cranesOnly = observedQueryKeys(http.queryClient, FEED);
     await toggleOption('Самосвалы');
     await waitFor(() =>
       expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBe(
@@ -485,19 +510,21 @@ describe('лента «Заказ автотехники»: набор пози�
       ),
     );
 
+    /*
+     * Both sets below were asked a moment ago, and the feed has to come back to exactly their
+     * keys. While those entries are younger than the LIVE term, the production client shows them
+     * from the cache and sends nothing, so each step is read from the observed key, not from the
+     * request log.
+     */
     await toggleOption('Самосвалы');
-    await waitFor(() =>
-      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBe(
-        'cvc-1',
-      ),
-    );
+    await waitFor(() => expect(observedQueryKeys(http.queryClient, FEED)).toEqual(cranesOnly));
 
     await toggleOption('Автокраны, г/п 25 т');
-    // Пустой набор — это «фильтра нет»: пустая строка означала бы то же самое, но уехала бы
-    // третьим ключом кэша за тем же списком.
-    await waitFor(() =>
-      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBeNull(),
-    );
+    /*
+     * An empty set means "no filter": an empty string would mean the same, but it would go out as
+     * a third cache key for the same list. Hence the very key the feed opened with.
+     */
+    await waitFor(() => expect(observedQueryKeys(http.queryClient, FEED)).toEqual(unfiltered));
   });
 
   it('порядок кликов не меняет строку запроса', async () => {

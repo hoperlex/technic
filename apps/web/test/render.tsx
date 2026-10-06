@@ -1,13 +1,14 @@
 import type { ReactNode } from 'react';
 import { vi } from 'vitest';
 import { render, type RenderResult } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { type QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App as AntApp, ConfigProvider } from 'antd';
 import ruRU from 'antd/locale/ru_RU';
 import { MemoryRouter } from 'react-router';
 import type { AuthUser } from '@technic/contracts';
 import { RouteModalContext, type RouteModalApi } from '@features/route-modal';
 import { AuthContext, AuthProvider, permissionChecks } from '@entities/session';
+import { createQueryClient } from '@app/providers';
 import { themeFor } from '../src/theme';
 import { FORM_VALIDATE_MESSAGES } from '../src/shared/config';
 import { setViewport, DESKTOP_VIEWPORT, type Viewport } from './viewport';
@@ -18,8 +19,7 @@ import { authUser } from './factories/auth';
  *
  * Порядок важен: `AntApp` даёт `App.useApp()`, которым формы показывают сообщения и модальные
  * подтверждения (без него падает любая форма), `MemoryRouter` — навигацию, `QueryClientProvider` —
- * кэш запросов. Клиент каждый раз свежий и без повторов: тест, который «иногда проходит»,
- * потому что запрос повторился, хуже упавшего.
+ * кэш запросов (клиент — `createTestQueryClient` ниже).
  *
  * Пользователь подставляется значением контекста, а не моком модуля: `vi.mock` поднимается на
  * верх файла и не переключается между тестами. Настоящий `AuthProvider` (со входом через сеть)
@@ -80,10 +80,15 @@ function routeModalStub(overrides: Partial<RouteModalApi> = {}): RouteModalApi {
   };
 }
 
+/**
+ * The production query client, fresh for every render, with retries off: a test that passes
+ * "sometimes" because a request happened to repeat is worse than a failing one. Nothing else
+ * differs from `main.tsx` — freshness term, focus and network behaviour are the shipped ones — so
+ * a refetch shows up in a test only where production would make it, and a missing invalidation
+ * shows up as stale data instead of being covered by a refetch on every mount.
+ */
 export function createTestQueryClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
+  return createQueryClient({ retry: false });
 }
 
 export function renderWithUser(

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { QueryClient } from '@tanstack/react-query';
 import type { AuthUser, ServiceRequestDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
+import { observedQueryKeys } from './query';
 import { emptyList, list } from './factories/common';
 import { serviceOperator, serviceRequest } from './factories/service';
 import { objectDto } from './factories/waste';
@@ -35,7 +37,11 @@ const repeated = (over: Partial<ServiceRequestDto> = {}): ServiceRequestDto =>
     ...over,
   });
 
-function renderTab(items: ServiceRequestDto[], viewport?: Viewport, over: RouteMap = {}): HttpMock {
+function renderTab(
+  items: ServiceRequestDto[],
+  viewport?: Viewport,
+  over: RouteMap = {},
+): HttpMock & { queryClient: QueryClient } {
   const http = mockHttp({
     'GET /service-requests': () => json(list(items)),
     // Статический путь описан раньше `:id` — иначе шаблон с параметром перехватил бы и его.
@@ -51,8 +57,8 @@ function renderTab(items: ServiceRequestDto[], viewport?: Viewport, over: RouteM
     'GET /office-equipment-types': () => json(emptyList()),
     ...over,
   });
-  renderWithUser(<RequestsTab />, { user: OPERATOR, viewport });
-  return http;
+  const { queryClient } = renderWithUser(<RequestsTab />, { user: OPERATOR, viewport });
+  return { ...http, queryClient };
 }
 
 describe('тег «Повтор ×N» в списке', () => {
@@ -179,7 +185,11 @@ describe('ссылка «Показать предыдущие» из карто
 
   it('«Показать все заявки» возвращает обычный список', async () => {
     const http = renderTab([repeated()]);
+    const LIST = ['service-requests', 'list'];
     await screen.findByText('СО-14');
+    const usual = observedQueryKeys(http.queryClient, LIST);
+    expect(usual).toHaveLength(1);
+    expect(http.lastCall('GET /service-requests')?.query.get('repeatFor')).toBeNull();
     await openCard();
     fireEvent.click(screen.getByText('Показать предыдущие'));
     await waitFor(() =>
@@ -188,9 +198,13 @@ describe('ссылка «Показать предыдущие» из карто
 
     fireEvent.click(screen.getByText('Показать все заявки'));
 
-    await waitFor(() =>
-      expect(http.lastCall('GET /service-requests')?.query.get('repeatFor')).toBeNull(),
-    );
+    /*
+     * The usual list has to come back under the very key the tab opened with, whose request
+     * carried no `repeatFor`. While that entry is younger than the LIVE term, the production
+     * client shows it from the cache and sends nothing, so the return is read from the observed
+     * key, not from the request log.
+     */
+    await waitFor(() => expect(observedQueryKeys(http.queryClient, LIST)).toEqual(usual));
     // Шапка вернулась целиком: режим кончился, а не остался наполовину.
     expect(screen.getByLabelText('Только срочные')).toBeDefined();
   });
