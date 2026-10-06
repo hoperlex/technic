@@ -1,6 +1,36 @@
-import type { OfficeEquipmentRequestOptionDto } from '@technic/contracts';
+import type { OfficeEquipmentDto, OfficeEquipmentRequestOptionDto } from '@technic/contracts';
 import { json, type RouteMap } from '../http';
 import { list } from './common';
+
+/**
+ * A unit of the office equipment registry (`GET /office-equipment`): an active MFP on a site,
+ * without service history or consumables. Those two arrive only on the detail read, and a list row
+ * that carried them would promise the table what the server does not send there.
+ */
+export function officeEquipmentUnit(over: Partial<OfficeEquipmentDto> = {}): OfficeEquipmentDto {
+  return {
+    id: 'oe-1',
+    type: { id: 'oet-1', name: 'МФУ', isActive: true },
+    model: { id: 'oem-1', name: 'Kyocera M3145' },
+    specs: [],
+    name: 'Kyocera M3145',
+    serialNumber: '',
+    inventoryNumber: '0012345',
+    object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
+    department: null,
+    location: 'Корпус 3, каб. 214',
+    state: 'on_site',
+    stateNote: '',
+    purchasedOn: null,
+    warrantyUntil: null,
+    comment: '',
+    isActive: true,
+    createdAt: '2026-08-01T09:00:00.000Z',
+    updatedAt: '2026-08-01T09:00:00.000Z',
+    deletedAt: null,
+    ...over,
+  };
+}
 
 /**
  * Единица справочника ГЛАЗАМИ ФОРМЫ ЗАЯВКИ — проекция селектора (план
