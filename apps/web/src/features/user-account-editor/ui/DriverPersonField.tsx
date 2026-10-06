@@ -290,9 +290,16 @@ interface RestoreProps {
 export function DriverRestoreModal({ account, onCancel, onSubmit, confirmLoading }: RestoreProps) {
   const [form] = Form.useForm<RestoreUserBody>();
 
+  /*
+   * The form resets once per window session: when it opens for an account or switches to another
+   * one. The parent builds `account` anew on every render (`personFactsOf(record)`), and the page
+   * re-renders while the restore request is pending and after a server refusal; keyed on the object,
+   * the reset wiped the employee the admin had just picked, exactly when they needed to retry.
+   */
+  const session = account ? (account.id ?? '') : null;
   useEffect(() => {
-    if (account) form.resetFields();
-  }, [account, form]);
+    if (session !== null) form.resetFields();
+  }, [session, form]);
 
   return (
     <FormModal
