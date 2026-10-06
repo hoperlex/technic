@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   approveWeeklyRequestSchema,
   can,
+  annulWeeklyRequestSchema,
   canAnnulWeeklyRequest,
+  canReturnWeeklyRequest,
+  returnWeeklyRequestSchema,
+  weeklyReturnHeaderBlocker,
   createWeeklyRequestSchema,
   extendBlocker,
   formatWeeklyRequestNumber,
@@ -926,5 +930,30 @@ describe('аннулирование: ветвь, право и эффектив
     expect(isWeeklyRequestLive('applied')).toBe(true);
     expect(isWeeklyRequestApplied('annulled')).toBe(true);
     expect(isWeeklyRequestApplied('cancelled')).toBe(false);
+  });
+});
+
+// Return of an applied week for re-approval (ADR 0219).
+describe('возврат применённой недели на согласование', () => {
+  it('возвращают диспетчер и администратор, площадка — нет (Р3: waybills.correct в обеих ветвях)', () => {
+    expect(canReturnWeeklyRequest({ role: 'dispatcher' })).toBe(true);
+    expect(canReturnWeeklyRequest({ role: 'admin' })).toBe(true);
+    // The construction manager approves and annuls, but the return is the dispatcher's tool.
+    expect(canReturnWeeklyRequest({ role: 'rukstroy' })).toBe(false);
+    expect(canReturnWeeklyRequest({ role: 'shtab' })).toBe(false);
+    expect(canReturnWeeklyRequest({ role: 'manager' })).toBe(false);
+    expect(canReturnWeeklyRequest(null)).toBe(false);
+  });
+
+  it('возвращают только применённую; аннулированную не оживляют', () => {
+    expect(weeklyReturnHeaderBlocker({ status: 'applied' })).toBeNull();
+    expect(weeklyReturnHeaderBlocker({ status: 'annulled' })).toContain('аннулирована');
+    expect(weeklyReturnHeaderBlocker({ status: 'pending' })).toContain('ещё не завизирована');
+    expect(weeklyReturnHeaderBlocker({ status: 'draft' })).toContain('ещё не завизирована');
+    expect(weeklyReturnHeaderBlocker({ status: 'cancelled' })).toContain('снята');
+  });
+
+  it('тело возврата — тело аннулирования: одна схема на одни и те же последствия', () => {
+    expect(returnWeeklyRequestSchema).toBe(annulWeeklyRequestSchema);
   });
 });

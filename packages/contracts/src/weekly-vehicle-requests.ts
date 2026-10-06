@@ -1671,7 +1671,7 @@ export function weeklyAnnulItemState(
     if (order.status !== 'new') {
       return blocked(
         `Порождённый заказ уже в статусе «${requestStatusLabels[order.status]}» — ` +
-          'закройте или откатите его, потом аннулируйте неделю',
+          'сначала закройте или откатите его',
       );
     }
     if (item.laterWeekRefs.length > 0) {
@@ -1686,7 +1686,7 @@ export function weeklyAnnulItemState(
     if (order?.pickupRoute) {
       return blocked(
         `Вывоз оформлен рейсом ${formatVehicleRouteNumber(order.pickupRoute.num)} на ` +
-          `${dayMonth(order.pickupRoute.routeDate)} — отмените рейс, потом аннулируйте неделю`,
+          `${dayMonth(order.pickupRoute.routeDate)} — сначала отмените рейс`,
       );
     }
     return { state: 'reversible', reason: '', reverse: 'release_leave' };
@@ -1722,7 +1722,7 @@ export function weeklyAnnulItemState(
   if (order.pendingEarlyEndDate) {
     return blocked(
       `Запрос на досрочный отъезд ${dayMonth(order.pendingEarlyEndDate)} ждёт визы — ` +
-        'решите его, потом аннулируйте неделю',
+        'сначала решите его',
     );
   }
   if (item.laterWeekRefs.length > 0) {

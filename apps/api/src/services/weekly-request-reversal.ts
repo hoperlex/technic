@@ -134,9 +134,7 @@ export async function runWeeklyReversal(
 
     // Blockers as a full list and before the first write: the week is fixed in one pass, and a
     // refusal naming one row of four would send the person in circles.
-    const blockedItems = plan.items.filter(
-      (item) => plan.states.get(item.id)?.state === 'blocked',
-    );
+    const blockedItems = plan.items.filter((item) => plan.states.get(item.id)?.state === 'blocked');
     if (blockedItems.length > 0 || plan.blockers.length > 0) {
       const reasons = [
         ...blockedItems.map((item) => plan.states.get(item.id)?.reason ?? ''),
