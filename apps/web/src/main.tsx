@@ -1,12 +1,13 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { App as AntApp, ConfigProvider } from 'antd';
 import ruRU from 'antd/locale/ru_RU';
 import { BrowserRouter } from 'react-router';
 import { AuthProvider } from '@entities/session';
 import App from './App';
 import { MaintenanceBoundary } from '@app/MaintenanceBoundary';
+import { createQueryClient } from '@app/providers';
 import { setupDayjs, useIsMobile, useMobileRootClass } from '@shared/lib';
 import { FORM_VALIDATE_MESSAGES } from '@shared/config';
 import { themeFor } from './theme';
@@ -16,11 +17,7 @@ import './styles.css';
 // раньше были связаны только памятью.
 setupDayjs();
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { retry: 1, refetchOnWindowFocus: false, staleTime: 10_000 },
-  },
-});
+const queryClient = createQueryClient();
 
 /**
  * Корень приложения: отсюда режим устройства расходится по обеим дорогам — в тему antd и в класс

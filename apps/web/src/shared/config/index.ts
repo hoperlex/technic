@@ -5,5 +5,6 @@
 export * from './files';
 export * from './forms';
 export * from './pagination';
+export * from './query';
 export * from './support';
 export * from './time';
