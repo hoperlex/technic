@@ -72,7 +72,7 @@ export async function applyWeeklyReturn(
     .from(weeklyVehicleRequests)
     .where(eq(weeklyVehicleRequests.id, plan.header.id));
 
-  const [previous] = await tx
+  const [bumped] = await tx
     .update(weeklyVehicleRequests)
     .set({
       status: 'pending',
@@ -90,7 +90,7 @@ export async function applyWeeklyReturn(
       ),
     )
     .returning({ id: weeklyVehicleRequests.id });
-  if (!previous) throw err.conflict();
+  if (!bumped) throw err.conflict();
 
   const rows = await tx
     .update(weeklyVehicleRequestItems)
