@@ -10,8 +10,9 @@ import {
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import { errorMessage, useRecordSession } from '@shared/lib';
+import { useRecordSession } from '@shared/lib';
 import { useEstimatePresentation } from './useEstimatePresentation';
+import { useEstimateFailure } from './conflict';
 import {
   estimateDraftIssue,
   estimateIssue,
@@ -89,6 +90,7 @@ export function useEstimateEditor({
 }) {
   const { message } = App.useApp();
   const qc = useQueryClient();
+  const failed = useEstimateFailure(request?.id ?? null);
   const breakdown = intent === 'breakdown';
   const directDocument = intent === 'document' || intent === 'work_done';
   const workDone = intent === 'work_done';
@@ -224,7 +226,7 @@ export function useEstimateEditor({
     // 409 здесь — обычный ответ: заявку подвинули, пока объём работ набирали. Второй его повод —
     // предъявление, повисшее с чужого экрана: замок гасит кнопки, но между открытием окна и
     // нажатием помещается чужое действие, и объяснение этому даёт уже сервер.
-    onError: (e) => message.error(errorMessage(e)),
+    onError: failed,
   });
 
   /** Гарантийный ремонт (Р27): объём работ из служебной нулевой строки, его собирает сервер. */
@@ -240,7 +242,7 @@ export function useEstimateEditor({
       refresh();
       onClose();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: failed,
   });
 
   /**
@@ -277,7 +279,7 @@ export function useEstimateEditor({
       if (onDocumentSubmitted) onDocumentSubmitted(result);
       else onClose();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: failed,
   });
 
   /**
@@ -305,7 +307,7 @@ export function useEstimateEditor({
     },
     // 409 — предъявление висит, 422 — заявка не в «В работе»: оба ответа объясняет сервер словами,
     // и портал их не предугадывает (замок гасит кнопку только по тому, что видно в карточке).
-    onError: (e) => message.error(errorMessage(e)),
+    onError: failed,
   });
 
   /*
