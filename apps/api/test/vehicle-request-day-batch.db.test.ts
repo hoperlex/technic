@@ -704,6 +704,82 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     }
   });
 
+  it('copies the current hitch into new routes and waybills without inventing a past hitch', async () => {
+    const vehicleId = ctx.vehicles[13]!;
+    const registrationNumber = `ZZBATCH${RUN.toUpperCase()}`;
+    const created = await inject('POST', '/api/v1/vehicle-trailers', ctx.admin, {
+      kind: 'semi_trailer',
+      model: 'ШМИТЦ SPR-24',
+      registrationNumber,
+      status: 'active',
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const hitched = await inject(
+      'POST',
+      `/api/v1/vehicle-trailers/${created.json().id}/hitch`,
+      ctx.admin,
+      { vehicleId, position: 2 },
+    );
+    expect(hitched.statusCode, hitched.body).toBe(200);
+
+    const dateFrom = shiftDateKey(ctx.today, -1);
+    const dateTo = shiftDateKey(ctx.today, 1);
+    const request = await requestInProgress({
+      typeId: ctx.linearTypeId,
+      vehicleId,
+      dateFrom,
+      dateTo,
+      backdateReason: 'работы начались вчера',
+    });
+    const result = await batchOk(request.id, {
+      reason: 'оформляем вчерашний день',
+      operationId: randomUUID(),
+    });
+    expect(result.issued).toBe(3);
+
+    const rows = await ctx.db.execute<{
+      date: string;
+      route_with_trailer: boolean;
+      route_model: string;
+      route_number: string;
+      paper_with_trailer: boolean;
+      paper_model: string;
+      paper_number: string;
+    }>(sql`
+      SELECT vr.route_date::text AS date,
+             vr.with_trailer AS route_with_trailer,
+             vr.trailer1_model AS route_model,
+             vr.trailer1_reg_number AS route_number,
+             w.with_trailer AS paper_with_trailer,
+             w.trailer1_model AS paper_model,
+             w.trailer1_reg_number AS paper_number
+        FROM vehicle_route_requests rr
+        JOIN vehicle_routes vr ON vr.id = rr.route_id
+        JOIN waybills w ON w.route_id = vr.id
+       WHERE rr.request_id = ${request.id}
+       ORDER BY vr.route_date`);
+    expect(rows.rows).toHaveLength(3);
+    expect(rows.rows[0]).toMatchObject({
+      date: dateFrom,
+      route_with_trailer: false,
+      route_model: '',
+      route_number: '',
+      paper_with_trailer: false,
+      paper_model: '',
+      paper_number: '',
+    });
+    for (const row of rows.rows.slice(1)) {
+      expect(row).toMatchObject({
+        route_with_trailer: true,
+        route_model: 'ШМИТЦ SPR-24',
+        route_number: registrationNumber,
+        paper_with_trailer: true,
+        paper_model: 'ШМИТЦ SPR-24',
+        paper_number: registrationNumber,
+      });
+    }
+  });
+
   /**
    * §7, the first of the five obstacles: a day already standing in a route of this request the
    * batch does not touch.

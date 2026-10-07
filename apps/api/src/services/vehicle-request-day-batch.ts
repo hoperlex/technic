@@ -12,6 +12,7 @@ import {
   canJoinRoute,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
+  hitchedTrailerGraphs,
   isRelocationPurpose,
   isRouteEditable,
   linearDaysBlocker,
@@ -55,6 +56,7 @@ import { markCorrectionWaybill } from './vehicle-route-correction';
 import {
   attachRequest,
   bumpRouteVersion,
+  hitchedTrailersOf,
   lockRoute,
   plannedDaysOfRequest,
   routeRequestCount,
@@ -651,12 +653,30 @@ async function pickDayRoute(tx: Tx, ctx: DayContext): Promise<RouteRow> {
     candidates.push(await lockRoute(tx, row.id));
   }
   if (candidates.length === 0) {
+    // A current hitch is an explicit directory choice. It cannot describe a past workday: the
+    // registry has no hitch history, so backdated paper must keep its trailer fields empty.
+    const trip = ctx.backdated
+      ? null
+      : hitchedTrailerGraphs(await hitchedTrailersOf(tx, ctx.vehicleId));
     return openDayRoute(tx, {
       body: {
         // The vehicle comes from the assignment for this day (ADR 0207 §5), the driver is one for
         // the whole period (§6): there is no vehicle field in the window at all, and a person is
         // never filled in without being asked (ADR 0083).
-        newRoute: { vehicleId: ctx.vehicleId, driverPersonId: ctx.input.driverPersonId },
+        newRoute: {
+          vehicleId: ctx.vehicleId,
+          driverPersonId: ctx.input.driverPersonId,
+          ...(trip
+            ? {
+                trip: {
+                  ...trip,
+                  garageNumber: '',
+                  communicationKind: '',
+                  transportationKind: '',
+                },
+              }
+            : {}),
+        },
       },
       date: ctx.date,
       actorId: ctx.actor.id,

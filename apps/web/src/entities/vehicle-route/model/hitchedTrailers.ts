@@ -1,24 +1,15 @@
 import {
   type HitchedTrailerDto,
   type RouteTripFields,
+  hitchedTrailerGraphs,
   vehicleStatusLabels,
   type VehicleTrailerVehicleRefDto,
 } from '@technic/contracts';
 
 /**
- * Правило чтения закреплённых прицепов — одно на все окна заведения рейса
- * (`docs/vehicle-trailers-plan.md`, §4.2.2).
- *
- * Правило целиком: **`hitched` не пуст — графы прицепа и галочка «с прицепом» берутся из него, а
- * под графами встаёт подпись, что подставлено и откуда; `hitched` пуст — новой подстановки нет
- * вовсе**, и окно ведёт себя ровно как вчера. Второе — решение, а не умолчание: подмешай сюда
- * историю рейсов, и портал начал бы предлагать вчерашний прицеп в окне «Новый маршрут», которое
- * сегодня не подставляет ничего (ADR 0083, решение 2). Граница проведена по источнику, а не по
- * окну: новая подстановка бывает только у машины с закреплённым прицепом.
- *
- * Функции здесь чистые и живут в сущности, а не в окне, ровно потому, что окон пять: подпись,
- * порядок слотов и предупреждение о ремонте, переписанные пять раз, разойдутся на первой же
- * правке — и человек прочтёт про один и тот же прицеп разное в двух соседних формах.
+ * A registry hitch overrides inherited trip fields in every route form. Empty hitches leave the
+ * form's previous behavior intact (ADR 0083). Slot placement is shared with the batch through
+ * the contract helper, while form only concerns such as the editable-source note remain here.
  */
 
 /** Код типа техники «Тягачи с полуприцепами» (миграция 0013): им включается галочка по §4.4 (а). */
@@ -56,32 +47,12 @@ export function emptyTrailerGraphs(): TrailerGraphs {
   };
 }
 
-/** Закрепления по возрастанию слота: порядок пар граф — свойство бланка, а не ответа сервера. */
+/** The paper's slot order is independent of the registry response order. */
 function ordered(hitched: readonly HitchedTrailerDto[] | undefined | null): HitchedTrailerDto[] {
   return [...(hitched ?? [])].sort((a, b) => a.position - b.position);
 }
 
-/**
- * Графы прицепа из закрепления; `null` — за машиной не закреплено ничего, и подставлять нечего.
- *
- * Слоты бланка заполняются **по порядку**, а не по номеру слота из реестра: за машиной может
- * стоять один прицеп во втором слоте (первый освободили), а второй прицеп при пустом первом бланк
- * печатает дырой посреди шапки — и сервер такой рейс не примет вовсе (§4.6). Реестр отвечает на
- * вопрос «что стоит за машиной», порядок граф — вопрос бумаги.
- */
-export function hitchedTrailerGraphs(
-  hitched: readonly HitchedTrailerDto[] | undefined | null,
-): TrailerGraphs | null {
-  const slots = ordered(hitched);
-  if (slots.length === 0) return null;
-  return {
-    withTrailer: true,
-    trailer1Model: slots[0]?.model ?? '',
-    trailer1RegNumber: slots[0]?.registrationNumber ?? '',
-    trailer2Model: slots[1]?.model ?? '',
-    trailer2RegNumber: slots[1]?.registrationNumber ?? '',
-  };
-}
+export { hitchedTrailerGraphs };
 
 /**
  * Стоит ли сейчас в графах именно закреплённое — этим и решается, показывать ли подпись.

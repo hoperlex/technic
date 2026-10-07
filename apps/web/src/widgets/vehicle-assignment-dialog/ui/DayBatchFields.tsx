@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
 import { Alert, Checkbox, Form, Input, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
+import { vehicleStatusLabels } from '@technic/contracts';
 import { driverKeys, driversApi } from '@entities/driver';
+import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 import { AutoSelect, FormGrid } from '@shared/ui';
 import {
   dayBatchModel,
@@ -36,12 +38,11 @@ import { formatDateOnly } from '@shared/lib';
  */
 
 /**
- * Who may drive this vehicle — with the same key and the same selection as the per-day dialog and
- * the take-into-work dialog: one list must not travel to the server twice, let alone answer
- * differently.
+ * The driver's category warning must reflect the trailer state that the batch prints. The query
+ * key and request must agree so the two batch dialogs share one selection.
  */
-const driversKey = (vehicleId: string | undefined, date: string) =>
-  driverKeys.available({ vehicleId, on: date, withTrailer: false });
+const driversKey = (vehicleId: string | undefined, date: string, withTrailer: boolean) =>
+  driverKeys.available({ vehicleId, on: date, withTrailer });
 
 interface Props {
   /**
@@ -89,18 +90,35 @@ export function DayBatchFields({
 }: Props) {
   const form = Form.useFormInstance<DayBatchFormValues>();
   const driverId = Form.useWatch('dayBatchDriverId', form);
+  const hasCurrentDays = !term.dateTo || term.dateTo >= onDate;
+  const trailerDate = term.dateFrom < onDate ? onDate : term.dateFrom;
+  const { data: suggestion } = useQuery({
+    queryKey: vehicleRouteKeys.suggest(vehicleId, trailerDate),
+    queryFn: () => vehicleRoutesApi.suggest({ vehicleId: vehicleId!, date: trailerDate }),
+    enabled: enabled && hasCurrentDays && !!vehicleId && !!trailerDate,
+  });
+  const hitched = suggestion?.hitched ?? [];
+  const withTrailer = hasCurrentDays && hitched.length > 0;
+  const unavailableTrailers = hitched.filter((trailer) => trailer.status !== 'active');
+  const trailerWarning = unavailableTrailers.length
+    ? ` Проверьте состояние: ${unavailableTrailers
+        .map(
+          (trailer) =>
+            `${trailer.registrationNumber} — «${vehicleStatusLabels[trailer.status].toLowerCase()}»`,
+        )
+        .join(', ')}.`
+    : '';
 
   /**
    * Drivers — with the same query and selection as the per-day dialog: an order day is printed on
    * an ordinary 4-P with the same licence and SNILS boxes. The selection date is the first day of
    * the term: document validity is checked for one day, while the batch has one person; a licence
-   * expiring inside the period will be shown by the waybill itself, and there is nothing to re-ask
-   * per day here.
+   * expiring inside the period will be shown by the waybill itself. The trailer flag describes the
+   * current and future days that receive the registry hitch.
    */
   const { data: selection, isFetching } = useQuery({
-    queryKey: driversKey(vehicleId, term.dateFrom),
-    queryFn: () =>
-      driversApi.available({ vehicleId: vehicleId!, on: term.dateFrom, withTrailer: false }),
+    queryKey: driversKey(vehicleId, term.dateFrom, withTrailer),
+    queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: term.dateFrom, withTrailer }),
     enabled: enabled && !!vehicleId && !!term.dateFrom,
   });
   const options = (selection?.drivers ?? []).map(driverOption);
@@ -156,6 +174,16 @@ export function DayBatchFields({
 
       {enabled && (
         <>
+          {withTrailer && (
+            <FormGrid.Full>
+              <Alert
+                type={unavailableTrailers.length ? 'warning' : 'info'}
+                showIcon
+                title="Закреплённые прицепы попадут в новые рейсы"
+                description={`${hitched.map((trailer) => `${trailer.model} ${trailer.registrationNumber}`).join(' · ')}. Пачка возьмёт привязку из справочника для сегодняшних и будущих дней; для прошедших дней её восстановить нельзя.${trailerWarning}`}
+              />
+            </FormGrid.Full>
+          )}
           <FormGrid.Full>
             <Form.Item
               name="dayBatchDriverId"

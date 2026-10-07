@@ -198,7 +198,9 @@
         },
         {
           "source": "src/widgets/user-audit/ui/UsersAuditTab.tsx",
-          "with": ["src/pages/admin/UsersTab.tsx"],
+          "with": [
+            "src/pages/admin/UsersTab.tsx"
+          ],
           "gzip": 598467
         }
       ]
