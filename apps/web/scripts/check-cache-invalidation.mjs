@@ -63,6 +63,18 @@
  *     типов техники шесть). «Погаси хоть один свой корень» для них не значит ничего, и сказанное
  *     полем `homeAmbiguous` в карте честнее сработавшего наугад правила.
  *
+ * THE PATH TABLE answers "which slice owns this API path", the question a handle name cannot
+ * answer for a read that bypasses the handles: `apiFetch('/counterparties')` in the service-request
+ * slice reads the counterparty slice's data under a root no counterparty mutation drops. Every
+ * handle's request is normalised into a template (`/vehicle-requests/:id/history`, with `${PATH}`
+ * replaced by the value of the file's constant), the template is owned by the slice of the file
+ * the request is written in, and an arbitrary path is matched to the longest template that covers
+ * it (`matchApiPath`). The answer is a SLICE, not a root: nine slices keep several roots
+ * (`route-prefill` under the vehicle request, `license-categories` under the driver), and which of
+ * them a read belongs to is a question about its key, not about its path. The map prints the table
+ * under `apiPaths`; a path the scan cannot evaluate goes to `unresolved` (class `api-inventory`)
+ * instead of silently shrinking the table.
+ *
  * WHY `unresolved` IS ALWAYS PRINTED. This check can decay by understanding less code and becoming
  * greener. Every unresolved site gets a class (`unknown-write`, `cache-effect`, `ownership`,
  * `api-inventory`, `scanner-limit`) in addition to its technical reason. Unknown writes fail the
@@ -140,13 +152,20 @@ const STORAGE_HANDLES = new Set(['filesApi.upload', 'filesApi.remove']);
  * Spelled out because the spread hides the HTTP verb: `...createWriteApi(PATH)` is the only place
  * `update` is declared a PATCH, and a scan that skipped it would read half the portal's writes as
  * plain reads and stay silent about them.
+ *
+ * `tail` is what each factory appends to the path it is given, for the same reason: the spread
+ * hides the request, and without it every list and card of the portal would be missing from the
+ * path table. Kept in this one table so the verb and the path of a factory handle cannot drift.
  */
 const API_FACTORIES = {
-  createListApi: { list: 'GET' },
-  createGetApi: { get: 'GET' },
-  createWriteApi: { create: 'POST', update: 'PATCH' },
-  createRemoveApi: { remove: 'DELETE' },
+  createListApi: { list: { verb: 'GET', tail: '' } },
+  createGetApi: { get: { verb: 'GET', tail: '/:id' } },
+  createWriteApi: { create: { verb: 'POST', tail: '' }, update: { verb: 'PATCH', tail: '/:id' } },
+  createRemoveApi: { remove: { verb: 'DELETE', tail: '/:id' } },
 };
+
+/** The request senders of `src/shared/api/http.ts`; the first argument of each is the path. */
+const API_SENDERS = new Set(['apiFetch', 'apiUpload', 'apiDownload', 'apiFetchBlob']);
 
 /** Bound on hops through names, helpers and factories; guards mutually referring declarations. */
 const MAX_HOPS = 8;
@@ -225,11 +244,18 @@ function harvestKeyRoots(sf, file, keys, rootOwners) {
   visit(sf);
 }
 
-/** `export const driversApi = { …, update: (id, b) => apiFetch(`…`, { method: 'PATCH' }) }`. */
+/**
+ * `export const driversApi = { …, update: (id, b) => apiFetch(`…`, { method: 'PATCH' }) }`.
+ *
+ * Returns the source ranges that belong to API declarations — the harvested objects and the local
+ * senders they call. A request inside those ranges is already in the path table under a handle;
+ * every other request of the file is a bare call and is matched against the table instead.
+ */
 function harvestApi(sf, file, objects, unresolved) {
   // Senders first: the handles below are read through them, so a sender declared after the API
   // object would otherwise be missed for every handle above it.
   const localVerbs = new Map();
+  const senderFns = new Map();
   const collectSenders = (node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const init = unwrap(node.initializer);
@@ -238,23 +264,41 @@ function harvestApi(sf, file, objects, unresolved) {
         // A sender declared twice in one file is stored as unusable rather than as its first
         // meaning: two senders under one name would silently label half the handles with the other
         // one's verb.
-        if (verb) localVerbs.set(node.name.text, localVerbs.has(node.name.text) ? undefined : verb);
+        if (verb) {
+          const name = node.name.text;
+          localVerbs.set(name, localVerbs.has(name) ? undefined : verb);
+          senderFns.set(name, senderFns.has(name) ? undefined : init);
+        }
       }
     }
     ts.forEachChild(node, collectSenders);
   };
   collectSenders(sf);
-  for (const [name, verb] of [...localVerbs]) if (verb === undefined) localVerbs.delete(name);
+  for (const [name, verb] of [...localVerbs])
+    if (verb === undefined) {
+      localVerbs.delete(name);
+      senderFns.delete(name);
+    }
 
+  const scope = { sf, consts: topLevelConsts(sf), senders: senderFns, usedSenders: new Set() };
+  const ranges = [];
   const visit = (node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const obj = unwrap(node.initializer);
-      if (ts.isObjectLiteralExpression(obj))
-        harvestApiObject(node.name.text, obj, file, objects, unresolved, localVerbs);
+      if (
+        ts.isObjectLiteralExpression(obj) &&
+        harvestApiObject(node.name.text, obj, file, objects, unresolved, localVerbs, scope)
+      )
+        ranges.push([obj.pos, obj.end]);
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
+  for (const name of scope.usedSenders) {
+    const fn = senderFns.get(name);
+    if (fn) ranges.push([fn.pos, fn.end]);
+  }
+  return ranges;
 }
 
 /**
@@ -266,17 +310,31 @@ function harvestApi(sf, file, objects, unresolved) {
  * was "an unknown factory" and the parts were never looked at, because their names do not end in
  * `Api`. So every literal is kept, and the spreads are followed in a second pass, once every file
  * has been read — a spread may name an object declared later or elsewhere.
+ *
+ * A member is `{ verb, requests }`: the verb the write rules read, and every request the member
+ * sends with its path template. Both are taken from the same body under the same condition, so the
+ * path table holds exactly the handles the verb registry holds. Returns whether the literal was
+ * kept as an API object.
  */
-function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs) {
+function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs, scope) {
   const members = new Map();
   const spreads = [];
   for (const member of obj.properties) {
     if (ts.isSpreadAssignment(member)) {
       const spread = unwrap(member.expression);
       const callee = ts.isCallExpression(spread) ? unwrap(spread.expression) : undefined;
-      const factory = callee && ts.isIdentifier(callee) ? API_FACTORIES[callee.text] : undefined;
-      if (factory) for (const [m, verb] of Object.entries(factory)) members.set(m, verb);
-      else if (ts.isIdentifier(spread)) spreads.push(spread.text);
+      const factory =
+        callee && ts.isIdentifier(callee) && Object.hasOwn(API_FACTORIES, callee.text)
+          ? API_FACTORIES[callee.text]
+          : undefined;
+      if (factory) {
+        const base = pathPieces(spread.arguments[0], scope, true);
+        for (const [m, { verb, tail }] of Object.entries(factory))
+          members.set(m, {
+            verb,
+            requests: [{ verb, file: rel(file), ...normalizePath([...base, ...tailPieces(tail)]) }],
+          });
+      } else if (ts.isIdentifier(spread)) spreads.push(spread.text);
       else
         unresolved.push({
           file: rel(file),
@@ -288,16 +346,28 @@ function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs) {
     if (!ts.isPropertyAssignment(member) && !ts.isMethodDeclaration(member)) continue;
     const name = propertyName(member.name);
     if (!name) continue;
-    const verb = apiFetchVerb(
-      ts.isPropertyAssignment(member) ? member.initializer : member,
-      localVerbs,
-    );
-    if (verb) members.set(name, verb);
+    const body = ts.isPropertyAssignment(member) ? member.initializer : member;
+    const verb = apiFetchVerb(body, localVerbs);
+    if (verb)
+      members.set(name, {
+        verb,
+        requests: memberRequests(body, scope).map((r) => ({ ...r, file: rel(file) })),
+      });
   }
   // A literal that reaches no request at all is not an API object: a config, a dictionary, a map of
   // labels. Keeping those would fill the table with names that answer nothing.
-  if (members.size > 0 || spreads.length > 0)
-    objects.add(objName, { members, spreads, file: rel(file) });
+  if (members.size === 0 && spreads.length === 0) return false;
+  objects.add(objName, { members, spreads, file: rel(file) });
+  // Reported once, where the request is written, and not once per object that spreads it.
+  for (const [m, { requests }] of members)
+    for (const r of requests)
+      if (r.computed !== undefined)
+        unresolved.push({
+          file: rel(file),
+          form: `${objName}.${m}: ${r.computed}`,
+          why: 'api-path-computed-in-a-handle',
+        });
+  return true;
 }
 
 /**
@@ -306,8 +376,12 @@ function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs) {
  * Depth-bounded and cycle-safe for the same reason as the helper table: two objects spreading each
  * other is a runtime error nobody would ship, but the scan must answer rather than hang if one
  * appears mid-edit.
+ *
+ * `handleRequests` receives the requests of every handle the verb registry receives. A request
+ * keeps the file it was WRITTEN in rather than the file of the object that spreads it, because the
+ * path belongs to the slice that declares the request.
  */
-function flattenApiObjects(objects, api, unresolved) {
+function flattenApiObjects(objects, api, unresolved, handleRequests) {
   const cache = new Map();
   const computing = new Set();
   const resolve = (name, depth) => {
@@ -332,7 +406,7 @@ function flattenApiObjects(objects, api, unresolved) {
           form: `${name} spreads ${from}`,
           why: 'api-spread-names-an-object-declared-twice',
         });
-      else for (const [m, verb] of inner) if (!out.has(m)) out.set(m, verb);
+      else for (const [m, member] of inner) if (!out.has(m)) out.set(m, member);
     }
     computing.delete(name);
     cache.set(name, out);
@@ -342,7 +416,10 @@ function flattenApiObjects(objects, api, unresolved) {
   for (const [name, entry] of objects.byName) {
     const members = resolve(name, 0);
     if (!members) continue;
-    for (const [member, verb] of members) api.add(`${name}.${member}`, verb, entry.value.file);
+    for (const [member, { verb, requests }] of members) {
+      api.add(`${name}.${member}`, verb, entry.value.file);
+      handleRequests.set(`${name}.${member}`, requests);
+    }
   }
 }
 
@@ -361,33 +438,13 @@ function apiFetchVerb(node, localVerbs) {
   const visit = (n) => {
     if (verb) return;
     if (ts.isCallExpression(n)) {
-      const callee = unwrap(n.expression);
-      const name = ts.isIdentifier(callee)
-        ? callee.text
-        : ts.isPropertyAccessExpression(callee)
-          ? callee.name.text
-          : undefined;
+      const name = calleeName(n);
       if (name && localVerbs?.has(name)) {
         verb = localVerbs.get(name);
         return;
       }
-      if (
-        name === 'apiFetch' ||
-        name === 'apiUpload' ||
-        name === 'apiDownload' ||
-        name === 'apiFetchBlob'
-      ) {
-        verb = 'GET';
-        const opts = n.arguments.find((a) => ts.isObjectLiteralExpression(unwrap(a)));
-        if (opts)
-          for (const p of unwrap(opts).properties)
-            if (
-              ts.isPropertyAssignment(p) &&
-              propertyName(p.name) === 'method' &&
-              ts.isStringLiteral(unwrap(p.initializer))
-            )
-              verb = unwrap(p.initializer).text;
-        if (name === 'apiUpload') verb = 'POST';
+      if (name && API_SENDERS.has(name)) {
+        verb = senderCallVerb(n, name);
         return;
       }
     }
@@ -395,6 +452,398 @@ function apiFetchVerb(node, localVerbs) {
   };
   visit(node);
   return verb;
+}
+
+/** `apiFetch` and `http.apiFetch` alike: the name a call is made by, whatever it is called on. */
+function calleeName(call) {
+  const callee = unwrap(call.expression);
+  if (!callee) return undefined;
+  if (ts.isIdentifier(callee)) return callee.text;
+  if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
+  return undefined;
+}
+
+/** The verb of one `apiFetch`-family call: its `method` option, GET without one, POST for upload. */
+function senderCallVerb(call, name) {
+  if (name === 'apiUpload') return 'POST';
+  let verb = 'GET';
+  const opts = call.arguments.find((a) => ts.isObjectLiteralExpression(unwrap(a)));
+  if (opts)
+    for (const p of unwrap(opts).properties)
+      if (
+        ts.isPropertyAssignment(p) &&
+        propertyName(p.name) === 'method' &&
+        ts.isStringLiteral(unwrap(p.initializer))
+      )
+        verb = unwrap(p.initializer).text;
+  return verb;
+}
+
+// ---------------------------------------------------------------------------------------------
+// API paths: which slice owns a request path.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Top-level `const` declarations of a file: where `${PATH}` and `${BASE}` get their value.
+ *
+ * Top level only, on purpose. Every path constant of the portal is declared there, while a
+ * function-local `const` of the same name as a handle parameter would substitute a stray value
+ * into a path; a name declared twice is stored as `null` and evaluates as computed.
+ */
+function topLevelConsts(sf) {
+  const consts = new Map();
+  for (const stmt of sf.statements) {
+    if (!ts.isVariableStatement(stmt) || !(stmt.declarationList.flags & ts.NodeFlags.Const))
+      continue;
+    for (const d of stmt.declarationList.declarations)
+      if (ts.isIdentifier(d.name) && d.initializer)
+        consts.set(d.name.text, consts.has(d.name.text) ? null : d.initializer);
+  }
+  return consts;
+}
+
+/** A constant may hold a path only if it is written as one: a string, a template or a sum. */
+function isPathShaped(node) {
+  const e = unwrap(node);
+  return (
+    !!e &&
+    (ts.isStringLiteral(e) ||
+      ts.isNoSubstitutionTemplateLiteral(e) ||
+      ts.isTemplateExpression(e) ||
+      ts.isIdentifier(e) ||
+      (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken))
+  );
+}
+
+/**
+ * A path expression as pieces: `{ lit }` text, `{ param }` a runtime value standing for ONE segment
+ * (`${id}`), `{ computed }` a value whose shape the scan cannot know.
+ *
+ * `top` marks the whole first argument of a request. There a bare runtime name (`apiFetch(url)`)
+ * is the path itself, not one segment of it, so it is computed; inside a template the same name is
+ * an id. Constants are followed through the file's top-level table and sender parameters through
+ * `scope.bound`, which `memberRequests` fills from the arguments of the call.
+ */
+function pathPieces(expr, scope, top, hops = 0) {
+  const e = expr ? unwrap(expr) : undefined;
+  if (!e) return [{ computed: '<no path argument>' }];
+  const text = () => scope.sf.text.slice(e.pos, e.end).replace(/\s+/g, ' ').trim();
+  if (hops > MAX_HOPS) return [{ computed: text() }];
+  if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return [{ lit: e.text }];
+  if (ts.isTemplateExpression(e)) {
+    const out = [{ lit: e.head.text }];
+    for (const span of e.templateSpans)
+      out.push(...pathPieces(span.expression, scope, false, hops + 1), { lit: span.literal.text });
+    return out;
+  }
+  if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken)
+    return [
+      ...pathPieces(e.left, scope, top, hops + 1),
+      ...pathPieces(e.right, scope, false, hops + 1),
+    ];
+  if (ts.isIdentifier(e)) {
+    const bound = scope.bound?.get(e.text);
+    if (bound) return bound;
+    const decl = scope.consts.get(e.text);
+    if (decl && isPathShaped(decl))
+      return pathPieces(decl, { sf: scope.sf, consts: scope.consts }, top, hops + 1);
+    if (decl !== undefined || top) return [{ computed: text() }];
+    return [{ param: e.text }];
+  }
+  if (!top) {
+    if (ts.isPropertyAccessExpression(e)) return [{ param: e.name.text }];
+    // `${encodeURIComponent(id)}`: still one value standing for one segment.
+    if (ts.isCallExpression(e) && e.arguments.length === 1) {
+      const inner = unwrap(e.arguments[0]);
+      if (inner && ts.isIdentifier(inner) && !scope.consts.has(inner.text))
+        return [{ param: inner.text }];
+      if (inner && ts.isPropertyAccessExpression(inner)) return [{ param: inner.name.text }];
+    }
+  }
+  return [{ computed: text() }];
+}
+
+/** `'/:id'` from the factory table as pieces, so that `:id` is a parameter and not a literal. */
+function tailPieces(tail) {
+  return tail
+    .split('/')
+    .filter(Boolean)
+    .flatMap((seg) => [{ lit: '/' }, seg.startsWith(':') ? { param: seg.slice(1) } : { lit: seg }]);
+}
+
+/**
+ * Pieces → `{ template, segments }`, or `{ computed }` when the path cannot be trusted.
+ *
+ * The query string is dropped (`/x?type=service` is `/x`): parameters select rows, not the
+ * resource, and a computed piece after `?` therefore does not matter. A segment holding a parameter
+ * is a wildcard (`null` in `segments`), whatever literal text surrounds it. A path that does not
+ * start with a literal slash is computed: `${base}/items` with an unknown `base` could be anything.
+ */
+function normalizePath(pieces) {
+  const kept = [];
+  for (const p of pieces) {
+    if (p.lit === undefined) {
+      kept.push(p);
+      continue;
+    }
+    const cut = p.lit.search(/[?#]/);
+    if (cut < 0) {
+      kept.push(p);
+      continue;
+    }
+    kept.push({ lit: p.lit.slice(0, cut) });
+    break;
+  }
+  const computed = kept.find((p) => p.computed !== undefined);
+  if (computed) return { computed: computed.computed };
+
+  const segments = [[]];
+  for (const p of kept) {
+    if (p.param !== undefined) {
+      segments.at(-1).push(p);
+      continue;
+    }
+    p.lit.split('/').forEach((text, i) => {
+      if (i > 0) segments.push([]);
+      if (text) segments.at(-1).push({ lit: text });
+    });
+  }
+  const show = (seg) => seg.map((x) => x.lit ?? `:${x.param}`).join('');
+  if (segments.length < 2 || segments[0].length > 0)
+    return { computed: `not rooted: ${segments.map(show).join('/')}` };
+  const parts = segments.slice(1).filter((seg) => seg.length > 0);
+  return {
+    template: `/${parts.map(show).join('/')}`,
+    segments: parts.map((seg) =>
+      seg.length === 1 && seg[0].lit !== undefined ? seg[0].lit : null,
+    ),
+  };
+}
+
+/**
+ * Every request a handle body sends, as `{ verb, template, segments }` or `{ verb, computed }`.
+ *
+ * All of them, not the first: `filesApi.upload` opens a session and completes it, and both paths
+ * belong to the handle. A call of a local sender (`patch(id, '/accept', body)`) is evaluated through
+ * the sender's own requests with its parameters bound to the call's arguments — the literal tail is
+ * what tells `/service-requests/:id/accept` from `/service-requests/:id/hold`.
+ */
+function memberRequests(node, scope) {
+  const out = [];
+  const visit = (n) => {
+    if (ts.isCallExpression(n)) {
+      const name = calleeName(n);
+      const sender = name ? scope.senders?.get(name) : undefined;
+      if (sender) {
+        scope.usedSenders?.add(name);
+        const bound = new Map();
+        sender.parameters.forEach((p, i) => {
+          if (!ts.isIdentifier(p.name)) return;
+          const arg = n.arguments[i];
+          bound.set(p.name.text, arg ? pathPieces(arg, scope, false) : [{ param: p.name.text }]);
+        });
+        out.push(...memberRequests(sender.body, { sf: scope.sf, consts: scope.consts, bound }));
+        return;
+      }
+      if (name && API_SENDERS.has(name)) {
+        out.push({
+          verb: senderCallVerb(n, name),
+          ...normalizePath(pathPieces(n.arguments[0], scope, true)),
+        });
+        return;
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return out;
+}
+
+/**
+ * The table matched by `matchApiPath`: one entry per template and owner, bucketed by the first
+ * segment. The owner is the slice of the file that writes the request; a request written outside a
+ * slice (`pages/driver/api.ts`) is owned by its file and has no slice — saying so beats lending it
+ * the nearest slice.
+ */
+function buildApiPathTable(handleRequests, rootsBySlice) {
+  const entries = new Map();
+  for (const [handle, requests] of handleRequests)
+    for (const r of requests) {
+      if (r.template === undefined) continue;
+      const slice = sliceOf(r.file) ?? null;
+      const owner = slice ?? r.file;
+      const key = `${r.template}\u0000${owner}`;
+      let entry = entries.get(key);
+      if (!entry) {
+        entry = { template: r.template, segments: r.segments, owner, slice, handles: new Set() };
+        entries.set(key, entry);
+      }
+      entry.handles.add(handle);
+    }
+  const buckets = new Map();
+  for (const entry of entries.values()) {
+    const first = entry.segments[0];
+    if (!buckets.has(first)) buckets.set(first, []);
+    buckets.get(first).push(entry);
+  }
+  return { entries: [...entries.values()], buckets, rootsBySlice };
+}
+
+/**
+ * Which slice owns a path: the LONGEST template that covers it, segment by segment.
+ *
+ * A template covers a path when it is no longer than the path and every literal segment of it is
+ * equal: `/office-equipment/:id/telemetry` (device telemetry) beats `/office-equipment/:id` (office
+ * equipment) for a telemetry request, and `/service-requests/:id` covers
+ * `/service-requests/executor-candidates` when no template names that segment. Among templates of
+ * equal length the one with more literal segments wins. A parameter in the PATH never matches a
+ * literal of a template: `${tab}` could be `selector` or not, and guessing would hand the path to a
+ * slice on a coin toss.
+ *
+ * The answer is explicit in every case: `{ owner, slice, template, roots }`, or `owner: null` with
+ * `why` — `not-found` (no template covers it), `ambiguous` (two owners tie, both in `candidates`),
+ * `computed` (the path itself could not be evaluated).
+ */
+function matchApiPath(table, path) {
+  const target = typeof path === 'string' ? normalizePath([{ lit: path }]) : path;
+  if (target.computed !== undefined) return { owner: null, why: 'computed' };
+  const candidates = [
+    ...(table.buckets.get(target.segments[0]) ?? []),
+    ...(target.segments[0] === null ? [] : (table.buckets.get(null) ?? [])),
+    ...(table.buckets.get(undefined) ?? []),
+  ];
+  let best = [];
+  let bestLength = -1;
+  let bestLiterals = -1;
+  for (const entry of candidates) {
+    if (entry.segments.length > target.segments.length) continue;
+    let literals = 0;
+    let fits = true;
+    for (let i = 0; i < entry.segments.length && fits; i++) {
+      const want = entry.segments[i];
+      if (want === null) continue;
+      if (target.segments[i] === want) literals++;
+      else fits = false;
+    }
+    if (!fits) continue;
+    const order = entry.segments.length - bestLength || literals - bestLiterals;
+    if (order > 0) {
+      best = [entry];
+      bestLength = entry.segments.length;
+      bestLiterals = literals;
+    } else if (order === 0) best.push(entry);
+  }
+  if (best.length === 0) return { owner: null, why: 'not-found' };
+  const owners = [...new Set(best.map((e) => e.owner))].sort();
+  if (owners.length > 1)
+    return { owner: null, why: 'ambiguous', candidates: owners, template: best[0].template };
+  const [entry] = best;
+  return {
+    owner: entry.owner,
+    slice: entry.slice,
+    template: entry.template,
+    roots: entry.slice ? (table.rootsBySlice.get(entry.slice) ?? []) : [],
+  };
+}
+
+/**
+ * Requests sent OUTSIDE every API declaration — `queryFn: () => apiFetch('/counterparties')` — each
+ * with the owner its path matches. Inventory only: whether such a call is allowed is a question about
+ * the slice it sits in, and the table merely makes it answerable.
+ *
+ * The factories of `shared/api/resource.ts` are skipped by name: their path is their parameter, and
+ * the handles they produce are already in the table under the slice that spreads them.
+ */
+function scanOutsideCalls(sf, file, ownedRanges, table, unresolved) {
+  const scope = { sf, consts: topLevelConsts(sf) };
+  const owned = (pos) => ownedRanges.some(([from, to]) => pos >= from && pos < to);
+  const out = [];
+  const visit = (node, owner) => {
+    let next = owner;
+    if (
+      (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node)) &&
+      node.name &&
+      ts.isIdentifier(node.name)
+    ) {
+      next = node.name.text;
+      if (Object.hasOwn(API_FACTORIES, next)) return;
+    }
+    if (ts.isCallExpression(node) && !owned(node.pos)) {
+      const name = calleeName(node);
+      if (name && API_SENDERS.has(name)) {
+        const line = lineOf(sf, node);
+        const site = {
+          at: `${rel(file)}:${line}`,
+          in: next ?? null,
+          verb: senderCallVerb(node, name),
+        };
+        const path = normalizePath(pathPieces(node.arguments[0], scope, true));
+        if (path.computed !== undefined) {
+          unresolved.push({
+            file: rel(file),
+            form: `${next ?? '<top level>'} (line ${line}): ${name}(${path.computed})`,
+            why: 'api-path-computed-outside-an-api-object',
+          });
+          out.push({ ...site, path: null, owner: null, why: 'computed' });
+        } else out.push({ ...site, path: path.template, ...matchApiPath(table, path) });
+      }
+    }
+    ts.forEachChild(node, (child) => visit(child, next));
+  };
+  visit(sf, undefined);
+  return out;
+}
+
+/** The table as the map prints it: per owner its roots and templates, plus the handles' requests. */
+function describeApiPaths(table, handleRequests, outside) {
+  const byOwner = new Map();
+  for (const entry of table.entries) {
+    if (!byOwner.has(entry.owner)) byOwner.set(entry.owner, { entry, templates: new Set() });
+    byOwner.get(entry.owner).templates.add(entry.template);
+  }
+  const owners = {};
+  for (const owner of [...byOwner.keys()].sort()) {
+    const { entry, templates } = byOwner.get(owner);
+    owners[owner] = {
+      ...(entry.slice ? {} : { outsideASlice: true }),
+      roots: entry.slice ? [...(table.rootsBySlice.get(entry.slice) ?? [])].sort() : [],
+      templates: [...templates].sort(),
+    };
+  }
+  const ownersOf = new Map();
+  for (const entry of table.entries) {
+    if (!ownersOf.has(entry.template)) ownersOf.set(entry.template, new Set());
+    ownersOf.get(entry.template).add(entry.owner);
+  }
+  const shared = Object.fromEntries(
+    [...ownersOf]
+      .filter(([, set]) => set.size > 1)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([template, set]) => [template, [...set].sort()]),
+  );
+  const handles = {};
+  for (const handle of [...handleRequests.keys()].sort())
+    handles[handle] = handleRequests
+      .get(handle)
+      .map((r) => `${r.verb} ${r.template ?? `<computed: ${r.computed}>`}`);
+  const requests = [...handleRequests.values()];
+  return {
+    totals: {
+      handles: requests.length,
+      handlesWithPath: requests.filter((rs) => rs.some((r) => r.template !== undefined)).length,
+      handlesWithComputedPath: requests.filter((rs) => rs.some((r) => r.computed !== undefined))
+        .length,
+      templates: ownersOf.size,
+      owners: byOwner.size,
+      sharedTemplates: Object.keys(shared).length,
+      outside: outside.length,
+      outsideByAnswer: countBy(outside, (o) => o.why ?? 'owned'),
+    },
+    owners,
+    shared,
+    handles,
+    outside,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1151,6 +1600,8 @@ function buildMap() {
   const unresolved = [];
   const parsed = new Map();
   const reaching = new Map();
+  const calling = new Map();
+  const ownedRanges = new Map();
 
   // Pass 1: portal-wide tables. Every file is read; only the ones that can hold a declaration or a
   // mutation are parsed, and only the ones that can hold a mutation are kept.
@@ -1165,7 +1616,9 @@ function buildMap() {
     // A file that calls a portal API handle can hold a function a mutation calls by name; it is
     // read for the API-reach table below even when it neither declares nor acts.
     const reachesApi = /\b[A-Za-z]+Api\.[A-Za-z]+/.test(code);
-    if (!declares && !acts && !reachesApi) continue;
+    // A file that sends a request itself is read for the path table's bare-call inventory.
+    const callsApi = /\bapi(?:Fetch|Upload|Download|FetchBlob)\s*[<(]/.test(code);
+    if (!declares && !acts && !reachesApi && !callsApi) continue;
 
     const sf = parseSource(code, file);
     if (sf.parseDiagnostics?.length)
@@ -1173,15 +1626,41 @@ function buildMap() {
 
     if (declares) {
       harvestKeyRoots(sf, file, keys, rootOwners);
-      harvestApi(sf, file, objects, unresolved);
+      ownedRanges.set(file, harvestApi(sf, file, objects, unresolved));
     }
     if (acts) parsed.set(file, sf);
     if (reachesApi) reaching.set(file, sf);
+    if (callsApi) calling.set(file, sf);
   }
 
   // Spreads are followed only now: a slice API may be assembled from parts declared in files read
   // after it.
-  flattenApiObjects(objects, api, unresolved);
+  const handleRequests = new Map();
+  flattenApiObjects(objects, api, unresolved, handleRequests);
+
+  /*
+   * The HOME roots of a slice: the key roots declared in it. `driversApi` lives in
+   * `entities/driver/api/driversApi.ts`, `driverKeys` in `entities/driver/api/keys.ts` — one slice,
+   * so writing through the handle and dropping that root are two halves of one act. Computed from
+   * the registries rather than from the key name, because the name proves nothing: `garageKeys`
+   * reads like the root of `garage`, and whether it is the home root of `vehiclesApi` depends on
+   * which slice declared it. Built here, before the mutations, because the path table answers with
+   * the roots of the slice a path belongs to.
+   */
+  const rootsBySlice = new Map();
+  for (const [root, owner] of rootOwners) {
+    const slice = sliceOf(owner);
+    if (!slice) continue;
+    if (!rootsBySlice.has(slice)) rootsBySlice.set(slice, []);
+    rootsBySlice.get(slice).push(root);
+  }
+
+  const pathTable = buildApiPathTable(handleRequests, rootsBySlice);
+  const outsideCalls = [];
+  for (const [file, sf] of calling)
+    outsideCalls.push(
+      ...scanOutsideCalls(sf, file, ownedRanges.get(file) ?? [], pathTable, unresolved),
+    );
 
   // Pass 2: portal-wide helper table, resolved on demand so that a helper calling a helper still
   // answers, and a cycle answers once instead of hanging.
@@ -1266,23 +1745,11 @@ function buildMap() {
   );
 
   /*
-   * The HOME roots of a mutation: the key roots declared in the same slice as the handle it writes
-   * through. `driversApi` lives in `entities/driver/api/driversApi.ts`, `driverKeys` in
-   * `entities/driver/api/keys.ts` — one slice, so writing through the handle and dropping that root
-   * are two halves of one act. Computed from the registries rather than from the key name, because
-   * the name proves nothing: `garageKeys` reads like the root of `garage`, and whether it is the
-   * home root of `vehiclesApi` depends on which slice declared it.
-   *
-   * A handle whose slice owns no root leaves the set empty, and rule 2 below then has nothing to
-   * require — that is the honest answer for a slice that keeps no cache of its own.
+   * The HOME roots of a mutation: the roots of the slice that declares the handle it writes through
+   * (`rootsBySlice` above). A handle whose slice owns no root leaves the set empty, and rule 2 below
+   * then has nothing to require — that is the honest answer for a slice that keeps no cache of its
+   * own.
    */
-  const rootsBySlice = new Map();
-  for (const [root, owner] of rootOwners) {
-    const slice = sliceOf(owner);
-    if (!slice) continue;
-    if (!rootsBySlice.has(slice)) rootsBySlice.set(slice, []);
-    rootsBySlice.get(slice).push(root);
-  }
   for (const m of mutations) {
     const home = new Set();
     const ambiguous = new Set();
@@ -1346,6 +1813,7 @@ function buildMap() {
       dropNothing: mutations.filter((m) => m.invalidates.length === 0 && !m.wholeCache).length,
       roots: rootOwners.size,
     },
+    apiPaths: describeApiPaths(pathTable, handleRequests, outsideCalls),
   };
 }
 
@@ -1375,7 +1843,7 @@ function classifyUnresolved(why) {
   )
     return 'cache-effect';
   if (why.startsWith('write-handle-')) return 'ownership';
-  if (why.startsWith('api-spread-')) return 'api-inventory';
+  if (why.startsWith('api-spread-') || why.startsWith('api-path-')) return 'api-inventory';
   return 'scanner-limit';
 }
 
@@ -1540,6 +2008,15 @@ const t = map.totals;
 console.log(
   `Мутаций ${t.mutations} (пишущих ${t.writing}), корней ${t.roots}; разобрано полностью ${t.fullyResolved}, с неразобранным ${t.withUnresolved}.`,
 );
+{
+  const p = map.apiPaths.totals;
+  const answers = Object.entries(p.outsideByAnswer)
+    .map(([answer, count]) => `${answer} ${count}`)
+    .join(', ');
+  console.log(
+    `Пути API: ручек ${p.handles}, с путём ${p.handlesWithPath}, с вычисляемым ${p.handlesWithComputedPath}; шаблонов ${p.templates} у ${p.owners} владельцев; запросов мимо ручек ${p.outside}${answers ? ` (${answers})` : ''}.`,
+  );
+}
 console.log(`Карта: ${path.relative(WEB, MAP_FILE)}`);
 
 // `unresolved` is printed on EVERY run, green or red. A static check of invalidations fails quietly
