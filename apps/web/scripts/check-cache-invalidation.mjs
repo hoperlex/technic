@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Which cache roots every portal mutation refreshes, and the three rules derived from that map.
+ * Which cache roots portal mutations refresh, and which reads can rely on those roots.
  *
  * WHY. A server transaction often changes more than the screen that sent it: rolling a waste
  * request back removes tickets, editing a vehicle releases trailers, editing a driver changes an
  * account, and confirming tickets recalculates recognition. Invalidating only the initiating
  * aggregate leaves a neighbouring screen stale. Neither types nor an isolated screen test catches
- * that mismatch; this inventory makes the relationship visible and enforces three rules over it.
+ * that mismatch; this inventory makes the relationship visible and enforces rules over it.
  *
  * WHAT IS CHECKED. `writes-nothing-dropped` catches a writer that touches no cache.
  * `home-root-missed` catches a writer that drops another root but misses the slice owning the API
@@ -80,7 +80,10 @@
  * option spreads, so callers carry the factory's actual key and API request. Direct `apiFetch`
  * reads keep the path-table answer separate from the key: a slice can have several roots. Generic
  * hooks whose key and fetcher arrive as parameters stay explicitly unresolved; guessing a family
- * from the hook's file would hide the foreign-root reads the next rule must find.
+ * from the hook's file would hide foreign-root reads. Four read rules check the API owner's root,
+ * bare foreign paths inside a slice's query factories, profiled reads outside their home factory,
+ * and competing factories for one family. The checked-in budget names every existing finding; a
+ * new finding or an obsolete budget entry fails the run.
  *
  * WHY `unresolved` IS ALWAYS PRINTED. This check can decay by understanding less code and becoming
  * greener. Every unresolved site gets a class (`unknown-write`, `cache-effect`, `ownership`,
@@ -98,7 +101,7 @@
  * своя команда `check:cache-invalidation` осталась: секунда прогона, запускать отдельно дешевле, чем
  * ждать бюджеты и раскладку.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import {
@@ -114,6 +117,7 @@ import {
 const WEB = path.resolve(process.cwd());
 const SRC = path.join(WEB, 'src');
 const MAP_FILE = path.join(WEB, 'cache-invalidation-map.json');
+const READ_BUDGET_FILE = path.join(WEB, 'cache-read-budget.json');
 
 /** Layers a mutation may live in. `shared` is excluded: it knows no domain and owns no key. */
 const LAYERS = ['entities', 'features', 'widgets', 'pages'];
@@ -184,6 +188,53 @@ const READ_CALLS = new Set([
   'queryOptions',
   'infiniteQueryOptions',
   'useOpenedRecord',
+]);
+
+/** Current key forms from plan A3. Wave 3a replaces this list with factory `meta.profile`. */
+const PROFILED_FAMILIES = new Set([
+  'objects.options',
+  'departments.options',
+  'warehouses.options',
+  'waste-types.options',
+  'container-types.options',
+  'mech-models.options',
+  'counterparties.activeOperatorOptions',
+  'counterparties.activeOptions',
+  'counterparties.activeVehicleLessorOptions',
+  'counterparties.operatorGridOptions',
+  'counterparties.operatorOptions',
+  'counterparties.options',
+  'counterparties.supplierOptions',
+  'counterparties.vehicleLessorOptions',
+  'drivers.options',
+  'drivers.machinistOptions',
+  'drivers.jobTitles',
+  'users.options',
+  'users.departmentHeadCandidates',
+  'vehicles.allOptions',
+  'vehicles.ownOptions',
+  'vehicles.ownActiveOptions',
+  'vehicles.ownForCorrection',
+  'vehicles.fuel-norm-picker',
+  'vehicle-types.forSelect',
+  'vehicle-types.full',
+  'vehicle-types.trailer-autocheck',
+  'vehicle-kinds.$root',
+  'vehicle-models.forSelect',
+  'vehicle-classifications.forSelect',
+  'vehicle-specs.active',
+  'vehicle-trailers.list',
+  'office-equipment-types.options',
+  'office-equipment-models.options',
+  'office-equipment-models.specs',
+  'office-equipment-consumables.list',
+  'manuals.active',
+  'grants.formCatalog',
+  'license-categories.byType',
+  'users.pendingCount',
+  'service-requests.waitingCount',
+  'service-requests.chatUnreadCount',
+  'office-equipment-candidates.list',
 ]);
 
 /** Bound on hops through names, helpers and factories; guards mutually referring declarations. */
@@ -1356,7 +1407,14 @@ function readOptions(node, ctx, factories, seen = new Set(), hops = 0) {
       new Set([...seen, `factory:${name}`]),
       hops + 1,
     );
-    return options ? { ...options, factory: name } : undefined;
+    return options
+      ? {
+          ...options,
+          factory: name,
+          factoryFile: factory.ctx.rel,
+          foreignMarker: hasForeignReadMarker(factory.ctx.sf, factory.node),
+        }
+      : undefined;
   }
   return undefined;
 }
@@ -1492,6 +1550,14 @@ function readRequests(node, ctx, api, objects, pathTable, hops = 0, seen = new S
   return { handles: requests, paths, unresolved: [...unknown].sort() };
 }
 
+/** A local explanation may waive a foreign-root read; a bare foreign path remains forbidden. */
+function hasForeignReadMarker(sf, node) {
+  // This parser does not keep parent pointers, so inspect the small declaration prefix.
+  const prefix = sf.text.slice(0, node.getStart(sf)).split('\n').slice(-3).join('\n');
+  const marker = /\/\/\s*cache-read:\s*foreign\s*[—-]\s*[A-Za-z][^\n]*\n/.exec(prefix);
+  return Boolean(marker && !prefix.slice(marker.index + marker[0].length).includes(';'));
+}
+
 function scanReads(readFiles, keys, keyFamilies, api, objects, pathTable) {
   const contexts = new Map();
   const factories = makeRegistry();
@@ -1558,6 +1624,11 @@ function scanReads(readFiles, keys, keyFamilies, api, objects, pathTable) {
                 kind === 'queryOptions' || kind === 'infiniteQueryOptions'
                   ? (next ?? null)
                   : (options.factory ?? null),
+              factoryFile:
+                kind === 'queryOptions' || kind === 'infiniteQueryOptions'
+                  ? ctx.rel
+                  : (options.factoryFile ?? null),
+              foreignMarker: hasForeignReadMarker(sf, node) || Boolean(options.foreignMarker),
               key,
               handles: requests.handles,
               paths: requests.paths,
@@ -2194,7 +2265,7 @@ function registerHelpers(sf, ctx, helperNodes) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The three rules.
+// Mutation rules.
 // ---------------------------------------------------------------------------------------------
 
 /**
@@ -2314,6 +2385,129 @@ function ruleCacheEffectUnproven(map) {
     }));
 }
 
+/** Reads may use any root declared by the API owner's slice, including secondary roots. */
+function ruleReadUnderForeignRoot(map) {
+  const findings = [];
+  for (const read of map.readInventory.reads) {
+    if (read.foreignMarker) continue;
+    const keys = read.key.variants ?? [read.key];
+    for (const key of keys) {
+      if (!key.root || !key.family) continue;
+      const family = `${key.root}.${key.family}`;
+      const sources = [
+        ...read.handles.map(({ handle, owner }) => ({ source: handle, owner })),
+        ...read.paths.map(({ path, owner }) => ({ source: path, owner })),
+      ];
+      for (const { source, owner } of sources) {
+        const roots = map.apiPaths.owners[owner]?.roots;
+        if (!roots?.length || roots.includes(key.root)) continue;
+        findings.push({
+          rule: 'read-under-foreign-root',
+          id: `${read.at}|${family}|${source}`,
+          at: read.at,
+          what: `${family} reads ${source} owned by ${owner} (${roots.join(', ')})`,
+        });
+      }
+    }
+  }
+  return findings;
+}
+
+/** A slice's query factory must not bypass another slice's API object with a bare path. */
+function ruleForeignBarePathInQueries(map) {
+  return map.apiPaths.outside
+    .filter(
+      (call) =>
+        /^entities\/[^/]+\/api\/queries\.ts$/.test(call.at.split(':')[0]) &&
+        call.owner &&
+        call.owner !== sliceOf(call.at.split(':')[0]),
+    )
+    .map((call) => ({
+      rule: 'foreign-bare-path-in-queries',
+      id: `${call.at}|${call.path}|${call.owner}`,
+      at: call.at,
+      what: `${call.path} belongs to ${call.owner}`,
+    }));
+}
+
+/** Until profiles exist on factories, plan A3 is the sole list of families requiring one. */
+function ruleProfiledReadBypassesFactory(map) {
+  return map.readInventory.reads
+    .filter((read) => read.kind !== 'queryOptions' && read.kind !== 'infiniteQueryOptions')
+    .flatMap((read) => (read.key.variants ?? [read.key]).map((key) => ({ read, key })))
+    .filter(({ read, key }) => {
+      const family = `${key.root}.${key.family}`;
+      if (!PROFILED_FAMILIES.has(family)) return false;
+      const ownerFile = map.roots[key.root];
+      const owner = ownerFile && sliceOf(ownerFile);
+      return !owner || read.factoryFile !== `${owner}/api/queries.ts`;
+    })
+    .map(({ read, key }) => ({
+      rule: 'profiled-read-bypasses-factory',
+      id: `${read.at}|${key.root}.${key.family}`,
+      at: read.at,
+      what: `${key.root}.${key.family} uses ${read.factory ?? 'inline options'}`,
+    }));
+}
+
+/** Two option factories for one profiled family can later receive different freshness policies. */
+function ruleSecondFactory(map) {
+  const byFamily = new Map();
+  for (const read of map.readInventory.reads) {
+    if (read.kind !== 'queryOptions' && read.kind !== 'infiniteQueryOptions') continue;
+    const family = `${read.key.root}.${read.key.family}`;
+    if (!PROFILED_FAMILIES.has(family)) continue;
+    if (!byFamily.has(family)) byFamily.set(family, []);
+    byFamily.get(family).push(read);
+  }
+  const findings = [];
+  for (const [family, factories] of byFamily) {
+    const owner = sliceOf(map.roots[factories[0].key.root] ?? '');
+    const canonicalFile = `${owner}/api/queries.ts`;
+    const canonical = factories.find((read) => read.factoryFile === canonicalFile);
+    for (const read of factories) {
+      if (read === canonical) continue;
+      findings.push({
+        rule: 'second-family-factory',
+        id: `${read.at}|${family}|${read.factory}`,
+        at: read.at,
+        what: `${read.factory ?? '<unnamed>'} defines ${family} outside its sole factory in ${canonicalFile}`,
+      });
+    }
+  }
+  return findings;
+}
+
+const READ_RULES = [
+  'read-under-foreign-root',
+  'foreign-bare-path-in-queries',
+  'profiled-read-bypasses-factory',
+  'second-family-factory',
+];
+
+/** Both a new finding and a dead budget entry fail, so the baseline can only shrink. */
+function checkReadBudget(findings) {
+  const budget = existsSync(READ_BUDGET_FILE)
+    ? JSON.parse(readFileSync(READ_BUDGET_FILE, 'utf8'))
+    : {};
+  const errors = [];
+  for (const rule of READ_RULES) {
+    const listed = budget[rule] ?? [];
+    if (!Array.isArray(listed) || listed.some((id) => typeof id !== 'string'))
+      throw new Error(`Invalid cache read budget for ${rule}`);
+    const allowed = new Set(listed);
+    if (allowed.size !== listed.length) errors.push(`duplicate budget entry: ${rule}`);
+    const actual = new Set(findings.filter((f) => f.rule === rule).map((f) => f.id));
+    for (const finding of findings.filter((f) => f.rule === rule))
+      if (!allowed.has(finding.id)) errors.push(`[${rule}] ${finding.id} — ${finding.what}`);
+    for (const id of allowed)
+      if (!actual.has(id)) errors.push(`stale budget entry: [${rule}] ${id}`);
+  }
+  for (const rule of Object.keys(budget))
+    if (!READ_RULES.includes(rule)) errors.push(`unknown budget rule: ${rule}`);
+  return errors;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Entry point.
 // ---------------------------------------------------------------------------------------------
@@ -2331,6 +2525,13 @@ const findings = [
   ...ruleUnknownWrite(map),
   ...ruleCacheEffectUnproven(map),
 ].sort((a, b) => a.rule.localeCompare(b.rule) || a.at.localeCompare(b.at));
+const readFindings = [
+  ...ruleReadUnderForeignRoot(map),
+  ...ruleForeignBarePathInQueries(map),
+  ...ruleProfiledReadBypassesFactory(map),
+  ...ruleSecondFactory(map),
+].sort((a, b) => a.rule.localeCompare(b.rule) || a.id.localeCompare(b.id));
+const readBudgetErrors = checkReadBudget(readFindings);
 
 const t = map.totals;
 console.log(
@@ -2373,8 +2574,9 @@ if (map.unresolved.length > 0) {
 // Inventory mode (step Ш0): take the picture, pass no verdict. Used to read the map without the
 // queue of known findings standing in the way.
 if (args.has('--map')) process.exitCode = 0;
-else if (findings.length > 0) {
-  console.error(`\nИнвалидация кэша нарушена (${findings.length}):`);
+else if (findings.length > 0 || readBudgetErrors.length > 0) {
+  console.error(`\nИнвалидация кэша нарушена (${findings.length + readBudgetErrors.length}):`);
   for (const f of findings) console.error(`  — [${f.rule}] ${f.at} — ${f.what}`);
+  for (const error of readBudgetErrors) console.error(`  — ${error}`);
   process.exitCode = args.has('--report-only') ? 0 : 1;
 } else console.log('Инвалидация кэша в порядке.');

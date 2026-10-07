@@ -7,14 +7,22 @@ import { beforeAll, describe, expect, it } from 'vitest';
 const CHECK = path.resolve(process.cwd(), 'scripts/check-cache-invalidation.mjs');
 
 /** Files keyed by their path below `src`; the check runs over them as if they were the portal. */
-function runFixtureFiles(files: Record<string, string>) {
+function runFixtureFiles(
+  files: Record<string, string>,
+  options: { budget?: Record<string, string[]>; mapOnly?: boolean } = {},
+) {
   const root = mkdtempSync(path.join(tmpdir(), 'cache-invalidation-check-'));
   for (const [relPath, source] of Object.entries(files)) {
     const full = path.join(root, 'src', relPath);
     mkdirSync(path.dirname(full), { recursive: true });
     writeFileSync(full, source);
   }
-  const result = spawnSync(process.execPath, [CHECK], { cwd: root, encoding: 'utf8' });
+  if (options.budget)
+    writeFileSync(path.join(root, 'cache-read-budget.json'), JSON.stringify(options.budget));
+  const result = spawnSync(process.execPath, [CHECK, ...(options.mapOnly ? ['--map'] : [])], {
+    cwd: root,
+    encoding: 'utf8',
+  });
   const map = JSON.parse(readFileSync(path.join(root, 'cache-invalidation-map.json'), 'utf8'));
   rmSync(root, { recursive: true, force: true });
   return { result, map };
@@ -262,11 +270,11 @@ export const missingQuery = () => ({ queryFn: () => apiFetch('/nowhere') });
     run.map.apiPaths.outside.find((o: Outside) => o.in === name);
 
   beforeAll(() => {
-    run = runFixtureFiles(PORTAL);
+    run = runFixtureFiles(PORTAL, { mapOnly: true });
   });
 
-  // An inventory, not a rule: a computed path and a bare call to a foreign slice keep the run green.
-  it('stays green and lists the paths it could not evaluate', () => {
+  // This fixture checks path ownership; --map leaves enforcement to the read-rule fixtures.
+  it('lists the paths it could not evaluate', () => {
     expect(run.result.status).toBe(0);
     expect(run.result.stdout).toContain('Пути API:');
   });
@@ -384,36 +392,38 @@ describe('cache invalidation check: read inventory', () => {
   let reads: Read[];
 
   beforeAll(() => {
-    const run = runFixtureFiles({
-      'entities/item/api/keys.ts': `
+    const run = runFixtureFiles(
+      {
+        'entities/item/api/keys.ts': `
 declare function createQueryKeys(root: string, families: unknown): unknown;
 export const itemKeys = createQueryKeys('items', { list: () => ['list'], detail: () => ['detail'] });
 export const itemCardKey = ['items', 'card'] as const;
 `,
-      'entities/item/api/itemsApi.ts': `
+        'entities/item/api/itemsApi.ts': `
 declare function apiFetch(path: string): Promise<unknown>;
 export const itemsApi = {
   list: () => apiFetch('/items'),
   get: (id: string) => apiFetch(\`/items/\${id}\`),
 };
 `,
-      'entities/foreign/api/foreignApi.ts': `
+        'entities/foreign/api/foreignApi.ts': `
 declare function apiFetch(path: string): Promise<unknown>;
 export const foreignApi = { list: () => apiFetch('/foreign') };
 `,
-      'entities/item/api/wrappers.ts': `
+        'entities/item/api/wrappers.ts': `
 export const itemReadApi = { catalog: () => itemsApi.list() };
 `,
-      'entities/item/api/queries.ts': `
+        'entities/item/api/queries.ts': `
 declare function queryOptions<T>(value: T): T;
 export const itemListQuery = () => queryOptions({
   queryKey: itemKeys.list(), queryFn: () => itemsApi.list(),
 });
+
 export const itemLabelsQuery = () => queryOptions({
   ...itemListQuery(), select: (data: unknown) => data,
 });
 `,
-      'features/example/reads.tsx': `
+        'features/example/reads.tsx': `
 declare function useQuery(options: unknown): unknown;
 declare function useQueries(options: unknown): unknown;
 declare function useInfiniteQuery(options: unknown): unknown;
@@ -445,7 +455,9 @@ useOpenedRecord<unknown>({
   fetch: (id: string) => itemsApi.get(id),
 });
 `,
-    });
+      },
+      { mapOnly: true },
+    );
     expect(run.result.status).toBe(0);
     reads = run.map.readInventory.reads as Read[];
   });
@@ -504,5 +516,87 @@ useOpenedRecord<unknown>({
     expect(wrapper?.handles).toMatchObject([
       { handle: 'itemReadApi.catalog', owner: 'entities/item' },
     ]);
+  });
+});
+
+describe('cache invalidation check: read rules', () => {
+  const FILES = {
+    'entities/object/api/keys.ts': `
+declare function createQueryKeys(root: string, families: unknown): unknown;
+export const objectKeys = createQueryKeys('objects', { options: () => ['options'] });
+`,
+    'entities/object/api/objectsApi.ts': `
+declare function apiFetch(path: string): Promise<unknown>;
+export const objectsApi = { list: () => apiFetch('/objects') };
+`,
+    'entities/counterparty/api/keys.ts': `
+declare function createQueryKeys(root: string, families: unknown): unknown;
+export const counterpartyKeys = createQueryKeys('counterparties', {});
+`,
+    'entities/counterparty/api/counterpartiesApi.ts': `
+declare function apiFetch(path: string): Promise<unknown>;
+export const counterpartiesApi = { list: () => apiFetch('/counterparties') };
+`,
+    'entities/object/api/queries.ts': `
+declare function queryOptions<T>(value: T): T;
+declare function apiFetch(path: string): Promise<unknown>;
+export const objectOptionsQuery = () => queryOptions({
+  queryKey: objectKeys.options(), queryFn: () => apiFetch('/counterparties'),
+});
+export const anotherObjectOptionsQuery = () => queryOptions({
+  queryKey: objectKeys.options(), queryFn: () => objectsApi.list(),
+});
+`,
+    'features/example/reads.tsx': `
+declare function useQuery(options: unknown): unknown;
+useQuery(objectOptionsQuery());
+useQuery({ queryKey: objectKeys.options(), queryFn: () => objectsApi.list() });
+`,
+  };
+
+  function listedFindings(stderr: string) {
+    const budget: Record<string, string[]> = {};
+    for (const line of stderr.split('\n')) {
+      const match = /^ {2}— \[([^\]]+)\] (.*?) — /.exec(line);
+      if (!match) continue;
+      (budget[match[1]!] ??= []).push(match[2]!);
+    }
+    return budget;
+  }
+
+  it('requires an exact named budget for all four rules and rejects a dead entry', () => {
+    const missing = runFixtureFiles(FILES);
+    expect(missing.result.status).toBe(1);
+    const budget = listedFindings(missing.result.stderr);
+    expect(
+      Object.fromEntries(Object.entries(budget).map(([rule, ids]) => [rule, ids.length])),
+    ).toEqual({
+      'foreign-bare-path-in-queries': 1,
+      'profiled-read-bypasses-factory': 1,
+      'read-under-foreign-root': 2,
+      'second-family-factory': 1,
+    });
+    expect(runFixtureFiles(FILES, { budget }).result.status).toBe(0);
+    const stale = runFixtureFiles(FILES, {
+      budget: {
+        ...budget,
+        'second-family-factory': [...(budget['second-family-factory'] ?? []), 'gone'],
+      },
+    });
+    expect(stale.result.status).toBe(1);
+    expect(stale.result.stderr).toContain('stale budget entry: [second-family-factory] gone');
+  });
+
+  it('allows a documented foreign-root exception while keeping the bare-path rule', () => {
+    const files = {
+      ...FILES,
+      'entities/object/api/queries.ts': FILES['entities/object/api/queries.ts'].replace(
+        'export const objectOptionsQuery',
+        '// cache-read: foreign — this legacy picker shares the counterparty endpoint.\nexport const objectOptionsQuery',
+      ),
+    };
+    const budget = listedFindings(runFixtureFiles(files).result.stderr);
+    expect(budget['read-under-foreign-root']).toBeUndefined();
+    expect(budget['foreign-bare-path-in-queries']).toHaveLength(1);
   });
 });
