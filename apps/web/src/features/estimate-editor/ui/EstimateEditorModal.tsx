@@ -8,7 +8,7 @@ import {
 } from '@technic/contracts';
 import { ServiceHint } from '@entities/service-request';
 import { useAuth } from '@entities/session';
-import { ViewModal } from '@shared/ui';
+import { StaleRecordNotice, ViewModal } from '@shared/ui';
 import { useEstimateEditor, type EstimateEditorIntent } from '../model/useEstimateEditor';
 import { EstimateComposition } from './EstimateComposition';
 import { EstimateDocumentFiles, EstimateDocumentSwitch } from './EstimateDocumentMode';
@@ -269,6 +269,7 @@ export function EstimateEditorModal({
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <StaleRecordNotice session={editor.staleRecord} />
           {locked ? (
             /*
              * Замок объясняется до нажатия, а не 409-й в ответ. Поля и кнопки погашены, и без этой

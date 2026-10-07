@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { App, Form, Typography } from 'antd';
-import dayjs, { type Dayjs } from 'dayjs';
+import dayjs from 'dayjs';
 import { useMutation } from '@tanstack/react-query';
 import {
   RECEIPT_NO_FILES_MESSAGE,
@@ -13,21 +13,17 @@ import {
 import { autoPartReceiptApi } from '@entities/auto-part-receipt';
 import { useAuth } from '@entities/session';
 import { errorFields, formatMoney } from '@shared/lib';
-import { FormModal, useFormBlockers } from '@shared/ui';
+import { FormModal, StaleRecordNotice, useFormBlockers, useFormRecordSession } from '@shared/ui';
 import { ReceiptHeaderFields } from './ReceiptHeaderFields';
 import { ReceiptLinesEditor } from './ReceiptLinesEditor';
 import { WAREHOUSE_DESTINATION_VALUE } from './receiptVehicleOptions';
 import { ReceiptScanField, type ScanFile } from './ReceiptScanField';
-import {
-  clearReceiptCreateDraft,
-  loadReceiptCreateDraft,
-  saveReceiptCreateDraft,
-} from './receiptCreateDraftStorage';
+import { receiptFormStart, type ReceiptHeaderValues } from './receiptFormStart';
+import { clearReceiptCreateDraft, saveReceiptCreateDraft } from './receiptCreateDraftStorage';
 import {
   hasLineErrors,
   newReceiptLine,
   receiptLineErrorsFromApi,
-  receiptLinesFromDto,
   receiptLinesPayload,
   receiptLinesTotal,
   receiptRowsFromDraft,
@@ -64,12 +60,7 @@ import {
 
 const DATE = 'YYYY-MM-DD';
 
-interface Values {
-  purchasedOn: Dayjs;
-  documentNumber: string;
-  sellerName?: string;
-  note?: string;
-}
+type Values = ReceiptHeaderValues;
 
 export function AutoPartReceiptFormModal({
   receipt,
@@ -99,45 +90,37 @@ export function AutoPartReceiptFormModal({
   const [linesError, setLinesError] = useState<string | undefined>();
   const [lineErrors, setLineErrors] = useState<ReceiptLineErrors>({});
 
-  useEffect(() => {
-    if (!open) return;
-    setDraftReady(false);
-    form.resetFields();
-    const restored = !receipt && userId ? loadReceiptCreateDraft(userId) : null;
+  /*
+   * Rows and scans as the last fill left them: the person's edits replace these arrays, so "changed"
+   * is a reference comparison — the header fields answer it with antd's touched marks.
+   */
+  const [filled, setFilled] = useState<{ rows: ReceiptLineRow[]; files: ScanFile[] } | null>(null);
 
-    if (receipt) {
-      form.setFieldsValue({
-        purchasedOn: dayjs(receipt.purchasedOn),
-        documentNumber: receipt.documentNumber,
-        sellerName: receipt.sellerName,
-        note: receipt.note,
-      });
-      setFiles(receipt.files.map((file) => ({ ...file })));
-      setRows(receiptLinesFromDto(receipt.lines));
-      setAppliedFileIds([]);
-    } else if (restored) {
-      form.setFieldsValue({
-        purchasedOn: dayjs(restored.values.purchasedOn),
-        documentNumber: restored.values.documentNumber,
-        sellerName: restored.values.sellerName,
-        note: restored.values.note,
-      });
-      setFiles(restored.files.map((file) => ({ ...file })));
-      setRows(restored.rows.map((row) => ({ ...row })));
-      setAppliedFileIds(restored.appliedFileIds ?? []);
-    } else {
-      // The Moscow day is the same boundary the API validates around midnight.
-      form.setFieldsValue({ purchasedOn: dayjs(today) });
-      setFiles([]);
-      setRows([newReceiptLine()]);
-      setAppliedFileIds([]);
-    }
-
-    setFilesError(undefined);
-    setLinesError(undefined);
-    setLineErrors({});
-    setDraftReady(true);
-  }, [open, receipt, today, form, userId]);
+  /*
+   * Filled per window session (stage 5 plan §4.5): the form stays mounted inside the receipt card
+   * while closed, and the card rereads the receipt after any neighbouring action — keyed by the
+   * receipt object, the form wiped what the mechanic was typing. The edit carries the version taken
+   * at that fill (R12): a colleague's save raises the notice, and saving over it answers 409.
+   */
+  const session = useFormRecordSession(form, {
+    open,
+    id: receipt?.id ?? null,
+    data: receipt,
+    version: (r: AutoPartReceiptDto | null) => r?.version,
+    values: (r: AutoPartReceiptDto | null) => receiptFormStart(r, userId).values,
+    isDirty: () => rows !== filled?.rows || files !== filled?.files,
+    fill: (r: AutoPartReceiptDto | null) => {
+      const start = receiptFormStart(r, userId);
+      setFiles(start.files);
+      setRows(start.rows);
+      setFilled({ rows: start.rows, files: start.files });
+      setAppliedFileIds(start.appliedFileIds);
+      setFilesError(undefined);
+      setLinesError(undefined);
+      setLineErrors({});
+      setDraftReady(true);
+    },
+  });
 
   const persistCreateDraft = useCallback(() => {
     if (!open || receipt || !draftReady || !userId) return;
@@ -178,7 +161,7 @@ export function AutoPartReceiptFormModal({
         lines: receiptLinesPayload(rows),
       };
       if (!receipt) return autoPartReceiptApi.create(body);
-      return autoPartReceiptApi.update(receipt.id, { ...body, version: receipt.version });
+      return autoPartReceiptApi.update(receipt.id, { ...body, version: session.version! });
     },
     onSuccess: (saved) => {
       if (!receipt && userId) clearReceiptCreateDraft(userId);
@@ -330,6 +313,7 @@ export function AutoPartReceiptFormModal({
           markOutsideForm();
         }}
       >
+        <StaleRecordNotice session={session} />
         {/* Скан первым: чек начинается с бумаги, а не с реквизитов (Р6). */}
         <ReceiptScanField
           files={files}

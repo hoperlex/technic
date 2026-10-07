@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useEffectEvent } from 'react';
 import { App, DatePicker, Form, Input, InputNumber, Select, Typography } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -31,11 +31,18 @@ export function AutoPartApplicationModal({
   const vehicles = useReceiptVehicleOptions();
   const today = moscowDateKeyOf(new Date());
 
-  useEffect(() => {
+  /*
+   * Filled once per opening of a lot, not per render of the lot object or per day: `today` is
+   * taken when the window opens, so a form opened before midnight keeps yesterday as its default
+   * date instead of rewriting the date the person may have already chosen (stage 5 plan §4.5).
+   */
+  const lotId = lot?.lineId ?? null;
+  const fill = useEffectEvent((_lotId: string | null) => {
     if (!lot) return;
     form.resetFields();
     form.setFieldsValue({ appliedOn: dayjs(today), quantity: lot.remainingQuantity });
-  }, [form, lot, today]);
+  });
+  useEffect(() => fill(lotId), [lotId]);
 
   const save = useMutation({
     mutationFn: (values: Values) =>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useRef, useState } from 'react';
 import { App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -10,7 +10,7 @@ import {
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import { errorMessage } from '@shared/lib';
+import { errorMessage, useRecordSession } from '@shared/lib';
 import { useEstimatePresentation } from './useEstimatePresentation';
 import {
   estimateDraftIssue,
@@ -49,8 +49,11 @@ export type EstimateEditorIntent = 'estimate' | 'breakdown' | 'document' | 'work
  * показывается тут же — это главное, что окно делает, — а объём работ есть разговор о деньгах, и
  * сумма не должна появляться только после отправки (ADR 0094, исключение ворот названо поимённо).
  *
- * ВЕРСИЯ ЗАЯВКИ ДЕРЖИТСЯ СВОИМ СОСТОЯНИЕМ: сохранение состава её поднимает, и предъявление сразу
- * после сохранения ушло бы со старой версией — то есть получило бы 409 на ровном месте (Р30).
+ * THE REQUEST VERSION IS A SNAPSHOT OF THE WINDOW SESSION (stage 5 plan §4.5): taken when the
+ * window fills, moved by this window's own answers — saving the composition raises it, and a
+ * submission right after the save with the old version would get 409 out of nowhere (R30). A
+ * reread of the card neither refills the window nor moves the version: an untouched window is
+ * refilled silently, a changed one shows the notice, and "Reload" is the only way to drop the rows.
  */
 export function useEstimateEditor({
   request,
@@ -98,23 +101,10 @@ export function useEstimateEditor({
    */
   const [mode, setMode] = useState<EstimateMode>('rows');
   const [comment, setComment] = useState('');
-  const [version, setVersion] = useState(0);
-
-  useEffect(() => {
-    if (!request) return;
-    const initial = rowsFromItems(request.items);
-    /*
-     * РАСКЛАДКА ОТКРЫВАЕТСЯ ПО ГРАФАМ ВСЕГДА, и это вся её суть: «Ведение» нажало «Разложить по
-     * графам» именно затем, чтобы развернуть свободную запись, — а свободная запись как раз и
-     * проходит `fitsFreeMode`, то есть без этой ветки окно открылось бы двумя полями, из которых
-     * раскладывать нечего.
-     */
-    const startMode = breakdown ? 'rows' : initialEstimateMode(initial);
-    setMode(startMode);
-    setRows(startMode === 'free' ? toFreeRows(initial) : initial);
-    setVersion(request.version);
-    setComment('');
-  }, [request, breakdown]);
+  /** Rows and mode as the last fill left them: the person's edits replace the rows array. */
+  const [filled, setFilled] = useState<{ rows: EstimateRow[]; mode: EstimateMode } | null>(null);
+  /** The rows array a draft save sent: unchanged since, it may be refilled from the answer. */
+  const sentRows = useRef<EstimateRow[] | null>(null);
 
   /*
    * Строки, которые уйдут на сервер: в свободном режиме нетронутая запись отсеивается (Р8) —
@@ -145,6 +135,37 @@ export function useEstimateEditor({
     forceExemption: workDone,
   });
   const { exemptionBody } = presentation;
+
+  const session = useRecordSession({
+    open: !!request,
+    id: request?.id ?? null,
+    data: request ?? undefined,
+    version: (r: ServiceRequestDto) => r.version,
+    isDirty: () =>
+      rows !== filled?.rows || mode !== filled?.mode || comment !== '' || presentation.changed,
+    fill: (r, reason) => {
+      const initial = rowsFromItems(r.items);
+      /*
+       * РАСКЛАДКА ОТКРЫВАЕТСЯ ПО ГРАФАМ ВСЕГДА, и это вся её суть: «Ведение» нажало «Разложить по
+       * графам» именно затем, чтобы развернуть свободную запись, — а свободная запись как раз и
+       * проходит `fitsFreeMode`, то есть без этой ветки окно открылось бы двумя полями, из которых
+       * раскладывать нечего.
+       */
+      const startMode = breakdown ? 'rows' : initialEstimateMode(initial);
+      const startRows = startMode === 'free' ? toFreeRows(initial) : initial;
+      // Our own draft came back: the rows are refilled only if not edited since they were sent; the
+      // comment and the submission method are not part of a draft and stay as they are.
+      if (reason === 'own' && rows !== sentRows.current) return;
+      setMode(startMode);
+      setRows(startRows);
+      setFilled({ rows: startRows, mode: startMode });
+      if (reason === 'own') return;
+      setComment('');
+      presentation.reset();
+    },
+  });
+  // Only behind an open window: every command below is sent after the session has filled.
+  const version = session.version ?? 0;
   // The server decides whether the declaration is applied; this message only confirms its input.
   const submittedMessage = () =>
     presentation.exemption
@@ -164,6 +185,7 @@ export function useEstimateEditor({
   const saveMutation = useMutation({
     mutationFn: async (submit: boolean) => {
       let current = version;
+      sentRows.current = rows;
       if (rowsChanged(saved, request!.items)) {
         const stored = await serviceRequestsApi.saveEstimate(request!.id, {
           items: rowsToPayload(saved),
@@ -189,7 +211,7 @@ export function useEstimateEditor({
       return { version: sent.version, submitted: true };
     },
     onSuccess: (result) => {
-      setVersion(result.version);
+      session.accept(result.version);
       refresh();
       if (result.submitted) {
         // Не «отправлена»: заявка никуда не уехала — она осталась «В работе» и ждёт подписи (Р8).
@@ -241,7 +263,7 @@ export function useEstimateEditor({
         version,
       }),
     onSuccess: (result) => {
-      setVersion(result.version);
+      session.accept(result.version);
       refresh();
       const automaticallyApproved =
         result.approval?.revision === result.estimateRevision && result.approval.source === 'auto';
@@ -276,7 +298,7 @@ export function useEstimateEditor({
         version,
       }),
     onSuccess: (result) => {
-      setVersion(result.version);
+      session.accept(result.version);
       refresh();
       message.success('Объём работ разложен по графам');
       onClose();
@@ -308,6 +330,8 @@ export function useEstimateEditor({
    */
 
   return {
+    /** Someone else's newer request over a changed window: the notice and its "Reload". */
+    staleRecord: { stale: session.stale, reload: session.reload },
     rows,
     mode,
     comment,

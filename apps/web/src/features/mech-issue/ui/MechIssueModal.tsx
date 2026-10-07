@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useEffectEvent } from 'react';
 import { Alert, App, DatePicker, Form } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -48,11 +48,19 @@ export function MechIssueModal({
   const blockers = useFormBlockers(form);
   const today = moscowDateKeyOf(new Date());
 
-  useEffect(() => {
+  /*
+   * Filled once per opening of a request, not per request object or per day (stage 5 plan §4.5):
+   * the default date is taken when the window opens, so a form opened before midnight keeps
+   * yesterday instead of rewriting a date the person may have already picked. The request is the
+   * row the action was started from, so its version is the one the person saw.
+   */
+  const requestId = request?.id ?? null;
+  const fill = useEffectEvent((_requestId: string | null) => {
     if (!request) return;
     form.resetFields();
     form.setFieldsValue({ actualFrom: dayjs(today) });
-  }, [request, form, today]);
+  });
+  useEffect(() => fill(requestId), [requestId]);
 
   const mutation = useMutation({
     mutationFn: (values: Values) =>

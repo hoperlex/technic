@@ -28,9 +28,15 @@ import { useCandidateDecision } from '../model/decisions';
  */
 export function CandidateDecisions({
   candidate,
+  expectedVersion,
   onDone,
 }: {
   candidate: OfficeEquipmentCandidateDto;
+  /**
+   * The version the review window took when it filled its form, not the live one: the decision is
+   * made on what the reviewer has read, and a colleague's newer edit must answer 409.
+   */
+  expectedVersion: number;
   /** Решение принято — окно проверки закрывается: разбирают следующую строку очереди. */
   onDone: () => void;
 }) {
@@ -56,7 +62,7 @@ export function CandidateDecisions({
     (officeEquipmentId: string) =>
       officeEquipmentCandidatesApi.merge(candidate.id, {
         officeEquipmentId,
-        expectedVersion: candidate.contentVersion,
+        expectedVersion,
       }),
     { success: 'Сообщение объединено с карточкой', onDone },
   );
@@ -65,7 +71,7 @@ export function CandidateDecisions({
     (reason: string) =>
       officeEquipmentCandidatesApi.reject(candidate.id, {
         reason,
-        expectedVersion: candidate.contentVersion,
+        expectedVersion,
       }),
     { success: 'Сообщение отклонено', onDone, blockers: rejectBlockers },
   );

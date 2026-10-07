@@ -1,9 +1,8 @@
-import { useEffect } from 'react';
 import { App, Alert, Form, InputNumber, Select, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import type { FuelNormSettingsDto } from '@technic/contracts';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormRecordSession } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import { fuelNormKeys, fuelNormsApi } from '@entities/fuel-norm';
 import { vehicleReadingKeys } from '@entities/vehicle-reading';
@@ -51,18 +50,27 @@ export function FuelNormSettingsModal({ open, onCancel, settings }: Props) {
   const [form] = Form.useForm<Values>();
   const qc = useQueryClient();
 
-  useEffect(() => {
-    if (!open || !settings) return;
-    const [fromMonth, fromDay] = settings.winterFromMd.split('-').map(Number);
-    const [toMonth, toDay] = settings.winterToMd.split('-').map(Number);
-    form.setFieldsValue({
-      winterFromMonth: fromMonth,
-      winterFromDay: fromDay,
-      winterToMonth: toMonth,
-      winterToDay: toDay,
-      tolerancePercent: settings.tolerancePercent,
-    } as Values);
-  }, [open, settings, form]);
+  /*
+   * Filled once per opening, as soon as the settings are there (stage 5 plan §4.5): the parent
+   * rereads them with the norms list, and filling from every new object erased the season being
+   * typed. Without a version there is nothing to compare a newer copy with, so a reread never
+   * touches the open form; the confirmation names the consequence instead.
+   */
+  useFormRecordSession(form, {
+    open,
+    data: settings ?? undefined,
+    values: (current: FuelNormSettingsDto) => {
+      const [fromMonth, fromDay] = current.winterFromMd.split('-').map(Number);
+      const [toMonth, toDay] = current.winterToMd.split('-').map(Number);
+      return {
+        winterFromMonth: fromMonth,
+        winterFromDay: fromDay,
+        winterToMonth: toMonth,
+        winterToDay: toDay,
+        tolerancePercent: current.tolerancePercent,
+      };
+    },
+  });
 
   const save = useMutation({
     mutationFn: (values: Values) =>

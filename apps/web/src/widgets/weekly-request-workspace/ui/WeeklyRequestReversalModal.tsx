@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Alert, Checkbox, Form, Input, Skeleton, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -9,7 +9,7 @@ import {
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { weeklyRequestKeys, weeklyRequestsApi } from '@entities/weekly-request';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormRecordSession } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
 import {
   WEEKLY_RETURN_OVERDUE_NOTE,
@@ -69,13 +69,19 @@ export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit,
    *
    * The key is always prepared but sent only in the correction branch: whether an operation is
    * needed is decided by the server (`requiresOperation`), and the request body need not guess.
+   *
+   * Both the key and the fields start once per window session, never per request object: the page
+   * rereads the week after any neighbouring action, and a new key on a reread would turn a repeat
+   * after a dropped connection into a second reversal (stage 5 plan §4.5).
    */
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
-  useEffect(() => {
-    if (!request) return;
-    setOperationId(crypto.randomUUID());
-    form.setFieldsValue({ reason: '', unlockWaybillIds: [] });
-  }, [request, form]);
+  useFormRecordSession(form, {
+    open: !!request,
+    id: request?.id ?? null,
+    data: request ?? undefined,
+    values: () => ({ reason: '', unlockWaybillIds: [] }),
+    fill: () => setOperationId(crypto.randomUUID()),
+  });
 
   const previewQuery = useQuery({
     queryKey:

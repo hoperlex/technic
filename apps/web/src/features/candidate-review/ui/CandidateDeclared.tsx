@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Button, Form, Input, Space, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import type {
@@ -11,7 +11,13 @@ import {
   subjectCheckTitle,
 } from '@entities/office-equipment-candidate';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
-import { AutoSelect, useFormBlockers, ViewFields } from '@shared/ui';
+import {
+  AutoSelect,
+  StaleRecordNotice,
+  useFormBlockers,
+  useFormRecordSession,
+  ViewFields,
+} from '@shared/ui';
 import { useCandidateDecision } from '../model/decisions';
 
 /** Шесть реквизитов в форме правки: те же поля, что заполнял заявитель (Р7, Р12). */
@@ -34,7 +40,14 @@ type Values = Omit<UpdateOfficeEquipmentCandidateInput, 'expectedVersion'>;
  * а правит одну строку из десяти: форма вместо текста заставляла бы его каждый раз решать, менял
  * он что-нибудь или нет, — и одно случайное касание уходило бы новой версией с новым аудитом.
  */
-export function CandidateDeclared({ candidate }: { candidate: OfficeEquipmentCandidateDto }) {
+export function CandidateDeclared({
+  candidate,
+  onSaved,
+}: {
+  candidate: OfficeEquipmentCandidateDto;
+  /** The window's own change: the review form takes the new version and the corrected values. */
+  onSaved?: (version: number) => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [form] = Form.useForm<Values>();
   const blockers = useFormBlockers(form);
@@ -46,34 +59,43 @@ export function CandidateDeclared({ candidate }: { candidate: OfficeEquipmentCan
   });
   const { data: objectOptions = [] } = useQuery({ ...objectOptionsQuery(), enabled: editing });
 
-  useEffect(() => {
-    if (!editing) return;
-    // Форма открывается заявленным, а не пустой: правят опечатку в одном поле, а не заполняют
-    // сообщение заново.
-    form.setFieldsValue({
-      equipmentTypeId: candidate.equipmentType.id,
-      declaredModel: candidate.declaredModel,
-      serialNumber: candidate.serialNumber,
-      inventoryNumber: candidate.inventoryNumber,
-      objectId: candidate.object.id,
-      location: candidate.location,
-      comment: candidate.comment,
-    });
-  }, [editing, candidate, form]);
+  // The edit opens with what was declared, not empty: one typo is fixed, not the whole message
+  // retyped. Filled per edit session with its own snapshot version, like the review form beside it.
+  const session = useFormRecordSession(form, {
+    open: editing,
+    id: candidate.id,
+    data: candidate,
+    version: (c: OfficeEquipmentCandidateDto) => c.contentVersion,
+    values: (c: OfficeEquipmentCandidateDto) => ({
+      equipmentTypeId: c.equipmentType.id,
+      declaredModel: c.declaredModel,
+      serialNumber: c.serialNumber,
+      inventoryNumber: c.inventoryNumber,
+      objectId: c.object.id,
+      location: c.location,
+      comment: c.comment,
+    }),
+  });
 
   const save = useCandidateDecision(
     candidate.id,
     (values: Values) =>
       officeEquipmentCandidatesApi.update(candidate.id, {
         ...values,
-        expectedVersion: candidate.contentVersion,
+        expectedVersion: session.version!,
       }),
-    { success: 'Сообщение поправлено', onDone: () => setEditing(false), blockers },
+    {
+      success: 'Сообщение поправлено',
+      onFresh: (fresh) => onSaved?.(fresh.contentVersion),
+      onDone: () => setEditing(false),
+      blockers,
+    },
   );
 
   if (editing) {
     return (
       <Form form={form} layout="vertical" onFinish={(v) => save.mutate(v)} {...blockers.formProps}>
+        <StaleRecordNotice session={session} />
         <Form.Item name="equipmentTypeId" label="Тип" rules={[{ required: true }]}>
           <AutoSelect
             options={typeOptions}

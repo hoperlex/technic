@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useEffectEvent } from 'react';
 import { Alert, App, Button, DatePicker, Form, InputNumber, Space, Typography } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -70,19 +70,26 @@ export function MechCompleteModal({
       ? cost - calculated
       : null;
 
-  useEffect(() => {
+  /*
+   * Filled once per opening of a request, not per request object or per day (stage 5 plan §4.5):
+   * `today` is taken when the window opens, so a form opened before midnight keeps yesterday as the
+   * return date instead of overwriting the four numbers being typed.
+   */
+  const requestId = request?.id ?? null;
+  const fill = useEffectEvent((_requestId: string | null) => {
     if (!request) return;
     form.resetFields();
     form.setFieldsValue({
-      // Выдача — из самой заявки: у действующей аренды она есть всегда, и переспрашивать её
-      // значило бы предлагать человеку ввести заново то, что портал уже знает.
+      // The issue date comes from the request itself: an active rental always has one, and asking
+      // for it again would make the person retype what the portal already knows.
       actualFrom: request.actualFrom ? dayjs(request.actualFrom) : dayjs(today),
-      // Повторное завершение начинается с прежних чисел: их и пришли исправлять.
+      // A repeated completion starts from the previous numbers: they are what is being corrected.
       actualTo: dayjs(request.actualTo ?? today),
       actualUnits: request.actualUnits ?? undefined,
       finalCost: request.finalCost ?? undefined,
     });
-  }, [request, form, today]);
+  });
+  useEffect(() => fill(requestId), [requestId]);
 
   const mutation = useMutation({
     mutationFn: (values: Values) =>

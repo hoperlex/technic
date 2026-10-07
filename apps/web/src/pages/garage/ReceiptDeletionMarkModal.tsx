@@ -1,11 +1,10 @@
-import { useEffect } from 'react';
 import { Alert, App, Form, Input } from 'antd';
 import dayjs from 'dayjs';
 import { useMutation } from '@tanstack/react-query';
 import { isApiError } from '@shared/api';
 import type { AutoPartReceiptDto } from '@technic/contracts';
 import { autoPartReceiptApi } from '@entities/auto-part-receipt';
-import { FormModal } from '@shared/ui';
+import { FormModal, StaleRecordNotice, useFormRecordSession } from '@shared/ui';
 import { receiptErrorText, useReceiptInvalidation } from './receiptMutations';
 
 /**
@@ -45,15 +44,25 @@ export function ReceiptDeletionMarkModal({
   const invalidate = useReceiptInvalidation();
   const [form] = Form.useForm<Values>();
 
-  useEffect(() => {
-    if (receipt) form.resetFields();
-  }, [receipt, form]);
+  /*
+   * The reason starts empty once per opening, and the mark carries the version of the receipt as
+   * it was when the window opened (stage 5 plan §4.5): the card rereads the receipt after any
+   * neighbouring action, and that must neither erase the typed reason nor silently retarget the
+   * mark to a receipt the person has not read.
+   */
+  const session = useFormRecordSession(form, {
+    open: !!receipt,
+    id: receipt?.id ?? null,
+    data: receipt ?? undefined,
+    version: (r: AutoPartReceiptDto) => r.version,
+    values: () => ({ reason: '' }),
+  });
 
   const mark = useMutation({
     mutationFn: (v: Values) =>
       autoPartReceiptApi.markDeletion(receipt!.id, {
         reason: v.reason.trim(),
-        version: receipt!.version,
+        version: session.version!,
       }),
     onSuccess: () => {
       message.success('Чек помечен к удалению');
@@ -90,6 +99,7 @@ export function ReceiptDeletionMarkModal({
       width={560}
     >
       <Form form={form} layout="vertical" onFinish={(v) => mark.mutate(v)}>
+        <StaleRecordNotice session={session} />
         <Alert
           type="info"
           showIcon

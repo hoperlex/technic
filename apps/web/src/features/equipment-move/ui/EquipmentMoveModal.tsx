@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Alert, App, Button, Checkbox, DatePicker, Form, Input, Select } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -26,7 +26,7 @@ import { departmentOptionsQuery } from '@entities/department';
 import { serviceRequestKeys, serviceRequestObjectLabel } from '@entities/service-request';
 import { isApiError } from '@shared/api';
 import { errorMessage } from '@shared/lib';
-import { FormModal } from '@shared/ui';
+import { FormModal, StaleRecordNotice, useFormRecordSession } from '@shared/ui';
 
 const DATE = 'YYYY-MM-DD';
 
@@ -83,6 +83,17 @@ function moveConflict(e: unknown): OfficeEquipmentMovePlaceDto | null {
   if (!isApiError(e) || e.code !== OFFICE_EQUIPMENT_MOVE_CONFLICT_CODE) return null;
   const details = e.details as OfficeEquipmentMoveConflictDetails | undefined;
   return details?.current ?? null;
+}
+
+/** The "from" side as the card shows it: the move's optimistic lock is exactly these five fields. */
+function shownPlace(equipment: OfficeEquipmentDto): MoveOfficeEquipmentSide {
+  return {
+    objectId: equipment.object.id,
+    departmentId: equipment.department?.id ?? null,
+    location: equipment.location,
+    state: equipment.state,
+    stateNote: equipment.stateNote,
+  };
 }
 
 /** Место словами — тем же порядком, каким его называет отказ сервера: пустые части опускаются. */
@@ -146,6 +157,8 @@ export function EquipmentMoveModal({
    * прочитал его под блокировкой строки, то есть это самый свежий ответ на вопрос, откуда едем.
    */
   const [conflict, setConflict] = useState<OfficeEquipmentMovePlaceDto | null>(null);
+  /** The place the form was filled from: the lock snapshot (stage 5 plan §4.5), not the live card. */
+  const [shown, setShown] = useState<MoveOfficeEquipmentSide | null>(null);
 
   const declared = useMemo(() => declaredPlace(request), [request]);
 
@@ -158,26 +171,38 @@ export function EquipmentMoveModal({
     enabled: !!equipment,
   });
 
-  useEffect(() => {
-    if (!equipment) return;
-    // Карточка перечитана — прежний отказ к ней уже не относится, и «откуда» снова снимается с
-    // показанного.
-    setConflict(null);
-    form.setFieldsValue({
+  /*
+   * Filled per window session. A colleague's move refills an untouched form silently; a changed one
+   * keeps the input under the notice, and a submission over it goes from the old place and gets the
+   * server's "already moved" (decision R6-a). The form is built from the place and the declared
+   * object together, so either changing is a newer record.
+   */
+  const session = useFormRecordSession(form, {
+    open: !!equipment,
+    id: equipment?.id ?? null,
+    data: equipment ?? undefined,
+    version: (e: OfficeEquipmentDto) =>
+      JSON.stringify([shownPlace(e), declared?.objectId ?? null, declared?.number ?? null]),
+    values: (e: OfficeEquipmentDto) => ({
       // Целевым предлагается ЗАЯВЛЕННЫЙ объект, если заявление есть и не разобрано: разбирать его
       // и есть то, ради чего окно открыли. Человек волен выбрать третий — аппарат нередко
       // находится там, где не ждал никто (находка Н6).
-      objectId: declared?.objectId ?? equipment.object.id,
-      departmentId: equipment.department?.id ?? null,
-      location: equipment.location,
-      state: equipment.state,
-      stateNote: equipment.stateNote,
+      objectId: declared?.objectId ?? e.object.id,
+      departmentId: e.department?.id ?? null,
+      location: e.location,
+      state: e.state,
+      stateNote: e.stateNote,
       movedOn: dayjs(),
       reason: declared ? `Подтверждение места по заявке ${declared.number}` : '',
       comment: '',
       confirmsDeclaredPlace: false,
-    });
-  }, [equipment, declared, form]);
+    }),
+    fill: (e: OfficeEquipmentDto) => {
+      // A fresh card: the previous refusal is about the old one, and "from" is the shown place again.
+      setConflict(null);
+      setShown(shownPlace(e));
+    },
+  });
 
   const mutation = useMutation({
     mutationFn: (values: Values) => {
@@ -194,13 +219,7 @@ export function EquipmentMoveModal({
             state: conflict.state,
             stateNote: conflict.stateNote,
           }
-        : {
-            objectId: equipment!.object.id,
-            departmentId: equipment!.department?.id ?? null,
-            location: equipment!.location,
-            state: equipment!.state,
-            stateNote: equipment!.stateNote,
-          };
+        : shown!;
       return officeEquipmentApi.move(equipment!.id, {
         from,
         objectId: values.objectId,
@@ -253,6 +272,7 @@ export function EquipmentMoveModal({
       width={560}
     >
       <Form form={form} layout="vertical" onFinish={(v) => mutation.mutate(v)}>
+        <StaleRecordNotice session={session} />
         {declared && (
           <Alert
             type="info"

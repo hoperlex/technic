@@ -1,8 +1,10 @@
-import { useEffect } from 'react';
 import { Alert, Divider, Form, Typography } from 'antd';
 import { Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { officeEquipmentCandidateStatusLabels } from '@technic/contracts';
+import {
+  officeEquipmentCandidateStatusLabels,
+  type OfficeEquipmentCandidateDto,
+} from '@technic/contracts';
 import { departmentOptionsQuery } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
 import {
@@ -15,7 +17,7 @@ import {
   officeEquipmentTypeOptionsQuery,
   type OfficeEquipmentFormValues,
 } from '@entities/office-equipment';
-import { FormModal, useFormBlockers } from '@shared/ui';
+import { FormModal, StaleRecordNotice, useFormBlockers, useFormRecordSession } from '@shared/ui';
 import { CandidateDeclared } from './CandidateDeclared';
 import { CandidateDecisions } from './CandidateDecisions';
 import { useCandidateDecision } from '../model/decisions';
@@ -37,6 +39,12 @@ import { useCandidateDecision } from '../model/decisions';
  * КАРТОЧКА ПЕРЕЧИТЫВАЕТСЯ СВОИМ ЗАПРОСОМ, а не берётся строкой очереди: между открытием списка и
  * решением коллега мог поправить реквизиты (Р12), и форма, собранная из строки, отправила бы
  * устаревшую версию и получила бы 409 — уже после того, как проверяющий заполнил её целиком.
+ *
+ * The form is filled per window session and every door of the window sends the version taken at
+ * that fill (stage 5 plan §4.5): a reread no longer wipes what the reviewer typed, and a colleague's
+ * edit over a changed form raises the notice instead of being overwritten. The neighbouring block
+ * "what was declared" is the same window: its save moves the snapshot and refills the untouched
+ * fields of this form with the corrected values.
  *
  * РЕШЁННЫЙ КАНДИДАТ ОТКРЫВАЕТСЯ ТОЖЕ, но без формы: очередь показывают и с отбором по состоянию, и
  * строка исхода отвечает на «чем кончилось», не обещая действий, которых у неё уже нет — правки
@@ -69,27 +77,29 @@ export function CandidateReviewModal({
   const { data: objectOptions = [] } = useQuery({ ...objectOptionsQuery(), enabled: open });
   const { data: departmentOptions = [] } = useQuery({ ...departmentOptionsQuery(), enabled: open });
 
-  useEffect(() => {
-    if (!candidate) return;
-    form.resetFields();
-    form.setFieldsValue({
-      equipmentTypeId: candidate.equipmentType.id,
-      serialNumber: candidate.serialNumber,
-      inventoryNumber: candidate.inventoryNumber,
-      objectId: candidate.object.id,
-      location: candidate.location,
-      comment: candidate.comment,
-      // «Активна» стоит сразу: заводят то, что стоит в кабинете и о чём уже завели заявку.
+  const session = useFormRecordSession(form, {
+    open,
+    id: candidateId,
+    data: candidate,
+    version: (c: OfficeEquipmentCandidateDto) => c.contentVersion,
+    values: (c: OfficeEquipmentCandidateDto) => ({
+      equipmentTypeId: c.equipmentType.id,
+      serialNumber: c.serialNumber,
+      inventoryNumber: c.inventoryNumber,
+      objectId: c.object.id,
+      location: c.location,
+      comment: c.comment,
+      // Active right away: what is registered stands in the office and already has a request.
       isActive: true,
-    } as OfficeEquipmentFormValues);
-  }, [candidate, form]);
+    }),
+  });
 
   const confirm = useCandidateDecision(
     candidateId ?? '',
     (values: OfficeEquipmentFormValues) =>
       officeEquipmentCandidatesApi.confirm(candidateId!, {
         equipment: officeEquipmentPayload(values),
-        expectedVersion: candidate!.contentVersion,
+        expectedVersion: session.version!,
       }),
     { success: 'Карточка заведена', onDone: onClose, blockers },
   );
@@ -106,13 +116,17 @@ export function CandidateReviewModal({
       width={640}
       footerExtra={
         candidate && pending ? (
-          <CandidateDecisions candidate={candidate} onDone={onClose} />
+          <CandidateDecisions
+            candidate={candidate}
+            expectedVersion={session.version!}
+            onDone={onClose}
+          />
         ) : undefined
       }
     >
       {candidate && (
         <>
-          <CandidateDeclared candidate={candidate} />
+          <CandidateDeclared candidate={candidate} onSaved={session.accept} />
           {/* Ссылка на заявку — обязательная часть проверки: решение про технику принимают, глядя
               на то, зачем о ней сообщили. Статус тут же: заявку могли отменить или закрыть, пока
               сообщение стояло в очереди (Р16), и знать это надо ДО заведения карточки. */}
@@ -126,19 +140,22 @@ export function CandidateReviewModal({
           )}
           <Divider />
           {pending ? (
-            <Form
-              form={form}
-              layout="vertical"
-              onFinish={(v) => confirm.mutate(v)}
-              {...blockers.formProps}
-            >
-              <OfficeEquipmentFields
-                typeOptions={typeOptions}
-                typesLoading={typesLoading}
-                objectOptions={objectOptions}
-                departmentOptions={departmentOptions}
-              />
-            </Form>
+            <>
+              <StaleRecordNotice session={session} />
+              <Form
+                form={form}
+                layout="vertical"
+                onFinish={(v) => confirm.mutate(v)}
+                {...blockers.formProps}
+              >
+                <OfficeEquipmentFields
+                  typeOptions={typeOptions}
+                  typesLoading={typesLoading}
+                  objectOptions={objectOptions}
+                  departmentOptions={departmentOptions}
+                />
+              </Form>
+            </>
           ) : (
             /* Исход словами, а не формой: у решённого кандидата действий нет вовсе, и открытая
                форма обещала бы кнопку, которую сервер встретит 409. */

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { App } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import {
@@ -76,7 +76,7 @@ export function useEstimatePresentation({
    * неизвестна до разбора документа. Третьим пунктом того же ряда окно обещало бы трём разным
    * вещам одинаковую природу.
    */
-  const [documentMode, setDocumentMode] = useState(false);
+  const [documentMode, setDocumentMode] = useState(forceDocument);
   /*
    * Загруженные страницы — идентификаторы, уже принятые хранилищем: сервер принимает основанием
    * только ДОГРУЖЕННЫЙ файл (`requireActive`, Р7), поэтому загрузка идёт до предъявления, а не
@@ -84,21 +84,22 @@ export function useEstimatePresentation({
    * от чужого.
    */
   const [files, setFiles] = useState<EstimateDocumentFile[]>([]);
-  const [exemption, setExemption] = useState(false);
+  const [exemption, setExemption] = useState(forceExemption);
   const [exemptionNote, setExemptionNote] = useState('');
 
-  useEffect(() => {
-    /*
-     * Способ подачи, счёт и заявление сбрасываются при смене заявки — тем же порядком, что состав.
-     * Окно переоткрывают по другой заявке тем же экземпляром хука (`request` — проп, а не монтаж),
-     * и уцелевшая галочка «согласование не требуется» стала бы денежным решением, которого по этой
-     * заявке никто не принимал, а чужой счёт — её основанием.
-     */
+  /*
+   * The submission method, the document and the declaration start over with the composition, by
+   * the same window session (the editor's fill calls this), never by a reread of the request. A
+   * checkbox "no signature needed" surviving into another request would be a money decision nobody
+   * took for it, and someone else's invoice its basis; a reread wiping the uploaded pages would
+   * throw away the person's work (stage 5 plan §4.5).
+   */
+  const reset = () => {
     setDocumentMode(forceDocument);
     setFiles([]);
     setExemption(forceExemption);
     setExemptionNote('');
-  }, [request, forceDocument, forceExemption]);
+  };
 
   /**
    * ЗАГРУЗКА СТРАНИЦЫ СЧЁТА — ОТДЕЛЬНЫМ ХОДОМ И ДО ПРЕДЪЯВЛЕНИЯ (Р7). Связь с заявкой ставит сама
@@ -169,6 +170,13 @@ export function useEstimatePresentation({
   const exemptionOn = exemptionOffered && (forceExemption || exemption);
 
   return {
+    reset,
+    /** Anything chosen or uploaded since the opening: part of "the person has changed the form". */
+    changed:
+      documentMode !== forceDocument ||
+      files.length > 0 ||
+      exemption !== forceExemption ||
+      exemptionNote !== '',
     documentOffered,
     documentOn,
     documentFits,

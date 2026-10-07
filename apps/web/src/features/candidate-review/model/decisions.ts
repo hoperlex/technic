@@ -65,10 +65,16 @@ export function useCandidateDecision<TVars>(
   run: (vars: TVars) => Promise<OfficeEquipmentCandidateDto>,
   {
     success,
+    onFresh,
     onDone,
     blockers,
   }: {
     success: string;
+    /**
+     * The fresh candidate, before it lands in the cache: a block of the review window passes it to
+     * the window's form session so that the snapshot version moves with the window's own change.
+     */
+    onFresh?: (fresh: OfficeEquipmentCandidateDto) => void;
     onDone?: () => void;
     /**
      * Форма, в которую ложатся отказы по полям: «Серийный номер уже заведён карточкой …» обязан
@@ -85,6 +91,7 @@ export function useCandidateDecision<TVars>(
     mutationFn: run,
     onSuccess: (fresh) => {
       message.success(success);
+      onFresh?.(fresh);
       qc.setQueryData(officeEquipmentCandidateKeys.detail(id), fresh);
       invalidateAfterCandidateDecision(qc);
       onDone?.();
