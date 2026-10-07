@@ -742,7 +742,7 @@ function matchApiPath(table, path) {
     owner: entry.owner,
     slice: entry.slice,
     template: entry.template,
-    roots: entry.slice ? (table.rootsBySlice.get(entry.slice) ?? []) : [],
+    roots: entry.slice ? [...(table.rootsBySlice.get(entry.slice) ?? [])].sort() : [],
   };
 }
 
