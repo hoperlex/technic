@@ -6,5 +6,20 @@
   },
   "rawKeyFiles": 0,
   "antdDeprecated": 17,
-  "maxLines": {}
+  "maxLines": {},
+  "queryFreshnessUnmarked": 33,
+  "unfilteredInvalidations": [
+    "src/pages/admin/AdministrationPage.tsx › AdministrationPage › refreshOnSwitch",
+    "src/pages/admin/DirectoryTransferTab.tsx › DirectoryTransferTab › onImported",
+    "src/pages/directories/DirectoriesPage.tsx › DirectoriesPage › refreshOnSwitch"
+  ],
+  "timers": [
+    "src/app/MaintenanceBoundary.tsx › useStatusFileWatch › setInterval",
+    "src/entities/waste-ticket/api/queries.ts › ticketAuditOperationsQuery › refetchInterval",
+    "src/entities/waste-ticket/api/queries.ts › ticketRecognitionHealthQuery › refetchInterval",
+    "src/features/service-chat/model/useServiceChatFeed.ts › useServiceChatFeed › setInterval",
+    "src/pages/garage/useReceiptRecognitionBatch.ts › useReceiptRecognitionBatch › refetchInterval",
+    "src/pages/service/ServiceBulkModal.tsx › ServiceBulkModal › ask › setTimeout",
+    "src/shared/lib/useVersionCheck.ts › useVersionCheck › setInterval"
+  ]
 }
