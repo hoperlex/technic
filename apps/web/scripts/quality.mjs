@@ -1,23 +1,23 @@
 #!/usr/bin/env node
 /**
- * Бюджеты качества фронта: числа, которым разрешено только уменьшаться.
+ * Front-end quality budgets: figures that are only allowed to go down.
  *
- * Зачем это поверх линта и проверок раскладки. `max-lines` включён предупреждением и не блокирует
- * ничего; `check-stage2-layout` про то, что отложено, а не про то, что растёт. В итоге за неделю
- * три страницы набрали 1369 строк, `resources.ts` — 224, и ни одна проверка не покраснела.
- * Бюджет ловит именно рост: он не требует ничего чинить сегодня, но не даёт долгу увеличиться
- * незаметно.
+ * Why this on top of the linter and the layout checks. `max-lines` is a warning and blocks nothing;
+ * `check-stage2-layout` is about what was postponed, not about what grows. Within one week three
+ * pages gained 1369 lines and `resources.ts` 224, and not a single check turned red. A budget
+ * catches exactly growth: it asks for no fix today, but does not let the debt grow unnoticed.
  *
- * Два режима — намеренно раздельные:
- *   check  — только читает; падает и на росте, и на незаписанном улучшении;
- *   update — переписывает бюджет, но ТОЛЬКО в сторону улучшения.
+ * Two modes, separate on purpose:
+ *   check  — read-only; fails both on growth and on an improvement that is not written down;
+ *   update — rewrites the budget, but ONLY in the direction of improvement.
  *
- * `check` зовётся из `pretest`, поэтому писать в дерево он не имеет права: правку бюджета,
- * сделанную молча посреди прогона тестов, слишком легко не закоммитить — и ратчет разожмётся сам
- * собой. Послабление (рост числа) не делает и `update`: его правят руками, и оно видно на ревью.
+ * `check` runs from `pretest`, so it has no right to write to the tree: a budget edit made silently
+ * in the middle of a test run is too easy to leave uncommitted, and the ratchet would loosen by
+ * itself. A relaxation (a figure going up) is not made by `update` either: it is edited by hand,
+ * where review sees it.
  *
- * Запуск: pnpm --filter @technic/web quality:check | quality:update
- * План: docs/frontend-followup-plan.md, барьеры Б1 и Б2.
+ * Run: pnpm --filter @technic/web quality:check | quality:update
+ * Plan: docs/frontend-followup-plan.md, barriers Б1 and Б2.
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
@@ -108,13 +108,14 @@ function countAntdDeprecated(file, code) {
   return found;
 }
 
-// --- замер -----------------------------------------------------------------
+// --- measurement -------------------------------------------------------------
 
 function measure() {
   const legacyFiles = {};
   for (const dir of LEGACY_DIRS) {
     const full = path.join(SRC, dir);
-    // Каталог исчез — значит разложен: ноль, а не пропуск. Пропуск читался бы как «не мерили».
+    // A directory that is gone has been taken apart: zero, not a gap. A gap would read as "not
+    // measured".
     legacyFiles[dir] = existsSync(full)
       ? walkTs(full).filter((f) => path.dirname(f) === full).length
       : 0;
@@ -131,17 +132,17 @@ function measure() {
     antdDeprecated += countAntdDeprecated(file, code);
 
     /*
-     * Строк в файле — по числу переносов, а не по числу кусков разбиения. `split('\n')` у файла с
-     * завершающим переводом строки (а он есть у всех, prettier его ставит) даёт на кусок больше:
-     * последний — пустая строка после последнего `\n`. Файл ровно на 400 строк считался за 401 и
-     * объявлялся «длиннее 400» — ровно то, что случилось с `ServiceRequestForm.tsx` и покрасило
-     * ворота на файле, который порога не нарушал.
+     * Lines in a file are counted by line breaks, not by the pieces of a split. `split('\n')` of a
+     * file ending with a newline (every file has one, prettier puts it there) yields one piece too
+     * many: the last one is the empty string after the final `\n`. A file of exactly 400 lines was
+     * counted as 401 and declared "longer than 400" — which is what happened to
+     * `ServiceRequestForm.tsx` and turned the gate red on a file that did not break the limit.
      *
-     * Число обязано совпадать с тем, что видит человек в редакторе и `wc -l`, — и опирается это
-     * требование именно на человека, а не на линт: у `max-lines` мера своя, без пустых строк и
-     * комментариев (см. шапку у `LINE_LIMIT`). Бюджет считает сырые строки потому, что спорят о
-     * них: «у меня 400, а ворота говорят 401» разбирается открытым редактором, а не настройками
-     * правила.
+     * The figure has to match what a person sees in the editor and in `wc -l`, and the requirement
+     * rests on the person, not on the linter: `max-lines` has a measure of its own, without blank
+     * lines and comments (see the header at `LINE_LIMIT`). The budget counts raw lines because raw
+     * lines are what people argue about: "I have 400 and the gate says 401" is settled by opening
+     * the editor, not by reading rule settings.
      */
     const lines = code.replace(/\n$/, '').split('\n').length;
     if (lines > LINE_LIMIT) maxLines[rel] = lines;
@@ -150,11 +151,12 @@ function measure() {
   return { legacyFiles, rawKeyFiles, antdDeprecated, maxLines };
 }
 
-// --- сравнение с бюджетом ---------------------------------------------------
+// --- comparison with the budget ----------------------------------------------
 
 /**
- * Рост — ошибка, улучшение — повод обновить бюджет. Разделены намеренно: первое чинит автор
- * правки, второе делает `quality:update` одной командой, и оба видны в дифффе коммита.
+ * Growth is an error, an improvement is a reason to update the budget. Kept apart on purpose: the
+ * first is fixed by the author of the change, the second is done by `quality:update` in one command,
+ * and both show in the commit diff.
  */
 function compare(actual, budget) {
   const grown = [];
@@ -181,12 +183,12 @@ function compare(actual, budget) {
   if (actual.rawKeyFiles < budget.rawKeyFiles)
     improved.push(`сырые ключи: ${budget.rawKeyFiles} → ${actual.rawKeyFiles}`);
 
-  // Волна Э8 сняла `Space direction`, `Divider type` и `Alert message` до нуля; на `Space` и
-  // `Divider` сверху стоит ещё и no-restricted-syntax. Остальное — `List`, `Drawer width`,
-  // `InputNumber addon*` и мелочь — чинится по мере касания, а число держит, чтобы долг не рос:
-  // портал уже на antd 6.5, и в следующем мажоре этих пропсов не будет.
-  // Число новое, и в бюджете его может ещё не быть. Это не рост: в `grown` оно бы заблокировало
-  // сам `quality:update`, которым его и записывают, — поэтому идёт в `improved`.
+  // Wave Э8 took `Space direction`, `Divider type` and `Alert message` down to zero; `Space` and
+  // `Divider` are also guarded by no-restricted-syntax. The rest — `List`, `Drawer width`,
+  // `InputNumber addon*` and small things — is fixed when touched, and the figure keeps the debt
+  // from growing: the portal is on antd 6.5 already, and the next major drops these props.
+  // The figure is new and the budget may not know it yet. That is not growth: in `grown` it would
+  // block the very `quality:update` that records it, so it goes to `improved`.
   if (budget.antdDeprecated === undefined)
     improved.push(`устаревшее antd: бюджет числа не знает → ${actual.antdDeprecated}`);
   else if (actual.antdDeprecated > budget.antdDeprecated)
@@ -199,8 +201,8 @@ function compare(actual, budget) {
   const budgetLines = budget.maxLines ?? {};
   for (const [file, now] of Object.entries(actual.maxLines)) {
     const was = budgetLines[file];
-    // Новый длинный файл — тоже рост, хотя ни одно старое число не изменилось. Без этой ветки
-    // ограничение обходится созданием ещё одного файла на 900 строк.
+    // A new long file is growth too, although no old figure changed. Without this branch the limit
+    // is bypassed by creating one more file of 900 lines.
     if (was === undefined)
       grown.push(`${file}: ${now} строк — новый файл длиннее ${LINE_LIMIT}; разделите его`);
     else if (now > was) grown.push(`${file}: ${now} строк, бюджет ${was}`);
@@ -214,7 +216,7 @@ function compare(actual, budget) {
   return { grown, improved };
 }
 
-// --- режимы -----------------------------------------------------------------
+// --- modes -------------------------------------------------------------------
 
 const mode = process.argv[2] ?? 'check';
 if (!['check', 'update'].includes(mode)) {
