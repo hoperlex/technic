@@ -145,13 +145,14 @@
   их в отчёте уже после выписки. У одиночной выписки рукопожатие осталось — значит один и тот же
   лист рождается подписанным или нет в зависимости от того, какой дверью его выписали, и это
   различие приходится помнить при разборе.
-- Рейсы, заведённые пачкой, рождаются без граф выезда: вид сообщения, гаражный номер и прицеп
-  остаются пустыми. Подённое окно их наследует, но делает это портал: он подставляет в форму
-  `trip` из подсказки двери дня (`lastTripFields` — графы последнего рейса этой машины), а сама
-  дверь рейса дня графы не придумывает и берёт их только из тела. Пачка шлёт в неё одну машину и
-  водителя, поэтому графы пустые, хотя прошлые рейсы у машины обычно есть. С галочкой бумаги лист
-  выписывается с пустыми графами сразу, и дописать их можно только аннулированием; без бумаги их
-  дозаполняют правкой рейса до выписки.
+- A new batch route for today or a future day copies the vehicle's current trailer hitch into its
+  route and waybill snapshots. The hitch is a directory choice, so leaving the trailer blank in an
+  already issued batch waybill lost information the dispatcher had recorded. The two trailer slots
+  use the same contract rule as the interactive route forms; one trailer in registry slot 2 goes
+  into paper slot 1. The batch does not change a route it joins or a waybill already issued.
+  Historical days retain empty trailer fields: the registry has no hitch history and today's
+  attachment cannot establish what was behind the vehicle then. Other departure fields remain
+  empty in batch routes; the per-day window can inherit them from `lastTripFields` for review.
 - День, поставленный пачкой без бумаги (галочка снята), повторная пачка листом уже не закроет: он
   отсекается как «уже стоит в рейсе». Такие дни закрывают подённо, с карточки рейса.
 - Выбранный водитель попадает только в те рейсы, которые пачка заводит сама. День, севший в уже

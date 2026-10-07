@@ -85,6 +85,7 @@ function renderAssign({
     'GET /drivers': () =>
       json(list([MACHINIST, machinist({ id: 'p-2', fullName: 'Кузнецов Кузьма Кузьмич' })])),
     'GET /drivers/available': () => json(selection),
+    'GET /vehicle-routes/suggest': () => json({ routes: [], trip: null, hitched: [] }),
     [BATCH]: () => json(dayBatchResult({ issued: 3 })),
     ...routes,
   });
@@ -238,10 +239,37 @@ describe('водитель на весь период', () => {
     const query = http.lastCall('GET /drivers/available')!.query;
     expect(query.get('vehicleId')).toBe('v-1');
     expect(query.get('on')).toBe('2026-08-10');
-    // The batch prints no trailer, so the selection is never measured against one.
+    // No trailer is hitched to this vehicle.
     expect(query.get('withTrailer')).toBeNull();
     // Default and choice agree, so there is nothing to warn about.
     expect(screen.queryByText(/Листы уйдут не на машиниста заявки/)).toBeNull();
+  });
+
+  it('shows the hitched semitrailer and uses it for the batch driver lookup', async () => {
+    const { http } = renderAssign({
+      routes: {
+        'GET /vehicle-routes/suggest': () =>
+          json({
+            routes: [],
+            trip: null,
+            hitched: [
+              {
+                id: 'trailer-1',
+                position: 2,
+                model: 'ШМИТЦ SPR-24',
+                registrationNumber: 'ВХ933277',
+                status: 'active',
+              },
+            ],
+          }),
+      },
+    });
+    await enableBatch();
+    expect(await screen.findByText('Закреплённые прицепы попадут в новые рейсы')).toBeDefined();
+    await waitFor(() =>
+      expect(http.lastCall('GET /drivers/available')?.query.get('withTrailer')).toBe('true'),
+    );
+    expect(document.body.textContent).toContain('ШМИТЦ SPR-24 ВХ933277');
   });
 
   it('машиниста нет в отборе — поле пусто, и окно объясняет почему', async () => {

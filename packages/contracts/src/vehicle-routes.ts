@@ -429,6 +429,30 @@ export interface HitchedTrailerDto {
   status: VehicleStatus;
 }
 
+/** The registry's current hitch fills the paper's slots in order, even if only slot 2 is occupied. */
+export function hitchedTrailerGraphs(
+  hitched:
+    | readonly Pick<HitchedTrailerDto, 'position' | 'model' | 'registrationNumber'>[]
+    | null
+    | undefined,
+): {
+  withTrailer: boolean;
+  trailer1Model: string;
+  trailer1RegNumber: string;
+  trailer2Model: string;
+  trailer2RegNumber: string;
+} | null {
+  const slots = [...(hitched ?? [])].sort((a, b) => a.position - b.position);
+  if (slots.length === 0) return null;
+  return {
+    withTrailer: true,
+    trailer1Model: slots[0]?.model ?? '',
+    trailer1RegNumber: slots[0]?.registrationNumber ?? '',
+    trailer2Model: slots[1]?.model ?? '',
+    trailer2RegNumber: slots[1]?.registrationNumber ?? '',
+  };
+}
+
 /**
  * Ответ `GET /vehicle-routes/suggest`: что портал знает об этой машине на этот день.
  *

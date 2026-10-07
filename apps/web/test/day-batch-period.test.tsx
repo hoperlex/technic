@@ -131,6 +131,7 @@ function routesFor(result: VehicleRequestDayBatchResultDto, days = DAYS): RouteM
     'GET /vehicle-requests/:id/assignment-changes': ({ params }) =>
       json(params.id === REQUEST.id ? HISTORY : assignmentHistory({ changes: [], people: [] })),
     'GET /drivers/available': () => json(SELECTION),
+    'GET /vehicle-routes/suggest': () => json({ routes: [], trip: null, hitched: [] }),
     [BATCH]: () => json(result),
   };
 }
