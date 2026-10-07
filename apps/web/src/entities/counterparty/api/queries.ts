@@ -8,11 +8,11 @@ import { counterpartyKeys } from './keys';
  */
 export const counterpartyOperatorGridQuery = () =>
   queryOptions({
-    queryKey: counterpartyKeys.operatorGridOptions(),
+    queryKey: counterpartyKeys.operatorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
         page: 1,
-        pageSize: 200,
+        pageSize: 500,
         sortBy: 'name',
         sortOrder: 'asc',
         type: 'operator',
@@ -36,4 +36,44 @@ export const counterpartyActiveVehicleLessorsQuery = () =>
         sortBy: 'name',
         sortOrder: 'asc',
       }),
+  });
+
+/** An inactive service company cannot be assigned a new request. */
+export const serviceCompanyOptionsQuery = () =>
+  queryOptions({
+    queryKey: counterpartyKeys.serviceOptions(),
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        type: 'service',
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+    select: (r) => r.items.map((c) => ({ value: c.id, label: c.name })),
+  });
+
+/**
+ * A mechanization lessor must have its own type. A company that also leases vehicles needs a
+ * second counterparty record because the server assigns one type per record.
+ */
+export const mechLessorOptionsQuery = () =>
+  queryOptions({
+    queryKey: counterpartyKeys.mechLessorOptions(),
+    queryFn: () =>
+      counterpartiesApi
+        .list({
+          page: 1,
+          pageSize: 500,
+          type: 'mech_lessor',
+          isActive: 'true',
+          sortBy: 'name',
+          sortOrder: 'asc',
+        })
+        .then((r) => r.items),
+    select: (items) =>
+      items
+        .map((c) => ({ value: c.id, label: c.name, name: c.name }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'ru')),
   });

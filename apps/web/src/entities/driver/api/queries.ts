@@ -2,22 +2,10 @@ import { queryOptions } from '@tanstack/react-query';
 import { driversApi } from './driversApi';
 import { driverKeys } from './keys';
 
-/**
- * Список выбора машиниста: справочник целиком, одним запросом на три окна — назначения, ремонта и
- * смены машиниста (ADR 0055, ADR 0190). Ключ и параметры у них совпадали до буквы и лежали тремя
- * копиями: разойдись одна копия на страницу или сортировку — и окна показали бы разный состав,
- * оставаясь при этом в одной ячейке кэша.
- *
- * Готовых `enabled` и `select` здесь нет: открыто ли окно и спрашивается ли машинист вообще, знает
- * только потребитель, а карточки водителей — персональные данные (ADR 0037), и просить их закрытым
- * окном незачем.
- *
- * Графа сортировки называется `sortOrder`, а не `sortDir`, и промах здесь ничем не заметен:
- * `baseListQuery` неизвестную графу отбрасывает молча, оставляя умолчание `desc`, — так три окна
- * и показывали машинистов обратным алфавиту, пока перенос не свёл их запросы в одно место.
- */
-export const machinistOptionsQuery = () =>
+/** The same 500-row directory serves filters and machinist pickers. */
+export const driverOptionsQuery = () =>
   queryOptions({
-    queryKey: driverKeys.machinistOptions(),
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
+    queryKey: driverKeys.options(),
+    queryFn: () =>
+      driversApi.list({ page: 1, pageSize: 500, sortBy: 'fullName', sortOrder: 'asc' }),
   });

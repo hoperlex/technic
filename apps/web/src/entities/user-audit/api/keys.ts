@@ -3,14 +3,9 @@ import { createQueryKeys, type Query } from '@shared/api';
 /**
  * Ключи запросов журнала изменений учётных записей (ADR 0109).
  *
- * Два запроса, и разводить их обязательно: лента отбирается фильтрами подвкладки и живёт
- * страницами, а путь одной учётки читается целиком и от фильтров не зависит вовсе. Общий ключ
- * означал бы, что открытая панель пути перерисовывается всякий раз, когда в ленте меняют отбор.
- *
- * Корень у обоих один — правка учётки на соседней подвкладке обязана обновлять и ленту, и путь:
- * сбрасывают их одним `userAuditKeys.root`.
+ * Audit entries use this root. The current account card at the end of a path uses
+ * `userAccountKeys.detail`, so account writes invalidate it with the rest of the account data.
  */
 export const userAuditKeys = createQueryKeys('audit', {
   list: (params: Query) => ['list', params],
-  path: (userId: string) => ['path', userId],
 });

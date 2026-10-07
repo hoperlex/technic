@@ -93,15 +93,3 @@ export const vehicleRouteKeys = createQueryKeys('vehicle-routes', {
    */
   correctionPreview: (routeId: string | undefined) => [routeId, 'correction'],
 });
-
-/**
- * Типы техники, по которым окно рейса узнаёт седельный тягач, — под корнем **справочника типов**,
- * а не рейсов.
- *
- * Это не оплошность разметки, а тот же приём, каким разведён `trailerHitchTargetsKey` у прицепов:
- * список приезжает из `vehicle-types` и устаревает от правок справочника типов, а гасит их
- * `['vehicle-types']`, до корня рейсов не достающий. Под своим корнем срез пришлось бы гасить
- * руками из чужого модуля — и забытым он оказался бы ровно тогда, когда тип завели вчера, а
- * галочка «с прицепом» у машин этого типа не встаёт.
- */
-export const vehicleTypesForTrailerKey = ['vehicle-types', 'trailer-autocheck'] as const;

@@ -55,7 +55,7 @@ export interface AccessUsers {
 
 export function useAccessUsers(): AccessUsers {
   const { data, isFetching } = useQuery({
-    queryKey: userAccountKeys.accessOverview(),
+    queryKey: userAccountKeys.options(),
     queryFn: () =>
       usersApi.list({
         page: 1,

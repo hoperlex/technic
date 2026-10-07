@@ -82,20 +82,8 @@ export const driverKeys = createQueryKeys('drivers', {
     withTrailer: boolean;
   }) => ['available', q.vehicleId, q.on, q.withTrailer],
   /**
-   * Список выбора машиниста в окнах назначения, ремонта и смены машиниста — обычный справочник
-   * целиком: в бланке ЭСМ-2 нет ни СНИЛСа, ни удостоверения, и отбирать по ним некого (ADR 0055).
-   *
-   * Имя сегмента историческое: за ним стоит `GET /drivers`, а не `GET /drivers/machinists`.
-   * Переименовать его переносом нельзя — сменится ячейка кэша у трёх окон сразу.
-   */
-  machinistOptions: () => ['machinists'],
-  /**
    * Кого предложить машинистом листа ЭСМ-2 на эти периоды — `GET /drivers/machinists`: отбор
    * отвечает пересечением, и у недели на стыке месяцев периодов два (ADR 0164).
-   *
-   * Префикс `['drivers', 'machinists']` этот ключ делит с `machinistOptions`, хотя ручки у них
-   * разные: гасить по префиксу нельзя — снесёт чужой запрос. Сегодня так никто и не гасит,
-   * справочник сбрасывают корнем целиком, но развести имена — та же смена ячеек кэша.
    *
    * Периоды приходят уже строкой: ровно её собирает экран сегодня. Собирать её здесь значит
    * завести второе место, где живёт формат `from..to`; первое — в самой ручке, и разойдясь на
@@ -105,15 +93,9 @@ export const driverKeys = createQueryKeys('drivers', {
 });
 
 /**
- * Категории вида документа (ADR 0095) — под собственным корнем, а не под `['drivers']`.
- *
- * Это не оплошность разметки, а тот же приём, каким разведён `vehicleTypesForTrailerKey` у рейсов:
- * справочник наполнен миграцией и только на чтение, экран берёт его один раз на вид и держит до
- * перезагрузки страницы. Под корнем водителей его сбрасывала бы каждая правка карточки — портал
- * перезапрашивал бы неизменяемый словарь ради данных, к которым тот не относится.
- *
- * Вид документа в ключе обязателен: «C» водительского и «C» тракториста — разные машины, и общий
- * ключ подсунул бы одному из двух мест экрана чужие буквы.
+ * Licence categories use their own root. Migrations define this immutable dictionary, so editing
+ * a driver must not refetch it. The document type remains part of the key because identical
+ * category letters can refer to different licences (ADR 0095).
  */
 export const licenseCategoryKeys = createQueryKeys('license-categories', {
   byType: (type: CredentialTypeCode) => [type],

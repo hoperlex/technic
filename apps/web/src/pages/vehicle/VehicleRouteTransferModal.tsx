@@ -58,7 +58,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
    * до выбора техники.
    */
   const { data: prefill, isFetching } = useQuery({
-    queryKey: routePrefillKeys.byKind(request?.id),
+    queryKey: routePrefillKeys.onTripDate(request?.id ?? null, undefined),
     queryFn: () => vehicleRequestsApi.routePrefill(request!.id),
     enabled: !!request,
   });

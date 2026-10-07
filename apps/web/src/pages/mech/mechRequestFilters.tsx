@@ -1,7 +1,7 @@
+import { mechLessorOptionsQuery } from '@entities/counterparty';
 import { useQuery } from '@tanstack/react-query';
 import { CLOSED_REQUEST_STATUSES, REQUEST_STATUSES, requestStatusLabels } from '@technic/contracts';
 import { mechModelOptionsQuery } from '@entities/mech-model';
-import { mechLessorOptionsQuery } from '@entities/mech-request';
 import { objectOptionsQuery } from '@entities/object';
 import { useRequestCustomerOptions } from '@features/request-customer';
 import type { FilterDefinition } from '@shared/ui';

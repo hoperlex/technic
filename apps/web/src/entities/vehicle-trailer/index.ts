@@ -3,7 +3,7 @@
  * `@entities/vehicle-trailer` — внутренние модули слайса не видны.
  */
 export { vehicleTrailersApi } from './api/vehicleTrailersApi';
-export { trailerHitchTargetsKey, trailerKeys } from './api/keys';
+export { trailerKeys } from './api/keys';
 export { trailerPickerQuery, trailerSlotsQuery } from './api/queries';
 /** Слова портала о снятых привязках — общие для всех дверей, которые их снимают (§4.2.3). */
 export { unhitchedNotice } from './model/notices';

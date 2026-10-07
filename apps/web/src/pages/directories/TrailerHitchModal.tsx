@@ -7,14 +7,9 @@ import {
   vehicleOptionLabel,
   type VehicleTrailerDto,
 } from '@technic/contracts';
-import {
-  trailerHitchTargetsKey,
-  trailerKeys,
-  trailerSlotsQuery,
-  vehicleTrailersApi,
-} from '@entities/vehicle-trailer';
+import { trailerKeys, trailerSlotsQuery, vehicleTrailersApi } from '@entities/vehicle-trailer';
 import { AutoSelect, FormModal } from '@shared/ui';
-import { vehiclesApi } from '@entities/vehicle';
+import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
 import { vehicleTrailerErrorMessage as errorMessage } from '@entities/vehicle-trailer';
 import { hitchedVehicleLabel } from './trailerGrid';
 
@@ -52,7 +47,7 @@ export function TrailerHitchModal({
   // Машины для окна привязки — только пока окно открыто: список парка нужен одному этому окну, а
   // вкладку открывают ради самих прицепов.
   const { data: vehiclesData, isLoading: vehiclesLoading } = useQuery({
-    queryKey: trailerHitchTargetsKey,
+    queryKey: vehicleKeys.ownForCorrection(),
     queryFn: () =>
       vehiclesApi.list({
         page: 1,

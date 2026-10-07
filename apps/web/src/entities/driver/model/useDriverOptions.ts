@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { driversApi } from '../api/driversApi';
-import { driverKeys } from '../api/keys';
+import { driverOptionsQuery } from '../api/queries';
 
 /**
  * Active drivers in alphabetical order for list filters.
@@ -12,9 +11,7 @@ import { driverKeys } from '../api/keys';
  */
 export function useDriverOptions(enabled = true) {
   const { data, isFetching } = useQuery({
-    queryKey: driverKeys.options(),
-    queryFn: () =>
-      driversApi.list({ page: 1, pageSize: 500, sortBy: 'fullName', sortOrder: 'asc' }),
+    ...driverOptionsQuery(),
     enabled,
   });
 

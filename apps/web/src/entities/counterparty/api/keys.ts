@@ -1,29 +1,9 @@
 import { createQueryKeys, type Query } from '@shared/api';
 
 /**
- * Ключи запросов контрагентов.
- *
- * Ключ описывает **запрос**, а не сущность, и у контрагентов это видно резче, чем где бы то ни
- * было: запись одна на все роли (ADR 0010, ADR 0038), а спрашивают её девятью разными вопросами —
- * операторы вывоза, арендодатели, поставщики, справочник целиком. Ответы у них несовместимы, и
- * слить два таких ключа значит показать в одном из мест не тот состав: где выбирают исполнителя
- * новой заявки, появился бы снятый с учёта, — а заметить это можно только глазами.
- *
- * **Две пары разводит ровно признак действия**, и это не педантизм. `activeOperatorOptions` и
- * `activeVehicleLessorOptions` — списки выбора: предложить в них того, с кем уже не работают,
- * значит пообещать невыполнимое. `operatorOptions` и `vehicleLessorOptions` — привязки и фильтры
- * журналов, то есть разговор о прошлом: снятый с учёта оператор там обязан называться, иначе
- * заведённая привязка останется в форме без наименования, а журнал — без строки, по которой его
- * открыли.
- *
- * Семейства сидят под общим корнем `['counterparties']` намеренно: вкладка справочника гасит
- * корень целиком после любой правки карточки, и выборки, собранные из тех же карточек, обязаны
- * уходить вместе с ним.
- *
- * Формы ключей повторяют то, что экраны собирали литералами, до сегмента — включая имена
- * сегментов, которые с именем семейства не совпадают, и форму, которая выглядит случайной; экраны
- * теперь зовут эти семейства. Где так, это сказано прямо, а не исправлено молча: сегмент — это
- * ячейка кэша, и правка кэша видна человеку на экране, поэтому делается отдельной, а не попутной.
+ * A counterparty has one record and one type, but different readers need different subsets.
+ * Active options serve new assignments; historical filters include inactive records. All families
+ * share this root so a counterparty edit invalidates service, mechanization and waste selections.
  */
 export const counterpartyKeys = createQueryKeys('counterparties', {
   /**
@@ -70,22 +50,8 @@ export const counterpartyKeys = createQueryKeys('counterparties', {
    * работают, в этом списке — приглашение к ошибке.
    */
   activeOperatorOptions: () => ['operators-for-select'],
-  /**
-   * Все операторы вывоза, вместе с недействующими, — привязка операторов к площадке (ADR 0010).
-   *
-   * Недействующих не убираем: привязка описывает сотрудничество с площадкой, а не готовность взять
-   * заявку прямо сейчас, — иначе уже заведённая привязка осталась бы в форме без наименования.
-   */
+  /** All operators, including inactive ones, remain available for historical links and tariffs. */
   operatorOptions: () => ['operators-for-objects'],
-  /**
-   * Тот же состав операторов — колонки сводного прайса вывоза и выбор в его форме.
-   *
-   * **Это дубль `operatorOptions` по существу**: вопрос дословно тот же, отличается только предел
-   * страницы — 200 против 500, под стать самому прайсу, который грузится одной страницей. Две
-   * ячейки вместо одной означают второй поход за тем же списком; слить их можно, но это смена
-   * ячейки кэша, видимая только глазами на экране, — поэтому отдельной правкой, а не попутной.
-   */
-  operatorGridOptions: () => ['operators'],
   /**
    * Поставщики — фильтр складов и выбор в их форме.
    *
@@ -93,6 +59,10 @@ export const counterpartyKeys = createQueryKeys('counterparties', {
    * в форме привязка осталась бы без наименования.
    */
   supplierOptions: () => ['suppliers'],
+  /** Active service companies for assignment and service filters. */
+  serviceOptions: () => ['service-options'],
+  /** Only mechanization lessors can take a mechanization request. */
+  mechLessorOptions: () => ['mech-lessor-options'],
   /** Действующие арендодатели ТС — выбор арендодателя в карточке машины. */
   activeVehicleLessorOptions: () => ['vehicle-lessors'],
   /**

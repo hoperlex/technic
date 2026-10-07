@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useMemo, useRef } from 'react';
 import { Form } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { DEFAULT_COMMUNICATION_KIND, type VehicleRequestDto } from '@technic/contracts';
-import { driverKeys, driversApi } from '@entities/driver';
+import { driverKeys, driverOptionsQuery, driversApi } from '@entities/driver';
 import { routePrefillKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import {
   inheritedTrailerGraphs,
@@ -170,8 +170,7 @@ export function useAssignmentRouteCrew({
     isLinear,
   });
   const { data: machinists, isFetching: machinistsLoading } = useQuery({
-    queryKey: driverKeys.machinistOptions(),
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
+    ...driverOptionsQuery(),
     enabled: machinistMode.needsMachinist,
   });
   const machinistOptions = (machinists?.items ?? []).map(machinistOption);

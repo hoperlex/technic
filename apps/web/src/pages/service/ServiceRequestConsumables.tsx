@@ -41,7 +41,7 @@ const consumableOptionsQuery = (modelId: string | undefined) => {
     sortOrder: 'asc',
   } as const;
   return queryOptions({
-    queryKey: officeEquipmentConsumableKeys.list(params),
+    queryKey: officeEquipmentConsumableKeys.picker({ activeOnly: true, modelId }),
     queryFn: () => officeEquipmentConsumablesApi.list(params),
     select: (r) =>
       r.items.map((item) => ({

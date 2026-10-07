@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
-import { driverKeys, driversApi } from '@entities/driver';
+import { driverOptionsQuery } from '@entities/driver';
 
 /**
  * Справочные данные окна «Сменить машиниста»: история заявки, список выбора и имя человека по
@@ -26,8 +26,7 @@ export function useMachinistDirectory(targetId: string | null, open: boolean) {
    * снятые карточки он прячет — предложить удалённого человека нельзя (ADR 0190).
    */
   const machinists = useQuery({
-    queryKey: driverKeys.machinistOptions(),
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
+    ...driverOptionsQuery(),
     enabled: open,
   });
 

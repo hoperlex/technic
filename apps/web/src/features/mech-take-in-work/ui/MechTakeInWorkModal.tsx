@@ -1,3 +1,4 @@
+import { mechLessorOptionsQuery } from '@entities/counterparty';
 import { useEffect } from 'react';
 import { Alert, App, DatePicker, Form, InputNumber, Select } from 'antd';
 import type { Dayjs } from 'dayjs';
@@ -13,7 +14,6 @@ import {
 } from '@technic/contracts';
 import {
   mechFailureText,
-  mechLessorOptionsQuery,
   MechRequestContext,
   mechRequestKeys,
   mechRequestsApi,

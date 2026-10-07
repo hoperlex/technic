@@ -5,7 +5,7 @@
  */
 export { driversApi } from './api/driversApi';
 export { driverKeys, licenseCategoryKeys } from './api/keys';
-export { machinistOptionsQuery } from './api/queries';
+export { driverOptionsQuery } from './api/queries';
 export { driverErrorMessage } from './model/errorMessage';
 export { useDriverOptions } from './model/useDriverOptions';
 export { useLicenseCategoryOptions } from './model/useLicenseCategoryOptions';

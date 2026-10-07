@@ -336,7 +336,7 @@ export const officeEquipmentModelPickerQuery = () =>
  */
 export const officeEquipmentConsumablePickerQuery = () =>
   queryOptions({
-    queryKey: officeEquipmentConsumableKeys.list({ picker: 'usage' }),
+    queryKey: officeEquipmentConsumableKeys.picker({ activeOnly: false }),
     queryFn: () =>
       officeEquipmentConsumablesApi.list({
         page: 1,
@@ -365,7 +365,7 @@ export const officeEquipmentConsumablePickerQuery = () =>
  */
 export const officeEquipmentActiveConsumablesQuery = () =>
   queryOptions({
-    queryKey: officeEquipmentConsumableKeys.list({ picker: 'purchase' }),
+    queryKey: officeEquipmentConsumableKeys.picker({ activeOnly: true }),
     queryFn: () =>
       officeEquipmentConsumablesApi.list({
         page: 1,

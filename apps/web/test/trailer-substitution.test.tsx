@@ -16,7 +16,8 @@ import { createTestQueryClient, renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { selectOption, typeDate } from './antd';
 import { list } from './factories/common';
-import { vehicleRouteKeys, vehicleTypesForTrailerKey } from '@entities/vehicle-route';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
+import { vehicleTypeKeys } from '@entities/vehicle-type';
 import {
   VehicleRouteCorrectionModal,
   VehicleRouteEditModal,
@@ -199,7 +200,7 @@ function renderEdit(route: VehicleRouteDto, hitched: HitchedTrailerDto[]) {
     trip: null,
     hitched,
   });
-  queryClient.setQueryData(vehicleTypesForTrailerKey, VEHICLE_TYPES);
+  queryClient.setQueryData(vehicleTypeKeys.full(), VEHICLE_TYPES);
   renderWithUser(<VehicleRouteEditModal route={route} onClose={() => {}} onSaved={() => {}} />, {
     user: authUser({ role: 'dispatcher' }),
     queryClient,
@@ -285,7 +286,7 @@ describe('правка рейса: закрепление доходит до п
       trip: null,
       hitched: [KRONE],
     });
-    queryClient.setQueryData(vehicleTypesForTrailerKey, VEHICLE_TYPES);
+    queryClient.setQueryData(vehicleTypeKeys.full(), VEHICLE_TYPES);
     renderWithUser(<Harness />, { user: authUser({ role: 'dispatcher' }), queryClient });
 
     await screen.findByText('Дата рейса');
@@ -675,7 +676,7 @@ describe('перевод в работу: справочник типов не �
 
     // Справочник ожил — подстановка не повторяется, снятая галочка остаётся снятой.
     typesFail = false;
-    await queryClient.invalidateQueries({ queryKey: vehicleTypesForTrailerKey });
+    await queryClient.invalidateQueries({ queryKey: vehicleTypeKeys.full() });
     await waitFor(() => expect(http.countOf('GET /vehicle-types')).toBeGreaterThan(1));
     await waitFor(() => expect(checkbox('Рейс с прицепом').checked).toBe(false));
   });
@@ -794,7 +795,7 @@ describe('перевод в работу: снятую галочку не во�
     await waitFor(() => expect(checkbox('Рейс с прицепом').checked).toBe(false));
 
     typesFail = false;
-    await queryClient.invalidateQueries({ queryKey: vehicleTypesForTrailerKey });
+    await queryClient.invalidateQueries({ queryKey: vehicleTypeKeys.full() });
     await waitFor(() => expect(http.countOf('GET /vehicle-types')).toBeGreaterThan(1));
     await waitFor(() => expect(checkbox('Рейс с прицепом').checked).toBe(false));
   });

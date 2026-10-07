@@ -9,7 +9,7 @@ import {
 } from '@technic/contracts';
 import { ViewFields, type ViewField } from '@shared/ui';
 import { formatDateTime, useIsMobile } from '@shared/lib';
-import { usersApi } from '@entities/user-account';
+import { userAccountKeys, usersApi } from '@entities/user-account';
 import { auditApi, userAuditKeys } from '@entities/user-audit';
 import { AuditEventCell } from './UserAuditChanges';
 
@@ -129,7 +129,7 @@ export function UserAuditPathDrawer({ target, onClose }: Props) {
   const open = userId !== null;
 
   const { data: card, isFetching: cardLoading } = useQuery({
-    queryKey: userAuditKeys.path(userId ?? 'none'),
+    queryKey: userAccountKeys.detail(userId ?? 'none'),
     queryFn: () => usersApi.get(userId!),
     enabled: open,
   });

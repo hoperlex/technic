@@ -88,8 +88,16 @@ export function CreateRouteModal({ open, onCancel, onCreated }: Props) {
 
   // Routes run only on own vehicles: for a rented one the lessor issues the waybill.
   const { data: vehicles, isFetching } = useQuery({
-    queryKey: vehicleKeys.forRoutes(),
-    queryFn: () => vehiclesApi.list({ ownership: 'own', status: 'active', page: 1, pageSize: 500 }),
+    queryKey: vehicleKeys.ownActiveOptions(),
+    queryFn: () =>
+      vehiclesApi.list({
+        ownership: 'own',
+        status: 'active',
+        page: 1,
+        pageSize: 500,
+        sortBy: 'registrationNumber',
+        sortOrder: 'asc',
+      }),
     enabled: open,
   });
   // The chosen unit: its form decides whether the trailer is asked, its type whether the checkbox

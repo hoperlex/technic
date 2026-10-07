@@ -3,15 +3,14 @@
  * работ, оператор вывоза, арендодатель, поставщик, сервисная компания (ADR 0010, 0038). Снаружи
  * берут `@entities/counterparty` — внутренние модули слайса не видны, и перестроить его можно, не
  * трогая потребителей.
- *
- * Перечни контрагентов для полей выбора в заявках обслуживания и механизации берутся не отсюда, и
- * это не пропуск: причина записана один раз, в `entities/service-request/api/queries.ts`.
  */
 export { counterpartiesApi } from './api/counterpartiesApi';
 export { counterpartyKeys } from './api/keys';
 export {
   counterpartyActiveVehicleLessorsQuery,
   counterpartyOperatorGridQuery,
+  serviceCompanyOptionsQuery,
+  mechLessorOptionsQuery,
 } from './api/queries';
 export { counterpartyTypeOptions } from './model/options';
 export { counterpartyErrorMessage } from './model/errorMessage';

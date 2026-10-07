@@ -54,7 +54,7 @@ export function OfficeEquipmentTypesModal({ open, onClose }: Props) {
   const qc = useQueryClient();
 
   const { data, isFetching } = useQuery({
-    queryKey: officeEquipmentTypeKeys.list(LIST_PARAMS),
+    queryKey: officeEquipmentTypeKeys.options(),
     queryFn: () => officeEquipmentTypesApi.list(LIST_PARAMS),
     // Перечень нужен только пока окно открыто: ради кнопки в шапке вкладки его не запрашивают.
     enabled: open,

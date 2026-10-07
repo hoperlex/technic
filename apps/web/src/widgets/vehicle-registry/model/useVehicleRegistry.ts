@@ -25,13 +25,14 @@ export function useVehicleRegistry() {
 
   // Registry filtering is by the whole type: “all cranes”, not one classified category.
   const { data: typesData } = useQuery({
-    queryKey: vehicleTypeKeys.forSelect(),
+    queryKey: vehicleTypeKeys.full(),
     queryFn: () =>
-      vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
+      vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
   });
   const typeOptions = (typesData?.items ?? [])
     .filter((type) => type.isActive)
-    .map((type) => ({ value: type.id, label: type.name }));
+    .map((type) => ({ value: type.id, label: type.name }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
 
   // Lessors are pure counterparty records; they have no portal accounts of their own.
   const { data: lessorsData, isLoading: lessorsLoading } = useQuery(

@@ -14,7 +14,7 @@
  * with the whole route without a single type from there. The issued waybill is fetched at its own
  * address — that is what keeps the boundary intact.
  */
-export { vehicleRouteKeys, vehicleTypesForTrailerKey } from './api/keys';
+export { vehicleRouteKeys } from './api/keys';
 export { vehicleRoutesApi } from './api/vehicleRoutesApi';
 export { vehicleRouteErrorMessage } from './model/errorMessage';
 export {

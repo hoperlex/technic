@@ -30,11 +30,12 @@ export const deviceMailKeys = createQueryKeys('device-mail', {
     value,
   ],
   /**
-   * Реестр ключей — своим семейством ПОД ТЕМ ЖЕ КОРНЕМ, что и очередь. Корень общий потому, что
-   * работа одна: заведённый ключ решает письма очереди, а разобранное письмо пополняет реестр.
-   * Разведи их по корням — и привязка из очереди оставила бы реестр со вчерашним ответом.
+   * The equipment card reads a single page; the registry accumulates cursor pages. They need
+   * distinct cache entries because an infinite response has a different shape. Both stay under
+   * this root so binding a message invalidates the card and registry together.
    */
   identities: (params: Record<string, unknown>) => ['identities', params],
+  identitiesInfinite: (params: Record<string, unknown>) => ['identities-infinite', params],
   /** Сколько писем подберёт ключ, которого ещё нет: живёт ровно до подтверждения. */
   identityTargets: (kind: string, value: string) => ['identity-targets', kind, value],
   /** Правила разбора: один набор, без курсора и без параметров. */

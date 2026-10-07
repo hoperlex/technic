@@ -48,7 +48,7 @@ export function DeviceIdentityRegistry({ toolbar }: { toolbar?: ReactNode }) {
   };
 
   const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
-    queryKey: deviceMailKeys.identities(params),
+    queryKey: deviceMailKeys.identitiesInfinite(params),
     queryFn: ({ pageParam }) =>
       deviceIdentityApi.list(pageParam ? { ...params, cursor: pageParam } : params),
     initialPageParam: '',

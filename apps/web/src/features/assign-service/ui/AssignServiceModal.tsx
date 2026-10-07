@@ -1,3 +1,4 @@
+import { serviceCompanyOptionsQuery } from '@entities/counterparty';
 import { useEffect, useMemo } from 'react';
 import { Alert, App, Form, Input, Select, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -7,7 +8,6 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import {
-  serviceCompanyOptionsQuery,
   serviceExecutorCandidatesQuery,
   ServiceRequestContext,
   serviceRequestKeys,

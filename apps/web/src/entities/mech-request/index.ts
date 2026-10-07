@@ -11,8 +11,7 @@
  * можно, не трогая потребителей.
  */
 export { mechRequestsApi } from './api/mechRequestsApi';
-export { mechLessorKeys, mechRequestKeys } from './api/keys';
-export { mechLessorOptionsQuery } from './api/queries';
+export { mechRequestKeys } from './api/keys';
 export {
   isDepartmentRequester,
   mechDayLabel,

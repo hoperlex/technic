@@ -77,18 +77,10 @@ export const officeEquipmentKeys = createQueryKeys('office-equipment', {
 });
 
 /**
- * Ключи перечня типов оргтехники.
- *
- * Свой корень, а не семейство внутри `office-equipment`: у типов своя ручка и своя жизнь — их
- * ведут в окне из вкладки (Р34), а список единиц при этом не устаревает. Общий корень означал бы,
- * что правка названия типа гасит и страницу справочника, и наоборот — каждая заведённая единица
- * перезапрашивала бы перечень.
- *
- * Семейства те же два: список окна (с неактивными — их там и включают обратно) и перечень для
- * выпадающих списков вкладки.
+ * The type modal and form selectors share one complete list. Disabled types stay present so an
+ * existing equipment card retains its label while the selector marks the type unavailable.
  */
 export const officeEquipmentTypeKeys = createQueryKeys('office-equipment-types', {
-  list: (params: Query) => ['list', params],
   options: () => ['options'],
 });
 
@@ -133,13 +125,16 @@ export const officeEquipmentModelKeys = createQueryKeys('office-equipment-models
  * остаток (Р15), то есть держит чужие данные у себя в ответе. Гасит тот, кто пишет; здесь только
  * ключи.
  *
- * Семейства три. Список окна: поиск, модель, наличие, активность, порядок и страница приходят в
- * параметрах. Карточка по идентификатору — остаток и счётчик парка, перечитанные после правки
- * события (в строке списка они могли устареть, пока окно было открыто). И лента журнала остатка
- * своим семейством.
+ * The registry list follows its page and filters. Pickers use a separate family so a full
+ * active set cannot be overwritten by a filtered registry page. The detail and stock history
+ * remain independent responses.
  */
 export const officeEquipmentConsumableKeys = createQueryKeys('office-equipment-consumables', {
   list: (params: Query) => ['list', params],
+  picker: ({ activeOnly, modelId }: { activeOnly: boolean; modelId?: string }) => [
+    'picker',
+    { activeOnly, modelId: modelId ?? null },
+  ],
   detail: (id: string) => ['detail', id],
   /**
    * Журнал остатка позиции страницами (план `docs/office-equipment-consumables-and-purchase-plan.md`,

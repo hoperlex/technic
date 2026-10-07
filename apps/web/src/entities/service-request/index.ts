@@ -9,8 +9,8 @@
  * ни раздел, ни окна действий.
  */
 export { serviceRequestsApi } from './api/serviceRequestsApi';
-export { serviceCompanyKeys, serviceExecutorKeys, serviceRequestKeys } from './api/keys';
-export { serviceCompanyOptionsQuery, serviceExecutorCandidatesQuery } from './api/queries';
+export { serviceExecutorKeys, serviceRequestKeys } from './api/keys';
+export { serviceExecutorCandidatesQuery } from './api/queries';
 export {
   serviceStatusLine,
   type ServiceStatusLine,

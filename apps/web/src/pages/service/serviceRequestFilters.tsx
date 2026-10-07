@@ -1,10 +1,10 @@
+import { serviceCompanyOptionsQuery } from '@entities/counterparty';
 import { useQuery } from '@tanstack/react-query';
 import {
   SERVICE_REQUEST_STATUSES,
   serviceRequestStatusLabels,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import { serviceCompanyOptionsQuery } from '@entities/service-request';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';

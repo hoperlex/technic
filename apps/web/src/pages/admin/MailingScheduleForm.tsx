@@ -24,7 +24,7 @@ import {
   mailingTypeLabels,
   type MailingScheduleDto,
 } from '@technic/contracts';
-import { driverKeys, driversApi } from '@entities/driver';
+import { driverOptionsQuery } from '@entities/driver';
 import { mailingsApi } from '@entities/mailing';
 import { FormModal } from '@shared/ui';
 import { MailingAudienceFields } from './MailingAudienceFields';
@@ -131,9 +131,7 @@ export function MailingScheduleForm({ open, editing, onClose, onSaved }: Props) 
   // Сторожит здесь `enabled`, а не отдельный ключ: имя ключа решает, где лежит ответ, а не пойдёт
   // ли запрос, — и своим ключом форма добивалась лишь второго похода за тем же списком.
   const driversQuery = useQuery({
-    queryKey: driverKeys.options(),
-    queryFn: () =>
-      driversApi.list({ page: 1, pageSize: 500, sortBy: 'fullName', sortOrder: 'asc' }),
+    ...driverOptionsQuery(),
     enabled: open && watchType === 'driver_routes',
   });
   const driverOptions = withMissing(

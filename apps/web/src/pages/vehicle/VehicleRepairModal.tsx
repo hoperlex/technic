@@ -15,7 +15,7 @@ import { isApiError } from '@shared/api';
 import { garageKeys } from '@entities/garage';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { waybillKeys, WarnedSheetsConfirm } from '@entities/waybill';
-import { driverKeys, driversApi } from '@entities/driver';
+import { driverOptionsQuery } from '@entities/driver';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { recheckReasonOf, warnedSheetsOf } from '@features/vehicle-assignment';
 import { MachinistAnchorFields } from './MachinistFields';
@@ -134,8 +134,7 @@ export function VehicleRepairModal({ request, onCancel, onRepaired }: Props) {
   });
 
   const machinists = useQuery({
-    queryKey: driverKeys.machinistOptions(),
-    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortOrder: 'asc' }),
+    ...driverOptionsQuery(),
     enabled: open,
   });
   const driverName = (personId: string) =>
