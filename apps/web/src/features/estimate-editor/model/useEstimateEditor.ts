@@ -146,10 +146,10 @@ export function useEstimateEditor({
     fill: (r, reason) => {
       const initial = rowsFromItems(r.items);
       /*
-       * РАСКЛАДКА ОТКРЫВАЕТСЯ ПО ГРАФАМ ВСЕГДА, и это вся её суть: «Ведение» нажало «Разложить по
-       * графам» именно затем, чтобы развернуть свободную запись, — а свободная запись как раз и
-       * проходит `fitsFreeMode`, то есть без этой ветки окно открылось бы двумя полями, из которых
-       * раскладывать нечего.
+       * THE BREAKDOWN ALWAYS OPENS BY COLUMNS, and that is its whole point: the coordinator pressed
+       * "Break down by columns" precisely to unfold a one-line entry — and a one-line entry is
+       * exactly what passes `fitsFreeMode`, so without this branch the window would open as two
+       * fields with nothing to break down.
        */
       const startMode = breakdown ? 'rows' : initialEstimateMode(initial);
       const startRows = startMode === 'free' ? toFreeRows(initial) : initial;

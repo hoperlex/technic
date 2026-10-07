@@ -184,9 +184,9 @@ export function EquipmentMoveModal({
     version: (e: OfficeEquipmentDto) =>
       JSON.stringify([shownPlace(e), declared?.objectId ?? null, declared?.number ?? null]),
     values: (e: OfficeEquipmentDto) => ({
-      // Целевым предлагается ЗАЯВЛЕННЫЙ объект, если заявление есть и не разобрано: разбирать его
-      // и есть то, ради чего окно открыли. Человек волен выбрать третий — аппарат нередко
-      // находится там, где не ждал никто (находка Н6).
+      // The DECLARED object is offered as the target when there is an unresolved declaration:
+      // resolving it is why the window was opened. The person may pick a third one — the unit is
+      // often found where nobody expected it (finding N6).
       objectId: declared?.objectId ?? e.object.id,
       departmentId: e.department?.id ?? null,
       location: e.location,
