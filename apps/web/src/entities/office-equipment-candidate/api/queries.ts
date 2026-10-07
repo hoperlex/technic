@@ -3,20 +3,9 @@ import { officeEquipmentCandidatesApi } from './officeEquipmentCandidatesApi';
 import { officeEquipmentCandidateKeys } from './keys';
 
 /**
- * Сколько сообщений ждёт проверки — счётчик в подписи подвкладки (§9).
- *
- * СРОКА ПРОВЕРКИ У МОДУЛЯ НЕТ ВОВСЕ (В3), и счётчик — единственное, чем очередь о себе заявляет:
- * ни таблицы сроков, ни фоновой рассылки о залежавшихся кандидатах не заводится. Поэтому число
- * стоит прямо в переключателе, а не внутри вкладки: увидеть его обязан и тот, кто пришёл смотреть
- * парк и заходить в очередь не собирался.
- *
- * Страница из одной записи, а не отдельная ручка счёта: `total` списка отвечает на тот же вопрос, а
- * своя ручка `GET /…/pending-count` была бы вторым способом посчитать одно и то же — и разошлась бы
- * с отбором очереди на первом же изменении видимости (Р9).
- *
- * Ключ — обычный ключ семейства списка, и это не совпадение: решение по кандидату гасит корень
- * целиком, и счётчик обновляется тем же гашением, что и сама очередь. Отдельное семейство пришлось
- * бы гасить вторым вызовом, и забытый вызов оставил бы в подписи вчерашнее число.
+ * The pending badge uses the list total from a one-row page, so it follows exactly the same
+ * visibility rule as the review queue. Candidate decisions invalidate the list root and refresh
+ * both views together; a separate count endpoint or key could leave the badge stale.
  */
 const PENDING_COUNT_PARAMS = {
   page: 1,
@@ -26,9 +15,19 @@ const PENDING_COUNT_PARAMS = {
   sortOrder: 'asc',
 } as const;
 
-export const officeEquipmentCandidatePendingCountQuery = () =>
+export const officeEquipmentCandidatePendingCountQuery = () => {
+  const base = officeEquipmentCandidateListQuery(PENDING_COUNT_PARAMS);
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
+    select: (r: Awaited<ReturnType<typeof officeEquipmentCandidatesApi.list>>) => r.total,
+  };
+};
+
+export const officeEquipmentCandidateListQuery = (
+  params: Parameters<typeof officeEquipmentCandidatesApi.list>[0],
+) =>
   queryOptions({
-    queryKey: officeEquipmentCandidateKeys.list(PENDING_COUNT_PARAMS),
-    queryFn: () => officeEquipmentCandidatesApi.list(PENDING_COUNT_PARAMS),
-    select: (r) => r.total,
+    queryKey: officeEquipmentCandidateKeys.list(params),
+    queryFn: () => officeEquipmentCandidatesApi.list(params),
   });

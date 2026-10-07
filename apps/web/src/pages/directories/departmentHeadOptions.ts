@@ -5,8 +5,7 @@ import {
   type DepartmentHeadRefDto,
   type UserAccountDto,
 } from '@technic/contracts';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
-import { userAccountKeys, usersApi } from '@entities/user-account';
+import { departmentHeadCandidatesQuery } from '@entities/user-account';
 
 /**
  * Кандидаты в руководители отдела — для карточки справочника (§11.1 плана реструктуризации прав,
@@ -57,17 +56,7 @@ export function useDepartmentHeadOptions(current: DepartmentHeadRefDto[]): {
   loading: boolean;
 } {
   const queries = useQueries({
-    queries: DEPARTMENT_SCOPED_ROLES.map((role) => ({
-      queryKey: userAccountKeys.departmentHeadCandidates(role),
-      queryFn: () =>
-        usersApi.list({
-          page: 1,
-          pageSize: DICTIONARY_PAGE_SIZE,
-          role,
-          sortBy: 'fullName',
-          sortOrder: 'asc',
-        }),
-    })),
+    queries: DEPARTMENT_SCOPED_ROLES.map((role) => departmentHeadCandidatesQuery(role)),
   });
 
   const options = queries

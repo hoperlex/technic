@@ -8,7 +8,7 @@ import {
   type VehicleStatus,
   type VehicleTrailerDto,
 } from '@technic/contracts';
-import { trailerKeys, vehicleTrailersApi } from '@entities/vehicle-trailer';
+import { trailerKeys, vehicleTrailersApi, trailerListQuery } from '@entities/vehicle-trailer';
 import { DataTable, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import type { FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
@@ -51,8 +51,7 @@ export function TrailersTab() {
   }>({}, { searchKeys: [] });
 
   const { data, isFetching } = useQuery({
-    queryKey: trailerKeys.list(params),
-    queryFn: () => vehicleTrailersApi.list(params),
+    ...trailerListQuery(params),
   });
 
   const [open, setOpen] = useState(false);

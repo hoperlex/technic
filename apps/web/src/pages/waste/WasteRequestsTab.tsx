@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { actsForCounterparty } from '@technic/contracts';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { counterpartyActiveOperatorOptionsQuery } from '@entities/counterparty';
 import { containerTypeOptionsQuery } from '@entities/container-type';
-import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
+import { objectFilterOptionLabel, objectRecordsQuery } from '@entities/object';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { wasteTypeOptionsQuery } from '@entities/waste-type';
 import { WasteOperatorAssignmentModal } from '@features/waste-operator-assignment';
@@ -39,15 +39,7 @@ export function WasteRequestsTab() {
   // isLoading is passed to editor fields as well: a required field with a single option fills
   // itself, and it must not do so from a list that has not finished loading.
   const { data: objects, isLoading: objectsLoading } = useQuery({
-    queryKey: objectKeys.options({ activeOnly: true }),
-    queryFn: () =>
-      objectsApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...objectRecordsQuery(true),
   });
   // One directory read split by kind below: the request needs both containers and trucks, and a
   // second request for the same answer would only delay the first screen.
@@ -62,16 +54,7 @@ export function WasteRequestsTab() {
   // Operators are counterparties of the operator type (ADR 0010). An operator never picks the
   // executor, so the list is requested only for those who may assign one.
   const { data: operators, isLoading: operatorsLoading } = useQuery({
-    queryKey: counterpartyKeys.activeOperatorOptions(),
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        type: 'operator',
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...counterpartyActiveOperatorOptionsQuery(),
     enabled: canAssignOperator,
   });
 

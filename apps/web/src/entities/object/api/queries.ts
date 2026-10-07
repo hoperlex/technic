@@ -25,18 +25,16 @@ export const objectOptionsQuery = ({ activeOnly = true }: { activeOnly?: boolean
   });
 
 /**
- * Объекты для выбора адреса (ADR 0069). Запрос тот же, что и у выпадающего списка объектов, — тот
- * же ключ, та же выборка, — и различается только сборка: здесь площадка называет себя адресом,
- * потому что ею отвечают на вопрос «куда ехать». Второго обращения к серверу это не стоит: кэш у
- * запроса общий, а `select` работает у каждого потребителя свой.
- *
- * Площадки без адреса отбрасываются: адрес объекта необязателен, а пустая строка в списке мест
- * ничего не называет и на запись всё равно не пройдёт.
+ * Address selection (ADR 0069) uses the same cached active-site response as the ordinary picker.
+ * Its observer includes the address in each label and omits sites with no address, since an empty
+ * address cannot answer where a vehicle should go.
  */
-export const objectAddressOptionsQuery = () =>
-  queryOptions({
-    ...objectOptionsQuery({ activeOnly: true }),
-    select: (r) =>
+export const objectAddressOptionsQuery = () => {
+  const base = objectOptionsQuery({ activeOnly: true });
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
+    select: (r: Awaited<ReturnType<typeof objectsApi.list>>) =>
       r.items
         .filter((o) => !!o.address.trim())
         .map((o) => ({
@@ -44,4 +42,15 @@ export const objectAddressOptionsQuery = () =>
           address: o.address,
           label: `${o.code} — ${o.name} — ${o.address}`,
         })),
-  });
+  };
+};
+
+/** Raw records serve filters that need fields beyond the standard option label. */
+export const objectRecordsQuery = (activeOnly: boolean) => {
+  const base = objectOptionsQuery({ activeOnly });
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
+    select: (r: Awaited<ReturnType<typeof objectsApi.list>>) => r,
+  };
+};

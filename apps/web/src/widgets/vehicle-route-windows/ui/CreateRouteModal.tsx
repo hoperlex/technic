@@ -13,7 +13,7 @@ import {
 } from '@technic/contracts';
 import { driverKeys, driversApi } from '@entities/driver';
 import { useAuth } from '@entities/session';
-import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { ownActiveVehicleOptionsQuery } from '@entities/vehicle';
 import {
   trailerTripBody,
   vehicleRouteErrorMessage as errorMessage,
@@ -88,16 +88,7 @@ export function CreateRouteModal({ open, onCancel, onCreated }: Props) {
 
   // Routes run only on own vehicles: for a rented one the lessor issues the waybill.
   const { data: vehicles, isFetching } = useQuery({
-    queryKey: vehicleKeys.ownActiveOptions(),
-    queryFn: () =>
-      vehiclesApi.list({
-        ownership: 'own',
-        status: 'active',
-        page: 1,
-        pageSize: 500,
-        sortBy: 'registrationNumber',
-        sortOrder: 'asc',
-      }),
+    ...ownActiveVehicleOptionsQuery(),
     enabled: open,
   });
   // The chosen unit: its form decides whether the trailer is asked, its type whether the checkbox

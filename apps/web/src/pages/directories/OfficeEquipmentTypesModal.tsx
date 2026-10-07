@@ -16,12 +16,12 @@ import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateOfficeEquipmentTypeInput, OfficeEquipmentTypeDto } from '@technic/contracts';
 import { FormModal, useFormBlockers } from '@shared/ui';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import {
   officeEquipmentKeys,
   officeEquipmentModelKeys,
   officeEquipmentTypeKeys,
   officeEquipmentTypesApi,
+  officeEquipmentTypeRecordsQuery,
 } from '@entities/office-equipment';
 import { officeEquipmentErrorMessage as errorMessage } from '@entities/office-equipment';
 
@@ -36,14 +36,6 @@ import { officeEquipmentErrorMessage as errorMessage } from '@entities/office-eq
  * меньше активных — их тут как раз и включают обратно.
  */
 
-/** Перечень целиком: порядок задан руками, алфавит поставил бы «Прочее» посреди списка. */
-const LIST_PARAMS = {
-  page: 1,
-  pageSize: DICTIONARY_PAGE_SIZE,
-  sortBy: 'sortOrder',
-  sortOrder: 'asc' as const,
-};
-
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -54,8 +46,7 @@ export function OfficeEquipmentTypesModal({ open, onClose }: Props) {
   const qc = useQueryClient();
 
   const { data, isFetching } = useQuery({
-    queryKey: officeEquipmentTypeKeys.options(),
-    queryFn: () => officeEquipmentTypesApi.list(LIST_PARAMS),
+    ...officeEquipmentTypeRecordsQuery(),
     // Перечень нужен только пока окно открыто: ради кнопки в шапке вкладки его не запрашивают.
     enabled: open,
   });

@@ -11,10 +11,10 @@ import {
 } from '@technic/contracts';
 import {
   apiViolationTexts,
-  grantFormApi,
   grantKeys,
   GRANT_ROLES,
   permissionLabel,
+  grantFormCatalogQuery,
 } from '@entities/grant';
 import { isApiError } from '@shared/api';
 import { GrantProfileField } from './GrantProfileField';
@@ -74,8 +74,7 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
   const roleBefore = record?.role ?? null;
 
   const catalogQuery = useQuery({
-    queryKey: grantKeys.formCatalog(role ?? NO_CATALOG_ROLE),
-    queryFn: () => grantFormApi.catalog(role ?? NO_CATALOG_ROLE),
+    ...grantFormCatalogQuery(role ?? NO_CATALOG_ROLE),
     enabled: open && shown,
     /*
      * The catalog is refetched on every window open: its versions go into the body (R7), and a

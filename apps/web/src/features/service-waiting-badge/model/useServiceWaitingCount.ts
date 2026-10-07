@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { isWaitingOn, SERVICE_WAITING_ON } from '@technic/contracts';
-import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import { serviceWaitingCountQuery } from '@entities/service-request';
 import { useAuth } from '@entities/session';
 
 /**
@@ -34,8 +34,7 @@ export function useServiceWaitingCount(): number {
      */
     can('serviceRequests.execute');
   const { data } = useQuery({
-    queryKey: serviceRequestKeys.waitingCount(),
-    queryFn: () => serviceRequestsApi.waitingCount(),
+    ...serviceWaitingCountQuery(),
     enabled: inServiceLoop,
     staleTime: 60_000,
   });

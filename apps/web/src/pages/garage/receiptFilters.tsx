@@ -3,8 +3,7 @@ import { Checkbox, DatePicker, Input, Select, Space } from 'antd';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import { vehicleOptionLabel } from '@technic/contracts';
-import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { ownVehicleOptionsQuery } from '@entities/vehicle';
 import { FilterReset, type FilterDefinition } from '@shared/ui';
 import { usePruneMissingFilters } from '@shared/lib';
 
@@ -73,14 +72,7 @@ export function useReceiptFilters({
     isFetching: vehiclesLoading,
     isSuccess: vehiclesReady,
   } = useQuery({
-    queryKey: vehicleKeys.ownOptions(),
-    queryFn: () =>
-      vehiclesApi.list({
-        page: 1,
-        pageSize: DICTIONARY_PAGE_SIZE,
-        ownership: 'own',
-        sortBy: 'createdAt',
-      }),
+    ...ownVehicleOptionsQuery(),
   });
   // Порядок — по подписи, а не по заведению в справочнике: машину ищут глазами по госномеру.
   const vehicleOptions = (vehicles?.items ?? [])

@@ -9,7 +9,7 @@ import {
 } from '@technic/contracts';
 import { trailerKeys, trailerSlotsQuery, vehicleTrailersApi } from '@entities/vehicle-trailer';
 import { AutoSelect, FormModal } from '@shared/ui';
-import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { ownVehicleCorrectionQuery } from '@entities/vehicle';
 import { vehicleTrailerErrorMessage as errorMessage } from '@entities/vehicle-trailer';
 import { hitchedVehicleLabel } from './trailerGrid';
 
@@ -47,15 +47,7 @@ export function TrailerHitchModal({
   // Машины для окна привязки — только пока окно открыто: список парка нужен одному этому окну, а
   // вкладку открывают ради самих прицепов.
   const { data: vehiclesData, isLoading: vehiclesLoading } = useQuery({
-    queryKey: vehicleKeys.ownForCorrection(),
-    queryFn: () =>
-      vehiclesApi.list({
-        page: 1,
-        pageSize: 500,
-        ownership: 'own',
-        sortBy: 'registrationNumber',
-        sortOrder: 'asc',
-      }),
+    ...ownVehicleCorrectionQuery(),
     enabled: !!trailer,
   });
 

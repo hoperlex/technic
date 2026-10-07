@@ -14,6 +14,7 @@
  * чужая ручка учёток.
  */
 export { grantKeys } from './api/keys';
+export { grantFormCatalogQuery } from './api/queries';
 export { grantFormApi, grantsApi, userGrantsApi } from './api/grantsApi';
 export type { GrantCatalog } from './api/grantsApi';
 export { grantErrorMessage } from './model/errorMessage';

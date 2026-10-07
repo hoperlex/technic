@@ -20,6 +20,14 @@
  */
 export { vehicleModelsApi, vehiclesApi } from './api/vehiclesApi';
 export { vehicleKeys, vehicleModelKeys } from './api/keys';
+export {
+  allVehicleOptionsQuery,
+  ownVehicleOptionsQuery,
+  ownActiveVehicleOptionsQuery,
+  ownVehicleCorrectionQuery,
+  fuelNormVehiclePickerQuery,
+  vehicleModelsForSelectQuery,
+} from './api/queries';
 export { vehicleErrorMessage } from './model/errorMessage';
 export { rentalVehicleStatusOptions, vehicleStatusOptions } from './model/options';
 export { useOwnVehicleOptions } from './model/useOwnVehicleOptions';

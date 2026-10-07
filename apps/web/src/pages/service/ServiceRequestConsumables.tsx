@@ -1,18 +1,16 @@
 import { useEffect, useState } from 'react';
 import { App, Button, Checkbox, Col, Form, InputNumber, Row, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
-import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestConsumableDto, ServiceRequestDto } from '@technic/contracts';
 import {
-  officeEquipmentConsumableKeys,
-  officeEquipmentConsumablesApi,
+  officeEquipmentConsumablesForModelQuery,
   officeEquipmentKeys,
   officeEquipmentOptionsQuery,
 } from '@entities/office-equipment';
 import { consumableLabel, serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { useAuth } from '@entities/session';
 import { AutoSelect, FormModal } from '@shared/ui';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 
 /** Строка формы: позиция справочника и сколько её просят. Пустая строка — только что добавленная. */
@@ -20,39 +18,6 @@ export interface ConsumableLineValue {
   consumableId?: string;
   requestedQuantity?: number;
 }
-
-/**
- * Позиции, подходящие аппарату. Отбор по **модели**, а не по карточке единицы: картридж подходит
- * модели целиком — «Тонер Ricoh 201» годится и 68 нынешним Ricoh Aficio MP 201SPF, и 69-му,
- * который приедет завтра (Р1 плана расходников). Ради этого справочник моделей и заводился.
- *
- * Погашенные позиции не предлагаются: гашение означает «больше не выдаём» (Р11 плана расходников).
- * Перечень небольшой и приходит целиком — поиск идёт на клиенте, как у прочих справочных полей.
- */
-const consumableOptionsQuery = (modelId: string | undefined) => {
-  const params = {
-    page: 1,
-    pageSize: DICTIONARY_PAGE_SIZE,
-    modelId,
-    isActive: 'true',
-    // Алфавит явно: умолчание списочной схемы — «последняя заведённая сверху», то есть случайный
-    // порядок в выпадающем списке.
-    sortBy: 'name',
-    sortOrder: 'asc',
-  } as const;
-  return queryOptions({
-    queryKey: officeEquipmentConsumableKeys.picker({ activeOnly: true, modelId }),
-    queryFn: () => officeEquipmentConsumablesApi.list(params),
-    select: (r) =>
-      r.items.map((item) => ({
-        value: item.id,
-        // Цвет — свойство позиции (Р9), а не поле формы: у цветной серии по позиции на цвет, со
-        // своим кодом и своим остатком, и в списке выбора они так и выглядят. Остаток стоит
-        // рядом — заказывая четыре тонера, человек должен видеть, что на складе их два.
-        label: `${consumableLabel(item)} · на складе ${item.quantity}`,
-      })),
-  });
-};
 
 /**
  * Строки номенклатуры заявки на расходники (Н9, Н10) — **окна исполнителя**, а не формы заведения.
@@ -88,8 +53,14 @@ export function ServiceRequestConsumablesField({
   const [showAll, setShowAll] = useState(false);
 
   const { data: options = [], isFetching } = useQuery({
-    ...consumableOptionsQuery(showAll ? undefined : modelId),
+    ...officeEquipmentConsumablesForModelQuery(showAll ? undefined : modelId),
     enabled,
+    // A model applies to all units of that model; each color has its own stock position.
+    select: (r) =>
+      r.items.map((item) => ({
+        value: item.id,
+        label: `${consumableLabel(item)} · на складе ${item.quantity}`,
+      })),
   });
 
   const chosen = lines.map((line) => line?.consumableId).filter(Boolean);

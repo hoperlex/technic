@@ -10,6 +10,11 @@
  */
 export { userAccountKeys } from './api/keys';
 export { usersApi } from './api/usersApi';
+export {
+  userOptionsQuery,
+  pendingUsersCountQuery,
+  departmentHeadCandidatesQuery,
+} from './api/queries';
 export type {
   DriverPersonBody,
   PersonCandidateDto,

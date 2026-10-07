@@ -14,7 +14,7 @@ import {
   weekStartKey,
 } from '@technic/contracts';
 import { driverKeys, driversApi } from '@entities/driver';
-import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { ownActiveVehicleOptionsQuery } from '@entities/vehicle';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
@@ -149,16 +149,7 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
    * разойдясь, они разведут один вопрос по одной ячейке, и второе окно покажет ответ на первый.
    */
   const { data: fleet, isFetching: fleetLoading } = useQuery({
-    queryKey: vehicleKeys.ownActiveOptions(),
-    queryFn: () =>
-      vehiclesApi.list({
-        status: 'active',
-        ownership: 'own',
-        page: 1,
-        pageSize: 500,
-        sortBy: 'registrationNumber',
-        sortOrder: 'asc',
-      }),
+    ...ownActiveVehicleOptionsQuery(),
     enabled: !!request,
   });
 

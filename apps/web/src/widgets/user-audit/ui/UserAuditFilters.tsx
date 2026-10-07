@@ -9,13 +9,12 @@ import {
   roleLabels,
   USER_TARGET_AUDIT_ACTIONS,
 } from '@technic/contracts';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import type { FilterDefinition } from '@shared/ui';
 import { withSavedOption } from '@shared/lib';
-import { objectKeys, objectsApi } from '@entities/object';
+import { objectRecordsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
-import { userAccountKeys, usersApi } from '@entities/user-account';
+import { counterpartyOptionsQuery } from '@entities/counterparty';
+import { userOptionsQuery } from '@entities/user-account';
 
 /**
  * Change-log filters (ADR 0109): by the events themselves — period, action, administrator — and by
@@ -94,14 +93,7 @@ export function useUserAuditFilters({ params, apply, target, onTargetChange }: A
    * and a filter without them would answer "no entries" to the most frequent question.
    */
   const { data: people, isFetching: peopleLoading } = useQuery({
-    queryKey: userAccountKeys.options(),
-    queryFn: () =>
-      usersApi.list({
-        page: 1,
-        pageSize: DICTIONARY_PAGE_SIZE,
-        sortBy: 'fullName',
-        sortOrder: 'asc',
-      }),
+    ...userOptionsQuery(),
   });
   const personOptions = (people?.items ?? []).map((u) => ({ value: u.id, label: u.fullName }));
   // An archived account is not in the list of live ones, yet its history is asked most often — its
@@ -111,8 +103,7 @@ export function useUserAuditFilters({ params, apply, target, onTargetChange }: A
   // All sites are loaded, closed ones included: the log is about the past, and accounts of a closed
   // site are asked about exactly when reviewing where its people went.
   const { data: objects, isFetching: objectsLoading } = useQuery({
-    queryKey: objectKeys.options({ activeOnly: false }),
-    queryFn: () => objectsApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
+    ...objectRecordsQuery(false),
   });
   const objectOptions = (objects?.items ?? []).map((o) => ({
     value: o.id,
@@ -121,9 +112,7 @@ export function useUserAuditFilters({ params, apply, target, onTargetChange }: A
   const { data: departmentOptions, isFetching: departmentsLoading } =
     useQuery(departmentOptionsQuery());
   const { data: counterparties, isFetching: counterpartiesLoading } = useQuery({
-    queryKey: counterpartyKeys.options(),
-    queryFn: () =>
-      counterpartiesApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
+    ...counterpartyOptionsQuery(),
   });
   // Grouped by type, as in the account form: the counterparty type decides what the account does.
   const counterpartyGroups = COUNTERPARTY_TYPES_WITH_ACCOUNTS.map((type) => ({

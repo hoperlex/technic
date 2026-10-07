@@ -22,7 +22,7 @@ import {
   roleLabels,
   type PortalShellSectionId,
 } from '@technic/contracts';
-import { userAccountKeys, usersApi } from '@entities/user-account';
+import { pendingUsersCountQuery } from '@entities/user-account';
 import { useAuth } from '@entities/session';
 import { UtilityMenu, useUtilityMenu } from '@widgets/utility-menu';
 import { useServiceWaitingCount } from '@features/service-waiting-badge';
@@ -81,8 +81,7 @@ export function AppLayout() {
    * visible only to whoever happens to open the users tab (ADR 0034).
    */
   const { data: pendingUsers } = useQuery({
-    queryKey: userAccountKeys.pendingCount(),
-    queryFn: () => usersApi.pendingCount(),
+    ...pendingUsersCountQuery(),
     enabled: can('users.manage'),
     staleTime: 60_000,
   });

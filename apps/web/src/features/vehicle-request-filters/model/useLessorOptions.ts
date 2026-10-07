@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { counterpartyVehicleLessorOptionsQuery } from '@entities/counterparty';
 
 /**
  * Lessors for the journal filter: counterparties with the "vehicle lessor" role, which rental costs
@@ -8,15 +8,7 @@ import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
  */
 export function useLessorOptions() {
   const { data, isFetching } = useQuery({
-    queryKey: counterpartyKeys.vehicleLessorOptions(),
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        type: 'vehicle_lessor',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...counterpartyVehicleLessorOptionsQuery(),
   });
   return {
     options: (data?.items ?? []).map((counterparty) => ({

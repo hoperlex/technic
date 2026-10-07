@@ -27,49 +27,35 @@ export const departmentOptionsQuery = () =>
   });
 
 /**
- * Площадки отдела (ADR 0144) по его идентификатору. Запрос и ключ — те же, что у выпадающего
- * списка отделов, отличается только сборка: `id отдела → id объектов`.
- *
- * Нужен там, где заявку заводит отдел: объекта в такой заявке нет вовсе (ADR 0040), а предложить
- * адрес всё-таки есть чем — площадками отдела, если они у него заведены. Без этой карты форма
- * знала бы только идентификатор отдела, из которого адрес не выводится.
- *
- * Отдаётся весь набор, а не первая его площадка: гарантийный отдел ведёт несколько объектов
- * сразу, и «первая» среди них ничем не выделена — порядок задаёт код объекта, а не то, куда чаще
- * заказывают. Показав одну, подсказка молча обещала бы, что остальных у отдела нет.
- *
- * Отделы без площадок из карты не выбрасываются: пустой набор — рабочее состояние (ПТО и АХО), а
- * не пропуск, и отдельная ветка «ключа нет» отвечала бы на тот же вопрос, что и пустой список,
- * второй раз. Читателю в обоих случаях подмешивать нечего.
- *
- * Устаревшую проекцию `DepartmentDto.object` карта не читает намеренно: при наборе из нескольких
- * площадок сервер отдаёт там `null` (совместимость на один релиз), и подсказка исчезла бы ровно у
- * тех отделов, ради которых набор и заведён.
+ * A department request has no object of its own (ADR 0040), so address suggestions use every
+ * object linked to that department (ADR 0144). An empty set is meaningful. The legacy singular
+ * `DepartmentDto.object` is null for departments with several objects and would lose those sites.
+ * This observer projects the same cached department response as the standard options picker.
  */
-export const departmentPlatformQuery = () =>
-  queryOptions({
-    ...departmentOptionsQuery(),
-    select: (r) => new Map(r.items.map((d) => [d.id, d.objects.map((o) => o.id)] as const)),
-  });
+export const departmentPlatformQuery = () => {
+  const base = departmentOptionsQuery();
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
+    select: (r: Awaited<ReturnType<typeof departmentsApi.list>>) =>
+      new Map(r.items.map((d) => [d.id, d.objects.map((o) => o.id)] as const)),
+  };
+};
 
 /**
- * Отделы исходными полями — `code` и `name` врозь, без склейки в подпись.
- *
- * Второй наблюдатель того же запроса, а не второй запрос: ключ общий с выпадающим списком,
- * отличается только сборка, и react-query отдаёт обоим один ответ из кэша — лишнего похода на
- * сервер не возникает.
- *
- * Нужен подбору отдела по свободному тексту заявки на регистрацию (план «пожелание при
- * регистрации», §3.7): подбор сопоставляет структуры, а подпись `код — имя` из списка уже склеена,
- * и разбирать её обратно нельзя — название с тире разделилось бы не по тому тире. Тип записи
- * подбора здесь не импортируется намеренно: `entities` не видит `pages` (границы слоёв), и сходятся
- * они структурно — по именам полей.
+ * Registration matching needs separate code and name fields. Splitting the picker label would be
+ * ambiguous when a department name contains a dash. This observer shares the picker response;
+ * its structural output keeps the entity slice independent of the page that performs matching.
  */
-export const departmentRecordsQuery = () =>
-  queryOptions({
-    ...departmentOptionsQuery(),
-    select: (r) => r.items.map((d) => ({ id: d.id, code: d.code, name: d.name })),
-  });
+export const departmentRecordsQuery = () => {
+  const base = departmentOptionsQuery();
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
+    select: (r: Awaited<ReturnType<typeof departmentsApi.list>>) =>
+      r.items.map((d) => ({ id: d.id, code: d.code, name: d.name })),
+  };
+};
 
 /*
  * Запроса «какими отделами учётка руководит» здесь больше нет намеренно. Он читал признак с чужой

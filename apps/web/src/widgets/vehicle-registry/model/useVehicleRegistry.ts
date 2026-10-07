@@ -6,7 +6,7 @@ import {
   vehiclesApi,
   vehicleStatusOptions,
 } from '@entities/vehicle';
-import { vehicleTypeKeys, vehicleTypesApi } from '@entities/vehicle-type';
+import { vehicleTypesFullQuery } from '@entities/vehicle-type';
 import { useListParams } from '@shared/lib';
 import { useVehicleFilters, type VehicleFilterParams } from './VehicleFilters';
 
@@ -25,9 +25,7 @@ export function useVehicleRegistry() {
 
   // Registry filtering is by the whole type: “all cranes”, not one classified category.
   const { data: typesData } = useQuery({
-    queryKey: vehicleTypeKeys.full(),
-    queryFn: () =>
-      vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
+    ...vehicleTypesFullQuery(),
   });
   const typeOptions = (typesData?.items ?? [])
     .filter((type) => type.isActive)

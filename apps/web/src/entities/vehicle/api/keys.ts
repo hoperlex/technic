@@ -2,9 +2,9 @@ import { createQueryKeys, type Query } from '@shared/api';
 
 /**
  * Vehicle reads share the `vehicles` root so vehicle writes invalidate every fleet picker.
- * The fuel norm picker still declares its key in its own slice because entities cannot import
- * peer entities. The trailer hitch picker now uses `ownForCorrection`: both read the same own fleet
- * in registration order, including units no longer active.
+ * The fuel norm picker also lives here: it reads vehicle records and must be invalidated by
+ * vehicle edits. The trailer hitch picker uses `ownForCorrection`, which includes inactive units
+ * for historical corrections.
  */
 export const vehicleKeys = createQueryKeys('vehicles', {
   /**
@@ -43,6 +43,8 @@ export const vehicleKeys = createQueryKeys('vehicles', {
    * по набранным буквам, и разойтись им было нечем помешать.
    */
   ownOptions: () => ['own-options'],
+  /** Fuel norm forms offer active vehicles, regardless of ownership. */
+  fuelNormPicker: () => ['fuel-norm-picker'],
   /**
    * Заказанный вид целиком — первая из двух страниц окна назначения. Почему страниц две, сказано
    * у самих запросов (`widgets/vehicle-assignment-dialog`): в 500 строк парк не

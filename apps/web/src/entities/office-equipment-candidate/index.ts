@@ -13,7 +13,10 @@
  */
 export { officeEquipmentCandidatesApi } from './api/officeEquipmentCandidatesApi';
 export { officeEquipmentCandidateKeys } from './api/keys';
-export { officeEquipmentCandidatePendingCountQuery } from './api/queries';
+export {
+  officeEquipmentCandidatePendingCountQuery,
+  officeEquipmentCandidateListQuery,
+} from './api/queries';
 /**
  * Состояние непроверенного предмета в самой заявке. В слое сущности, а не у карточки заявки: тот же
  * ответ читают плашка предмета, замок приёмки в меню и подпись заявителю (Р16, §9).

@@ -9,6 +9,11 @@ export { counterpartyKeys } from './api/keys';
 export {
   counterpartyActiveVehicleLessorsQuery,
   counterpartyOperatorGridQuery,
+  counterpartyOptionsQuery,
+  counterpartyActiveOptionsQuery,
+  counterpartyActiveOperatorOptionsQuery,
+  counterpartySupplierOptionsQuery,
+  counterpartyVehicleLessorOptionsQuery,
   serviceCompanyOptionsQuery,
   mechLessorOptionsQuery,
 } from './api/queries';

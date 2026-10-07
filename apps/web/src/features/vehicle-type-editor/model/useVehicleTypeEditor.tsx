@@ -15,11 +15,10 @@ import {
 } from '@technic/contracts';
 import {
   vehicleClassificationKeys,
-  vehicleKindKeys,
-  vehicleKindsApi,
   vehicleTypeErrorMessage as errorMessage,
   vehicleTypeKeys,
   vehicleTypesApi,
+  vehicleKindsQuery,
 } from '@entities/vehicle-type';
 import { trailerKeys } from '@entities/vehicle-trailer';
 import { isApiError } from '@shared/api';
@@ -91,8 +90,7 @@ export function useVehicleTypeEditor(): VehicleTypeEditorController {
   const [form] = Form.useForm<VtFormValues>();
 
   const kindsQuery = useQuery({
-    queryKey: vehicleKindKeys.root,
-    queryFn: () => vehicleKindsApi.list({ pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
+    ...vehicleKindsQuery(),
   });
 
   const invalidateTypes = () => {

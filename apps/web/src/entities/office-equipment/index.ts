@@ -29,6 +29,8 @@ export {
 export {
   officeEquipmentActiveConsumablesQuery,
   officeEquipmentConsumablePickerQuery,
+  officeEquipmentConsumableFilterQuery,
+  officeEquipmentConsumablesForModelQuery,
   officeEquipmentModelOptionsQuery,
   officeEquipmentModelPickerQuery,
   officeEquipmentOptionsQuery,
@@ -43,6 +45,7 @@ export {
   officeEquipmentSelectorPickedQuery,
   officeEquipmentSpecsQuery,
   officeEquipmentTypeOptionsQuery,
+  officeEquipmentTypeRecordsQuery,
   type OfficeEquipmentOption,
   type OfficeEquipmentSelectorOption,
 } from './api/queries';

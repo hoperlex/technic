@@ -11,9 +11,9 @@ import {
 } from '@technic/contracts';
 import { AutoSelect, FormModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
-import { fuelNormKeys, fuelNormVehiclePickerKey, fuelNormsApi } from '@entities/fuel-norm';
+import { fuelNormKeys, fuelNormsApi } from '@entities/fuel-norm';
 import { vehicleReadingKeys } from '@entities/vehicle-reading';
-import { vehiclesApi } from '@entities/vehicle';
+import { fuelNormVehiclePickerQuery } from '@entities/vehicle';
 
 /**
  * A fuel-norm version: vehicle, effective date, two seasonal rates and a unit
@@ -70,8 +70,7 @@ export function FuelNormFormModal({ open, onCancel, onSaved, record, lockedVehic
   }, [open, record, lockedVehicleId, form]);
 
   const vehicles = useQuery({
-    queryKey: fuelNormVehiclePickerKey,
-    queryFn: () => vehiclesApi.list({ page: 1, pageSize: 500, status: 'active' }),
+    ...fuelNormVehiclePickerQuery(),
     enabled: open,
   });
 

@@ -7,11 +7,10 @@ import {
   type GrantDto,
   type GrantHolderDto,
 } from '@technic/contracts';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { ViewModal } from '@shared/ui';
 import { formatDateTime } from '@shared/lib';
 import { grantKeys, grantsApi, userGrantsApi } from '@entities/grant';
-import { userAccountKeys, usersApi } from '@entities/user-account';
+import { userAccountKeys, userOptionsQuery } from '@entities/user-account';
 import { grantErrorMessage as errorMessage } from '@entities/grant';
 import { GrantImpactConfirm } from './GrantImpactConfirm';
 import {
@@ -130,14 +129,7 @@ export function GrantHoldersModal({ open, grant, onClose }: Props) {
    * нужен полный перечень людей, и второй запрос за тем же ответом лишний.
    */
   const { data: users } = useQuery({
-    queryKey: userAccountKeys.options(),
-    queryFn: () =>
-      usersApi.list({
-        page: 1,
-        pageSize: DICTIONARY_PAGE_SIZE,
-        sortBy: 'fullName',
-        sortOrder: 'asc',
-      }),
+    ...userOptionsQuery(),
     enabled: open,
   });
 

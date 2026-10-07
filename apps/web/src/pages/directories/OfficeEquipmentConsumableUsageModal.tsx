@@ -21,7 +21,7 @@ import { Link } from 'react-router';
 import { SummaryBar, ViewModal } from '@shared/ui';
 import { errorMessage, formatDateTime, useIsMobile } from '@shared/lib';
 import {
-  officeEquipmentConsumablePickerQuery,
+  officeEquipmentConsumableFilterQuery,
   officeEquipmentConsumableKeys,
   officeEquipmentConsumablesApi,
 } from '@entities/office-equipment';
@@ -147,7 +147,7 @@ export function OfficeEquipmentConsumableUsageModal({
   });
 
   const { data: options = [], isFetching: optionsLoading } = useQuery({
-    ...officeEquipmentConsumablePickerQuery(),
+    ...officeEquipmentConsumableFilterQuery(),
     enabled: open,
   });
 

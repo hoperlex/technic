@@ -34,6 +34,12 @@ export {
   vehicleTypeKeys,
   vehicleTypeSpecKeys,
 } from './api/keys';
+export {
+  activeVehicleSpecsQuery,
+  vehicleClassificationsForSelectQuery,
+  vehicleKindsQuery,
+  vehicleTypesFullQuery,
+} from './api/queries';
 
 /*
  * Классификатор позиций и фильтр по нему. Ключ запросов хук брал у этого слайса ещё до переезда,

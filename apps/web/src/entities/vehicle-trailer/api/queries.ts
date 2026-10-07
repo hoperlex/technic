@@ -2,6 +2,12 @@ import { queryOptions } from '@tanstack/react-query';
 import { trailerKeys } from './keys';
 import { vehicleTrailersApi } from './vehicleTrailersApi';
 
+export const trailerListQuery = (params: Parameters<typeof vehicleTrailersApi.list>[0]) =>
+  queryOptions({
+    queryKey: trailerKeys.list(params),
+    queryFn: () => vehicleTrailersApi.list(params),
+  });
+
 /**
  * Состав машины: что стоит в её слотах. Спрашивают его двое — окно привязки (под выбранную там
  * машину) и карточка самой машины, — и вопрос у них дословно один, поэтому ключ и параметры общие:
@@ -42,23 +48,17 @@ const PICKER_PARAMS = {
 } as const;
 
 /**
- * Прицепы, из которых выбирают в форме рейса (план §13, Р17).
- *
- * Страница берётся целиком и одна: реестр — это десятки строк, а не тысячи, и поиск по нему идёт
- * набором на клиенте — тем же способом, каким ищет список выбора адреса (ADR 0069). Запрос на
- * портал при этом один: ключ общий, ответ кэшируется, и обе пары граф во всех пяти окнах делят
- * одну загрузку. Спрашивается лениво (`enabled` на стороне поля): список нужен тому, кто включил
- * галочку, а окно рейса открывается и без неё.
- *
- * Списанные отсеиваются здесь: предлагать в рейс то, чего в парке уже нет, портал не вправе, а
- * реестру такой прицеп по-прежнему нужен — история листов ссылается на него текстом (Р11). Графы,
- * в которых он уже стоит, список не трогает: они снимок (Р11), и списание задним числом их не
- * стирает — поле показывает такой прицеп вписанным.
+ * Route forms share one cached, registration-ordered trailer page. The server only supports an
+ * exact status filter, so this observer removes retired and deleted units locally while historical
+ * trailer slots keep their saved snapshot (R11). The picker is enabled by its caller when needed.
  */
-export const trailerPickerQuery = () =>
-  queryOptions({
-    queryKey: trailerKeys.list(PICKER_PARAMS),
-    queryFn: () => vehicleTrailersApi.list(PICKER_PARAMS),
+export const trailerPickerQuery = () => {
+  const base = trailerListQuery(PICKER_PARAMS);
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
     staleTime: 5 * 60 * 1000,
-    select: (page) => page.items.filter((t) => t.status !== 'retired' && !t.deletedAt),
-  });
+    select: (page: Awaited<ReturnType<typeof vehicleTrailersApi.list>>) =>
+      page.items.filter((t) => t.status !== 'retired' && !t.deletedAt),
+  };
+};

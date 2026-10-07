@@ -7,10 +7,10 @@ import {
   ROLES,
   roleLabels,
 } from '@technic/contracts';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
-import { objectKeys, objectsApi } from '@entities/object';
+import { counterpartyActiveOptionsQuery } from '@entities/counterparty';
+import { objectRecordsQuery } from '@entities/object';
 import { useAuth } from '@entities/session';
-import { userAccountKeys, usersApi } from '@entities/user-account';
+import { userAccountKeys, usersApi, pendingUsersCountQuery } from '@entities/user-account';
 import { useListParams } from '@shared/lib';
 
 interface RegistryFilters {
@@ -46,30 +46,13 @@ export function useUserAccountRegistry() {
   // Count of unreviewed registrations; the same number is drawn as a badge in the administration
   // menu.
   const { data: pending } = useQuery({
-    queryKey: userAccountKeys.pendingCount(),
-    queryFn: () => usersApi.pendingCount(),
+    ...pendingUsersCountQuery(),
   });
   const { data: objects, isLoading: objectsLoading } = useQuery({
-    queryKey: objectKeys.options({ activeOnly: true }),
-    queryFn: () =>
-      objectsApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...objectRecordsQuery(true),
   });
   const { data: executors, isLoading: executorsLoading } = useQuery({
-    queryKey: counterpartyKeys.activeOptions(),
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...counterpartyActiveOptionsQuery(),
   });
 
   const objectOptions = (objects?.items ?? []).map((object) => ({

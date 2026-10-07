@@ -1,3 +1,4 @@
+import { vehicleClassificationsForSelectQuery } from '../api/queries';
 import { useQuery } from '@tanstack/react-query';
 import {
   classificationFilterKey,
@@ -5,8 +6,6 @@ import {
   vehicleClassificationKey,
   type VehicleClassificationDto,
 } from '@technic/contracts';
-import { vehicleClassificationKeys } from '../api/keys';
-import { vehicleClassificationsApi } from '../api/vehicleTypesApi';
 
 // Классификатор ТС для списков выбора (ADR 0028): позиции — категории типа, а у типа без ТТХ
 // сам тип. Правило «общий тип при наличии категорий не выводится» держит сервер, клиент только
@@ -114,15 +113,7 @@ export function classificationFilterGroups(
  */
 export function useVehicleClassifications() {
   const { data, isFetching } = useQuery({
-    queryKey: vehicleClassificationKeys.forSelect(),
-    queryFn: () =>
-      vehicleClassificationsApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
+    ...vehicleClassificationsForSelectQuery(),
   });
   const items = data?.items ?? [];
 

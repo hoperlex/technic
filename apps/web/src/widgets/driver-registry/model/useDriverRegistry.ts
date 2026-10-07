@@ -6,7 +6,12 @@ import {
   driverDocumentSetLabels,
   requiredCredentialType,
 } from '@technic/contracts';
-import { driverKeys, driversApi, useLicenseCategoryOptions } from '@entities/driver';
+import {
+  driverKeys,
+  driversApi,
+  useLicenseCategoryOptions,
+  driverJobTitlesQuery,
+} from '@entities/driver';
 import { useListParams } from '@shared/lib';
 
 interface RegistryFilters {
@@ -38,8 +43,7 @@ export function useDriverRegistry() {
   // purpose — invalidating driverKeys.root after a new driver is saved refreshes these per-title
   // counters too; an own root would leave them stale after the first created driver.
   const { data: jobTitles } = useQuery({
-    queryKey: driverKeys.jobTitles(),
-    queryFn: () => driversApi.jobTitles(),
+    ...driverJobTitlesQuery(),
   });
 
   // The credential kind the registry asks about right now is named by the job-title filter. Without

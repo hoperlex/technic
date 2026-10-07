@@ -15,9 +15,8 @@ import { garageKeys } from '@entities/garage';
 import {
   vehicleErrorMessage as errorMessage,
   vehicleKeys,
-  vehicleModelKeys,
-  vehicleModelsApi,
   vehiclesApi,
+  vehicleModelsForSelectQuery,
 } from '@entities/vehicle';
 import {
   classificationKeyOf,
@@ -72,16 +71,7 @@ export function useVehicleEditor(): VehicleEditorController {
       : activeLessorOptions;
 
   const { data: modelsData } = useQuery({
-    queryKey: vehicleModelKeys.forSelect(watchTypeId),
-    queryFn: () =>
-      vehicleModelsApi.list({
-        page: 1,
-        pageSize: 500,
-        vehicleTypeId: watchTypeId,
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...vehicleModelsForSelectQuery(watchTypeId),
     enabled: !!watchTypeId && !isRental,
   });
   // An unseeded type legitimately has no model options; model selection is optional (ADR 0007).

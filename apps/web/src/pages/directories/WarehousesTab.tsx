@@ -3,7 +3,7 @@ import { App, Button, Form, Input, Select, Space, Switch, Tag } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type CreateWarehouseInput, formatPhone, type WarehouseDto } from '@technic/contracts';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { counterpartySupplierOptionsQuery } from '@entities/counterparty';
 import { PhoneField, PhoneLink } from '@entities/user-account';
 import { AddressField } from '@features/address-input';
 import { AutoSelect } from '@shared/ui';
@@ -49,15 +49,7 @@ export function WarehousesTab() {
   // Поставщики — и для фильтра, и для формы. Неактивных из списка не убираем: склад у них
   // заведён, и в форме привязка осталась бы без наименования — та же оговорка, что у объектов.
   const { data: suppliersData } = useQuery({
-    queryKey: counterpartyKeys.supplierOptions(),
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        type: 'supplier',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...counterpartySupplierOptionsQuery(),
   });
   const supplierOptions = (suppliersData?.items ?? []).map((c) => ({
     value: c.id,

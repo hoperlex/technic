@@ -7,7 +7,7 @@ import {
   counterpartyErrorMessage as errorMessage,
   counterpartyKeys,
 } from '@entities/counterparty';
-import { objectKeys, objectsApi } from '@entities/object';
+import { objectKeys, objectRecordsQuery } from '@entities/object';
 import { vehicleKeys } from '@entities/vehicle';
 import {
   CounterpartyEditorModal,
@@ -35,8 +35,7 @@ export function useCounterpartyEditor(): CounterpartyEditorController {
   // Inactive construction sites remain readable in an existing operator card; filtering them
   // would leave raw ids in the form while live waste requests still refer to those bindings.
   const { data: objectsData } = useQuery({
-    queryKey: objectKeys.options({ activeOnly: false }),
-    queryFn: () => objectsApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
+    ...objectRecordsQuery(false),
   });
   const objectOptions = (objectsData?.items ?? []).map((object) => ({
     value: object.id,

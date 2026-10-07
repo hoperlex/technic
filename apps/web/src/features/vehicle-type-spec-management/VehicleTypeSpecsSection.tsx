@@ -12,11 +12,11 @@ import {
   vehicleCategoryKeys,
   vehicleClassificationKeys,
   vehicleSpecKeys,
-  vehicleSpecsApi,
   vehicleTypeErrorMessage as errorMessage,
   vehicleTypeKeys,
   vehicleTypeSpecKeys,
   vehicleTypesApi,
+  activeVehicleSpecsQuery,
 } from '@entities/vehicle-type';
 import { useIsMobile } from '@shared/lib';
 import { AutoSelect, FormModal } from '@shared/ui';
@@ -49,14 +49,7 @@ export function VehicleTypeSpecsSection({ typeId, specs, categoriesCount, loadin
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm<AttachFormValues>();
   const availableQuery = useQuery({
-    queryKey: vehicleSpecKeys.active(),
-    queryFn: () =>
-      vehicleSpecsApi.list({
-        isActive: 'true',
-        pageSize: 500,
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
+    ...activeVehicleSpecsQuery(),
     enabled: !!typeId,
   });
 

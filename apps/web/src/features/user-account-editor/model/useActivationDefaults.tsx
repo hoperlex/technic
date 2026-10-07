@@ -11,7 +11,7 @@ import {
   type UserAccountDto,
 } from '@technic/contracts';
 import { departmentRecordsQuery } from '@entities/department';
-import { grantFormApi, grantKeys } from '@entities/grant';
+import { grantFormCatalogQuery } from '@entities/grant';
 import {
   matchReasonLabels,
   NO_SUGGESTION,
@@ -333,8 +333,7 @@ export function useActivationDefaults(params: Params): ActivationControl {
    */
   const catalogRole = applied.role ?? NO_CATALOG_ROLE;
   const catalog = useQuery({
-    queryKey: grantKeys.formCatalog(catalogRole),
-    queryFn: () => grantFormApi.catalog(catalogRole),
+    ...grantFormCatalogQuery(catalogRole),
     enabled: false,
   });
   const grantNames = (catalog.data?.items ?? [])

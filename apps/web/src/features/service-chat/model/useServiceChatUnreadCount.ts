@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import { serviceChatUnreadCountQuery } from '@entities/service-request';
 import { useAuth } from '@entities/session';
 
 /**
@@ -19,8 +19,7 @@ import { useAuth } from '@entities/session';
 export function useServiceChatUnreadCount(): number {
   const { can } = useAuth();
   const { data } = useQuery({
-    queryKey: serviceRequestKeys.chatUnreadCount(),
-    queryFn: () => serviceRequestsApi.chatUnreadCount(),
+    ...serviceChatUnreadCountQuery(),
     enabled: can('serviceRequests.read'),
     staleTime: 60_000,
   });

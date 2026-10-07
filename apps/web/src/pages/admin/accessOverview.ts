@@ -15,8 +15,7 @@ import {
   type UserAccountDto,
   type UserDto,
 } from '@technic/contracts';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
-import { userAccountKeys, usersApi } from '@entities/user-account';
+import { userOptionsQuery } from '@entities/user-account';
 
 /**
  * Общие данные и вычисления вкладки «Права» (`docs/permissions-tab-plan.md`).
@@ -55,14 +54,7 @@ export interface AccessUsers {
 
 export function useAccessUsers(): AccessUsers {
   const { data, isFetching } = useQuery({
-    queryKey: userAccountKeys.options(),
-    queryFn: () =>
-      usersApi.list({
-        page: 1,
-        pageSize: DICTIONARY_PAGE_SIZE,
-        sortBy: 'fullName',
-        sortOrder: 'asc',
-      }),
+    ...userOptionsQuery(),
   });
   const users = data?.items ?? [];
   const total = data?.total ?? 0;

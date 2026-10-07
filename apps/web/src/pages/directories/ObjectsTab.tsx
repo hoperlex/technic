@@ -3,7 +3,7 @@ import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from
 import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { counterpartyKeys, counterpartyOperatorGridQuery } from '@entities/counterparty';
 import { AddressField } from '@features/address-input';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -35,15 +35,7 @@ export function ObjectsTab() {
   // описывает сотрудничество с объектом, а не готовность взять заявку прямо сейчас, — иначе
   // уже заведённая привязка осталась бы в форме без наименования.
   const { data: operatorsData } = useQuery({
-    queryKey: counterpartyKeys.operatorOptions(),
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        type: 'operator',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...counterpartyOperatorGridQuery(),
   });
   const operatorOptions = (operatorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name }));
 

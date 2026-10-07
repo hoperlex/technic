@@ -4,10 +4,8 @@ import { DEFAULT_PAGE_SIZE } from '@technic/contracts';
 import {
   vehicleClassificationKeys,
   vehicleClassificationsApi,
-  vehicleKindKeys,
-  vehicleKindsApi,
-  vehicleTypeKeys,
-  vehicleTypesApi,
+  vehicleTypesFullQuery,
+  vehicleKindsQuery,
 } from '@entities/vehicle-type';
 import type { TableChange } from '@shared/ui';
 
@@ -47,13 +45,10 @@ export function useVehicleClassificationRegistry() {
   // while the form needs the whole type (code, kind, description, order). There are dozens of
   // types, so they are loaded at once.
   const typesQuery = useQuery({
-    queryKey: vehicleTypeKeys.full(),
-    queryFn: () =>
-      vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
+    ...vehicleTypesFullQuery(),
   });
   const kindsQuery = useQuery({
-    queryKey: vehicleKindKeys.root,
-    queryFn: () => vehicleKindsApi.list({ pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
+    ...vehicleKindsQuery(),
   });
 
   // Sorting is server-side; clearing it returns the directory to its own sort order.

@@ -7,9 +7,8 @@ import {
   type OfficeEquipmentCandidateDto,
 } from '@technic/contracts';
 import {
-  officeEquipmentCandidateKeys,
-  officeEquipmentCandidatesApi,
   subjectCheckTitle,
+  officeEquipmentCandidateListQuery,
 } from '@entities/office-equipment-candidate';
 import { statusAgeLabel } from '@entities/service-request';
 import { CandidateReviewModal } from '@features/candidate-review';
@@ -48,8 +47,7 @@ export function CandidatesTab({ toolbar }: { toolbar?: ReactNode }) {
   const query = { ...params, sortBy: 'createdAt', sortOrder: 'asc' as const };
 
   const { data, isFetching } = useQuery({
-    queryKey: officeEquipmentCandidateKeys.list(query),
-    queryFn: () => officeEquipmentCandidatesApi.list(query),
+    ...officeEquipmentCandidateListQuery(query),
   });
 
   const columns: TableColumnsType<OfficeEquipmentCandidateDto> = [

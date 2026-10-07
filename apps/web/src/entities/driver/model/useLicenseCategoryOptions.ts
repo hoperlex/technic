@@ -1,7 +1,6 @@
+import { licenseCategoriesQuery } from '../api/queries';
 import { useQuery } from '@tanstack/react-query';
 import type { CredentialTypeCode } from '@technic/contracts';
-import { driversApi } from '../api/driversApi';
-import { licenseCategoryKeys } from '../api/keys';
 
 /**
  * Category options are shared by the registry filter and both document forms. The credential type
@@ -9,8 +8,7 @@ import { licenseCategoryKeys } from '../api/keys';
  */
 export function useLicenseCategoryOptions(type: CredentialTypeCode) {
   const { data } = useQuery({
-    queryKey: licenseCategoryKeys.byType(type),
-    queryFn: () => driversApi.licenseCategories(type),
+    ...licenseCategoriesQuery(type),
     staleTime: Infinity,
   });
 

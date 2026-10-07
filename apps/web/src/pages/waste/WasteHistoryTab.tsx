@@ -14,7 +14,7 @@ import {
   requestTypeLabels,
   type WasteRequestDto,
 } from '@technic/contracts';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { counterpartyActiveOperatorOptionsQuery } from '@entities/counterparty';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable } from '@shared/ui';
@@ -24,7 +24,7 @@ import { SummaryBar } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { dayEnd, dayStart, formatMoney, useListParams, useOpenedRecord } from '@shared/lib';
 import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
-import { objectFilterOptionLabel, objectsApi, objectKeys } from '@entities/object';
+import { objectFilterOptionLabel, objectRecordsQuery } from '@entities/object';
 import { wasteHistoryCard, wasteHistoryColumns } from './wasteHistoryColumns';
 import { WasteRequestView } from '@widgets/waste-request-view';
 
@@ -95,15 +95,7 @@ export function WasteHistoryTab() {
   });
 
   const { data: objects } = useQuery({
-    queryKey: objectKeys.options({ activeOnly: true }),
-    queryFn: () =>
-      objectsApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...objectRecordsQuery(true),
   });
   // Площадка называется и адресом: журнал открывают вопросом «что вывезли с Ленина, 14», и по
   // адресу же ищут в поле — подпись у варианта одна, поиск идёт по ней.
@@ -112,16 +104,7 @@ export function WasteHistoryTab() {
   );
 
   const { data: operatorsData } = useQuery({
-    queryKey: counterpartyKeys.activeOperatorOptions(),
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        type: 'operator',
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...counterpartyActiveOperatorOptionsQuery(),
     enabled: !isOperator,
   });
   const operatorOptions = (operatorsData?.items ?? []).map((c) => ({

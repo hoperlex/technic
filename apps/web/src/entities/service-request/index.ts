@@ -11,6 +11,7 @@
 export { serviceRequestsApi } from './api/serviceRequestsApi';
 export { serviceExecutorKeys, serviceRequestKeys } from './api/keys';
 export { serviceExecutorCandidatesQuery } from './api/queries';
+export { serviceWaitingCountQuery, serviceChatUnreadCountQuery } from './api/queries';
 export {
   serviceStatusLine,
   type ServiceStatusLine,

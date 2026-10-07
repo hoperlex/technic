@@ -1,7 +1,6 @@
+import { ownVehicleOptionsQuery } from '../api/queries';
 import { useQuery } from '@tanstack/react-query';
 import { vehicleOptionLabel } from '@technic/contracts';
-import { vehicleKeys } from '../api/keys';
-import { vehiclesApi } from '../api/vehiclesApi';
 
 /**
  * The complete company-owned fleet for route and waybill history filters.
@@ -12,9 +11,7 @@ import { vehiclesApi } from '../api/vehiclesApi';
  */
 export function useOwnVehicleOptions() {
   const { data, isFetching } = useQuery({
-    queryKey: vehicleKeys.ownOptions(),
-    queryFn: () =>
-      vehiclesApi.list({ page: 1, pageSize: 500, ownership: 'own', sortBy: 'createdAt' }),
+    ...ownVehicleOptionsQuery(),
   });
 
   return {

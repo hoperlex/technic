@@ -290,90 +290,78 @@ export const officeEquipmentSpecsQuery = (equipmentTypeId: string | undefined) =
   });
 
 /**
- * Модели аппаратов **всех типов** — для привязки расходника «Подходит к» и для отбора «модель» в
- * окне картриджей (план `docs/office-equipment-consumables-plan.md`, Р6).
- *
- * Тип здесь не спрашивается, и это не упущение, а разница вопросов. В карточке техники тип задан
- * самой карточкой, и модель чужого типа маршрут отобьёт 422; расходник же подходит к аппаратам
- * разных типов сразу — один и тот же картридж живёт и в МФУ, и в принтере, — и сузить перечень
- * типом значило бы спрятать половину законных ответов.
- *
- * Отсюда и подпись с типом: одноимённые принтер и МФУ — разные модели (Р1), и в общем списке две
- * строки «Ricoh IM 350» без типа неразличимы.
- *
- * Ключ тот же, что у перечня по типу с пустым типом (`options(undefined)`): запрос это один и тот
- * же — «все действующие модели». Перечень по типу с пустым типом не уходит вовсе (`enabled`),
- * поэтому спорить за эту запись кэша некому.
- *
- * Только активные: погашенная модель означает «новых аппаратов такого рода не заводим» (Р11).
- * Уже привязанные к расходнику остаются видимыми — их добавляет к списку сама форма
- * (`withSavedOption`), иначе правка комментария снимала бы привязку к погашенной модели молча.
+ * A consumable can fit models of several equipment types, so its editor must offer all active
+ * models. Type names distinguish identically named models. The canonical model query normally
+ * waits for a type; this observer enables its all-types key and uses its own label projection.
+ * Existing inactive links are restored by the form through `withSavedOption`.
  */
-export const officeEquipmentModelPickerQuery = () =>
-  queryOptions({
-    queryKey: officeEquipmentModelKeys.options(undefined),
-    queryFn: () =>
-      officeEquipmentModelsApi.list({
-        page: 1,
-        pageSize: DICTIONARY_PAGE_SIZE,
-        isActive: 'true',
-        // Алфавит явно: умолчание `baseListQuery` — `desc`, и перечень пришёл бы задом наперёд.
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
-    select: (r) => r.items.map((m) => ({ value: m.id, label: `${m.name} · ${m.type.name}` })),
-  });
+export const officeEquipmentModelPickerQuery = () => {
+  const base = officeEquipmentModelOptionsQuery(undefined);
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
+    enabled: true,
+    select: (r: Awaited<ReturnType<typeof officeEquipmentModelsApi.list>>) =>
+      r.items.map((m) => ({ value: m.id, label: `${m.name} · ${m.type.name}` })),
+  };
+};
 
 /**
- * Позиции номенклатуры для отбора в отчёте по расходу (Р10, опрос В18).
- *
- * ПОГАШЕННЫЕ ВКЛЮЧЕНЫ — в отличие от перечня моделей. Отчёт смотрит в прошлое: позицию, которую
- * перестали покупать в июле, за июнь выдавали, и убрав её из отбора, портал сделал бы невозможным
- * ровно тот вопрос, ради которого в отчёт и заходят («куда делись те картриджи»).
- *
- * Подпись с кодом: по коду позицию ищут в счёте поставщика, а строк с похожими наименованиями в
- * справочнике много («Тонер Ricoh 201» и «Тонер Ricoh 201 увеличенный»).
+ * One request carrier serves the consumable picker family. Historical usage filters include
+ * inactive items; purchase and service forms ask for active items. A model narrows the service
+ * form, while the all-items toggle omits that filter. All variants retain the alphabetical order
+ * that the server's default list order would not provide.
  */
-export const officeEquipmentConsumablePickerQuery = () =>
+export const officeEquipmentConsumablePickerQuery = ({
+  activeOnly = false,
+  modelId,
+}: { activeOnly?: boolean; modelId?: string } = {}) =>
   queryOptions({
-    queryKey: officeEquipmentConsumableKeys.picker({ activeOnly: false }),
+    queryKey: officeEquipmentConsumableKeys.picker({ activeOnly, modelId }),
     queryFn: () =>
       officeEquipmentConsumablesApi.list({
         page: 1,
         pageSize: DICTIONARY_PAGE_SIZE,
-        // Алфавит явно: умолчание `baseListQuery` — `desc`, и перечень пришёл бы задом наперёд.
+        ...(activeOnly ? { isActive: 'true' } : {}),
+        modelId,
         sortBy: 'name',
         sortOrder: 'asc',
       }),
-    select: (r) => r.items.map((c) => ({ value: c.id, label: `${c.name} · ${c.code}` })),
   });
 
+export const officeEquipmentConsumableFilterQuery = () => {
+  const base = officeEquipmentConsumablePickerQuery();
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
+    select: (r: Awaited<ReturnType<typeof officeEquipmentConsumablesApi.list>>) =>
+      r.items.map((c) => ({ value: c.id, label: `${c.name} · ${c.code}` })),
+  };
+};
+
 /**
- * Действующие позиции номенклатуры ЦЕЛИКОМ — для дописывания строк в форме плановой закупки (план
- * `docs/office-equipment-consumables-and-purchase-plan.md`, Р16).
- *
- * ОТЛИЧАЕТСЯ ОТ СОСЕДНЕГО ПОДБОРА ДВУМЯ ВЕЩАМИ, и обе существенны.
- *
- * Первое: только действующие. Погашенная позиция означает «больше не покупаем», и закупка
- * погашенного — это забытая галочка, а не заказ (Р13); сервер такую строку и не примет. Подбор
- * отчёта по расходу, наоборот, показывает и погашенные — он смотрит в прошлое.
- *
- * Второе: сюда приходят сами позиции, а не пара «значение — подпись». Форме нужны их числа —
- * потребность, остаток и «уже заказано»: они и составляют снимок расчёта дописанной строки (Р17).
- * Считает их тот же сервер тем же выражением, что и предзаполнение, и второго вычислителя дефицита
- * на портале нет намеренно.
+ * Purchase forms need complete active stock records, including demand, quantity and amounts
+ * already ordered. Those values come from the server's calculation; a second calculation in the
+ * portal could disagree. Historical usage filters keep inactive records in their own variant.
  */
-export const officeEquipmentActiveConsumablesQuery = () =>
-  queryOptions({
-    queryKey: officeEquipmentConsumableKeys.picker({ activeOnly: true }),
-    queryFn: () =>
-      officeEquipmentConsumablesApi.list({
-        page: 1,
-        pageSize: DICTIONARY_PAGE_SIZE,
-        isActive: 'true',
-        // Алфавит явно: умолчание `baseListQuery` — `desc`, и перечень пришёл бы задом наперёд.
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
-    select: (r) => r.items,
-  });
+export const officeEquipmentActiveConsumablesQuery = () => {
+  const base = officeEquipmentConsumablePickerQuery({ activeOnly: true });
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
+    select: (r: Awaited<ReturnType<typeof officeEquipmentConsumablesApi.list>>) => r.items,
+  };
+};
+
+export const officeEquipmentConsumablesForModelQuery = (modelId: string | undefined) =>
+  officeEquipmentConsumablePickerQuery({ activeOnly: true, modelId });
+
+/** The modal needs complete type records; selectors project the same cached response. */
+export const officeEquipmentTypeRecordsQuery = () => {
+  const base = officeEquipmentTypeOptionsQuery();
+  return {
+    queryKey: base.queryKey,
+    queryFn: base.queryFn,
+    select: (r: Awaited<ReturnType<typeof officeEquipmentTypesApi.list>>) => r,
+  };
+};

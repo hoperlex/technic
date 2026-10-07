@@ -15,7 +15,7 @@ import {
   type TrailerSlotModes,
   trailerSubstitution,
 } from '@entities/vehicle-route';
-import { vehicleTypeKeys, vehicleTypesApi } from '@entities/vehicle-type';
+import { vehicleTypesFullQuery } from '@entities/vehicle-type';
 
 /**
  * Applying the trailer default rule (`docs/vehicle-trailers-plan.md`, §14, R20–R21).
@@ -91,9 +91,7 @@ export function useTrailerGraphs({
    * answer cached, and five dialogs share one load.
    */
   const { data: tractorTypeIds } = useQuery({
-    queryKey: vehicleTypeKeys.full(),
-    queryFn: () =>
-      vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
+    ...vehicleTypesFullQuery(),
     staleTime: 5 * 60 * 1000,
     select: (page) =>
       new Set(page.items.filter((t) => t.code === TRACTOR_TRAILERS_TYPE_CODE).map((t) => t.id)),

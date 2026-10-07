@@ -11,7 +11,7 @@ import {
   vehicleLabel,
 } from '@technic/contracts';
 import { driverKeys, driversApi } from '@entities/driver';
-import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { ownActiveVehicleOptionsQuery } from '@entities/vehicle';
 
 /**
  * Own fleet vehicles only: only they run routes, a rented vehicle's waybill is issued by the
@@ -27,16 +27,7 @@ export function useDayRouteFleet({
   assignment: SpecialEquipmentRequestDto['assignment'];
 }) {
   const { data: fleet, isFetching: fleetLoading } = useQuery({
-    queryKey: vehicleKeys.ownActiveOptions(),
-    queryFn: () =>
-      vehiclesApi.list({
-        status: 'active',
-        ownership: 'own',
-        page: 1,
-        pageSize: 500,
-        sortBy: 'registrationNumber',
-        sortOrder: 'asc',
-      }),
+    ...ownActiveVehicleOptionsQuery(),
     enabled,
   });
 

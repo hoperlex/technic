@@ -11,7 +11,7 @@ import {
   vehicleStatusLabels,
 } from '@technic/contracts';
 import { driverKeys, driversApi } from '@entities/driver';
-import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { ownVehicleCorrectionQuery } from '@entities/vehicle';
 import { vehicleRouteKeys, vehicleRoutesApi } from '@entities/vehicle-route';
 
 /**
@@ -53,15 +53,7 @@ export function useRouteCorrectionChoices({ route, vehicleId, withTrailer }: Arg
    * service today went on this route".
    */
   const { data: fleet, isFetching: fleetLoading } = useQuery({
-    queryKey: vehicleKeys.ownForCorrection(),
-    queryFn: () =>
-      vehiclesApi.list({
-        ownership: 'own',
-        page: 1,
-        pageSize: 500,
-        sortBy: 'registrationNumber',
-        sortOrder: 'asc',
-      }),
+    ...ownVehicleCorrectionQuery(),
     enabled: !!route,
   });
 

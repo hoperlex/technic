@@ -1,7 +1,7 @@
 import { Select } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { vehicleOptionLabel } from '@technic/contracts';
-import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { allVehicleOptionsQuery } from '@entities/vehicle';
 import type { FilterDefinition } from '@shared/ui';
 
 /**
@@ -27,8 +27,7 @@ export function useVehicleFilter({
   onChange: (patch: { vehicleId?: string }) => void;
 }) {
   const { data, isFetching } = useQuery({
-    queryKey: vehicleKeys.allOptions(),
-    queryFn: () => vehiclesApi.list({ page: 1, pageSize: 500, sortBy: 'createdAt' }),
+    ...allVehicleOptionsQuery(),
   });
   // Sorted by label rather than directory order: people look a vehicle up by its plate number.
   const options = (data?.items ?? [])

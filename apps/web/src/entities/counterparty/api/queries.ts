@@ -19,6 +19,66 @@ export const counterpartyOperatorGridQuery = () =>
       }),
   });
 
+export const counterpartyOptionsQuery = () =>
+  queryOptions({
+    queryKey: counterpartyKeys.options(),
+    queryFn: () =>
+      counterpartiesApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
+  });
+
+export const counterpartyActiveOptionsQuery = () =>
+  queryOptions({
+    queryKey: counterpartyKeys.activeOptions(),
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });
+
+export const counterpartyActiveOperatorOptionsQuery = () =>
+  queryOptions({
+    queryKey: counterpartyKeys.activeOperatorOptions(),
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        type: 'operator',
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });
+
+export const counterpartySupplierOptionsQuery = () =>
+  queryOptions({
+    queryKey: counterpartyKeys.supplierOptions(),
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        type: 'supplier',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });
+
+export const counterpartyVehicleLessorOptionsQuery = () =>
+  queryOptions({
+    queryKey: counterpartyKeys.vehicleLessorOptions(),
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        type: 'vehicle_lessor',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });
+
 /**
  * Active vehicle lessors for the fleet filter and the vehicle form. One carrier for the key and its
  * request: two components asking the same key with different requests would silently share

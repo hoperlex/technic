@@ -13,9 +13,9 @@ import {
   roleLabels,
   type UserAccountDto,
 } from '@technic/contracts';
-import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
+import { counterpartyActiveOptionsQuery } from '@entities/counterparty';
 import { departmentKeys, departmentOptionsQuery } from '@entities/department';
-import { objectKeys, objectsApi } from '@entities/object';
+import { objectRecordsQuery } from '@entities/object';
 import { useAuth } from '@entities/session';
 import {
   approvesRegistration,
@@ -50,30 +50,14 @@ export function useUserAccountEditor(): UserAccountEditorController {
   const [form] = Form.useForm<UserFormValues>();
 
   const { data: objects, isLoading: objectsLoading } = useQuery({
-    queryKey: objectKeys.options({ activeOnly: true }),
-    queryFn: () =>
-      objectsApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...objectRecordsQuery(true),
   });
   const { data: departmentOptions, isLoading: departmentsLoading } =
     useQuery(departmentOptionsQuery());
   // An executor account is bound to the counterparty it works for in the portal: a waste operator
   // or a vehicle lessor (ADR 0038). A contractor has no requests in any module.
   const { data: executors, isLoading: executorsLoading } = useQuery({
-    queryKey: counterpartyKeys.activeOptions(),
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
+    ...counterpartyActiveOptionsQuery(),
   });
 
   const objectOptions = (objects?.items ?? []).map((object) => ({
