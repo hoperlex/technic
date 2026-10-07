@@ -1,178 +1,190 @@
-# Портал строительной компании
+# Construction company portal
 
-Корпоративный портал: заказ техники и путевые листы, вывоз мусора, аренда механизации,
-обслуживание оргтехники, гараж и показания, справочники, кабинет водителя, администрирование.
-Построен по корпоративному стандарту v3.1 (single-VPS).
+A corporate portal: vehicle orders and waybills, waste removal, mechanization rental, office
+equipment service, garage and readings, directories, driver cabinet, administration. Built to the
+corporate standard v3.1 (single-VPS).
 
-Куда идти дальше: **[AGENTS.md](AGENTS.md)** — как здесь принято работать;
-**[docs/code-map.md](docs/code-map.md)** — какая область за что отвечает и через какие слои
-проходит; **[docs/adr/README.md](docs/adr/README.md)** — указатель принятых решений.
+Where to go next: **[AGENTS.md](AGENTS.md)** — how work is done here;
+**[docs/code-map.md](docs/code-map.md)** — which area is responsible for what and which layers it
+passes through; **[docs/adr/README.md](docs/adr/README.md)** — the index of accepted decisions.
 
-## Стек
+## Stack
 
 - **Backend**: Node.js 24 · TypeScript · Fastify 5 · Drizzle ORM · pg · jose · @node-rs/argon2 · zod · pino
 - **Frontend**: React 19 · Ant Design 6 · Vite 8 · TanStack Query · react-router 7
-- **БД**: Yandex Managed PostgreSQL (TLS verify-full)
-- **Файлы**: cloud.ru Evolution Object Storage (S3, presigned URL)
+- **DB**: Yandex Managed PostgreSQL (TLS verify-full)
+- **Files**: cloud.ru Evolution Object Storage (S3, presigned URLs)
 
-## Структура
+## Layout
 
 ```text
-apps/web            React SPA (Vite + antd 6): страницы, слои entities/features/shared
-apps/api            Fastify REST API, сервисы, миграции и teardown-набор, seed
-apps/worker         Фоновые задачи (PostgreSQL jobs, почта, распознавание талонов, S3 cleanup)
-packages/contracts  Общий язык сервера и портала: zod-схемы, права, предикаты, коридоры статусов
-scripts             Ворота качества и проверки документации
-deploy              Dockerfile'ы, docker-compose, nginx
-docs                решения (adr/), карта кода, runbook, схема БД, планы работ
+apps/web            React SPA (Vite + antd 6): pages, entities/features/shared layers
+apps/api            Fastify REST API, services, migrations and the teardown suite, seed
+apps/worker         Background jobs (PostgreSQL jobs, mail, waste ticket recognition, S3 cleanup)
+packages/contracts  Shared language of server and portal: zod schemas, permissions, predicates, status corridors
+scripts             Quality gates and documentation checks
+deploy              Dockerfiles, docker-compose, nginx
+docs                decisions (adr/), code map, runbook, DB schema, work plans
 ```
 
-## Быстрый старт (dev)
+## Quick start (dev)
 
-Требуется Node ≥ 22.12 и pnpm 9. Локальная БД PostgreSQL и S3-совместимое хранилище (MinIO) — см. `deploy/docker-compose.dev.yml`.
+Requires Node ≥ 22.12 and pnpm 9. A local PostgreSQL and S3-compatible storage (MinIO) — see `deploy/docker-compose.dev.yml`.
 
 ```bash
 pnpm install
 docker compose -f deploy/docker-compose.dev.yml -p technic-dev up -d   # postgres :5433 + minio :9000
-cp .env.example .env.dev        # заполнить локальными значениями
-pnpm db:migrate                 # применить SQL-миграции
+cp .env.example .env.dev        # fill in local values
+pnpm db:migrate                 # apply SQL migrations
 ADMIN_EMAIL=admin@dev.local ADMIN_PASSWORD=... pnpm seed:admin
-pnpm dev                        # api + worker + web параллельно
+pnpm dev                        # api + worker + web in parallel
 ```
 
-Локальные переменные лежат в `.env.dev`, и dev-скрипты читают его сами
-(`tsx --env-file-if-exists=../../.env.dev`): ни api, ни worker не тянут dotenv, а окружения у
-`pnpm dev` своего нет — без этого файла оба поднимались бы с пустым `DATABASE_URL` и падали до
-первой строки лога. Флаг `-if-exists` и приоритет настоящего окружения над файлом оставляют прод и
-CI нетронутыми: там переменные приходят из host env-файла, а `.env.dev` попросту отсутствует.
-Почта в нём выключена, S3 смотрит в MinIO, распознавание талонов — заглушка: наружу локальный
-контур не ходит.
+Local variables live in `.env.dev`, and the dev scripts read it themselves
+(`tsx --env-file-if-exists=../../.env.dev`): neither api nor worker pulls in dotenv, and `pnpm dev`
+has no environment of its own — without this file both would start with an empty `DATABASE_URL` and
+crash before the first log line. The `-if-exists` flag and the real environment taking precedence
+over the file leave prod and CI untouched: there the variables come from the host env file, and
+`.env.dev` simply does not exist. Mail is off in it, S3 points at MinIO, ticket recognition is a
+stub: the local setup never reaches outside.
 
-Сервер при старте сверяет схему с кодом и отказывается подниматься, если миграции не применены:
-неприменённая миграция иначе роняет первое же действие человека пятисоткой из середины
-транзакции, и читается это как поломка формы, а не как несобранная база.
+On start the server compares the schema with the code and refuses to come up if migrations are not
+applied: otherwise an unapplied migration fails the first human action with a 500 from the middle of
+a transaction, and that reads as a broken form rather than an unmigrated database.
 
-## Проверки
+## Checks
 
 ```bash
-pnpm check        # типы, линт и все тесты, кроме db-набора
-pnpm check:db     # db-тесты на своей свежей базе
-pnpm check:docs   # ссылки, номера решений, полнота карты кода
+pnpm check        # types, lint and all tests except the db suite
+pnpm check:db     # db tests on their own fresh database
+pnpm check:docs   # links, decision numbers, code map completeness
 ```
 
-Тесты API базы не требуют — кроме одного файла, который без неё пропускается. Он проверяет то,
-чего правилами не проверить: что код и схема сходятся. Запуск на отдельной (можно пустой — он сам
-накатит миграции) базе:
+API tests need no database — except one file, which is skipped without it. It checks what rules
+cannot: that the code and the schema agree. Run it on a separate database (an empty one is fine —
+it applies migrations itself):
 
 ```bash
 TEST_DATABASE_URL=postgres://technic:technic@localhost:5432/technic_test \
   pnpm --filter @technic/api test
 ```
 
-## Роли и права
+## Roles and permissions
 
-Доступ выдаётся правами, а не перечислением ролей в коде: матрица — в
-`packages/contracts/src/permissions.ts`, по ней проверяет API и по ней же портал скрывает
-недоступное ([ADR 0021](docs/adr/0021-permissions-model.md)).
+Access is granted by permissions, not by listing roles in code: the matrix is in
+`packages/contracts/src/permissions.ts`; the API checks it, and the portal hides what is unavailable
+by the same matrix ([ADR 0021](docs/adr/0021-permissions-model.md)).
 
-**Источник истины по правам ролей — [docs/access-model.md](docs/access-model.md)**: полная матрица,
-области видимости, коридоры статусов и карта кода, где всё это проверяется. Таблица ниже —
-краткая выжимка.
+**The source of truth for role permissions is [docs/access-model.md](docs/access-model.md)**: the
+full matrix, visibility scopes, status corridors and the map of code where all of it is checked.
+The table below is a short digest.
 
-Права выдаются не роли, а паре «роль + тип контрагента учётки»
-([ADR 0038](docs/adr/0038-executor-permissions-by-counterparty-type.md)). Контрагент есть только у
-внешнего исполнителя, и его тип решает, в каком модуле тот работает: оператор вывоза ведёт вывоз
-мусора, арендодатель ТС — заявки на технику, куда вышли его машины. Ниже это две последние колонки.
+Permissions are granted not to a role but to the pair "role + the account's counterparty type"
+([ADR 0038](docs/adr/0038-executor-permissions-by-counterparty-type.md)). Only an external executor
+has a counterparty, and its type decides which module the executor works in: a waste operator
+handles waste removal, a vehicle lessor handles the vehicle requests its machines are assigned to.
+These are the last two columns below.
 
-| Право                        | Админ | Менеджер | Диспетчер | Штаб | Рукстрой | Оператор вывоза | Арендодатель ТС | Наблюдатель |
-| ---------------------------- | :---: | :------: | :-------: | :--: | :------: | :-------------: | :-------------: | :---------: |
-| Справочники — чтение         |   ✓   |    ✓     |     ✓     |  ✓   |    ✓     |        ✓        |        ✓        |      ✓      |
-| Справочники — ведение        |   ✓   |    ✓     |     ✓     |  —   |    —     |        —        |        —        |      —      |
-| Оргтехника — справочник      |   ✓   |    ✓     |     ✓     |  ✓   |    ✓     |        —        |        —        |      ✓      |
-| Оргтехника — ведение         |   ✓   |    ✓     |     ✓     |  —   |    —     |        —        |        —        |      —      |
-| Вывоз мусора — чтение        |   ✓   |    ✓     |     ✓     |  ✓   |    ✓     |        ✓        |        —        |      ✓      |
-| Вывоз — создание/правка      |   ✓   |    ✓     |     ✓     |  ✓   |    ✓     |        —        |        —        |      —      |
-| Вывоз — статусы              |   ✓   |    ✓     |     ✓     |  —   |    —     |        ✓        |        —        |      —      |
-| Вывоз — назначение оператора |   ✓   |    ✓     |     ✓     |  —   |    —     |        —        |        —        |      —      |
-| Заказ ТС — чтение            |   ✓   |    ✓     |     ✓     |  ✓   |    ✓     |        —        |        ✓        |      ✓      |
-| Заказ ТС — создание/правка   |   ✓   |    ✓     |     ✓     |  ✓   |    ✓     |        —        |        —        |      —      |
-| Заказ ТС — статусы           |   ✓   |    ✓     |     ✓     |  —   |    —     |        —        |        ✓        |      —      |
-| Заказ ТС — виза              |   ✓   |    —     |     —     |  —   |    ✓     |        —        |        —        |      —      |
-| Гараж — срез дня             |   ✓   |    ✓     |     ✓     |  —   |    —     |        —        |        —        |      —      |
-| Архив, откаты, учётки, аудит |   ✓   |    —     |     —     |  —   |    —     |        —        |        —        |      —      |
+The Russian names the business uses (role labels live in `roleLabels`, `packages/contracts`):
+Admin — «Администратор», Manager — «Менеджер», Dispatcher — «Диспетчер», Site HQ — «Штаб»,
+Construction manager — «Руководитель строительства» («Рукстрой»), Observer — «Наблюдатель»; the
+two external executors share the role «Оператор» and differ by counterparty type — Waste operator
+(«Оператор вывоза») and Vehicle lessor («Арендодатель ТС»).
 
-Сверх роли учётке можно навесить **надстройку** — набор действий по одному модулю, который
-остаётся частью её обычной работы ([ADR 0086](docs/adr/0086-role-addons.md)). Сейчас надстройка
-одна: «Оператор (оргтехника)» для «Штаба» и «Отдела» — она добавляет ведение справочника
-оргтехники и **не меняет область видимости**: человек остаётся штабом своего объекта.
+| Permission                          | Admin | Manager | Dispatcher | Site HQ | Constr. mgr | Waste operator | Vehicle lessor | Observer |
+| ----------------------------------- | :---: | :-----: | :--------: | :-----: | :---------: | :------------: | :------------: | :------: |
+| Directories — read                  |   ✓   |    ✓    |     ✓      |    ✓    |      ✓      |       ✓        |       ✓        |    ✓     |
+| Directories — maintain              |   ✓   |    ✓    |     ✓      |    —    |      —      |       —        |       —        |    —     |
+| Office equipment — directory        |   ✓   |    ✓    |     ✓      |    ✓    |      ✓      |       —        |       —        |    ✓     |
+| Office equipment — maintain         |   ✓   |    ✓    |     ✓      |    —    |      —      |       —        |       —        |    —     |
+| Waste removal — read                |   ✓   |    ✓    |     ✓      |    ✓    |      ✓      |       ✓        |       —        |    ✓     |
+| Waste — create/edit                 |   ✓   |    ✓    |     ✓      |    ✓    |      ✓      |       —        |       —        |    —     |
+| Waste — statuses                    |   ✓   |    ✓    |     ✓      |    —    |      —      |       ✓        |       —        |    —     |
+| Waste — assign operator             |   ✓   |    ✓    |     ✓      |    —    |      —      |       —        |       —        |    —     |
+| Vehicle orders — read               |   ✓   |    ✓    |     ✓      |    ✓    |      ✓      |       —        |       ✓        |    ✓     |
+| Vehicle orders — create/edit        |   ✓   |    ✓    |     ✓      |    ✓    |      ✓      |       —        |       —        |    —     |
+| Vehicle orders — statuses           |   ✓   |    ✓    |     ✓      |    —    |      —      |       —        |       ✓        |    —     |
+| Vehicle orders — approval           |   ✓   |    —    |     —      |    —    |      ✓      |       —        |       —        |    —     |
+| Garage — day snapshot               |   ✓   |    ✓    |     ✓      |    —    |      —      |       —        |       —        |    —     |
+| Archive, rollbacks, accounts, audit |   ✓   |    —    |     —      |    —    |      —      |       —        |       —        |    —     |
 
-Право говорит, что учётка может делать; **область видимости** — над какими строками:
+On top of the role an account can get an **add-on** — a set of actions in one module that stays part
+of its regular work ([ADR 0086](docs/adr/0086-role-addons.md)). There is one add-on now: "Operator
+(office equipment)" («Оператор (оргтехника)») for Site HQ and Department («Отдел»). It adds
+maintaining the office equipment directory and **does not change the visibility scope**: the person
+stays the HQ of their own site.
 
-- **Штаб** — только свой объект; правит и удаляет заявку, пока она в статусе «Новая».
-- **Руководитель строительства** («Рукстрой») — тоже только свой объект: заявки обоих модулей
-  ведёт наравне со штабом ([ADR 0031](docs/adr/0031-rukstroy-waste-requests.md)), а сверх того
-  визирует технику ([ADR 0025](docs/adr/0025-vehicle-request-approval.md)) — без визы диспетчер не
-  берёт заявку в работу. Своя заявка визируется сразу: автовиза следует из ответственности за
-  объект, а не из права визы, поэтому у администратора её нет
-  ([ADR 0032](docs/adr/0032-approval-not-automatic-for-admin.md)).
-- **Оператор вывоза** — только заявки, назначенные его контрагенту (ADR 0010); закрывает взятые
-  в работу.
-- **Арендодатель ТС** — только заявки, на которые назначена его техника (ADR 0038); закрывает их
-  фактом выполнения. «Новую» заявку он не видит: до назначения машины она ничья.
-- **Наблюдатель** — заявки всех объектов, без единого действия над ними
-  ([ADR 0033](docs/adr/0033-observer-role.md)); архив ему закрыт.
+A permission says what an account may do; the **visibility scope** says over which rows:
 
-Регистрация — самостоятельная; аккаунт неактивен до активации администратором, а активировать
-учётку без роли API не даёт: без роли прав нет вовсе. Объектным ролям («Штаб», «Руководитель
-строительства») при активации обязателен объект строительства, внешнему исполнителю — контрагент
-(оператор вывоза или арендодатель ТС: его тип и задаёт модуль работы); «Наблюдателю» — ничего:
-его видимость ничем не сужена.
+- **Site HQ** — only its own site; edits and deletes a request while it is in the «Новая» (New)
+  status.
+- **Construction manager** («Рукстрой») — also only its own site: handles requests of both modules on
+  a par with HQ ([ADR 0031](docs/adr/0031-rukstroy-waste-requests.md)), and in addition approves
+  vehicle requests ([ADR 0025](docs/adr/0025-vehicle-request-approval.md)) — without the approval the
+  dispatcher does not take the request into work. Their own request is approved at once: the
+  auto-approval follows from responsibility for the site, not from the approval permission, which is
+  why the admin does not get it ([ADR 0032](docs/adr/0032-approval-not-automatic-for-admin.md)).
+- **Waste operator** — only requests assigned to its counterparty (ADR 0010); closes the ones taken
+  into work.
+- **Vehicle lessor** — only requests its vehicles are assigned to (ADR 0038); closes them with the
+  fact of completion. It does not see a «Новая» request: before a vehicle is assigned it belongs to
+  no one.
+- **Observer** — requests of all sites, with no action on them
+  ([ADR 0033](docs/adr/0033-observer-role.md)); the archive is closed to it.
 
-ФИО спрашивается по частям — фамилия, имя, отчество (если есть), — и склеивается базой в
-`users.full_name`; форму защищает Yandex SmartCaptcha
-([ADR 0130](docs/adr/0130-smart-captcha.md), прежде — собственная растровая капча,
-[ADR 0034](docs/adr/0034-registration-name-parts-and-captcha.md)). Нерассмотренные заявки видны
-администратору переключателем «Ожидают активации» и бейджем в меню; отказ требует причины и
-уходит в аудит.
+Registration is self-service; an account stays inactive until an administrator activates it, and the
+API does not allow activating an account without a role: without a role there are no permissions at
+all. Site roles (Site HQ, Construction manager) require a construction site at activation, an
+external executor requires a counterparty (a waste operator or a vehicle lessor: its type sets the
+working module); an Observer requires nothing — its visibility is not narrowed by anything.
 
-## Режим технических работ
+The full name is asked in parts — surname, first name, patronymic (if any) — and the database joins
+them into `users.full_name`; the form is protected by Yandex SmartCaptcha
+([ADR 0130](docs/adr/0130-smart-captcha.md); before that, a custom raster captcha,
+[ADR 0034](docs/adr/0034-registration-name-parts-and-captcha.md)). Pending applications are visible
+to the administrator through the «Ожидают активации» (Awaiting activation) toggle and a badge in the
+menu; a rejection requires a reason and goes to the audit.
 
-Портал закрывается на окно миграции целиком: браузерное API отвечает 503, все выданные
-access-токены гаснут, а вкладки показывают объявление вместо сетевых ошибок
-([ADR 0157](docs/adr/0157-maintenance-mode.md), [план](docs/maintenance-mode-plan.md)).
+## Maintenance mode
+
+The portal closes entirely for a migration window: the browser API answers 503, all issued access
+tokens expire, and tabs show an announcement instead of network errors
+([ADR 0157](docs/adr/0157-maintenance-mode.md), [plan](docs/maintenance-mode-plan.md)).
 
 ```bash
-deploy-auto --maintenance                      # три состояния порознь: prod.env, контейнер, файл
+deploy-auto --maintenance                      # three states separately: prod.env, container, file
 deploy-auto --maintenance=on --reason='перенос данных' --until='2026-09-04 03:00'
 deploy-auto --maintenance=off
 ```
 
-Выключатель — переменные в `prod.env` (`MAINTENANCE_MODE`, `AUTH_EPOCH_SINCE` и текст объявления),
-а не строка в базе: в окне базу и мигрируют, и состояние портала не должно лежать в том, что
-закрывают. Сквозь режим не проходит никто, включая администратора, — данные после миграции
-проверяют доступом `DATABASE_MAINTENANCE_URL`.
+The switch is variables in `prod.env` (`MAINTENANCE_MODE`, `AUTH_EPOCH_SINCE` and the announcement
+text), not a row in the database: during the window the database is what gets migrated, and the
+portal's state must not live in what is being closed. Nobody passes through the mode, the
+administrator included — data after a migration is checked through `DATABASE_MAINTENANCE_URL`.
 
-**Люди в портал не выходят.** Гаснут только access-токены (эпоха по `iat`), refresh-сессии живут, а
-`/auth/refresh` и `/auth/logout` выведены из-под гейта — после снятия режима вкладка продолжает
-работу без пароля и без капчи, сбросив кэш запросов.
+**People are not logged out.** Only access tokens expire (an epoch by `iat`); refresh sessions live
+on, and `/auth/refresh` and `/auth/logout` are outside the gate — once the mode is lifted, a tab
+continues working without a password or a captcha after dropping its query cache.
 
-**Каналов объявления два.** 503 от гейта — немедленный сигнал живой вкладке; `/maintenance.json`,
-раздаваемый вебом, — единственный, который переживает остановку `technic-api` в окне `--cutover`,
-и по нему же веб отдаёт статическую заглушку на перезагрузку страницы.
+**There are two announcement channels.** A 503 from the gate is the immediate signal to a live tab;
+`/maintenance.json`, served by the web container, is the only one that survives stopping
+`technic-api` in a `--cutover` window, and the web container also uses it to serve a static stub on
+page reload.
 
-**Перед первым окном** нужен поднятый пол версии клиента (`deploy-auto --client-floor=<контракт
-сборки>`): объявление рисует только сборка, которая про него знает. Пока пол ниже,
-`--maintenance=on` отказывает сам. Место режима в выкате — [протокол](docs/schema-cutover-protocol.md)
-§11, команды оператора — [runbook](docs/runbook.md).
+**Before the first window** the client version floor must be raised
+(`deploy-auto --client-floor=<build contract>`): only a build that knows about the announcement draws
+it. While the floor is lower, `--maintenance=on` refuses by itself. The mode's place in a deploy —
+[the protocol](docs/schema-cutover-protocol.md) §11, operator commands — [runbook](docs/runbook.md).
 
-## Безопасность
+## Security
 
-- Секреты — в host env-файле вне docker-образа и вне git (`.env`, `.env.*` в `.gitignore`).
-- Собственная авторизация: access-JWT (Ed25519) + opaque refresh с ротацией и reuse detection.
-- Файлы — presigned URL напрямую в cloud.ru; backend генерирует object key.
+- Secrets live in a host env file outside the docker image and outside git (`.env`, `.env.*` are in
+  `.gitignore`).
+- Own authentication: access JWT (Ed25519) + opaque refresh with rotation and reuse detection.
+- Files go through presigned URLs straight to cloud.ru; the backend generates the object key.
 
-Подробности деплоя и эксплуатации — в `docs/`. Оттуда же — рабочие инструкции:
-[наполнение справочника сотрудниками](docs/guide-staff-import.md) из кадровой выгрузки,
-[настройка почтовых оповещений оргтехники](docs/guide-office-equipment-mail.md),
-[памятка сотруднику отдела](docs/guide-department.md),
-[памятка руководителю строительства](docs/guide-rukstroy.md).
+Deployment and operations details are in `docs/`. So are the working guides (in Russian, for portal
+users and operators): [filling the staff directory](docs/guide-staff-import.md) from an HR export,
+[setting up office equipment mail notifications](docs/guide-office-equipment-mail.md),
+[a guide for department staff](docs/guide-department.md),
+[a guide for construction managers](docs/guide-rukstroy.md).
