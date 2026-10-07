@@ -75,6 +75,13 @@
  * under `apiPaths`; a path the scan cannot evaluate goes to `unresolved` (class `api-inventory`)
  * instead of silently shrinking the table.
  *
+ * THE READ INVENTORY lists each query observer, query-options declaration, and opened-record
+ * consumer with its key root and family. A query factory is opened at its declaration, including
+ * option spreads, so callers carry the factory's actual key and API request. Direct `apiFetch`
+ * reads keep the path-table answer separate from the key: a slice can have several roots. Generic
+ * hooks whose key and fetcher arrive as parameters stay explicitly unresolved; guessing a family
+ * from the hook's file would hide the foreign-root reads the next rule must find.
+ *
  * WHY `unresolved` IS ALWAYS PRINTED. This check can decay by understanding less code and becoming
  * greener. Every unresolved site gets a class (`unknown-write`, `cache-effect`, `ownership`,
  * `api-inventory`, `scanner-limit`) in addition to its technical reason. Unknown writes fail the
@@ -167,6 +174,18 @@ const API_FACTORIES = {
 /** The request senders of `src/shared/api/http.ts`; the first argument of each is the path. */
 const API_SENDERS = new Set(['apiFetch', 'apiUpload', 'apiDownload', 'apiFetchBlob']);
 
+/** Read entry points. Factory declarations are inventoried separately from their consumers. */
+const READ_CALLS = new Set([
+  'useQuery',
+  'useQueries',
+  'useInfiniteQuery',
+  'useSuspenseQuery',
+  'useSuspenseInfiniteQuery',
+  'queryOptions',
+  'infiniteQueryOptions',
+  'useOpenedRecord',
+]);
+
 /** Bound on hops through names, helpers and factories; guards mutually referring declarations. */
 const MAX_HOPS = 8;
 
@@ -215,7 +234,7 @@ function makeRegistry() {
 }
 
 /** `createQueryKeys('drivers', …)` and `['vehicles', 'trailer-hitch-targets'] as const`. */
-function harvestKeyRoots(sf, file, keys, rootOwners) {
+function harvestKeyRoots(sf, file, keys, rootOwners, keyFamilies) {
   const visit = (node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const init = unwrap(node.initializer);
@@ -235,8 +254,13 @@ function harvestKeyRoots(sf, file, keys, rootOwners) {
         // from key positions, so a `['requests', 'on-site']` tab list recorded here can never be
         // read as anything but the key it would be if someone handed it to `invalidateQueries`.
         const first = init.elements[0];
-        if (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first))
+        if (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) {
           keys.add(node.name.text, first.text, rel(file));
+          const second = init.elements[1] && unwrap(init.elements[1]);
+          if (!second) keyFamilies.add(node.name.text, '$root', rel(file));
+          else if (ts.isStringLiteral(second) || ts.isNoSubstitutionTemplateLiteral(second))
+            keyFamilies.add(node.name.text, second.text, rel(file));
+        }
       }
     }
     ts.forEachChild(node, visit);
@@ -354,9 +378,10 @@ function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs, s
         requests: memberRequests(body, scope).map((r) => ({ ...r, file: rel(file) })),
       });
   }
-  // A literal that reaches no request at all is not an API object: a config, a dictionary, a map of
-  // labels. Keeping those would fill the table with names that answer nothing.
-  if (members.size === 0 && spreads.length === 0) return false;
+  // An `*Api` wrapper may delegate to another API object and send no request directly. Its slice
+  // still owns the read; keep the declaration for ownership without adding a path or verb.
+  // Other request-free literals are configs and dictionaries, not API objects.
+  if (members.size === 0 && spreads.length === 0 && !/Api$/.test(objName)) return false;
   objects.add(objName, { members, spreads, file: rel(file) });
   // Reported once, where the request is written, and not once per object that spreads it.
   for (const [m, { requests }] of members)
@@ -1264,6 +1289,301 @@ function collectImports(sf) {
   return imports;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Reads: where a query is declared, consumed, and which key family it uses.
+// ---------------------------------------------------------------------------------------------
+
+/** A function's returned options, including the `queryOptions({...baseQuery()})` pattern. */
+function returnedOptions(fn) {
+  if (!fn.body) return undefined;
+  if (!ts.isBlock(fn.body)) return fn.body;
+  const returns = [];
+  const visit = (node) => {
+    if (node !== fn.body && ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node) && node.expression) returns.push(node.expression);
+    else ts.forEachChild(node, visit);
+  };
+  visit(fn.body);
+  return returns.length === 1 ? returns[0] : undefined;
+}
+
+/** The option and its source context travel together: an imported factory owns its own bindings. */
+function readOptions(node, ctx, factories, seen = new Set(), hops = 0) {
+  const expr = node && unwrap(node);
+  if (!expr || hops > MAX_HOPS) return undefined;
+  if (ts.isObjectLiteralExpression(expr)) {
+    let found = {};
+    for (const prop of expr.properties) {
+      if (ts.isSpreadAssignment(prop))
+        found = { ...found, ...readOptions(prop.expression, ctx, factories, seen, hops + 1) };
+      else if (ts.isPropertyAssignment(prop) || ts.isMethodDeclaration(prop)) {
+        const name = propertyName(prop.name);
+        if (name === 'queryKey' || name === 'queryFn' || name === 'fetch')
+          found[name] = { node: prop.initializer ?? prop, ctx };
+      } else if (ts.isShorthandPropertyAssignment(prop)) {
+        const name = prop.name.text;
+        if (name === 'queryKey' || name === 'queryFn' || name === 'fetch')
+          found[name] = { node: prop.name, ctx };
+      }
+    }
+    return found;
+  }
+  if (ts.isIdentifier(expr)) {
+    const local = ctx.bindings.get(expr.text);
+    if (!local || seen.has(`${ctx.rel}:${expr.text}`)) return undefined;
+    return readOptions(
+      local,
+      ctx,
+      factories,
+      new Set([...seen, `${ctx.rel}:${expr.text}`]),
+      hops + 1,
+    );
+  }
+  if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr) || ts.isFunctionDeclaration(expr))
+    return readOptions(returnedOptions(expr), ctx, factories, seen, hops + 1);
+  if (ts.isCallExpression(expr)) {
+    const name = calleeName(expr);
+    if (name === 'queryOptions' || name === 'infiniteQueryOptions')
+      return readOptions(expr.arguments[0], ctx, factories, seen, hops + 1);
+    if (!name || seen.has(`factory:${name}`)) return undefined;
+    const local = ctx.bindings.get(name);
+    const factory = local ? { node: local, ctx } : factories.get(name);
+    if (!factory) return undefined;
+    const options = readOptions(
+      factory.node,
+      factory.ctx,
+      factories,
+      new Set([...seen, `factory:${name}`]),
+      hops + 1,
+    );
+    return options ? { ...options, factory: name } : undefined;
+  }
+  return undefined;
+}
+
+/** Query keys are compared by the first two literal segments; runtime parameters are irrelevant. */
+function readKey(node, ctx, hops = 0) {
+  const expr = node && unwrap(node);
+  if (!expr || hops > MAX_HOPS) return { root: null, family: null, why: 'key-unresolved' };
+  if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr) || ts.isFunctionDeclaration(expr))
+    return readKey(returnedOptions(expr), ctx, hops + 1);
+  if (ts.isIdentifier(expr)) {
+    const local = ctx.bindings.get(expr.text);
+    if (local) return readKey(local, ctx, hops + 1);
+    const family = ctx.keyFamilies.get(expr.text);
+    if (family) {
+      const root = ctx.keys.get(expr.text);
+      return root ? { root, family } : { root: null, family: null, why: 'key-name-ambiguous' };
+    }
+  }
+  if (ts.isCallExpression(expr)) {
+    const callee = unwrap(expr.expression);
+    if (callee && ts.isIdentifier(callee)) {
+      const local = ctx.bindings.get(callee.text);
+      if (local) return readKey(local, ctx, hops + 1);
+    }
+  }
+  const rootAnswer = resolveRoots(expr, ctx);
+  const roots = [...new Set(rootAnswer.roots)];
+  const root = !rootAnswer.why && roots.length === 1 ? roots[0] : null;
+  let family = null;
+  if (ts.isArrayLiteralExpression(expr)) {
+    const second = expr.elements[1] && unwrap(expr.elements[1]);
+    if (second && (ts.isStringLiteral(second) || ts.isNoSubstitutionTemplateLiteral(second)))
+      family = second.text;
+    else if (!second) family = '$root';
+  } else if (ts.isCallExpression(expr) || ts.isPropertyAccessExpression(expr)) {
+    const target = ts.isCallExpression(expr) ? unwrap(expr.expression) : expr;
+    if (target && ts.isPropertyAccessExpression(target))
+      family = target.name.text === 'root' ? '$root' : target.name.text;
+  } else if (ts.isConditionalExpression(expr)) {
+    const left = readKey(expr.whenTrue, ctx, hops + 1);
+    const right = readKey(expr.whenFalse, ctx, hops + 1);
+    if (left.root === right.root && left.family === right.family) return left;
+    return {
+      root: null,
+      family: null,
+      variants: [left, right],
+      ...(left.why || right.why ? { why: 'conditional-key-unresolved' } : {}),
+    };
+  }
+  return {
+    root,
+    family,
+    ...(root && family ? {} : { why: rootAnswer.why ?? 'family-unresolved' }),
+  };
+}
+
+/** One `useQueries` call may define several families, either in an array or in a `.map` body. */
+function queryList(node, ctx, hops = 0) {
+  const expr = node && unwrap(node);
+  if (!expr || hops > MAX_HOPS) return [];
+  if (ts.isIdentifier(expr)) return queryList(ctx.bindings.get(expr.text), ctx, hops + 1);
+  if (ts.isArrayLiteralExpression(expr)) return [...expr.elements];
+  if (ts.isCallExpression(expr)) {
+    const callee = unwrap(expr.expression);
+    if (callee && ts.isPropertyAccessExpression(callee) && callee.name.text === 'map') {
+      const fn = expr.arguments[0] && unwrap(expr.arguments[0]);
+      if (fn && (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) {
+        const returned = returnedOptions(fn);
+        return returned ? [returned] : [];
+      }
+    }
+  }
+  return [];
+}
+
+/** The API request belongs to the query function, not to `select` or a nearby mutation. */
+function readRequests(node, ctx, api, objects, pathTable, hops = 0, seen = new Set()) {
+  const handles = new Set();
+  const paths = [];
+  const unknown = new Set();
+  const walk = (n, depth) => {
+    if (!n || depth > MAX_HOPS) return;
+    if (ts.isCallExpression(n)) {
+      const callee = unwrap(n.expression);
+      if (callee && ts.isPropertyAccessExpression(callee)) {
+        const owner = unwrap(callee.expression);
+        if (owner && ts.isIdentifier(owner) && /Api$/.test(owner.text))
+          handles.add(`${owner.text}.${callee.name.text}`);
+      } else if (callee && ts.isIdentifier(callee)) {
+        if (API_SENDERS.has(callee.text)) {
+          const normalized = normalizePath(
+            pathPieces(n.arguments[0], { sf: ctx.sf, consts: topLevelConsts(ctx.sf) }, true),
+          );
+          paths.push({
+            path: normalized.template ?? null,
+            verb: senderCallVerb(n, callee.text),
+            ...matchApiPath(pathTable, normalized),
+          });
+        } else if (seen.has(callee.text)) unknown.add(`query-helper-cycle:${callee.text}`);
+        else if (callee.text !== 'queryOptions') {
+          const local = ctx.bindings.get(callee.text);
+          if (local) {
+            seen.add(callee.text);
+            walk(local, depth + 1);
+            seen.delete(callee.text);
+          } else if (!ctx.imports.has(callee.text) && !GLOBAL_CALLS.has(callee.text))
+            unknown.add(`query-function-unresolved:${callee.text}`);
+        }
+      }
+    }
+    ts.forEachChild(n, (child) => walk(child, depth));
+  };
+  const expr = node && unwrap(node);
+  if (expr && ts.isIdentifier(expr)) {
+    const local = ctx.bindings.get(expr.text);
+    if (local) walk(local, hops);
+    else unknown.add(`query-function-unresolved:${expr.text}`);
+  } else walk(expr, hops);
+  const requests = [...handles].sort().map((handle) => {
+    const hit = api.byName.get(handle);
+    const object = objects.byName.get(handle.slice(0, handle.indexOf('.')));
+    const file =
+      hit && !hit.conflict ? hit.file : object && !object.conflict ? object.value.file : null;
+    return {
+      handle,
+      verb: hit && !hit.conflict ? hit.value : null,
+      owner: file ? (sliceOf(file) ?? file) : null,
+    };
+  });
+  for (const request of requests)
+    if (request.verb === null) unknown.add(`api-handle-verb-unresolved:${request.handle}`);
+  return { handles: requests, paths, unresolved: [...unknown].sort() };
+}
+
+function scanReads(readFiles, keys, keyFamilies, api, objects, pathTable) {
+  const contexts = new Map();
+  const factories = makeRegistry();
+  for (const [file, sf] of readFiles) {
+    const ctx = {
+      rel: rel(file),
+      sf,
+      bindings: collectBindings(sf),
+      imports: collectImports(sf),
+      keys,
+      keyFamilies,
+    };
+    contexts.set(file, ctx);
+    const visit = (node) => {
+      if (
+        ((ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) ||
+          (ts.isFunctionDeclaration(node) && node.name)) &&
+        /queryKey|queryOptions|infiniteQueryOptions/.test(node.getText(sf))
+      ) {
+        const name = node.name.text;
+        factories.add(name, { node: node.initializer ?? node, ctx }, ctx.rel);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  const reads = [];
+  for (const [file, sf] of readFiles) {
+    const ctx = contexts.get(file);
+    const visit = (node, owner) => {
+      let next = owner;
+      if (
+        (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node)) &&
+        node.name &&
+        ts.isIdentifier(node.name)
+      )
+        next = node.name.text;
+      if (ts.isCallExpression(node)) {
+        const kind = calleeName(node);
+        if (READ_CALLS.has(kind)) {
+          let optionNodes = [node.arguments[0]];
+          if (kind === 'useQueries') {
+            const outer = node.arguments[0] && unwrap(node.arguments[0]);
+            const queries =
+              outer && ts.isObjectLiteralExpression(outer)
+                ? optionProp(outer, 'queries')
+                : undefined;
+            optionNodes = queryList(queries, ctx);
+            if (optionNodes.length === 0) optionNodes = [undefined];
+          }
+          for (const optionNode of optionNodes) {
+            const options = readOptions(optionNode, ctx, factories) ?? {};
+            const source = options.queryFn ?? options.fetch;
+            const key = options.queryKey
+              ? readKey(options.queryKey.node, options.queryKey.ctx)
+              : { root: null, family: null, why: 'query-key-not-found' };
+            const requests = source
+              ? readRequests(source.node, source.ctx, api, objects, pathTable)
+              : { handles: [], paths: [], unresolved: ['query-function-not-found'] };
+            reads.push({
+              at: `${ctx.rel}:${lineOf(sf, node)}`,
+              kind,
+              factory:
+                kind === 'queryOptions' || kind === 'infiniteQueryOptions'
+                  ? (next ?? null)
+                  : (options.factory ?? null),
+              key,
+              handles: requests.handles,
+              paths: requests.paths,
+              unresolved: requests.unresolved,
+            });
+          }
+        }
+      }
+      ts.forEachChild(node, (child) => visit(child, next));
+    };
+    visit(sf, undefined);
+  }
+  reads.sort((a, b) => a.at.localeCompare(b.at) || a.kind.localeCompare(b.kind));
+  return {
+    totals: {
+      reads: reads.length,
+      byKind: countBy(reads, (r) => r.kind),
+      keyResolved: reads.filter(
+        (r) => (r.key.root && r.key.family) || (r.key.variants && !r.key.why),
+      ).length,
+      withHandleOrPath: reads.filter((r) => r.handles.length || r.paths.length).length,
+    },
+    reads,
+  };
+}
+
 export const __internals = { resolveRoots, collectCacheEffects, collectApiCalls };
 
 // ---------------------------------------------------------------------------------------------
@@ -1594,6 +1914,7 @@ const CACHE_MENTION = new RegExp([...KEY_FIRST_ARG_CALLS, ...KEY_LIST_PROPS].joi
 function buildMap() {
   const files = walkTs(SRC);
   const keys = makeRegistry();
+  const keyFamilies = makeRegistry();
   const api = makeRegistry();
   const objects = makeRegistry();
   const rootOwners = new Map();
@@ -1601,6 +1922,7 @@ function buildMap() {
   const parsed = new Map();
   const reaching = new Map();
   const calling = new Map();
+  const readFiles = new Map();
   const ownedRanges = new Map();
 
   // Pass 1: portal-wide tables. Every file is read; only the ones that can hold a declaration or a
@@ -1618,19 +1940,24 @@ function buildMap() {
     const reachesApi = /\b[A-Za-z]+Api\.[A-Za-z]+/.test(code);
     // A file that sends a request itself is read for the path table's bare-call inventory.
     const callsApi = /\bapi(?:Fetch|Upload|Download|FetchBlob)\s*[<(]/.test(code);
-    if (!declares && !acts && !reachesApi && !callsApi) continue;
+    const reads =
+      /\b(?:useQuery|useQueries|useInfiniteQuery|useSuspenseQuery|useSuspenseInfiniteQuery|queryOptions|infiniteQueryOptions|useOpenedRecord)\s*[<(]/.test(
+        code,
+      );
+    if (!declares && !acts && !reachesApi && !callsApi && !reads) continue;
 
     const sf = parseSource(code, file);
     if (sf.parseDiagnostics?.length)
       unresolved.push({ file: rel(file), form: 'whole file', why: 'file-does-not-parse-cleanly' });
 
     if (declares) {
-      harvestKeyRoots(sf, file, keys, rootOwners);
+      harvestKeyRoots(sf, file, keys, rootOwners, keyFamilies);
       ownedRanges.set(file, harvestApi(sf, file, objects, unresolved));
     }
     if (acts) parsed.set(file, sf);
     if (reachesApi) reaching.set(file, sf);
     if (callsApi) calling.set(file, sf);
+    if (reads) readFiles.set(file, sf);
   }
 
   // Spreads are followed only now: a slice API may be assembled from parts declared in files read
@@ -1814,6 +2141,7 @@ function buildMap() {
       roots: rootOwners.size,
     },
     apiPaths: describeApiPaths(pathTable, handleRequests, outsideCalls),
+    readInventory: scanReads(readFiles, keys, keyFamilies, api, objects, pathTable),
   };
 }
 
@@ -2017,6 +2345,12 @@ console.log(
     `Пути API: ручек ${p.handles}, с путём ${p.handlesWithPath}, с вычисляемым ${p.handlesWithComputedPath}; шаблонов ${p.templates} у ${p.owners} владельцев; запросов мимо ручек ${p.outside}${answers ? ` (${answers})` : ''}.`,
   );
 }
+{
+  const r = map.readInventory.totals;
+  console.log(
+    `Чтения: ${r.reads}; ключ до семейства ${r.keyResolved}; ручка или прямой путь ${r.withHandleOrPath}.`,
+  );
+}
 console.log(`Карта: ${path.relative(WEB, MAP_FILE)}`);
 
 // `unresolved` is printed on EVERY run, green or red. A static check of invalidations fails quietly
@@ -2038,13 +2372,9 @@ if (map.unresolved.length > 0) {
 
 // Inventory mode (step Ш0): take the picture, pass no verdict. Used to read the map without the
 // queue of known findings standing in the way.
-if (args.has('--map')) process.exit(0);
-
-if (findings.length > 0) {
+if (args.has('--map')) process.exitCode = 0;
+else if (findings.length > 0) {
   console.error(`\nИнвалидация кэша нарушена (${findings.length}):`);
   for (const f of findings) console.error(`  — [${f.rule}] ${f.at} — ${f.what}`);
-  if (!args.has('--report-only')) process.exit(1);
-  process.exit(0);
-}
-
-console.log('Инвалидация кэша в порядке.');
+  process.exitCode = args.has('--report-only') ? 0 : 1;
+} else console.log('Инвалидация кэша в порядке.');

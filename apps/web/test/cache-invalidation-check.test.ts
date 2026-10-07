@@ -245,6 +245,7 @@ export const linkOpenQuery = (href: string) => ({ queryFn: () => apiFetch(href) 
 export const itemOptionsQuery = () => ({
   queryFn: () => apiFetch('/items', { query: { pageSize: 500 } }),
 });
+
 export const itemCardQuery = (id: string) => ({ queryFn: () => apiFetch(\`/items/\${id}?full=1\`) });
 export const itemTelemetryQuery = (id: string) => ({
   queryFn: () => apiFetch(\`/items/\${id}/telemetry\`),
@@ -368,5 +369,140 @@ export const missingQuery = () => ({ queryFn: () => apiFetch('/nowhere') });
       'not-found': 1,
       owned: 3,
     });
+  });
+});
+
+describe('cache invalidation check: read inventory', () => {
+  type Read = {
+    at: string;
+    kind: string;
+    factory: string | null;
+    key: { root: string | null; family: string | null; variants?: unknown[]; why?: string };
+    handles: Array<{ handle: string; owner: string | null }>;
+    paths: Array<{ path: string; owner: string | null }>;
+  };
+  let reads: Read[];
+
+  beforeAll(() => {
+    const run = runFixtureFiles({
+      'entities/item/api/keys.ts': `
+declare function createQueryKeys(root: string, families: unknown): unknown;
+export const itemKeys = createQueryKeys('items', { list: () => ['list'], detail: () => ['detail'] });
+export const itemCardKey = ['items', 'card'] as const;
+`,
+      'entities/item/api/itemsApi.ts': `
+declare function apiFetch(path: string): Promise<unknown>;
+export const itemsApi = {
+  list: () => apiFetch('/items'),
+  get: (id: string) => apiFetch(\`/items/\${id}\`),
+};
+`,
+      'entities/foreign/api/foreignApi.ts': `
+declare function apiFetch(path: string): Promise<unknown>;
+export const foreignApi = { list: () => apiFetch('/foreign') };
+`,
+      'entities/item/api/wrappers.ts': `
+export const itemReadApi = { catalog: () => itemsApi.list() };
+`,
+      'entities/item/api/queries.ts': `
+declare function queryOptions<T>(value: T): T;
+export const itemListQuery = () => queryOptions({
+  queryKey: itemKeys.list(), queryFn: () => itemsApi.list(),
+});
+export const itemLabelsQuery = () => queryOptions({
+  ...itemListQuery(), select: (data: unknown) => data,
+});
+`,
+      'features/example/reads.tsx': `
+declare function useQuery(options: unknown): unknown;
+declare function useQueries(options: unknown): unknown;
+declare function useInfiniteQuery(options: unknown): unknown;
+declare function useOpenedRecord<T>(options: unknown): unknown;
+declare function apiFetch(path: string): Promise<unknown>;
+const rawKey = ['items', 'detail'] as const;
+const detailKey = (id: string) => itemKeys.detail(id);
+useQuery(itemLabelsQuery());
+useQuery({ queryKey: rawKey, queryFn: () => apiFetch('/foreign') });
+useQuery({ queryKey: itemCardKey, queryFn: () => itemsApi.get('1') });
+useQuery({ queryKey: detailKey('1'), queryFn: () => itemsApi.get('1') });
+useQuery({ queryKey: itemKeys.list(), queryFn: () => itemReadApi.catalog() });
+useQueries({ queries: [
+  { queryKey: itemKeys.list(), queryFn: () => itemsApi.list() },
+  { queryKey: ['items', 'detail'], queryFn: () => itemsApi.get('1') },
+] });
+useQueries({ queries: [1, 2].map((id) => ({
+  queryKey: itemKeys.detail(id), queryFn: () => itemsApi.get(String(id)),
+})) });
+useInfiniteQuery({ queryKey: itemKeys.list(), queryFn: () => itemsApi.list() });
+useQuery({ queryKey: itemKeys.root, queryFn: () => itemsApi.list() });
+useQuery({
+  queryKey: Math.random() ? itemKeys.list() : itemKeys.detail('1'),
+  queryFn: () => itemsApi.list(),
+});
+useOpenedRecord<unknown>({
+  active: true,
+  queryKey: (id: string) => itemKeys.detail(id),
+  fetch: (id: string) => itemsApi.get(id),
+});
+`,
+    });
+    expect(run.result.status).toBe(0);
+    reads = run.map.readInventory.reads as Read[];
+  });
+
+  it('follows a queryOptions factory and its spread to the caller', () => {
+    const factory = reads.find((r) => r.kind === 'queryOptions' && r.factory === 'itemLabelsQuery');
+    const caller = reads.find((r) => r.kind === 'useQuery' && r.factory === 'itemLabelsQuery');
+    expect(factory?.key).toMatchObject({ root: 'items', family: 'list' });
+    expect(caller?.key).toMatchObject({ root: 'items', family: 'list' });
+    expect(caller?.handles).toMatchObject([{ handle: 'itemsApi.list', owner: 'entities/item' }]);
+  });
+
+  it('records bare API reads with the path owner separately from their key family', () => {
+    const bare = reads.find((r) => r.kind === 'useQuery' && r.paths.length > 0);
+    expect(bare?.key).toMatchObject({ root: 'items', family: 'detail' });
+    expect(bare?.paths).toMatchObject([{ path: '/foreign', owner: 'entities/foreign' }]);
+  });
+
+  it('enumerates useQueries, infinite queries and opened records', () => {
+    expect(reads.filter((r) => r.kind === 'useQueries').map((r) => r.key.family)).toEqual([
+      'list',
+      'detail',
+      'detail',
+    ]);
+    expect(reads.find((r) => r.kind === 'useInfiniteQuery')?.key).toMatchObject({
+      root: 'items',
+      family: 'list',
+    });
+    expect(reads.find((r) => r.kind === 'useOpenedRecord')).toMatchObject({
+      key: { root: 'items', family: 'detail' },
+      handles: [{ handle: 'itemsApi.get', owner: 'entities/item' }],
+    });
+  });
+
+  it('keeps root keys and both conditional families explicit', () => {
+    expect(reads.find((r) => r.key.family === '$root')?.key).toMatchObject({
+      root: 'items',
+      family: '$root',
+    });
+    expect(reads.find((r) => r.key.variants)?.key.variants).toMatchObject([
+      { root: 'items', family: 'list' },
+      { root: 'items', family: 'detail' },
+    ]);
+  });
+
+  it('resolves imported literal keys and local key helpers to families', () => {
+    expect(reads.find((r) => r.key.family === 'card')?.key).toMatchObject({
+      root: 'items',
+      family: 'card',
+    });
+    expect(reads.filter((r) => r.key.family === 'detail').length).toBeGreaterThan(1);
+  });
+
+  it('keeps the slice owner of a wrapper whose HTTP verb is not directly visible', () => {
+    const wrapper = reads.find((r) => r.handles.some((h) => h.handle === 'itemReadApi.catalog'));
+    expect(wrapper?.handles).toMatchObject([
+      { handle: 'itemReadApi.catalog', owner: 'entities/item' },
+    ]);
   });
 });
