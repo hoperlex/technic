@@ -5,7 +5,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import type { AutoPartReceiptDto, AutoPartReceiptLineDto } from '@technic/contracts';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
 import { EntityLink, ViewFields, ViewModal, type ViewField } from '@shared/ui';
-import { errorMessage, formatMoney, type AddressParam } from '@shared/lib';
+import { errorMessage, errorStatus, formatMoney, type AddressParam } from '@shared/lib';
 import { useAuth } from '@entities/session';
 import { FileLinkList } from '@entities/file';
 import { AutoPartReceiptFormModal } from './AutoPartReceiptFormModal';
@@ -131,13 +131,19 @@ export function AutoPartReceiptCardModal({
     enabled: !!receiptId,
   });
 
+  /*
+   * The receipt cannot be shown (deleted by the administrator while the card was open; someone
+   * else's link): the address is cleared, otherwise it would open emptiness on every return. Only
+   * then — nothing to show or 404: a failed background reread (503, a dropped connection) keeps the
+   * card with the data it has, and with it the edit and mark windows living inside the card and the
+   * input in them (stage 5 plan §4.5, the rule of `useOpenedRecord`).
+   */
+  const lost = !!error && (receipt === undefined || errorStatus(error) === 404);
   useEffect(() => {
-    if (!error) return;
-    // Чек не читается (удалён администратором, пока карточка висела; чужая ссылка): адрес
-    // чистится, иначе он открывал бы пустоту при каждом возвращении.
+    if (!lost) return;
     message.error(errorMessage(error));
     onClose();
-  }, [error, message, onClose]);
+  }, [lost, error, message, onClose]);
 
   /**
    * Unmarking sends the version in the address (`DELETE ?version=`): the request has no body (R12).
