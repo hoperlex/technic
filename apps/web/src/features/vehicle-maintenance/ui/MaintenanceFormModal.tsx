@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useState } from 'react';
 import { Alert, App, DatePicker, Form, Input, InputNumber } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -90,13 +90,14 @@ export function MaintenanceFormModal({
   const odometerKm = Form.useWatch('odometerKm', form);
 
   /*
-   * Подсказка берётся числом, а не объектом сводки, и это не мелочь: сводка перечитывается сама —
-   * по возврату в окно, после чужой правки, — и объект приходит каждый раз новый. Стой он в
-   * зависимостях, форма стирала бы набранное на ровном месте.
+   * Filled once per window session — opening, or another record — and never by a reread (stage 5
+   * plan §4.5, group R1). The summary rereads itself after a colleague's reading or act, and the
+   * odometer hint used to sit in the reset dependencies: a new reading erased what was being typed.
+   * The hint is taken as the window opens; the record is the row the edit was started from, with
+   * the version the person saw (R30).
    */
-  const prefillKm = lastOdometer?.km;
-
-  useEffect(() => {
+  const recordId = record?.id ?? null;
+  const fill = useEffectEvent((_open: boolean, _recordId: string | null) => {
     if (!open) return;
     form.resetFields();
     form.setFieldsValue(
@@ -109,12 +110,13 @@ export function MaintenanceFormModal({
           }
         : {
             performedOn: dayjs(defaultOn ?? undefined),
-            // Подсказка, а не готовый ответ: число из акта бывает своим, и его тут же исправляют.
-            odometerKm: prefillKm,
+            // A hint, not the answer: the act may carry its own number, corrected right away.
+            odometerKm: lastOdometer?.km,
           },
     );
     setFiles(attachedScans(record));
-  }, [open, record, defaultOn, prefillKm, form]);
+  });
+  useEffect(() => fill(open, recordId), [open, recordId]);
 
   /**
    * Предыдущий акт с одометром — тот, с которым сверяется вводимое число. Ищется по дате

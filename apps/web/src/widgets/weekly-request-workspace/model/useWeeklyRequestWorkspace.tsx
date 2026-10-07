@@ -144,7 +144,9 @@ export function useWeeklyRequestWorkspace() {
   const onError = (error: unknown) => {
     if (hasApiStatus(error, 409)) {
       void queryClient.invalidateQueries({ queryKey: weeklyRequestKeys.root });
-      message.error('Состав изменил другой пользователь — страница обновлена');
+      // Not "the page was refreshed": an edited composition stays on screen under the notice, and
+      // "Reload" there is the person's choice (stage 5 plan §4.5, decision R6-a).
+      message.error('Заявку изменил другой пользователь — ваши правки не сохранены');
       return;
     }
     if (hasApiStatus(error, 422) && request) {
@@ -160,15 +162,22 @@ export function useWeeklyRequestWorkspace() {
     message.error(weeklyRequestErrorMessage(error));
   };
 
-  // The composition is sent whole; version is a lock token, not a column value.
+  /*
+   * The composition is sent whole; version is a lock token, not a column value. Every command of
+   * the page sends the version the composition was built from, not the live one: a colleague's
+   * newer save must answer 409 instead of being overwritten. Our own answers move that version.
+   */
+  const { session } = composition;
   const saveComposition = async () => {
     if (!request) throw new Error('Заявка не загружена');
-    if (!composition.dirty) return request;
-    return weeklyRequestsApi.update(request.id, {
+    if (!composition.dirty) return { ...request, version: session.version! };
+    const saved = await weeklyRequestsApi.update(request.id, {
       items: composition.items,
       comment: composition.comment,
-      version: request.version,
+      version: session.version!,
     });
+    session.accept(saved.version);
+    return saved;
   };
   /**
    * Reversals of an applied week — annulment (ADR 0218) and return for re-approval (ADR 0219) — in
@@ -197,6 +206,7 @@ export function useWeeklyRequestWorkspace() {
       });
     },
     onSuccess: (result) => {
+      session.accept(result.request.version);
       clearApplyError();
       message.success(
         result.apply ? `Неделя применена: строк ${result.apply.applied}` : 'Заявка подана на визу',
@@ -217,7 +227,9 @@ export function useWeeklyRequestWorkspace() {
        */
       correction?: WeeklyCorrectionBody;
     }) => {
-      const saved = value.approved ? await saveComposition() : request!;
+      const saved = value.approved
+        ? await saveComposition()
+        : { ...request!, version: session.version! };
       return weeklyRequestsApi.approval(saved.id, {
         approved: value.approved,
         comment: value.comment,
@@ -226,6 +238,7 @@ export function useWeeklyRequestWorkspace() {
       });
     },
     onSuccess: (result, value) => {
+      session.accept(result.request.version);
       setReasonMode(null);
       setConducting(false);
       clearApplyError();
@@ -239,9 +252,10 @@ export function useWeeklyRequestWorkspace() {
       weeklyRequestsApi.changeStatus(request!.id, {
         status: 'cancelled',
         reason,
-        version: request!.version,
+        version: session.version!,
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      session.accept(result.request.version);
       setReasonMode(null);
       message.success('Заявка снята');
       invalidate();

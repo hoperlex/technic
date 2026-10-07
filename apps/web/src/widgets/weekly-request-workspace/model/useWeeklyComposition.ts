@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type {
   UpdateWeeklyRequestBody,
   VehicleClassificationDto,
@@ -7,6 +7,7 @@ import type {
   WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { weeklyToday } from '@entities/weekly-request';
+import { useRecordSession, type RecordSession } from '@shared/lib';
 import {
   buildWeeklyCompositionState,
   emptyWeeklyNewRow,
@@ -35,14 +36,29 @@ export interface WeeklyComposition {
   issues: Map<string, string>;
   items: UpdateWeeklyRequestBody['items'];
   dirty: boolean;
+  /**
+   * The request version the composition was built from — the one every command of the page sends,
+   * moved by the page's own answers (`accept`); `stale` and `reload` drive the notice.
+   */
+  session: RecordSession<number>;
+}
+
+interface Source {
+  request: WeeklyVehicleRequestDto;
+  suggestion: WeeklySuggestionDto | undefined;
 }
 
 const EMPTY_COMPOSITION: WeeklyCompositionState = { rows: [], decisions: {}, newRows: [] };
 
 /**
- * The composition in page state. Rebuilt when the request version changes (composition saved,
- * applied, rejected) or the suggestion membership changes: then the screen must show what lies on
- * the server. An ordinary re-render never touches the user's edits.
+ * The composition in page state, built per page session (stage 5 plan §4.5, group R1): when the
+ * request and the suggestion are both there, and anew for another request.
+ *
+ * A newer source — another request version or another suggestion membership — rebuilds an
+ * untouched composition silently, since the screen must show what lies on the server. Over the
+ * dispatcher's edits it only raises the notice: before, a colleague's save or a refreshed site slice
+ * rebuilt the composition and wiped the work. The page's own commands move the snapshot version
+ * with their answers and rebuild from what they saved.
  */
 export function useWeeklyComposition(
   request: WeeklyVehicleRequestDto | undefined,
@@ -59,22 +75,8 @@ export function useWeeklyComposition(
   // classifier loaded would lose the new rows.
   const [initial, setInitial] = useState<WeeklyCompositionState>(EMPTY_COMPOSITION);
   const [comment, setComment] = useState('');
-  const sourceKey = request
-    ? `${request.id}:${request.version}:${(suggestion?.extend ?? [])
-        .concat(suggestion?.leaving ?? [])
-        .map((order) => order.requestId)
-        .join(',')}`
-    : '';
-  const builtKey = useRef('');
-
-  useEffect(() => {
-    if (!request || !ready || builtKey.current === sourceKey) return;
-    builtKey.current = sourceKey;
-    setState(buildWeeklyCompositionState(request, suggestion, true));
-    setInitial(buildWeeklyCompositionState(request, suggestion, false));
-    setComment(request.comment);
-  }, [request, suggestion, sourceKey, ready]);
-
+  // The comment as built, not the live one: a colleague's new comment is not the person's edit.
+  const [initialComment, setInitialComment] = useState('');
   const items = useMemo(
     () => serializeWeeklyComposition(state, classifications),
     [state, classifications],
@@ -83,6 +85,29 @@ export function useWeeklyComposition(
     () => serializeWeeklyComposition(initial, classifications),
     [initial, classifications],
   );
+  // Unsaved changes compare what will be sent to the server, not form state: toggling a decision
+  // there and back must not count as an edit.
+  const dirty = JSON.stringify(items) !== JSON.stringify(savedItems) || comment !== initialComment;
+
+  const session = useRecordSession<Source>({
+    open: true,
+    id: request?.id ?? null,
+    data: request && ready ? { request, suggestion } : undefined,
+    version: (source) => source.request.version,
+    revision: (source) =>
+      `${source.request.version}:${(source.suggestion?.extend ?? [])
+        .concat(source.suggestion?.leaving ?? [])
+        .map((order) => order.requestId)
+        .join(',')}`,
+    isDirty: () => dirty,
+    fill: (source) => {
+      setState(buildWeeklyCompositionState(source.request, source.suggestion, true));
+      setInitial(buildWeeklyCompositionState(source.request, source.suggestion, false));
+      setComment(source.request.comment);
+      setInitialComment(source.request.comment);
+    },
+  });
+
   const counts: WeeklyItemCounts = {
     extend: items.filter((item) => item.kind === 'extend').length,
     new: items.filter((item) => item.kind === 'new').length,
@@ -125,10 +150,7 @@ export function useWeeklyComposition(
       ? weeklyNewRowIssues(state.newRows, request, classifications, weeklyToday())
       : new Map<string, string>(),
     items,
-    // Unsaved changes compare what will be sent to the server, not form state: toggling a decision
-    // there and back must not count as an edit.
-    dirty:
-      JSON.stringify(items) !== JSON.stringify(savedItems) ||
-      (request ? comment !== request.comment : false),
+    dirty,
+    session,
   };
 }

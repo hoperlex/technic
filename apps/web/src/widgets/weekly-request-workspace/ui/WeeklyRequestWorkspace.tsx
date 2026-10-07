@@ -1,6 +1,6 @@
 import { Card, Input, Skeleton } from 'antd';
 import { isWeeklyRequestApplied, weeklyWeekEffectiveDate } from '@technic/contracts';
-import { ReasonModal } from '@shared/ui';
+import { ReasonModal, StaleRecordNotice } from '@shared/ui';
 import { useWeeklyRequestWorkspace } from '../model/useWeeklyRequestWorkspace';
 import { weeklyReasonText } from '../model/pageState';
 import { WeeklyRequestActions } from './WeeklyRequestActions';
@@ -65,6 +65,7 @@ export function WeeklyRequestWorkspace() {
             }
             nextWeekPending={workspace.create.pending}
           />
+          <StaleRecordNotice session={composition.session} />
 
           {composable && (
             <Card size="small" title="Остаётся на площадке">
