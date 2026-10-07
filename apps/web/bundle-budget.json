@@ -42,7 +42,7 @@
         },
         {
           "source": "src/pages/vehicle/VehicleRequestsOnSiteTab.tsx",
-          "gzip": 599714
+          "gzip": 599775
         },
         {
           "source": "src/widgets/vehicle-request-history/index.ts",

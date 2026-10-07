@@ -496,6 +496,27 @@ describe.skipIf(!DB_URL)('отбор среза «На объекте» по б�
     expect(await onSiteNums(request, 'esm2')).toEqual([]);
   });
 
+  it('срез называет прицеп по сохранённым реквизитам рейса дня', async () => {
+    const request = await linearInProgress();
+    const routeId = await planToday(request.id, ctx.dayVehicleId);
+    await ctx.db.execute(sql`
+      UPDATE vehicle_routes SET with_trailer = true,
+        trailer1_model = 'КРОНА SDP27', trailer1_reg_number = 'ЕН806277',
+        trailer2_model = 'НЕФАЗ 8332', trailer2_reg_number = 'АВ123477'
+      WHERE id = ${routeId}`);
+
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/vehicle-requests/on-site?num=${request.num}`,
+      headers: ctx.auth,
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().items[0].dayVehicle).toMatchObject({
+      routeId,
+      trailerLabel: 'КРОНА SDP27 ЕН806277 · НЕФАЗ 8332 АВ123477',
+    });
+  });
+
   it('линейный день с листом по требованию находится обоими бланками и стоит один раз', async () => {
     const request = await linearInProgress();
     await planToday(request.id, ctx.dayVehicleId);

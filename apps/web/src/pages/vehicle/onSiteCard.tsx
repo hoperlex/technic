@@ -51,12 +51,12 @@ export function onSiteCard({
           typeName: r.vehicleTypeName,
           categoryName: r.vehicleCategoryName,
         }),
-      // Марка перед арендодателем: без неё на телефоне видно только, чья машина, но не какая —
-      // ровно то, на что жаловались (Р15). При нераспланированном дне строка уже сказана крупной.
+      // Keep model and lessor below the vehicle; an unplanned day already says why it is empty.
       (r) => {
         const { title, details } = onSiteVehicleLines(r);
         return title ? details : null;
       },
+      (r) => onSiteVehicleLines(r).trailer,
       (r) => termCell(r),
       (r) => shiftsCell(r),
       (r) => r.comment || null,

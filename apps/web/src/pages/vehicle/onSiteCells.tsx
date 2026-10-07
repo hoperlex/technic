@@ -104,46 +104,39 @@ export function shiftsCell(r: SpecialEquipmentRequestDto) {
 export const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
 /**
- * Что графа «Техника» говорит про строку: подпись машины и одна строка про неё мелким текстом.
- *
- * Ответов у строки два разной природы, и различает их само поле `dayVehicle` (ADR 0100 §12): у
- * нелинейного заказа его нет вовсе (`undefined`) — машина строки назначенная, и второго ответа на
- * этот вопрос не существует; у линейного оно приходит всегда — объектом (машина рейса **этого
- * дня**) либо `null` (день никуда не поставлен). Слить `undefined` с `null` значило бы объявить
- * нелинейной строке «машина не назначена» вместо её машины.
- *
- * Строка под подписью одна, а не две: марка и тот, с кем об этой машине говорят, стоят через
- * точку — иначе строка таблицы выросла бы втрое против соседних (Р15).
+ * The vehicle label, compact detail line and trailer line shared by table and mobile card.
+ * A present `dayVehicle` names the route vehicle or assignment-history vehicle for this day;
+ * null means an unplanned linear day. An absent field means the standing assignment remains
+ * the answer. Collapsing null and absent would show a default assignment as today's vehicle.
+ * The route's trailer stays beside that vehicle, never beside a different assignment (ADR 0221).
  */
 export function onSiteVehicleLines(r: SpecialEquipmentRequestDto): {
-  /** Чем машина подписана; `null` — машины на этот день нет вовсе. */
+  /** Null when no vehicle is assigned to this day. */
   title: string | null;
-  /** Строка под подписью; у нераспланированного дня она и объясняет, почему подписи нет. */
+  /** For an unplanned day, the detail line explains why there is no title. */
   details: string | null;
+  /** The route's recorded trailer composition, distinct from the driver and vehicle model. */
+  trailer: string | null;
 } {
-  // Линейный заказ отвечает машиной дня, а не назначением: назначение у него — машина по
-  // умолчанию, и выдать её за вышедшую сегодня значило бы ответить догадкой (ADR 0100 §12).
+  // A planned day answers from its route, even when the order has another default vehicle.
   if (r.dayVehicle !== undefined) {
     const day = r.dayVehicle;
-    // День никуда не поставлен — об этом и говорится словами: подставить сюда назначение значит
-    // ответить не про сегодня.
-    if (day === null) return { title: null, details: ON_SITE_DAY_UNPLANNED_MESSAGE };
-    // Рейс дня и человек на нём — рядом с маркой: спрашивая, что стоит на площадке, спрашивают и
-    // по какому рейсу оно там и кто в кабине. Водителя ставят утром, и до этого его строки нет.
+    // An unplanned linear day cannot borrow the default assignment as a claim about today.
+    if (day === null) return { title: null, details: ON_SITE_DAY_UNPLANNED_MESSAGE, trailer: null };
+    // Keep route, driver and trailer together: they describe one day's vehicle composition.
     return {
       title: day.vehicleLabel,
       details: detailsLine(day.vehicleLabel, [
         day.vehicleModelName,
         day.routeDisplayNumber,
-        // Снятая карточка помечается прямо у имени (ADR 0190): человек на машине остался, а
-        // справочник его больше не держит — и бумага по заказу пойдёт на удалённого.
+        // A removed driver still works on the vehicle but needs a visible warning (ADR 0190).
         day.driverCardRemovedOn ? `${day.driverName} (карточка снята)` : day.driverName,
       ]),
+      trailer: day.trailerLabel ? `Прицеп: ${day.trailerLabel}` : null,
     };
   }
-  if (!r.assignment) return { title: null, details: null };
-  // Арендодатель — тот, кому звонят и про простой, и про замену машины; у своей на его месте
-  // стоит «Своя техника»: пустое место читалось бы как «арендодателя не заполнили».
+  if (!r.assignment) return { title: null, details: null, trailer: null };
+  // A lessor is the contact for downtime or replacement; own vehicles say so explicitly.
   const title = assignmentTitle(r.assignment);
   return {
     title,
@@ -151,33 +144,36 @@ export function onSiteVehicleLines(r: SpecialEquipmentRequestDto): {
       r.assignment.modelName,
       r.assignment.lessorName ?? 'Своя техника',
     ]),
+    trailer: null,
   };
 }
 
-/**
- * Вторая строка — через точку и одной. Совпавшая с подписью марка из неё выпадает: у своей машины
- * с незаполненным госномером подписью становится сама марка (`vehicleLabel`), и «КамАЗ 65115 ·
- * КамАЗ 65115 · Своя техника» читалось бы как ошибка данных, а не как ответ.
- */
+/** The label fallback can equal the model; repeating it in the detail line suggests bad data. */
 function detailsLine(title: string, parts: (string | null)[]): string | null {
   const shown = parts.filter((part): part is string => !!part && part !== title);
   return shown.length > 0 ? shown.join(' · ') : null;
 }
 
-/**
- * Графа «Техника» таблицы: подпись первой строкой, всё остальное — второй. Ячейка общая с
- * карточкой по составу (`onSiteVehicleLines`), потому что вопрос у них один: что стоит на площадке.
- */
+/** The table and mobile card use one vehicle composition through `onSiteVehicleLines`. */
 export function vehicleCell(r: SpecialEquipmentRequestDto) {
-  const { title, details } = onSiteVehicleLines(r);
-  if (!title && !details) return dash;
+  const { title, details, trailer } = onSiteVehicleLines(r);
+  if (!title && !details && !trailer) return dash;
   return (
     <div style={{ lineHeight: 1.35 }}>
       {title && <div>{title}</div>}
       {details && (
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {details}
-        </Typography.Text>
+        <div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {details}
+          </Typography.Text>
+        </div>
+      )}
+      {trailer && (
+        <div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {trailer}
+          </Typography.Text>
+        </div>
       )}
     </div>
   );
