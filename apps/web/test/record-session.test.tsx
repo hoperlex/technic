@@ -1,9 +1,8 @@
-import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
 import { act, fireEvent, screen } from '@testing-library/react';
 import { Button, Form, Input } from 'antd';
 import { StaleRecordNotice, useFormRecordSession } from '../src/shared/ui';
-import { renderWithUser } from './render';
+import { renderWithProps } from './propsDriver';
 
 /**
  * The form-session rule of stage 5 (plan §4.5, decision R6-a) on a bare form: the forms of wave 1
@@ -25,29 +24,7 @@ interface Note {
 
 const NOTE: Note = { id: 'n-1', version: 3, title: 'Счёт', body: 'Оплатить до пятницы' };
 
-type HarnessProps = Parameters<typeof Harness>[0];
-
-/**
- * Props changed from the test the way a parent changes them on a reread. Not `rerender`: the
- * render helper wraps the screen into providers inline, and `rerender` would replace the whole
- * tree — every step would mount a new form and prove nothing about the old one.
- */
-function mount(initial: HarnessProps): { update: (next: Partial<HarnessProps>) => void } {
-  let set: ((next: HarnessProps) => void) | null = null;
-  let current = initial;
-  function Driver() {
-    const [props, setProps] = useState(initial);
-    set = setProps;
-    return <Harness {...props} />;
-  }
-  renderWithUser(<Driver />);
-  return {
-    update: (next) => {
-      current = { ...current, ...next };
-      act(() => set!(current));
-    },
-  };
-}
+const mount = (initial: Parameters<typeof Harness>[0]) => renderWithProps(Harness, initial);
 
 function Harness({
   open,
