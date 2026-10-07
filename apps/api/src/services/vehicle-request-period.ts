@@ -7,6 +7,8 @@ import {
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { assertAssignmentBackstop, type AssignmentBackstopDoor } from './assignment-backstop';
+import type { AssignmentCommandTx } from './assignment-command';
+import { ensureAssignmentHistory, ensureCommandHistory } from './assignment-ensure';
 import type { Esm2ScopedPlan } from './esm2-plan';
 import {
   applyLinearRouteDaysPlan,
@@ -114,14 +116,16 @@ export type WorkPeriodBackstop =
   Extract<AssignmentBackstopDoor, 'work_period' | 'completion'> | 'checked_by_caller';
 
 /**
- * Кто ведёт бумагу ЭСМ-2 этой правки — недельная сверка или **готовый отрезковый план** (§10).
+ * Who leads the ESM-2 paper of this change — the weekly sweep or a **ready segment plan** (§10).
  *
- * Умолчание есть, и оно `weekly`: правку срока зовут четыре места, и три из них — статусная ручка,
- * широкая правка и досрочное завершение — отрезкового плана не считают вовсе. Отрезковый приносит
- * дверь `/period` и только в режиме `history`: там он уже посчитан шагом 6, показан человеку и
- * захеширован в отпечаток, и пересчитывать его здесь значило бы исполнить не то, что подтверждено.
+ * There is a default, and it is `weekly`: the status handle and the wide edit compute no segment
+ * plan at all. The segment plan comes only in `history`, from the doors that computed it before
+ * their first write — the `/period` door (shown to the person and hashed into the fingerprint),
+ * the early end, the completion by the actual date, the weekly reversal and the weekly visa
+ * (ADR 0220) — and recomputing it here would execute something other than what was computed
+ * under the locks.
  *
- * Событие `waybill.esm2_sync` в обеих ветвях пишет один и тот же владелец — исполнитель плана.
+ * The `waybill.esm2_sync` event is written by the same owner in both branches — the executor.
  */
 export type WorkPeriodPaper =
   { kind: 'weekly' } | { kind: 'plan'; plan: Esm2ScopedPlan; context: Esm2ExecutionContext };
@@ -279,48 +283,78 @@ export async function loadWorkPeriod(tx: Tx, requestId: string): Promise<Current
   return { dateFrom: row.dateFrom, effectiveDateTo: row.dateTo ?? row.dateFrom };
 }
 
-/** Что изменило продление: прежний последний день и последствия для запроса и бумаги. */
+/** What the extension changed: the previous last day and the consequences for requests and paper. */
 export interface ExtendResult extends WorkPeriodChangeResult {
   previousDateTo: string;
 }
 
 /**
- * Продлить срок заказа спецтехники до `newDateTo` — вход недельной заявки (ADR о недельной заявке,
- * решение «виза применяет заявку той же транзакцией»).
+ * The segment plan of an extension when history leads the paper (ADR 0220), and what its
+ * execution needs besides the plan itself.
+ */
+export interface ExtendHistoryPaper {
+  /** The calculation day the plan was computed for; readiness is recomputed for the same day. */
+  asOf: string;
+  /**
+   * Whether the order's history could be restored. `false` — it could not (no assignment, or
+   * sheets that contradict each other): there is nothing to materialize, as at the `/period` door.
+   */
+  historyPresent: boolean;
+  plan: Esm2ScopedPlan;
+  context: Esm2ExecutionContext;
+}
+
+/**
+ * Extend the term of a special-equipment order to `newDateTo` — the entry of the weekly request
+ * (the weekly-request ADR, decision "the approval applies the request in the same transaction").
  *
- * Отличается от обычной правки тремя вещами, и каждая здесь обязательна:
+ * It differs from an ordinary edit in three things, and each is mandatory here:
  *
- * 1. **Только вперёд.** Сокращение срока работающей заявки идёт через досрочное завершение с визой
- *    (ADR 0044), и продление, принявшее дату раньше нынешнего конца, обошло бы визу в один шаг.
- *    Вызывающий обязан проверить это заранее (предикат контрактов), но проверка стоит и здесь:
- *    место, меняющее чужой срок, не полагается на вежливость вызывающего.
- * 2. **Версия двигается своим условным `UPDATE`.** Заявку правят и мимо недельной, поэтому запись
- *    идёт по прочитанной под блокировкой версии: разошлась — конфликт, а не тихая перезапись.
- * 3. **Запрос на отъезд снимается только с явного согласия** (`dropPendingEarlyEnd`).
+ * 1. **Forward only.** Shortening the term of a working order goes through the early end with an
+ *    approval (ADR 0044), and an extension accepting a date before the current end would bypass
+ *    that approval in one step. The caller must check it beforehand (a contracts predicate), but
+ *    the check stands here too: a place that changes someone else's term does not rely on the
+ *    caller's courtesy.
+ * 2. **The version moves by its own conditional `UPDATE`.** The order is edited outside the weekly
+ *    request too, so the write goes by the version read under the lock: a mismatch is a conflict,
+ *    not a silent overwrite.
+ * 3. **A pending early-end request is dropped only with explicit consent** (`dropPendingEarlyEnd`).
+ *
+ * In `history` the paper is not the weekly sweep's (ADR 0220): the sweep knows one vehicle and one
+ * machinist per order and wants one sheet per week, so on a week cut by a mid-week change it burns
+ * the second half and cannot reissue it over the worked first one. The caller then brings the
+ * segment plan in `history`, and this service keeps step 11 of the history doors around the term
+ * write in the order of the `/period` door: history materialized by the OLD term first (the plan
+ * was computed over it), readiness recomputed by the NEW term after (Ж1), paper last.
  */
 export async function extendSpecialEquipmentPeriod(
   tx: Tx,
   params: {
     requestId: string;
-    /** Версия заявки, прочитанная под `FOR UPDATE` в этой же транзакции. */
+    /** The order version read under `FOR UPDATE` in this same transaction. */
     expectedVersion: number;
     newDateTo: string;
     actor: { id: string };
     reason: string;
     dropPendingEarlyEnd: boolean;
     /**
-     * Кто считает бэкстоп истории (Р21–Р23). Проезжает насквозь и без умолчания: продление зовёт
-     * недельная операция, а она обязана посчитать его preflight'ом по всем строкам разом — иначе
-     * первый же проблемный заказ остановил бы неделю посреди применения.
+     * Who computes the history backstop (Р21–Р23). Passed through with no default: the extension is
+     * called by the weekly operation, which must compute it as a preflight over all rows at once —
+     * otherwise the first problematic order would stop the week in the middle of applying it.
      */
     backstop: WorkPeriodBackstop;
     /**
-     * Контекст операции коррекции (ADR 0101). Продление в **прошедшую** неделю без него оставило бы
-     * заказ с новым сроком и без бумаги за уже отработанные дни: сверка кончившуюся неделю не
-     * выписывает вовсе. Проверять его здесь нечем и не нужно — признак приходит от сервера, уже
-     * спросившего право, причину и глубину.
+     * Context of the correction operation (ADR 0101). An extension into a **past** week without it
+     * would leave the order with a new term and no paper for the worked days: the weekly sweep does
+     * not issue an ended week at all. There is nothing to check it with here, and no need: the
+     * marker comes from the server that already asked the right, the reason and the depth.
      */
     correction?: WorkPeriodCorrection;
+    /**
+     * The segment plan, when history leads the paper (ADR 0220). Not passed — the weekly sweep,
+     * as before (`legacy`).
+     */
+    history?: ExtendHistoryPaper;
   },
 ): Promise<ExtendResult> {
   const period = await loadWorkPeriod(tx, params.requestId);
@@ -330,6 +364,15 @@ export async function extendSpecialEquipmentPeriod(
       `Продление не удлиняет срок: заказ уже идёт по ${period.effectiveDateTo}`,
       { dateTo: 'Дата не позже нынешнего конца срока' },
     );
+  }
+
+  // Materialized by the old term: the plan's targets were computed over the history restored in
+  // memory, and a backfill run after the term write would restore a different one.
+  if (params.history?.historyPresent) {
+    await ensureCommandHistory(tx as AssignmentCommandTx, {
+      requestId: params.requestId,
+      asOf: params.history.asOf,
+    });
   }
 
   await tx
@@ -349,6 +392,15 @@ export async function extendSpecialEquipmentPeriod(
     .returning({ id: vehicleRequests.id });
   if (!bumped) throw err.conflict();
 
+  // A door that widened the validity range of the history recomputes its readiness (Ж1): the
+  // added days were not part of yesterday's verdict.
+  if (params.history) {
+    await ensureAssignmentHistory(tx as AssignmentCommandTx, {
+      requestId: params.requestId,
+      asOf: params.history.asOf,
+    });
+  }
+
   const result = await afterWorkPeriodChanged(tx, {
     requestId: params.requestId,
     actor: params.actor,
@@ -356,6 +408,15 @@ export async function extendSpecialEquipmentPeriod(
     dropPendingEarlyEnd: params.dropPendingEarlyEnd,
     backstop: params.backstop,
     correction: params.correction,
+    ...(params.history
+      ? {
+          paper: {
+            kind: 'plan' as const,
+            plan: params.history.plan,
+            context: params.history.context,
+          },
+        }
+      : {}),
   });
   return { previousDateTo: period.effectiveDateTo, ...result };
 }

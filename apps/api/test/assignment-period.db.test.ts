@@ -672,54 +672,108 @@ describeReadModes(readMode, 'правка срока: продление и со
     });
   });
 
-  it('продление задним числом: лист выходит на отрезок состава, а недельная сверка молчит', async () => {
+  it('продление заказа, кончающегося в середине недели, переоформляет её лист до воскресенья', async () => {
     /*
-     * Продление в **прошедшую** неделю. Срок кончился в прошлый вторник, и его двигают на прошлую
-     * же пятницу: исход `crew` (Р32, Е3) — правка утверждает что-то о днях, которые уже прошли, и
-     * потому спрашивает причину, право и глубину.
+     * The order ends next Wednesday and is extended to next Sunday. The opened Thursday–Sunday
+     * belong to the document Monday–Sunday, and the issued Monday–Wednesday sheet is not worked
+     * yet, so the plan burns it and issues the week whole — what the weekly sweep has always done.
+     * Until ADR 0220 the segment plan saw only the bare opened days, found no document touching
+     * them, and issued nothing: Thursday–Sunday were left without paper.
+     */
+    const wednesday = shiftDateKey(NEXT, 2);
+    await inScene(
+      { status: 'confirmed', dateTo: wednesday, issueSheets: true },
+      async (tx, scene) => {
+        const before = activeSheets(await sheetsOf(tx, scene.requestId));
+        expect(compositionOf(before)).toEqual(
+          esm2Periods(TERM_FROM, wednesday).map(
+            (p) => `${p.from}—${p.to}|${scene.vehicleA}|${scene.personA}`,
+          ),
+        );
+
+        const command: PeriodCommand = { version: 0, dateTo: EXTENDED_TO };
+        const preview = await previewPeriod(tx, scene, DISPATCHER, command);
+        expect(preview.operationRequirement).toBeNull();
+        expect(preview.requiredUnlocks).toEqual([]);
+        // The opened days are issued: the plan names the whole week, not nothing.
+        expect(preview.plan.issue.length).toBeGreaterThan(0);
+
+        const outcome = await runPeriod(tx, scene, DISPATCHER, armed(command, preview));
+        expect(outcome.repeated).toBe(false);
+        const after = activeSheets(await sheetsOf(tx, scene.requestId));
+        // One expectation for both modes: a forward extension of one pair cuts nothing, and the
+        // segment plan and the weekly sweep give the same documents (the compatibility gate, Б1).
+        expect(compositionOf(after)).toEqual(
+          esm2Periods(TERM_FROM, EXTENDED_TO).map(
+            (p) => `${p.from}—${p.to}|${scene.vehicleA}|${scene.personA}`,
+          ),
+        );
+        // The weeks before the extended one keep their numbers.
+        const untouched = before.filter((row) => row.period_to < NEXT).map((row) => row.id);
+        expect(after.filter((row) => row.period_to < NEXT).map((row) => row.id)).toEqual(untouched);
+      },
+    );
+  });
+
+  it('продление задним числом: открытые дни получают свои документы, лист их недели переоформляется', async () => {
+    /*
+     * An extension into a **past** week. The term ended last Tuesday and is moved to last Friday:
+     * outcome `crew` (Р32, Е3) — the edit claims something about days that have passed, so it asks
+     * for a reason, a right and a depth.
      *
-     * Со среды прошлой недели по истории работает другая машина с другим машинистом. Это и есть
-     * то, чего недельная сверка выразить не может: единица у неё — календарная неделя, а неделя
-     * уже занята запертым листом за вторник (Р21). Отрезковый план единицей считает отрезок
-     * постоянного состава, и открытые продлением дни получают **свой** документ.
+     * From last Thursday the history has another vehicle with another machinist, and Monday to
+     * Wednesday is vehicle A with personA — while the issued Monday–Tuesday sheet carries the
+     * scene's denormalized vehicle B. The weekly sweep cannot express that at all: its unit is the
+     * calendar week. The segment plan gives Thursday–Friday their own document, and the opened
+     * Wednesday brings in its document, Monday–Wednesday (ADR 0220): the worked Monday–Tuesday
+     * sheet is named by the server for reissue and confirmed by the person's unlock fingerprint.
+     * Before ADR 0220 the scope was the bare opened days, the plan did not see that sheet, and
+     * Wednesday was left without paper.
      */
     const splitAt = shiftDateKey(PREV, 3);
     const extendedTo = shiftDateKey(PREV, 4);
+    const wednesday = shiftDateKey(PREV, 2);
     /**
-     * Бумага двухдневного срока сцены и бумага открытых продлением дней — обе считаются порталом.
-     *
-     * Границы называет сцена (понедельник–вторник прошлой недели и четверг–пятница той же), а
-     * сколько документов из этих границ выходит — ответ ADR 0142: месяц режет и двухдневный
-     * отрезок. Прошлый понедельник бывает последним числом месяца, четверг — тоже, и тогда каждый
-     * из отрезков становится двумя листами. Записанные одной строкой, оба ожидания краснели бы 35
-     * и 28 дней из 1095 соответственно — без единой правки кода.
+     * The paper of the scene's two-day term and of the opened days — both computed by the portal:
+     * the scene names the bounds, and how many documents come out of them is ADR 0142's answer (a
+     * month cuts a two-day range too). Written as one line each, the expectations would go red on
+     * the days a month ends inside them, with no change of code.
      */
     const scenePeriods = esm2Periods(PREV, shiftDateKey(PREV, 1));
+    /** The document of the opened Wednesday: Monday–Wednesday, unless a month's end cuts it. */
+    const wednesdayPeriod = esm2Periods(PREV, wednesday).find((p) => p.to === wednesday)!;
     const openedPeriods = esm2Periods(splitAt, extendedTo);
     await inScene(
       { status: 'done', dateTo: shiftDateKey(PREV, 1), splitAt, issueSheets: true },
       async (tx, scene) => {
-        const before = compositionOf(await sheetsOf(tx, scene.requestId));
+        const sheets = activeSheets(await sheetsOf(tx, scene.requestId));
+        const before = compositionOf(sheets);
         expect(before).toEqual(
           scenePeriods.map((p) => `${p.from}—${p.to}|${scene.vehicleB}|${scene.personA}`),
+        );
+        /** The worked sheets Wednesday's document overlaps — the ones its reissue burns. */
+        const replaced = sheets.filter(
+          (row) => row.period_from <= wednesdayPeriod.to && row.period_to >= wednesdayPeriod.from,
         );
 
         const command: PeriodCommand = { version: 0, dateTo: extendedTo };
         const preview = await previewPeriod(tx, scene, DISPATCHER, command);
         expect(preview.operationRequirement).toMatchObject({ kind: 'crew' });
         /*
-         * Предпросмотр в **обоих** режимах показывает один и тот же отрезковый план: дверь считает
-         * его всегда, режим решает не «считать ли», а «исполнять ли». До переключения обещание
-         * шире исполнения — недельная сверка этот отрезок не выпишет, — и ровно это расхождение
-         * cutover и закрывает.
+         * The preview shows the same segment plan in **both** modes: the door always computes it,
+         * and the mode decides only whether to execute it.
          */
         expect(preview.plan.issue.map((i) => `${i.from}—${i.to}`)).toEqual(
-          openedPeriods.map((p) => `${p.from}—${p.to}`),
+          [wednesdayPeriod, ...openedPeriods].map((p) => `${p.from}—${p.to}`),
         );
-        // Подтверждать надо и пустое множество разблокировок (Д4): лист за вторник в область
-        // сверки не попал — область продления это только открытые им дни (Р11).
+        expect(preview.plan.cancel.map((c) => c.waybillId).sort()).toEqual(
+          replaced.map((row) => row.id).sort(),
+        );
+        // The unlocks are the server's: the person confirms exactly the burnt numbers shown (Д4).
         expect(preview.unlockFingerprint).not.toBeNull();
-        expect(preview.requiredUnlocks).toEqual([]);
+        expect(preview.requiredUnlocks.map((u) => u.waybillId).sort()).toEqual(
+          replaced.map((row) => row.id).sort(),
+        );
 
         const outcome = await runPeriod(tx, scene, DISPATCHER, {
           ...armed(command, preview, {
@@ -733,46 +787,36 @@ describeReadModes(readMode, 'правка срока: продление и со
         expect(outcome.repeated).toBe(false);
         expect(await termOf(tx, scene.requestId)).toMatchObject({ date_to: extendedTo });
 
-        expect(compositionOf(await sheetsOf(tx, scene.requestId))).toEqual(
+        const after = compositionOf(await sheetsOf(tx, scene.requestId));
+        const kept = compositionOf(sheets.filter((row) => !replaced.includes(row)));
+        expect(after).toEqual(
           byReadMode(mode, {
             /*
-             * Недельная сверка не выписала ничего. Не «забыла»: неделю она считает занятой —
-             * действующий лист за вторник в ней уже есть, а переоформить его нельзя, он отработан
-             * и в область сверки не назван. Заказ живёт с новым сроком и без бумаги за открытые
-             * дни: тот самый исход, ради устранения которого шаг 12 и переводят на отрезки.
+             * The weekly sweep prints one pair per order — the denormalized vehicle B with
+             * personA — and, given the named sheet, rewrites the period of the opened days whole.
              */
-            legacy: before,
+            legacy: esm2Periods(PREV, extendedTo).map(
+              (p) => `${p.from}—${p.to}|${scene.vehicleB}|${scene.personA}`,
+            ),
             /*
-             * Отрезковый план выписывает документ ровно на новый отрезок — со среды по пятницу, на
-             * машину и человека, которых история этих дней и называет. Лист за вторник при этом не
-             * тронут: он вне области, и переоформлять его никто не просил.
-             *
-             * «Документ» здесь единственного числа по обыкновению, а не по расчёту: если четверг
-             * окажется последним числом месяца, тот же отрезок выйдет двумя бланками (ADR 0142), и
-             * предмет случая — что открытые дни получили СВОЮ бумагу, а не долепились к запертому
-             * листу за вторник — от этого не меняется.
+             * The segment plan prints what the history of each day names: Wednesday's document
+             * with vehicle A and personA, Thursday–Friday with vehicle B and personB. A sheet the
+             * opened days do not reach keeps its number.
              */
             history: [
-              ...before,
+              ...kept,
+              `${wednesdayPeriod.from}—${wednesdayPeriod.to}|${scene.vehicleA}|${scene.personA}`,
               ...openedPeriods.map((p) => `${p.from}—${p.to}|${scene.vehicleB}|${scene.personB}`),
             ],
           }),
         );
-        expect(outcome.paper?.esm2.issued).toHaveLength(
-          byReadMode(mode, { legacy: 0, history: openedPeriods.length }),
-        );
-
-        /*
-         * Среда остаётся без бумаги в обоих режимах, и это не пропуск: её накрыл бы только
-         * переоформленный лист за вторник, а он вне области сверки. Р11 запрещает трогать
-         * документы, которых человек в предпросмотре не видел, — и запрет здесь сильнее удобства.
-         */
-        const middle = shiftDateKey(PREV, 2);
+        expect(outcome.paper?.esm2.issued).toHaveLength(after.length - kept.length);
+        // Wednesday has paper in both modes: the opened day's document came with it.
         expect(
           activeSheets(await sheetsOf(tx, scene.requestId)).some(
-            (row) => row.period_from <= middle && row.period_to >= middle,
+            (row) => row.period_from <= wednesday && row.period_to >= wednesday,
           ),
-        ).toBe(false);
+        ).toBe(true);
       },
     );
   });

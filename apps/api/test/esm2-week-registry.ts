@@ -132,11 +132,11 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     file: 'assignment-period.db.test.ts',
     klass: 'sync',
     status: 'done',
-    note: 'дверь правки срока (Ж4, Д2, Е3): блоки «продление и сокращение» и «права по исходу» идут двумя прогонами, ожидания утверждаются составом (`границы|машина|человек`), а не числом листов. Расходятся два случая. **Права по исходу**: границы листа у обоих исполнителей одни, а машина разная — недельная сверка печатает пару из денормализации (после гашения хвостовой группы там всё ещё машина хвоста, Р17 её не двигает), отрезковый план берёт машину из истории отрезка. **Продление задним числом** (новый случай, исход `crew`): недельная сверка не выписывает ничего — неделя занята запертым листом, — а отрезковый план даёт открытым дням свой документ на их собственный состав. Остальные четыре случая совпадают половинами намеренно: продление вперёд ничего не режет (паритет Б1), а сокращение переоформляет только вынесенные за срок дни — соседние документы вне области сверки (Р11) **ADR 0142**: ожидания пересчитаны месячным разрезом — число и границы листов считаются из `esm2Periods`, а не пишутся цифрой.',
+    note: "the term door (Ж4, Д2, Е3): the «extension and shortening» and «rights by outcome» blocks run in both modes and assert compositions (`bounds|vehicle|person`), not counts. Two cases diverge by mode. **Rights by outcome**: the bounds match, the vehicle differs — the weekly sweep prints the denormalized pair (after the tail group is cancelled it is still the tail vehicle, Р17 does not move it), the segment plan takes the segment's vehicle from history. **Backdated extension** (outcome `crew`): the opened Wednesday brings in its document Monday–Wednesday (ADR 0220) and the worked Monday–Tuesday sheet is named by the server; the sweep then rewrites the period whole with the order's single pair, the segment plan gives every segment its own composition. **Mid-week end**: a forward extension reissues the partial week whole in both modes (ADR 0220). The other cases match by design: a forward extension cuts nothing (parity Б1), a shortening reissues only the days taken out of the term (Р11). **ADR 0142**: counts and bounds come from `esm2Periods`, never written as numbers.",
     todo:
-      'осталось следом разбора: предпросмотр в `legacy` показывает **отрезковый** план, который ' +
-      'недельная сверка не исполнит (случай продления задним числом это фиксирует). Свойство не ' +
-      'этапа 5 — оно у двери с волны 4a, — и снимается самим cutover',
+      'left as a trace of the review: in `legacy` the preview shows the **segment** plan, which the ' +
+      'weekly sweep executes its own way (the backdated case records it). A property of the door ' +
+      'since wave 4a, not of stage 5; the cutover removes it',
   },
   {
     file: 'assignment-correction.db.test.ts',
@@ -334,6 +334,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     todo:
       'на этапе 5 недельная операция начнёт резать неделю — тогда расходятся ожидания по числу листов ' +
       'в блоке «ЭСМ-2 после продления»',
+  },
+  {
+    file: 'weekly-visa-history-paper.db.test.ts',
+    klass: 'sync',
+    status: 'done',
+    note: 'the weekly visa leads paper by the segment plan in `history` (ADR 0220). The vehicle-change and mid-week-end cases run in both modes with one expectation each; the machinist-change and backdated cases are `history` only. Expectations are compositions and sheet identities (`before` vs `after`), periods come from `esm2Periods`; the backdated case picks the latest ended week no month cuts',
   },
   {
     file: 'request-backdate.db.test.ts',

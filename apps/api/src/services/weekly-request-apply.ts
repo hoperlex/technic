@@ -5,13 +5,17 @@ import {
   formatVehicleRequestNumber,
   formatWeeklyRequestNumber,
   moscowDateKeyOf,
+  movedRequestDateKey,
   newItemBlocker,
+  periodsOverlap,
   orderEffectiveDateTo,
   sourceItemBlocker,
   WEEKLY_SELECTABLE_WEEKS,
   weeklyWeekBlocker,
   weeklyWeekBounds,
   weeklyWeekLabel,
+  type AssignmentUnlockDto,
+  type Esm2Period,
   type WeeklyApplyItemResultDto,
   type WeeklyApplyResultDto,
   type WeeklyRequestScope,
@@ -32,12 +36,16 @@ import {
   weeklyVehicleRequestItems,
   weeklyVehicleRequests,
 } from '../db/schema';
-import { err } from '../lib/errors';
+import { AppError, err } from '../lib/errors';
 import {
   applyAssignmentBackstop,
   evaluateAssignmentBackstop,
   type AssignmentBackstopVerdict,
 } from './assignment-backstop';
+import type { AssignmentCommandTx } from './assignment-command';
+import type { AssignmentTerm } from './assignment-history';
+import { assignmentPaperExecution, paperFollowsHistory } from './assignment-paper';
+import { shortenTermPlan, type ShortenTermPlan } from './assignment-shorten-term';
 import { machinistCardRemovedSql } from './machinist-commitments';
 import { extendSpecialEquipmentPeriod } from './vehicle-request-period';
 import { createSpecialEquipmentRequest } from './vehicle-request-create';
@@ -45,7 +53,7 @@ import { loadLeftBy } from './weekly-request-blockers';
 import { esm2SheetsOfRequests, type Esm2SyncResult } from './waybill-esm2';
 // Гейт режима модуля периодов назначения (план §10, решение И1): применение недели продлевает
 // сроки и переоформляет листы, то есть читает историю ради бумаги — дверь класса `history`.
-import { requireOpenDoor } from './assignment-mode';
+import { requireOpenDoor, type AssignmentModeSnapshot } from './assignment-mode';
 
 /**
  * Применение недельной заявки (ADR 0085, план §8): виза той же транзакцией двигает сроки и
@@ -366,6 +374,161 @@ async function decide(
   return { item, skipReason: blocker, order };
 }
 
+/**
+ * The segment plan of one extension row (ADR 0220): the calculation the `/period` door makes for
+ * the same term change, because in `history` a visa extends a term exactly as that door would.
+ *
+ * One function for the apply and for the correction preview: the preview promises the sheets to
+ * name for reissue, and the promise holds only while the same calculation makes it.
+ */
+export async function planWeeklyExtension(
+  tx: Tx,
+  params: {
+    requestId: string;
+    /** The term as it is now — read under the order lock by the apply, without it by the preview. */
+    termBefore: AssignmentTerm;
+    /** The last day the row extends the order to. */
+    dateTo: string;
+    asOf: string;
+  },
+): Promise<ShortenTermPlan> {
+  const { requestId, termBefore, dateTo, asOf } = params;
+  // The effective date of an extension is its new last day (`movedRequestDateKey`, ADR 0101 §4) —
+  // the same boundary the `/period` door asks: today and later is ordinary work, earlier is an
+  // operation in the past, and the plan then needs the correction context and named unlocks.
+  const movedDate = movedRequestDateKey(
+    { dateFrom: termBefore.dateFrom, dateTo: termBefore.dateTo },
+    { dateTo },
+  );
+  return shortenTermPlan(tx as AssignmentCommandTx, {
+    requestId,
+    asOf,
+    termBefore,
+    termAfter: { dateFrom: termBefore.dateFrom, dateTo },
+    external:
+      movedDate === null
+        ? null
+        : { effectiveDate: movedDate, outcome: movedDate < asOf ? 'crew' : 'none' },
+    // Linear days are not asked, as at the `/period` door: an extension takes no day off a route.
+    linearDays: null,
+  });
+}
+
+/**
+ * What the correction preview shows for one extension row in `history` (ADR 0220): the worked
+ * sheets the visa will require named, and the past periods it will issue where the order has no
+ * sheet. Read from the plan the visa executes — `esm2CorrectionScope` knows only the week cut, and
+ * on a week cut by a mid-week change it would promise sheets the visa never touches.
+ *
+ * `null` — the row extends nothing (the order is gone or already runs past the row's date): the
+ * visa will skip it, and the preview has nothing to say about it either.
+ */
+export async function weeklyExtensionPreview(
+  tx: Tx,
+  params: { requestId: string; dateTo: string; asOf: string },
+): Promise<{ unlocks: AssignmentUnlockDto[]; pastPeriods: Esm2Period[] } | null> {
+  const [term] = await tx
+    .select({
+      dateFrom: specialEquipmentRequestDetails.dateFrom,
+      dateTo: specialEquipmentRequestDetails.dateTo,
+    })
+    .from(specialEquipmentRequestDetails)
+    .where(eq(specialEquipmentRequestDetails.requestId, params.requestId));
+  if (!term || params.dateTo <= (term.dateTo ?? term.dateFrom)) return null;
+  const plan = await planWeeklyExtension(tx, {
+    requestId: params.requestId,
+    termBefore: term,
+    dateTo: params.dateTo,
+    asOf: params.asOf,
+  });
+  return {
+    unlocks: plan.requiredUnlocks,
+    // "Paper the orders do not have" — a reissue over a named sheet is the unlock's to explain.
+    pastPeriods: plan.preview.issue
+      .filter((issue) => issue.to < params.asOf)
+      .filter(
+        (issue) =>
+          !plan.sheets.some((sheet) =>
+            periodsOverlap({ from: sheet.periodFrom, to: sheet.periodTo }, issue),
+          ),
+      )
+      .map((issue) => ({ from: issue.from, to: issue.to })),
+  };
+}
+
+/**
+ * The paper of every applicable extension in `history` — its segment plan (ADR 0220), computed
+ * before the first write and under the order locks, so that a refusal names every order at once
+ * (Р23): the week is fixed in one pass.
+ *
+ * WHY NOT THE WEEKLY SWEEP. The sweep knows one vehicle and one machinist per order and wants one
+ * sheet per week. On a week cut by a mid-week change it burns the second half and cannot reissue
+ * it, because the worked first half locks the week (ТС-202, 02–04.10.2026); while the first half is
+ * not worked yet, it burns both halves and prints the new pair over the days of the previous one —
+ * the case ADR 0212 moved work entry off the sweep for. The segment plan touches only the
+ * documents that intersect the days the extension adds.
+ *
+ * In `legacy` the map stays empty and the sweep leads the paper as before.
+ */
+async function planHistoryPaper(
+  tx: Tx,
+  params: {
+    mode: AssignmentModeSnapshot;
+    decisions: readonly Decision[];
+    asOf: string;
+    correction: WeeklyApplyCorrection | undefined;
+    unlockByRequest: ReadonlyMap<string, readonly string[]>;
+  },
+): Promise<Map<string, ShortenTermPlan>> {
+  const plans = new Map<string, ShortenTermPlan>();
+  if (!paperFollowsHistory(params.mode)) return plans;
+
+  const unnamed: { order: string; unlock: AssignmentUnlockDto }[] = [];
+  for (const decision of params.decisions) {
+    if (decision.skipReason !== null || decision.item.kind !== 'extend') continue;
+    const order = decision.order!;
+    const plan = await planWeeklyExtension(tx, {
+      requestId: order.id,
+      termBefore: { dateFrom: order.dateFrom, dateTo: order.dateTo },
+      dateTo: decision.item.dateTo!,
+      asOf: params.asOf,
+    });
+    /*
+     * An extension into the past is reachable only through the correction branch: the fifth week
+     * check refuses an overdue week without it, and a week that has not started cannot end before
+     * today. A plan asking for an operation without one means those rules diverged, and executing
+     * it as ordinary work would open the past with no provenance.
+     */
+    if (plan.effects.needsOperation && !params.correction) {
+      throw new AppError(
+        500,
+        'weekly_apply_invariant',
+        `Недельная заявка: продление заказа ${formatVehicleRequestNumber(order.num)} уходит в прошлое, а операции коррекции у визы нет`,
+      );
+    }
+    // Unlocking is named and never spreads sideways by itself (ADR 0116 item 11), as at every
+    // history door: a worked sheet the plan must reissue and the person did not name refuses the
+    // visa instead of leaving the added days without paper.
+    const named = new Set(params.unlockByRequest.get(order.id) ?? []);
+    for (const unlock of plan.requiredUnlocks) {
+      if (!named.has(unlock.waybillId)) {
+        unnamed.push({ order: formatVehicleRequestNumber(order.num), unlock });
+      }
+    }
+    plans.set(order.id, plan);
+  }
+  if (unnamed.length > 0) {
+    throw err.unprocessable(
+      `Продление задевает отработанные листы ЭСМ-2 — отметьте их к перевыписке: ${unnamed
+        .map(({ order, unlock }) => `${order} — № ${unlock.displayNumber}`)
+        .join('; ')}`,
+      { unlockWaybillIds: 'Нужна перевыписка' },
+      { requiredUnlocks: unnamed.map(({ unlock }) => unlock) },
+    );
+  }
+  return plans;
+}
+
 export async function applyWeeklyRequest(
   tx: Tx,
   params: {
@@ -379,9 +542,10 @@ export async function applyWeeklyRequest(
     correction?: WeeklyApplyCorrection;
   },
 ): Promise<WeeklyApplyOutcome> {
-  // Шаг 0 канонического порядка — до шапки недели и до первой её блокировки: гейт обязан быть
-  // первым запросом пишущей транзакции, иначе freeze не дождётся этого писателя (Ж3).
-  await requireOpenDoor(tx, 'history');
+  // Step 0 of the canonical order — before the week header and its first lock: the gate must be the
+  // first query of a writing transaction, otherwise a freeze would not wait for this writer (Ж3).
+  // Its snapshot also decides who leads the paper, once for the whole week (ADR 0220).
+  const mode = await requireOpenDoor(tx, 'history');
   const [header] = await tx
     .select({
       id: weeklyVehicleRequests.id,
@@ -475,6 +639,12 @@ export async function applyWeeklyRequest(
   const results: WeeklyApplyItemResultDto[] = [];
   const esm2: { requestId: string; sync: Esm2SyncResult }[] = [];
   const reason = `Недельная заявка ${formatWeeklyRequestNumber(header.num)} (${weeklyWeekLabel(header.weekStart)})`;
+  // The operation's reason is appended to the extension's, not substituted for it (Р35 ADR 0101): a
+  // burnt number must show both answers — which document moved the term and why it was done in the
+  // past. Either half alone explains exactly half.
+  const extendReason = params.correction
+    ? `${reason}: срок продлён задним числом — ${params.correction.reason}`
+    : `${reason}: срок продлён`;
 
   /*
    * Бэкстоп чужой двери (Р21, Р22) — **preflight'ом, до первой записи** (Р23).
@@ -515,6 +685,14 @@ export async function applyWeeklyRequest(
     reason,
   });
 
+  const paperPlans = await planHistoryPaper(tx, {
+    mode,
+    decisions,
+    asOf: today,
+    correction: params.correction,
+    unlockByRequest,
+  });
+
   for (const decision of decisions) {
     const { item, order } = decision;
     if (decision.skipReason !== null) {
@@ -537,35 +715,60 @@ export async function applyWeeklyRequest(
     }
 
     if (item.kind === 'extend') {
+      const paperPlan = paperPlans.get(order!.id);
       const extended = await extendSpecialEquipmentPeriod(tx, {
         requestId: order!.id,
-        // Версия берётся из только что прочитанного под блокировкой заказа, а не из строки
-        // состава: после `FOR UPDATE` условная запись защищает от потерянного перечитывания, а не
-        // от конкурента — тот уже ждёт на блокировке.
+        // The version comes from the order just read under the lock, not from the row: after
+        // `FOR UPDATE` the conditional write guards against a lost re-read, not against a
+        // competitor — that one is already waiting on the lock.
         expectedVersion: order!.version,
         newDateTo: item.dateTo!,
         actor: params.actor,
-        // Причина операции дописывается к причине продления, а не заменяет её (Р35 ADR 0101): у
-        // сгоревшего номера обязаны читаться оба ответа — каким документом двинулся срок и почему
-        // это сделано задним числом. Одна из двух половин по отдельности объясняет ровно половину.
-        reason: params.correction
-          ? `${reason}: срок продлён задним числом — ${params.correction.reason}`
-          : `${reason}: срок продлён`,
-        // Чужой запрос на досрочный отъезд неделя не снимает никогда: единица с нерешённым
-        // запросом в состав не идёт вовсе (`sourceItemBlocker`), и второго — молчаливого — способа
-        // отменить чужое решение у модуля быть не должно. Умолчания у параметра нет намеренно
-        // (`vehicle-request-period.ts`): ответ на этот вопрос даёт вызывающий, а не забывчивость.
+        reason: extendReason,
+        // The week never drops someone else's early-departure request: a unit with an undecided
+        // request does not enter the composition at all (`sourceItemBlocker`), and the module must
+        // not have a second, silent way to cancel someone else's decision. The parameter has no
+        // default on purpose (`vehicle-request-period.ts`): the caller answers, not forgetfulness.
         dropPendingEarlyEnd: false,
-        // Бэкстоп уже посчитан preflight'ом выше — по всем строкам разом и до первой записи (Р23).
+        // The backstop was computed by the preflight above — over all rows and before the first
+        // write (Р23).
         backstop: 'checked_by_caller',
-        // Контекст операции — иначе продление в прошедшую неделю оставило бы заказ с новым сроком
-        // и без бумаги за отработанные дни: сверка кончившуюся неделю сама не выписывает (Р21
-        // ADR 0101). Названные листы идут сюда уже разложенными по заказам.
+        // The operation context — otherwise an extension into a past week would leave the order
+        // with a new term and no paper for the worked days: the weekly sweep does not issue an
+        // ended week by itself (Р21 ADR 0101). Named sheets arrive already split by order.
         ...(params.correction
           ? {
               correction: {
                 id: params.correction.id,
                 unlockWaybillIds: unlockByRequest.get(order!.id) ?? [],
+              },
+            }
+          : {}),
+        // In `history` the paper is the segment plan computed before the first write (ADR 0220).
+        ...(paperPlan
+          ? {
+              history: {
+                asOf: today,
+                historyPresent: paperPlan.historyPresent,
+                ...assignmentPaperExecution({
+                  requestId: order!.id,
+                  actor: params.actor,
+                  reason: extendReason,
+                  mode,
+                  effects: paperPlan.effects,
+                  operationId: params.correction?.id ?? null,
+                  sheetPlan: paperPlan.sheetPlan,
+                  paperScope: paperPlan.paperScope,
+                  sheets: paperPlan.sheets,
+                  displayNumbers: paperPlan.sheetNumbers,
+                  // Every required unlock is named — `planHistoryPaper` refused otherwise.
+                  unlockWaybillIds: paperPlan.requiredUnlockIds,
+                  issues: paperPlan.issuePreparations,
+                  // The visa asks no per-sheet signatures (ADR 0220): its form has none, and the
+                  // weekly sweep it replaces did not ask either. An issued sheet keeps its
+                  // warnings unconfirmed.
+                  acknowledgements: undefined,
+                }),
               },
             }
           : {}),
