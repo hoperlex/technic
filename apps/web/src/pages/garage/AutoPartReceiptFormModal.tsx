@@ -179,14 +179,14 @@ export function AutoPartReceiptFormModal({
     },
     onError: (e) => {
       /*
-       * Версия уехала (Р12): на экране устаревший чек, и повторять отправку не по чему — та же
-       * кнопка с той же версией даст тот же отказ. Карточка перечитывается, окно закрывается:
-       * правку продолжают уже поверх чужой.
+       * The version moved (R12): resending would get the same refusal. The card rereads the receipt
+       * and the window STAYS OPEN with the input: the reread brings the colleague's version, the
+       * form shows the notice, and "Reload" is the person's choice — closing the window here lost
+       * the input without consent (stage 5 plan §4.5, decision R6-a).
        */
       if (receipt && isReceiptVersionConflict(e)) {
         message.error(receiptErrorText(e));
         invalidate({ kind: 'write', id: receipt.id, vehicleIds: receiptVehicleIds(receipt.lines) });
-        onClose();
         return;
       }
       // Отказ сервера ложится на те же ячейки и поля, что и свои проверки (§7, ADR 0094): путь

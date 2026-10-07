@@ -73,14 +73,14 @@ export function ReceiptDeletionMarkModal({
     onError: (e) => {
       message.error(receiptErrorText(e));
       /*
-       * 409 — либо версия уехала, либо пометку уже поставили из другого окна. И то, и другое
-       * лечится перечиткой, а не повторным нажатием той же кнопки: карточка на экране устарела.
-       * Прочие отказы (сеть, отказ сервера) окно не закрывают — набранная причина пережила бы
-       * закрытие только в голове у пишущего.
+       * 409 — the version moved or the mark was set from another window. Both are cured by a
+       * reread, not by pressing the same button again: the card on screen is stale. The window stays
+       * open with the typed reason — the reread brings the newer receipt and the notice, and
+       * "Reload" is the person's choice (stage 5 plan §4.5, decision R6-a). Other refusals (network,
+       * server) keep it open too: a typed reason would survive closing only in the writer's head.
        */
       if (isApiError(e) && e.status === 409) {
         invalidate({ kind: 'mark', id: receipt!.id });
-        onClose();
       }
     },
   });
