@@ -94,7 +94,11 @@ import {
 } from '../lib/access';
 // Состояние позиции классификатора для `newItemBlocker` читается тем же справочником, что и на
 // визе: один вопрос цикла — один ответ (см. `loadClassification`).
-import { applyWeeklyRequest, loadClassification } from '../services/weekly-request-apply';
+import {
+  applyWeeklyRequest,
+  loadClassification,
+  weeklyExtensionPreview,
+} from '../services/weekly-request-apply';
 import {
   assertWeeklyRequestReadable,
   weeklyItemsReadWhere,
@@ -107,6 +111,8 @@ import { WEEKLY_ANNUL_SPEC } from '../services/weekly-request-annul';
 import { WEEKLY_RETURN_SPEC } from '../services/weekly-request-return';
 import { previewWeeklyReversal, runWeeklyReversal } from '../services/weekly-request-reversal';
 import { esm2CorrectionScope } from '../services/waybill-esm2';
+import { readAssignmentMode } from '../services/assignment-mode';
+import { paperFollowsHistory } from '../services/assignment-paper';
 // Механика заднего числа — общая для всех входов (ADR 0101): вердикт, запись операции,
 // идемпотентность по ключу и связь операции с заявками живут в одном месте, а не переписываются
 // каждым входом по-своему.
@@ -1776,10 +1782,12 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
    * какие прошедшие недели появится бумага, какая у операции эффективная дата и докуда достаёт
    * глубина субъекта, — и её запреты, если провести неделю нельзя.
    *
-   * Расхождение предпросмотра и исполнения здесь недопустимо: диалог обещает человеку сгоревшие
-   * номера, и обещание верно ровно до тех пор, пока считает его та же работа. Поэтому ни одного
-   * своего расчёта тут нет — `weeklyWeekBlocker`, `weeklyWeekEffectiveDate`, `checkBackdate`,
-   * `esm2CorrectionScope` и `canCancelWaybill` те же, что на визе и в сверке.
+   * A divergence between the preview and the execution is not allowed here: the dialog promises
+   * the person burnt numbers, and the promise holds only while the same work computes it. So there
+   * is no calculation of its own here — `weeklyWeekBlocker`, `weeklyWeekEffectiveDate` and
+   * `checkBackdate` are the visa's, and the paper is whatever leads it in the current mode: the
+   * segment plan in `history` (ADR 0220), `esm2CorrectionScope` and `canCancelWaybill` of the
+   * weekly sweep in `legacy`.
    *
    * Доступ — по чтению карточки: понять, почему кнопка недоступна, должен и тот, кто провести
    * неделю не вправе. Ответ на этот вопрос лежит в полях `allowed` и `blockedReason`, а не в
@@ -1837,45 +1845,92 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
 
       const unlockable: WeeklyCorrectionSheetDto[] = [];
       const pastWeeks: WeeklyCorrectionWeekDto[] = [];
-      for (const row of rows) {
-        // Бумагу двигает только продление: «уезжает» с заказом не делает ничего, а порождённый
-        // строкой `new` заказ рождается без назначения — листов у него нет и быть не может.
-        if (row.kind !== 'extend' || !row.sourceRequestId || !row.dateTo) continue;
-        const displayNumber = row.sourceRequestNum
-          ? formatVehicleRequestNumber(row.sourceRequestNum)
-          : '';
-        const scope = await esm2CorrectionScope(db, {
-          requestId: row.sourceRequestId,
-          today,
-          // Срок, каким он станет: продление и добавляет заказу те прошедшие недели, о которых
-          // окно рассказывает. По нынешнему `date_to` их не видно вовсе.
-          dateTo: row.dateTo,
-        });
-        for (const sheet of scope.sheets) {
-          // Назвать можно ровно отработанный лист: действующий лист незакончившейся недели сверка
-          // переоформит сама, и разрешения на это не спрашивают. Граница — `canCancelWaybill`, та
-          // же, которой `esm2SyncPlan` запирает неделю.
-          const worked = !canCancelWaybill(
-            { issuedForDate: sheet.periodFrom, periodTo: sheet.periodTo },
+      if (paperFollowsHistory(await readAssignmentMode(db))) {
+        /*
+         * In `history` the visa leads the paper by the segment plan (ADR 0220), and the preview
+         * reads the same plan: the sheets listed here are exactly those the visa will require
+         * named, and a sheet it will not touch is not offered. One read-only transaction — the
+         * plan asks history, sheets and terms in a dozen reads, and under `READ COMMITTED` each
+         * would take its own snapshot.
+         */
+        await db.transaction(
+          async (tx) => {
+            for (const row of rows) {
+              // Only an extension moves paper: a «leave» row does nothing to its order, and an
+              // order created by a «new» row is born without an assignment.
+              if (row.kind !== 'extend' || !row.sourceRequestId || !row.dateTo) continue;
+              const paper = await weeklyExtensionPreview(tx, {
+                requestId: row.sourceRequestId,
+                dateTo: row.dateTo,
+                asOf: today,
+              });
+              if (!paper) continue;
+              const displayNumber = row.sourceRequestNum
+                ? formatVehicleRequestNumber(row.sourceRequestNum)
+                : '';
+              for (const unlock of paper.unlocks) {
+                unlockable.push({
+                  waybillId: unlock.waybillId,
+                  requestId: row.sourceRequestId,
+                  displayNumber,
+                  number: unlock.displayNumber,
+                  periodFrom: unlock.from,
+                  periodTo: unlock.to,
+                });
+              }
+              for (const period of paper.pastPeriods) {
+                pastWeeks.push({
+                  requestId: row.sourceRequestId,
+                  displayNumber,
+                  from: period.from,
+                  to: period.to,
+                });
+              }
+            }
+          },
+          { accessMode: 'read only' },
+        );
+      } else {
+        for (const row of rows) {
+          // Only an extension moves paper: a «leave» row does nothing to its order, and an order
+          // created by a «new» row is born without an assignment — it has no sheets and cannot.
+          if (row.kind !== 'extend' || !row.sourceRequestId || !row.dateTo) continue;
+          const displayNumber = row.sourceRequestNum
+            ? formatVehicleRequestNumber(row.sourceRequestNum)
+            : '';
+          const scope = await esm2CorrectionScope(db, {
+            requestId: row.sourceRequestId,
             today,
-          );
-          if (!worked) continue;
-          unlockable.push({
-            waybillId: sheet.id,
-            requestId: row.sourceRequestId,
-            displayNumber,
-            number: sheet.number,
-            periodFrom: sheet.periodFrom,
-            periodTo: sheet.periodTo,
+            // The term as it will become: the extension is what adds the past weeks the window
+            // tells about, and by the current `date_to` they are not visible at all.
+            dateTo: row.dateTo,
           });
-        }
-        for (const period of scope.pastWeeks) {
-          pastWeeks.push({
-            requestId: row.sourceRequestId,
-            displayNumber,
-            from: period.from,
-            to: period.to,
-          });
+          for (const sheet of scope.sheets) {
+            // Only a worked sheet can be named: an active sheet of an unfinished week the sweep
+            // reissues by itself, and no permission is asked for that. The boundary is
+            // `canCancelWaybill`, the same one `esm2SyncPlan` locks a week with.
+            const worked = !canCancelWaybill(
+              { issuedForDate: sheet.periodFrom, periodTo: sheet.periodTo },
+              today,
+            );
+            if (!worked) continue;
+            unlockable.push({
+              waybillId: sheet.id,
+              requestId: row.sourceRequestId,
+              displayNumber,
+              number: sheet.number,
+              periodFrom: sheet.periodFrom,
+              periodTo: sheet.periodTo,
+            });
+          }
+          for (const period of scope.pastWeeks) {
+            pastWeeks.push({
+              requestId: row.sourceRequestId,
+              displayNumber,
+              from: period.from,
+              to: period.to,
+            });
+          }
         }
       }
 

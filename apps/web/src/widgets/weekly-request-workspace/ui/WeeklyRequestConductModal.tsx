@@ -172,13 +172,15 @@ export function WeeklyRequestConductModal({ request, onClose, onConduct, pending
         {/* Waybills of worked weeks are listed by name (ADR 0101 R11), not "all past ones": after
             linear equipment two vehicles' waybills legitimately live in one week (ADR 0100 item 7),
             and a blanket checkbox would burn the wrong number. An unnamed waybill stays untouched:
-            unlocking is targeted and does not spread by itself. */}
+            unlocking is targeted and does not spread by itself. In `history` the list holds exactly
+            the waybills the visa must reissue, and leaving one unnamed refuses the visa with its
+            number (ADR 0220) — so the hint promises only what is true in both modes. */}
         <Form.Item
           name="unlockWaybillIds"
           label="Листы ЭСМ-2 к перевыписке"
           extra={
             (preview?.unlockable.length ?? 0) > 0
-              ? 'Отмеченные номера будут аннулированы, взамен выпишутся новые — следующими по серии. Неотмеченная неделя останется с прежним листом и прежним сроком'
+              ? 'Отмеченные номера будут аннулированы, взамен выпишутся новые — следующими по серии. Неотмеченный лист не переписывается'
               : 'Действующих листов за отработанные недели у состава нет: переписывать нечего'
           }
         >

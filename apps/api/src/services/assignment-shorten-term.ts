@@ -38,6 +38,7 @@ import {
   esm2RequestedSheets,
   esm2SheetPlan,
   normalizeRangeSet,
+  rangeSetIntersects,
   type DateRangeSet,
   type Esm2ExistingSheet,
   type Esm2SheetPlan,
@@ -298,12 +299,11 @@ export async function shortenTermPlan(
         ? esm2RequestedSheets(sheets, term)
         : [];
   /*
-   * Отрезки `wanted` до и после команды: замыкание области считается по обоим разрезам (§7).
+   * The `wanted` segments before and after the command: the scope closure runs over both cuts (§7).
+   * The "after" half is also kept apart — the documents of the days the command opens come from it.
    */
-  const wanted: Esm2Period[] = [
-    ...wantedOf(segmentsBefore, termBefore),
-    ...wantedOf(segmentsAfter, termAfter),
-  ];
+  const wantedAfter = wantedOf(segmentsAfter, termAfter);
+  const wanted: Esm2Period[] = [...wantedOf(segmentsBefore, termBefore), ...wantedAfter];
 
   const effects = assignmentCommandEffects({
     changes,
@@ -321,8 +321,25 @@ export async function shortenTermPlan(
    * внутри дней, которые оно же и выносит за срок.
    */
   const termDiff = symmetricDifference(termRange(termBefore), termRange(termAfter));
+  /*
+   * The days the command opens bring their whole documents into the range (ADR 0220). The unit of
+   * paper is the sheet, not the day: an order ending on Wednesday and extended to Sunday needs the
+   * sheet Monday–Sunday, and Thursday–Sunday alone is no sheet any cut would issue. Started from
+   * the bare days, the closure finds no document touching them — the Monday–Wednesday sheet ends
+   * the day before — so the plan issued nothing and Thursday–Sunday stayed without paper, at the
+   * `/period` door and at the weekly visa alike. From the documents, the closure takes in the
+   * partial sheet and the plan reissues the week (a worked one only when named for reissue).
+   *
+   * Only the "after" cut and only opened days: a shortening opens nothing and keeps its scope, and
+   * a document of the previous cut is not a reason to touch days the command does not add — that
+   * would fill an old gap in passing, the very thing the closure exists to forbid.
+   */
+  const opened = openedDays(termRange(termBefore), termRange(termAfter));
+  const openedDocuments = wantedAfter
+    .map((want) => ({ from: want.from, to: want.to }))
+    .filter((period) => rangeSetIntersects(opened, period));
   const paperScope = documentClosure(
-    normalizeRangeSet([...effects.paperRange, ...termDiff]),
+    normalizeRangeSet([...effects.paperRange, ...termDiff, ...openedDocuments]),
     sheets,
     wanted,
   );
@@ -417,22 +434,30 @@ function termRange(term: AssignmentTerm): { from: string; to: string } {
 }
 
 /**
- * Симметрическая разность двух сроков — дни, которые команда открывает или закрывает (§8).
+ * The symmetric difference of two terms — the days the command opens or closes (§8).
  *
- * Считается на отрезках, а не поштучно: срок бывает многолетним, а различий у двух отрезков не
- * больше двух — по краю с каждой стороны.
+ * Computed on ranges, not day by day: a term may span years, and two ranges differ by at most two
+ * pieces, one at each edge.
  */
 function symmetricDifference(
   before: { from: string; to: string },
   after: { from: string; to: string },
 ): DateRangeSet {
+  return normalizeRangeSet([...openedDays(before, after), ...openedDays(after, before)]);
+}
+
+/** The days of `after` outside `before` — what a command adds to the term, an edge on each side. */
+function openedDays(
+  before: { from: string; to: string },
+  after: { from: string; to: string },
+): DateRangeSet {
   const parts: { from: string; to: string }[] = [];
-  const edge = (a: { from: string; to: string }, b: { from: string; to: string }): void => {
-    if (a.from < b.from) parts.push({ from: a.from, to: min(shiftDateKey(b.from, -1), a.to) });
-    if (a.to > b.to) parts.push({ from: max(shiftDateKey(b.to, 1), a.from), to: a.to });
-  };
-  edge(before, after);
-  edge(after, before);
+  if (after.from < before.from) {
+    parts.push({ from: after.from, to: min(shiftDateKey(before.from, -1), after.to) });
+  }
+  if (after.to > before.to) {
+    parts.push({ from: max(shiftDateKey(before.to, 1), after.from), to: after.to });
+  }
   return normalizeRangeSet(parts);
 }
 
