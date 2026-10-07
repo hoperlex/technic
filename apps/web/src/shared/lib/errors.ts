@@ -31,6 +31,14 @@ function isApiErrorShape(error: unknown): error is ApiErrorShape {
 }
 
 /**
+ * HTTP status of a portal error; `null` for anything else (a network failure, a bug). Lets the
+ * foundation tell "the record is gone" (404) from "the reread failed" without seeing the transport.
+ */
+export function errorStatus(error: unknown): number | null {
+  return isApiErrorShape(error) ? error.status : null;
+}
+
+/**
  * Поля с ошибками из ответа сервера (`validation_error` или доменная 400 с `fields`) — ровно
  * такими путями, какими их прислал сервер.
  *
@@ -55,10 +63,7 @@ export function errorFields(error: unknown): Record<string, string> | null {
  * Механика одна на все такие экраны намеренно: она уже была написана дважды (ведение ТО и чеки
  * запчастей) слово в слово, и разъехаться двум копиям было негде, кроме как в наборе кодов.
  */
-export function isVersionConflictError(
-  error: unknown,
-  domainCodes: ReadonlySet<string>,
-): boolean {
+export function isVersionConflictError(error: unknown, domainCodes: ReadonlySet<string>): boolean {
   return isApiErrorShape(error) && error.status === 409 && !domainCodes.has(error.code);
 }
 
@@ -92,9 +97,7 @@ export function errorMessage(error: unknown, labels: Record<string, string> = {}
     const text = fields
       ? `${error.message}: ${[...new Set(Object.keys(fields).map((path) => fieldLabel(path, labels)))].join(', ')}`
       : error.message;
-    return error.status >= 500 && error.requestId
-      ? `${text} (обращение ${error.requestId})`
-      : text;
+    return error.status >= 500 && error.requestId ? `${text} (обращение ${error.requestId})` : text;
   }
   if (error instanceof Error) return error.message;
   return 'Произошла ошибка';

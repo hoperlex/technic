@@ -2,6 +2,7 @@ import { useCallback, useEffect } from 'react';
 import { App } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
+import { errorStatus } from './errors';
 
 /** Имя параметра адреса, которым названа открытая карточка: `?tab=routes&open=<id>`. */
 export const OPEN_PARAM = 'open';
@@ -81,11 +82,19 @@ export function useOpenedRecord<T>({
     enabled: !!id,
   });
 
+  /*
+   * The card closes only when there is nothing to show — the first read failed — or the record is
+   * gone (404). A background reread that failed with the card on screen (503, a dropped connection)
+   * keeps it open with the data it has: closing it took away whatever window the person had open
+   * inside the card, input included, over an outage that the next reread repairs (stage 5 plan
+   * §4.5).
+   */
+  const lost = !!error && (data === undefined || errorStatus(error) === 404);
   useEffect(() => {
-    if (!error) return;
+    if (!lost) return;
     message.error(notFoundMessage);
     clear();
-  }, [error, message, notFoundMessage, clear]);
+  }, [lost, message, notFoundMessage, clear]);
 
   return { id, record: id ? (data ?? null) : null, clear };
 }
