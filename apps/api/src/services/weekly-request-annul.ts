@@ -22,11 +22,11 @@ import {
   WEEKLY_ANNUL_CORRECTION_REQUIRED_MESSAGE,
   waybillDisplayNumber,
   weeklyWeekLabel,
+  type WeeklyReversalResultDto,
 } from '@technic/contracts';
 import type { db } from '../db/client';
 import {
   specialEquipmentRequestDetails,
-  vehicleRequestCorrections,
   vehicleRequests,
   vehicleRequestStatusHistory,
   waybills,
@@ -66,41 +66,42 @@ import { requestShiftRows } from './vehicle-request-shifts';
 import { annulStates, type AnnulStateRow } from './weekly-request-annul-state';
 
 /**
- * Аннулирование применённой недельной заявки (ADR 0218): виза была, следствия разворачиваются
- * обратно.
+ * Reversal of an applied weekly request: the approval happened, its consequences are rolled back.
+ * Two commands run this engine — annulment (ADR 0218), after which the week is final, and the
+ * return for re-approval (ADR 0219, `weekly-request-return.ts`), after which the same week is
+ * approved again. They share the plan, the blockers, the fingerprints and the reversal, and differ
+ * only in rights, wording and what happens to the header and the rows (`WeeklyReversalSpec`).
  *
- * ПОЧЕМУ ОТДЕЛЬНЫЙ СЕРВИС, А НЕ КОМАНДА КАНОНА. Канон `assignment-command.ts` однозаказный — его
- * спецификация несёт `requestId`, одну блокировку строки, один отпечаток и одну операцию журнала. У
- * недели заказов до десяти, и каждый проходит свой расчёт сокращения. Поэтому композиция живёт
- * здесь — по образцу применения (`weekly-request-apply.ts`), — а шаги канона повторяются по каждому
- * заказу теми же функциями, которыми их исполняет дверь досрочного завершения.
+ * WHY A SEPARATE SERVICE AND NOT A CANON COMMAND. The canon `assignment-command.ts` handles one
+ * order: its specification carries a `requestId`, one row lock, one fingerprint and one journal
+ * operation. A week holds up to ten orders, each with its own shortening plan. So the composition
+ * lives here — after the pattern of apply (`weekly-request-apply.ts`) — and the canon steps are
+ * repeated per order by the same functions the early-end door executes them with.
  *
- * ПОРЯДОК. Применение трогает чужие конкурентные сущности, и одной блокировки шапки ему мало:
+ * ORDER. A reversal touches foreign concurrent entities, and a header lock is not enough:
  *
- *   1. `requireOpenDoor('history')` — **первым запросом** транзакции (иначе заморозка проскочит
- *      мимо этой транзакции, а она — мимо заморозки);
- *   2. `FOR UPDATE` шапки, сверка версии и статуса;
- *   3. **все рейсы** затронутых заказов, затем **строки заказов** — буквальный порядок ADR 0050
- *      п. 12, тот же, которым берёт их однозаказная дверь канона; иначе встречные порядки дают
- *      взаимный клинч;
- *   4. предвалидация **всех** строк до первой записи: блокирована хотя бы одна — 422 с полным
- *      перечнем;
- *   5. записи, бумага, статус, версия, событие истории.
+ *   1. `requireOpenDoor('history')` — the **first query** of the transaction (otherwise a freeze
+ *      slips past this transaction, and it past the freeze);
+ *   2. `FOR UPDATE` of the header, version and status check;
+ *   3. **all routes** of the affected orders, then the **order rows** — the literal order of ADR
+ *      0050 item 12, the one the single-order canon door takes them in; opposite orders deadlock;
+ *   4. prevalidation of **all** rows before the first write: one blocked row — 422 with the full
+ *      list;
+ *   5. writes, paper, status, version, history event.
  *
- * ВЕТВЕЙ ДВЕ, и выбирает их эффективная дата операции — первый снимаемый день. Не раньше сегодня —
- * обычная ветвь. Раньше — ветвь коррекции: право прошлого, глубина, причина, ключ идемпотентности
- * и строка журнала, как у проведения просроченной недели (ADR 0116).
+ * THERE ARE TWO BRANCHES, chosen by the effective date of the operation — the first removed day.
+ * Not before today — the ordinary branch. Earlier — the correction branch: the past right, depth,
+ * reason, idempotency key and a journal row, as for conducting an overdue week (ADR 0116).
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 /**
- * Кто читает план. Предпросмотр зовёт расчёт **вне транзакции** (ADR 0211 решение 1): блокировок
- * он не берёт, и транзакция ему не нужна — а боевая ручка приходит со своей, потому что ей нужны и
- * блокировки, и запись.
+ * Who reads the plan. The preview takes no locks (ADR 0211 decision 1) and reads in its own read
+ * transaction; the command comes with its writing one, because it needs both locks and writes.
  */
 type Reader = Tx | typeof db;
 
-/** Шапка заявки, прочитанная под блокировкой: ровно то, что нужно разбору и записи. */
+/** The request header read under the lock: exactly what the plan and the write need. */
 interface LockedHeader {
   id: string;
   num: number;
@@ -111,7 +112,7 @@ interface LockedHeader {
   version: number;
 }
 
-/** Строка состава под блокировкой — поля, которые читают разбор и запись. */
+/** A composition row under the lock — the fields the plan and the write read. */
 interface LockedItem {
   id: string;
   kind: 'extend' | 'new' | 'leave';
@@ -126,7 +127,7 @@ interface LockedItem {
   createdRequestNum: number | null;
 }
 
-/** Расчёт сокращения по одной строке `extend` — вместе со сроками, которыми его считали. */
+/** The shortening plan of one `extend` row — together with the terms it was computed from. */
 interface ExtendPlan {
   item: LockedItem;
   requestId: string;
@@ -134,17 +135,17 @@ interface ExtendPlan {
   termBefore: AssignmentTerm;
   termAfter: AssignmentTerm;
   shorten: ShortenTermPlan;
-  /** Неподтверждённые смены на снимаемых днях: их удалит исполнение. */
+  /** Unconfirmed shifts on the removed days: the execution deletes them. */
   droppedShiftDates: string[];
 }
 
-/** Что аннулирование сделает — посчитанное до первой записи и подтверждаемое отпечатком. */
+/** What the reversal will do — computed before the first write and confirmed by a fingerprint. */
 export interface WeeklyAnnulPlan {
   header: LockedHeader;
   items: LockedItem[];
   states: Map<string, AnnulStateRow>;
   extend: ExtendPlan[];
-  /** Строки `new`, порождённые заказы которых надо отменить. */
+  /** `new` rows whose created orders are to be cancelled. */
   cancelOrders: { item: LockedItem; requestId: string }[];
   blockers: WeeklyAnnulBlockerDto[];
   effectiveDate: string | null;
@@ -162,23 +163,27 @@ export interface WeeklyAnnulPlan {
   asOf: string;
 }
 
-/** Параметры расчёта: блокировки берёт только боевая ручка, предпросмотр читает снимок. */
+/** Plan parameters: only the command takes locks, the preview reads a snapshot. */
 export interface PlanWeeklyAnnulParams {
   weeklyId: string;
   asOf: string;
   /**
-   * Брать ли `FOR UPDATE`. Предпросмотр читает **без** блокировок намеренно (ADR 0211 решение 1):
-   * `FOR UPDATE` на время просмотра остановил бы работу диспетчеров ради вопроса «что будет,
-   * если», а боевую ручку защищает отпечаток, а не блокировка.
+   * Whether to take `FOR UPDATE`. The preview reads **without** locks on purpose (ADR 0211
+   * decision 1): `FOR UPDATE` for the time of viewing would stop the dispatchers' work for the sake
+   * of "what if", and the command is protected by the fingerprint, not by a lock.
    */
   locked: boolean;
-  /** Листы, названные человеком к перевыписке; у предпросмотра пусто. */
+  /** Sheets the person named for reissue; empty for the preview. */
   unlockWaybillIds?: readonly string[];
 }
 
 const ITEM_TITLE_FALLBACK = 'Техника';
 
-/** Подпись строки — тем же текстом, что в чек-листе: «Экскаватор (продление)». */
+/**
+ * The row label: the kind word after the type name. The plan does not read the type name
+ * (`vehicleTypeName` stays `null`), so it reads "Техника (продление)"; the window labels rows by
+ * `kind` and does not use this field.
+ */
 function titleOf(item: LockedItem): string {
   const suffix = item.kind === 'extend' ? 'продление' : item.kind === 'new' ? 'новая' : 'уезжает';
   return `${item.vehicleTypeName ?? ITEM_TITLE_FALLBACK} (${suffix})`;
@@ -194,12 +199,13 @@ function displayNumberOf(item: LockedItem): string | null {
 }
 
 /**
- * Прочитать шапку и состав; под блокировкой — в каноническом порядке захвата.
+ * Read the header and the composition; under the lock — in the canonical capture order.
  *
- * Рейсы берутся **раньше** строк заказов (ADR 0050 п. 12) и одним запросом на все заказы состава:
- * так же их берёт однозаказная дверь канона, и встречный порядок двух команд дал бы взаимный
- * клинч. Применение недели явных блокировок рейсов не берёт вовсе — они ложатся неявно правками
- * сверки дней, — поэтому клинч с ним возможен и разрешается повтором, а не порядком.
+ * Routes are taken **before** the order rows (ADR 0050 item 12) and in one query for all orders of
+ * the composition: the single-order canon door takes them the same way, and opposite orders of two
+ * commands would deadlock. The week apply takes no explicit route locks at all — they fall
+ * implicitly with the day reconciliation edits — so a deadlock with it is possible and is resolved
+ * by a retry, not by the order.
  */
 async function lockPlanRows(
   tx: Reader,
@@ -238,8 +244,8 @@ async function lockPlanRows(
     .where(eq(weeklyVehicleRequestItems.weeklyRequestId, header.id))
     .orderBy(asc(weeklyVehicleRequestItems.position));
 
-  // Номера заказов и подпись типа — отдельным чтением по собранным идентификаторам: `leftJoin`
-  // размножил бы строку состава на каждый действующий лист заказа, а номер нужен ровно один.
+  // Order numbers by a separate read over the collected ids: a `leftJoin` would multiply a
+  // composition row by every live sheet of the order, while exactly one number is needed.
   const orderIds = [...new Set(items.map(orderIdOf).filter((v): v is string => v !== null))];
   const nums = new Map<string, number>();
   if (orderIds.length > 0) {
@@ -257,7 +263,7 @@ async function lockPlanRows(
   }));
 
   if (params.locked && orderIds.length > 0) {
-    // Рейсы — первыми и по возрастанию id (ADR 0050 п. 12), затем строки заказов тем же порядком.
+    // Routes first and by ascending id (ADR 0050 item 12), then the order rows in the same order.
     await tx.execute(sql`
       select r.id from vehicle_routes r
       where r.source_request_id = any(${sql.raw(`array['${orderIds.join("','")}']::uuid[]`)})
@@ -276,11 +282,11 @@ async function lockPlanRows(
 }
 
 /**
- * Недели в работе по тем же заказам: после разворота их снимок `expected_date_to` разойдётся со
- * сроком, и при визе строки станут `skipped` («срок изменился после подачи»).
+ * Weeks in progress on the same orders: after the reversal their `expected_date_to` snapshot will
+ * differ from the term, and at approval their rows become `skipped` ("term changed after submit").
  *
- * Не блокировка, а предупреждение: чужой черновик не вправе запирать исправление ошибочной визы, а
- * узнать о нём человек обязан до нажатия, а не из чужой жалобы через неделю.
+ * A warning, not a blocker: someone else's draft must not lock the correction of a wrong approval,
+ * but the person must learn about it before the click, not from a complaint a week later.
  */
 async function loadPendingWeeks(
   tx: Reader,
@@ -305,7 +311,7 @@ async function loadPendingWeeks(
   return rows.map((row) => formatWeeklyRequestNumber(row.num));
 }
 
-/** Напечатанные номера названных листов — для окна и для отказа по чужому листу. */
+/** Printed numbers of the named sheets — for the window and for the refusal on a foreign sheet. */
 async function loadSheetPreviews(
   tx: Reader,
   unlocks: { waybillId: string; requestId: string; requestNum: number }[],
@@ -347,11 +353,12 @@ async function loadSheetPreviews(
 }
 
 /**
- * Посчитать аннулирование целиком: что развернётся, что помешает и какой ценой.
+ * Compute a reversal of the week in full — for annulment and for the return alike: what will be
+ * reversed, what stands in the way and at what price.
  *
- * Транзакция приходит читающей у предпросмотра и пишущей у команды — расчёт **ничего не пишет** в
- * обоих случаях (ADR 0211 решение 1): первая запись идёт только после сверки отпечатка и
- * авторизации.
+ * The transaction is a reading one for the preview and a writing one for the command — the plan
+ * **writes nothing** in both cases (ADR 0211 decision 1): the first write comes only after the
+ * fingerprint check and the authorization.
  */
 export async function planWeeklyAnnul(
   tx: Reader,
@@ -360,7 +367,8 @@ export async function planWeeklyAnnul(
   const { header, items } = await lockPlanRows(tx, params);
   const headerBlocker = weeklyAnnulHeaderBlocker(header);
 
-  // Неприменённую разбирать нечего: следствий у неё не было, и `applied_at` пуст по построению.
+  // An unapplied week has nothing to plan: it had no consequences, and `applied_at` is empty by
+  // construction.
   if (!isWeeklyRequestApplied(header.status) || !header.appliedAt) {
     return {
       header,
@@ -440,9 +448,10 @@ export async function planWeeklyAnnul(
     const termBefore: AssignmentTerm = { dateFrom: detail.dateFrom, dateTo: detail.dateTo };
     const termAfter: AssignmentTerm = { dateFrom: detail.dateFrom, dateTo: previousDateTo };
     /*
-     * Исход самой команды над сроком — внешним эффектом, тем же расчётом, что у двери досрочного
-     * завершения: границу «сегодня и вперёд — обычная работа» считает `movedRequestDateKey`, а не
-     * константа. Напиши мы здесь `outcome: 'none'`, утверждение о ветви проверяло бы само себя.
+     * The outcome of the command over the term, as an external effect — the same computation as
+     * at the early-end door: the boundary "today and later is ordinary work" is computed by
+     * `movedRequestDateKey`, not a constant. Writing `outcome: 'none'` here would make the branch
+     * claim check itself.
      */
     const movedDate = movedRequestDateKey(
       { dateFrom: termBefore.dateFrom, dateTo: termBefore.dateTo },
@@ -458,9 +467,9 @@ export async function planWeeklyAnnul(
           ? null
           : { effectiveDate: movedDate, outcome: movedDate < params.asOf ? 'crew' : 'none' },
       /*
-       * Субъект допустимости дней — как у досрочного завершения: статус остаётся прежним и
-       * настоящим («В работе»), заказ продолжает работать по укороченному сроку. Отработанные дни
-       * не удерживаются: аннулирование снимает ровно те дни, которые добавила неделя.
+       * The day-eligibility subject is as at the early end: the status stays the current one ("in
+       * work"), and the order keeps working on the shortened term. Worked days are not retained:
+       * the reversal removes exactly the days the week added.
        */
       linearDays: {
         eligibilitySubject: {
@@ -470,16 +479,16 @@ export async function planWeeklyAnnul(
           deletedAt: null,
           dateFrom: termAfter.dateFrom,
           dateTo: termAfter.dateTo,
-          // Принадлежность машины допустимость дней не решает — её читает `linearDaysBlocker`
-          // только у арендной техники, у которой линейных дней не бывает вовсе. Расчёт сокращения
-          // всё равно требует поле явно, и `null` здесь означает «не спрашиваем», а не «арендная».
+          // Ownership does not decide day eligibility — `linearDaysBlocker` reads it only for
+          // rented vehicles, which have no linear days at all. The shortening plan still requires
+          // the field explicitly, and `null` here means "not asked", not "rented".
           ownership: null,
         },
         retainCompletedDays: false,
       },
     });
 
-    // Факты работы на снимаемых днях — то, что право прошлого не открывает (ADR 0218 решение 3).
+    // Facts of work on the removed days — what the past right does not open (ADR 0218 decision 3).
     const removedFrom = shiftDateKey(previousDateTo, 1);
     const removedTo = orderEffectiveDateTo({
       dateFrom: termBefore.dateFrom,
@@ -497,7 +506,7 @@ export async function planWeeklyAnnul(
         message:
           `По заказу ${formatVehicleRequestNumber(item.sourceRequestNum ?? 0)} площадка уже ` +
           'подписала работу за снимаемые дни — эти дни закрывают фактической датой, а не ' +
-          'аннулированием недели',
+          'разворотом недели',
       });
     }
     const unapprovedDates = shiftRows
@@ -512,12 +521,12 @@ export async function planWeeklyAnnul(
         message:
           `По заказу ${formatVehicleRequestNumber(item.sourceRequestNum ?? 0)} на снимаемые дни ` +
           'выписан действующий путевой лист — он уже у водителя, и снять такой день ' +
-          'аннулированием нельзя',
+          'разворотом недели нельзя',
       });
     }
 
-    // Отработанные листы: названный перевыпишется, неназванный — отказ. Разблокировка адресная и
-    // сама в стороны не растёт (ADR 0116 п. 11).
+    // Worked sheets: a named one is reissued, an unnamed one refuses. Unlocking is addressed and
+    // never grows sideways by itself (ADR 0116 item 11).
     const notNamed = shorten.requiredUnlockIds.filter((id) => !named.has(id));
     if (notNamed.length > 0) {
       blockers.push({
@@ -538,9 +547,9 @@ export async function planWeeklyAnnul(
     }
 
     for (const group of shorten.cancelGroupsPreview) {
-      // Дата вступления лежит в строках группы, а не в самой группе: гашение групповое, и у
-      // решения о паре «машина + машинист» строк две, с одной и той же датой. Берётся первая по
-      // порядку — он уже отсортирован расчётом.
+      // The effective date lives in the group rows, not in the group: cancelling is per group, and
+      // a decision on the "vehicle + machinist" pair has two rows with one date. The first by order
+      // is taken — the plan has already sorted them.
       const effectiveDate = group.rows[0]?.effectiveDate ?? params.asOf;
       cancelGroups.push({
         effectiveDate,
@@ -555,12 +564,12 @@ export async function planWeeklyAnnul(
     cancelGroupTargets.push(...shorten.cancelGroups);
     for (const issue of shorten.issues) {
       issues.push({
-        // Ключ пересчитывается по порядку в ответе недели: у каждой строки состава свой план, и
-        // `issueKey` расчёта нумерует листы внутри одного заказа — два заказа дали бы один ключ
-        // дважды, и подпись человека ушла бы не к тому листу.
+        // The key is renumbered by order in the week's answer: every composition row has its own
+        // plan, and the plan's `issueKey` numbers sheets within one order — two orders would give
+        // one key twice, and the person's acknowledgement would go to the wrong sheet.
         issueKey: issues.length,
-        // Виды замечаний, а не их текст (ADR 0211 решение 3): вид говорит, **что** не в порядке, и
-        // молчит о том, у кого.
+        // Warning kinds, not their text (ADR 0211 decision 3): the kind says WHAT is wrong and is
+        // silent about whose it is.
         codes: [...new Set(issue.warnings.map((warning) => warning.facts.code))],
         warningFingerprint: issue.warningFingerprint,
       });
@@ -629,9 +638,10 @@ export async function planWeeklyAnnul(
     shifts: [...new Set(droppedShifts)].sort(),
     pendingWeeks,
     /*
-     * Отпечаток — по **содержанию** последствий (ADR 0211 решение 4): строки с их ходом, бумага,
-     * гасимые группы, дни и смены. Между просмотром и нажатием это меняется, не тронув версию
-     * заявки: по заказу выписали лист, появился черновик смены, неделя стала отработанной.
+     * The fingerprint covers the **content** of the consequences (ADR 0211 decision 4): rows with
+     * their moves, paper, cancelled groups, days and shifts. Between the preview and the click
+     * these change without touching the request version: a sheet was issued for an order, a shift
+     * draft appeared, the week became worked.
      */
     fingerprint: fingerprintOf({
       weeklyId: header.id,
@@ -654,44 +664,73 @@ export async function planWeeklyAnnul(
 }
 
 /**
- * Ответ предпросмотра — та же работа теми же функциями, но без единой правки.
- *
- * Доступ к предпросмотру — по чтению карточки, а не по праву команды (ADR 0116 п. 12): понять,
- * почему кнопка недоступна, должен и тот, кто аннулировать не вправе. Отсюда `allowed` и
- * `blockedReason` в теле вместо 403, и причина называется в том же порядке, в каком откажет
- * команда: право по ветви, потом шапка, потом строки.
+ * What differs between the two commands that run this engine — annulment (ADR 0218) and the
+ * return for re-approval (ADR 0219). Everything else is shared on purpose: the plan, the blockers,
+ * the fingerprints and the reversal itself. A second copy of any of them would let the window of
+ * one command promise what the other executes.
  */
-export function weeklyAnnulPreviewDto(
+export interface WeeklyReversalSpec {
+  /** Correction-journal kind: the journal must tell the two operations apart. */
+  kind: 'weekly_annul' | 'weekly_return';
+  auditAction: 'weekly_request.annul' | 'weekly_request.return';
+  /** Whether the subject holds the right of this branch. */
+  canRun: (subject: Principal, backdated: boolean) => boolean;
+  /** Whether the right came with a site scope that must be asked as well. */
+  needsSiteScope: (subject: Principal, backdated: boolean) => boolean;
+  rightRefusal: (backdated: boolean) => string;
+  /** Refusal outside the site scope; only a command whose right has a scope needs it. */
+  scopeRefusal?: string;
+  headerBlocker: (header: { status: LockedHeader['status'] }) => string | null;
+  /** Lead of the refusal that lists blocked rows: "Аннулировать неделю нельзя". */
+  refusalLead: string;
+  /** Refusal for a week none of whose rows was ever applied. */
+  nothingToReverse: string;
+  correctionRequired: string;
+  /**
+   * The command's execution under the locks: it runs the shared reversal (`reverseWeeklyEffects`)
+   * and then writes what is its own — the header, the rows and the history events.
+   */
+  apply: (tx: Tx, params: WeeklyReversalParams) => Promise<WeeklyReversalResultDto>;
+}
+
+/**
+ * The preview answer — the same work by the same functions, without a single write.
+ *
+ * Access to the preview follows the card, not the command right (ADR 0116 item 12): whoever may
+ * not run the command still has to understand why the button is unavailable. Hence `allowed` and
+ * `blockedReason` in the body instead of a 403, and the reason is named in the order the command
+ * would refuse: branch right, then site scope, depth, header and rows.
+ */
+export function weeklyReversalPreviewDto(
   plan: WeeklyAnnulPlan,
+  spec: WeeklyReversalSpec,
   params: {
     subject: Principal;
-    /** Видит ли субъект номера бланков: право отката журнала листов не открывает. */
+    /** Whether the subject sees form numbers: a reversal right does not open the sheet journal. */
     canReadWaybills: boolean;
-    /** Область площадки — спрашивается только там, где право пришло визой. */
+    /** Site scope — asked only where the right came with the site approval. */
     inSiteScope: boolean;
     correctionFloor: string | null;
-    /** Вердикт глубины: `null` — прошлого нет либо глубина позволяет. */
+    /** Depth verdict: `null` — no past, or the depth allows it. */
     depthRefusal: string | null;
   },
 ): WeeklyAnnulPreviewDto {
-  const headerBlocker = weeklyAnnulHeaderBlocker(plan.header);
-  const hasRight = canAnnulWeeklyRequest(params.subject, plan.backdated);
-  const needsScope = weeklyAnnulNeedsSiteScope(params.subject, plan.backdated);
+  const headerBlocker = spec.headerBlocker(plan.header);
+  const hasRight = spec.canRun(params.subject, plan.backdated);
+  const needsScope = spec.needsSiteScope(params.subject, plan.backdated);
   const blockedItems = plan.items.filter((item) => plan.states.get(item.id)?.state === 'blocked');
   /*
-   * Считаются строки, у которых следствия **были**, а не только те, что ещё предстоит развернуть
-   * (решение 4 ADR 0218). Неделя, след которой уже убрали поштучно, обязана закрываться: иначе
-   * документ навсегда остаётся «Применённым», держит пару «объект + неделя», и человек, начавший
-   * разбор руками, не может его закончить ничем.
+   * Rows that HAD consequences count, not only those still to be reversed (ADR 0218 decision 4).
+   * A week whose trace was already removed row by row must still be closable: otherwise the document
+   * stays applied forever, holds the "object + week" pair, and whoever started the manual cleanup
+   * cannot finish it.
    */
   const hadEffects = plan.items.some((item) => weeklyItemHadEffect(item.result));
 
   const blockedReason = !hasRight
-    ? plan.backdated
-      ? 'Аннулировать неделю, чьи дни уже идут, может тот, у кого есть право коррекции задним числом'
-      : 'Аннулировать применённую неделю может руководитель этой площадки или диспетчер'
+    ? spec.rightRefusal(plan.backdated)
     : needsScope && !params.inSiteScope
-      ? 'Недельную заявку аннулирует руководитель этой площадки'
+      ? (spec.scopeRefusal ?? spec.rightRefusal(plan.backdated))
       : (params.depthRefusal ??
         headerBlocker ??
         (blockedItems.length > 0
@@ -700,7 +739,7 @@ export function weeklyAnnulPreviewDto(
             ? plan.blockers[0]!.message
             : hadEffects
               ? null
-              : 'Закрывать нечего: ни одна строка этой недели не применилась'));
+              : spec.nothingToReverse));
 
   const dtoItems: WeeklyAnnulItemDto[] = plan.items.map((item) => {
     const state = plan.states.get(item.id);
@@ -714,6 +753,7 @@ export function weeklyAnnulPreviewDto(
       reason: state?.reason ?? '',
       reverse: state?.reverse ?? 'none',
       shortenTo: state?.shortenTo ?? null,
+      hadEffect: weeklyItemHadEffect(item.result),
     };
   });
 
@@ -731,8 +771,8 @@ export function weeklyAnnulPreviewDto(
     items: dtoItems,
     blockers: plan.blockers,
     paper: plan.paper,
-    // Номера бланков — только держателю журнала (ADR 0211 решение 3): на вопрос «есть ли что
-    // называть» отвечает счётчик, и право аннулирования номеров строгой отчётности не открывает.
+    // Form numbers only for the journal holder (ADR 0211 decision 3): "is there anything to name"
+    // is answered by the counter, and a reversal right does not open numbers of strict accounting.
     unlockable: params.canReadWaybills ? plan.unlockable : null,
     unlockableCount: plan.unlockable.length,
     cancelGroups: plan.cancelGroups,
@@ -746,74 +786,81 @@ export function weeklyAnnulPreviewDto(
   };
 }
 
-/** Результат команды — им ручка отвечает, а портал обновляет карточку. */
-export interface WeeklyAnnulResult {
-  weeklyRequestId: string;
-  status: 'annulled';
-  shortened: { requestId: string; displayNumber: string; dateTo: string }[];
-  cancelled: { requestId: string; displayNumber: string }[];
-  released: number;
-  esm2: { cancelled: number; issued: number };
+/** Parameters of a reversal command, after the fingerprint and the authorization were checked. */
+export interface WeeklyReversalParams {
+  plan: WeeklyAnnulPlan;
+  actor: Principal;
+  reason: string;
+  mode: AssignmentModeSnapshot;
+  /** Correction-journal row; `null` — outcome `none`, nothing to explain. */
+  correctionId: string | null;
+  acknowledgements?: Readonly<Record<string, string>> | undefined;
+  unlockWaybillIds: readonly string[];
 }
 
+/** What the reversal did to the orders — the common part of both command results. */
+type WeeklyReversalEffects = Omit<
+  WeeklyReversalResultDto,
+  'weeklyRequestId' | 'status' | 'repeated'
+>;
+
 /**
- * Исполнить аннулирование: обратный ход по каждой строке, затем шапка.
+ * Reverse every consequence of the applied week: terms back to the snapshots, created orders
+ * cancelled, "leaving" decisions released by the header change of the caller.
  *
- * Вызывается **после** сверки отпечатка и авторизации — и под операцией журнала, если расчёт
- * сказал `requiresOperation`. Гейт режима, блокировки и сверку отпечатка держит вызывающий: у
- * ветви коррекции между ними стоит `runCorrection`, и своей транзакции этот сервис не открывает.
+ * Called **after** the fingerprint check and the authorization, and under a journal operation when
+ * the plan said `requiresOperation`. The mode gate, the locks and the fingerprint belong to the
+ * caller: in the correction branch `runCorrection` stands between them, so this function opens no
+ * transaction of its own. The header and the rows are the caller's too: annulment keeps the rows
+ * with their results, the return resets or drops them (`WeeklyReversalSpec.apply`).
  */
-export async function applyWeeklyAnnul(
+export async function reverseWeeklyEffects(
   tx: Tx,
-  params: {
-    plan: WeeklyAnnulPlan;
-    actor: Principal;
-    reason: string;
-    mode: AssignmentModeSnapshot;
-    /** Строка журнала коррекций; `null` — исход `none`, объяснять нечего. */
-    correctionId: string | null;
-    acknowledgements?: Readonly<Record<string, string>> | undefined;
-    unlockWaybillIds: readonly string[];
+  params: WeeklyReversalParams & {
+    /**
+     * The command's journal kind; the backstop door bears the same name, so the refusal names the
+     * command the person actually ran.
+     */
+    kind: WeeklyReversalSpec['kind'];
+    /** "НЗ-12 (week) <what the command did>: reason" — goes to sheets and order histories. */
+    baseReason: string;
   },
-): Promise<WeeklyAnnulResult> {
-  const { plan, actor } = params;
+): Promise<WeeklyReversalEffects> {
+  const { plan, actor, baseReason } = params;
   const now = new Date();
-  const weekLabel = weeklyWeekLabel(plan.header.weekStart);
-  const weeklyNumber = formatWeeklyRequestNumber(plan.header.num);
-  const baseReason = `Недельная заявка ${weeklyNumber} (${weekLabel}) аннулирована: ${params.reason}`;
 
   /*
-   * Бэкстоп чужой двери — preflight'ом по всем строкам разом и до первой записи: отказ обязан
-   * назвать **все** проблемные заказы, а не первый, — неделю чинят одним заходом. Ловить его из
-   * середины бесполезно: к тому моменту предыдущие строки уже переписаны.
+   * Backstop of the foreign door — as a preflight over all rows and before the first write: the
+   * refusal must name ALL problematic orders, not the first one, because the week is fixed in one
+   * pass. Catching it in the middle is useless: the earlier rows would already be rewritten.
    */
   const verdicts: AssignmentBackstopVerdict[] = [];
   for (const row of plan.extend) {
     const verdict = await evaluateAssignmentBackstop(tx, {
-      door: 'weekly_annul',
+      door: params.kind,
       requestId: row.requestId,
       asOf: plan.asOf,
-      // Новых дней аннулирование не открывает — оно их снимает, — и решения по хвосту у него не
-      // спрашивают: гашение хвостовой группы само создаёт то расхождение, о котором спросили бы.
+      // The reversal opens no days, it removes them, and tail decisions are not asked: cancelling
+      // the tail group itself creates the very divergence they would be asked about.
       opensTerm: false,
     });
     if (verdict) verdicts.push(verdict);
   }
   await applyAssignmentBackstop(tx, {
-    door: 'weekly_annul',
+    door: params.kind,
     actor,
     verdicts,
     reason: baseReason,
   });
 
-  // Рукопожатия по выпускаемым листам — тем же общим правилом, что у дверей истории (Б4).
+  // Handshakes on the issued sheets — by the same shared rule as the history doors (B4).
   assertAssignmentIssueAcknowledgements({
     issues: plan.extend.flatMap((row) => row.shorten.issues),
     acknowledgements: params.acknowledgements,
     required: paperFollowsHistory(params.mode),
   });
 
-  const shortened: WeeklyAnnulResult['shortened'] = [];
+  const shortened: WeeklyReversalEffects['shortened'] = [];
   let esm2Cancelled = 0;
   let esm2Issued = 0;
 
@@ -824,9 +871,9 @@ export async function applyWeeklyAnnul(
     if (shorten.historyPresent) {
       await ensureCommandHistory(tx as AssignmentCommandTx, { requestId, asOf: plan.asOf });
     }
-    // Гасимые решения истории внутри снимаемых дней (ADR 0218 решение 6) — ровно то, что делает
-    // сокращение у всех прочих дверей. Ссылка на операцию объясняет, почему субботняя машина
-    // вдруг снята.
+    // Assignment decisions inside the removed days are cancelled (ADR 0218 decision 6) — exactly
+    // what shortening does at every other door. The operation link explains why the Saturday
+    // vehicle suddenly disappeared.
     await applyAssignmentMutations(tx as AssignmentCommandTx, {
       requestId,
       actorUserId: actor.id,
@@ -848,8 +895,8 @@ export async function applyWeeklyAnnul(
       .returning({ id: vehicleRequests.id });
     if (!bumped) throw err.conflict();
 
-    // Неподтверждённые часы на снимаемых днях — диапазоном, а не «все смены заказа»: подписанные
-    // дни блокируют ещё в расчёте, а `dropRequestShifts` снял бы и отработанное прошлое.
+    // Unconfirmed hours on the removed days — by range, not "all shifts of the order": signed days
+    // block already in the plan, and `dropRequestShifts` would remove the worked past as well.
     if (row.droppedShiftDates.length > 0) {
       await dropUnapprovedShiftsInRange(tx, {
         requestId,
@@ -859,7 +906,7 @@ export async function applyWeeklyAnnul(
         },
       });
     }
-    // Дверь, изменившая область валидности истории, обязана пересчитать блокеры готовности.
+    // A door that changed the validity range of the history must recompute readiness blockers.
     await ensureAssignmentHistory(tx as AssignmentCommandTx, { requestId, asOf: plan.asOf });
 
     const doomed = [...shorten.linearDays.detachable, ...shorten.linearDays.frozen];
@@ -871,9 +918,9 @@ export async function applyWeeklyAnnul(
       requestId,
       actor: { id: actor.id },
       reason: paperReason,
-      // Чужой запрос на досрочный отъезд аннулирование не снимает никогда: строка с нерешённым
-      // запросом блокирована ещё в расчёте, и второго — молчаливого — способа отменить чужое
-      // решение у модуля быть не должно.
+      // A foreign early-departure request is never dropped by a reversal: a row with an undecided
+      // request is blocked in the plan, and the module must not have a second, silent way to
+      // cancel someone else's decision.
       dropPendingEarlyEnd: false,
       backstop: 'checked_by_caller',
       opensTerm: false,
@@ -914,20 +961,21 @@ export async function applyWeeklyAnnul(
   }
 
   /*
-   * Порождённые заказы — в «Отменена» (ADR 0218 решение 10).
+   * Created orders go to "Cancelled" (ADR 0218 decision 10).
    *
-   * Шаги повторяют то, что делает с таким заказом общий обработчик статуса: условная запись
-   * статуса с версией, строка истории с причиной и обе сверки. Отдельной ветви `new → cancelled`
-   * в ручке нет — это общий путь, в котором отсоединение, сброс заморозки и снятие досрочного
-   * заперты условием «заказ был в работе», — поэтому вынести «ту ветвь» было нечем, а
-   * воспроизводятся здесь **примитивы двери**, а не её текст: правило «что делает отмена» живёт в
-   * `syncEsm2Waybills` и `syncLinearRouteDays`, и они одни на оба входа.
+   * The steps repeat what the shared status handler does with such an order: a conditional status
+   * write with the version, a history row with the reason and both reconciliations. There is no
+   * separate `new → cancelled` branch in that handler — it is the shared path, where detaching,
+   * resetting the freeze and dropping the early end are guarded by "the order was in work" — so
+   * there was nothing to extract, and the door's PRIMITIVES are reproduced here, not its text: the
+   * rule of what cancelling does lives in `syncEsm2Waybills` and `syncLinearRouteDays`, one for both
+   * entries.
    *
-   * Что у «Новой» пусто по построению и потому не повторяется: назначения, факта и смен у неё нет
-   * (расчёт требует статус `new`), бэкстоп истории ей нечего спросить — бланков эта команда не
-   * рождает, — а снимок линейности у заказа, не бывшего в работе, не ставится.
+   * Empty for a "New" order by construction and therefore not repeated: it has no assignment, fact
+   * or shifts (the plan requires status `new`), the history backstop has nothing to ask — this
+   * command issues no forms — and the linear snapshot is never set on an order that was not in work.
    */
-  const cancelled: WeeklyAnnulResult['cancelled'] = [];
+  const cancelled: WeeklyReversalEffects['cancelled'] = [];
   for (const row of plan.cancelOrders) {
     const [updated] = await tx
       .update(vehicleRequests)
@@ -939,8 +987,8 @@ export async function applyWeeklyAnnul(
       })
       .where(and(eq(vehicleRequests.id, row.requestId), eq(vehicleRequests.status, 'new')))
       .returning({ id: vehicleRequests.id, status: vehicleRequests.status });
-    // Расхождение считается конфликтом, а не молчаливым пропуском: статус читался под
-    // блокировкой, и «заказ уже не Новая» означает, что между расчётом и записью его тронули.
+    // A mismatch is a conflict, not a silent skip: the status was read under the lock, and "no
+    // longer New" means someone touched the order between the plan and the write.
     if (!updated) throw err.conflict();
     await tx.insert(vehicleRequestStatusHistory).values({
       vehicleRequestId: row.requestId,
@@ -971,11 +1019,52 @@ export async function applyWeeklyAnnul(
     });
   }
 
-  // Решения «уезжает» снимаются самой шапкой: `loadLeftBy` отбирает только применённые недели,
-  // поэтому по ним не делается ничего — счётчик нужен ответу, чтобы человек увидел их в итоге.
+  // "Leaving" decisions are released by the header itself: `loadLeftBy` selects applied weeks only,
+  // and both reversals take the week out of `applied`. The counter is for the answer, so the person
+  // sees them in the result.
   const released = plan.items.filter(
     (item) => plan.states.get(item.id)?.reverse === 'release_leave',
   ).length;
+
+  return { shortened, cancelled, released, esm2: { cancelled: esm2Cancelled, issued: esm2Issued } };
+}
+
+/** The payload of the history event: what the reversal undid, readable a month later. */
+export function weeklyReversalPayload(
+  plan: WeeklyAnnulPlan,
+  effects: WeeklyReversalEffects,
+  correctionId: string | null,
+): Record<string, unknown> {
+  return {
+    ...effects,
+    shifts: plan.shifts,
+    linearDays: plan.linearDays,
+    cancelGroups: plan.cancelGroups,
+    backdated: plan.backdated,
+    effectiveDate: plan.effectiveDate,
+    ...(correctionId ? { operationId: correctionId } : {}),
+  };
+}
+
+/**
+ * Annul the applied week: reverse its consequences, then the header goes to `annulled`.
+ *
+ * The rows keep their results and snapshots (ADR 0218 decision 9): they answer "what was decided
+ * and what was undone", and the state of the document is told by the header.
+ */
+async function applyWeeklyAnnul(
+  tx: Tx,
+  params: WeeklyReversalParams,
+): Promise<WeeklyReversalResultDto> {
+  const { plan, actor } = params;
+  const now = new Date();
+  const weekLabel = weeklyWeekLabel(plan.header.weekStart);
+  const weeklyNumber = formatWeeklyRequestNumber(plan.header.num);
+  const effects = await reverseWeeklyEffects(tx, {
+    ...params,
+    kind: 'weekly_annul',
+    baseReason: `Недельная заявка ${weeklyNumber} (${weekLabel}) аннулирована: ${params.reason}`,
+  });
 
   const [bumpedHeader] = await tx
     .update(weeklyVehicleRequests)
@@ -997,8 +1086,8 @@ export async function applyWeeklyAnnul(
     .returning({ id: weeklyVehicleRequests.id });
   if (!bumpedHeader) throw err.conflict();
 
-  // История — той же транзакцией, а не только аудитом (ADR 0085 п. 16): `writeAudit` намеренно не
-  // роняет операцию при сбое записи, и тогда сам факт разворота мог бы исчезнуть.
+  // History in the same transaction, not only the audit (ADR 0085 item 16): `writeAudit` does not
+  // fail the operation on a write error by design, and the reversal itself could vanish.
   await tx.insert(weeklyVehicleRequestHistory).values({
     weeklyRequestId: plan.header.id,
     event: 'status',
@@ -1006,58 +1095,47 @@ export async function applyWeeklyAnnul(
     toStatus: 'annulled',
     changedBy: actor.id,
     comment: params.reason,
-    payload: {
-      shortened,
-      cancelled,
-      released,
-      esm2: { cancelled: esm2Cancelled, issued: esm2Issued },
-      shifts: plan.shifts,
-      linearDays: plan.linearDays,
-      cancelGroups: plan.cancelGroups,
-      backdated: plan.backdated,
-      effectiveDate: plan.effectiveDate,
-      ...(params.correctionId ? { operationId: params.correctionId } : {}),
-    },
+    payload: weeklyReversalPayload(plan, effects, params.correctionId),
   });
 
-  // Какие заказы задела операция — многие-ко-многим: обратный вопрос «что делали с этой заявкой
-  // задним числом» задаёт её карточка при каждом открытии.
-  if (params.correctionId) {
-    const touched = [
-      ...new Set([
-        ...plan.extend.map((row) => row.requestId),
-        ...plan.cancelOrders.map((row) => row.requestId),
-      ]),
-    ];
-    if (touched.length > 0) {
-      await tx
-        .insert(vehicleRequestCorrections)
-        .values(touched.map((requestId) => ({ correctionId: params.correctionId!, requestId })))
-        .onConflictDoNothing();
-    }
-  }
-
-  return {
-    weeklyRequestId: plan.header.id,
-    status: 'annulled',
-    shortened,
-    cancelled,
-    released,
-    esm2: { cancelled: esm2Cancelled, issued: esm2Issued },
-  };
+  return { weeklyRequestId: plan.header.id, status: 'annulled', ...effects };
 }
 
-/** Отказ без ключа операции там, где он нужен — текстом контрактов, одним на окно и на ручку. */
-export function assertAnnulOperation(plan: WeeklyAnnulPlan, body: AnnulWeeklyRequestInput): void {
+/**
+ * The annulment command (ADR 0218 decision 7): the right depends on the branch. The correction
+ * branch takes the past right only; the ordinary one takes either the site approval — in the site
+ * scope — or the dispatcher's past right.
+ */
+export const WEEKLY_ANNUL_SPEC: WeeklyReversalSpec = {
+  kind: 'weekly_annul',
+  auditAction: 'weekly_request.annul',
+  canRun: (subject, backdated) => canAnnulWeeklyRequest(subject, backdated),
+  needsSiteScope: (subject, backdated) => weeklyAnnulNeedsSiteScope(subject, backdated),
+  rightRefusal: (backdated) =>
+    backdated
+      ? 'Аннулировать неделю, чьи дни уже идут, может тот, у кого есть право коррекции задним числом'
+      : 'Аннулировать применённую неделю может руководитель этой площадки или диспетчер',
+  scopeRefusal: 'Недельную заявку аннулирует руководитель этой площадки',
+  headerBlocker: weeklyAnnulHeaderBlocker,
+  refusalLead: 'Аннулировать неделю нельзя',
+  nothingToReverse: 'Закрывать нечего: ни одна строка этой недели не применилась',
+  correctionRequired: WEEKLY_ANNUL_CORRECTION_REQUIRED_MESSAGE,
+  apply: applyWeeklyAnnul,
+};
+
+/** Refusal without an operation key where one is required — the contract text of the command. */
+export function assertReversalOperation(
+  plan: WeeklyAnnulPlan,
+  body: AnnulWeeklyRequestInput,
+  message: string,
+): void {
   if (plan.requiresOperation && !body.correction) {
-    throw err.unprocessable(WEEKLY_ANNUL_CORRECTION_REQUIRED_MESSAGE, {
-      correction: 'Нужен ключ операции',
-    });
+    throw err.unprocessable(message, { correction: 'Нужен ключ операции' });
   }
 }
 
-/** Гейт режима — первым запросом транзакции, как у применения. */
-export async function openAnnulDoor(tx: Tx): Promise<AssignmentModeSnapshot> {
+/** Mode gate — the first query of the transaction, as for apply. */
+export async function openReversalDoor(tx: Tx): Promise<AssignmentModeSnapshot> {
   return requireOpenDoor(tx as AssignmentCommandTx, 'history');
 }
 

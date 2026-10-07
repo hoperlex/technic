@@ -2,6 +2,7 @@ import { Alert, Button, Space } from 'antd';
 import type { WeeklyItemCounts, WeeklyVehicleRequestDto } from '@technic/contracts';
 import { formatDateOnly, formatDateTime } from '@shared/lib';
 import { weeklyOverdueWord } from '@entities/weekly-request';
+import { WEEKLY_RETURN_OVERDUE_NOTE } from '../model/reversalTexts';
 
 /**
  * Weekly request states in words (section 9). Each is easy to reduce to a faceless notice, and then
@@ -34,6 +35,8 @@ interface Props {
   request: WeeklyVehicleRequestDto;
   /** The approver's rejection reason, shown on top of the request itself, not only in history. */
   rejection: string | null;
+  /** The return for re-approval that reopened the week (ADR 0219); null while there is none. */
+  returned: { by: string; at: string; reason: string } | null;
   /** Why this account cannot submit for this week; null means the week is open to it. */
   weekBlocker: string | null;
   /** The week has started or passed (isWeeklyWeekOverdue). */
@@ -73,6 +76,23 @@ export function WeeklyRequestBanners(props: Props) {
           showIcon
           title="Заявка отклонена и возвращена в черновик"
           description={props.rejection}
+        />
+      )}
+      {request.status === 'pending' && props.returned && (
+        <Alert
+          type="warning"
+          showIcon
+          title={`Неделя возвращена на согласование — ${props.returned.by}, ${formatDateTime(props.returned.at)}`}
+          description={
+            <>
+              {props.returned.reason}
+              <br />
+              Сроки и порождённые заказы развёрнуты.{' '}
+              {props.overdue
+                ? WEEKLY_RETURN_OVERDUE_NOTE
+                : 'Дополните состав — руководитель строительства завизирует неделю заново.'}
+            </>
+          }
         />
       )}
       {request.status === 'cancelled' && (

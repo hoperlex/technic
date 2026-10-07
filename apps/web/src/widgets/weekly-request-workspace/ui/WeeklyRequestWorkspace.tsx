@@ -5,7 +5,7 @@ import { useWeeklyRequestWorkspace } from '../model/useWeeklyRequestWorkspace';
 import { weeklyReasonText } from '../model/pageState';
 import { WeeklyRequestActions } from './WeeklyRequestActions';
 import { WeeklyRequestBanners } from './WeeklyRequestBanners';
-import { WeeklyRequestAnnulModal } from './WeeklyRequestAnnulModal';
+import { WeeklyRequestReversalModal } from './WeeklyRequestReversalModal';
 import { WeeklyRequestConductModal } from './WeeklyRequestConductModal';
 import { WeeklyRequestComposition, WeeklyRequestLeaving } from './WeeklyRequestComposition';
 import { WeeklyRequestHeader, WeeklyRequestNotOpened } from './WeeklyRequestFrame';
@@ -46,6 +46,7 @@ export function WeeklyRequestWorkspace() {
           <WeeklyRequestBanners
             request={request}
             rejection={workspace.rejection}
+            returned={workspace.returned}
             weekBlocker={weekState.weekBlocker}
             overdue={weekState.overdue}
             canPast={workspace.backdate.correct}
@@ -157,15 +158,25 @@ export function WeeklyRequestWorkspace() {
         onReject={() => workspace.setReasonMode('reject')}
         onCancel={() => workspace.setReasonMode('cancel')}
         onAnnul={workspace.annul.onOpen}
+        onReturn={workspace.returning.onOpen}
       />
 
-      {/* Annulment: the server computes the price of the rollback with the very code that will
-          execute it (ADR 0218); the reason and the sheets to reissue are named by the person. */}
-      <WeeklyRequestAnnulModal
+      {/* Annulment and return for re-approval: the server computes the price of the rollback
+          with the very code that will execute it (ADR 0218, ADR 0219); the reason and the sheets
+          to reissue are named by the person. */}
+      <WeeklyRequestReversalModal
+        intent="annul"
         request={workspace.annul.target}
         onClose={workspace.annul.onClose}
-        onAnnul={workspace.annul.onAnnul}
+        onSubmit={workspace.annul.onSubmit}
         pending={workspace.annul.pending}
+      />
+      <WeeklyRequestReversalModal
+        intent="return"
+        request={workspace.returning.target}
+        onClose={workspace.returning.onClose}
+        onSubmit={workspace.returning.onSubmit}
+        pending={workspace.returning.pending}
       />
 
       {/* Retroactive conduct window: the operation price is asked from the server by the same code

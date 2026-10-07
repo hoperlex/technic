@@ -3,28 +3,36 @@ import { Alert, Checkbox, Form, Input, Skeleton, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   type AnnulWeeklyRequestBody,
+  isWeeklyWeekOverdue,
   weeklyItemKindLabels,
+  weeklyReturnDropsItem,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { weeklyRequestKeys, weeklyRequestsApi } from '@entities/weekly-request';
 import { FormModal } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
+import {
+  WEEKLY_RETURN_OVERDUE_NOTE,
+  WEEKLY_REVERSAL_TEXTS,
+  type WeeklyReversalIntent,
+} from '../model/reversalTexts';
 
 /**
- * Аннулирование применённой недели (ADR 0218).
+ * Reversal of an applied week — annulment (ADR 0218) or return for re-approval (ADR 0219).
  *
- * Применение той же транзакцией продлило заказы, породило новые и зафиксировало решения «уезжает».
- * Окно отвечает на один вопрос — **чего стоит развернуть это обратно**: какие листы ЭСМ-2 сгорят,
- * какие подрежутся, какие отработанные придётся назвать поимённо, какие запланированные решения
- * погаснут и какие дни уйдут из рейсов.
+ * The approval extended orders, created new ones and fixed "leaving" decisions in the same
+ * transaction. The window answers one question — **what it costs to roll that back**: which ESM-2
+ * sheets burn, which are trimmed, which worked ones must be named, which planned decisions are
+ * cancelled and which days leave routes. Both commands run the same plan, so the window is one; the
+ * intent changes only what the person is told the week becomes.
  *
- * Устроено как окно проведения (`WeeklyRequestConductModal`) и по той же причине: последствия
- * считает сервер тем же кодом, которым будет их исполнять, и возвращает отпечаток, который окно
- * присылает обратно. Своего расчёта у портала нет ни одного — разойдись они, окно обещало бы не то,
- * что произойдёт.
+ * Built like the conduct window (`WeeklyRequestConductModal`) for the same reason: the server
+ * computes the consequences with the code that will execute them and returns a fingerprint the
+ * window sends back. The portal has no computation of its own — otherwise the window would promise
+ * something other than what happens.
  *
- * Предпросмотр запрашивается при **открытии окна**, а не карточки: он строит план истории и бумаги
- * по каждой продлённой строке, и платить это за каждый показ карточки незачем.
+ * The preview is requested when the **window opens**, not with the card: it builds a history and
+ * paper plan per extended row, and paying that on every card view is waste.
  */
 
 interface FormValues {
@@ -33,10 +41,11 @@ interface FormValues {
 }
 
 interface Props {
-  /** Заявка, которую аннулируют; `null` — окно закрыто. */
+  intent: WeeklyReversalIntent;
+  /** The request being reversed; `null` — the window is closed. */
   request: WeeklyVehicleRequestDto | null;
   onClose: () => void;
-  onAnnul: (body: AnnulWeeklyRequestBody) => void;
+  onSubmit: (body: AnnulWeeklyRequestBody) => void;
   pending: boolean;
 }
 
@@ -45,17 +54,21 @@ const STATE_TAGS = {
   reverted: { color: 'default', text: 'уже развёрнута' },
   blocked: { color: 'red', text: 'нельзя развернуть' },
 } as const;
+/** A row undone by hand before the return leaves the composition (ADR 0219). */
+const DROPPED_TAG = { color: 'orange', text: 'уйдёт из состава' } as const;
 
-export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: Props) {
+export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit, pending }: Props) {
   const [form] = Form.useForm<FormValues>();
+  const texts = WEEKLY_REVERSAL_TEXTS[intent];
 
   /**
-   * Ключ идемпотентности придумывается **до** отправки и держится, пока окно открыто на этой
-   * заявке: повтор после обрыва связи обязан вернуть результат прежней операции, а не развернуть
-   * неделю второй раз и не сжечь второй номер бланка.
+   * The idempotency key is invented **before** sending and kept while the window is open on this
+   * request: a repeat after a dropped connection must be recognized by the server as the same
+   * operation — answered with `repeated`, nothing moved — not reverse the week a second time and
+   * burn a second form number.
    *
-   * Ключ готовится всегда, а уходит только у ветви коррекции: нужна ли операция, решает сервер
-   * (`requiresOperation`), и угадывать это телу запроса незачем.
+   * The key is always prepared but sent only in the correction branch: whether an operation is
+   * needed is decided by the server (`requiresOperation`), and the request body need not guess.
    */
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
   useEffect(() => {
@@ -65,18 +78,24 @@ export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: 
   }, [request, form]);
 
   const previewQuery = useQuery({
-    queryKey: weeklyRequestKeys.annul(request?.id),
-    queryFn: () => weeklyRequestsApi.annulPreview(request!.id),
+    queryKey:
+      intent === 'annul'
+        ? weeklyRequestKeys.annul(request?.id)
+        : weeklyRequestKeys.returnPreview(request?.id),
+    queryFn: () =>
+      intent === 'annul'
+        ? weeklyRequestsApi.annulPreview(request!.id)
+        : weeklyRequestsApi.returnPreview(request!.id),
     enabled: !!request,
-    // Перезапрашивается при каждом открытии: между двумя показами карточки диспетчер успевает
-    // выписать лист или взять заказ в работу, и устаревший отпечаток дал бы 409 на нажатии.
+    // Refetched on every opening: between two views of the card the dispatcher manages to issue a
+    // sheet or take an order into work, and a stale fingerprint would give 409 on the click.
     staleTime: 0,
   });
   const preview = previewQuery.data;
 
   const submit = (values: FormValues) => {
     if (!preview) return;
-    onAnnul({
+    onSubmit({
       reason: values.reason,
       version: request!.version,
       fingerprint: preview.fingerprint,
@@ -92,12 +111,8 @@ export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: 
   return (
     <FormModal
       open={!!request}
-      title={
-        request
-          ? `${request.displayNumber} · аннулировать неделю`
-          : 'Аннулирование недельной заявки'
-      }
-      okText="Аннулировать"
+      title={request ? `${request.displayNumber} · ${texts.title}` : texts.emptyTitle}
+      okText={texts.okText}
       okDanger
       okDisabled={!preview?.allowed}
       confirmLoading={pending}
@@ -113,7 +128,7 @@ export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: 
             type="error"
             showIcon
             style={{ marginBottom: 16 }}
-            title="Аннулировать нельзя"
+            title={texts.refusedTitle}
             description={preview.blockedReason}
           />
         )}
@@ -132,13 +147,31 @@ export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: 
                 preview.backdated
                   ? 'Операция идёт задним числом'
                   : preview.items.every((item) => item.state !== 'reversible')
-                    ? 'Следствия уже развёрнуты — аннулирование только закроет документ'
+                    ? texts.nothingLeft
                     : preview.effectiveDate
                       ? 'Снимаемые дни ещё не наступили'
                       : 'Сроки заказов не двигаются'
               }
               description={
                 <ul style={{ margin: 0, paddingInlineStart: 20 }}>
+                  {texts.outcome && <li>{texts.outcome}</li>}
+                  {intent === 'return' && preview.items.some(weeklyReturnDropsItem) && (
+                    <li>
+                      Строки, уже развёрнутые вручную, уйдут из состава: повторная виза не должна
+                      применить их снова. Продлеваемую технику площадка увидит в предложении
+                      состава; дополнительную, если она снова нужна, добавляют строкой заново.
+                    </li>
+                  )}
+                  {intent === 'return' &&
+                    preview.items.some((item) => item.reverse === 'cancel') && (
+                      <li>
+                        Отменённые заказы повторная виза заведёт заново по строкам недели: правки,
+                        сделанные в них после визы, не перенесутся.
+                      </li>
+                    )}
+                  {intent === 'return' && isWeeklyWeekOverdue(preview.weekStart, preview.today) && (
+                    <li>{WEEKLY_RETURN_OVERDUE_NOTE}</li>
+                  )}
                   {preview.effectiveDate && (
                     <li>
                       Первый снимаемый день — {formatDateOnly(preview.effectiveDate)}
@@ -188,27 +221,33 @@ export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: 
               }
             />
 
-            {/* Строки состава — перечнем с ходом и причиной: отказ и окно называют препятствие
-              одними словами, потому что текст один и приходит с сервера. */}
+            {/* Composition rows as a list with their move and reason: the refusal and the window
+              name an obstacle in the same words, because the text is one and comes from the server. */}
             <Typography.Paragraph strong style={{ marginBottom: 8 }}>
               Что будет со строками
             </Typography.Paragraph>
             <ul style={{ margin: '0 0 16px', paddingInlineStart: 20 }}>
-              {preview.items.map((item) => (
-                <li key={item.itemId} style={{ marginBottom: 4 }}>
-                  <Tag color={STATE_TAGS[item.state].color}>{STATE_TAGS[item.state].text}</Tag>
-                  {item.displayNumber ? `${item.displayNumber} · ` : ''}
-                  {weeklyItemKindLabels[item.kind]}
-                  {item.reverse === 'shorten_to' && item.shortenTo
-                    ? ` — срок вернётся к ${formatDateOnly(item.shortenTo)}`
-                    : item.reverse === 'cancel'
-                      ? ' — заказ будет отменён'
-                      : item.reverse === 'release_leave'
-                        ? ' — решение об отъезде перестанет действовать'
-                        : ''}
-                  {item.reason ? ` — ${item.reason}` : ''}
-                </li>
-              ))}
+              {preview.items.map((item) => {
+                const tag =
+                  intent === 'return' && weeklyReturnDropsItem(item)
+                    ? DROPPED_TAG
+                    : STATE_TAGS[item.state];
+                return (
+                  <li key={item.itemId} style={{ marginBottom: 4 }}>
+                    <Tag color={tag.color}>{tag.text}</Tag>
+                    {item.displayNumber ? `${item.displayNumber} · ` : ''}
+                    {weeklyItemKindLabels[item.kind]}
+                    {item.reverse === 'shorten_to' && item.shortenTo
+                      ? ` — срок вернётся к ${formatDateOnly(item.shortenTo)}`
+                      : item.reverse === 'cancel'
+                        ? ' — заказ будет отменён'
+                        : item.reverse === 'release_leave'
+                          ? ' — решение об отъезде перестанет действовать'
+                          : ''}
+                    {item.reason ? ` — ${item.reason}` : ''}
+                  </li>
+                );
+              })}
             </ul>
 
             {preview.blockers.length > 0 && (
@@ -252,15 +291,15 @@ export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: 
               />
             )}
 
-            {/* Листы отработанных недель — поимённо, а не общей галочкой: в одной неделе законно
-              живут листы двух машин, и «переписать все прошлые» сожгло бы не тот номер. */}
+            {/* Sheets of worked weeks are named one by one, not by a common checkbox: two vehicles'
+              sheets legally live in one week, and "rewrite all past ones" would burn the wrong number. */}
             {preview.unlockableCount > 0 && (
               <Form.Item
                 name="unlockWaybillIds"
                 label="Листы ЭСМ-2 к перевыписке"
                 extra={
                   preview.unlockable
-                    ? 'Отмеченные номера будут аннулированы, взамен выпишутся новые — следующими по серии. Неотмеченный лист запирает свои дни, и неделя не аннулируется'
+                    ? `Отмеченные номера будут аннулированы, взамен выпишутся новые — следующими по серии. ${texts.unnamedSheet}`
                     : 'Номера бланков показываются тому, кто ведёт журнал листов. Отметить их может диспетчер'
                 }
               >
@@ -280,17 +319,13 @@ export function WeeklyRequestAnnulModal({ request, onClose, onAnnul, pending }: 
               </Form.Item>
             )}
 
-            {/* Причина обязательна всегда, а не только у ветви коррекции: она объясняет сам
-              документ — почему эту неделю развернули, — и остаётся в его шапке. */}
+            {/* The reason is always required, not only in the correction branch: it explains the
+              document itself — why this week was rolled back. */}
             <Form.Item
               name="reason"
-              label="Причина аннулирования"
+              label={texts.reasonLabel}
               rules={[{ required: true, message: 'Укажите причину' }]}
-              extra={
-                preview.requiresOperation
-                  ? 'Останется в шапке заявки и в журнале коррекций, а также в листах, переоформленных этой операцией'
-                  : 'Останется в шапке заявки и в её истории'
-              }
+              extra={preview.requiresOperation ? texts.reasonStaysOperation : texts.reasonStays}
             >
               <Input.TextArea rows={2} maxLength={2000} showCount />
             </Form.Item>

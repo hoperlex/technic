@@ -1574,6 +1574,20 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['weeklyRequests.read'],
   },
+  // Preview of the return for re-approval (ADR 0219) — under reading the card, as the annulment
+  // preview. It is the window's source for the holder of the right: why the command refuses now
+  // (header, blocked rows, worked facts) is a property of the week, not of the right. The one reader
+  // it is closed to is a lessor (403 in the handler): the plan lists the site's whole fleet.
+  'GET /api/v1/weekly-vehicle-requests/:id/return': {
+    kind: 'permissions',
+    allOf: ['weeklyRequests.read'],
+  },
+  // The return itself has one right in both branches, so no handler-side exception is needed: the
+  // guard carries it.
+  'POST /api/v1/weekly-vehicle-requests/:id/return': {
+    kind: 'permissions',
+    allOf: ['weeklyRequests.read', 'waybills.correct'],
+  },
   'GET /api/v1/weekly-vehicle-requests/:id/documents': {
     kind: 'permissions',
     allOf: ['weeklyRequests.read'],

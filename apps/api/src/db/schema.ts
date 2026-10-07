@@ -8219,11 +8219,15 @@ export const waybillCorrections = pgTable(
       // это обязано читаться одной операцией, иначе «что сделали задним числом» отвечается
       // полусотней строк, которые нечем связать.
       | 'day_batch'
-      // Аннулирование применённой недельной заявки (миграция 0356, ADR 0218). Свой вид, а не
-      // `weekly`: тот двигает сроки состава вперёд и выписывает бумагу, а этот двигает их назад
-      // и бумагу гасит. Одно слово на два противоположных события отвечало бы одинаково там, где
-      // спрашивают разное.
+      // Annulment of an applied weekly request (migration 0356, ADR 0218). Not `weekly`: that one
+      // moves the composition's terms forward and issues paper, this one moves them back and
+      // cancels paper. One word for two opposite events would answer alike where different things
+      // are asked.
       | 'weekly_annul'
+      // Return of an applied weekly request for re-approval (migration 0358, ADR 0219). Not
+      // `weekly_annul`: the paper reversal is the same, but the week is approved again afterwards,
+      // so the gap in numbering is followed by a second operation on the same document.
+      | 'weekly_return'
     >(),
     reason: text('reason').notNull(),
     /**
@@ -8253,13 +8257,13 @@ export const waybillCorrections = pgTable(
     payload: jsonb('payload').notNull().default({}),
   },
   (t) => ({
-    // `weekly` (миграция 0157) — проведение недельной заявки на просроченную неделю. Свой вид, а не
-    // `esm2`: у той операции предмет — бумага одной заявки, а здесь одним решением двигаются сроки
-    // целого состава, и в журнале эти две команды обязаны различаться — иначе «что делали задним
-    // числом» отвечается одним словом на два разных события.
+    // The list of operation kinds; the registry with reasons is the `$type` above. `weekly`
+    // (migration 0157) conducts an overdue weekly request, `weekly_annul` (0356) and
+    // `weekly_return` (0358) reverse an applied one: the journal must answer "what was done in the
+    // past" with a different word for each, or opposite events would read alike.
     kindCheck: check(
       'waybill_corrections_kind_check',
-      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail', 'day_batch', 'weekly_annul')`,
+      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly', 'crew', 'assignment_tail', 'day_batch', 'weekly_annul', 'weekly_return')`,
     ),
     // Снимок обязателен ровно у тех видов, что заведены историей назначения: у остальных его нет и
     // быть не может — миграция их не переписывала.

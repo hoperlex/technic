@@ -8,7 +8,9 @@ import type {
   WeeklyCorrectionPreviewDto,
   WeeklyRequestDocumentsDto,
   WeeklyRequestStatus,
+  ReturnWeeklyRequestBody,
   WeeklyRequestStatusBody,
+  WeeklyReversalResultDto,
   WeeklySuggestionDto,
   WeeklyVehicleRequestDto,
 } from '@technic/contracts';
@@ -59,16 +61,6 @@ export interface WeeklyRequestHistoryEntryDto {
  * подача заявки тем, кто её и визирует, применяет её сразу же (Р8) — и «сколько строк прошло»
  * отвечает только применение. У отказа и снятия итога нет вовсе, поэтому `apply` бывает `null`.
  */
-/** Что аннулирование развернуло — им окно рассказывает об итоге, а список обновляет карточку. */
-export interface WeeklyAnnulResultDto {
-  weeklyRequestId: string;
-  status: 'annulled';
-  shortened: { requestId: string; displayNumber: string; dateTo: string }[];
-  cancelled: { requestId: string; displayNumber: string }[];
-  released: number;
-  esm2: { cancelled: number; issued: number };
-}
-
 export interface WeeklyDecisionResultDto {
   request: WeeklyVehicleRequestDto;
   apply: WeeklyApplyResultDto | null;
@@ -132,28 +124,45 @@ export const weeklyRequestsApi = {
   correctionPreview: (id: string) =>
     apiFetch<WeeklyCorrectionPreviewDto>(`/weekly-vehicle-requests/${id}/correction`),
   /**
-   * Что развернёт аннулирование этой недели (ADR 0218): какие листы ЭСМ-2 сгорят, какие
-   * подрежутся, какие отработанные придётся назвать поимённо, какие запланированные решения
-   * погаснут и какие дни уйдут из рейсов.
+   * What annulment of this week would reverse (ADR 0218): which ESM-2 sheets burn, which are
+   * trimmed, which worked ones must be named, which planned decisions are cancelled and which days
+   * leave routes.
    *
-   * Считает это сервер тем же кодом, которым будет исполнять, и возвращает отпечаток последствий —
-   * его окно присылает обратно. Расчёта у портала своего нет: разойдись они, окно обещало бы не
-   * то, что произойдёт.
+   * The server computes it with the code that will execute it and returns a fingerprint of the
+   * consequences, which the window sends back. The portal has no computation of its own: otherwise
+   * the window would promise something other than what happens.
    *
-   * Запрашивается **при нажатии**, а не при открытии карточки: расчёт строит план истории и бумаги
-   * по каждой продлённой строке, и платить это за каждый показ карточки незачем.
+   * Requested **on the click**, not with the card: the plan builds a history and paper plan per
+   * extended row, and paying that on every card view is waste.
    */
   annulPreview: (id: string) =>
     apiFetch<WeeklyAnnulPreviewDto>(`/weekly-vehicle-requests/${id}/annul`),
   /**
-   * Аннулировать применённую неделю. Тело несёт причину, версию шапки и отпечатки — последствий и
-   * перечня гасимых решений; у ветви коррекции ещё ключ операции и названные к перевыписке листы.
+   * Annul the applied week. The body carries the reason, the header version and both fingerprints;
+   * the correction branch adds the operation key and the sheets named for reissue.
    *
-   * Повтор с тем же `operationId` — не ошибка, а ответ на обрыв связи: сервер возвращает прежний
-   * результат, ничего не двигая второй раз. Ключ придумывает окно до отправки и держит неизменным.
+   * A repeat with the same `operationId` is not an error but the answer to a dropped connection:
+   * the server moves nothing a second time and answers from the state the first attempt left, with
+   * `repeated: true` and no counters (ADR 0101 decision 9). The window invents the key before
+   * sending and keeps it.
    */
   annul: (id: string, body: AnnulWeeklyRequestBody) =>
-    apiFetch<WeeklyAnnulResultDto>(`/weekly-vehicle-requests/${id}/annul`, {
+    apiFetch<WeeklyReversalResultDto>(`/weekly-vehicle-requests/${id}/annul`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * What the return for re-approval would reverse (ADR 0219) — the same plan as annulment, with
+   * the rights and wording of the return.
+   */
+  returnPreview: (id: string) =>
+    apiFetch<WeeklyAnnulPreviewDto>(`/weekly-vehicle-requests/${id}/return`),
+  /**
+   * Return an applied week to "awaiting approval". Same body as annulment, same idempotency: a
+   * repeat with the same `operationId` moves nothing again and answers with `repeated: true`.
+   */
+  returnToApproval: (id: string, body: ReturnWeeklyRequestBody) =>
+    apiFetch<WeeklyReversalResultDto>(`/weekly-vehicle-requests/${id}/return`, {
       method: 'POST',
       body,
     }),

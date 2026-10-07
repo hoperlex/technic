@@ -113,6 +113,7 @@ export type AssignmentBackstopDoor =
   | 'work_period'
   | 'weekly_apply'
   | 'weekly_annul'
+  | 'weekly_return'
   | 'completion';
 
 interface DoorSpec {
@@ -137,12 +138,16 @@ const DOORS: Record<AssignmentBackstopDoor, DoorSpec> = {
   early_end_decision: { title: 'Виза досрочного завершения', opensTerm: false },
   work_period: { title: 'Правка срока работ', opensTerm: true },
   weekly_apply: { title: 'Применение недельной заявки', opensTerm: true },
-  // Аннулирование недельной заявки (ADR 0218): дверь **сокращает** сроки состава, то есть снимает
-  // дни, а не открывает их, — решения по хвосту с неё не спрашивают по той же причине, что и с
-  // досрочного завершения: гашение хвостовой группы само создаёт то расхождение, о котором
-  // спросили бы. Пробелы машиниста спрашиваются, как у всех: перевыписанные листы накрывают
-  // ровно те дни, о которых история молчит.
+  // Annulment of a weekly request (ADR 0218): the door SHORTENS the composition's terms, removing
+  // days rather than opening them, so tail decisions are not asked — for the same reason as at the
+  // early end: cancelling the tail group itself creates the divergence they would be asked about.
+  // Machinist gaps are asked, as everywhere: reissued sheets cover exactly the days the history is
+  // silent about.
   weekly_annul: { title: 'Аннулирование недельной заявки', opensTerm: false },
+  // Return of a weekly request for re-approval (ADR 0219): the same reversal as annulment, so the
+  // same answers — it removes days rather than opening them, tail decisions are not asked, machinist
+  // gaps are. Its own door only so that the refusal names the command the person actually ran.
+  weekly_return: { title: 'Возврат недельной заявки на согласование', opensTerm: false },
   // Закрытие фактической датой (Р1 плана `docs/vehicle-request-actual-end-date-plan.md`): дверь
   // сокращает срок и потому переписывает бумагу — пробелы машиниста у неё спрашиваются, как у
   // всех. Новых дней она не открывает никогда (факт не бывает позже утверждённого срока, Р15),

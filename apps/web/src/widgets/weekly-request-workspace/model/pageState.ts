@@ -126,6 +126,19 @@ export function lastRejectionComment(
 }
 
 /**
+ * The return for re-approval that brought the week back to "awaiting approval" (ADR 0219), while it
+ * is the latest status event. The reason belongs on top of the document — the site opens the week
+ * to add what was forgotten and must see what — and it stops being news once the week moves on.
+ */
+export function lastReturn(
+  entries: WeeklyRequestHistoryEntryDto[] | undefined,
+): { by: string; at: string; reason: string } | null {
+  const last = (entries ?? []).filter((e) => e.event === 'status').at(-1);
+  if (!last || last.fromStatus !== 'applied' || last.toStatus !== 'pending') return null;
+  return { by: last.changedByName, at: last.changedAt, reason: last.comment };
+}
+
+/**
  * Leaving the page with an unsaved composition (section 9). Concrete text rather than a vague
  * "there are changes": exactly what the person just did by hand will be lost (row decisions and
  * added equipment), and they must be able to name it before pressing "Leave".
