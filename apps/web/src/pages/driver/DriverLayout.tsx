@@ -197,6 +197,7 @@ function usePendingDays(today: string, shown: string): string[] {
     [today],
   );
   /** Общие настройки чтения кабинета (Р7) — кроме показанного дня: его читает сама страница. */
+  // query-freshness: exception — the shown day refreshes through its own page, not background focus
   const read = (date: string) =>
     date === shown
       ? { ...cabinetRead, refetchOnWindowFocus: false as const, refetchOnReconnect: false as const }

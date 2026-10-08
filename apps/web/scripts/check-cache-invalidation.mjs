@@ -190,50 +190,7 @@ const READ_CALLS = new Set([
   'useOpenedRecord',
 ]);
 
-/** Current key forms from plan A3. Wave 3a replaces this list with factory `meta.profile`. */
-const PROFILED_FAMILIES = new Set([
-  'objects.options',
-  'departments.options',
-  'warehouses.options',
-  'waste-types.options',
-  'container-types.options',
-  'mech-models.options',
-  'counterparties.activeOperatorOptions',
-  'counterparties.activeOptions',
-  'counterparties.activeVehicleLessorOptions',
-  'counterparties.operatorOptions',
-  'counterparties.options',
-  'counterparties.serviceOptions',
-  'counterparties.mechLessorOptions',
-  'counterparties.supplierOptions',
-  'counterparties.vehicleLessorOptions',
-  'drivers.options',
-  'drivers.jobTitles',
-  'users.options',
-  'users.departmentHeadCandidates',
-  'vehicles.allOptions',
-  'vehicles.ownOptions',
-  'vehicles.ownActiveOptions',
-  'vehicles.ownForCorrection',
-  'vehicles.fuel-norm-picker',
-  'vehicle-types.full',
-  'vehicle-kinds.$root',
-  'vehicle-models.forSelect',
-  'vehicle-classifications.forSelect',
-  'vehicle-specs.active',
-  'vehicle-trailers.list',
-  'office-equipment-types.options',
-  'office-equipment-consumables.picker',
-  'office-equipment-models.options',
-  'office-equipment-models.specs',
-  'manuals.active',
-  'grants.formCatalog',
-  'license-categories.byType',
-  'users.pendingCount',
-  'service-requests.waitingCount',
-  'service-requests.chatUnreadCount',
-  'office-equipment-candidates.list',
-]);
+const PROFILE_NAMES = new Set(['SIGNAL', 'DICTIONARY', 'STATIC']);
 
 /** Bound on hops through names, helpers and factories; guards mutually referring declarations. */
 const MAX_HOPS = 8;
@@ -1357,18 +1314,52 @@ function returnedOptions(fn) {
 }
 
 /** The option and its source context travel together: an imported factory owns its own bindings. */
+function optionProfile(node) {
+  const expr = node && unwrap(node);
+  if (!expr) return null;
+  if (
+    ts.isPropertyAccessExpression(expr) &&
+    ts.isIdentifier(expr.expression) &&
+    expr.expression.text === 'QUERY_PROFILE' &&
+    PROFILE_NAMES.has(expr.name.text)
+  )
+    return expr.name.text;
+  if (ts.isConditionalExpression(expr))
+    return optionProfile(expr.whenTrue) ?? optionProfile(expr.whenFalse);
+  if (ts.isObjectLiteralExpression(expr)) {
+    const meta = optionProp(expr, 'meta');
+    if (meta && ts.isObjectLiteralExpression(unwrap(meta))) {
+      const profile = optionProp(unwrap(meta), 'profile');
+      if (profile && ts.isStringLiteral(unwrap(profile)) && PROFILE_NAMES.has(unwrap(profile).text))
+        return unwrap(profile).text;
+    }
+  }
+  return null;
+}
+
 function readOptions(node, ctx, factories, seen = new Set(), hops = 0) {
   const expr = node && unwrap(node);
   if (!expr || hops > MAX_HOPS) return undefined;
   if (ts.isObjectLiteralExpression(expr)) {
     let found = {};
     for (const prop of expr.properties) {
-      if (ts.isSpreadAssignment(prop))
+      if (ts.isSpreadAssignment(prop)) {
         found = { ...found, ...readOptions(prop.expression, ctx, factories, seen, hops + 1) };
-      else if (ts.isPropertyAssignment(prop) || ts.isMethodDeclaration(prop)) {
+        const profile = optionProfile(prop.expression);
+        if (profile) found.profile = profile;
+      } else if (ts.isPropertyAssignment(prop) || ts.isMethodDeclaration(prop)) {
         const name = propertyName(prop.name);
         if (name === 'queryKey' || name === 'queryFn' || name === 'fetch')
           found[name] = { node: prop.initializer ?? prop, ctx };
+        if (name === 'meta') {
+          const meta = prop.initializer && unwrap(prop.initializer);
+          if (meta && ts.isObjectLiteralExpression(meta)) {
+            const profile = optionProp(meta, 'profile');
+            const value = profile && unwrap(profile);
+            if (value && ts.isStringLiteral(value) && PROFILE_NAMES.has(value.text))
+              found.profile = value.text;
+          }
+        }
       } else if (ts.isShorthandPropertyAssignment(prop)) {
         const name = prop.name.text;
         if (name === 'queryKey' || name === 'queryFn' || name === 'fetch')
@@ -1627,6 +1618,7 @@ function scanReads(readFiles, keys, keyFamilies, api, objects, pathTable) {
                   ? ctx.rel
                   : (options.factoryFile ?? null),
               foreignMarker: hasForeignReadMarker(sf, node) || Boolean(options.foreignMarker),
+              profile: options.profile ?? null,
               key,
               handles: requests.handles,
               paths: requests.paths,
@@ -2428,14 +2420,28 @@ function ruleForeignBarePathInQueries(map) {
     }));
 }
 
-/** Until profiles exist on factories, plan A3 is the sole list of families requiring one. */
-function ruleProfiledReadBypassesFactory(map) {
+/** The canonical factory's metadata defines which families require a single owner. */
+function profiledFamilies(map) {
+  return new Set(
+    map.readInventory.reads
+      .filter((read) => {
+        if (read.kind !== 'queryOptions' && read.kind !== 'infiniteQueryOptions') return false;
+        if (!PROFILE_NAMES.has(read.profile) || !read.key.root || !read.key.family) return false;
+        const ownerFile = map.roots[read.key.root];
+        const owner = ownerFile && sliceOf(ownerFile);
+        return owner && read.factoryFile === `${owner}/api/queries.ts`;
+      })
+      .map((read) => `${read.key.root}.${read.key.family}`),
+  );
+}
+
+function ruleProfiledReadBypassesFactory(map, families) {
   return map.readInventory.reads
     .filter((read) => read.kind !== 'queryOptions' && read.kind !== 'infiniteQueryOptions')
     .flatMap((read) => (read.key.variants ?? [read.key]).map((key) => ({ read, key })))
     .filter(({ read, key }) => {
       const family = `${key.root}.${key.family}`;
-      if (!PROFILED_FAMILIES.has(family)) return false;
+      if (!families.has(family)) return false;
       const ownerFile = map.roots[key.root];
       const owner = ownerFile && sliceOf(ownerFile);
       return !owner || read.factoryFile !== `${owner}/api/queries.ts`;
@@ -2449,12 +2455,12 @@ function ruleProfiledReadBypassesFactory(map) {
 }
 
 /** Two option factories for one profiled family can later receive different freshness policies. */
-function ruleSecondFactory(map) {
+function ruleSecondFactory(map, families) {
   const byFamily = new Map();
   for (const read of map.readInventory.reads) {
     if (read.kind !== 'queryOptions' && read.kind !== 'infiniteQueryOptions') continue;
     const family = `${read.key.root}.${read.key.family}`;
-    if (!PROFILED_FAMILIES.has(family)) continue;
+    if (!families.has(family)) continue;
     if (!byFamily.has(family)) byFamily.set(family, []);
     byFamily.get(family).push(read);
   }
@@ -2523,11 +2529,12 @@ const findings = [
   ...ruleUnknownWrite(map),
   ...ruleCacheEffectUnproven(map),
 ].sort((a, b) => a.rule.localeCompare(b.rule) || a.at.localeCompare(b.at));
+const profiled = profiledFamilies(map);
 const readFindings = [
   ...ruleReadUnderForeignRoot(map),
   ...ruleForeignBarePathInQueries(map),
-  ...ruleProfiledReadBypassesFactory(map),
-  ...ruleSecondFactory(map),
+  ...ruleProfiledReadBypassesFactory(map, profiled),
+  ...ruleSecondFactory(map, profiled),
 ].sort((a, b) => a.rule.localeCompare(b.rule) || a.id.localeCompare(b.id));
 const readBudgetErrors = checkReadBudget(readFindings);
 

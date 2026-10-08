@@ -90,6 +90,7 @@ export function OfficeEquipmentPurchaseFormModal({ open, purchase, onClose, onSa
      * и подставило бы их насовсем: строки садятся в состояние формы один раз, и свежий ответ их
      * уже не тронет.
      */
+    // query-freshness: exception — this one-shot purchase response must not survive reopening
     staleTime: 0,
     gcTime: 0,
   });

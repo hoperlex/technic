@@ -1,3 +1,4 @@
+import { QUERY_PROFILE } from '@shared/config';
 import { queryOptions } from '@tanstack/react-query';
 import { counterpartiesApi } from './counterpartiesApi';
 import { counterpartyKeys } from './keys';
@@ -8,6 +9,7 @@ import { counterpartyKeys } from './keys';
  */
 export const counterpartyOperatorGridQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: counterpartyKeys.operatorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
@@ -21,6 +23,7 @@ export const counterpartyOperatorGridQuery = () =>
 
 export const counterpartyOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: counterpartyKeys.options(),
     queryFn: () =>
       counterpartiesApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
@@ -28,6 +31,7 @@ export const counterpartyOptionsQuery = () =>
 
 export const counterpartyActiveOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: counterpartyKeys.activeOptions(),
     queryFn: () =>
       counterpartiesApi.list({
@@ -41,6 +45,7 @@ export const counterpartyActiveOptionsQuery = () =>
 
 export const counterpartyActiveOperatorOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: counterpartyKeys.activeOperatorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
@@ -55,6 +60,7 @@ export const counterpartyActiveOperatorOptionsQuery = () =>
 
 export const counterpartySupplierOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: counterpartyKeys.supplierOptions(),
     queryFn: () =>
       counterpartiesApi.list({
@@ -68,6 +74,7 @@ export const counterpartySupplierOptionsQuery = () =>
 
 export const counterpartyVehicleLessorOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: counterpartyKeys.vehicleLessorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
@@ -86,6 +93,7 @@ export const counterpartyVehicleLessorOptionsQuery = () =>
  */
 export const counterpartyActiveVehicleLessorsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: counterpartyKeys.activeVehicleLessorOptions(),
     queryFn: () =>
       counterpartiesApi.list({
@@ -101,6 +109,7 @@ export const counterpartyActiveVehicleLessorsQuery = () =>
 /** An inactive service company cannot be assigned a new request. */
 export const serviceCompanyOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: counterpartyKeys.serviceOptions(),
     queryFn: () =>
       counterpartiesApi.list({
@@ -120,6 +129,7 @@ export const serviceCompanyOptionsQuery = () =>
  */
 export const mechLessorOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: counterpartyKeys.mechLessorOptions(),
     queryFn: () =>
       counterpartiesApi

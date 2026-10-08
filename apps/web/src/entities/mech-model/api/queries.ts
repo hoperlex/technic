@@ -1,25 +1,17 @@
 import { queryOptions } from '@tanstack/react-query';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { DICTIONARY_PAGE_SIZE, QUERY_PROFILE } from '@shared/config';
 import { mechModelsApi } from './mechModelsApi';
 import { mechModelKeys } from './keys';
 
 /**
- * Модели механизации для подбора в заявке и отборов её списка. Справочник маленький (сотня с
- * небольшим позиций) и приходит целиком одним ответом.
- *
- * Алфавит просится явно: умолчание `baseListQuery` на сервере — «последняя заведённая сверху»
- * (`sortOrder: 'desc'`), и список, из которого выбирают глазами, открывался бы задом наперёд.
- * Порядок здесь по названию, а не по `sortOrder`: своего привычного порядка у ста трёх моделей
- * нет — их ищут набором букв, а не находят взглядом на нужном месте.
- *
- * Только действующие: выведенную из обращения модель в новой заявке предлагать нельзя. Второго
- * вида перечня — «вместе с погашенными, чтобы правка старой заявки показала сохранённое» — так и
- * не понадобилось: заявка несёт наименование своей модели снимком (`mechModelName`), и форма
- * дописывает сохранённое значение в состав поля сама (`withSavedOption`). Спрашивать ради одной
- * строки весь справочник второй раз незачем.
+ * Mechanization model choices fit in one page and are searched locally. Explicit name order avoids
+ * the server's default newest-first order, which is unsuitable for a picker. Only active models
+ * may be selected for new requests; an old request keeps its model name in its own snapshot, so
+ * the form can add a saved inactive value without fetching a second directory page.
  */
 export const mechModelOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: mechModelKeys.options(),
     queryFn: () =>
       mechModelsApi.list({
@@ -29,7 +21,6 @@ export const mechModelOptionsQuery = () =>
         sortOrder: 'asc',
         isActive: 'true',
       }),
-    // Готовыми парами для поля: перечень нужен ровно двум местам — форме заявки и её отбору, — и
-    // одинаковая раскладка в обоих не должна быть вопросом внимательности.
+    // The request form and its filter must project the same option labels from this one response.
     select: (r) => r.items.map((m) => ({ value: m.id, label: m.name })),
   });

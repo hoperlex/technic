@@ -1,30 +1,29 @@
+import { QUERY_PROFILE, queryProfileOptions } from '@shared/config';
 import { queryOptions } from '@tanstack/react-query';
 import { trailerKeys } from './keys';
 import { vehicleTrailersApi } from './vehicleTrailersApi';
 
 export const trailerListQuery = (params: Parameters<typeof vehicleTrailersApi.list>[0]) =>
   queryOptions({
+    ...(Object.keys(params).length === Object.keys(PICKER_PARAMS).length &&
+    params.page === PICKER_PARAMS.page &&
+    params.pageSize === PICKER_PARAMS.pageSize &&
+    params.sortBy === PICKER_PARAMS.sortBy &&
+    params.sortOrder === PICKER_PARAMS.sortOrder &&
+    !params.status &&
+    !params.hitchedVehicleId
+      ? QUERY_PROFILE.DICTIONARY
+      : {}),
     queryKey: trailerKeys.list(params),
     queryFn: () => vehicleTrailersApi.list(params),
   });
 
 /**
- * Состав машины: что стоит в её слотах. Спрашивают его двое — окно привязки (под выбранную там
- * машину) и карточка самой машины, — и вопрос у них дословно один, поэтому ключ и параметры общие:
- * два ключа под один вопрос дали бы два ответа, расходящихся ровно на время между запросами.
- *
- * Ручка отбирает **по одной машине** (`hitchedVehicleId`, контракт списка), и это же определяет,
- * где вопрос уместен: в карточке — один запрос на открытие, в колонке списка — по запросу на
- * строку. Отсюда и `enabled`: без машины спрашивать нечего.
- *
- * Страницу ручка требует всегда, а размер её выбирает не спрашивающий: допустимы только
- * `PAGE_SIZES` контракта (50|100|200|500), и `pageSize: 10`, стоявший здесь по числу слотов,
- * ручка отклоняла с 400 — «Прицепы за машиной» в карточке техники показывали ошибку вместо
- * состава. Берётся наименьший допустимый: больше двух живых привязок у машины не бывает
- * (`UNIQUE (hitched_vehicle_id, hitch_position)` и слоты 1|2), а лишнее в ответе покажет
- * наследство, легшее в базу помимо портала.
- *
- * Порядок ответа — `createdAt` сервера; по слотам список расставляет показ (`VehicleTrailersField`).
+ * The binding dialog and vehicle card ask the same question: which trailers occupy this vehicle's
+ * slots. One key and one request keep their answers aligned. Without a vehicle there is no useful
+ * question, so the query stays disabled. The API accepts only contract page sizes; the smallest
+ * valid page (50) is enough for the two live slots and still exposes any legacy extra rows. The
+ * display orders slots locally because the server orders by creation time.
  */
 export const trailerSlotsQuery = (vehicleId: string | undefined) =>
   queryOptions({
@@ -34,11 +33,10 @@ export const trailerSlotsQuery = (vehicleId: string | undefined) =>
   });
 
 /**
- * Параметры списка выбора: весь живой реестр одной страницей, по госномеру.
- *
- * Отбор по состоянию ручке не отдан намеренно: `status` у неё — равенство, а нужно «кроме
- * списанных», и вторым запросом это стоило бы двух ответов на один вопрос. Архива в ответе не
- * бывает вовсе — удалённых ручка отдаёт только по `includeDeleted`, которого здесь нет.
+ * The picker needs the whole live trailer register ordered by registration number. The server
+ * accepts only exact status equality, while the picker needs every status except retired; one
+ * page with local filtering avoids separate requests. Deleted rows are absent unless explicitly
+ * requested by `includeDeleted`, which this key never does.
  */
 const PICKER_PARAMS = {
   page: 1,
@@ -57,7 +55,7 @@ export const trailerPickerQuery = () => {
   return {
     queryKey: base.queryKey,
     queryFn: base.queryFn,
-    staleTime: 5 * 60 * 1000,
+    ...queryProfileOptions(base),
     select: (page: Awaited<ReturnType<typeof vehicleTrailersApi.list>>) =>
       page.items.filter((t) => t.status !== 'retired' && !t.deletedAt),
   };

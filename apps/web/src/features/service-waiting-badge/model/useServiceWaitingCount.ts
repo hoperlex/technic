@@ -36,7 +36,6 @@ export function useServiceWaitingCount(): number {
   const { data } = useQuery({
     ...serviceWaitingCountQuery(),
     enabled: inServiceLoop,
-    staleTime: 60_000,
   });
   return data?.count ?? 0;
 }

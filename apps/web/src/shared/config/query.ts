@@ -9,9 +9,9 @@ import type { DefaultOptions } from '@tanstack/react-query';
  *
  * A profile is a set of query options that a read takes as a whole. LIVE is the client default and
  * covers every read that does not name another profile: feeds, summaries, registers, record cards.
- * The other profiles of the stage 5 plan (SIGNAL, DICTIONARY, PICK, STATIC) belong here as well, as
- * objects that query factories spread; a freshness number written anywhere else is an exception and
- * has to say why next to it.
+ * SIGNAL, DICTIONARY and STATIC live here as objects that query factories spread; PICK is added
+ * with the deferred selectors in wave 5. A freshness number written anywhere else is an exception
+ * and has to say why next to it.
  */
 export const QUERY_PROFILE = {
   LIVE: {
@@ -33,6 +33,27 @@ export const QUERY_PROFILE = {
     /** The library default, written out: once the network is back, mounted reads refetch. */
     refetchOnReconnect: true,
   },
+  SIGNAL: {
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    meta: { profile: 'SIGNAL' },
+  },
+  DICTIONARY: {
+    staleTime: 30 * 60_000,
+    gcTime: 35 * 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: true,
+    meta: { profile: 'DICTIONARY' },
+  },
+  STATIC: {
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    meta: { profile: 'STATIC' },
+  },
 } as const;
 
 /**
@@ -52,3 +73,22 @@ export const QUERY_CLIENT_DEFAULTS = {
     retry: false,
   },
 } as const satisfies DefaultOptions;
+
+/**
+ * Projection views share an entry with their owner factory. They must carry the owner's cache
+ * metadata and freshness options, because a later observer can overwrite the entry's metadata.
+ */
+type ProfileFields =
+  'staleTime' | 'gcTime' | 'refetchOnWindowFocus' | 'refetchOnReconnect' | 'meta';
+
+export function queryProfileOptions<T extends Partial<Record<ProfileFields, unknown>>>(
+  base: T,
+): Pick<T, ProfileFields> {
+  return {
+    staleTime: base.staleTime,
+    gcTime: base.gcTime,
+    refetchOnWindowFocus: base.refetchOnWindowFocus,
+    refetchOnReconnect: base.refetchOnReconnect,
+    meta: base.meta,
+  } as Pick<T, ProfileFields>;
+}

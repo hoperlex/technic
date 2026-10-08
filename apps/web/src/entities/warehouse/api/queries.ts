@@ -1,19 +1,16 @@
 import { queryOptions } from '@tanstack/react-query';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { DICTIONARY_PAGE_SIZE, QUERY_PROFILE } from '@shared/config';
 import { warehousesApi } from './warehousesApi';
 import { warehouseKeys } from './keys';
 
 /**
- * Склады для выбора адреса (ADR 0069). Справочник небольшой и запрашивается целиком: поиск идёт на
- * клиенте, и список открывается без запроса на каждую букву.
- *
- * Склады приостановленного поставщика в список не попадают, хотя сами активны: деактивация
- * поставщика склады не гасит, но возить к тому, с кем не работают, незачем — и сервер такой адрес
- * на запись не примет. Опознаётся склад адресом, метка необязательна, поэтому в подписи вместо
- * пустой метки встаёт наименование поставщика: строка «— адрес» не назвала бы ничего.
+ * Warehouse addresses fit in one locally searched page. A warehouse of an inactive supplier cannot
+ * be selected even if the warehouse itself is active: the server rejects that destination. When a
+ * warehouse has no name, the supplier name keeps its address option identifiable.
  */
 export const warehouseOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: warehouseKeys.options(),
     queryFn: () =>
       warehousesApi.list({

@@ -17,5 +17,6 @@ export const releasesQuery = () =>
   queryOptions({
     queryKey: releaseKeys.list(),
     queryFn: () => releasesApi.list(),
+    // query-freshness: exception — release notes change only with deployment
     staleTime: RELEASES_STALE_TIME,
   });

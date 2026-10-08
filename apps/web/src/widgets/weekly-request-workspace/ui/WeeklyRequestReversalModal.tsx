@@ -95,6 +95,7 @@ export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit,
     enabled: !!request,
     // Refetched on every opening: between two views of the card the dispatcher manages to issue a
     // sheet or take an order into work, and a stale fingerprint would give 409 on the click.
+    // query-freshness: exception — reversal eligibility must be checked when the modal opens
     staleTime: 0,
   });
   const preview = previewQuery.data;

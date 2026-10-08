@@ -92,7 +92,6 @@ export function useTrailerGraphs({
    */
   const { data: tractorTypeIds } = useQuery({
     ...vehicleTypesFullQuery(),
-    staleTime: 5 * 60 * 1000,
     select: (page) =>
       new Set(page.items.filter((t) => t.code === TRACTOR_TRAILERS_TYPE_CODE).map((t) => t.id)),
   });

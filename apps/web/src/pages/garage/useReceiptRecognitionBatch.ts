@@ -31,6 +31,7 @@ export function useReceiptRecognitionBatch(
     queries: files.map((file) => ({
       queryKey: autoPartReceiptKeys.recognition(file.id),
       queryFn: () => autoPartReceiptApi.recognition(file.id),
+      // query-freshness: exception — pending receipt recognition needs progress polling
       refetchInterval: (query: { state: { data?: unknown } }) =>
         (query.state.data as ReceiptRecognitionStateDto | undefined)?.status === 'pending'
           ? POLL_MS

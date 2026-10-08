@@ -21,7 +21,6 @@ export function useServiceChatUnreadCount(): number {
   const { data } = useQuery({
     ...serviceChatUnreadCountQuery(),
     enabled: can('serviceRequests.read'),
-    staleTime: 60_000,
   });
   return data?.count ?? 0;
 }

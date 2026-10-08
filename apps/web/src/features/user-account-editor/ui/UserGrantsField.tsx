@@ -80,6 +80,7 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
      * The catalog is refetched on every window open: its versions go into the body (R7), and a
      * stale composition served from cache would turn into a 409 on save where nothing was changed.
      */
+    // query-freshness: exception — grant versions must be checked on each edit
     staleTime: 0,
   });
   const catalog: GrantDto[] = useMemo(() => catalogQuery.data?.items ?? [], [catalogQuery.data]);

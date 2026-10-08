@@ -1,3 +1,4 @@
+import { QUERY_PROFILE } from '@shared/config';
 import { queryOptions } from '@tanstack/react-query';
 import { apiFetch } from '@shared/api';
 import { serviceExecutorKeys } from './keys';
@@ -6,12 +7,14 @@ import { serviceRequestsApi } from './serviceRequestsApi';
 
 export const serviceWaitingCountQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.SIGNAL,
     queryKey: serviceRequestKeys.waitingCount(),
     queryFn: () => serviceRequestsApi.waitingCount(),
   });
 
 export const serviceChatUnreadCountQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.SIGNAL,
     queryKey: serviceRequestKeys.chatUnreadCount(),
     queryFn: () => serviceRequestsApi.chatUnreadCount(),
   });

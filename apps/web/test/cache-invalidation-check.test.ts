@@ -541,6 +541,7 @@ export const counterpartiesApi = { list: () => apiFetch('/counterparties') };
 declare function queryOptions<T>(value: T): T;
 declare function apiFetch(path: string): Promise<unknown>;
 export const objectOptionsQuery = () => queryOptions({
+  ...QUERY_PROFILE.DICTIONARY,
   queryKey: objectKeys.options(), queryFn: () => apiFetch('/counterparties'),
 });
 export const anotherObjectOptionsQuery = () => queryOptions({
@@ -567,6 +568,11 @@ useQuery({ queryKey: objectKeys.options(), queryFn: () => objectsApi.list() });
   it('requires an exact named budget for all four rules and rejects a dead entry', () => {
     const missing = runFixtureFiles(FILES);
     expect(missing.result.status).toBe(1);
+    expect(
+      missing.map.readInventory.reads.find(
+        (read: { factory: string }) => read.factory === 'objectOptionsQuery',
+      )?.profile,
+    ).toBe('DICTIONARY');
     const budget = listedFindings(missing.result.stderr);
     expect(
       Object.fromEntries(Object.entries(budget).map(([rule, ids]) => [rule, ids.length])),
@@ -585,6 +591,19 @@ useQuery({ queryKey: objectKeys.options(), queryFn: () => objectsApi.list() });
     });
     expect(stale.result.status).toBe(1);
     expect(stale.result.stderr).toContain('stale budget entry: [second-family-factory] gone');
+  });
+
+  it('derives profiled families from canonical factory metadata', () => {
+    const withoutProfile = {
+      ...FILES,
+      'entities/object/api/queries.ts': FILES['entities/object/api/queries.ts'].replace(
+        '  ...QUERY_PROFILE.DICTIONARY,\n',
+        '',
+      ),
+    };
+    const budget = listedFindings(runFixtureFiles(withoutProfile).result.stderr);
+    expect(budget['profiled-read-bypasses-factory']).toBeUndefined();
+    expect(budget['second-family-factory']).toBeUndefined();
   });
 
   it('allows a documented foreign-root exception while keeping the bare-path rule', () => {

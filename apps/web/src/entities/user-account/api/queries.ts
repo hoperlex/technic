@@ -1,10 +1,11 @@
 import { queryOptions } from '@tanstack/react-query';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { DICTIONARY_PAGE_SIZE, QUERY_PROFILE } from '@shared/config';
 import { userAccountKeys } from './keys';
 import { usersApi } from './usersApi';
 
 export const userOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: userAccountKeys.options(),
     queryFn: () =>
       usersApi.list({
@@ -17,12 +18,14 @@ export const userOptionsQuery = () =>
 
 export const pendingUsersCountQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.SIGNAL,
     queryKey: userAccountKeys.pendingCount(),
     queryFn: () => usersApi.pendingCount(),
   });
 
 export const departmentHeadCandidatesQuery = (role: string) =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: userAccountKeys.departmentHeadCandidates(role),
     queryFn: () =>
       usersApi.list({
