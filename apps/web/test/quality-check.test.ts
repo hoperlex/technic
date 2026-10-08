@@ -24,6 +24,7 @@ const EMPTY_BUDGET: Budget = {
   queryFreshnessUnmarked: 0,
   unfilteredInvalidations: [],
   timers: [],
+  unheldLists: [],
 };
 
 function run(files: Record<string, string>, budget?: Budget, mode: 'check' | 'update' = 'check') {
@@ -55,6 +56,46 @@ export const QUERY_PROFILE = {
   PICK: { staleTime: 60_000 },
 } as const;
 `;
+
+describe('quality budgets: list placeholders', () => {
+  it('counts a list state owner without the helper, even if a neighbour uses it', () => {
+    const figures = measure({
+      [FIXTURE]: `
+declare function useListParams(): unknown;
+declare function listQueryOptions(options: unknown): unknown;
+export function useHeld() {
+  useListParams();
+  listQueryOptions({});
+}
+export function useUnheld() {
+  // listQueryOptions() is mentioned here, but no query uses it.
+  useListParams();
+}
+`,
+    });
+    expect(figures.unheldLists).toEqual([`${FIXTURE} › useUnheld`]);
+  });
+
+  it('requires a local English exception marker for a client-paged list', () => {
+    const files = {
+      [FIXTURE]: `
+declare function useListParams(): unknown;
+export function ClientList() {
+  // list-query: exception — this response is paged locally after one request
+  const params = useListParams();
+  return params;
+}
+export function ServerList() {
+  useListParams();
+}
+`,
+    };
+    const { status, stderr } = run(files, EMPTY_BUDGET);
+    expect(status).toBe(1);
+    expect(stderr).toContain(`${FIXTURE} › ServerList`);
+    expect(stderr).not.toContain(`${FIXTURE} › ClientList`);
+  });
+});
 
 describe('quality budgets: freshness options without a marker', () => {
   it('counts each option written outside the config module, not comments, strings or types', () => {

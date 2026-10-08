@@ -16,9 +16,9 @@
  * itself. A relaxation (a figure going up) is not made by `update` either: it is edited by hand,
  * where review sees it.
  *
- * Most figures are counts. Two are NAMED LISTS (stage 5 plan, §5): whole-cache invalidations and
- * timers, where the question is not "how many" but "which ones" — each place is a deliberate
- * exception, and a new one must not hide behind an old one going away. A list compares as a set
+ * Most figures are counts. Named lists (stage 5 plan, §5) cover whole-cache invalidations,
+ * timers and server lists without placeholder handling: the question is "which ones". A new place
+ * must not hide behind an old one going away. A list compares as a set
  * (see `compareList`).
  *
  * Run: pnpm --filter @technic/web quality:check | quality:update
@@ -535,6 +535,63 @@ function scanQueryHygiene(sf, rel, code, profiles) {
   return found;
 }
 
+/**
+ * A `useListParams` owner needs the list helper in the same function. This deliberately counts
+ * client-paged and address-only uses until they carry a local exception marker: a new server list
+ * must not hide behind an unclassified call in the same file. The check does not infer data flow
+ * across functions; every list state owner in this portal also owns its query.
+ */
+function scanUnheldLists(sf, rel, code) {
+  if (!code.includes('useListParams')) return [];
+  const found = [];
+  const taken = new Map();
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && calleeName(node) === 'useListParams') {
+      let owner = node.parent;
+      while (
+        owner &&
+        !ts.isFunctionDeclaration(owner) &&
+        !ts.isArrowFunction(owner) &&
+        !ts.isFunctionExpression(owner) &&
+        !ts.isMethodDeclaration(owner)
+      )
+        owner = owner.parent;
+      let hasHelper = false;
+      const findHelper = (child) => {
+        if (ts.isCallExpression(child) && calleeName(child) === 'listQueryOptions')
+          hasHelper = true;
+        if (!hasHelper) ts.forEachChild(child, findHelper);
+      };
+      if (owner) findHelper(owner);
+      let statement = node.parent;
+      while (
+        statement &&
+        !ts.isVariableStatement(statement) &&
+        !ts.isExpressionStatement(statement)
+      )
+        statement = statement.parent;
+      const comments = statement
+        ? (ts.getLeadingCommentRanges(code, statement.getFullStart()) ?? [])
+        : [];
+      const exception = comments.some(({ pos, end }) =>
+        /list-query: exception — [A-Za-z]/.test(code.slice(pos, end)),
+      );
+      if (!hasHelper && !exception) {
+        const base = placeId(rel, node, sf);
+        const n = (taken.get(base) ?? 0) + 1;
+        taken.set(base, n);
+        found.push({
+          id: n === 1 ? base : `${base} #${n}`,
+          line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return found;
+}
+
 // --- measurement -------------------------------------------------------------
 
 function measure() {
@@ -555,6 +612,7 @@ function measure() {
   const freshness = [];
   const invalidations = [];
   const timers = [];
+  const unheldLists = [];
   for (const file of walkTs(SRC)) {
     const rel = path.relative(WEB, file);
     const code = readFileSync(file, 'utf8');
@@ -567,6 +625,7 @@ function measure() {
     freshness.push(...hygiene.freshness);
     invalidations.push(...hygiene.invalidations);
     timers.push(...hygiene.timers);
+    unheldLists.push(...scanUnheldLists(sf, rel, code));
 
     /*
      * Lines in a file are counted by line breaks, not by the pieces of a split. `split('\n')` of a
@@ -597,13 +656,14 @@ function measure() {
       queryFreshnessUnmarked: unmarked.length,
       unfilteredInvalidations: ids(invalidations),
       timers: ids(timers),
+      unheldLists: ids(unheldLists),
     },
     // Where things are, for the messages only: line numbers stay out of the budget (see `placeId`).
     places: {
       unmarked: unmarked.map((o) =>
         o.fault ? `${o.at} — маркер рядом не годится: ${o.fault}` : o.at,
       ),
-      line: new Map([...invalidations, ...timers].map((p) => [p.id, p.line])),
+      line: new Map([...invalidations, ...timers, ...unheldLists].map((p) => [p.id, p.line])),
     },
   };
 }
@@ -704,6 +764,15 @@ function compare(actual, budget, places) {
     places.line,
     'новых таймеров нет (план этапа 5, §3 п. 5): свежесть даёт профиль или инвалидация; ' +
       'осознанное исключение вносится в перечень руками, с причиной',
+    { grown, improved },
+  );
+  compareList(
+    'списки без удержания предыдущих строк',
+    actual.unheldLists,
+    budget.unheldLists,
+    places.line,
+    'оберните серверный запрос в listQueryOptions или отметьте локальное исключение ' +
+      '«list-query: exception — <reason in English>» над вызовом useListParams',
     { grown, improved },
   );
 
