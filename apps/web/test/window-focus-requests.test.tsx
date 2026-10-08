@@ -13,17 +13,9 @@ import {
 } from './section-requests';
 
 /**
- * The price of decision R1 (stage 5 plan, §9): how many requests one return to the browser tab
- * would cost if lists refetched on focus — a measurement, not a ban, and a preliminary one. The
- * final number is measured after wave 3а (§6): until the profiles exist, dictionaries refetch on
- * focus too and inflate it.
- *
- * The portal does not refetch on focus (`QUERY_PROFILE.LIVE`); the client here is the production
- * one with that single option turned on, for this measurement only. The section is opened with the
- * shell, its neighbour tab is visited and left, the user is away `AWAY_MS` — longer than every
- * term up to a minute, so LIVE data and the 60-second badges are stale — and comes back.
- *
- * Wave 3в replaces the expected lists with the measurement after the profiles and decides R1.
+ * The price of decision R1 after wave 3a1 profiles (stage 5 plan, §6): how many requests one
+ * return to the browser tab would cost if LIVE lists also refetched on focus. The decision whether
+ * to enable that is deferred to wave 3c. Dictionaries stay fresh; SIGNAL badges use focus already.
  */
 
 const AWAY_MS = 2 * 60_000;
@@ -65,94 +57,49 @@ async function returnCost({ page, section, user, first, neighbour }: TabbedSecti
   return requestsSince(http, left);
 }
 
-/**
- * One return, as a sorted request list. Everything mounted and stale refetches: both visited tabs,
- * their dictionaries (`/objects`, `/departments`, `/counterparties`, types, models — the inflation
- * wave 3а removes) and the shell badges with their 60-second term; the release notes (30 min) stay.
- */
+/** One return with visited tabs mounted; dictionaries do not refetch on focus. */
 const EXPECTED: Record<string, string[]> = {
   'Вывоз мусора, диспетчер (№1)': [
-    'GET /container-types',
-    'GET /counterparties',
-    'GET /objects',
     'GET /waste-requests',
     'GET /waste-requests/present',
     'GET /waste-requests/summary',
     'GET /waste-requests/ticket-recognition/health',
-    'GET /waste-types',
   ],
   'Заказ ТС, диспетчер (№3)': [
-    'GET /departments',
-    'GET /objects',
-    'GET /vehicle-classifications',
     'GET /vehicle-requests/feed',
     'GET /vehicle-requests/on-site',
     'GET /vehicle-requests/on-site/summary',
     'GET /vehicle-requests/summary',
-    'GET /vehicles',
   ],
   'Механизация, диспетчер (№7)': [
-    'GET /counterparties',
-    'GET /departments',
-    'GET /mech-models',
     'GET /mech-requests',
     'GET /mech-requests',
     'GET /mech-requests/summary',
-    'GET /objects',
-    'GET /objects',
   ],
   'Орг.техника, ИТ-служба (№8)': [
-    'GET /counterparties',
-    'GET /departments',
-    'GET /objects',
-    'GET /objects',
-    'GET /office-equipment-types',
     'GET /service-requests',
     'GET /service-requests/unread-count',
     'GET /service-requests/waiting-count',
     'GET /service-requests/warranties',
   ],
-  'Орг.техника, диспетчер (№9)': [
-    'GET /departments',
-    'GET /objects',
-    'GET /office-equipment',
-    'GET /office-equipment-consumables',
-    'GET /office-equipment-models',
-    'GET /office-equipment-types',
-  ],
+  'Орг.техника, диспетчер (№9)': ['GET /office-equipment', 'GET /office-equipment-consumables'],
   'Гараж, диспетчер (№6)': [
     'GET /auto-part-receipts/vehicles/snapshot',
     'GET /garage/drivers',
     'GET /garage/drivers/summary',
     'GET /garage/vehicles',
     'GET /garage/vehicles/summary',
-    'GET /objects',
-    'GET /vehicle-classifications',
     'GET /vehicle-maintenance/snapshot',
   ],
-  'Справочники, directories.write (№10)': [
-    'GET /counterparties',
-    'GET /departments',
-    'GET /objects',
-    'GET /objects',
-    'GET /users',
-    'GET /users',
-  ],
+  'Справочники, directories.write (№10)': ['GET /departments', 'GET /objects'],
   'Справочники, только officeEquipment.write (№11)': [
-    'GET /departments',
-    'GET /objects',
     'GET /office-equipment',
-    'GET /office-equipment-types',
     'GET /service-requests/unread-count',
     'GET /service-requests/waiting-count',
   ],
   'Администрирование, администратор (№12)': [
-    'GET /counterparties',
-    'GET /departments',
-    'GET /objects',
     'GET /service-requests/unread-count',
     'GET /service-requests/waiting-count',
-    'GET /users',
     'GET /users',
     'GET /users/pending-count',
   ],
@@ -165,7 +112,7 @@ afterEach(() => {
   restoreClock();
 });
 
-describe('цена Р1: запросов на один возврат во вкладку браузера (предварительно, до 3а)', () => {
+describe('цена Р1: запросов на возврат во вкладку после профилей 3а1', () => {
   it.each(TABBED_SECTIONS)('$title', async (section) => {
     expect(await returnCost(section)).toEqual(EXPECTED[section.title]);
   });

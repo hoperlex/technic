@@ -1,17 +1,16 @@
 import { queryOptions } from '@tanstack/react-query';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { DICTIONARY_PAGE_SIZE, QUERY_PROFILE, queryProfileOptions } from '@shared/config';
 import { objectsApi } from './objectsApi';
 import { objectKeys } from './keys';
 
 /**
- * Объекты для выпадающих списков. Справочник небольшой и запрашивается целиком: сотня площадок
- * приходит одним ответом, а поиск по ним идёт на клиенте — так список открывается без ожидания.
- *
- * `activeOnly` — не украшение: закрытые площадки не предлагают в новых заявках, но показывают там,
- * где на них уже ссылаются.
+ * Sites fit in one response and are searched locally, so a picker opens without a request per
+ * keystroke. New requests offer only active sites, while historical references need the inactive
+ * variant under its own key.
  */
 export const objectOptionsQuery = ({ activeOnly = true }: { activeOnly?: boolean } = {}) =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: objectKeys.options({ activeOnly }),
     queryFn: () =>
       objectsApi.list({
@@ -33,6 +32,7 @@ export const objectAddressOptionsQuery = () => {
   const base = objectOptionsQuery({ activeOnly: true });
   return {
     queryKey: base.queryKey,
+    ...queryProfileOptions(base),
     queryFn: base.queryFn,
     select: (r: Awaited<ReturnType<typeof objectsApi.list>>) =>
       r.items
@@ -50,6 +50,7 @@ export const objectRecordsQuery = (activeOnly: boolean) => {
   const base = objectOptionsQuery({ activeOnly });
   return {
     queryKey: base.queryKey,
+    ...queryProfileOptions(base),
     queryFn: base.queryFn,
     select: (r: Awaited<ReturnType<typeof objectsApi.list>>) => r,
   };

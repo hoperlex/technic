@@ -4,7 +4,7 @@ import {
   type OfficeEquipmentDto,
   type OfficeEquipmentRequestOptionDto,
 } from '@technic/contracts';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { DICTIONARY_PAGE_SIZE, QUERY_PROFILE, queryProfileOptions } from '@shared/config';
 import {
   officeEquipmentApi,
   officeEquipmentConsumablesApi,
@@ -20,20 +20,13 @@ import {
 } from './keys';
 
 /**
- * Типы оргтехники для выпадающих списков. Перечень маленький и запрашивается целиком: десяток
- * строк приходит одним ответом, а поиск по ним идёт на клиенте.
- *
- * Порядок задан руками (`sortOrder`), а не алфавитом: МФУ и принтер должны стоять выше «Прочего» —
- * тем же порядком их отдаёт сервер по умолчанию.
- *
- * Выключенные типы из списка не убираются, хотя новую единицу на такой заводить незачем. Причина
- * та же, что у складов приостановленного поставщика: на выключенный тип уже ссылаются заведённые
- * карточки, и в форме правки привязка осталась бы без наименования — вместо названия человек видел
- * бы пустое поле и «терял» тип при первом же сохранении. Поэтому тип назван, но назван честно:
- * подпись говорит, что новых на него не заводят.
+ * Equipment types fit in one page in directory order. Inactive types remain in the picker because
+ * existing equipment may still refer to them; their labels disclose that they cannot be used for
+ * new equipment, so editing an old card does not appear to lose its type.
  */
 export const officeEquipmentTypeOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: officeEquipmentTypeKeys.options(),
     queryFn: () =>
       officeEquipmentTypesApi.list({
@@ -238,27 +231,13 @@ export const officeEquipmentSelectorPickedQuery = (id: string | undefined) =>
   });
 
 /**
- * Модели аппаратов **выбранного типа** — для поля «Модель» карточки техники (Р1, §6 плана).
- *
- * Тип обязателен и задаёт вопрос целиком: одноимённые принтер и МФУ это разные модели, а маршрут
- * на модель чужого типа отвечает 422. Пока тип не выбран, запрос не уходит вовсе (`enabled`):
- * перечень всех моделей портала здесь не значит ничего — выбрать из него можно только неверное.
- *
- * Алфавит просится **явно**: умолчание `baseListQuery` — `sortOrder: 'desc'`, и список без этих
- * двух параметров пришёл бы «последняя заведённая сверху», то есть задом наперёд. В выпадающем
- * списке из полусотни строк это читается как случайный порядок.
- *
- * Только активные: погашенная модель означает «новых аппаратов такого рода не заводим» (Р11), и
- * предлагать её при заведении незачем — сервер такой выбор и не примет. У уже заведённой карточки
- * она остаётся: поле формы добавляет сохранённое значение к списку само (`withSavedOption`), иначе
- * правка кабинета начиналась бы с пустого обязательного поля.
- *
- * Перечень маленький (сорок пять моделей на весь парк, из них на один тип — единицы), поэтому он
- * приходит целиком и ищется на клиенте: серверный поиск на каждую букву стоил бы дороже самого
- * ответа.
+ * Only active models may be chosen for new equipment. Existing cards restore an inactive saved
+ * model through `withSavedOption`. The small directory is fetched once and searched locally rather
+ * than requesting the server for each keystroke.
  */
 export const officeEquipmentModelOptionsQuery = (equipmentTypeId: string | undefined) =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: officeEquipmentModelKeys.options(equipmentTypeId),
     queryFn: () =>
       officeEquipmentModelsApi.list({
@@ -274,16 +253,13 @@ export const officeEquipmentModelOptionsQuery = (equipmentTypeId: string | undef
   });
 
 /**
- * Характеристики, положенные типу, со значениями на выбор (план
- * `docs/office-equipment-specs-plan.md`, Р4). Ими форма модели строит поля вроде «Цветность
- * печати», а пустой ответ означает, что у этого типа таких вопросов не задают вовсе.
- *
- * `enabled` по типу — как у перечня моделей: до выбора типа спрашивать нечего, набор характеристик
- * задаёт именно тип. Перечень меняется только миграцией, поэтому переспрашивать его на каждое
- * открытие формы незачем — запись живёт, пока жив кэш вкладки.
+ * A model form asks only for the specifications of its selected equipment type. Before a type is
+ * chosen the query must stay disabled; an empty response then means that type requires no such
+ * fields. The set changes through migrations, so repeated form openings can reuse the cache.
  */
 export const officeEquipmentSpecsQuery = (equipmentTypeId: string | undefined) =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: officeEquipmentModelKeys.specs(equipmentTypeId),
     queryFn: () => officeEquipmentSpecsApi.list(equipmentTypeId!),
     enabled: !!equipmentTypeId,
@@ -299,6 +275,7 @@ export const officeEquipmentModelPickerQuery = () => {
   const base = officeEquipmentModelOptionsQuery(undefined);
   return {
     queryKey: base.queryKey,
+    ...queryProfileOptions(base),
     queryFn: base.queryFn,
     enabled: true,
     select: (r: Awaited<ReturnType<typeof officeEquipmentModelsApi.list>>) =>
@@ -317,6 +294,7 @@ export const officeEquipmentConsumablePickerQuery = ({
   modelId,
 }: { activeOnly?: boolean; modelId?: string } = {}) =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: officeEquipmentConsumableKeys.picker({ activeOnly, modelId }),
     queryFn: () =>
       officeEquipmentConsumablesApi.list({
@@ -333,6 +311,7 @@ export const officeEquipmentConsumableFilterQuery = () => {
   const base = officeEquipmentConsumablePickerQuery();
   return {
     queryKey: base.queryKey,
+    ...queryProfileOptions(base),
     queryFn: base.queryFn,
     select: (r: Awaited<ReturnType<typeof officeEquipmentConsumablesApi.list>>) =>
       r.items.map((c) => ({ value: c.id, label: `${c.name} · ${c.code}` })),
@@ -348,6 +327,7 @@ export const officeEquipmentActiveConsumablesQuery = () => {
   const base = officeEquipmentConsumablePickerQuery({ activeOnly: true });
   return {
     queryKey: base.queryKey,
+    ...queryProfileOptions(base),
     queryFn: base.queryFn,
     select: (r: Awaited<ReturnType<typeof officeEquipmentConsumablesApi.list>>) => r.items,
   };
@@ -361,6 +341,7 @@ export const officeEquipmentTypeRecordsQuery = () => {
   const base = officeEquipmentTypeOptionsQuery();
   return {
     queryKey: base.queryKey,
+    ...queryProfileOptions(base),
     queryFn: base.queryFn,
     select: (r: Awaited<ReturnType<typeof officeEquipmentTypesApi.list>>) => r,
   };

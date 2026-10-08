@@ -97,6 +97,7 @@ export function VehiclePeriodModal({
     queryFn: () =>
       vehicleRequestsApi.periodPreview(request!.id, { version: request!.version, ...command! }),
     enabled: open,
+    // query-freshness: exception — period options are a one-shot response for this modal
     staleTime: 0,
     gcTime: 0,
     retry: false,

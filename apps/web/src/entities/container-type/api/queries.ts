@@ -1,22 +1,16 @@
 import { queryOptions } from '@tanstack/react-query';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { DICTIONARY_PAGE_SIZE, QUERY_PROFILE } from '@shared/config';
 import { containerTypesApi } from './containerTypesApi';
 import { containerTypeKeys } from './keys';
 
 /**
- * Типы контейнеров и машин для выпадающих списков и фильтров. Справочник маленький и приходит
- * целиком одним ответом: разложить его по видам («установка берёт контейнеры, фильтр списка —
- * ещё и самосвалы») дешевле на клиенте, чем вторым запросом за тем же самым.
- *
- * Порядок задаёт сам справочник (`sortOrder`), а не алфавит: в нём типы стоят так, как их привыкли
- * видеть в заявке.
- *
- * `select` тут нет намеренно: одному потребителю нужен вид техники (`type`), другому —
- * вместимость (`volumeM3`), из которой выводится цена за контейнер целиком. Готовые
- * `{ value, label }` пришлось бы разворачивать обратно в обоих местах.
+ * Container and vehicle types fit in one response. The request editor and list filter need different
+ * subsets, so one cached page is cheaper than separate server reads. The directory's sort order is
+ * intentional, and consumers need complete records for equipment kind and volume-based prices.
  */
 export const containerTypeOptionsQuery = ({ activeOnly = true }: { activeOnly?: boolean } = {}) =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: containerTypeKeys.options({ activeOnly }),
     queryFn: () =>
       containerTypesApi.list({

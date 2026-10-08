@@ -1,3 +1,4 @@
+import { QUERY_PROFILE } from '@shared/config';
 import { queryOptions } from '@tanstack/react-query';
 import {
   vehicleClassificationsApi,
@@ -14,6 +15,7 @@ import {
 
 export const vehicleTypesFullQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: vehicleTypeKeys.full(),
     queryFn: () =>
       vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
@@ -21,12 +23,14 @@ export const vehicleTypesFullQuery = () =>
 
 export const vehicleKindsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: vehicleKindKeys.root,
     queryFn: () => vehicleKindsApi.list({ pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
   });
 
 export const vehicleClassificationsForSelectQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: vehicleClassificationKeys.forSelect(),
     queryFn: () =>
       vehicleClassificationsApi.list({
@@ -40,6 +44,7 @@ export const vehicleClassificationsForSelectQuery = () =>
 
 export const activeVehicleSpecsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: vehicleSpecKeys.active(),
     queryFn: () =>
       vehicleSpecsApi.list({

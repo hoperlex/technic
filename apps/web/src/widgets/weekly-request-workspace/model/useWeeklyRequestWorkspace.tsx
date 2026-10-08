@@ -87,6 +87,7 @@ export function useWeeklyRequestWorkspace() {
     // The site slice is not recomputed by itself during assembly, otherwise a background refresh
     // would wipe the person's edits. That the composition may be stale is said by the apply
     // refusal (R14).
+    // query-freshness: exception — background suggestion refresh could erase unsaved composition
     staleTime: 5 * 60_000,
   });
   // The checklist lives on for an annulled week too: its rows explain what was rolled back

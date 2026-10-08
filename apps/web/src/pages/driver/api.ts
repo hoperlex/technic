@@ -45,17 +45,14 @@ export const driverCabinetKeys = createQueryKeys('driver-cabinet', {
 const CABINET_FRESH_MS = 10_000;
 
 /**
- * Настройки читающих запросов кабинета — `assignment` и `report` (Р7). Оба дешёвые и читающие,
- * и оба отступают от общих настроек портала, потому что кабинет живёт иначе.
- *
- * - **Обновление по возврату в приложение.** Глобально у портала `refetchOnWindowFocus: false`, а
- *   телефон водителя весь день лежит в кармане со свёрнутым браузером: рейс, заведённый
- *   диспетчером в обед, обязан появиться сам — перезагрузить страницу водителю никто не подскажет.
- *   `'always'`, а не «если устарело»: снимок мог устареть и за секунду до возврата.
- * - **Свой срок свежести.** Ответы `open` и `submit` ложатся в тот же кэш (Р8), а на время их
- *   полёта читающие запросы выключены (Р7); без собственного срока первое же включение обратно
- *   перечитало бы отчёт и вернуло страницу к снимку «до отправки».
+ * The driver's assignment and report follow a different freshness policy from the portal's LIVE
+ * reads. A phone may return from the background after dispatch changed the route, so both refetch
+ * on focus even if the last response was recent. Their own ten-second term also protects a response
+ * just written by `open` or `submit`: those commands share the report key, and the read is disabled
+ * while they run. An immediate refetch on re-enable could replace the command's answer with an
+ * older snapshot.
  */
+// query-freshness: exception — cabinet reads refresh on focus and retain mutation answers briefly
 export const cabinetRead = {
   refetchOnWindowFocus: 'always',
   staleTime: CABINET_FRESH_MS,

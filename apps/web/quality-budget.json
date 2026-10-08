@@ -7,7 +7,7 @@
   "rawKeyFiles": 0,
   "antdDeprecated": 17,
   "maxLines": {},
-  "queryFreshnessUnmarked": 33,
+  "queryFreshnessUnmarked": 0,
   "unfilteredInvalidations": [
     "src/pages/admin/AdministrationPage.tsx › AdministrationPage › refreshOnSwitch",
     "src/pages/admin/DirectoryTransferTab.tsx › DirectoryTransferTab › onImported",

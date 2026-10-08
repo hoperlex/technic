@@ -83,7 +83,6 @@ export function AppLayout() {
   const { data: pendingUsers } = useQuery({
     ...pendingUsersCountQuery(),
     enabled: can('users.manage'),
-    staleTime: 60_000,
   });
 
   const waitingServiceCount = useServiceWaitingCount();

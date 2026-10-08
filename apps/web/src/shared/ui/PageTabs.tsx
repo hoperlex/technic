@@ -34,10 +34,15 @@ export function PageTabs({ activeKey, refreshQueryKey, onChange, ...rest }: Prop
   /**
    * Hidden tabs stay mounted, so returning would otherwise show a cache predating work on the
    * neighbour. Switching means "show it as it is now": refresh section queries while preserving
-   * filters and pagination.
+   * filters and pagination. SIGNAL badges follow their own focus policy and must not be
+   * invalidated on every section tab switch.
    */
   const handleChange = (key: string) => {
-    if (refreshQueryKey) void qc.invalidateQueries({ queryKey: refreshQueryKey });
+    if (refreshQueryKey)
+      void qc.invalidateQueries({
+        queryKey: refreshQueryKey,
+        predicate: (query) => query.meta?.profile !== 'SIGNAL',
+      });
     onChange?.(key);
   };
 

@@ -73,6 +73,7 @@ export function useVehicleRouteWindow({ routeId, onChanged }: Args) {
     queryKey: vehicleRouteKeys.detail(routeId),
     queryFn: () => vehicleRoutesApi.get(routeId!),
     enabled: !!routeId,
+    // query-freshness: exception — route version can change through edits in another tab
     staleTime: 0,
     refetchOnMount: 'always',
     // A neighbouring portal browser tab is the same case: the request is edited there, the action

@@ -106,6 +106,7 @@ export function WasteRequestCompletionModal({
       operatorCounterpartyId: operatorId,
     }),
     enabled: needTariff,
+    // query-freshness: exception — tariff quotes may change during completion
     staleTime: 60_000,
   });
   const pricePerM3 = request?.pricePerM3 ?? tariffResult?.tariff?.pricePerM3 ?? null;

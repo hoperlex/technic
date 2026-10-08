@@ -22,26 +22,24 @@ import { shtabUser } from './factories/auth';
  * measurement is how many times the sites dictionary is asked on the way back. A mutation of the
  * sites directory in between has to be seen at once, whatever the freshness term.
  *
- * Only wave 3а changes this file, and only `EXPECTED`: today the sites dictionary is LIVE (stale
- * after 10 s, unobserved data kept 5 min), the DICTIONARY profile of the plan keeps it 30 min
- * (R3.1) and its unobserved entry 35 min. The scenario itself stays as it is.
+ * The DICTIONARY profile keeps the site response fresh for 30 minutes (R3.1) and its unobserved
+ * entry for 35 minutes. The scenario itself is the same measurement used before the profile.
  */
 const EXPECTED = {
   /** Requests of the sites dictionary on the return to Waste, by the pause spent elsewhere. */
   returnAfter: [
     // A control: data younger than any term is reused under every profile.
     { pause: '1 с', ms: 1_000, requests: 0 },
-    { pause: '11 с', ms: 11_000, requests: 1 },
-    { pause: '6 мин', ms: 6 * 60_000, requests: 1 },
-    { pause: '30 мин − 1 с', ms: 30 * 60_000 - 1_000, requests: 1 },
+    { pause: '11 с', ms: 11_000, requests: 0 },
+    { pause: '6 мин', ms: 6 * 60_000, requests: 0 },
+    { pause: '30 мин − 1 с', ms: 30 * 60_000 - 1_000, requests: 0 },
     { pause: '30 мин + 1 с', ms: 30 * 60_000 + 1_000, requests: 1 },
   ],
   /**
    * How long the unobserved sites entry stays in the cache. Faking the clock cannot show this — the
    * entry is dropped by a timer of the library — so the entry's own term is read instead (§6).
-   * Today the client default: past 5 min the return above is a cold load, not a refetch.
    */
-  gcTime: 5 * 60_000,
+  gcTime: 35 * 60_000,
   /** Requests on the return right after the user's own sites mutation: one, under any profile. */
   afterMutation: 1,
 };

@@ -1,19 +1,16 @@
 import { queryOptions } from '@tanstack/react-query';
-import { DICTIONARY_PAGE_SIZE } from '@shared/config';
+import { DICTIONARY_PAGE_SIZE, QUERY_PROFILE, queryProfileOptions } from '@shared/config';
 import { departmentsApi } from './departmentsApi';
 import { departmentKeys } from './keys';
 
 /**
- * Отделы для выпадающих списков. Справочник маленький и запрашивается целиком: подразделения
- * приходят одним ответом, а поиск по ним идёт на клиенте — поле открывается без запроса на каждую
- * букву.
- *
- * Запрос описан здесь, а не на экранах, потому что спрашивают его в двух местах — в форме заявки
- * на технику и в карточке учётки. Разойдись у них `pageSize` или сортировка, один и тот же ключ
- * стал бы отдавать двум экранам разные списки.
+ * Departments fit in one response and are searched locally. The vehicle request form and account
+ * editor must share one key and one set of request parameters; different page sizes or sorting under
+ * the same key would make the answer depend on which screen loaded first.
  */
 export const departmentOptionsQuery = () =>
   queryOptions({
+    ...QUERY_PROFILE.DICTIONARY,
     queryKey: departmentKeys.options(),
     queryFn: () =>
       departmentsApi.list({
@@ -36,6 +33,7 @@ export const departmentPlatformQuery = () => {
   const base = departmentOptionsQuery();
   return {
     queryKey: base.queryKey,
+    ...queryProfileOptions(base),
     queryFn: base.queryFn,
     select: (r: Awaited<ReturnType<typeof departmentsApi.list>>) =>
       new Map(r.items.map((d) => [d.id, d.objects.map((o) => o.id)] as const)),
@@ -51,6 +49,7 @@ export const departmentRecordsQuery = () => {
   const base = departmentOptionsQuery();
   return {
     queryKey: base.queryKey,
+    ...queryProfileOptions(base),
     queryFn: base.queryFn,
     select: (r: Awaited<ReturnType<typeof departmentsApi.list>>) =>
       r.items.map((d) => ({ id: d.id, code: d.code, name: d.name })),
@@ -58,9 +57,7 @@ export const departmentRecordsQuery = () => {
 };
 
 /*
- * Запроса «какими отделами учётка руководит» здесь больше нет намеренно. Он читал признак с чужой
- * стороны связи — из `DepartmentDto.heads` справочника, — пока `UserDto` его не отдавал; теперь
- * признак приходит самой карточкой (`UserDepartmentRefDto.isHead`), и обход стал не только лишним,
- * но и неверным: выпадающий список отделов отдаёт только действующие, а руководство выключенным
- * отделом остаётся и должно быть видно.
+ * Account leadership is no longer inferred from the active-department picker. The account card
+ * carries `UserDepartmentRefDto.isHead` directly, including leadership of inactive departments;
+ * the picker would omit those links and show an incomplete account.
  */

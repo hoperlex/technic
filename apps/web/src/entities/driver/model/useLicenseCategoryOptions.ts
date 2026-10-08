@@ -9,7 +9,6 @@ import type { CredentialTypeCode } from '@technic/contracts';
 export function useLicenseCategoryOptions(type: CredentialTypeCode) {
   const { data } = useQuery({
     ...licenseCategoriesQuery(type),
-    staleTime: Infinity,
   });
 
   return (data ?? []).map((category) => ({
