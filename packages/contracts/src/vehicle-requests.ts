@@ -2377,51 +2377,38 @@ export interface VehicleOnSiteListDto {
 }
 
 /**
- * Машина, которой заказ работает в день среза: машина **этого дня**, а не машина назначения.
- *
- * Источников у ответа два, и оба отвечают на один вопрос — «что сейчас стоит на площадке»:
- *
- * - у линейного заказа (ADR 0100 §4) это машина **рейса этого дня**. Назначение у него всего лишь
- *   машина по умолчанию, а на объект во вторник выходит та, чьим рейсом вторник закрыт;
- * - у обычного заказа — машина, действующая на этот день по истории назначения (план Ф3, этап 5).
- *   Прежде поле у него не заполнялось вовсе, и это опиралось ровно на ту посылку, которую фича
- *   отменяет: «машина стоит весь срок одна». После разреза срока назначение повторяет **последнее**
- *   vehicle-изменение (Р17), то есть на январской дате называет мартовскую машину.
- *
- * Водитель едет вместе с машиной по той же причине, по какой он есть в занятости гаража: «кто
- * сегодня на этой машине» спрашивают ровно тогда же, когда «какая машина сегодня на объекте».
+ * The vehicle working on the site on this day, which can differ from the order's assignment.
+ * A planned day uses its route, including the trailer recorded there (ADR 0221). An ordinary
+ * order without a route uses the vehicle and driver effective on this date in assignment
+ * history; its latest assignment may belong to a later segment of the term.
  */
 export interface VehicleOnSiteDayVehicleDto {
   /**
-   * Рейс, которым машина вышла в этот день; `null` — она стоит на площадке сроком заказа, а не
-   * едет рейсом. Пустой рейс бывает только у второго источника (история обычного заказа): у
-   * линейного дня рейс и есть то, чем день закрыт.
+   * The route used for this day's work. Null identifies a standing vehicle supplied by
+   * assignment history; a planned linear day always has a route.
    */
   routeId: string | null;
-  /** «Р-12» — по нему о рейсе говорят по телефону; пусто вместе с самим рейсом. */
+  /** The number used to refer to the route, absent together with the route. */
   routeDisplayNumber: string | null;
   vehicleId: string;
   /**
-   * Как машина названа везде — общим правилом `vehicleLabel`: госномер, а без него модель,
-   * категория, тип (Р16). Склейки «модель · госномер» здесь больше нет: из неё вторую строку
-   * колонки не построить, не разбирая строку обратно по разделителю.
+   * The shared vehicle label: registration number, then model, category or type as fallback.
+   * The model is separate because the on-site row puts it below the label.
    */
   vehicleLabel: string;
-  /** Марка второй строкой колонки — полем, а не сборкой на портале (Р14): пусто, если не заведена. */
+  /** The model shown below the vehicle label; null when the directory has no model. */
   vehicleModelName: string | null;
+  /** Trailer details recorded on the day's route; null when no route snapshot names a trailer. */
+  trailerLabel: string | null;
   /**
-   * Пусто — человека на этот день портал не называет: у рейса его ещё не поставили (рейс собирают
-   * заранее, человека ставят утром), у истории он снят осознанно (`cleared`, арендный отрезок) или
-   * не восстановлен (`unknown`). Догадка вместо него не подставляется ни в одном из трёх случаев.
+   * Null when the route has no driver yet or assignment history cleared or cannot recover
+   * one. The view must not guess a person from another day.
    */
   driverPersonId: string | null;
   driverName: string;
   /**
-   * День, когда карточку человека сняли из справочника; `null` — карточка жива (ADR 0190).
-   *
-   * Человек из среза не исчезает — он и сегодня на этой машине, — но колонка обязана это показать:
-   * бумага по такому заказу продолжает выписываться на снятую карточку, и знать об этом надо
-   * раньше, чем бланк уйдёт в бухгалтерию заказчика.
+   * A removed driver remains visible because the person still works on this vehicle, but the
+   * row must flag the removed card before another sheet is issued (ADR 0190).
    */
   driverCardRemovedOn: string | null;
 }

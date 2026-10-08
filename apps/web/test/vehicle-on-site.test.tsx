@@ -167,6 +167,7 @@ const linearSlice: VehicleOnSiteListDto = {
         vehicleId: 'v-day',
         vehicleLabel: 'В321ВВ777',
         vehicleModelName: 'МАЗ 6501',
+        trailerLabel: 'КРОНА SDP27 ЕН806277',
         driverPersonId: 'p-1',
         driverCardRemovedOn: null,
         driverName: 'Иванов И. И.',
@@ -303,9 +304,19 @@ describe('вкладка «На объекте»', () => {
     // Машина рейса этого дня — с рейсом и человеком в кабине рядом с маркой (ADR 0100 §12).
     expect(await screen.findByText('В321ВВ777')).toBeDefined();
     expect(screen.getByText('МАЗ 6501 · Р-12 · Иванов И. И.')).toBeDefined();
+    expect(screen.getByText('Прицеп: КРОНА SDP27 ЕН806277')).toBeDefined();
     // Назначенной машины в строке нет вовсе: у линейного заказа она лишь машина по умолчанию.
     expect(screen.queryByText('Х001АА777')).toBeNull();
     expect(screen.queryByText('КамАЗ 6520 · Своя техника')).toBeNull();
+  });
+
+  it('на телефоне прицеп рейса виден вместе с машиной дня', async () => {
+    renderTab(MOBILE_VIEWPORT, linearSlice);
+
+    expect(await screen.findByText('В321ВВ777')).toBeDefined();
+    expect(screen.getByText('МАЗ 6501 · Р-12 · Иванов И. И.')).toBeDefined();
+    expect(screen.getByText('Прицеп: КРОНА SDP27 ЕН806277')).toBeDefined();
+    expect(screen.queryByText('Х001АА777')).toBeNull();
   });
 
   it('линейный день без рейса объявляет об этом словами, а не машиной по умолчанию', async () => {

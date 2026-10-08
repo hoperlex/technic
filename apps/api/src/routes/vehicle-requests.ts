@@ -88,6 +88,7 @@ import {
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
   type VehicleRouteDto,
+  trailerLabelOf,
   waybillFormLabels,
   isAllowedEarlyEndDate,
   isApprovalChangeable,
@@ -934,24 +935,14 @@ async function matchedDaysByRequestIds(
 }
 
 /**
- * Машина дня среза (ADR 0100 §12) — рейс, в который поставлен именно этот день. Спрашивается у
- * всей страницы, а не у одних линейных заказов: с ADR 0207 день и 4-П бывают у любого заказа
- * техники на объект, и машину такого дня обязана называть та, на которую выписан лист.
+ * The vehicle on this day's route takes precedence over the order's assignment for every
+ * on-site order (ADR 0207). The route also supplies the trailer snapshot (ADR 0221): reading
+ * today's hitch would misstate an already issued route after a hitch change.
  *
- * Заказ без такого дня в карту не попадает вовсе, и что это означает, решает уже вызывающий: у
- * линейного — «день не распланирован», то есть на площадке никого, у прочих — что машина стоит
- * сроком и её называет история назначения.
- *
- * Машина называется общим правилом портала (`vehicleLabel`, Р16), а не своей склейкой: колонка
- * среза показывает подпись первой строкой и марку второй, и из пары «модель · госномер» вторую
- * строку не построить, не разбирая её обратно по разделителю. Ради запасных ветвей правила
- * (госномера нет → модель → категория → тип) запрос берёт ещё два справочника — тип и категорию.
- *
- * Ветки аренды у правила здесь нет и быть не может: `assertDayRouteVehicle` пускает в день только
- * собственную машину — лист на арендную выписывает арендодатель.
- *
- * Пара «модель · госномер» осталась у дней заказа (`loadRequestDays`), и это не расхождение: там
- * она подпись строки дня, а не колонки, — общего кода у этих двух мест нет.
+ * Missing routes remain absent from this map. The caller then distinguishes an unplanned
+ * linear day from a standing vehicle supplied by assignment history. The shared vehicle label
+ * needs model, category and type fallbacks; only owned vehicles can be planned into these
+ * routes, because the lessor issues paper for rented vehicles.
  */
 async function dayVehiclesByRequestIds(
   ids: string[],
@@ -964,6 +955,10 @@ async function dayVehiclesByRequestIds(
       requestId: dayRouteRequests.requestId,
       routeId: dayRoutes.id,
       routeNum: dayRoutes.num,
+      trailer1Model: dayRoutes.trailer1Model,
+      trailer1RegNumber: dayRoutes.trailer1RegNumber,
+      trailer2Model: dayRoutes.trailer2Model,
+      trailer2RegNumber: dayRoutes.trailer2RegNumber,
       vehicleId: dayRoutes.vehicleId,
       ownership: vehicles.ownership,
       description: vehicles.description,
@@ -979,9 +974,8 @@ async function dayVehiclesByRequestIds(
     .innerJoin(dayRoutes, eq(dayRoutes.id, dayRouteRequests.routeId))
     .innerJoin(vehicles, eq(vehicles.id, dayRoutes.vehicleId))
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
-    // Тип и категория — под запасные ветви подписи: у машины без госномера её называют маркой, а
-    // без марки — категорией и типом. Тип у машины NOT NULL, но join левый: правило читает обе
-    // ветви одинаково, и второй вид join'а здесь ничего не менял бы, кроме чтения.
+    // Category and type serve the shared label's fallback when registration and model are absent.
+    // The type is required in the table; both joins stay left joins for the same label path.
     .leftJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
     .leftJoin(vehicleCategories, eq(vehicleCategories.id, vehicles.vehicleCategoryId))
     .leftJoin(persons, eq(persons.id, dayRoutes.driverPersonId))
@@ -994,6 +988,7 @@ async function dayVehiclesByRequestIds(
       vehicleLabel: vehicleLabel({ ...row, typeName: row.typeName ?? '' }),
       driverCardRemovedOn: row.driverDeletedAt ? moscowDateKeyOf(row.driverDeletedAt) : null,
       vehicleModelName: row.modelName,
+      trailerLabel: trailerLabelOf(row) || null,
       driverPersonId: row.driverPersonId,
       driverName: row.driverName ?? '',
     });
@@ -1097,6 +1092,7 @@ async function historyDayVehiclesByRequestIds(
       vehicleId: vehicle.id,
       vehicleLabel: vehicleLabel({ ...vehicle, typeName: vehicle.typeName ?? '' }),
       vehicleModelName: vehicle.modelName,
+      trailerLabel: null,
       driverPersonId,
       driverName: (driverPersonId && personById.get(driverPersonId)) || '',
       driverCardRemovedOn: (driverPersonId && personRemovedOn.get(driverPersonId)) || null,
