@@ -13,9 +13,9 @@ import {
 } from './section-requests';
 
 /**
- * The price of decision R1 after wave 3a1 profiles (stage 5 plan, §6): how many requests one
- * return to the browser tab would cost if LIVE lists also refetched on focus. The decision whether
- * to enable that is deferred to wave 3c. Dictionaries stay fresh; SIGNAL badges use focus already.
+ * The price of decision R1 after the stage 5 profiles (plan §6): one browser-tab return with
+ * visited panes still mounted. The current policy refetches SIGNAL; the proposed policy also
+ * refetches LIVE. Dictionaries keep their own freshness term in either case.
  */
 
 const AWAY_MS = 2 * 60_000;
@@ -39,12 +39,15 @@ async function returnToBrowserTab(queryClient: QueryClient): Promise<void> {
   await settle(queryClient);
 }
 
-async function returnCost({ page, section, user, first, neighbour }: TabbedSection) {
+async function returnCost(
+  { page, section, user, first, neighbour }: TabbedSection,
+  focusLive = true,
+) {
   freezeClock();
   const { http, queryClient } = mountSection(page, section, user, {
     shell: true,
     routes: VISITED_TAB_ROUTES,
-    queryClient: focusRefetchingClient(),
+    queryClient: focusLive ? focusRefetchingClient() : createTestQueryClient(),
   });
   await settle(queryClient);
   if (neighbour) {
@@ -58,7 +61,7 @@ async function returnCost({ page, section, user, first, neighbour }: TabbedSecti
 }
 
 /** One return with visited tabs mounted; dictionaries do not refetch on focus. */
-const EXPECTED: Record<string, string[]> = {
+const WITH_LIVE_FOCUS: Record<string, string[]> = {
   'Вывоз мусора, диспетчер (№1)': [
     'GET /waste-requests',
     'GET /waste-requests/present',
@@ -105,6 +108,28 @@ const EXPECTED: Record<string, string[]> = {
   ],
 };
 
+const CURRENT: Record<string, string[]> = {
+  'Вывоз мусора, диспетчер (№1)': [],
+  'Заказ ТС, диспетчер (№3)': [],
+  'Механизация, диспетчер (№7)': [],
+  'Орг.техника, ИТ-служба (№8)': [
+    'GET /service-requests/unread-count',
+    'GET /service-requests/waiting-count',
+  ],
+  'Орг.техника, диспетчер (№9)': [],
+  'Гараж, диспетчер (№6)': [],
+  'Справочники, directories.write (№10)': [],
+  'Справочники, только officeEquipment.write (№11)': [
+    'GET /service-requests/unread-count',
+    'GET /service-requests/waiting-count',
+  ],
+  'Администрирование, администратор (№12)': [
+    'GET /service-requests/unread-count',
+    'GET /service-requests/waiting-count',
+    'GET /users/pending-count',
+  ],
+};
+
 afterEach(() => {
   // Unmount first: handing focus back to the document would otherwise refetch the mounted screen.
   cleanup();
@@ -112,8 +137,12 @@ afterEach(() => {
   restoreClock();
 });
 
-describe('цена Р1: запросов на возврат во вкладку после профилей 3а1', () => {
-  it.each(TABBED_SECTIONS)('$title', async (section) => {
-    expect(await returnCost(section)).toEqual(EXPECTED[section.title]);
+describe('R1 browser-tab return request cost after query profiles', () => {
+  it.each(TABBED_SECTIONS)('current $title', async (section) => {
+    expect(await returnCost(section, false)).toEqual(CURRENT[section.title]);
+  });
+
+  it.each(TABBED_SECTIONS)('with LIVE focus $title', async (section) => {
+    expect(await returnCost(section, true)).toEqual(WITH_LIVE_FOCUS[section.title]);
   });
 });
