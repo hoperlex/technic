@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useEffect, useState } from 'react';
 import { Space, Tag, Typography } from 'antd';
 import dayjs from 'dayjs';
@@ -98,10 +99,12 @@ export function UsersAuditTab() {
     entityType: target ? 'user' : undefined,
     entityId: target?.id,
   };
-  const { data, isFetching } = useQuery({
-    queryKey: userAuditKeys.list(query),
-    queryFn: () => auditApi.list(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: userAuditKeys.list(query),
+      queryFn: () => auditApi.list(query),
+    }),
+  );
 
   const { filters, mobileFilters } = useUserAuditFilters({
     params,

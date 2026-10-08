@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useEffect, useState } from 'react';
 import { App, Button, DatePicker, Input, Select, Space } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
@@ -108,10 +109,12 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
     dateFrom: range[0].format(DATE),
     dateTo: range[1].format(DATE),
   };
-  const { data, isFetching } = useQuery({
-    queryKey: vehicleRouteKeys.list(query),
-    queryFn: () => vehicleRoutesApi.list(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: vehicleRouteKeys.list(query),
+      queryFn: () => vehicleRoutesApi.list(query),
+    }),
+  );
 
   const { options: vehicleOptions, loading: vehiclesLoading } = useOwnVehicleOptions();
   const { options: driverOptions, loading: driversLoading } = useDriverOptions();

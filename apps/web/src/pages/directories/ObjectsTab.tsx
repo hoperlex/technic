@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from 'antd';
 import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
@@ -29,10 +30,12 @@ export function ObjectsTab() {
       mapFilters: (f) => ({ isActive: f.isActive?.[0] as string | undefined }),
     },
   );
-  const { data, isFetching } = useQuery({
-    queryKey: objectKeys.list(params),
-    queryFn: () => objectsApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: objectKeys.list(params),
+      queryFn: () => objectsApi.list(params),
+    }),
+  );
 
   // Операторы вывоза для привязки (ADR 0010). Неактивных из списка не убираем: привязка
   // описывает сотрудничество с объектом, а не готовность взять заявку прямо сейчас, — иначе

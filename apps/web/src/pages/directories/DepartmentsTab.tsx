@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from 'antd';
 import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
@@ -36,10 +37,12 @@ export function DepartmentsTab() {
       mapFilters: (f) => ({ isActive: f.isActive?.[0] as string | undefined }),
     },
   );
-  const { data, isFetching } = useQuery({
-    queryKey: departmentKeys.list(params),
-    queryFn: () => departmentsApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: departmentKeys.list(params),
+      queryFn: () => departmentsApi.list(params),
+    }),
+  );
 
   // Площадки отдела (ADR 0144). Неактивные объекты в списке есть: привязка описывает зону
   // ответственности, а не готовность принимать заявки — закрытую площадку отдел ещё доубирает.

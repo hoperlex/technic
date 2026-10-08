@@ -88,6 +88,7 @@ export function WasteStatsTab() {
    */
   const setMonth = (next: string) => setSp({ tab: 'stats', month: next });
 
+  // list-query: exception — the server returns the whole month; the visible page is sliced locally.
   const { params, onTableChange } = useListParams<Record<string, never>>({}, { searchKeys: [] });
   /**
    * The site of the open window is state, not address: the subject of a link here is the month, and

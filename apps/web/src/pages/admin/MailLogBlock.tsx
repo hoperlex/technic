@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { Alert, DatePicker, Input, Segmented, Select, Space, Table, Tag, Typography } from 'antd';
 import dayjs from 'dayjs';
@@ -71,10 +72,12 @@ export function MailLogBlock() {
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const query = { ...params, from: dayStart(params.from), to: dayEnd(params.to) };
-  const { data, isFetching } = useQuery({
-    queryKey: mailLogKeys.list(query),
-    queryFn: () => mailLogApi.list(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: mailLogKeys.list(query),
+      queryFn: () => mailLogApi.list(query),
+    }),
+  );
 
   const columns = [
     {

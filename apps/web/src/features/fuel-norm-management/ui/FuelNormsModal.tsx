@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { App, Button, Space, Switch, Tooltip, Typography, type TableColumnType } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
@@ -60,11 +61,13 @@ export function FuelNormsModal({ open, onClose, vehicleId = null, vehicleLabel }
     ...(vehicleId ? { vehicleId } : {}),
     currentOnly: currentOnly ? 'true' : 'false',
   };
-  const { data, isFetching } = useQuery({
-    queryKey: fuelNormKeys.list(query),
-    queryFn: () => fuelNormsApi.list(query),
-    enabled: open,
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: fuelNormKeys.list(query),
+      queryFn: () => fuelNormsApi.list(query),
+      enabled: open,
+    }),
+  );
 
   const settings = useQuery({
     queryKey: fuelNormKeys.settings(),

@@ -63,11 +63,8 @@ export function AccessPeopleTab() {
   const { users, total, truncated, isFetching } = useAccessUsers();
   const [opened, setOpened] = useState<UserAccountDto | null>(null);
 
-  /**
-   * Параметры списка тем же хуком, что у серверных таблиц: он держит страницу и её размер
-   * одинаково на телефоне и на десктопе. Запрос от них не зависит — список приходит целиком, и
-   * весь отбор идёт по загруженным учёткам.
-   */
+  // Shared page controls keep desktop and phone in sync; the server sends all users for local filtering.
+  // list-query: exception — the server returns all users; filters and pages are applied locally.
   const { params, setParams, onTableChange } = useListParams<{
     role?: Role;
     permission?: Permission;

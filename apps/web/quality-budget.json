@@ -20,29 +20,5 @@
     "src/pages/service/ServiceBulkModal.tsx › ServiceBulkModal › ask › setTimeout",
     "src/shared/lib/useVersionCheck.ts › useVersionCheck › setInterval"
   ],
-  "unheldLists": [
-    "src/features/fuel-norm-management/ui/FuelNormsModal.tsx › FuelNormsModal",
-    "src/pages/admin/AccessGrantsTab.tsx › AccessGrantsTab",
-    "src/pages/admin/AccessPeopleTab.tsx › AccessPeopleTab",
-    "src/pages/admin/MailLogBlock.tsx › MailLogBlock",
-    "src/pages/admin/ManualsTab.tsx › ManualsTab",
-    "src/pages/directories/ContainerTypesTab.tsx › ContainerTypesTab",
-    "src/pages/directories/DepartmentsTab.tsx › DepartmentsTab",
-    "src/pages/directories/MechModelsTab.tsx › MechModelsTab",
-    "src/pages/directories/ObjectsTab.tsx › ObjectsTab",
-    "src/pages/directories/OfficeEquipmentConsumablesModal.tsx › OfficeEquipmentConsumablesModal",
-    "src/pages/directories/OfficeEquipmentModelsModal.tsx › OfficeEquipmentModelsModal",
-    "src/pages/directories/OfficeEquipmentTab.tsx › OfficeEquipmentTab",
-    "src/pages/directories/TrailersTab.tsx › TrailersTab",
-    "src/pages/directories/WarehousesTab.tsx › WarehousesTab",
-    "src/pages/waste/WasteStatsTab.tsx › WasteStatsTab",
-    "src/widgets/counterparty-registry/model/useCounterpartyRegistry.ts › useCounterpartyRegistry",
-    "src/widgets/driver-registry/model/useDriverRegistry.ts › useDriverRegistry",
-    "src/widgets/user-account-registry/model/useUserAccountRegistry.ts › useUserAccountRegistry",
-    "src/widgets/user-audit/ui/UsersAuditTab.tsx › UsersAuditTab",
-    "src/widgets/vehicle-registry/model/useVehicleRegistry.ts › useVehicleRegistry",
-    "src/widgets/vehicle-request-history/ui/VehicleRequestHistory.tsx › VehicleRequestHistory",
-    "src/widgets/vehicle-route-windows/ui/VehicleRoutesModal.tsx › VehicleRoutesModal",
-    "src/widgets/waste-tariff-registry/ui/WasteTariffRegistry.tsx › WasteTariffRegistry"
-  ]
+  "unheldLists": []
 }

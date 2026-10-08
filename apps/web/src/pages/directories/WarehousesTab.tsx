@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { App, Button, Form, Input, Select, Space, Switch, Tag } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
@@ -41,10 +42,12 @@ export function WarehousesTab() {
       mapFilters: (f) => ({ isActive: f.isActive?.[0] as string | undefined }),
     },
   );
-  const { data, isFetching } = useQuery({
-    queryKey: warehouseKeys.list(params),
-    queryFn: () => warehousesApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: warehouseKeys.list(params),
+      queryFn: () => warehousesApi.list(params),
+    }),
+  );
 
   // Поставщики — и для фильтра, и для формы. Неактивных из списка не убираем: склад у них
   // заведён, и в форме привязка осталась бы без наименования — та же оговорка, что у объектов.

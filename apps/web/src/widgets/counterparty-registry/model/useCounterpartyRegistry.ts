@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
@@ -18,10 +19,12 @@ export function useCounterpartyRegistry() {
       mapFilters: (filters) => ({ isActive: filters.isActive?.[0] as string | undefined }),
     },
   );
-  const { data, isFetching } = useQuery({
-    queryKey: counterpartyKeys.list(params),
-    queryFn: () => counterpartiesApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: counterpartyKeys.list(params),
+      queryFn: () => counterpartiesApi.list(params),
+    }),
+  );
 
   const [typeFilter, setTypeFilter] = useState('');
   const applyTypeFilter = (value: string) => {

@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { App, Button, Form, Input, InputNumber, Space, Switch, Tag } from 'antd';
 import { DeleteFilled, EditOutlined, PlusOutlined } from '@ant-design/icons';
@@ -50,10 +51,12 @@ export function MechModelsTab() {
       mapFilters: (f) => ({ isActive: f.isActive?.[0] as string | undefined }),
     },
   );
-  const { data, isFetching } = useQuery({
-    queryKey: mechModelKeys.list(params),
-    queryFn: () => mechModelsApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: mechModelKeys.list(params),
+      queryFn: () => mechModelsApi.list(params),
+    }),
+  );
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<MechModelDto | null>(null);

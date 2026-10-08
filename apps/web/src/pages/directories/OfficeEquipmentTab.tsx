@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { App, Button, Form, Space } from 'antd';
 import { AppstoreOutlined, PlusOutlined, PrinterOutlined, TagsOutlined } from '@ant-design/icons';
@@ -63,23 +64,22 @@ export function OfficeEquipmentTab() {
   const canMove = can('officeEquipment.move');
   const qc = useQueryClient();
 
-  // Набор отборов описан один раз — в модуле полосы фильтров: разъехавшись, тип параметров и
-  // сама полоса начали бы спорить о том, что вкладка умеет спрашивать.
+  // Filter fields share one definition with the toolbar so its controls and request parameters agree.
   const { params, setParams, setSort, onTableChange } = useListParams<OfficeEquipmentFilterParams>(
     {},
     {
-      // Поиск живёт лупой в заголовке «Модели» — единственного столбца с поисковой выпадашкой;
-      // сервер ищет по нему же и по обоим номерам.
+      // The model column owns the only header search; the server also searches both serial numbers.
       searchKeys: ['name'],
       mapFilters: (f) => ({ isActive: f.isActive?.[0] as string | undefined }),
     },
   );
 
-  const { data, isFetching } = useQuery({
-    queryKey: officeEquipmentKeys.list(params),
-    queryFn: () => officeEquipmentApi.list(params),
-  });
-
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: officeEquipmentKeys.list(params),
+      queryFn: () => officeEquipmentApi.list(params),
+    }),
+  );
   const { data: typeOptions = [], isLoading: typesLoading } = useQuery(
     officeEquipmentTypeOptionsQuery(),
   );

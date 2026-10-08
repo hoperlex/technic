@@ -40,6 +40,7 @@ export function WasteTariffRegistry({
   togglePending,
 }: Props) {
   const isMobile = useIsMobile();
+  // list-query: exception — the server returns the tariff grid; assembled pairs are paged locally.
   const { params, setParams, onTableChange } = useListParams<{
     wasteTypeId?: string;
     isActive?: string;

@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { Button, Input, Select, Space, Tag, Typography } from 'antd';
 import {
@@ -74,10 +75,12 @@ export function AccessGrantsTab() {
     sortBy: params.sortBy ?? 'name',
     sortOrder: params.sortBy ? params.sortOrder : ('asc' as const),
   };
-  const { data, isFetching } = useQuery({
-    queryKey: grantKeys.list(query),
-    queryFn: () => grantsApi.list(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: grantKeys.list(query),
+      queryFn: () => grantsApi.list(query),
+    }),
+  );
 
   const [builder, setBuilder] = useState<BuilderState | null>(null);
   const [holdersOf, setHoldersOf] = useState<GrantDto | null>(null);

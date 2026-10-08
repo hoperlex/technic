@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { App, Button, Checkbox, Input, Select, Space, Tooltip, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
@@ -77,12 +78,14 @@ export function OfficeEquipmentModelsModal({ open, onClose, typeOptions, typesLo
     { searchKeys: [] },
   );
 
-  const { data, isFetching } = useQuery({
-    queryKey: officeEquipmentModelKeys.list(params),
-    queryFn: () => officeEquipmentModelsApi.list(params),
-    // Перечень нужен, только пока окно открыто: ради кнопки в шапке вкладки его не запрашивают.
-    enabled: open,
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: officeEquipmentModelKeys.list(params),
+      queryFn: () => officeEquipmentModelsApi.list(params),
+      // The header button does not need the list while this window is closed.
+      enabled: open,
+    }),
+  );
 
   const [formOpen, setFormOpen] = useState(false);
   const [record, setRecord] = useState<OfficeEquipmentModelDto | null>(null);

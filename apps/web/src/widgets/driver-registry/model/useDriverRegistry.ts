@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useQuery } from '@tanstack/react-query';
 import {
   CREDENTIAL_TYPE_CODES,
@@ -34,10 +35,12 @@ export function useDriverRegistry() {
     { searchKeys: ['fullName', 'snils', 'contacts'] },
   );
   const { params, setParams } = list;
-  const { data, isFetching } = useQuery({
-    queryKey: driverKeys.list(params),
-    queryFn: () => driversApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: driverKeys.list(params),
+      queryFn: () => driversApi.list(params),
+    }),
+  );
   // Job titles arrive from staff imports as free text (ADR 0095): there is no job-title dictionary,
   // so the server list is the only complete one. The key lives under the ['drivers'] root on
   // purpose — invalidating driverKeys.root after a new driver is saved refreshes these per-title

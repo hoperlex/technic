@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { App, Button, Form, Input, InputNumber, Space, Switch, Tag } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
@@ -39,10 +40,12 @@ export function ManualsTab() {
     },
   );
 
-  const { data, isFetching } = useQuery({
-    queryKey: manualKeys.list(params),
-    queryFn: () => manualsApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: manualKeys.list(params),
+      queryFn: () => manualsApi.list(params),
+    }),
+  );
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<ManualDto | null>(null);

@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
 import { App, Button, Checkbox, Form, Input, Select, Space } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
@@ -50,9 +51,12 @@ export function TrailersTab() {
     // и любая сортировка сбрасывала бы выбранное (в onChange таблицы приходит пустой фильтр).
   }>({}, { searchKeys: [] });
 
-  const { data, isFetching } = useQuery({
-    ...trailerListQuery(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      ...trailerListQuery(params),
+      enabled: true,
+    }),
+  );
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<VehicleTrailerDto | null>(null);

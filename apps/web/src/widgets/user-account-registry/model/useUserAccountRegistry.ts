@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useQuery } from '@tanstack/react-query';
 import {
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
@@ -39,10 +40,12 @@ export function useUserAccountRegistry() {
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((current) => ({ ...current, ...patch, page: 1 }));
 
-  const { data, isFetching } = useQuery({
-    queryKey: userAccountKeys.list(params),
-    queryFn: () => usersApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: userAccountKeys.list(params),
+      queryFn: () => usersApi.list(params),
+    }),
+  );
   // Count of unreviewed registrations; the same number is drawn as a badge in the administration
   // menu.
   const { data: pending } = useQuery({

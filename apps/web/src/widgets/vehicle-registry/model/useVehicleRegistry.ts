@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useQuery } from '@tanstack/react-query';
 import { counterpartyActiveVehicleLessorsQuery } from '@entities/counterparty';
 import {
@@ -18,10 +19,12 @@ export function useVehicleRegistry() {
   );
   const ownershipFilter = params.ownership;
 
-  const { data, isFetching } = useQuery({
-    queryKey: vehicleKeys.list(params),
-    queryFn: () => vehiclesApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: vehicleKeys.list(params),
+      queryFn: () => vehiclesApi.list(params),
+    }),
+  );
 
   // Registry filtering is by the whole type: “all cranes”, not one classified category.
   const { data: typesData } = useQuery({

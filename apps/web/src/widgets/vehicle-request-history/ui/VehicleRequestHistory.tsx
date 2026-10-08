@@ -1,3 +1,4 @@
+import { listQueryOptions } from '@shared/api';
 import { useState, type ReactNode } from 'react';
 import { DatePicker, Input, Select, Space, Tooltip, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
@@ -111,16 +112,20 @@ export function VehicleRequestHistory({
     placeholder: 'Все объекты и отделы',
   });
   const { options: lessorOptions } = useLessorOptions();
-  const { data, isFetching } = useQuery({
-    queryKey: vehicleRequestKeys.closedList(params),
-    queryFn: () => vehicleRequestsApi.historyList(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: vehicleRequestKeys.closedList(params),
+      queryFn: () => vehicleRequestsApi.historyList(params),
+    }),
+  );
   // The summary uses the same filters as the table: a total that is not about what the person sees
   // misleads more surely than no total at all.
-  const { data: summary } = useQuery({
-    queryKey: vehicleRequestKeys.closedSummary(params),
-    queryFn: () => vehicleRequestsApi.historySummary(params),
-  });
+  const { data: summary } = useQuery(
+    listQueryOptions({
+      queryKey: vehicleRequestKeys.closedSummary(params),
+      queryFn: () => vehicleRequestsApi.historySummary(params),
+    }),
+  );
 
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
   // A closed request named in the URL: links from a route's composition or the waybill journal lead
