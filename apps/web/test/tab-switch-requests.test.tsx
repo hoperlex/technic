@@ -54,20 +54,9 @@ const EXPECTED: Record<string, { visit: string[]; back: string[] }> = {
     back: ['GET /mech-requests', 'GET /mech-requests', 'GET /mech-requests/summary'],
   },
   'Орг.техника, ИТ-служба (№8)': {
-    // The section root holds the two shell badges, `waiting-count` and `unread-count`: every
-    // switch refetches them (R2 sub-question, removed by wave 3а).
-    visit: [
-      'GET /service-requests',
-      'GET /service-requests/unread-count',
-      'GET /service-requests/waiting-count',
-      'GET /service-requests/warranties',
-    ],
-    back: [
-      'GET /service-requests',
-      'GET /service-requests/unread-count',
-      'GET /service-requests/waiting-count',
-      'GET /service-requests/warranties',
-    ],
+    // The two SIGNAL shell badges remain fresh on a section-tab switch (wave 3a1, R2).
+    visit: ['GET /service-requests', 'GET /service-requests/warranties'],
+    back: ['GET /service-requests', 'GET /service-requests/warranties'],
   },
   'Орг.техника, диспетчер (№9)': {
     // Equipment and consumables live outside the cleared root (`service-requests`): a switch
