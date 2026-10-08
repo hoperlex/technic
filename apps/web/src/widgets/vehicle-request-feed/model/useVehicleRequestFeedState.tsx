@@ -16,6 +16,7 @@ import { weeklyRequestPath, weekSelectOptions } from '@entities/weekly-request';
 import { useRequestCustomerDefaults, useRequestCustomerFilter } from '@features/request-customer';
 import { useVehicleFilter } from '@features/vehicle-request-filters';
 import { useListParams } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import type {
   VehicleRequestFeedFilters,
   VehicleRequestFeedList,
@@ -107,10 +108,12 @@ export function useVehicleRequestFeedState() {
   // one page and one order (vehicleRequestsApi.feed). A separate endpoint rather than a list flag:
   // the order list also serves the archive and picking requests for a route, where a weekly
   // document (never put into a route) would be a row that cannot be chosen.
-  const feedQuery = useQuery({
-    queryKey: vehicleRequestKeys.feed(params),
-    queryFn: () => vehicleRequestsApi.feed(params),
-  });
+  const feedQuery = useQuery(
+    listQueryOptions({
+      queryKey: vehicleRequestKeys.feed(params),
+      queryFn: () => vehicleRequestsApi.feed(params),
+    }),
+  );
   // Header summary: how many requests await processing and how many are in work. The key starts
   // with 'vehicle-requests', so the counters refresh with the same invalidations as the list.
   // Narrowing filters (customer, request type, vehicle type and the vehicle itself) apply to the
@@ -125,10 +128,12 @@ export function useVehicleRequestFeedState() {
     classifications: params.classifications,
     vehicleId: params.vehicleId,
   };
-  const summaryResult = useQuery({
-    queryKey: vehicleRequestKeys.summary(summaryQuery),
-    queryFn: () => vehicleRequestsApi.summary(summaryQuery),
-  });
+  const summaryResult = useQuery(
+    listQueryOptions({
+      queryKey: vehicleRequestKeys.summary(summaryQuery),
+      queryFn: () => vehicleRequestsApi.summary(summaryQuery),
+    }),
+  );
 
   /*
    * "Request type" with a third value, the document kind. In the UI it is one select: the person
@@ -211,6 +216,7 @@ export function useVehicleRequestFeedState() {
     rows: data?.items ?? [],
     total: data?.total ?? 0,
     loading: feedQuery.isFetching,
+    isPlaceholderData: feedQuery.isPlaceholderData,
     filters,
     list,
     summary,

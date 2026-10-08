@@ -13,6 +13,7 @@ import {
 import { useAuth } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, type CardConfig } from '@shared/ui';
+import { listQueryOptions } from '@shared/api';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
@@ -58,17 +59,19 @@ export function WasteArchiveTab() {
     setParams((p) => ({ ...p, num: parseWasteRequestNumberSearch(raw), page: 1 }));
   };
 
-  const { data, isFetching } = useQuery({
-    queryKey: wasteRequestKeys.archive(params),
-    queryFn: () =>
-      wasteRequestsApi.list({
-        ...params,
-        // Порядок по времени удаления, пока столбец не выбрали руками: архив открывают вопросом
-        // «что снесли последним», а умолчание списка (дата создания) отвечает не на него.
-        sortBy: params.sortBy ?? 'deletedAt',
-        archive: 'only',
-      }),
-  });
+  const { data, isFetching, isPlaceholderData } = useQuery(
+    listQueryOptions({
+      queryKey: wasteRequestKeys.archive(params),
+      queryFn: () =>
+        wasteRequestsApi.list({
+          ...params,
+          // Порядок по времени удаления, пока столбец не выбрали руками: архив открывают вопросом
+          // «что снесли последним», а умолчание списка (дата создания) отвечает не на него.
+          sortBy: params.sortBy ?? 'deletedAt',
+          archive: 'only',
+        }),
+    }),
+  );
 
   /**
    * Возврат из архива. Гасится корень `wasteRequestKeys.root`: восстановленная заявка исчезает
@@ -282,6 +285,7 @@ export function WasteArchiveTab() {
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching || restoreMut.isPending || purge.pending}
+        isPlaceholderData={isPlaceholderData}
         page={params.page}
         pageSize={params.pageSize}
         sortBy={params.sortBy}

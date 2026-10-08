@@ -4,6 +4,7 @@ import { type WasteRequestDto } from '@technic/contracts';
 import { useAuth } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, type CardConfig } from '@shared/ui';
+import { listQueryOptions } from '@shared/api';
 import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
@@ -24,10 +25,12 @@ export function OnSiteTab() {
     { searchKeys: ['objectName'] },
   );
 
-  const { data, isFetching } = useQuery({
-    queryKey: wasteRequestKeys.present(params),
-    queryFn: () => wasteRequestsApi.present(params),
-  });
+  const { data, isFetching, isPlaceholderData } = useQuery(
+    listQueryOptions({
+      queryKey: wasteRequestKeys.present(params),
+      queryFn: () => wasteRequestsApi.present(params),
+    }),
+  );
 
   const columns = [
     textColumn<WasteRequestDto>({
@@ -123,6 +126,7 @@ export function OnSiteTab() {
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
+        isPlaceholderData={isPlaceholderData}
         page={params.page}
         pageSize={params.pageSize}
         sortBy={params.sortBy}

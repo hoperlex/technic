@@ -7,6 +7,7 @@ import { useWaybillFormFilter } from '@features/waybill-form-filter';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { DataTable, PageTableLayout, sortOptionsFrom, SummaryBar } from '@shared/ui';
+import { listQueryOptions } from '@shared/api';
 import { TabsExtra } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
@@ -78,10 +79,12 @@ export function VehicleRequestsOnSiteTab() {
   // первой же правке справочника бланков.
   const formFilter = useWaybillFormFilter({ forms: params.forms, onChange: applyFilter });
 
-  const { data, isFetching } = useQuery({
-    queryKey: vehicleRequestKeys.onSite(params),
-    queryFn: () => vehicleRequestsApi.onSite(params),
-  });
+  const { data, isFetching, isPlaceholderData } = useQuery(
+    listQueryOptions({
+      queryKey: vehicleRequestKeys.onSite(params),
+      queryFn: () => vehicleRequestsApi.onSite(params),
+    }),
+  );
 
   // День среза считает сервер (ADR 0036): до ответа подписи присутствия не строятся — считать их
   // по часам браузера значило бы отвечать про другой день, чем отобранные строки. От него же
@@ -90,10 +93,12 @@ export function VehicleRequestsOnSiteTab() {
 
   // Итог считается по тем же фильтрам, что и таблица: сводка, отвечающая не про то, что человек
   // видит перед собой, вводит в заблуждение вернее, чем её отсутствие.
-  const { data: summary } = useQuery({
-    queryKey: vehicleRequestKeys.onSiteSummary(params),
-    queryFn: () => vehicleRequestsApi.onSiteSummary(params),
-  });
+  const { data: summary } = useQuery(
+    listQueryOptions({
+      queryKey: vehicleRequestKeys.onSiteSummary(params),
+      queryFn: () => vehicleRequestsApi.onSiteSummary(params),
+    }),
+  );
 
   const { options: allObjectOptions } = useObjectOptions();
   const objectOptions = limitObjectOptions(allObjectOptions);
@@ -190,6 +195,7 @@ export function VehicleRequestsOnSiteTab() {
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
+        isPlaceholderData={isPlaceholderData}
         page={params.page}
         pageSize={params.pageSize}
         sortBy={params.sortBy}

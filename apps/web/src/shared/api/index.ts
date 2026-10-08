@@ -3,6 +3,7 @@
  * Так линт границ отличает «слой пользуется тем, что ему разрешено» от «кто-то залез внутрь».
  */
 export { createQueryKeys } from './createQueryKeys';
+export { listQueryOptions } from './listQueryOptions';
 export type { QueryKeyDefinitions, QueryKeys } from './createQueryKeys';
 export * from './clientContract';
 export * from './http';

@@ -34,6 +34,7 @@ interface ListProps {
   scopeKey?: string;
   maxSelected?: number;
   card?: CardConfig<Row>;
+  isPlaceholderData?: boolean;
   initialKeys?: string[];
   disabled?: (record: Row) => string | null;
   onSelect?: (keys: string[]) => void;
@@ -44,7 +45,15 @@ interface ListProps {
  * говорит, каким им быть. Проверять гашение выбора на неуправляемом списке было бы нечестно:
  * половина правила как раз в том, что о гашении узнаёт страница.
  */
-function List({ scopeKey, maxSelected, card, initialKeys = [], disabled, onSelect }: ListProps) {
+function List({
+  scopeKey,
+  maxSelected,
+  card,
+  isPlaceholderData,
+  initialKeys = [],
+  disabled,
+  onSelect,
+}: ListProps) {
   const [keys, setKeys] = useState<string[]>(initialKeys);
   return (
     <DataTable<Row>
@@ -54,6 +63,7 @@ function List({ scopeKey, maxSelected, card, initialKeys = [], disabled, onSelec
       page={1}
       pageSize={50}
       card={card}
+      isPlaceholderData={isPlaceholderData}
       onChange={vi.fn()}
       selection={{
         keys,
@@ -160,6 +170,31 @@ describe('выбор гаснет при смене того, что видно'
 
     expect(selectedText()).toBe('Выбрано 1');
     expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it('placeholder rows cannot be selected or sent to a bulk action', () => {
+    const onSelect = vi.fn<(keys: string[]) => void>();
+    const { rerender } = render(
+      <List scopeKey={listScopeKey(SCOPE)} initialKeys={['r1']} onSelect={onSelect} />,
+    );
+    expect(selectedText()).toBe('Выбрано 1');
+
+    rerender(
+      <List
+        scopeKey={listScopeKey({ ...SCOPE, page: 2 })}
+        isPlaceholderData
+        initialKeys={['r1']}
+        onSelect={onSelect}
+      />,
+    );
+    expect(selectedText()).toBeNull();
+    expect(boxOf('Лист 1').disabled).toBe(true);
+    expect(headBox().disabled).toBe(true);
+    fireEvent.click(boxOf('Лист 1'));
+    expect(onSelect).toHaveBeenLastCalledWith([]);
+
+    rerender(<List scopeKey={listScopeKey({ ...SCOPE, page: 2 })} onSelect={onSelect} />);
+    expect(selectedText()).toBeNull();
   });
 });
 

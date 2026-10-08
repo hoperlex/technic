@@ -92,6 +92,7 @@ export function WasteRequestFeed({
         data={state.rows}
         total={state.total}
         loading={state.loading}
+        isPlaceholderData={state.isPlaceholderData}
         page={state.list.page}
         pageSize={state.list.pageSize}
         sortBy={state.list.sortBy}

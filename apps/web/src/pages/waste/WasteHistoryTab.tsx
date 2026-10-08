@@ -18,6 +18,7 @@ import { counterpartyActiveOperatorOptionsQuery } from '@entities/counterparty';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable } from '@shared/ui';
+import { listQueryOptions } from '@shared/api';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
@@ -82,17 +83,21 @@ export function WasteHistoryTab() {
     deliveryFrom: dayStart(params.deliveryFrom),
     deliveryTo: dayEnd(params.deliveryTo),
   };
-  const { data, isFetching } = useQuery({
-    queryKey: wasteRequestKeys.closed(query),
-    queryFn: () => wasteRequestsApi.historyList(query),
-  });
+  const { data, isFetching, isPlaceholderData } = useQuery(
+    listQueryOptions({
+      queryKey: wasteRequestKeys.closed(query),
+      queryFn: () => wasteRequestsApi.historyList(query),
+    }),
+  );
 
   // Итог считается по тем же фильтрам, что и таблица: сводка, отвечающая не про то, что человек
   // видит перед собой, вводит в заблуждение вернее, чем её отсутствие.
-  const { data: summary } = useQuery({
-    queryKey: wasteRequestKeys.closedSummary(query),
-    queryFn: () => wasteRequestsApi.historySummary(query),
-  });
+  const { data: summary } = useQuery(
+    listQueryOptions({
+      queryKey: wasteRequestKeys.closedSummary(query),
+      queryFn: () => wasteRequestsApi.historySummary(query),
+    }),
+  );
 
   const { data: objects } = useQuery({
     ...objectRecordsQuery(true),
@@ -330,6 +335,7 @@ export function WasteHistoryTab() {
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
+        isPlaceholderData={isPlaceholderData}
         page={params.page}
         pageSize={params.pageSize}
         sortBy={params.sortBy}

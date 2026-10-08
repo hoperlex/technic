@@ -25,6 +25,7 @@ export function VehicleRequestFeed({
   filters,
   list,
   loading,
+  isPlaceholderData,
   pending,
   rights,
   rows: sourceRows,
@@ -128,6 +129,7 @@ export function VehicleRequestFeed({
         data={rows}
         total={total}
         loading={loading}
+        isPlaceholderData={isPlaceholderData}
         page={list.page}
         pageSize={list.pageSize}
         sortBy={list.sortBy}

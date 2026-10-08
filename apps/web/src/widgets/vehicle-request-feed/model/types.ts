@@ -113,6 +113,7 @@ export interface VehicleRequestFeedProps {
   filters: VehicleRequestFeedFilters;
   list: VehicleRequestFeedList;
   loading: boolean;
+  isPlaceholderData: boolean;
   pending: VehicleRequestFeedPending;
   rights: VehicleRequestFeedRights;
   rows: VehicleFeedRow[];

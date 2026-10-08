@@ -17,6 +17,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { weeklyRequestKeys } from '@entities/weekly-request';
 import { useRequestCustomerFilter } from '@features/request-customer';
 import { DataTable, type CardConfig } from '@shared/ui';
+import { listQueryOptions } from '@shared/api';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
@@ -80,17 +81,19 @@ export function VehicleRequestsArchiveTab() {
     placeholder: 'Все объекты и отделы',
   });
 
-  const { data, isFetching } = useQuery({
-    queryKey: vehicleRequestKeys.deletedList(params),
-    queryFn: () =>
-      vehicleRequestsApi.list({
-        ...params,
-        // Порядок по времени удаления, пока столбец не выбрали руками: архив открывают вопросом
-        // «что снесли последним», а умолчание списка (дата создания) отвечает не на него.
-        sortBy: params.sortBy ?? 'deletedAt',
-        archive: 'only',
-      }),
-  });
+  const { data, isFetching, isPlaceholderData } = useQuery(
+    listQueryOptions({
+      queryKey: vehicleRequestKeys.deletedList(params),
+      queryFn: () =>
+        vehicleRequestsApi.list({
+          ...params,
+          // Порядок по времени удаления, пока столбец не выбрали руками: архив открывают вопросом
+          // «что снесли последним», а умолчание списка (дата создания) отвечает не на него.
+          sortBy: params.sortBy ?? 'deletedAt',
+          archive: 'only',
+        }),
+    }),
+  );
 
   /**
    * Возврат из архива. Гасится корень `['vehicle-requests']`: восстановленная заявка исчезает
@@ -316,6 +319,7 @@ export function VehicleRequestsArchiveTab() {
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching || restoreMut.isPending || purge.pending}
+        isPlaceholderData={isPlaceholderData}
         page={params.page}
         pageSize={params.pageSize}
         sortBy={params.sortBy}

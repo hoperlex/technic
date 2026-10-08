@@ -670,6 +670,14 @@ body,
   flex-direction: column;
   gap: 8px;
 }
+.list-cards--loading .list-card {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.list-cards__loading {
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 13px;
+}
 .list-card {
   position: relative;
   padding: 10px 40px 10px 12px;

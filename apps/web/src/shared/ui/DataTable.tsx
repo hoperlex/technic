@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState, type MouseEvent, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Empty,
   Pagination,
@@ -8,14 +8,12 @@ import {
   type TableColumnsType,
   type TableProps,
 } from 'antd';
-import { MoreOutlined } from '@ant-design/icons';
 import type { SorterResult } from 'antd/es/table/interface';
 import { PAGE_SIZE_OPTIONS } from '@shared/config';
 import type { TableChange } from '@shared/lib';
 import { useElementSize } from '@shared/lib';
 import { useIsMobile } from '@shared/lib';
-import { ActionSheet, type ActionSheetItem } from './ActionSheet';
-import { NO_ROW_CLICK } from './columns';
+import { ListCard, opensRow, type CardConfig } from './ListCard';
 import { useScopedSelection, withSelectionColumn, type SelectionConfig } from './tableSelection';
 
 /**
@@ -24,28 +22,7 @@ import { useScopedSelection, withSelectionColumn, type SelectionConfig } from '.
  */
 export { listScopeKey, type SelectionConfig } from './tableSelection';
 
-/**
- * Карточное представление строки на телефоне (ADR 0030). Объявляется рядом с колонками и из тех
- * же полей записи: данные у списка одни, меняется только способ их показать.
- */
-export interface CardConfig<T> {
-  /** Первая строка слева — обычно номер записи. */
-  title: (record: T) => ReactNode;
-  /** Первая строка справа: статус или другой бейдж. */
-  badge?: (record: T) => ReactNode;
-  /** Главная строка карточки: объект, наименование. */
-  primary?: (record: T) => ReactNode;
-  /** Дополнительные строки; пустые пропускаются. */
-  lines?: ((record: T) => ReactNode)[];
-  /** Действия строки списком с подписями: подсказка на иконке по касанию не открывается. */
-  actions?: (record: T) => ActionSheetItem[];
-  /**
-   * Касание по карточке — обычно открыть карточку записи. Касание по активному содержимому
-   * (ссылка на связанную запись, кнопка, поле) карточку не открывает: карточка спрашивает тот же
-   * `opensRow`, что и строка таблицы на десктопе.
-   */
-  onOpen?: (record: T) => void;
-}
+export type { CardConfig } from './ListCard';
 
 interface DataTableProps<T> {
   rowKey?: string;
@@ -53,6 +30,8 @@ interface DataTableProps<T> {
   data: T[];
   total: number;
   loading?: boolean;
+  /** Rows still belong to the preceding query while the next page or filter loads. */
+  isPlaceholderData?: boolean;
   page: number;
   pageSize: number;
   /** Выбор строк для действия над несколькими сразу; нет — списку он не нужен. */
@@ -129,91 +108,6 @@ function compactColumns<T>(columns: TableColumnsType<T>): TableColumnsType<T> {
   });
 }
 
-/**
- * Отдаёт ли этот клик строку тому, кто её открывает. Карточку записи открывают кликом по строке —
- * это короче, чем целиться в кнопку колонки «Действия», — но строка полна активного содержимого,
- * и открывать её поверх каждого нажатия нельзя.
- *
- * Отсекаются три случая:
- *
- * — клик из портала. Меню статуса и поповер файлов antd рисует в конце `body`, но в дереве React
- *   они остались детьми ячейки, и событие всплывает до строки, хотя в DOM лежит вне её. Без
- *   проверки принадлежности выбор пункта меню открывал бы заодно карточку;
- * — клик по управляющему элементу (кнопка, ссылка, поле) и по ячейке, помеченной `NO_ROW_CLICK`:
- *   колонка действий целиком отдана нажатиям, и промах мимо кнопки открытием карточки не считают;
- * — клик, которым кончилось выделение текста: адрес или комментарий копировали, а не открывали.
- *
- * Правило одно на оба представления списка: строка таблицы спрашивает его в `onRow`, карточка
- * телефона — в `ListCard`. Разъехавшись, они дали бы одному и тому же списку разное поведение:
- * ссылка внутри карточки уводила бы на связанную запись и открывала бы заодно саму карточку,
- * а та же ссылка в строке таблицы — нет.
- */
-function opensRow(e: MouseEvent<HTMLElement>): boolean {
-  const target = e.target as HTMLElement | null;
-  if (!target || !e.currentTarget.contains(target)) return false;
-  if (target.closest(`button, a, input, textarea, label, .ant-select, .${NO_ROW_CLICK}`)) {
-    return false;
-  }
-  return !window.getSelection()?.toString();
-}
-
-function ListCard<T>({ record, card }: { record: T; card: CardConfig<T> }) {
-  const [actionsOpen, setActionsOpen] = useState(false);
-  const actions = card.actions?.(record) ?? [];
-  const lines = (card.lines ?? []).map((line) => line(record)).filter(Boolean);
-  const openable = !!card.onOpen;
-
-  return (
-    <div
-      className={`list-card${openable ? ' list-card--openable' : ''}`}
-      role={openable ? 'button' : undefined}
-      tabIndex={openable ? 0 : undefined}
-      onClick={
-        openable
-          ? (e) => {
-              if (opensRow(e)) card.onOpen?.(record);
-            }
-          : undefined
-      }
-      onKeyDown={
-        openable
-          ? (e) => {
-              if (e.key === 'Enter') card.onOpen?.(record);
-            }
-          : undefined
-      }
-    >
-      <div className="list-card__head">
-        <Typography.Text strong>{card.title(record)}</Typography.Text>
-        <div className="list-card__badge">{card.badge?.(record)}</div>
-      </div>
-      {card.primary && <div className="list-card__primary">{card.primary(record)}</div>}
-      {lines.map((line, index) => (
-        <div key={index} className="list-card__line">
-          {line}
-        </div>
-      ))}
-      {actions.length > 0 && (
-        <>
-          <button
-            type="button"
-            className="list-card__more"
-            aria-label="Действия"
-            // Касание по меню не должно заодно открывать саму карточку.
-            onClick={(e) => {
-              e.stopPropagation();
-              setActionsOpen(true);
-            }}
-          >
-            <MoreOutlined />
-          </button>
-          <ActionSheet open={actionsOpen} onClose={() => setActionsOpen(false)} items={actions} />
-        </>
-      )}
-    </div>
-  );
-}
-
 /** Протокол перерисовки списка живёт в `shared/lib`; здесь он переэкспортируется для удобства. */
 export type { TableChange };
 
@@ -222,7 +116,27 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
   const isMobile = useIsMobile();
   const rowKey = props.rowKey ?? 'id';
   /** Выбор гасится при смене того, что видно: правило общее для портала, см. `scopeKey`. */
-  const selection = useScopedSelection(props.selection);
+  const scopedSelection = useScopedSelection(props.selection);
+  // A placeholder row belongs to the old query. Keeping checkboxes usable could send its IDs to
+  // a bulk command for the new filter, even when the selection scope has already been cleared.
+  const selection =
+    scopedSelection && props.isPlaceholderData
+      ? {
+          ...scopedSelection,
+          keys: [],
+          onChange: () => {},
+          disabled: () => 'Дождитесь обновления списка',
+        }
+      : scopedSelection;
+  const mobileListRef = useRef<HTMLDivElement>(null);
+  const previousPage = useRef(props.page);
+  useLayoutEffect(() => {
+    if (previousPage.current !== props.page && isMobile) {
+      const body = mobileListRef.current?.closest<HTMLElement>('.mobile-page__body');
+      if (body) body.scrollTop = 0;
+    }
+    previousPage.current = props.page;
+  }, [props.page, isMobile]);
   // An explicit check rather than a type: a summary beside the selection column would misalign.
   const summary = selection ? undefined : props.summary;
   /*
@@ -307,7 +221,16 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
     if (props.card) {
       const card = props.card;
       return (
-        <div className="list-cards">
+        <div
+          ref={mobileListRef}
+          className={`list-cards${props.loading && props.data.length > 0 ? ' list-cards--loading' : ''}`}
+          aria-busy={props.loading}
+        >
+          {props.loading && props.data.length > 0 && (
+            <div className="list-cards__loading" role="status">
+              Загрузка…
+            </div>
+          )}
           {props.loading && props.data.length === 0 ? (
             <Skeleton active paragraph={{ rows: 6 }} />
           ) : props.data.length === 0 ? (

@@ -22,6 +22,7 @@ export function VehicleRequestsTab() {
       rows={feed.rows}
       total={feed.total}
       loading={feed.loading}
+      isPlaceholderData={feed.isPlaceholderData}
       rights={{ ...feed.rights, ...operations.rights }}
       pending={operations.pending}
       actions={actions}

@@ -20,6 +20,7 @@ import { useDriverOptions } from '@entities/driver';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { useOwnVehicleOptions } from '@entities/vehicle';
 import { DataTable, listScopeKey, PageTableLayout, sortOptionsFrom } from '@shared/ui';
+import { listQueryOptions } from '@shared/api';
 import { useRouteModal } from '@features/route-modal';
 import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './filters';
 // Подсказки метки «коррекция» и печати сокращённого листа — соседним файлом (Р12, Р13).
@@ -135,10 +136,12 @@ export function WaybillsPage() {
     dateFrom: range?.[0]?.format(DATE),
     dateTo: range?.[1]?.format(DATE),
   };
-  const { data, isFetching } = useQuery({
-    queryKey: waybillKeys.list(query),
-    queryFn: () => waybillsApi.list(query),
-  });
+  const { data, isFetching, isPlaceholderData } = useQuery(
+    listQueryOptions({
+      queryKey: waybillKeys.list(query),
+      queryFn: () => waybillsApi.list(query),
+    }),
+  );
 
   const cancelMut = useMutation({
     mutationFn: ({
@@ -278,6 +281,7 @@ export function WaybillsPage() {
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
+        isPlaceholderData={isPlaceholderData}
         page={params.page}
         pageSize={params.pageSize}
         sortBy={params.sortBy}

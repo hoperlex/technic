@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { parseWasteRequestNumberSearch, type ContainerKind } from '@technic/contracts';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
+import { listQueryOptions } from '@shared/api';
 import { dayEnd, dayStart, useListParams } from '@shared/lib';
 import type {
   WasteFilterOptions,
@@ -55,16 +56,20 @@ export function useWasteRequestFeedState(
     deliveryFrom: dayStart(params.deliveryFrom),
     deliveryTo: dayEnd(params.deliveryTo),
   };
-  const listQueryResult = useQuery({
-    queryKey: wasteRequestKeys.list(listQuery),
-    queryFn: () => wasteRequestsApi.list(listQuery),
-  });
+  const listQueryResult = useQuery(
+    listQueryOptions({
+      queryKey: wasteRequestKeys.list(listQuery),
+      queryFn: () => wasteRequestsApi.list(listQuery),
+    }),
+  );
   // Header summary: how many requests await processing and how many are in work. Its key shares
   // the list root, so every existing mutation invalidates both views together.
-  const summaryQueryResult = useQuery({
-    queryKey: wasteRequestKeys.summary(params.objectId),
-    queryFn: () => wasteRequestsApi.summary({ objectId: params.objectId }),
-  });
+  const summaryQueryResult = useQuery(
+    listQueryOptions({
+      queryKey: wasteRequestKeys.summary(params.objectId),
+      queryFn: () => wasteRequestsApi.summary({ objectId: params.objectId }),
+    }),
+  );
 
   const subjectOptions = subjectFilterOptions(sources.subjectTypes);
   const filterOptions: WasteFilterOptions = {
@@ -104,6 +109,7 @@ export function useWasteRequestFeedState(
     rows: listQueryResult.data?.items ?? [],
     total: listQueryResult.data?.total ?? 0,
     loading: listQueryResult.isFetching,
+    isPlaceholderData: listQueryResult.isPlaceholderData,
     filterOptions,
     list,
     summary,
