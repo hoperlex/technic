@@ -1,207 +1,205 @@
 {
   "requireDynamicRoutes": true,
-  "entryGzip": 557943,
+  "entryGzip": 558043,
   "routes": {
     "waste": {
       "source": "src/pages/waste/WasteRequestsPage.tsx",
-      "gzip": 631155,
+      "gzip": 631302,
       "tabs": [
         {
           "source": "src/pages/waste/WasteRequestsTab.tsx",
-          "gzip": 631155
+          "gzip": 631302
         },
         {
           "source": "src/pages/waste/OnSiteTab.tsx",
-          "gzip": 602452
+          "gzip": 602594
         },
         {
           "source": "src/pages/waste/WasteHistoryTab.tsx",
-          "gzip": 620884
+          "gzip": 621027
         },
         {
           "source": "src/features/waste-ticket-review/ui/BlindCheckQueue.tsx",
-          "gzip": 601834
+          "gzip": 601969
         },
         {
           "source": "src/pages/waste/WasteArchiveTab.tsx",
-          "gzip": 619767
+          "gzip": 619910
         },
         {
           "source": "src/pages/waste/WasteStatsTab.tsx",
-          "gzip": 605112
+          "gzip": 605249
         }
       ]
     },
     "vehicle-requests": {
       "source": "src/pages/vehicle/VehicleRequestsPage.tsx",
-      "gzip": 659832,
+      "gzip": 659987,
       "tabs": [
         {
           "source": "src/pages/vehicle/VehicleRequestsTab.tsx",
-          "gzip": 659832
+          "gzip": 659987
         },
         {
           "source": "src/pages/vehicle/VehicleRequestsOnSiteTab.tsx",
-          "gzip": 601008
+          "gzip": 601131
         },
         {
           "source": "src/widgets/vehicle-request-history/index.ts",
-          "gzip": 580321
+          "gzip": 580440
         },
         {
           "source": "src/pages/vehicle/VehicleRequestsArchiveTab.tsx",
-          "gzip": 574848
+          "gzip": 574958
         }
       ]
     },
     "waybills": {
       "source": "src/pages/waybills/WaybillsPage.tsx",
-      "gzip": 588066
+      "gzip": 588189
     },
     "garage": {
       "source": "src/pages/garage/GaragePage.tsx",
-      "gzip": 621813,
+      "gzip": 621940,
       "tabs": [
         {
           "source": "src/pages/garage/GarageVehiclesTab.tsx",
-          "gzip": 612040
+          "gzip": 612178
         },
         {
           "source": "src/pages/garage/GarageDriversTab.tsx",
-          "gzip": 581719
+          "gzip": 581846
         },
         {
           "source": "src/pages/garage/ReadingsTab.tsx",
-          "gzip": 621813
+          "gzip": 621940
         },
         {
           "source": "src/pages/garage/AutoPartsTab.tsx",
-          "gzip": 611933
+          "gzip": 612064
         }
       ]
     },
     "mechanization": {
       "source": "src/pages/mech/MechRequestsPage.tsx",
-      "gzip": 610401
+      "gzip": 610535
     },
     "office-equipment": {
       "source": "src/pages/service/ServiceRequestsPage.tsx",
-      "gzip": 665067,
+      "gzip": 665220,
       "tabs": [
         {
           "source": "src/pages/service/RequestsTab.tsx",
-          "gzip": 665067
+          "gzip": 665220
         },
         {
           "source": "src/pages/service/WarrantiesTab.tsx",
-          "gzip": 604308
+          "gzip": 604438
         },
         {
           "source": "src/pages/service/ArchiveTab.tsx",
-          "gzip": 621938
+          "gzip": 622069
         },
         {
           "source": "src/pages/service/EquipmentTab.tsx",
-          "gzip": 602717
+          "gzip": 602841
         },
         {
           "source": "src/pages/service/ConsumablesTab.tsx",
-          "gzip": 584253
+          "gzip": 584367
         }
       ]
     },
     "directories": {
       "source": "src/pages/directories/DirectoriesPage.tsx",
-      "gzip": 616295,
+      "gzip": 616446,
       "tabs": [
         {
           "source": "src/pages/directories/ObjectsTab.tsx",
-          "gzip": 578559
+          "gzip": 578693
         },
         {
           "source": "src/pages/directories/DepartmentsTab.tsx",
-          "gzip": 568606
+          "gzip": 568737
         },
         {
           "source": "src/pages/directories/CounterpartiesTab.tsx",
-          "gzip": 571275
+          "gzip": 571398
         },
         {
           "source": "src/pages/directories/WarehousesTab.tsx",
-          "gzip": 572129
+          "gzip": 572259
         },
         {
           "source": "src/pages/directories/MechModelsTab.tsx",
-          "gzip": 572813
+          "gzip": 572948
         },
         {
           "source": "src/pages/directories/ContainerTypesTab.tsx",
-          "gzip": 573149
+          "gzip": 573282
         },
         {
           "source": "src/pages/directories/WasteTariffsTab.tsx",
-          "gzip": 580174
+          "gzip": 580308
         },
         {
           "source": "src/pages/directories/VehicleTypesTab.tsx",
-          "gzip": 593160
+          "gzip": 593305
         },
         {
           "source": "src/pages/directories/VehicleSpecsTab.tsx",
-          "gzip": 575843
+          "gzip": 575976
         },
         {
           "source": "src/pages/directories/VehiclesTab.tsx",
-          "gzip": 616295
+          "gzip": 616446
         },
         {
           "source": "src/pages/directories/TrailersTab.tsx",
-          "gzip": 578685
+          "gzip": 578826
         },
         {
           "source": "src/pages/directories/OfficeEquipmentTab.tsx",
-          "gzip": 612025
+          "gzip": 612171
         },
         {
           "source": "src/pages/directories/DriversTab.tsx",
-          "gzip": 572825
+          "gzip": 572951
         }
       ]
     },
     "admin": {
       "source": "src/pages/admin/AdministrationPage.tsx",
-      "gzip": 602623,
+      "gzip": 602752,
       "tabs": [
         {
           "source": "src/pages/admin/UsersTab.tsx",
-          "gzip": 599849
+          "gzip": 599975
         },
         {
           "source": "src/pages/admin/AccessTab.tsx",
-          "gzip": 575084
+          "gzip": 575223
         },
         {
           "source": "src/pages/admin/MailingsTab.tsx",
-          "gzip": 597746
+          "gzip": 597884
         },
         {
           "source": "src/pages/admin/DirectoryTransferTab.tsx",
-          "gzip": 575448
+          "gzip": 575582
         },
         {
           "source": "src/pages/admin/ManualsTab.tsx",
-          "gzip": 569495
+          "gzip": 569632
         },
         {
           "source": "src/pages/admin/ExportsTab.tsx",
-          "gzip": 568797
+          "gzip": 568932
         },
         {
           "source": "src/widgets/user-audit/ui/UsersAuditTab.tsx",
-          "with": [
-            "src/pages/admin/UsersTab.tsx"
-          ],
-          "gzip": 602623
+          "with": ["src/pages/admin/UsersTab.tsx"],
+          "gzip": 602752
         }
       ]
     }
