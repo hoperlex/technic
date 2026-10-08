@@ -1,26 +1,26 @@
-# Машинный слой архитектуры
+# The machine layer of the architecture
 
-Здесь лежит то, что система обслуживания кодовой базы читает как ПРАВИЛА: карта модулей, политики
-решений, защищённые области, исключения и бюджеты обслуживания. Всё это — желаемое состояние
-проекта, поэтому версионируется вместе с кодом. Производное состояние прогона (факты, находки,
-задания агентам, снимки, отчёты) живёт в `.maintenance/` и в историю не идёт.
+This directory holds what the codebase maintenance system reads as RULES: the module map, decision
+policies, protected areas, exceptions and maintenance budgets. All of it is the desired state of the
+project, so it is versioned together with the code. The derived state of a run (facts, findings,
+agent assignments, snapshots, reports) lives in `.maintenance/` and stays out of history.
 
-Главное правило этого каталога: **он не заводит вторых реестров**. Домены и их состав описаны
-картой кода `docs/code-map.md`, слои портала — `eslint.config.mjs`, права — `permissions.ts`,
-разделы — `portal-sections.ts`. Файлы отсюда на них ссылаются и называют, кто правило исполняет
-(`enforcedBy`), но не переписывают их содержимое: копия правила расходится с оригиналом молча.
+The main rule of this directory: **it does not start second registries**. Domains and their
+contents are described by the code map `docs/code-map.md`, portal layers by `eslint.config.mjs`,
+permissions by `permissions.ts`, sections by `portal-sections.ts`. Files here refer to them and name
+who enforces a rule (`enforcedBy`), but do not copy their contents: a copy of a rule diverges from
+the original silently.
 
-- `modules.yaml` — уровень монорепозитория: пакеты, разрешённые направления, публичные входы. Того,
-  что уже стережёт линт, здесь нет.
-- `policies/architecture.yaml` — машинная часть решений: где действует, насколько строго
-  (`hard` / `soft` / `advisory`), можно ли чинить автоматически.
-- `policies/protected-surfaces.yaml` — области, где автоматическая правка запрещена или требует
-  человека.
-- `policies/exceptions.yaml` — осознанные исключения с причиной и датой пересмотра.
-- `policies/maintenance.yaml` — бюджеты и условия остановки циклов.
-- `policies/versioning.yaml` — правила версий выпуска ([ADR 0191](../docs/adr/0191-version-numbering.md));
-  единственный файл каталога, который система обслуживания НЕ читает: его исполняет
-  `scripts/check-version.mjs`. Лежит здесь потому, что это тоже машинное правило проекта.
+- `modules.yaml` — the monorepo level: packages, allowed directions, public entry points. What the
+  linter already guards is not repeated here.
+- `policies/architecture.yaml` — the machine part of decisions: where each applies, how strictly
+  (`hard` / `soft` / `advisory`), whether it may be fixed automatically.
+- `policies/protected-surfaces.yaml` — areas where an automatic change is forbidden or needs a human.
+- `policies/exceptions.yaml` — deliberate exceptions with a reason and a review date.
+- `policies/maintenance.yaml` — budgets and stop conditions of the cycles.
+- `policies/versioning.yaml` — release version rules ([ADR 0191](../docs/adr/0191-version-numbering.md));
+  the only file here the maintenance system does NOT read: `scripts/check-version.mjs` enforces it.
+  It lives here because it is a machine rule of the project as well.
 
-Постановка и этапы — [docs/maintenance-framework-plan.md](../docs/maintenance-framework-plan.md),
-порядок работы — [docs/maintenance-guide.md](../docs/maintenance-guide.md).
+Statement and stages — [docs/maintenance-framework-plan.md](../docs/maintenance-framework-plan.md),
+working procedure — [docs/maintenance-guide.md](../docs/maintenance-guide.md).

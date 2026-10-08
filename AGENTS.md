@@ -1,102 +1,100 @@
-# Как работать в этом репозитории
+# How to work in this repository
 
-Портал строительной компании: заявки на технику, вывоз мусора, механизацию и обслуживание
-оргтехники, путевые листы, гараж, справочники, кабинет водителя. Монорепозиторий pnpm:
-`apps/api` (Fastify), `apps/web` (React), `apps/worker` (фоновые задачи),
-`packages/contracts` (схемы, права, предикаты — общий язык сервера и портала).
+A construction company's portal: vehicle, waste removal, mechanization and office equipment
+requests, waybills, garage, directories, driver cabinet. A pnpm monorepo: `apps/api` (Fastify),
+`apps/web` (React), `apps/worker` (background jobs), `packages/contracts` (schemas, permissions,
+predicates — the shared language of server and portal).
 
-## С чего начинать
+## Where to start
 
-1. **[docs/code-map.md](docs/code-map.md)** — 16 логических областей: где живёт сценарий, который
-   вы правите, и через какие слои он проходит. Дерево каталогов логике не соответствует.
-2. **[docs/adr/README.md](docs/adr/README.md)** — указатель 176 решений по доменам, со связями
-   «изменён / отменён». Собирается `pnpm docs:index`, руками не правится.
-3. Само решение (ADR) — почему сделано так. Правило простое: **сначала прочитать решение своей
-   области, потом менять код**. Половина здешних инвариантов держится не типами, а договорённостью,
-   и её текст лежит в ADR и в комментариях рядом с кодом.
+1. **[docs/code-map.md](docs/code-map.md)** — 16 logical areas: where the scenario you are changing
+   lives and which layers it passes through. The directory tree does not follow the logic.
+2. **[docs/adr/README.md](docs/adr/README.md)** — the decision index by domain, with "changed /
+   revoked" links. Built by `pnpm docs:index`, never edited by hand.
+3. The decision (ADR) itself — why it is done this way. The rule is simple: **read the decision for
+   your area first, then change code**. Half of the invariants here are held not by types but by
+   agreement, and that agreement is written in ADRs and in comments next to the code.
 
-## Иерархия источников истины
+## Source-of-truth hierarchy
 
-Спорят — побеждает тот, кто выше:
+When sources disagree, the higher one wins. A plan is the history of an intent, not the system:
 
-| Что                                               | Где                                                                                |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Поведение системы                                 | код `packages/contracts` → `apps/api` → `apps/web`                                 |
-| Модель доступа (права, наборы, область)           | [docs/access-model.md](docs/access-model.md) + `packages/contracts/permissions.ts` |
-| Схема БД                                          | `apps/api/src/db/schema.ts` + миграции `apps/api/drizzle/`                         |
-| Свод схемы для чтения                             | [docs/database-schema.md](docs/database-schema.md)                                 |
-| Почему так решено                                 | `docs/adr/*.md`                                                                    |
-| Что собирались сделать (в т. ч. неосуществлённое) | `docs/*-plan.md` — **намерение, а не состояние**                                   |
-| Как выкатывать и что делать при сбое              | [docs/runbook.md](docs/runbook.md)                                                 |
+| What                                         | Where                                                                              |
+| -------------------------------------------- | ---------------------------------------------------------------------------------- |
+| System behavior                              | code `packages/contracts` → `apps/api` → `apps/web`                                |
+| Access model (permissions, sets, scope)      | [docs/access-model.md](docs/access-model.md) + `packages/contracts/permissions.ts` |
+| DB schema                                    | `apps/api/src/db/schema.ts` + migrations `apps/api/drizzle/`                       |
+| Schema digest for reading                    | [docs/database-schema.md](docs/database-schema.md)                                 |
+| Why it was decided this way                  | `docs/adr/*.md`                                                                    |
+| What was intended (including never realized) | `docs/*-plan.md` — **intent, not state**                                           |
+| How to deploy and what to do on failure      | [docs/runbook.md](docs/runbook.md)                                                 |
 
-План — не описание системы. Если план и код расходятся, прав код, а план — история намерения.
-
-## Команды
+## Commands
 
 ```bash
-pnpm check          # типы, линт и все тесты, кроме db-набора
-pnpm check:db       # db-тесты (нужна своя свежая база)
-pnpm check:docs     # целостность документации: ссылки, номера решений, карта кода
-pnpm test:docs      # тесты разборщика документации
-pnpm docs:index     # пересобрать docs/adr/README.md (после правки шапок ADR)
-pnpm db:migrate     # накат миграций
-pnpm maintain       # обслуживание кодовой базы: doctor, policies, surfaces, analyze, verify
+pnpm check          # types, lint and all tests except the db suite
+pnpm check:db       # db tests (needs its own fresh database)
+pnpm check:docs     # docs integrity; fails on errors (dead link, duplicate number, stale index),
+                    # only shows warnings; `-- --strict` raises them, `-- --report-only` never fails
+pnpm test:docs      # tests of the documentation parser
+pnpm docs:index     # rebuild docs/adr/README.md (after editing ADR headers)
+pnpm db:migrate     # apply migrations
+pnpm maintain       # codebase maintenance: doctor, policies, surfaces, analyze, verify
 ```
 
-`check:docs` роняет прогон **ошибками** (ссылка в никуда, задвоенный номер решения, отставший
-указатель) и только показывает **предупреждения** (домен не назначен, маршрут ещё не в карте).
-Поднять вторые до первых — `pnpm check:docs -- --strict`; снять картину, ничего не роняя —
-`pnpm check:docs -- --report-only`.
+`pnpm maintain` ([plan](docs/maintenance-framework-plan.md)) answers "what may be changed
+automatically here"; its rules and protected areas live in `architecture/`. A change in a protected
+area (migrations, permissions, gates, decisions) is never automatic, whatever the confidence;
+`pnpm maintain surfaces <path>` tells the mode for a file.
 
-Система обслуживания (`pnpm maintain`, план — [maintenance-framework-plan.md](docs/maintenance-framework-plan.md))
-отвечает на вопрос «что здесь разрешено править автоматически»: правила лежат в `architecture/`,
-защищённые области — там же. Правка в защищённой области (миграции, права, ворота, решения)
-автоматической быть не может ни при какой уверенности; `pnpm maintain surfaces <путь>` скажет
-режим для конкретного файла.
+## The rules most expensive to break
 
-## Правила, которые дороже всего нарушить
+**Russian is for talking to the user — the one justified exception.** Everything else agents write
+is English: reasoning, instruction files, handoffs, agent memory, code comments, new ADRs, plans and
+docs; old Russian text is translated when touched. Commit messages and journal cards stay Russian,
+as do UI strings, domain terms and ADR header fields (`Статус`, `Домены`) with their dictionaries.
 
-**Номера ADR и миграций занимают параллельные потоки.** Перед созданием файла посмотрите занятые
-номера (`ls docs/adr`, `ls apps/api/drizzle`) и возьмите следующий за максимальным; проверьте ещё
-раз перед `git add`. Атомарной брони нет — это детектор, а не замок: два номера уже заняты дважды
-(0060 и 0085), и перенумеровать их поздно. Ссылаться на них голым номером нельзя, в ссылке обязан
-стоять путь к файлу.
+**ADR and migration numbers are taken by parallel streams.** Before creating a file, look at the
+taken numbers (`ls docs/adr`, `ls apps/api/drizzle`), take the next after the maximum and check again
+before `git add`. It is a detector, not a lock: 0060 and 0085 are already taken twice and too late to
+renumber, so a reference to them never uses a bare number — it carries the file path.
 
-**Написали в шапке `Домены` — файл объявил себя написанным по новой форме**, и с него
-спрашивается всё: словарь статуса, словарь доменов, поле `Область`. Не написали — с вас ничего
-нового не спрашивается, домен берётся из таблицы `scripts/lib/docs-legacy-domains.mjs`. **Два
-источника сразу запрещены**: дописали поле — уберите строку из таблицы.
+**Writing `Домены` in a decision header declares the new form**: the status and domain dictionaries
+and the `Область` field are then required. Without it nothing new is required, and the domain comes
+from `scripts/lib/docs-legacy-domains.mjs`. **Never both**: add the field — remove the table row.
 
-**Путь в шапке решения, которого нет в дереве, проверяется вопросом к истории git**: файл жил и
-был снят — это история решения, предупреждение; не существовал никогда — опечатка и ошибка.
+**A header path missing from the tree is checked against git history**: the file lived and was
+removed — the decision's history, a warning; it never existed — a typo and an error.
 
-**Правило одного места.** Одно правило — один носитель: доступность действия считают предикаты
-контрактов, а не портал; перечень видов документов, коридоры статусов и словари живут в
-`packages/contracts` и спрашиваются обеими сторонами. Копия правила на другой стороне расходится
-молча — так уже терялись запреты при переделке циклов.
+**One rule, one place.** Contract predicates, not the portal, decide whether an action is
+available; document kinds, status corridors and dictionaries live in `packages/contracts` and both
+sides ask them. A copy on the other side diverges silently — prohibitions were lost this way.
 
-**Миграции идут при работающем портале и до перезапуска приложения.** Значит новый столбец какое-то
-время пишет только старый код: правка обязана пережить окно (см. `docs/runbook.md` и teardown-набор
-в `apps/api/teardown/`).
+**Migrations run while the portal is up and before the application restarts.** So for a while a new
+column is written only by old code: a change must survive that window (see `docs/runbook.md` and
+the teardown suite in `apps/api/teardown/`).
 
-**Комментарий объясняет причину, а не действие, и пишется на английском.** Удаляйте комментарии,
-которые только пересказывают код, повторяют имя функции или уже не соответствуют реализации.
-Полезный комментарий самодостаточно называет инвариант, объясняет, почему выбран именно этот путь,
-и что сломается при его нарушении — так, чтобы AI-агенту не требовалось угадывать контекст автора.
-При работе с фрагментом переводите относящиеся к нему русскоязычные комментарии на английский,
-сохраняя смысл, а не дословную форму. Комментарий рядом с инвариантом ценнее ссылки на ADR в каждом
-файле.
+**A comment explains the reason, not the action, and is written in English.** Delete comments that
+retell the code, repeat the function name or no longer match the implementation. A useful comment
+names the invariant on its own, why this path was chosen and what breaks if it is violated, so an AI
+agent need not guess the author's context. Translate the Russian comments of the fragment you work on
+by meaning, not word for word. A comment next to an invariant beats an ADR link in every file.
 
-**Работа записывается в журнал задач** — один, в главном дереве, `.local/tasks/` вне истории:
-`current.md` (карточки по статусам), `README.md` (форма и правила), `archive.md`. Приняли
-постановку — завели карточку; продвинули или закрыли — обновили в том же заходе; берётесь за
-задачу или пушите — прочли «В работе» и «Ждёт». Иначе ручные шаги выката живут в одной сессии.
+**Work is recorded in the task journal** — one, in the main tree, `.local/tasks/` outside history:
+`current.md` (cards by status), `README.md` (form and rules), `archive.md`. Accepted a task — open a
+card; advanced or closed it — update the card in the same pass; before taking a task or pushing —
+read `В работе` and `Ждёт`. Otherwise manual deploy steps live in a single session.
 
-## Чего делать не нужно
+**One session — one stage of a task.** At a stage boundary (a wave committed and green; research,
+a plan or a review round done; a plan approved) a session commits, updates its card, writes
+`.local/handoff-<topic>-<YYYY-MM-DD>.md` and stops. An integrator goes on until its context is
+spent, then finishes the item in hand and hands over: [docs/agent-sessions.md](docs/agent-sessions.md).
 
-- заводить второй реестр там, где есть машинный (разделы портала — `portal-sections.ts`, права —
-  `permissions.ts`): карта и указатель на них ссылаются, а не копируют;
-- править `docs/adr/README.md` руками — он собирается;
-- добавлять `console.log` в корневые `scripts/**`: они не размечены node-глобалями в конфиге линта,
-  печать идёт через `process.stdout.write`;
-- считать план описанием сегодняшнего состояния.
+## What not to do
+
+- create a second registry where a machine one exists (portal sections — `portal-sections.ts`,
+  permissions — `permissions.ts`): the map and the index point to them instead of copying;
+- edit `docs/adr/README.md` by hand — it is generated;
+- add `console.log` to root `scripts/**` (no node globals there in the lint config) — print through
+  `process.stdout.write`;
+- treat a plan as a description of today's state.
