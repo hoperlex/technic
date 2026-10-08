@@ -25,9 +25,9 @@ export const QUERY_PROFILE = {
     /** The library default, written out: an unobserved entry keeps its data for five minutes. */
     gcTime: 5 * 60_000,
     /**
-     * Returning to the browser tab does not refetch: a refetch under an open form may reset input
-     * that is not saved yet. Turning it on is the plan's open question R1 and needs the form
-     * protection of wave 1 first.
+     * R1-b keeps focus refetch off: even after wave 1, some forms still initialize from live props,
+     * so a background refetch under an open form may reset unsaved input. Wave 3c measured up to
+     * six added requests per return if this were enabled; event-driven updates are planned next.
      */
     refetchOnWindowFocus: false,
     /** The library default, written out: once the network is back, mounted reads refetch. */

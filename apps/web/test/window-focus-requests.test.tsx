@@ -14,8 +14,8 @@ import {
 
 /**
  * The price of decision R1 after the stage 5 profiles (plan §6): one browser-tab return with
- * visited panes still mounted. The current policy refetches SIGNAL; the proposed policy also
- * refetches LIVE. Dictionaries keep their own freshness term in either case.
+ * visited panes still mounted. Decision R1-b keeps LIVE focus off; the alternate policy includes
+ * LIVE to retain its measured cost. Dictionaries keep their own freshness term in either case.
  */
 
 const AWAY_MS = 2 * 60_000;
