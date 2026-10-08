@@ -21,6 +21,8 @@ import {
   vehicleKindsQuery,
 } from '@entities/vehicle-type';
 import { trailerKeys } from '@entities/vehicle-trailer';
+import { vehicleKeys } from '@entities/vehicle';
+import { fuelNormKeys } from '@entities/fuel-norm';
 import { isApiError } from '@shared/api';
 import { formatDateOnly } from '@shared/lib';
 import { FormModal } from '@shared/ui';
@@ -97,6 +99,9 @@ export function useVehicleTypeEditor(): VehicleTypeEditorController {
     void queryClient.invalidateQueries({ queryKey: vehicleTypeKeys.root });
     // A type name is also the label of every classification row derived from that type (ADR 0028).
     void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
+    // Vehicle rows and fuel-norm labels embed the type name and its waybill form.
+    void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+    void queryClient.invalidateQueries({ queryKey: fuelNormKeys.root });
   };
 
   const create = () => {

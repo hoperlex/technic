@@ -187,6 +187,8 @@ const EXEMPTIONS: Record<Exemption, string> = {
 interface PortalCall {
   name: string;
   run: () => Promise<unknown>;
+  /** Canonical query factory called by the screen when it no longer calls the API method directly. */
+  screenName?: string;
 }
 
 /**
@@ -231,9 +233,10 @@ const FILE_ID = 'FILE-ID';
  *
  * Аргументы одни и те же у всех: лишние JS отбрасывает, а на путь влияют только эти два.
  */
-const via = (name: keyof typeof serviceRequestsApi): PortalCall => ({
+const via = (name: keyof typeof serviceRequestsApi, screenName?: string): PortalCall => ({
   name: `serviceRequestsApi.${String(name)}`,
   run: () => LOOSE[String(name)]!(REQUEST_ID, FILE_ID, 'act'),
+  screenName,
 });
 
 /**
@@ -274,12 +277,12 @@ const DOORS: Record<string, Door> = {
     exempt: 'read',
   },
   'GET /api/v1/service-requests/waiting-count': {
-    call: via('waitingCount'),
+    call: via('waitingCount', 'serviceWaitingCountQuery'),
     entry: 'бейдж «ждут меня» у пункта раздела в меню портала (`AppLayout`)',
     exempt: 'read',
   },
   'GET /api/v1/service-requests/unread-count': {
-    call: via('chatUnreadCount'),
+    call: via('chatUnreadCount', 'serviceChatUnreadCountQuery'),
     entry: 'синий бейдж непрочитанного у пункта раздела (`AppLayout`)',
     exempt: 'read',
   },
@@ -605,20 +608,24 @@ describe('объявленный вход и правда открывает с�
   });
 
   it('вход существует на экране, а не только объявлен словами', () => {
-    /*
-     * Прозу столбца «где это на экране» машина не проверит, но проверит главное: что звено вообще
-     * кто-то зовёт из портала. Метод, живущий в клиенте и не вызванный ни одним экраном, — ровно
-     * та мёртвая дверь, ради которой караул и заведён, только с портальной стороны: снаружи ручка
-     * доступна, изнутри недостижима.
-     */
+    // A query factory can sit between a screen and the API method. Both links must remain live:
+    // otherwise a declared server door can lose its only reachable entry without this test noticing.
     for (const key of keysWhere((door) => door.call !== null)) {
       const { call, entry } = DOORS[key]! as { call: PortalCall; entry: string };
       expect(
-        callersOf(call.name),
+        callersOf(call.screenName ?? call.name),
         `реестр обещает вход «${entry}» (${call.name}), но в исходниках портала его не зовёт ни ` +
           'один экран: либо вход сняли и не убрали строку, либо ручку пора снимать вместе с ' +
           'методом клиента',
       ).not.toHaveLength(0);
+      if (call.screenName) {
+        expect(
+          SOURCES.filter(
+            (src) => src.code.includes(call.screenName!) && src.code.includes(call.name),
+          ),
+          `${call.screenName} no longer calls ${call.name}`,
+        ).not.toHaveLength(0);
+      }
     }
   });
 });

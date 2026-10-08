@@ -12,6 +12,7 @@ import {
 } from '@technic/contracts';
 import { counterpartyActiveVehicleLessorsQuery } from '@entities/counterparty';
 import { garageKeys } from '@entities/garage';
+import { fuelNormKeys } from '@entities/fuel-norm';
 import {
   vehicleErrorMessage as errorMessage,
   vehicleKeys,
@@ -21,6 +22,7 @@ import {
 import {
   classificationKeyOf,
   useVehicleClassifications,
+  vehicleClassificationKeys,
   withSavedClassification,
 } from '@entities/vehicle-type';
 import { trailerKeys, unhitchedNotice } from '@entities/vehicle-trailer';
@@ -165,6 +167,9 @@ export function useVehicleEditor(): VehicleEditorController {
         message.warning(unhitchedNotice(unhitchedTrailers, 'этой правкой'), 8);
       }
       void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+      // The classifier averages vehicle prices; fuel norms carry a vehicle label.
+      void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
+      void queryClient.invalidateQueries({ queryKey: fuelNormKeys.root });
       // The trailer registry has its own root and embeds the tractor in each row (hitchedVehicle).
       // This edit can both change that embedded card and release its hitches on the server
       // (releaseHitchesOfVehicle, on retirement or a move to form No. 3). Dropping only

@@ -19,6 +19,8 @@ import {
   activeVehicleSpecsQuery,
 } from '@entities/vehicle-type';
 import { useIsMobile } from '@shared/lib';
+import { vehicleKeys } from '@entities/vehicle';
+import { fuelNormKeys } from '@entities/fuel-norm';
 import { AutoSelect, FormModal } from '@shared/ui';
 
 interface AttachFormValues {
@@ -55,7 +57,7 @@ export function VehicleTypeSpecsSection({ typeId, specs, categoriesCount, loadin
 
   // Specs and category tuples are one invariant (ADR 0016): a spec change rewrites every category
   // of the type, and a category change is read through the type, the spec directory and the
-  // classifier. Every mutation of the type card therefore drops the same five caches; the set is
+  // classifier. Every mutation of the type card therefore drops the same caches; the set is
   // kept identical to the one in vehicle-category-management on purpose. The classifier
   // (ADR 0028) is assembled from types and categories, so a new category changes both what the
   // directory shows and what the pickers offer.
@@ -65,6 +67,9 @@ export function VehicleTypeSpecsSection({ typeId, specs, categoriesCount, loadin
     void queryClient.invalidateQueries({ queryKey: vehicleTypeKeys.root });
     void queryClient.invalidateQueries({ queryKey: vehicleSpecKeys.root });
     void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
+    // A changed tuple can rewrite generated category names carried by both directories.
+    void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+    void queryClient.invalidateQueries({ queryKey: fuelNormKeys.root });
   };
 
   const attach = useMutation({

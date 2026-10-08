@@ -95,6 +95,19 @@ describe('граница загрузки тела вкладки', () => {
     const next = deferredTab();
     const queryClient = createTestQueryClient();
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const liveKey = ['scenario', 'live'];
+    const signalKey = ['scenario', 'signal'];
+    await queryClient.fetchQuery({
+      queryKey: liveKey,
+      queryFn: async () => 'before',
+      staleTime: Infinity,
+    });
+    await queryClient.fetchQuery({
+      queryKey: signalKey,
+      queryFn: async () => 'before',
+      staleTime: Infinity,
+      meta: { profile: 'SIGNAL' },
+    });
     function Body({ tabKey }: { tabKey: string }) {
       const active = useActiveTabKey();
       return (
@@ -127,7 +140,11 @@ describe('граница загрузки тела вкладки', () => {
     expect(screen.getByText('Сводка first')).toBeDefined();
     fireEvent.click(screen.getByRole('tab', { name: 'Следующая' }));
     expect(screen.getByRole('status').textContent).toBe('tab=next');
-    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: ['scenario'] });
+    expect(invalidate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ queryKey: ['scenario'] }),
+    );
+    expect(queryClient.getQueryState(liveKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(signalKey)?.isInvalidated).toBe(false);
     expect(screen.queryByText('Сводка first')).toBeNull();
     await next.finish(() => <Body tabKey="next" />);
     await waitFor(() => expect(screen.getByText('Сводка next')).toBeDefined());

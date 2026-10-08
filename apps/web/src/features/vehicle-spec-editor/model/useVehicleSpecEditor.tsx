@@ -7,9 +7,11 @@ import {
   type VehicleSpecDto,
 } from '@technic/contracts';
 import {
+  vehicleCategoryKeys,
   vehicleSpecKeys,
   vehicleSpecsApi,
   vehicleTypeErrorMessage as errorMessage,
+  vehicleTypeSpecKeys,
 } from '@entities/vehicle-type';
 import { VehicleSpecEditorModal, type SpecFormValues } from '../ui/VehicleSpecEditorModal';
 
@@ -32,6 +34,13 @@ export function useVehicleSpecEditor(): VehicleSpecEditorController {
   const [form] = Form.useForm<SpecFormValues>();
   // An attached spec already takes part in value canonicalisation: unit and precision are frozen.
   const isUsed = (record?.usedInTypes ?? 0) > 0;
+
+  const invalidateSpecs = () => {
+    void queryClient.invalidateQueries({ queryKey: vehicleSpecKeys.root });
+    // Type cards and category tuples embed specification names and units.
+    void queryClient.invalidateQueries({ queryKey: vehicleTypeSpecKeys.root });
+    void queryClient.invalidateQueries({ queryKey: vehicleCategoryKeys.root });
+  };
 
   const create = () => {
     setRecord(null);
@@ -66,7 +75,7 @@ export function useVehicleSpecEditor(): VehicleSpecEditorController {
         : vehicleSpecsApi.update(arg.id, arg.body),
     onSuccess: () => {
       message.success('Сохранено');
-      void queryClient.invalidateQueries({ queryKey: vehicleSpecKeys.root });
+      invalidateSpecs();
       setOpen(false);
     },
     onError: (error) => message.error(errorMessage(error)),
@@ -112,7 +121,7 @@ export function useVehicleSpecEditor(): VehicleSpecEditorController {
       vehicleSpecsApi.update(id, { isActive }),
     onSuccess: (_data, values) => {
       message.success(values.isActive ? 'ТТХ активирован' : 'ТТХ деактивирован');
-      void queryClient.invalidateQueries({ queryKey: vehicleSpecKeys.root });
+      invalidateSpecs();
     },
     onError: (error) => message.error(errorMessage(error)),
   });

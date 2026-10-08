@@ -13,6 +13,8 @@ import { usePurgeAction } from '@features/purge-record';
 import { useAuth } from '@entities/session';
 import { userAuditKeys } from '@entities/user-audit';
 import { userAccountKeys, usersApi } from '@entities/user-account';
+import { departmentKeys } from '@entities/department';
+import { driverKeys } from '@entities/driver';
 import { UserAccountRegistry } from '@widgets/user-account-registry';
 import { UserAuditPathDrawer, UsersAuditTab, type AuditTarget } from '@widgets/user-audit';
 
@@ -45,7 +47,7 @@ export function UsersTab() {
   const purge = usePurgeAction({
     subject: 'учётную запись',
     purge: usersApi.purge,
-    invalidate: [userAccountKeys.root],
+    invalidate: [userAccountKeys.root, departmentKeys.root, driverKeys.root],
   });
 
   const showHistory = (record: UserAccountDto) =>

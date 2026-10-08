@@ -32,6 +32,8 @@ import {
   vehicleTypeSpecKeys,
 } from '@entities/vehicle-type';
 import { weeklyRequestKeys } from '@entities/weekly-request';
+import { vehicleKeys } from '@entities/vehicle';
+import { fuelNormKeys } from '@entities/fuel-norm';
 import { useIsMobile } from '@shared/lib';
 import { FormModal } from '@shared/ui';
 
@@ -67,7 +69,7 @@ export function VehicleTypeCategoriesSection({ typeId, specs, categories, loadin
 
   // Specs and category tuples are one invariant (ADR 0016): a spec change rewrites every category
   // of the type, and a category change is read through the type, the spec directory and the
-  // classifier. Every mutation of the type card therefore drops the same five caches; the set is
+  // classifier. Every mutation of the type card therefore drops the same caches; the set is
   // kept identical to the one in vehicle-type-spec-management on purpose. The classifier
   // (ADR 0028) is assembled from types and categories, so a new category changes both what the
   // directory shows and what the pickers offer.
@@ -77,6 +79,9 @@ export function VehicleTypeCategoriesSection({ typeId, specs, categories, loadin
     void queryClient.invalidateQueries({ queryKey: vehicleTypeKeys.root });
     void queryClient.invalidateQueries({ queryKey: vehicleSpecKeys.root });
     void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
+    // Category names and values are embedded in vehicles and their fuel-norm labels.
+    void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+    void queryClient.invalidateQueries({ queryKey: fuelNormKeys.root });
   };
 
   const openCreate = () => {

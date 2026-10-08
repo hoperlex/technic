@@ -15,18 +15,16 @@ import { usePurgeAction } from '@features/purge-record';
 import { departmentsApi, departmentKeys } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
 import { userAccountKeys } from '@entities/user-account';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { useDepartmentHeadOptions } from './departmentHeadOptions';
 
 /**
- * Справочник отделов (ADR 0040) — офисные подразделения. Устроен как справочник объектов: тот же
- * набор действий, то же удаление деактивацией.
+ * Office departments (ADR 0040) use the same deactivation lifecycle as sites.
  *
- * Руководители отдела не хранятся в карточке, а лежат признаком на привязке учётки к отделу
- * (`user_departments.is_head`, миграция 0149) — той же самой, что задаёт область видимости, только
- * показанной со стороны справочника. Роль «Руководитель отдела» руководителем больше не делает и
- * не требуется (§11.1 плана реструктуризации прав): признак ставится **только отсюда**, а карточка
- * учётки задаёт участие в отделе. Привязка общая, поэтому после сохранения список учёток тоже
- * устаревает.
+ * Department heads live on the account-to-department link (`user_departments.is_head`, migration
+ * 0149), which also defines scope. The head role alone does not confer headship: this card sets
+ * the flag, while the account card sets membership. Both directories carry the same link, so a
+ * department save also makes the account list stale.
  */
 export function DepartmentsTab() {
   const { message, modal } = App.useApp();
@@ -91,8 +89,10 @@ export function DepartmentsTab() {
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: departmentKeys.root });
-      // Та же привязка видна в карточке учётки — список пользователей тоже устарел.
+      // The same membership is shown in the account card.
       void qc.invalidateQueries({ queryKey: userAccountKeys.root });
+      // Office equipment stores its department label in each directory row.
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -103,15 +103,16 @@ export function DepartmentsTab() {
     onSuccess: () => {
       message.success('Отдел деактивирован');
       void qc.invalidateQueries({ queryKey: departmentKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  // Удаление насовсем (ADR 0060) — только администратору и только на деактивированной строке.
+  // Only administrators can purge an inactive department (ADR 0060).
   const purge = usePurgeAction({
     subject: 'отдел',
     purge: departmentsApi.purge,
-    invalidate: [departmentKeys.root],
+    invalidate: [departmentKeys.root, officeEquipmentKeys.root],
   });
 
   const confirmDelete = (r: DepartmentDto) =>

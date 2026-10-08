@@ -1,5 +1,8 @@
 import { useAuth } from '@entities/session';
 import { vehicleKeys, vehiclesApi } from '@entities/vehicle';
+import { vehicleClassificationKeys } from '@entities/vehicle-type';
+import { trailerKeys } from '@entities/vehicle-trailer';
+import { fuelNormKeys } from '@entities/fuel-norm';
 import { usePurgeAction } from '@features/purge-record';
 import { useVehicleEditor } from '@features/vehicle-editor';
 import { useVehicleLifecycle } from '@features/vehicle-lifecycle';
@@ -15,7 +18,12 @@ export function VehiclesTab() {
   const purge = usePurgeAction({
     subject: 'технику',
     purge: vehiclesApi.purge,
-    invalidate: [vehicleKeys.root],
+    invalidate: [
+      vehicleKeys.root,
+      vehicleClassificationKeys.root,
+      trailerKeys.root,
+      fuelNormKeys.root,
+    ],
   });
 
   return (

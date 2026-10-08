@@ -3,6 +3,7 @@ import { App, Form } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { RejectUserBody, UserAccountDto } from '@technic/contracts';
 import { useAuth } from '@entities/session';
+import { departmentKeys } from '@entities/department';
 import {
   isPendingRegistration,
   PasswordField,
@@ -69,6 +70,8 @@ export function useUserAccountLifecycle({
   const [passwordForm] = Form.useForm<{ newPassword: string }>();
 
   const invalidateAccounts = () => void qc.invalidateQueries({ queryKey: userAccountKeys.root });
+  const invalidateDepartmentHeads = () =>
+    void qc.invalidateQueries({ queryKey: departmentKeys.root });
 
   const toggleActive = useMutation({
     mutationFn: (record: UserAccountDto) =>
@@ -76,6 +79,8 @@ export function useUserAccountLifecycle({
     onSuccess: () => {
       message.success('Готово');
       invalidateAccounts();
+      // Department head projections include account activity as well as membership.
+      invalidateDepartmentHeads();
     },
     onError: (error) => message.error(errorMessage(error)),
   });
@@ -85,6 +90,7 @@ export function useUserAccountLifecycle({
     onSuccess: () => {
       message.success('Пользователь удалён');
       invalidateAccounts();
+      invalidateDepartmentHeads();
     },
     onError: (error) => message.error(errorMessage(error)),
   });
@@ -99,6 +105,7 @@ export function useUserAccountLifecycle({
       message.success('Учётная запись восстановлена — она осталась неактивной');
       setRestoring(null);
       invalidateAccounts();
+      invalidateDepartmentHeads();
     },
     onError: (error) => message.error(errorMessage(error)),
   });
@@ -137,7 +144,6 @@ export function useUserAccountLifecycle({
   // commands would tangle two conversations.
   const changeEmail = useChangeEmailAction({
     currentUserId: currentUser?.id,
-    onChanged: invalidateAccounts,
   });
 
   const requestRemove = (record: UserAccountDto) =>

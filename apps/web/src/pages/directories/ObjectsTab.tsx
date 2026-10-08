@@ -15,6 +15,9 @@ import { objectErrorMessage as errorMessage } from '@entities/object';
 import { usePurgeAction } from '@features/purge-record';
 import { objectsApi, objectKeys } from '@entities/object';
 import { weeklyRequestKeys } from '@entities/weekly-request';
+import { departmentKeys } from '@entities/department';
+import { officeEquipmentKeys } from '@entities/office-equipment';
+import { userAccountKeys } from '@entities/user-account';
 
 export function ObjectsTab() {
   const { message, modal } = App.useApp();
@@ -68,8 +71,12 @@ export function ObjectsTab() {
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: objectKeys.root });
-      // Та же привязка видна в карточке контрагента — его список тоже устарел.
+      // The same operator binding is shown in the counterparty card.
       void qc.invalidateQueries({ queryKey: counterpartyKeys.root });
+      // Department and equipment cards and account scopes embed object fields.
+      void qc.invalidateQueries({ queryKey: departmentKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      void qc.invalidateQueries({ queryKey: userAccountKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -80,17 +87,26 @@ export function ObjectsTab() {
     onSuccess: () => {
       message.success('Объект деактивирован');
       void qc.invalidateQueries({ queryKey: objectKeys.root });
+      void qc.invalidateQueries({ queryKey: departmentKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+      void qc.invalidateQueries({ queryKey: userAccountKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  // Удаление насовсем (ADR 0060) — только администратору и только на деактивированной строке.
-  // Вместе с площадкой сервер сносит целиком её неприменённые недельные заявки: заявка на
-  // снесённую площадку — документ ни о чём (ADR 0085 Р15).
+  // Purge is restricted to inactive rows and administrators (ADR 0060). The server also removes
+  // unapplied weekly requests for the site: a request for a purged site has no subject (ADR 0085 R15).
   const purge = usePurgeAction({
     subject: 'объект',
     purge: objectsApi.purge,
-    invalidate: [objectKeys.root, weeklyRequestKeys.root],
+    invalidate: [
+      objectKeys.root,
+      counterpartyKeys.root,
+      departmentKeys.root,
+      officeEquipmentKeys.root,
+      userAccountKeys.root,
+      weeklyRequestKeys.root,
+    ],
   });
 
   const confirmDelete = (r: ObjectDto) =>

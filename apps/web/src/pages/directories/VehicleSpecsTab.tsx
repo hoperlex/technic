@@ -1,4 +1,9 @@
-import { vehicleSpecKeys, vehicleSpecsApi } from '@entities/vehicle-type';
+import {
+  vehicleCategoryKeys,
+  vehicleSpecKeys,
+  vehicleSpecsApi,
+  vehicleTypeSpecKeys,
+} from '@entities/vehicle-type';
 import { usePurgeAction } from '@features/purge-record';
 import { useVehicleSpecEditor } from '@features/vehicle-spec-editor';
 import { VehicleSpecRegistry } from '@widgets/vehicle-spec-registry';
@@ -11,7 +16,7 @@ export function VehicleSpecsTab() {
   const purge = usePurgeAction({
     subject: 'ТТХ',
     purge: vehicleSpecsApi.purge,
-    invalidate: [vehicleSpecKeys.root],
+    invalidate: [vehicleSpecKeys.root, vehicleTypeSpecKeys.root, vehicleCategoryKeys.root],
   });
 
   return (

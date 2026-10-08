@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { roleLabels, type DepartmentDto, type UserAccountDto } from '@technic/contracts';
+import type { QueryClient } from '@tanstack/react-query';
+import { officeEquipmentKeys } from '@entities/office-equipment';
+import { driverKeys } from '@entities/driver';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
@@ -8,6 +11,7 @@ import { emptyList, list } from './factories/common';
 import { openSelectOptions, selectOption } from './antd';
 import { DepartmentsTab } from '../src/pages/directories/DepartmentsTab';
 import { UsersTab } from '../src/pages/admin/UsersTab';
+import { expectCarriersRefetched, primeCarriers } from './carrierRefresh';
 
 /**
  * Руководитель отдела как признак связи, а не как роль (§11.1 плана реструктуризации прав,
@@ -111,15 +115,18 @@ function clickButton(label: string): void {
 // --- карточка отдела --------------------------------------------------------
 
 /** Учётки отдаются по роли из запроса — так же, как их отбирает сервер. */
-function renderDepartments(departments: DepartmentDto[], candidates: UserAccountDto[]): HttpMock {
+function renderDepartments(
+  departments: DepartmentDto[],
+  candidates: UserAccountDto[],
+): HttpMock & { queryClient: QueryClient } {
   const http = mockHttp({
     'GET /departments': () => json(list(departments)),
     'GET /objects': () => json(emptyList()),
     'GET /users': (ctx) => json(list(candidates.filter((u) => u.role === ctx.query.get('role')))),
     'PATCH /departments/:id': () => json(department()),
   });
-  renderWithUser(<DepartmentsTab />, { user: authUser({ role: 'admin' }) });
-  return http;
+  const { queryClient } = renderWithUser(<DepartmentsTab />, { user: authUser({ role: 'admin' }) });
+  return Object.assign(http, { queryClient });
 }
 
 /** Правка строки справочника — первая кнопка в её действиях. */
@@ -159,6 +166,8 @@ describe('карточка отдела: кандидаты в руководи�
       [HEAD_ROLE, EMPLOYEE],
     );
     await openDepartmentCard('ПТО');
+    const carriers = [officeEquipmentKeys.list({})];
+    primeCarriers(http.queryClient, carriers);
 
     await selectOption('Руководители', /Петров Пётр Петрович/);
     clickButton('Сохранить');
@@ -171,6 +180,7 @@ describe('карточка отдела: кандидаты в руководи�
         EMPLOYEE.id,
       ]);
     });
+    await expectCarriersRefetched(http.queryClient, carriers);
   });
 
   it('уже назначенного показывает именем, даже если его нет среди кандидатов', async () => {
@@ -190,7 +200,7 @@ function renderUsers(
   user: UserAccountDto,
   departments: DepartmentDto[],
   over: RouteMap = {},
-): HttpMock {
+): HttpMock & { queryClient: QueryClient } {
   const http = mockHttp({
     'GET /users': () => json(list([user])),
     'GET /users/pending-count': () => json({ count: 0 }),
@@ -206,8 +216,8 @@ function renderUsers(
     'GET /grants': () => json(emptyList()),
     ...over,
   });
-  renderWithUser(<UsersTab />, { user: authUser({ role: 'admin' }) });
-  return http;
+  const { queryClient } = renderWithUser(<UsersTab />, { user: authUser({ role: 'admin' }) });
+  return Object.assign(http, { queryClient });
 }
 
 /** Правка учётки — из меню строки, как её открывает администратор. */
@@ -267,6 +277,8 @@ describe('карточка учётки: признак руководителя
     const http = renderUsers(HEAD_ASSIGNED, [department()], {
       'PATCH /users/:id': () => json({ user: HEAD_ASSIGNED, notified: 'not_requested' }),
     });
+    const carriers = [driverKeys.list({})];
+    primeCarriers(http.queryClient, carriers);
     await openUserCard(HEAD_ASSIGNED.email);
     await screen.findByText(/Руководит: PTO — ПТО/);
     const before = http.countOf('GET /users');
@@ -277,6 +289,7 @@ describe('карточка учётки: признак руководителя
       expect(http.lastCall('PATCH /users/:id')).toBeTruthy();
       expect(http.countOf('GET /users')).toBeGreaterThan(before);
     });
+    await expectCarriersRefetched(http.queryClient, carriers);
   });
 
   it('у новой учётки отсылает в справочник отделов, а не молчит', async () => {
