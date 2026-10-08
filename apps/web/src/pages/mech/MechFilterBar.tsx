@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
-import { Checkbox, DatePicker, Input, Select, Space } from 'antd';
+import { Checkbox, DatePicker, Select, Space } from 'antd';
 import dayjs from 'dayjs';
-import { FilterReset, type FilterDefinition } from '@shared/ui';
+import { DeferredSearchInput, FilterReset, type FilterDefinition } from '@shared/ui';
 
 /**
  * Панель отбора аренд на десктопе: как выглядят фильтры, описанные соседним
@@ -100,12 +100,12 @@ export function MechFilterBar({
   return (
     <Space wrap>
       {filters.map(renderFilter)}
-      <Input
+      <DeferredSearchInput
         style={{ width: 160 }}
         allowClear
         placeholder="Поиск по № заявки"
         value={num.text}
-        onChange={(e) => num.onChange(e.target.value)}
+        onChange={(value) => num.onChange(value ?? '')}
       />
       {reset ? <FilterReset {...reset} /> : null}
       {extra}

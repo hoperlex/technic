@@ -12,6 +12,7 @@ export * from './AsyncTabs';
 export * from './CheckboxPicker';
 export * from './columns';
 export * from './DataTable';
+export * from './DeferredSearchInput';
 export * from './DeferredContent';
 export * from './EntityLink';
 export * from './ExpandableCell';

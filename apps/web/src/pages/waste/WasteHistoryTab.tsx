@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, DatePicker, Input, Select, Space } from 'antd';
+import { App, DatePicker, Select, Space } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import {
@@ -17,7 +17,7 @@ import {
 import { counterpartyActiveOperatorOptionsQuery } from '@entities/counterparty';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
-import { DataTable } from '@shared/ui';
+import { DataTable, DeferredSearchInput } from '@shared/ui';
 import { listQueryOptions } from '@shared/api';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -238,12 +238,12 @@ export function WasteHistoryTab() {
           })
         }
       />
-      <Input
+      <DeferredSearchInput
         allowClear
         style={{ width: 180 }}
         placeholder="№ заявки"
         value={numInput}
-        onChange={(e) => applyNumFilter(e.target.value)}
+        onChange={(value) => applyNumFilter(value ?? '')}
       />
     </Space>
   );

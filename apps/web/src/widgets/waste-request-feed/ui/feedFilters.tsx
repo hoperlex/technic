@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Button, DatePicker, Input, Select, Space, Tooltip } from 'antd';
+import { Button, DatePicker, Select, Space, Tooltip } from 'antd';
 import dayjs from 'dayjs';
 import {
   OPEN_WASTE_STATUSES,
@@ -7,7 +7,7 @@ import {
   requestStatusLabels,
   requestTypeLabels,
 } from '@technic/contracts';
-import type { FilterDefinition } from '@shared/ui';
+import { DeferredSearchInput, type FilterDefinition } from '@shared/ui';
 import type { WasteFilterOptions } from '../model/types';
 
 const DATE = 'YYYY-MM-DD';
@@ -126,12 +126,12 @@ export function WasteRequestFeedFilterBar({ options }: { options: WasteFilterOpt
           </Button>
         </Tooltip>
       )}
-      <Input
+      <DeferredSearchInput
         style={{ width: 160 }}
         allowClear
         placeholder="Поиск по № заявки"
         value={options.num.text}
-        onChange={(event) => options.num.onChange(event.target.value)}
+        onChange={(value) => options.num.onChange(value ?? '')}
       />
     </Space>
   );

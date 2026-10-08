@@ -1,6 +1,6 @@
 import { listQueryOptions } from '@shared/api';
 import { useState } from 'react';
-import { Button, Input, Select, Space, Tag, Typography } from 'antd';
+import { Button, Select, Space, Tag, Typography } from 'antd';
 import {
   EditOutlined,
   EyeOutlined,
@@ -15,6 +15,7 @@ import {
   actionsColumn,
   boolBadgeColumn,
   DataTable,
+  DeferredSearchInput,
   ExpandableCell,
   PageTableLayout,
   RowActionButton,
@@ -200,13 +201,13 @@ export function AccessGrantsTab() {
         ]}
       />
       <Space wrap size={8}>
-        <Input
+        <DeferredSearchInput
           allowClear
           prefix={<SearchOutlined />}
           placeholder="Название или код набора"
           style={{ width: 260 }}
           value={params.search ?? ''}
-          onChange={(e) => setParams((p) => ({ ...p, search: e.target.value, page: 1 }))}
+          onChange={(search) => setParams((p) => ({ ...p, search, page: 1 }))}
         />
         {/* Отбор подписан, а не оставлен подсказкой внутри поля: пустого состояния у него не бывает
             («Все наборы» — тоже выбор), и без подписи прочитать, чем сужен список, было бы нечем. */}

@@ -1,7 +1,13 @@
-import { Button, Input, Select, Space } from 'antd';
+import { Button, Select, Space } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import type { VehicleClassificationDto, VehicleTypeDto } from '@technic/contracts';
-import { DataTable, PageTableLayout, sortOptionsFrom, type FilterDefinition } from '@shared/ui';
+import {
+  DataTable,
+  DeferredSearchInput,
+  PageTableLayout,
+  sortOptionsFrom,
+  type FilterDefinition,
+} from '@shared/ui';
 import { useVehicleClassificationRegistry } from '../model/useVehicleClassificationRegistry';
 import { classificationCard, classificationColumns } from './classificationPresentation';
 
@@ -44,12 +50,12 @@ export function VehicleClassificationRegistry({
 
   const filters = (
     <Space wrap>
-      <Input
+      <DeferredSearchInput
         allowClear
         placeholder="Поиск (код, тип, категория)"
         style={{ width: 220 }}
         value={registry.params.search}
-        onChange={(event) => registry.patchParams({ search: event.target.value || undefined })}
+        onChange={(search) => registry.patchParams({ search })}
       />
       <Select
         allowClear

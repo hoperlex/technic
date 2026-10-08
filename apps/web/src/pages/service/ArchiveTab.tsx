@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Input, Space, Typography } from 'antd';
+import { App, Space, Typography } from 'antd';
 import { DeleteFilled, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
@@ -15,6 +15,7 @@ import { useAuth } from '@entities/session';
 import {
   actionsColumn,
   DataTable,
+  DeferredSearchInput,
   PageTableLayout,
   RowActionButton,
   sortOptionsFrom,
@@ -237,12 +238,12 @@ export function ServiceArchiveTab() {
     <PageTableLayout
       filters={
         <Space wrap>
-          <Input
+          <DeferredSearchInput
             allowClear
             style={{ width: 260 }}
             placeholder="СО-14, модель или номер техники"
             value={params.search ?? ''}
-            onChange={(e) => applySearch(e.target.value)}
+            onChange={(value) => applySearch(value ?? '')}
           />
         </Space>
       }

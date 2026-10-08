@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Input, Select, Space, Switch, Tag, Tooltip, type TableColumnType } from 'antd';
+import { Button, Select, Space, Switch, Tag, Tooltip, type TableColumnType } from 'antd';
 import { DeleteFilled, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { DEFAULT_PAGE_SIZE, type VehicleSpecDto } from '@technic/contracts';
@@ -7,6 +7,7 @@ import { vehicleSpecKeys, vehicleSpecsApi } from '@entities/vehicle-type';
 import {
   actionsColumn,
   DataTable,
+  DeferredSearchInput,
   PageTableLayout,
   sortOptionsFrom,
   textColumn,
@@ -138,12 +139,12 @@ export function VehicleSpecRegistry({ create, edit, toggle, togglePending, purge
 
   const filters = (
     <Space wrap>
-      <Input
+      <DeferredSearchInput
         allowClear
         placeholder="Поиск (код/название/ед.)"
         style={{ width: 240 }}
         value={params.search}
-        onChange={(event) => patchParams({ search: event.target.value || undefined })}
+        onChange={(search) => patchParams({ search })}
       />
       <Select
         allowClear

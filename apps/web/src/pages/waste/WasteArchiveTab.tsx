@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Input, Space, Tag, Typography } from 'antd';
+import { App, Space, Tag, Typography } from 'antd';
 import { DeleteFilled, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -12,7 +12,7 @@ import {
 } from '@technic/contracts';
 import { useAuth } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
-import { DataTable, type CardConfig } from '@shared/ui';
+import { DataTable, DeferredSearchInput, type CardConfig } from '@shared/ui';
 import { listQueryOptions } from '@shared/api';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -260,12 +260,12 @@ export function WasteArchiveTab() {
     <PageTableLayout
       filters={
         <Space wrap>
-          <Input
+          <DeferredSearchInput
             allowClear
             style={{ width: 180 }}
             placeholder="№ заявки"
             value={numInput}
-            onChange={(e) => applyNumFilter(e.target.value)}
+            onChange={(value) => applyNumFilter(value ?? '')}
           />
         </Space>
       }

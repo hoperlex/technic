@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Input, Space, Typography } from 'antd';
+import { App, Space, Typography } from 'antd';
 import { DeleteFilled, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -19,6 +19,7 @@ import {
 import { useAuth } from '@entities/session';
 import {
   actionsColumn,
+  DeferredSearchInput,
   DataTable,
   PageTableLayout,
   RowActionButton,
@@ -266,12 +267,12 @@ export function MechArchiveTab() {
     <PageTableLayout
       filters={
         <Space wrap>
-          <Input
+          <DeferredSearchInput
             allowClear
             style={{ width: 260 }}
             placeholder="Поиск по № заявки, например МХ-42"
             value={numInput}
-            onChange={(e) => applyNum(e.target.value)}
+            onChange={(value) => applyNum(value ?? '')}
           />
         </Space>
       }

@@ -1,21 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
-import { Badge, Button, Input, Space } from 'antd';
+import { useState } from 'react';
+import { Badge, Button, Space } from 'antd';
 import { FilterOutlined, SearchOutlined, SortAscendingOutlined } from '@ant-design/icons';
+import { DeferredSearchInput } from './DeferredSearchInput';
 import { FilterSheet } from './FilterSheet';
 import { SortSheet } from './SortSheet';
 import { activeFilterCount, type MobileListControls } from './listControls';
 
-/** Пауза перед запросом: список не дёргается на каждую букву, но и жать «Найти» не приходится. */
-const SEARCH_DEBOUNCE_MS = 300;
-
 /**
- * Панель списка на телефоне (ADR 0030, ADR 0042): строка поиска плюс вход в фильтры и сортировку.
- * Заменяет собой полосу фильтров десктопа — шесть выпадающих списков фиксированной ширины на
- * 360 px занимают экран целиком, а заголовков колонок, по которым сортируют и ищут, в карточном
- * списке нет вовсе.
- *
- * Счётчик на кнопке отвечает на «а не фильтром ли я себе список сузил»: сами значения скрыты в
- * шите, и без числа пустой список выглядел бы поломкой.
+ * The phone list needs a visible search and entry points for filters and sorting (ADR 0030,
+ * ADR 0042). Its card layout has no column headers, and the filter sheet hides active values;
+ * the badge makes the narrowed list understandable without opening the sheet.
  */
 export function ListToolbar({ search, filters, sort, secondaryActions }: MobileListControls) {
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -23,16 +17,14 @@ export function ListToolbar({ search, filters, sort, secondaryActions }: MobileL
   const count = activeFilterCount(filters);
   const actions = secondaryActions ?? [];
 
-  // Список без поиска, фильтров и сортировки, но со своей кнопкой, — тоже повод нарисовать панель:
-  // иначе единственное второстепенное действие исчезло бы вместе с ней.
+  // A secondary action must remain visible even when the list has no search, filters, or sort.
   if (!search && !filters?.length && !sort && !actions.length) return null;
 
   return (
     <div className="list-toolbar">
       {search && <SearchField {...search} />}
       {(!!filters?.length || sort || !!actions.length) && (
-        // Кнопок в ряду бывает больше двух, а ширина телефона фиксирована: без переноса последняя
-        // уехала бы за край экрана.
+        // Wrapping keeps the last action within the phone viewport.
         <Space size={8} wrap>
           {!!filters?.length && (
             <Badge count={count} size="small" offset={[-4, 2]}>
@@ -71,37 +63,13 @@ export function ListToolbar({ search, filters, sort, secondaryActions }: MobileL
   );
 }
 
-/**
- * Поле поиска с собственным текстом: буквы появляются сразу, а список перезапрашивается с
- * задержкой. Без локального состояния каждый набранный знак ждал бы ответа сервера, и курсор
- * прыгал бы на перерисовке.
- */
 function SearchField({ value, placeholder, onChange }: NonNullable<MobileListControls['search']>) {
-  const [text, setText] = useState(value ?? '');
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  // Внешний сброс (например, возврат к пустому фильтру) перебивает набранное.
-  useEffect(() => setText(value ?? ''), [value]);
-  useEffect(() => () => clearTimeout(timer.current), []);
-
-  const send = (next: string) => onChange(next.trim() || undefined);
-
   return (
-    <Input
-      allowClear
-      value={text}
+    <DeferredSearchInput
+      value={value}
       prefix={<SearchOutlined />}
       placeholder={placeholder ?? 'Поиск'}
-      onChange={(e) => {
-        setText(e.target.value);
-        clearTimeout(timer.current);
-        timer.current = setTimeout(() => send(e.target.value), SEARCH_DEBOUNCE_MS);
-      }}
-      // Enter отправляет набранное сразу: ждать паузу после явного действия незачем.
-      onPressEnter={() => {
-        clearTimeout(timer.current);
-        send(text);
-      }}
+      onChange={onChange}
     />
   );
 }

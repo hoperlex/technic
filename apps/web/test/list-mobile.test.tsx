@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { DataTable, PageTableLayout, type CardConfig, type TableChange } from '../src/shared/ui';
 import { FilterSheet } from '../src/shared/ui';
-import { ListToolbar } from '../src/shared/ui';
+import { DeferredSearchInput, ListToolbar } from '../src/shared/ui';
 import type { FilterDefinition } from '../src/shared/ui';
 import { activeFilterCount, sortOptionsFrom } from '../src/shared/ui';
 import { ApprovalCell } from '../src/widgets/vehicle-request-feed';
@@ -392,6 +392,40 @@ describe('поиск в панели списка', () => {
   it('панель без единого контрола не рисуется', () => {
     const { container } = render(<ListToolbar />);
     expect(container.querySelector('.list-toolbar')).toBeNull();
+  });
+});
+
+describe('deferred desktop search', () => {
+  it('submits one query after typing, keeps a trailing space, flushes Enter, and accepts an external reset', async () => {
+    vi.useFakeTimers();
+    const onChange = vi.fn();
+    const { rerender } = render(<DeferredSearchInput value={undefined} onChange={onChange} />);
+    const field = screen.getByRole('textbox');
+
+    fireEvent.change(field, { target: { value: 'М' } });
+    fireEvent.change(field, { target: { value: 'М-128' } });
+    await act(async () => vi.advanceTimersByTime(299));
+    expect(onChange).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith('М-128');
+
+    rerender(<DeferredSearchInput value="М-128" onChange={onChange} />);
+    fireEvent.change(field, { target: { value: 'М-128 ' } });
+    await act(async () => vi.advanceTimersByTime(300));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect((field as HTMLInputElement).value).toBe('М-128 ');
+
+    fireEvent.change(field, { target: { value: 'М-128 7' } });
+    fireEvent.keyDown(field, { key: 'Enter', keyCode: 13 });
+    fireEvent.keyUp(field, { key: 'Enter', keyCode: 13 });
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenLastCalledWith('М-128 7');
+    await act(async () => vi.advanceTimersByTime(300));
+    expect(onChange).toHaveBeenCalledTimes(2);
+
+    rerender(<DeferredSearchInput value="другой отбор" onChange={onChange} />);
+    expect((field as HTMLInputElement).value).toBe('другой отбор');
+    vi.useRealTimers();
   });
 });
 
