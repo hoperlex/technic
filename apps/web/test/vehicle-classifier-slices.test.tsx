@@ -10,10 +10,16 @@ import type {
 } from '@technic/contracts';
 import { VehicleSpecsTab } from '../src/pages/directories/VehicleSpecsTab';
 import { VehicleTypesTab } from '../src/pages/directories/VehicleTypesTab';
+import { VehicleTypeCategoriesSection } from '@features/vehicle-category-management';
+import { useVehicleClassificationLifecycle } from '@features/vehicle-classification-lifecycle';
+import { fuelNormKeys } from '@entities/fuel-norm';
+import { vehicleKeys } from '@entities/vehicle';
+import { vehicleCategoryKeys, vehicleTypeSpecKeys } from '@entities/vehicle-type';
 import { selectOption } from './antd';
 import { list } from './factories/common';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
+import { expectCarriersRefetched, primeCarriers } from './carrierRefresh';
 
 const kind: VehicleKindDto = {
   id: 'kind-1',
@@ -126,7 +132,51 @@ const category: VehicleCategoryDto = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
+function ClassifierToggle() {
+  const lifecycle = useVehicleClassificationLifecycle();
+  return (
+    <button onClick={() => lifecycle.toggle({ ...classification, isActive: false }, true)}>
+      Activate category
+    </button>
+  );
+}
+
 describe('vehicle classifier slices', () => {
+  it('refreshes embedded category fields when activation comes from the flat classifier', async () => {
+    const http = mockHttp({
+      'PATCH /vehicle-categories/:id': () => json({ ...category, isActive: true }),
+    });
+    const { queryClient } = renderWithUser(<ClassifierToggle />);
+    const carriers = [vehicleKeys.list({}), fuelNormKeys.list({})];
+    primeCarriers(queryClient, carriers);
+
+    fireEvent.click(screen.getByText('Activate category'));
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-categories/:id')).toBe(1));
+    await expectCarriersRefetched(queryClient, carriers);
+  });
+
+  it('refreshes vehicle rows and fuel labels when a category changes', async () => {
+    const http = mockHttp({
+      'PATCH /vehicle-categories/:id': () => json({ ...category, isActive: false }),
+    });
+    const { queryClient } = renderWithUser(
+      <VehicleTypeCategoriesSection
+        typeId={type.id}
+        specs={[attachedSpec]}
+        categories={[category]}
+        loading={false}
+      />,
+    );
+    const carriers = [vehicleKeys.list({}), fuelNormKeys.list({})];
+    primeCarriers(queryClient, carriers);
+
+    const row = screen.getByText(category.name).closest('tr');
+    fireEvent.click(row!.querySelector('.ant-switch')!);
+
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-categories/:id')).toBe(1));
+    await expectCarriersRefetched(queryClient, carriers);
+  });
+
   it('backfills existing categories when a spec is attached from the type card', async () => {
     const available = directorySpec();
     const http = mockHttp({
@@ -138,7 +188,9 @@ describe('vehicle classifier slices', () => {
       'GET /vehicle-specs': () => json(list([available])),
       'POST /vehicle-types/:id/specs': () => json([attachedSpec]),
     });
-    renderWithUser(<VehicleTypesTab />);
+    const { queryClient } = renderWithUser(<VehicleTypesTab />);
+    const carriers = [vehicleKeys.list({}), fuelNormKeys.list({})];
+    primeCarriers(queryClient, carriers);
 
     await screen.findByText(classification.label);
     const cardButton = [...document.querySelectorAll('tbody button')].find(
@@ -160,6 +212,7 @@ describe('vehicle classifier slices', () => {
       sortOrder: 20,
       backfillValue: 21,
     });
+    await expectCarriersRefetched(queryClient, carriers);
   });
 
   it('omits frozen unit and precision when an attached spec is edited', async () => {
@@ -168,7 +221,9 @@ describe('vehicle classifier slices', () => {
       'GET /vehicle-specs': () => json(list([used])),
       'PATCH /vehicle-specs/:id': () => json(used),
     });
-    renderWithUser(<VehicleSpecsTab />);
+    const { queryClient } = renderWithUser(<VehicleSpecsTab />);
+    const carriers = [vehicleTypeSpecKeys.byType(type.id), vehicleCategoryKeys.byType(type.id)];
+    primeCarriers(queryClient, carriers);
 
     await screen.findByText(used.name);
     const editButton = document.querySelector('[aria-label="edit"]')?.closest('button');
@@ -186,5 +241,6 @@ describe('vehicle classifier slices', () => {
     expect(body).toMatchObject({ name: 'Длина основной стрелы' });
     expect(body).not.toHaveProperty('unit');
     expect(body).not.toHaveProperty('decimals');
+    await expectCarriersRefetched(queryClient, carriers);
   });
 });

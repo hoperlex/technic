@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { CounterpartyDto, ObjectDto } from '@technic/contracts';
+import type { QueryClient } from '@tanstack/react-query';
+import { warehouseKeys } from '@entities/warehouse';
+import { wasteTariffKeys } from '@entities/waste-tariff';
+import { userAccountKeys } from '@entities/user-account';
 import { CounterpartiesTab } from '@pages/directories';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
+import { expectCarriersRefetched, primeCarriers } from './carrierRefresh';
 
 const NOW = '2026-01-01T00:00:00.000Z';
 
@@ -38,7 +43,7 @@ function counterparty(overrides: Partial<CounterpartyDto> = {}): CounterpartyDto
   };
 }
 
-function renderTab(record = counterparty()): HttpMock {
+function renderTab(record = counterparty()): HttpMock & { queryClient: QueryClient } {
   const http = mockHttp({
     'GET /counterparties': () => json(list([record])),
     'GET /objects': () => json(list([site])),
@@ -47,10 +52,10 @@ function renderTab(record = counterparty()): HttpMock {
     'DELETE /counterparties/:id': () => json({ ok: true }),
     'POST /counterparties/:id/restore': () => json({ ...record, deletedAt: null }),
   });
-  renderWithUser(<CounterpartiesTab />, {
+  const { queryClient } = renderWithUser(<CounterpartiesTab />, {
     user: authUser({ id: 'user-admin', role: 'admin' }),
   });
-  return http;
+  return Object.assign(http, { queryClient });
 }
 
 async function waitForRegistry(http: HttpMock): Promise<void> {
@@ -89,6 +94,8 @@ describe('counterparty directory', () => {
   it('edits a counterparty and refreshes both the registry and object bindings', async () => {
     const http = renderTab();
     await waitForRegistry(http);
+    const carriers = [warehouseKeys.options(), wasteTariffKeys.grid({}), userAccountKeys.list({})];
+    primeCarriers(http.queryClient, carriers);
 
     fireEvent.click(within(row()).getAllByRole('button')[0]!);
     const modal = document.querySelector('.ant-modal');
@@ -110,11 +117,14 @@ describe('counterparty directory', () => {
       expect(http.countOf('GET /counterparties')).toBeGreaterThan(1);
       expect(http.countOf('GET /objects')).toBeGreaterThan(1);
     });
+    await expectCarriersRefetched(http.queryClient, carriers);
   });
 
   it('confirms archival removal and refreshes the registry', async () => {
     const http = renderTab();
     await waitForRegistry(http);
+    const carriers = [warehouseKeys.options(), wasteTariffKeys.grid({}), userAccountKeys.list({})];
+    primeCarriers(http.queryClient, carriers);
 
     fireEvent.click(within(row()).getAllByRole('button')[1]!);
     expect(http.countOf('DELETE /counterparties/:id')).toBe(0);
@@ -123,6 +133,8 @@ describe('counterparty directory', () => {
     await waitFor(() => expect(http.countOf('DELETE /counterparties/:id')).toBe(1));
     expect(http.lastCall('DELETE /counterparties/:id')!.path).toContain('counterparty-operator');
     await waitFor(() => expect(http.countOf('GET /counterparties')).toBeGreaterThan(1));
+    await waitFor(() => expect(http.countOf('GET /objects')).toBeGreaterThan(1));
+    await expectCarriersRefetched(http.queryClient, carriers);
   });
 
   it('requests archived rows explicitly and restores one from its row action', async () => {

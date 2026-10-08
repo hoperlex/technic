@@ -13,7 +13,7 @@ export function WasteTariffsTab() {
   const purgeTariff = usePurgeAction({
     subject: 'цену',
     purge: wasteTariffsApi.purge,
-    invalidate: [wasteTariffKeys.root],
+    invalidate: [wasteTariffKeys.root, wasteTypeKeys.root],
   });
   const purgeType = usePurgeAction({
     subject: 'тип мусора',

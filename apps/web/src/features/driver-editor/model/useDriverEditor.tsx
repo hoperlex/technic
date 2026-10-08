@@ -10,6 +10,7 @@ import {
   useLicenseCategoryOptions,
 } from '@entities/driver';
 import { garageKeys } from '@entities/garage';
+import { departmentKeys } from '@entities/department';
 import { userAccountKeys } from '@entities/user-account';
 import { DriverEditorModal } from '../ui/DriverEditorModal';
 import type { DriverFormValues } from './types';
@@ -107,6 +108,8 @@ export function useDriverEditor({ documentActions }: Options): DriverEditorContr
       // the «Пользователи» tab and every account picker keep the old name. Of the directory's doors
       // only this one writes to users: purging refuses while a live account points at the person.
       void queryClient.invalidateQueries({ queryKey: userAccountKeys.root });
+      // A department embeds each head's account name, which this edit can rewrite.
+      void queryClient.invalidateQueries({ queryKey: departmentKeys.root });
       setOpen(false);
     },
     onError: (error) => message.error(errorMessage(error)),

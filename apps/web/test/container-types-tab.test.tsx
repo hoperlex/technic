@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { ContainerTypeDto } from '@technic/contracts';
+import type { QueryClient } from '@tanstack/react-query';
+import { wasteTariffKeys } from '@entities/waste-tariff';
 import { ContainerTypesTab } from '../src/pages/directories/ContainerTypesTab';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
+import { expectCarriersRefetched, primeCarriers } from './carrierRefresh';
 
 /**
  * Состав тела правки типа контейнера.
@@ -35,14 +38,16 @@ function containerType(over: Partial<ContainerTypeDto> = {}): ContainerTypeDto {
   };
 }
 
-function renderTab(items: ContainerTypeDto[]): HttpMock {
+function renderTab(items: ContainerTypeDto[]): HttpMock & { queryClient: QueryClient } {
   const http = mockHttp({
     'GET /container-types': () => json(list(items)),
     'POST /container-types': () => json(containerType({ id: 'ct-2' })),
     'PATCH /container-types/:id': ({ params }) => json(containerType({ id: params.id })),
   });
-  renderWithUser(<ContainerTypesTab />, { user: authUser({ id: 'user-admin', role: 'admin' }) });
-  return http;
+  const { queryClient } = renderWithUser(<ContainerTypesTab />, {
+    user: authUser({ id: 'user-admin', role: 'admin' }),
+  });
+  return Object.assign(http, { queryClient });
 }
 
 const rowActionButtons = () => [
@@ -65,6 +70,8 @@ describe('справочник типов контейнеров: состав �
     const http = renderTab([containerType()]);
 
     await screen.findByText('Контейнер 8 м³');
+    const carriers = [wasteTariffKeys.grid({})];
+    primeCarriers(http.queryClient, carriers);
     const edit = rowActionButtons()[0];
     if (!edit) throw new Error('кнопок в строке нет');
     fireEvent.click(edit);
@@ -75,6 +82,7 @@ describe('справочник типов контейнеров: состав �
     const body = http.lastCall('PATCH /container-types/:id')!.body as Record<string, unknown>;
     expect(body).not.toHaveProperty('code');
     expect(body.name).toBe('Контейнер 8 м³ (новый)');
+    await expectCarriersRefetched(http.queryClient, carriers);
   });
 
   it('заведение код по-прежнему шлёт: без него сервер не примет', async () => {

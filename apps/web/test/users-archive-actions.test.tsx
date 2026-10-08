@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { UserAccountDto } from '@technic/contracts';
+import { departmentKeys } from '@entities/department';
+import { driverKeys } from '@entities/driver';
 import { json, mockHttp, type MockResponse } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { UsersTab } from '../src/pages/admin/UsersTab';
+import { expectCarriersRefetched, primeCarriers } from './carrierRefresh';
 
 /**
  * Buttons of an archived account row (ADR 0063): restore and purge.
@@ -72,13 +75,17 @@ function renderHeld(route: string) {
         release = resolve;
       }),
   });
-  renderWithUser(<UsersTab />, { user: authUser({ id: 'me-1', role: 'admin' }) });
-  return { http, release: (response: MockResponse) => release(response) };
+  const { queryClient } = renderWithUser(<UsersTab />, {
+    user: authUser({ id: 'me-1', role: 'admin' }),
+  });
+  return { http, queryClient, release: (response: MockResponse) => release(response) };
 }
 
 describe('archived account row', () => {
   it('restore stays loading while the request is in flight and ignores a second click', async () => {
-    const { http, release } = renderHeld('POST /users/:id/restore');
+    const { http, queryClient, release } = renderHeld('POST /users/:id/restore');
+    const carriers = [departmentKeys.list({})];
+    primeCarriers(queryClient, carriers);
 
     fireEvent.click(await archivedButton('Восстановить'));
     const restoreButton = await archivedButton('Восстановить');
@@ -91,10 +98,13 @@ describe('archived account row', () => {
       expect(document.querySelector('.ant-btn-loading[title="Восстановить"]')).toBeNull(),
     );
     expect(http.countOf('POST /users/:id/restore')).toBe(1);
+    await expectCarriersRefetched(queryClient, carriers);
   });
 
   it('purge shows its pending state on the row button', async () => {
-    const { http, release } = renderHeld('DELETE /users/:id/purge');
+    const { http, queryClient, release } = renderHeld('DELETE /users/:id/purge');
+    const carriers = [departmentKeys.list({}), driverKeys.list({})];
+    primeCarriers(queryClient, carriers);
 
     fireEvent.click(await archivedButton('Удалить окончательно'));
     const dialog = await screen.findByRole('dialog');
@@ -107,5 +117,6 @@ describe('archived account row', () => {
     await waitFor(() =>
       expect(document.querySelector('.ant-btn-loading[title="Удалить окончательно"]')).toBeNull(),
     );
+    await expectCarriersRefetched(queryClient, carriers);
   });
 });

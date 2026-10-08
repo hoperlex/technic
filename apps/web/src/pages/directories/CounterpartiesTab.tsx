@@ -2,6 +2,9 @@ import { counterpartiesApi, counterpartyKeys } from '@entities/counterparty';
 import { objectKeys } from '@entities/object';
 import { useAuth } from '@entities/session';
 import { vehicleKeys } from '@entities/vehicle';
+import { warehouseKeys } from '@entities/warehouse';
+import { wasteTariffKeys } from '@entities/waste-tariff';
+import { userAccountKeys } from '@entities/user-account';
 import { useCounterpartyEditor } from '@features/counterparty-editor';
 import { useCounterpartyLifecycle } from '@features/counterparty-lifecycle';
 import { usePurgeAction } from '@features/purge-record';
@@ -17,7 +20,14 @@ export function CounterpartiesTab() {
   const purge = usePurgeAction({
     subject: 'контрагента',
     purge: counterpartiesApi.purge,
-    invalidate: [counterpartyKeys.root, vehicleKeys.root, objectKeys.root],
+    invalidate: [
+      counterpartyKeys.root,
+      vehicleKeys.root,
+      objectKeys.root,
+      warehouseKeys.root,
+      wasteTariffKeys.root,
+      userAccountKeys.root,
+    ],
   });
 
   return (

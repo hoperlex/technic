@@ -3,8 +3,10 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { VehicleDto } from '@technic/contracts';
 import { vehicleTitle } from '@technic/contracts';
 import { garageKeys } from '@entities/garage';
+import { fuelNormKeys } from '@entities/fuel-norm';
 import { vehicleErrorMessage as errorMessage, vehicleKeys, vehiclesApi } from '@entities/vehicle';
-import { unhitchedNotice } from '@entities/vehicle-trailer';
+import { vehicleClassificationKeys } from '@entities/vehicle-type';
+import { trailerKeys, unhitchedNotice } from '@entities/vehicle-trailer';
 
 /** Own recoverable vehicle archival and restore commands. */
 export function useVehicleLifecycle() {
@@ -21,6 +23,10 @@ export function useVehicleLifecycle() {
         message.warning(unhitchedNotice(unhitchedTrailers, 'уходом в архив'), 8);
       }
       void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+      void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
+      void queryClient.invalidateQueries({ queryKey: fuelNormKeys.root });
+      // Archival releases trailer hitches on the server, even when the count is zero here.
+      void queryClient.invalidateQueries({ queryKey: trailerKeys.root });
       void queryClient.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (error) => message.error(errorMessage(error)),
@@ -31,6 +37,8 @@ export function useVehicleLifecycle() {
     onSuccess: () => {
       message.success('Восстановлено');
       void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+      void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
+      void queryClient.invalidateQueries({ queryKey: fuelNormKeys.root });
       void queryClient.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (error) => message.error(errorMessage(error)),

@@ -9,6 +9,9 @@ import {
 } from '@entities/counterparty';
 import { objectKeys, objectRecordsQuery } from '@entities/object';
 import { vehicleKeys } from '@entities/vehicle';
+import { warehouseKeys } from '@entities/warehouse';
+import { wasteTariffKeys } from '@entities/waste-tariff';
+import { userAccountKeys } from '@entities/user-account';
 import {
   CounterpartyEditorModal,
   type CounterpartyFormValues,
@@ -80,6 +83,10 @@ export function useCounterpartyEditor(): CounterpartyEditorController {
       void queryClient.invalidateQueries({ queryKey: objectKeys.root });
       // Deactivating a lessor deactivates its rental offers as a server-side effect.
       void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+      // Supplier, operator and account names are embedded in other directory responses.
+      void queryClient.invalidateQueries({ queryKey: warehouseKeys.root });
+      void queryClient.invalidateQueries({ queryKey: wasteTariffKeys.root });
+      void queryClient.invalidateQueries({ queryKey: userAccountKeys.root });
       setOpen(false);
     },
     onError: (error) => message.error(errorMessage(error)),

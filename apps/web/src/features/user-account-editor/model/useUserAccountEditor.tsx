@@ -15,6 +15,7 @@ import {
 } from '@technic/contracts';
 import { counterpartyActiveOptionsQuery } from '@entities/counterparty';
 import { departmentKeys, departmentOptionsQuery } from '@entities/department';
+import { driverKeys } from '@entities/driver';
 import { objectRecordsQuery } from '@entities/object';
 import { useAuth } from '@entities/session';
 import {
@@ -244,6 +245,8 @@ export function useUserAccountEditor(): UserAccountEditorController {
       // data — in the department card and as a hint in this form — so it is refreshed too. The
       // reverse invalidation lives in the department card.
       void qc.invalidateQueries({ queryKey: departmentKeys.root });
+      // License verification and contact fields in driver cards refer to account data.
+      void qc.invalidateQueries({ queryKey: driverKeys.root });
       setOpen(false);
     },
     onError: (error) => {

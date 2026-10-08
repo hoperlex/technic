@@ -11,6 +11,7 @@ import {
 } from '@technic/contracts';
 import type { TableColumnType } from 'antd';
 import { containerTypeKeys, containerTypesApi } from '@entities/container-type';
+import { wasteTariffKeys } from '@entities/waste-tariff';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -66,32 +67,32 @@ export function ContainerTypesTab() {
 
   const saveMut = useMutation({
     /*
-     * Правка не шлёт код, и это не аккуратность, а починка: `updateContainerTypeSchema` объявлена
-     * `.strict()` и колонки `code` не знает — а antd отдаёт значение запертого поля наравне с
-     * остальными, потому что `disabled` убирает ввод, но не значение из формы. Сервер отвечал на
-     * такую правку ошибкой валидации, то есть переименовать тип контейнера или подвинуть порядок
-     * сортировки было нельзя вовсе.
-     *
-     * Разбор значений, а не второй тип формы: поля у заведения и правки одни и те же, и вторая
-     * форма разошлась бы с первой при первом же добавленном поле.
+     * The strict update schema excludes `code`, while antd submits disabled field values too.
+     * Strip it from edits or every rename and sort change fails validation. Creation still needs
+     * it; one form keeps the shared fields in sync as the schema grows.
      */
     mutationFn: ({ code, ...rest }: CreateContainerTypeInput) =>
-      record ? containerTypesApi.update(record.id, rest) : containerTypesApi.create({ code, ...rest }),
+      record
+        ? containerTypesApi.update(record.id, rest)
+        : containerTypesApi.create({ code, ...rest }),
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: containerTypeKeys.root });
+      // Price rows embed container names and volumes.
+      void qc.invalidateQueries({ queryKey: wasteTariffKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  // Удаления нет: деактивация через isActive (единый принцип со справочником ТС).
+  // Ordinary removal is deactivation, as in the vehicle-type directory.
   const toggleMut = useMutation({
     mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
       containerTypesApi.update(id, { isActive }),
     onSuccess: (_d, v) => {
       message.success(v.isActive ? 'Активирован' : 'Деактивирован');
       void qc.invalidateQueries({ queryKey: containerTypeKeys.root });
+      void qc.invalidateQueries({ queryKey: wasteTariffKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -110,12 +111,11 @@ export function ContainerTypesTab() {
     });
   };
 
-  // Удаление насовсем (ADR 0060): деактивация оставляет тип в базе навсегда, а заведённый по
-  // ошибке код убирает отсюда только администратор.
+  // Purge removes an erroneous code that deactivation would leave forever (ADR 0060).
   const purge = usePurgeAction({
     subject: 'тип',
     purge: containerTypesApi.purge,
-    invalidate: [containerTypeKeys.root],
+    invalidate: [containerTypeKeys.root, wasteTariffKeys.root],
   });
 
   const activeColumn: TableColumnType<ContainerTypeDto> = {

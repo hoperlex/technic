@@ -11,6 +11,8 @@ import {
   vehicleTypesApi,
 } from '@entities/vehicle-type';
 import { weeklyRequestKeys } from '@entities/weekly-request';
+import { vehicleKeys } from '@entities/vehicle';
+import { fuelNormKeys } from '@entities/fuel-norm';
 import { usePurgeAction } from '@features/purge-record';
 import { VehicleTypeCategoriesSection } from '@features/vehicle-category-management';
 import { VehicleTypeSpecsSection } from '@features/vehicle-type-spec-management';
@@ -37,7 +39,15 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   const purge = usePurgeAction({
     subject: 'тип',
     purge: vehicleTypesApi.purge,
-    invalidate: [vehicleClassificationKeys.root, vehicleTypeKeys.root, weeklyRequestKeys.root],
+    invalidate: [
+      vehicleClassificationKeys.root,
+      vehicleTypeKeys.root,
+      vehicleCategoryKeys.root,
+      vehicleTypeSpecKeys.root,
+      vehicleKeys.root,
+      fuelNormKeys.root,
+      weeklyRequestKeys.root,
+    ],
   });
   const specsQuery = useQuery({
     queryKey: vehicleTypeSpecKeys.byType(typeId),

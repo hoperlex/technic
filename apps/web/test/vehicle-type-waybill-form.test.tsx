@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type { VehicleClassificationDto, VehicleKindDto, VehicleTypeDto } from '@technic/contracts';
 import { VehicleTypesTab } from '../src/pages/directories/VehicleTypesTab';
+import { vehicleKeys } from '@entities/vehicle';
+import { fuelNormKeys } from '@entities/fuel-norm';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
 import { selectOption } from './antd';
+import { expectCarriersRefetched, primeCarriers } from './carrierRefresh';
 
 /**
  * Бланк путевого листа в справочнике типов ТС (ADR 0065).
@@ -121,7 +124,9 @@ async function openCreateForm(): Promise<void> {
 describe('бланк путевого листа в справочнике типов', () => {
   it('новый грузовой тип уходит с 4-П: бланк не спрашивают, его подставляют', async () => {
     const http = mockDirectory([vehicleType()]);
-    renderWithUser(<VehicleTypesTab />);
+    const { queryClient } = renderWithUser(<VehicleTypesTab />);
+    const carriers = [vehicleKeys.list({}), fuelNormKeys.list({})];
+    primeCarriers(queryClient, carriers);
     await openCreateForm();
 
     await selectOption('Вид', 'Грузоперевозки');
@@ -140,6 +145,7 @@ describe('бланк путевого листа в справочнике ти�
       code: 'lowbed_semi_trailers',
       waybillFormCode: '4p',
     });
+    await expectCarriersRefetched(queryClient, carriers);
   });
 
   it('отмеченный «Легковой транспорт» переводит тип на форму № 3', async () => {

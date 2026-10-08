@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type { UserDto } from '@technic/contracts';
+import { driverKeys } from '@entities/driver';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { UsersTab } from '../src/pages/admin/UsersTab';
+import { expectCarriersRefetched, primeCarriers } from './carrierRefresh';
 
 /**
  * Смена адреса учётной записи из списка учёток (ADR 0092).
@@ -82,7 +84,7 @@ function renderTab(users: UserDto[], onChange?: (body: unknown) => void) {
       });
     },
   });
-  renderWithUser(<UsersTab />, { user: authUser({ id: ADMIN_ID, role: 'admin' }) });
+  return renderWithUser(<UsersTab />, { user: authUser({ id: ADMIN_ID, role: 'admin' }) });
 }
 
 /** Строка списка по адресу — действия читаем в ней, а не по всей странице. */
@@ -155,7 +157,9 @@ describe('смена адреса учётной записи', () => {
 
   it('отправляет адрес, когда оба поля совпали', async () => {
     const sent = vi.fn();
-    renderTab([EMPLOYEE], sent);
+    const { queryClient } = renderTab([EMPLOYEE], sent);
+    const carriers = [driverKeys.list({})];
+    primeCarriers(queryClient, carriers);
     await openChangeEmail(EMPLOYEE.email);
 
     fill('Новый адрес', 'petrov@su10.ru');
@@ -164,6 +168,8 @@ describe('смена адреса учётной записи', () => {
 
     // Пароля в теле нет: чужую учётку сервер о нём не спрашивает.
     await waitFor(() => expect(sent).toHaveBeenCalledWith({ newEmail: 'petrov@su10.ru' }));
+    await waitFor(() => expect(queryClient.getQueryState(carriers[0]!)?.isInvalidated).toBe(true));
+    await expectCarriersRefetched(queryClient, carriers);
   });
 
   it('у своей учётки спрашивает текущий пароль и шлёт его вместе с адресом', async () => {

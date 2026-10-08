@@ -6,6 +6,7 @@ import {
   wasteTariffKeys,
   wasteTariffsApi,
 } from '@entities/waste-tariff';
+import { wasteTypeKeys } from '@entities/waste-type';
 
 export interface WasteTariffLifecycleController {
   toggle: (tariff: WasteTariffDto, next: boolean) => void;
@@ -24,6 +25,8 @@ export function useWasteTariffLifecycle(): WasteTariffLifecycleController {
     onSuccess: (_data, values) => {
       message.success(values.isActive ? 'Цена включена' : 'Цена отключена');
       void queryClient.invalidateQueries({ queryKey: wasteTariffKeys.root });
+      // Priced-only waste-type options depend on whether any active tariff remains.
+      void queryClient.invalidateQueries({ queryKey: wasteTypeKeys.root });
     },
     onError: (error) => message.error(errorMessage(error)),
   });

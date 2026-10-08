@@ -6,11 +6,14 @@ import type {
   WasteTariffDto,
   WasteTypeDto,
 } from '@technic/contracts';
+import type { QueryClient } from '@tanstack/react-query';
+import { wasteTypeKeys } from '@entities/waste-type';
 import { WasteTariffsTab } from '@pages/directories';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
+import { expectCarriersRefetched, primeCarriers } from './carrierRefresh';
 
 const NOW = '2026-01-01T00:00:00.000Z';
 
@@ -77,7 +80,7 @@ function tariff(overrides: Partial<WasteTariffDto> = {}): WasteTariffDto {
   };
 }
 
-function renderTab(currentTariff = tariff()): HttpMock {
+function renderTab(currentTariff = tariff()): HttpMock & { queryClient: QueryClient } {
   const http = mockHttp({
     'GET /waste-tariffs': () => json(list([currentTariff])),
     'GET /waste-types': () => json(list([wasteType])),
@@ -88,10 +91,10 @@ function renderTab(currentTariff = tariff()): HttpMock {
     'PATCH /waste-types/:id': ({ body }) =>
       json({ ...wasteType, ...(body as Partial<WasteTypeDto>) }),
   });
-  renderWithUser(<WasteTariffsTab />, {
+  const { queryClient } = renderWithUser(<WasteTariffsTab />, {
     user: authUser({ id: 'user-admin', role: 'admin' }),
   });
-  return http;
+  return Object.assign(http, { queryClient });
 }
 
 async function waitForGrid(http: HttpMock): Promise<void> {
@@ -182,12 +185,15 @@ describe('waste tariff directory', () => {
   it('enables an inactive price without confirmation and refreshes the tariff grid', async () => {
     const http = renderTab(tariff({ isActive: false }));
     await waitForGrid(http);
+    const carriers = [wasteTypeKeys.options({ pricedOnly: true })];
+    primeCarriers(http.queryClient, carriers);
 
     fireEvent.click(tariffSwitch());
 
     await waitFor(() => expect(http.countOf('PATCH /waste-tariffs/:id')).toBe(1));
     expect(http.lastCall('PATCH /waste-tariffs/:id')!.body).toEqual({ isActive: true });
     await waitFor(() => expect(http.countOf('GET /waste-tariffs')).toBeGreaterThan(1));
+    await expectCarriersRefetched(http.queryClient, carriers);
   });
 
   it('confirms before disabling an active price and refreshes the tariff grid', async () => {

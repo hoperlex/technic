@@ -4,6 +4,9 @@ import { Link, Route, Routes } from 'react-router';
 import type { AuthUser } from '@technic/contracts';
 import { AsyncContent } from '@shared/ui';
 import { objectKeys } from '@entities/object';
+import { departmentKeys } from '@entities/department';
+import { officeEquipmentKeys } from '@entities/office-equipment';
+import { userAccountKeys } from '@entities/user-account';
 import { DirectoriesPage } from '../src/pages/directories';
 import { WasteRequestsPage } from '../src/pages/waste';
 import { json, mockHttp, type HttpMock } from './http';
@@ -11,6 +14,7 @@ import { renderWithUser } from './render';
 import { advanceClock, cachedGcTime, freezeClock, restoreClock, settle } from './query';
 import { NORTH, sectionPath, sectionRoutes } from './section-requests';
 import { shtabUser } from './factories/auth';
+import { expectCarriersRefetched, primeCarriers } from './carrierRefresh';
 
 /**
  * Freshness of a dictionary that stays on a first screen — a measurement, not a ban (stage 5 plan,
@@ -132,6 +136,12 @@ describe('свежесть справочника объектов у штаба
     await settle(queryClient);
 
     await go('Справочники');
+    const carriers = [
+      departmentKeys.options(),
+      officeEquipmentKeys.list({}),
+      userAccountKeys.list({}),
+    ];
+    primeCarriers(queryClient, carriers);
     // Deactivation is the lightest site mutation to drive; every one of them clears the same root.
     const row = (await screen.findByText(NORTH.name)).closest('tr')!;
     // By label and text, not by role: a role query checks visibility through computed styles, and
@@ -140,6 +150,7 @@ describe('свежесть справочника объектов у штаба
     fireEvent.click(await screen.findByText('Деактивировать'));
     await settle(queryClient);
     expect(http.countOf('DELETE /objects/:id')).toBe(1);
+    await expectCarriersRefetched(queryClient, carriers);
 
     advanceClock(1_000);
     const returned = http.calls.length;

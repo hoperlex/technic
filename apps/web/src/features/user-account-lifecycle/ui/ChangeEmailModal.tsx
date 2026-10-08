@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Alert, App, Form, Input, Typography } from 'antd';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { FormModal } from '@shared/ui';
 import {
   isInternalEmail,
@@ -8,9 +8,10 @@ import {
   type ChangeUserEmailBody,
   type UserDto,
 } from '@technic/contracts';
-import { usersApi } from '@entities/user-account';
+import { userAccountKeys, usersApi } from '@entities/user-account';
 import { useAuth } from '@entities/session';
 import { userAccountErrorMessage as errorMessage } from '@entities/user-account';
+import { driverKeys } from '@entities/driver';
 
 interface Props {
   open: boolean;
@@ -179,13 +180,9 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
 export function useChangeEmailAction(opts: {
   /** Who is viewing: one's own account changes with a password and signs out. */
   currentUserId: string | undefined;
-  /**
-   * What to refresh after the change. A callback rather than a query from here: which list is shown
-   * and under which cache key is the calling screen's business; the hook owns the change itself.
-   */
-  onChanged: () => void;
 }) {
   const { message } = App.useApp();
+  const queryClient = useQueryClient();
   const { logout } = useAuth();
   const [user, setUser] = useState<UserDto | null>(null);
   const self = !!user && user.id === opts.currentUserId;
@@ -204,6 +201,9 @@ export function useChangeEmailAction(opts: {
         void logout();
         return;
       }
+      // The server can copy the new login into the linked driver's contact card.
+      void queryClient.invalidateQueries({ queryKey: userAccountKeys.root });
+      void queryClient.invalidateQueries({ queryKey: driverKeys.root });
       // Each email is reported separately: a single "sent" would hide that the warning did not reach
       // the old mailbox — and that is exactly the news it was sent for.
       message.success(
@@ -225,7 +225,6 @@ export function useChangeEmailAction(opts: {
           'Этот адрес принадлежал архивной учётной записи — восстановить её из архива больше нельзя',
         );
       }
-      opts.onChanged();
     },
     onError: (e) => message.error(errorMessage(e)),
   });
