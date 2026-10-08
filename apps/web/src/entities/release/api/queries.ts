@@ -17,6 +17,8 @@ export const releasesQuery = () =>
   queryOptions({
     queryKey: releaseKeys.list(),
     queryFn: () => releasesApi.list(),
+    // The shell owns this read; switching a section tab must not refresh it.
+    meta: { sectionTabRefresh: false },
     // query-freshness: exception — release notes change only with deployment
     staleTime: RELEASES_STALE_TIME,
   });

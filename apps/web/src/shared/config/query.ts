@@ -1,4 +1,4 @@
-import type { DefaultOptions } from '@tanstack/react-query';
+import type { DefaultOptions, Query } from '@tanstack/react-query';
 
 /**
  * Freshness of server data: the one module that holds the numbers and the defaults of the portal's
@@ -73,6 +73,15 @@ export const QUERY_CLIENT_DEFAULTS = {
     retry: false,
   },
 } as const satisfies DefaultOptions;
+
+/**
+ * A section switch refreshes mounted section reads, including panes visited earlier. Shell reads
+ * live outside the section: SIGNAL has its own focus policy, and a shell query with another
+ * freshness policy opts out in its canonical query factory.
+ */
+export function shouldRefreshSectionTabQuery(query: Query): boolean {
+  return query.meta?.profile !== 'SIGNAL' && query.meta?.sectionTabRefresh !== false;
+}
 
 /**
  * Projection views share an entry with their owner factory. They must carry the owner's cache

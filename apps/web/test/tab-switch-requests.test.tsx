@@ -16,9 +16,9 @@ import {
  *
  * Visited tabs stay mounted, so a switch by itself refetches nothing: every request below comes
  * from the clearing on the switch. Sections on `PageTabs` clear their own root
- * (`refreshQueryKey`) — in office equipment that root also holds two shell badges; Directories and
- * Administration clear the whole cache. Active entries refetch at once, wherever they are
- * mounted: in the tab left, in the tab opened, in the shell. That is why the shell is mounted here.
+ * (`refreshQueryKey`); Directories and Administration refresh active reads but exclude shell
+ * signals and release notes. Active entries in visited panes refetch at once. The shell is
+ * mounted here so an accidental broad invalidation changes this measurement.
  *
  * The walk: the first screen, then the neighbour tab (its first visit: the clearing plus the
  * neighbour's own first screen), then back (both tabs mounted: the clearing alone, the cost of one
@@ -81,13 +81,12 @@ const EXPECTED: Record<string, { visit: string[]; back: string[] }> = {
     ],
   },
   'Справочники, directories.write (№10)': {
-    // The whole cache: both tabs and the shell's release notes.
+    // Both visited tabs refresh; the shell's release notes keep their own freshness policy.
     visit: [
       'GET /counterparties',
       'GET /departments',
       'GET /objects',
       'GET /objects',
-      'GET /releases',
       'GET /users',
       'GET /users',
     ],
@@ -96,35 +95,14 @@ const EXPECTED: Record<string, { visit: string[]; back: string[] }> = {
       'GET /departments',
       'GET /objects',
       'GET /objects',
-      'GET /releases',
       'GET /users',
       'GET /users',
     ],
   },
   'Администрирование, администратор (№12)': {
-    // The whole cache: both tabs and all three shell badges.
-    visit: [
-      'GET /counterparties',
-      'GET /departments',
-      'GET /objects',
-      'GET /releases',
-      'GET /service-requests/unread-count',
-      'GET /service-requests/waiting-count',
-      'GET /users',
-      'GET /users',
-      'GET /users/pending-count',
-    ],
-    back: [
-      'GET /counterparties',
-      'GET /departments',
-      'GET /objects',
-      'GET /releases',
-      'GET /service-requests/unread-count',
-      'GET /service-requests/waiting-count',
-      'GET /users',
-      'GET /users',
-      'GET /users/pending-count',
-    ],
+    // Both visited tabs refresh; three shell badges and release notes stay fresh.
+    visit: ['GET /counterparties', 'GET /departments', 'GET /objects', 'GET /users', 'GET /users'],
+    back: ['GET /counterparties', 'GET /departments', 'GET /objects', 'GET /users', 'GET /users'],
   },
 };
 

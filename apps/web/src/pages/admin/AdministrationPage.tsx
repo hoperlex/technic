@@ -2,6 +2,7 @@ import { lazy } from 'react';
 import { AsyncTabs } from '@shared/ui';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
+import { shouldRefreshSectionTabQuery } from '@shared/config';
 import { useAuth } from '@entities/session';
 
 const UsersTab = lazy(() => import('./UsersTab').then((module) => ({ default: module.UsersTab })));
@@ -27,11 +28,15 @@ export function AdministrationPage() {
   const { can } = useAuth();
   const qc = useQueryClient();
   /**
-   * As in directories, hidden tabs stay mounted and would show stale cache on return. These
-   * relationships are direct: grants issued on Users appear in Access, and directory imports
-   * change data shown throughout the portal.
+   * Visited tabs stay mounted, so their active observers refresh on a section tab switch.
+   * Inactive entries belong to screens that are not open, while shell reads follow their own
+   * freshness policy. Directory import deliberately invalidates the full cache at its own source.
    */
-  const refreshOnSwitch = () => void qc.invalidateQueries();
+  const refreshOnSwitch = () =>
+    void qc.invalidateQueries({
+      type: 'active',
+      predicate: shouldRefreshSectionTabQuery,
+    });
   // Gate tabs by permission, not role: notification management and access management need not
   // belong to the same person.
   const items = [
