@@ -9,9 +9,7 @@
   "maxLines": {},
   "queryFreshnessUnmarked": 0,
   "unfilteredInvalidations": [
-    "src/pages/admin/AdministrationPage.tsx › AdministrationPage › refreshOnSwitch",
-    "src/pages/admin/DirectoryTransferTab.tsx › DirectoryTransferTab › onImported",
-    "src/pages/directories/DirectoriesPage.tsx › DirectoriesPage › refreshOnSwitch"
+    "src/pages/admin/DirectoryTransferTab.tsx › DirectoryTransferTab › onImported"
   ],
   "timers": [
     "src/app/MaintenanceBoundary.tsx › useStatusFileWatch › setInterval",

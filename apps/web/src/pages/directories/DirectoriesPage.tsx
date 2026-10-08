@@ -2,6 +2,7 @@ import { lazy } from 'react';
 import { AsyncTabs } from '@shared/ui';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
+import { shouldRefreshSectionTabQuery } from '@shared/config';
 import { useAuth } from '@entities/session';
 
 const ObjectsTab = lazy(() =>
@@ -52,18 +53,16 @@ export function DirectoriesPage() {
   const { can } = useAuth();
   const qc = useQueryClient();
   /**
-   * Switching tabs means "show it as it is now": hidden tabs stay mounted and would otherwise
-   * show cache from before work on a neighbour. Directories reference each other, and the server
-   * embeds neighbouring fields in lists: vehicle type/category names and tariff container volumes.
-   * Renaming a type then returning to the vehicle list would leave the old name until reload,
-   * not merely for a short polling interval.
-   *
-   * Invalidate the whole cache, not just the destination root: manually enumerating embedded
-   * relationships after every server change would recreate the defect as soon as one is missed.
-   * This does not eagerly fetch every directory: active observers refetch, while inactive queries
-   * are only marked stale until they are used again.
+   * Visited tabs stay mounted, so their active observers need a refresh when the user switches
+   * directories. Inactive entries belong to screens that are not open; mutations invalidate
+   * embedded fields in those entries at their source. Shell reads follow their own freshness
+   * policy and must not be refreshed by navigation inside this section.
    */
-  const refreshOnSwitch = () => void qc.invalidateQueries();
+  const refreshOnSwitch = () =>
+    void qc.invalidateQueries({
+      type: 'active',
+      predicate: shouldRefreshSectionTabQuery,
+    });
   /**
    * Two permissions open this section (R7): directories.write exposes all directories, while
    * officeEquipment.write exposes one tab. The main group must therefore stay conditional:
