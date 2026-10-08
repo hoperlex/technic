@@ -8,6 +8,7 @@ import {
 } from '@technic/contracts';
 import { DataTable, textColumn, type CardConfig } from '@shared/ui';
 import { formatDateTime, useListParams } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import {
   officeEquipmentPurchaseKeys,
   officeEquipmentPurchasesApi,
@@ -74,10 +75,12 @@ export function OfficeEquipmentPurchasesList({ onOpen }: Props) {
     { searchKeys: [] },
   );
 
-  const { data, isFetching } = useQuery({
-    queryKey: officeEquipmentPurchaseKeys.list(params),
-    queryFn: () => officeEquipmentPurchasesApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: officeEquipmentPurchaseKeys.list(params),
+      queryFn: () => officeEquipmentPurchasesApi.list(params),
+    }),
+  );
 
   const columns = [
     textColumn<OfficeEquipmentPurchaseDto>({

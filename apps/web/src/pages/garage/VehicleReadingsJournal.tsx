@@ -301,6 +301,7 @@ export function VehicleReadingsJournal({
    * начинается с первой страницы, — и держать их в двух состояниях значило бы иметь два ответа на
    * вопрос «что сейчас показано».
    */
+  // list-query: exception — this window is scoped to one vehicle, so its page is not a section list.
   const { params, setParams, onTableChange } = useListParams<{ from: string; to: string }>(
     { from: from ?? dayjs(day).subtract(DEFAULT_DAYS, 'day').format(DATE), to: day },
     { searchKeys: [] },

@@ -11,6 +11,7 @@ import { mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
 import { useAuth } from '@entities/session';
 import { DataTable, PageTableLayout, SummaryBar, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { mechRequestCard, mechRequestColumns } from './mechRequestGrid';
 import {
@@ -85,18 +86,22 @@ export function RequestsTab() {
   const sortBy = params.sortBy ?? 'plannedTo';
   const sortOrder = params.sortBy ? params.sortOrder : 'asc';
   const query = { ...params, sortBy, sortOrder, archive: 'exclude' };
-  const { data, isFetching } = useQuery({
-    queryKey: mechRequestKeys.list(query),
-    queryFn: () => mechRequestsApi.list(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: mechRequestKeys.list(query),
+      queryFn: () => mechRequestsApi.list(query),
+    }),
+  );
 
   // Сводка знает из отборов только площадку: отбор по статусу свёл бы её к самой себе, а по
   // номеру — к одной заявке.
   const summaryQuery = { placeObjectId: params.placeObjectId };
-  const { data: summary } = useQuery({
-    queryKey: mechRequestKeys.summary(summaryQuery),
-    queryFn: () => mechRequestsApi.summary(summaryQuery),
-  });
+  const { data: summary } = useQuery(
+    listQueryOptions({
+      queryKey: mechRequestKeys.summary(summaryQuery),
+      queryFn: () => mechRequestsApi.summary(summaryQuery),
+    }),
+  );
   const summaryItems = [
     { label: 'Не обработано', value: summary?.pending ?? 0 },
     { label: 'Ждут подачи', value: summary?.awaitingIssue ?? 0 },

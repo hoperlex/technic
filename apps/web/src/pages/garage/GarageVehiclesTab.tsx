@@ -8,6 +8,7 @@ import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { useAuth } from '@entities/session';
 import { useJournalAddress } from './journalAddress';
@@ -83,10 +84,12 @@ export function GarageVehiclesTab({
 
   // День приходит от страницы: он общий у обеих вкладок и живёт в адресе.
   const query = { ...params, on: date };
-  const { data, isFetching } = useQuery({
-    queryKey: garageKeys.vehicles(query),
-    queryFn: () => garageApi.vehicles(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: garageKeys.vehicles(query),
+      queryFn: () => garageApi.vehicles(query),
+    }),
+  );
 
   // Строка среза шире контракта на одно поле: состояние показаний сервер отдаёт, а `GarageVehicleDto`
   // о нём ещё не знает. Приведение — ровно до переезда поля в контракт, вместе с типом `VehicleRow`.
@@ -106,10 +109,12 @@ export function GarageVehiclesTab({
   // свелась бы к одной своей цифре. Площадка остаётся: она определяет перечень машин, а не одну
   // из его цифр, и несуженная сводка отвечала бы про весь парк под отобранной таблицей.
   const summaryQuery = { ...query, state: undefined, readings: undefined };
-  const { data: summary } = useQuery({
-    queryKey: garageKeys.vehiclesSummary(summaryQuery),
-    queryFn: () => garageApi.vehiclesSummary(summaryQuery),
-  });
+  const { data: summary } = useQuery(
+    listQueryOptions({
+      queryKey: garageKeys.vehiclesSummary(summaryQuery),
+      queryFn: () => garageApi.vehiclesSummary(summaryQuery),
+    }),
+  );
 
   const summaryItems = [
     { label: 'Машин', value: summary?.total ?? 0 },

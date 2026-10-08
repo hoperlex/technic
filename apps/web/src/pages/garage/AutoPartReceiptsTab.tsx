@@ -5,6 +5,7 @@ import type { AutoPartReceiptListItemDto } from '@technic/contracts';
 import { autoPartReceiptApi, autoPartReceiptKeys } from '@entities/auto-part-receipt';
 import { DataTable, PageTableLayout, SummaryBar, sortOptionsFrom } from '@shared/ui';
 import { formatMoney, useListParams } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { useAuth } from '@entities/session';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { AutoPartReceiptCardModal } from './AutoPartReceiptCardModal';
@@ -89,15 +90,19 @@ export function AutoPartReceiptsTab() {
     sortOrder: params.sortOrder,
   };
 
-  const { data, isFetching } = useQuery({
-    queryKey: autoPartReceiptKeys.list(listQuery),
-    queryFn: () => autoPartReceiptApi.list(listQuery),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: autoPartReceiptKeys.list(listQuery),
+      queryFn: () => autoPartReceiptApi.list(listQuery),
+    }),
+  );
 
-  const { data: summary } = useQuery({
-    queryKey: autoPartReceiptKeys.summary(filterQuery),
-    queryFn: () => autoPartReceiptApi.summary(filterQuery),
-  });
+  const { data: summary } = useQuery(
+    listQueryOptions({
+      queryKey: autoPartReceiptKeys.summary(filterQuery),
+      queryFn: () => autoPartReceiptApi.summary(filterQuery),
+    }),
+  );
 
   /**
    * Четыре числа над таблицей (§8). «Не отнесено» стоит рядом с суммой, потому что объясняет

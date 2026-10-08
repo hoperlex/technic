@@ -11,6 +11,7 @@ import {
   type FilterDefinition,
 } from '@shared/ui';
 import { useListParams, usePruneMissingFilters } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import {
   officeEquipmentConsumableKeys,
   officeEquipmentConsumablesApi,
@@ -105,10 +106,12 @@ export function ConsumablesTab() {
       },
     );
 
-  const { data, isFetching } = useQuery({
-    queryKey: officeEquipmentConsumableKeys.list(params),
-    queryFn: () => officeEquipmentConsumablesApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: officeEquipmentConsumableKeys.list(params),
+      queryFn: () => officeEquipmentConsumablesApi.list(params),
+    }),
+  );
 
   const { data: modelOptions = [], isSuccess: modelsReady } = useQuery(
     officeEquipmentModelPickerQuery(),

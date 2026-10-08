@@ -17,6 +17,7 @@ import {
   type FilterDefinition,
 } from '@shared/ui';
 import { useListParams, usePruneMissingFilters } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import {
   officeEquipmentApi,
   officeEquipmentCard,
@@ -91,8 +92,7 @@ const EQUIPMENT_FILTER_FIELDS = [
 
 export function EquipmentTab() {
   const { can, user } = useAuth();
-  // Переезд записывает тот, кто ведёт парк. Смотреть список и историю может каждый, кому открыт
-  // справочник: «что с этим аппаратом было» — вопрос читателя.
+  // Moving equipment needs park editing; reading its history only needs directory access.
   const canWrite = can('officeEquipment.write');
   // Перемещение — своё право (план перемещения из карточки заявки, Р1): справочник и карточка
   // заявки спрашивают одно и то же, иначе у действия два замка разной строгости.
@@ -131,10 +131,12 @@ export function EquipmentTab() {
       },
     );
 
-  const { data, isFetching } = useQuery({
-    queryKey: officeEquipmentKeys.list(params),
-    queryFn: () => officeEquipmentApi.list(params),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: officeEquipmentKeys.list(params),
+      queryFn: () => officeEquipmentApi.list(params),
+    }),
+  );
 
   const {
     data: typeOptions = [],
@@ -262,7 +264,6 @@ export function EquipmentTab() {
     </Space>
   );
 
-  /** Те же срезы описанием — для шита на телефоне (ADR 0030). */
   const mobileFilters: FilterDefinition[] = [
     {
       kind: 'select',
@@ -322,8 +323,7 @@ export function EquipmentTab() {
 
   const columns = officeEquipmentColumns(grid);
 
-  // Переключатель виден только проверяющему и стоит рядом с обеими половинами: из очереди в парк
-  // ходят так же часто, как обратно.
+  // Reviewers move between the queue and the park, so the switch stays beside both views.
   const toolbar =
     canReview || canTelemetry ? (
       <Segmented<'park' | 'review' | 'mail' | 'keys' | 'rules' | 'poll'>

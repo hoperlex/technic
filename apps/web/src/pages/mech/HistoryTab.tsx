@@ -17,6 +17,7 @@ import {
 import { useAuth } from '@entities/session';
 import { DataTable, PageTableLayout, SummaryBar, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { mechHistoryCard, mechHistoryColumns } from './mechHistoryGrid';
 import {
@@ -117,20 +118,24 @@ export function HistoryTab() {
     sortBy,
     sortOrder,
   };
-  const { data, isFetching } = useQuery({
-    queryKey: mechRequestKeys.closed(listQuery),
-    queryFn: () => mechRequestsApi.closedList(listQuery),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: mechRequestKeys.closed(listQuery),
+      queryFn: () => mechRequestsApi.closedList(listQuery),
+    }),
+  );
 
   /*
    * Итог считается по тем же отборам, что и таблица, — включая статус: «во сколько обошлись
    * отменённые» законный вопрос к журналу. Сводка, отвечающая не про то, что человек видит перед
    * собой, вводит в заблуждение вернее, чем её отсутствие.
    */
-  const { data: summary } = useQuery({
-    queryKey: mechRequestKeys.closedSummary(filterQuery),
-    queryFn: () => mechRequestsApi.closedSummary(filterQuery),
-  });
+  const { data: summary } = useQuery(
+    listQueryOptions({
+      queryKey: mechRequestKeys.closedSummary(filterQuery),
+      queryFn: () => mechRequestsApi.closedSummary(filterQuery),
+    }),
+  );
 
   /**
    * Итог журнала. Два числа в нём объяснены прямо в подписи, потому что иначе их читают неверно:

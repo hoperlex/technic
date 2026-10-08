@@ -68,6 +68,7 @@ export function ReadingsStatsTab({ date }: { date: string }) {
    */
   const [exportOpen, setExportOpen] = useState(false);
 
+  // list-query: exception — the server returns the whole period; the visible page is sliced locally.
   const { params, onTableChange } = useListParams<Record<string, never>>({}, { searchKeys: [] });
 
   const query = { from: period[0], to: period[1] };

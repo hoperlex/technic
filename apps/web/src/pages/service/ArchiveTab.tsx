@@ -22,6 +22,7 @@ import {
   type CardConfig,
 } from '@shared/ui';
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { useActiveTabKey } from '@shared/ui';
 import { usePurgeAction } from '@features/purge-record';
 import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
@@ -73,10 +74,12 @@ export function ServiceArchiveTab() {
     sortBy: params.sortBy ?? 'createdAt',
     archive: 'only',
   };
-  const { data, isFetching } = useQuery({
-    queryKey: serviceRequestKeys.list(query),
-    queryFn: () => serviceRequestsApi.list(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: serviceRequestKeys.list(query),
+      queryFn: () => serviceRequestsApi.list(query),
+    }),
+  );
 
   const restoreMutation = useMutation({
     mutationFn: (id: string) => serviceRequestsApi.restore(id),

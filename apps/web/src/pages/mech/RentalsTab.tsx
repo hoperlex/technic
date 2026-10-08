@@ -15,6 +15,7 @@ import {
   type ActionSheetItem,
 } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { mechRentalCard, mechRentalColumns } from './mechRentalGrid';
 import {
@@ -85,10 +86,12 @@ export function RentalsTab() {
   const sortBy = params.sortBy ?? 'plannedTo';
   const sortOrder = params.sortBy ? params.sortOrder : 'asc';
   const query = { ...params, sortBy, sortOrder, rental: 'true', archive: 'exclude' };
-  const { data, isFetching } = useQuery({
-    queryKey: mechRequestKeys.list(query),
-    queryFn: () => mechRequestsApi.list(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: mechRequestKeys.list(query),
+      queryFn: () => mechRequestsApi.list(query),
+    }),
+  );
 
   /*
    * Сводка — та же ручка и те же предикаты, что у списка заявок, но показываются из неё два числа
@@ -98,10 +101,12 @@ export function RentalsTab() {
    * другому срезу.
    */
   const summaryQuery = { placeObjectId: params.placeObjectId };
-  const { data: summary } = useQuery({
-    queryKey: mechRequestKeys.summary(summaryQuery),
-    queryFn: () => mechRequestsApi.summary(summaryQuery),
-  });
+  const { data: summary } = useQuery(
+    listQueryOptions({
+      queryKey: mechRequestKeys.summary(summaryQuery),
+      queryFn: () => mechRequestsApi.summary(summaryQuery),
+    }),
+  );
   const summaryItems = [
     { label: 'В аренде', value: summary?.rental ?? 0 },
     { label: 'Просрочено', value: summary?.overdue ?? 0 },

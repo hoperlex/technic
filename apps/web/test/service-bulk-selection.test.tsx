@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import type { AuthUser, ServiceRequestDto } from '@technic/contracts';
-import { json, mockHttp, type RouteMap } from './http';
+import { json, mockHttp, type MockResponse, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
 import {
@@ -62,6 +62,37 @@ const NEW_ASSIGNED = assignedServiceRequest({ id: 'sr-1', num: 14, displayNumber
 const HELD = heldServiceRequest('in_work', { id: 'sr-2', num: 15, displayNumber: 'СО-15' });
 
 describe('состав полосы', () => {
+  it('keeps the old page visible but blocks bulk selection while the next page loads', async () => {
+    let answerNext: (response: MockResponse) => void = () => {};
+    const nextPage = new Promise<MockResponse>((resolve) => {
+      answerNext = resolve;
+    });
+    const http = renderTab(OPERATOR, [], {
+      'GET /service-requests': ({ query }) =>
+        query.get('page') === '2'
+          ? nextPage
+          : json(list([NEW_ASSIGNED], { total: 150, pageSize: 100 })),
+    });
+    expect(await screen.findByText('СО-14')).toBeDefined();
+    fireEvent.click(boxOf('СО-14'));
+    expect(document.querySelector('.table-footer__bar')?.textContent).toContain('Выбрано 1');
+
+    const nextButton = document.querySelector('.ant-pagination-next button');
+    expect(nextButton).not.toBeNull();
+    fireEvent.click(nextButton!);
+    await waitFor(() =>
+      expect(http.lastCall('GET /service-requests')?.query.get('page')).toBe('2'),
+    );
+    expect(screen.getByText('СО-14')).toBeDefined();
+    expect(screen.getByText('Всего: 150')).toBeDefined();
+    expect(boxOf('СО-14').disabled).toBe(true);
+    expect(document.querySelector('.table-footer__bar')?.textContent).toBe('');
+
+    await act(async () => answerNext(json(list([HELD], { total: 150, page: 2, pageSize: 100 }))));
+    expect(await screen.findByText('СО-15')).toBeDefined();
+    expect(screen.queryByText('СО-14')).toBeNull();
+  });
+
   it('команда появляется от одной строки, а счётчик считает применимые', async () => {
     renderTab(OPERATOR, [NEW_ASSIGNED, HELD]);
     expect(await screen.findByText('СО-14')).toBeDefined();

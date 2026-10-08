@@ -14,6 +14,7 @@ import { statusAgeLabel } from '@entities/service-request';
 import { CandidateReviewModal } from '@features/candidate-review';
 import { DataTable, PageTableLayout } from '@shared/ui';
 import { useListParams } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 
 /**
  * Очередь проверки сообщений о технике — подвкладка «На проверке» (план
@@ -46,9 +47,12 @@ export function CandidatesTab({ toolbar }: { toolbar?: ReactNode }) {
   );
   const query = { ...params, sortBy: 'createdAt', sortOrder: 'asc' as const };
 
-  const { data, isFetching } = useQuery({
-    ...officeEquipmentCandidateListQuery(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      ...officeEquipmentCandidateListQuery(query),
+      enabled: true,
+    }),
+  );
 
   const columns: TableColumnsType<OfficeEquipmentCandidateDto> = [
     {

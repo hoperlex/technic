@@ -5,6 +5,7 @@ import type { ReadingIntakeRow } from '@technic/contracts';
 import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { useReadingsAddress } from './readingsAddress';
 import { intakeColumns } from './intakeColumns';
@@ -51,16 +52,18 @@ export function ReadingsIntakeTab({ date }: { date: string }) {
   );
 
   const query = { from: period[0], to: period[1], page: params.page, pageSize: params.pageSize };
-  const { data, isFetching } = useQuery({
-    queryKey: vehicleReadingKeys.intake(query),
-    queryFn: () => vehicleReadingsApi.intake(query),
-    /*
-     * Только на своей вкладке. Скрытая вкладка не размонтируется (`PageTabs`), и без этого условия
-     * реестр за неделю пересобирался бы на сервере всякий раз, когда смотрят срез дня; с ним же
-     * возвращение на вкладку показывает свежие строки, а не снимок получасовой давности.
-     */
-    enabled: active,
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: vehicleReadingKeys.intake(query),
+      queryFn: () => vehicleReadingsApi.intake(query),
+      /*
+       * Только на своей вкладке. Скрытая вкладка не размонтируется (`PageTabs`), и без этого условия
+       * реестр за неделю пересобирался бы на сервере всякий раз, когда смотрят срез дня; с ним же
+       * возвращение на вкладку показывает свежие строки, а не снимок получасовой давности.
+       */
+      enabled: active,
+    }),
+  );
 
   const reports = data?.reports ?? [];
 

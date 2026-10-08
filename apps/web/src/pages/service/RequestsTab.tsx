@@ -15,6 +15,7 @@ import { useAuth } from '@entities/session';
 import { MarkAllChatReadButton } from '@features/service-chat';
 import { DataTable, PageTableLayout, sortOptionsFrom } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { useActiveTabKey } from '@shared/ui';
 import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 import { serviceRequestColumns, serviceGridView } from './serviceRequestGrid';
@@ -84,17 +85,12 @@ export function RequestsTab() {
   // Режим «предыдущие» не сочетается с отбором (Р10): сочетание гасится ДО сети, а не эффектом.
   const query = serviceRepeatQuery({ ...params, sortBy, sortOrder });
 
-  const { data, isFetching } = useQuery({
-    queryKey: serviceRequestKeys.list(query),
-    queryFn: () => serviceRequestsApi.list(query),
-  });
-
-  /*
-   * Гарантии справочник больше не спрашивают вовсе (Ф3 плана кандидата): срок гарантии единицы
-   * приезжает в самой строке заявки (`equipment.warrantyUntil`), и колонке «Гарантия» хватает
-   * выдачи списка. Прежний запрос брал весь парк страницей в 500 строк — потолок Н11, из-за
-   * которого колонка замолчала бы у части строк молча, — и снят он вместе со своим ключом кэша.
-   */
+  const { data, isFetching, isPlaceholderData } = useQuery(
+    listQueryOptions({
+      queryKey: serviceRequestKeys.list(query),
+      queryFn: () => serviceRequestsApi.list(query),
+    }),
+  );
 
   // Строки страницы спрашивают трое: таблица, набор колонок (ADR 0160) и набор отборов — «Только
   // повторные» показывается, лишь когда признак повтора включён (Р5).
@@ -363,6 +359,7 @@ export function RequestsTab() {
         data={items}
         total={data?.total ?? 0}
         loading={isFetching || actions.pending || cardActions.pending || removeMutation.isPending}
+        isPlaceholderData={isPlaceholderData}
         page={params.page}
         pageSize={params.pageSize}
         sortBy={sortBy}

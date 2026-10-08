@@ -26,6 +26,7 @@ import {
   type CardConfig,
 } from '@shared/ui';
 import { formatDateTime, useListParams, useOpenedRecord } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { useActiveTabKey } from '@shared/ui';
 import { usePurgeAction } from '@features/purge-record';
 import { MechRequestViewModal } from './MechRequestViewModal';
@@ -80,10 +81,12 @@ export function MechArchiveTab() {
     sortBy: params.sortBy ?? 'deletedAt',
     archive: 'only',
   };
-  const { data, isFetching } = useQuery({
-    queryKey: mechRequestKeys.list(query),
-    queryFn: () => mechRequestsApi.list(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: mechRequestKeys.list(query),
+      queryFn: () => mechRequestsApi.list(query),
+    }),
+  );
 
   const restoreMutation = useMutation({
     mutationFn: (request: MechRequestDto) => mechRequestsApi.restore(request.id, request.version),

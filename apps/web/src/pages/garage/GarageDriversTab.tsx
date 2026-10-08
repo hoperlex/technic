@@ -8,6 +8,7 @@ import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { useAuth } from '@entities/session';
 import { useJournalAddress } from './journalAddress';
@@ -93,10 +94,12 @@ export function GarageDriversTab({
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const query = { ...params, on: date };
-  const { data, isFetching } = useQuery({
-    queryKey: garageKeys.drivers(query),
-    queryFn: () => garageApi.drivers(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: garageKeys.drivers(query),
+      queryFn: () => garageApi.drivers(query),
+    }),
+  );
 
   const items = data?.items ?? [];
   const journalVehicle = journal.id ? openedVehicle(journal.id, items) : null;
@@ -109,10 +112,12 @@ export function GarageDriversTab({
    * людей, и «свободны: 12» под отбором по площадке считало бы свободных по всему парку.
    */
   const summaryQuery = { ...query, state: undefined, documents: undefined };
-  const { data: summary } = useQuery({
-    queryKey: garageKeys.driversSummary(summaryQuery),
-    queryFn: () => garageApi.driversSummary(summaryQuery),
-  });
+  const { data: summary } = useQuery(
+    listQueryOptions({
+      queryKey: garageKeys.driversSummary(summaryQuery),
+      queryFn: () => garageApi.driversSummary(summaryQuery),
+    }),
+  );
 
   const summaryItems = [
     { label: 'Водителей', value: summary?.total ?? 0 },

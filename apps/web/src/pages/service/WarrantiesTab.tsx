@@ -9,6 +9,7 @@ import { departmentOptionsQuery } from '@entities/department';
 import { useAuth } from '@entities/session';
 import { DataTable, PageTableLayout, sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams, usePruneMissingFilters } from '@shared/lib';
+import { listQueryOptions } from '@shared/api';
 import { OPEN_PARAM } from '@shared/lib';
 import { ServiceFilterBar } from './ServiceFilterBar';
 import { warrantyCard, warrantyColumns } from './warrantyGrid';
@@ -70,10 +71,12 @@ export function WarrantiesTab() {
   const sortOrder = params.sortBy ? params.sortOrder : 'asc';
   const query = { ...params, sortBy, sortOrder };
 
-  const { data, isFetching } = useQuery({
-    queryKey: serviceRequestKeys.warranties(query),
-    queryFn: () => serviceRequestsApi.warranties(query),
-  });
+  const { data, isFetching } = useQuery(
+    listQueryOptions({
+      queryKey: serviceRequestKeys.warranties(query),
+      queryFn: () => serviceRequestsApi.warranties(query),
+    }),
+  );
 
   const { data: objectOptions = [], isSuccess: objectsReady } = useQuery(
     objectOptionsQuery({ activeOnly: false }),
