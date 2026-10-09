@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { costTargetKey, type CostTargetKey, type CostTargetRef } from '@technic/contracts';
 import { departmentOptionsQuery } from '@entities/department';
-import { objectOptionsQuery } from '@entities/object';
+import { objectOptionsQuery, objectRecordsQuery } from '@entities/object';
+import { isCurrentPickAnswer, QUERY_PROFILE } from '@shared/config';
 import { useDepartmentScope, useObjectScope, usePlaceObjectScope } from '@entities/session';
 import { flattenOptions, soleOption, withSavedOption } from '@shared/lib';
 
@@ -62,6 +63,13 @@ export type RequestCustomerSite = { id: string; label: string };
 export type RequestCustomerSaved = { target: CostTargetRef; label: string };
 
 export interface RequestCustomerInput {
+  /** A closed form does not ask directories until its own opening. */
+  enabled?: boolean;
+  pick?: boolean;
+  /** Reuse the historical-site filter response while selecting only active sites in a form. */
+  activeObjectsFromAll?: boolean;
+  /** Historical filters keep inactive sites in their choices. */
+  includeInactiveObjects?: boolean;
   /**
    * Откуда берутся объекты: `'scope'` — справочник по **прямой** оси учётки (заказ грузоперевозки,
    * Р3); `'place'` — по площадочной оси (заказ спецтехники, ADR 0201): у объектной роли свои
@@ -150,6 +158,10 @@ export function useRequestCustomerOptions({
   objects = 'scope',
   departments = 'scope',
   saved = null,
+  enabled = true,
+  pick = false,
+  activeObjectsFromAll = false,
+  includeInactiveObjects = false,
 }: RequestCustomerInput = {}): RequestCustomerOptions {
   const { isObjectRole, limitObjectOptions } = useObjectScope();
   const { isDepartmentRole, limitDepartmentOptions } = useDepartmentScope();
@@ -180,13 +192,33 @@ export function useRequestCustomerOptions({
     (objects === 'scope' && !isDepartmentRole);
   const wantDepartments = departments !== 'none' && !(departments === 'scope' && isObjectRole);
 
-  const objectsQuery = useQuery({ ...objectOptionsQuery(), enabled: wantObjects });
-  const departmentsQuery = useQuery({ ...departmentOptionsQuery(), enabled: wantDepartments });
+  const objectsQuery = useQuery({
+    ...objectOptionsQuery({ activeOnly: !includeInactiveObjects }),
+    ...(pick ? QUERY_PROFILE.PICK : {}),
+    enabled: enabled && wantObjects && !activeObjectsFromAll,
+  });
+  const allObjectsQuery = useQuery({
+    ...objectRecordsQuery(false),
+    ...(pick ? QUERY_PROFILE.PICK : {}),
+    enabled: enabled && wantObjects && activeObjectsFromAll,
+  });
+  const departmentsQuery = useQuery({
+    ...departmentOptionsQuery(),
+    ...(pick ? QUERY_PROFILE.PICK : {}),
+    enabled: enabled && wantDepartments,
+  });
+  const current =
+    !pick ||
+    ((!wantObjects || isCurrentPickAnswer(activeObjectsFromAll ? allObjectsQuery : objectsQuery)) &&
+      (!wantDepartments || isCurrentPickAnswer(departmentsQuery)));
 
-  // Те же два признака применяются и к данным, а не только к `enabled`: выключенный запрос всё
-  // равно отдаёт то, что уже лежит в кэше от соседнего экрана, — и справочник, которого учётке
-  // видеть не положено, вошёл бы в список сам собой.
-  const allObjects = objectsQuery.data ?? [];
+  // A disabled observer can still expose cache data from another screen. Apply scope to that data
+  // as well, or the picker can offer a site this account is not allowed to choose.
+  const allObjects = activeObjectsFromAll
+    ? (allObjectsQuery.data?.items ?? [])
+        .filter((object) => object.isActive)
+        .map((object) => ({ value: object.id, label: `${object.code} — ${object.name}` }))
+    : (objectsQuery.data ?? []);
   const scopeObjects = wantObjects
     ? wideObjects
       ? allObjects
@@ -246,9 +278,11 @@ export function useRequestCustomerOptions({
 
   return {
     options: groups,
-    soleCustomerKey: sole?.value ?? null,
-    disabled: leaves.length <= 1,
-    loading: objectsQuery.isFetching || departmentsQuery.isFetching,
+    soleCustomerKey: current ? (sole?.value ?? null) : null,
+    disabled: !current || leaves.length <= 1,
+    loading:
+      (activeObjectsFromAll ? allObjectsQuery.isFetching : objectsQuery.isFetching) ||
+      departmentsQuery.isFetching,
     customerPairOf: (value) => {
       const picked = value ? leaves.find((o) => o.value === value) : undefined;
       return {

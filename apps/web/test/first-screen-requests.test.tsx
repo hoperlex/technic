@@ -26,7 +26,7 @@ import { serviceInHouseExecutor, serviceOperator } from './factories/service';
  * the row (invariant 6 of the plan, §3):
  *   - wave 2б1, by the rows of appendix A2 — one HTTP request read under several cache keys
  *     becomes one key;
- *   - waves 5а/5б, by the rows of appendix A1 (and A2 №11) — a dictionary that only a filter or a
+ *   - waves 5а/5б, by the rows of appendix A1 (and A2 №11/№13) — a dictionary that only a filter or a
  *     form needs is asked when that filter is expanded or that form is opened.
  * Any other change of a list below is a regression: a request nobody decided to add to the first
  * screen, or a deferred one that came back. A new request fails here as an extra line; an
@@ -76,73 +76,45 @@ describe('первый экран раздела: запросы до перво
     expect(await firstScreen(<WaybillsPage />, 'waybills', authUser())).toEqual(['GET /waybills']);
   });
 
-  it('№6 Гараж, диспетчер — 6', async () => {
+  it('№6 Гараж, диспетчер — 4', async () => {
     expect(await firstScreen(<GaragePage />, 'garage', authUser())).toEqual([
       'GET /auto-part-receipts/vehicles/snapshot',
       'GET /garage/vehicles',
       'GET /garage/vehicles/summary',
-      'GET /objects',
-      'GET /vehicle-classifications',
       'GET /vehicle-maintenance/snapshot',
     ]);
   });
 
-  it('№7 Механизация, диспетчер — 7', async () => {
+  it('№7 Механизация, диспетчер — 2', async () => {
     expect(await firstScreen(<MechRequestsPage />, 'mechanization', authUser())).toEqual([
-      // Lessors.
-      'GET /counterparties',
-      'GET /departments',
-      'GET /mech-models',
       'GET /mech-requests',
       'GET /mech-requests/summary',
-      // Sites twice, under two keys: the filter reads closed sites too (`activeOnly: false`), the
-      // mounted closed form reads active ones.
-      'GET /objects',
-      'GET /objects',
     ]);
   });
 
-  it('№8 Орг.техника «Заявки», ИТ-служба — 6', async () => {
+  it('№8 Орг.техника «Заявки», ИТ-служба — 1', async () => {
     expect(
       await firstScreen(<ServiceRequestsPage />, 'office-equipment', serviceInHouseExecutor()),
-    ).toEqual([
-      // Service companies.
-      'GET /counterparties',
-      'GET /departments',
-      // Sites twice, as in Mechanization: the filter (`activeOnly: false`) and the customer
-      // options of the mounted closed request form (`activeOnly: true`).
-      'GET /objects',
-      'GET /objects',
-      'GET /office-equipment-types',
-      'GET /service-requests',
-    ]);
+    ).toEqual(['GET /service-requests']);
   });
 
-  it('№9 Орг.техника «Техника», диспетчер — 4', async () => {
+  it('№9 Орг.техника «Техника», диспетчер — 1', async () => {
     // Without `serviceRequests.read` the dispatcher's first tab is the equipment registry.
     expect(await firstScreen(<ServiceRequestsPage />, 'office-equipment', authUser())).toEqual([
-      'GET /departments',
-      'GET /objects',
       'GET /office-equipment',
-      'GET /office-equipment-types',
     ]);
   });
 
-  it('№10 Справочники «Объекты», диспетчер (directories.write) — 2', async () => {
+  it('№10 Справочники «Объекты», диспетчер (directories.write) — 1', async () => {
     expect(await firstScreen(<DirectoriesPage />, 'directories', authUser())).toEqual([
-      // Operators of the site form, asked although the form is not open.
-      'GET /counterparties',
       'GET /objects',
     ]);
   });
 
-  it('№11 Справочники «Оргтехника», только officeEquipment.write — 4', async () => {
+  it('№11 Справочники «Оргтехника», только officeEquipment.write — 1', async () => {
     // Without `directories.write` the equipment tab is the only one, and so the first.
     expect(await firstScreen(<DirectoriesPage />, 'directories', serviceOperator())).toEqual([
-      'GET /departments',
-      'GET /objects',
       'GET /office-equipment',
-      'GET /office-equipment-types',
     ]);
   });
 

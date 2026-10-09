@@ -53,6 +53,7 @@ interface Args {
   typeOptions: Option[];
   typesLoading: boolean;
   departmentOptions: Option[];
+  onOpen: (key: string) => void;
 }
 
 export function useOfficeEquipmentFilters({
@@ -62,6 +63,7 @@ export function useOfficeEquipmentFilters({
   typeOptions,
   typesLoading,
   departmentOptions,
+  onOpen,
 }: Args) {
   /**
    * Отдел и «без владельца» — один вопрос с двумя ответами, а не два фильтра: сервер их вместе не
@@ -81,6 +83,7 @@ export function useOfficeEquipmentFilters({
         placeholder="Все объекты"
         style={{ width: 240 }}
         options={objectOptions}
+        onOpenChange={(open) => open && onOpen('objectId')}
         value={params.objectId}
         onChange={(v) => apply({ objectId: v })}
       />
@@ -92,6 +95,7 @@ export function useOfficeEquipmentFilters({
         style={{ width: 180 }}
         loading={typesLoading}
         options={typeOptions}
+        onOpenChange={(open) => open && onOpen('equipmentTypeId')}
         value={params.equipmentTypeId}
         onChange={(v) => apply({ equipmentTypeId: v })}
       />
@@ -102,6 +106,7 @@ export function useOfficeEquipmentFilters({
         placeholder="Все отделы"
         style={{ width: 220 }}
         options={departmentOptions}
+        onOpenChange={(open) => open && onOpen('departmentId')}
         disabled={params.unassignedDepartment === 'true'}
         value={params.departmentId}
         onChange={applyDepartment}
@@ -131,6 +136,7 @@ export function useOfficeEquipmentFilters({
       label: 'Объект',
       value: params.objectId,
       options: objectOptions,
+      onOpen: () => onOpen('objectId'),
       placeholder: 'Все объекты',
       onChange: (v) => apply({ objectId: v }),
     },
@@ -141,6 +147,7 @@ export function useOfficeEquipmentFilters({
       value: params.equipmentTypeId,
       options: typeOptions,
       loading: typesLoading,
+      onOpen: () => onOpen('equipmentTypeId'),
       placeholder: 'Все типы',
       onChange: (v) => apply({ equipmentTypeId: v }),
     },
@@ -150,6 +157,7 @@ export function useOfficeEquipmentFilters({
       label: 'Отдел',
       value: params.departmentId,
       options: departmentOptions,
+      onOpen: () => onOpen('departmentId'),
       placeholder: 'Все отделы',
       disabled: params.unassignedDepartment === 'true',
       onChange: applyDepartment,

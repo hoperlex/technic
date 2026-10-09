@@ -1,4 +1,5 @@
 import { mechLessorOptionsQuery } from '@entities/counterparty';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { CLOSED_REQUEST_STATUSES, REQUEST_STATUSES, requestStatusLabels } from '@technic/contracts';
 import { mechModelOptionsQuery } from '@entities/mech-model';
@@ -121,34 +122,38 @@ export function useMechRequestFilters({
   overdue?: boolean;
 }): FilterDefinition[] {
   const statusOptions = status ? statusOptionsOf(status) : [];
-  const { data: objectOptions = [], isSuccess: objectsReady } = useQuery(
-    objectOptionsQuery({ activeOnly: false }),
-  );
+  const [opened, setOpened] = useState<Set<string>>(() => new Set());
+  const reveal = (key: string) => setOpened((previous) => new Set(previous).add(key));
+  const wanted = (key: string, value?: string) => opened.has(key) || !!value;
+  const placeEnabled = wanted('placeObjectId', params.placeObjectId);
+  const requesterEnabled = wanted('requester', params.requester);
+  const modelEnabled = wanted('mechModelId', params.mechModelId);
+  const lessorEnabled = wanted('lessorId', params.lessorId);
+  const { data: objectOptions = [], isSuccess: objectsReady } = useQuery({
+    ...objectOptionsQuery({ activeOnly: false }),
+    enabled: placeEnabled,
+  });
   const {
     data: lessorOptions = [],
-    isFetching: lessorsLoading,
+    isLoading: lessorsLoading,
     isSuccess: lessorsReady,
-  } = useQuery(mechLessorOptionsQuery());
-  /*
-   * Модели — тот же справочник, что и в форме (ADR 0156), и тем же запросом: перечень маленький,
-   * приезжает целиком, и поиск идёт по уже приехавшему списку.
-   *
-   * Только действующие, в отличие от состава поля формы: отбирать по выведенной из обращения
-   * модели незачем — заявок на неё больше не заводят, а старые ищутся периодом и площадкой.
-   * Отбор, переживший погашение своей модели, снимает `usePruneMissingFilters` ниже.
-   */
+  } = useQuery({ ...mechLessorOptionsQuery(), enabled: lessorEnabled });
+  // The filter and form share the model answer (ADR 0156). A retired saved filter is pruned
+  // after that answer arrives; historical requests remain searchable by period and site.
   const {
     data: modelOptions = [],
-    isFetching: modelsLoading,
+    isLoading: modelsLoading,
     isSuccess: modelsReady,
-  } = useQuery(mechModelOptionsQuery());
+  } = useQuery({ ...mechModelOptionsQuery(), enabled: modelEnabled });
 
-  /*
-   * Заявитель — тем же подбором «Объект/отдел», что и в форме (Р20): формат ключа один, и второй
-   * его реализации в портале нет. Сужение по оси учётки считает сам подбор — объектной роли
-   * отделы не показываются вовсе, отдельской не показываются объекты.
-   */
-  const requester = useRequestCustomerOptions({ objects: 'scope', departments: 'scope' });
+  // The shared customer picker owns both the compound key and the account's scope (R20). A
+  // second filter-only rule would offer a customer that the form or server rejects.
+  const requester = useRequestCustomerOptions({
+    objects: 'scope',
+    departments: 'scope',
+    includeInactiveObjects: true,
+    enabled: requesterEnabled,
+  });
 
   /**
    * Восстановленный набор мог пережить сам предмет отбора: площадку закрыли, арендодателя
@@ -172,25 +177,25 @@ export function useMechRequestFilters({
         key: 'placeObjectId',
         value: params.placeObjectId,
         options: objectOptions,
-        ready: objectsReady,
+        ready: placeEnabled && objectsReady,
       },
       {
         key: 'mechModelId',
         value: params.mechModelId,
         options: modelOptions,
-        ready: modelsReady,
+        ready: modelEnabled && modelsReady,
       },
       {
         key: 'lessorId',
         value: params.lessorId,
         options: lessorOptions,
-        ready: lessorsReady,
+        ready: lessorEnabled && lessorsReady,
       },
       {
         key: 'requester',
         value: params.requester,
         options: flattenOptions(requester.options) as { value: string }[],
-        ready: !requester.loading && requester.options.length > 0,
+        ready: requesterEnabled && !requester.loading && requester.options.length > 0,
       },
     ],
     (keys) => apply(Object.fromEntries(keys.map((key) => [key, undefined]))),
@@ -205,6 +210,7 @@ export function useMechRequestFilters({
       options: requester.options,
       placeholder: 'Все заявители',
       loading: requester.loading,
+      onOpen: () => reveal('requester'),
       onChange: (v) => apply({ requester: v }),
     },
     {
@@ -213,6 +219,7 @@ export function useMechRequestFilters({
       label: 'Площадка',
       value: params.placeObjectId,
       options: objectOptions,
+      onOpen: () => reveal('placeObjectId'),
       placeholder: 'Все площадки',
       onChange: (v) => apply({ placeObjectId: v }),
     },
@@ -223,6 +230,7 @@ export function useMechRequestFilters({
       value: params.mechModelId,
       options: modelOptions,
       loading: modelsLoading,
+      onOpen: () => reveal('mechModelId'),
       placeholder: 'Любая модель',
       onChange: (v) => apply({ mechModelId: v }),
     },
@@ -248,6 +256,7 @@ export function useMechRequestFilters({
       value: params.lessorId,
       options: lessorOptions,
       loading: lessorsLoading,
+      onOpen: () => reveal('lessorId'),
       placeholder: 'Все арендодатели',
       onChange: (v) => apply({ lessorId: v }),
     },

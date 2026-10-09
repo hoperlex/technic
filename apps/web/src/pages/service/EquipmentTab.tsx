@@ -1,14 +1,7 @@
 import { useState } from 'react';
 import { Checkbox, Segmented, Select, Space } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import {
-  OFFICE_EQUIPMENT_STATES,
-  OFFICE_EQUIPMENT_WARRANTY_FILTERS,
-  officeEquipmentStateLabels,
-  WARRANTY_EXPIRING_DAYS,
-  type OfficeEquipmentDto,
-  type OfficeEquipmentWarrantyFilter,
-} from '@technic/contracts';
+import { type OfficeEquipmentDto } from '@technic/contracts';
 import {
   DataTable,
   FilterReset,
@@ -23,10 +16,7 @@ import {
   officeEquipmentCard,
   officeEquipmentColumns,
   officeEquipmentKeys,
-  officeEquipmentTypeOptionsQuery,
 } from '@entities/office-equipment';
-import { objectOptionsQuery } from '@entities/object';
-import { departmentOptionsQuery } from '@entities/department';
 import {
   candidateIntakeAccess,
   officeEquipmentCandidatePendingCountQuery,
@@ -39,6 +29,11 @@ import { DeviceMailReview } from './DeviceMailReview';
 import { DeviceIdentityRegistry } from '@features/device-mail-identities';
 import { DeviceRulesBoard } from '@features/device-mail-rules';
 import { DevicePollBoard } from '@features/device-poll';
+import {
+  stateOptions,
+  useEquipmentFilterChoices,
+  warrantyOptions,
+} from './useEquipmentFilterChoices';
 
 /**
  * Парк оргтехники в самом модуле (план `docs/office-equipment-mail-and-history-plan.md`, Р72–Р74).
@@ -53,22 +48,6 @@ import { DevicePollBoard } from '@features/device-poll';
  * есть состояние и «в ремонте без открытых заявок» — вопрос «а где вообще этот аппарат» задают
  * именно те, кто ведёт заявки.
  */
-
-const warrantyFilterLabels: Record<OfficeEquipmentWarrantyFilter, string> = {
-  active: 'Действует',
-  expiring: `Истекает (${WARRANTY_EXPIRING_DAYS} дней)`,
-  expired: 'Истекла',
-};
-
-const warrantyOptions = OFFICE_EQUIPMENT_WARRANTY_FILTERS.map((value) => ({
-  value,
-  label: warrantyFilterLabels[value],
-}));
-
-const stateOptions = OFFICE_EQUIPMENT_STATES.map((value) => ({
-  value,
-  label: officeEquipmentStateLabels[value],
-}));
 
 /** Срезы вкладки в параметрах списка; поиск, страница и сортировка сюда не заходят. */
 interface EquipmentListFilters {
@@ -137,22 +116,18 @@ export function EquipmentTab() {
       queryFn: () => officeEquipmentApi.list(params),
     }),
   );
-
   const {
-    data: typeOptions = [],
-    isLoading: typesLoading,
-    isSuccess: typesReady,
-  } = useQuery(officeEquipmentTypeOptionsQuery());
-  const { data: objectOptions = [], isSuccess: objectsReady } = useQuery(
-    objectOptionsQuery({ activeOnly: false }),
-  );
-  const { data: departmentOptions = [], isSuccess: departmentsReady } =
-    useQuery(departmentOptionsQuery());
+    onOpen: reveal,
+    typeOptions,
+    typesLoading,
+    typesReady,
+    objectOptions,
+    objectsReady,
+    departmentOptions,
+    departmentsReady,
+  } = useEquipmentFilterChoices(params);
 
-  /**
-   * Сохранённый срез мог пережить свой предмет: площадку закрыли, отдел выключили, тип погасили
-   * (ADR 0139). Такое значение в поле не прочитать, а список от него пуст — снимаем.
-   */
+  /** A retired saved choice has no readable label and leaves an empty list (ADR 0139). */
   usePruneMissingFilters(
     [
       { key: 'objectId', value: params.objectId, options: objectOptions, ready: objectsReady },
@@ -211,6 +186,7 @@ export function EquipmentTab() {
         placeholder="Все объекты"
         style={{ width: 240 }}
         options={objectOptions}
+        onOpenChange={(open) => open && reveal('objectId')}
         value={params.objectId}
         onChange={(v) => setParams((p) => ({ ...p, objectId: v, page: 1 }))}
       />
@@ -222,6 +198,7 @@ export function EquipmentTab() {
         style={{ width: 180 }}
         loading={typesLoading}
         options={typeOptions}
+        onOpenChange={(open) => open && reveal('equipmentTypeId')}
         value={params.equipmentTypeId}
         onChange={(v) => setParams((p) => ({ ...p, equipmentTypeId: v, page: 1 }))}
       />
@@ -232,6 +209,7 @@ export function EquipmentTab() {
         placeholder="Все отделы"
         style={{ width: 220 }}
         options={departmentOptions}
+        onOpenChange={(open) => open && reveal('departmentId')}
         value={params.departmentId}
         onChange={(v) => setParams((p) => ({ ...p, departmentId: v, page: 1 }))}
       />
@@ -271,6 +249,7 @@ export function EquipmentTab() {
       label: 'Объект',
       value: params.objectId,
       options: objectOptions,
+      onOpen: () => reveal('objectId'),
       placeholder: 'Все объекты',
       onChange: (v) => setParams((p) => ({ ...p, objectId: v, page: 1 })),
     },
@@ -281,6 +260,7 @@ export function EquipmentTab() {
       value: params.equipmentTypeId,
       options: typeOptions,
       loading: typesLoading,
+      onOpen: () => reveal('equipmentTypeId'),
       placeholder: 'Все типы',
       onChange: (v) => setParams((p) => ({ ...p, equipmentTypeId: v, page: 1 })),
     },
@@ -290,6 +270,7 @@ export function EquipmentTab() {
       label: 'Отдел',
       value: params.departmentId,
       options: departmentOptions,
+      onOpen: () => reveal('departmentId'),
       placeholder: 'Все отделы',
       onChange: (v) => setParams((p) => ({ ...p, departmentId: v, page: 1 })),
     },

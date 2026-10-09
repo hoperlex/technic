@@ -35,6 +35,7 @@ function renderFilter(filter: FilterDefinition): ReactNode {
           loading={filter.loading}
           disabled={filter.disabled}
           value={filter.value}
+          onOpenChange={(open) => open && filter.onOpen?.()}
           onChange={(v) => filter.onChange(v)}
         />
       );

@@ -59,6 +59,7 @@ export function useVehicleFilters({
   const classificationFilter = useVehicleClassificationFilter({
     classifications: params.classifications,
     onChange: applyFilter,
+    deferred: true,
   });
   const objectsFilter = useObjectsFilter({ objects: params.objects, onChange: applyFilter });
 

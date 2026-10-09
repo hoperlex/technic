@@ -79,6 +79,7 @@ export type ServiceRequestCustomerSnapshot = Pick<
 >;
 
 export interface ServiceRequestCustomerInput {
+  open?: boolean;
   /** Правка заявки — источник обоих снимков; `null` — заведение новой. */
   request: ServiceRequestCustomerSnapshot | null;
   /** Единица, выбранная в справочнике сейчас; у правки её не выбирают вовсе. */
@@ -138,6 +139,7 @@ export function useServiceRequestCustomer({
   request,
   equipment,
   withoutEquipment = false,
+  open = true,
 }: ServiceRequestCustomerInput): ServiceRequestCustomer {
   const scope = useDepartmentScope();
   const objectScope = useObjectScope();
@@ -232,6 +234,9 @@ export function useServiceRequestCustomer({
      */
     departments: (withoutEquipment || ownSiteAxis) && objectAxis ? 'none' : 'requester',
     saved,
+    enabled: open,
+    pick: true,
+    activeObjectsFromAll: true,
   });
 
   return {

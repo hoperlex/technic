@@ -1,4 +1,5 @@
 import { serviceCompanyOptionsQuery } from '@entities/counterparty';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   SERVICE_REQUEST_STATUSES,
@@ -143,22 +144,32 @@ export function useServiceRequestFilters({
   rows: readonly ServiceRequestDto[];
 }): FilterDefinition[] {
   const { can } = useAuth();
+  const [opened, setOpened] = useState<Set<string>>(() => new Set());
+  const reveal = (key: string) => setOpened((previous) => new Set(previous).add(key));
+  const wanted = (key: string, value?: string) => opened.has(key) || !!value;
+  const objectsEnabled = wanted('objectId', params.objectId);
+  const departmentsEnabled = wanted('departmentId', params.departmentId);
+  const servicesEnabled = wanted('serviceCounterpartyId', params.serviceCounterpartyId);
+  const typesEnabled =
+    can('officeEquipment.read') && wanted('equipmentTypeId', params.equipmentTypeId);
 
-  const { data: objectOptions = [], isSuccess: objectsReady } = useQuery(
-    objectOptionsQuery({ activeOnly: false }),
-  );
-  const { data: departmentOptions = [], isSuccess: departmentsReady } =
-    useQuery(departmentOptionsQuery());
+  const { data: objectOptions = [], isSuccess: objectsReady } = useQuery({
+    ...objectOptionsQuery({ activeOnly: false }),
+    enabled: objectsEnabled,
+  });
+  const { data: departmentOptions = [], isSuccess: departmentsReady } = useQuery({
+    ...departmentOptionsQuery(),
+    enabled: departmentsEnabled,
+  });
   const {
     data: serviceOptions = [],
-    isFetching: servicesLoading,
+    isLoading: servicesLoading,
     isSuccess: servicesReady,
-  } = useQuery(serviceCompanyOptionsQuery());
-  // Перечень типов оргтехники закрыт правом справочника: сервису он недоступен вовсе (Р7), и
-  // спрашивать его за него значило бы ловить 403 на каждом открытии списка.
+  } = useQuery({ ...serviceCompanyOptionsQuery(), enabled: servicesEnabled });
+  // The equipment type directory has its own grant; a request-only service account would get 403.
   const { data: typeOptions = [], isSuccess: typesReady } = useQuery({
     ...officeEquipmentTypeOptionsQuery(),
-    enabled: can('officeEquipment.read'),
+    enabled: typesEnabled,
   });
 
   /**
@@ -182,24 +193,29 @@ export function useServiceRequestFilters({
         options: candidateStatusOptions,
         ready: true,
       },
-      { key: 'objectId', value: params.objectId, options: objectOptions, ready: objectsReady },
+      {
+        key: 'objectId',
+        value: params.objectId,
+        options: objectOptions,
+        ready: objectsEnabled && objectsReady,
+      },
       {
         key: 'departmentId',
         value: params.departmentId,
         options: departmentOptions,
-        ready: departmentsReady,
+        ready: departmentsEnabled && departmentsReady,
       },
       {
         key: 'serviceCounterpartyId',
         value: params.serviceCounterpartyId,
         options: serviceOptions,
-        ready: servicesReady,
+        ready: servicesEnabled && servicesReady,
       },
       {
         key: 'equipmentTypeId',
         value: params.equipmentTypeId,
         options: typeOptions,
-        ready: typesReady,
+        ready: typesEnabled && typesReady,
       },
     ],
     (keys) => apply(Object.fromEntries(keys.map((key) => [key, undefined]))),
@@ -259,6 +275,7 @@ export function useServiceRequestFilters({
       label: 'Объект',
       value: params.objectId,
       options: objectOptions,
+      onOpen: () => reveal('objectId'),
       placeholder: 'Все объекты',
       onChange: (v) => apply({ objectId: v }),
     },
@@ -268,6 +285,7 @@ export function useServiceRequestFilters({
       label: 'Отдел',
       value: params.departmentId,
       options: departmentOptions,
+      onOpen: () => reveal('departmentId'),
       placeholder: 'Все отделы',
       onChange: (v) => apply({ departmentId: v }),
     },
@@ -278,6 +296,7 @@ export function useServiceRequestFilters({
       value: params.serviceCounterpartyId,
       options: serviceOptions,
       loading: servicesLoading,
+      onOpen: () => reveal('serviceCounterpartyId'),
       placeholder: 'Все исполнители',
       onChange: (v) => apply({ serviceCounterpartyId: v }),
     },
@@ -289,6 +308,7 @@ export function useServiceRequestFilters({
             label: 'Тип техники',
             value: params.equipmentTypeId,
             options: typeOptions,
+            onOpen: () => reveal('equipmentTypeId'),
             placeholder: 'Все типы',
             onChange: (v: string | undefined) => apply({ equipmentTypeId: v }),
           },

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Select } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { GARAGE_OBJECT_FILTER_MAX } from '@technic/contracts';
@@ -40,7 +40,11 @@ export function useObjectsFilter({
    * числе прошлогодний, а закрытая площадка при умолчании `activeOnly: true` не пришла бы вовсе —
    * исторический срез нельзя было бы отобрать по той самой площадке, ради которой его открыли.
    */
-  const { data: options = [], isFetching } = useQuery(objectOptionsQuery({ activeOnly: false }));
+  const [opened, setOpened] = useState(!!objects);
+  const { data: options = [], isLoading } = useQuery({
+    ...objectOptionsQuery({ activeOnly: false }),
+    enabled: opened || !!objects,
+  });
   // Объектной роли чужие площадки и выбирать незачем: сервер их всё равно не покажет, а список
   // предлагал бы отбор, из которого не возвращается ни одной строки.
   const { limitObjectOptions } = useObjectScope();
@@ -64,7 +68,8 @@ export function useObjectsFilter({
       // получить 400 на уже собранный набор.
       maxCount={GARAGE_OBJECT_FILTER_MAX}
       options={own}
-      loading={isFetching}
+      loading={isLoading}
+      onOpenChange={(open) => open && setOpened(true)}
       value={value}
       onChange={pick}
     />
@@ -78,7 +83,8 @@ export function useObjectsFilter({
     value,
     options: own,
     placeholder: 'Все объекты',
-    loading: isFetching,
+    loading: isLoading,
+    onOpen: () => setOpened(true),
     // Фиксированные четыре, а не `responsive`: в шите поле во всю ширину, и теги растут вниз —
     // десяток выбранных площадок вытеснил бы с экрана остальные фильтры и саму кнопку «Применить».
     maxTagCount: 4,

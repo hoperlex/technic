@@ -1,12 +1,12 @@
 import { useEffect } from 'react';
 import { Alert, App, DatePicker, Form, Input } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { mechEditScope, type MechRequestDto } from '@technic/contracts';
 import { mechModelOptionsQuery } from '@entities/mech-model';
 import { mechFailureText, mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
-import { withSavedOption } from '@shared/lib';
+import { useDeferredOptions, withSavedOption } from '@shared/lib';
 import { MechRequestAttachments, useMechAttachments } from './MechRequestAttachments';
 import { useMechRequesterFields } from './MechRequesterFields';
 import { PhoneInput } from '@entities/user-account';
@@ -56,19 +56,15 @@ export function MechRequestForm({
   const customerKey = Form.useWatch('customer', form);
 
   /**
-   * Модели справочника (ADR 0156). Справочник маленький и приходит целиком: поиск идёт по уже
-   * приехавшему списку (`optionFilterProp`), а не запросом на каждую букву — сотню позиций сервер
-   * фильтровать не должен.
-   *
-   * К перечню дописывается модель самой заявки (`withSavedOption`): её могли вывести из обращения
-   * уже после заведения, а состав поля — только действующие. Без этого правка заявки показывала бы
-   * в поле сырой идентификатор, а сохранение подставляло бы другую модель.
+   * Models fit in one locally searched response (ADR 0156). An edited request keeps its saved
+   * model label even after deactivation; otherwise an unchanged edit would display a raw ID.
    */
-  const { data: modelOptions = [], isFetching: modelsLoading } = useQuery({
-    ...mechModelOptionsQuery(),
-    enabled: open,
-  });
-  const models = withSavedOption(modelOptions, {
+  const {
+    options: modelOptions,
+    loading: modelsLoading,
+    current: modelsCurrent,
+  } = useDeferredOptions(mechModelOptionsQuery(), open, (options) => options, 'pick');
+  const models = withSavedOption(modelOptions ?? [], {
     id: request?.mechModelId,
     name: request?.mechModelName,
   });
@@ -85,6 +81,7 @@ export function MechRequestForm({
     request,
     customerKey,
     disabled: lockedSubject,
+    open,
   });
   const { savedKey, soleKey } = requester;
 
@@ -110,10 +107,21 @@ export function MechRequestForm({
       });
       return;
     }
-    // Единственный доступный заявитель подставляется сам: заперто поле его не подставит, а
-    // заперто оно как раз тогда, когда вариант один.
-    form.setFieldsValue({ customer: soleKey ?? undefined });
-  }, [open, request, form, savedKey, soleKey]);
+  }, [open, request, form, savedKey]);
+
+  useEffect(() => {
+    // PICK may finish after the new form opens. Filling its only customer must not reset contact,
+    // dates or model that the person entered while the directory was loading.
+    if (
+      open &&
+      !request &&
+      soleKey &&
+      !form.isFieldTouched('customer') &&
+      !form.getFieldValue('customer')
+    ) {
+      form.setFieldValue('customer', soleKey);
+    }
+  }, [open, request, soleKey, form]);
 
   const mutation = useMutation({
     mutationFn: (values: Values) => {
@@ -219,6 +227,7 @@ export function MechRequestForm({
             optionFilterProp="label"
             options={models}
             loading={modelsLoading}
+            autoSelectSole={modelsCurrent}
             disabled={lockedSubject}
             placeholder="Например: виброплита Wacker DPU 3070Н"
           />

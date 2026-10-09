@@ -12,6 +12,8 @@ import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
+import { withSavedOption } from '@shared/lib';
+import { QUERY_PROFILE } from '@shared/config';
 import { objectErrorMessage as errorMessage } from '@entities/object';
 import { usePurgeAction } from '@features/purge-record';
 import { objectsApi, objectKeys } from '@entities/object';
@@ -37,16 +39,20 @@ export function ObjectsTab() {
     }),
   );
 
-  // Операторы вывоза для привязки (ADR 0010). Неактивных из списка не убираем: привязка
-  // описывает сотрудничество с объектом, а не готовность взять заявку прямо сейчас, — иначе
-  // уже заведённая привязка осталась бы в форме без наименования.
-  const { data: operatorsData } = useQuery({
-    ...counterpartyOperatorGridQuery(),
-  });
-  const operatorOptions = (operatorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name }));
-
+  // A site's operator link survives an operator's deactivation (ADR 0010). Keep inactive names
+  // available so editing an old link does not replace its label with an ID.
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<ObjectDto | null>(null);
+  const { data: operatorsData, isLoading: operatorsLoading } = useQuery({
+    ...counterpartyOperatorGridQuery(),
+    ...QUERY_PROFILE.PICK,
+    enabled: open,
+  });
+  const operatorOptions = (record?.operators ?? []).reduce(
+    (options, operator) => withSavedOption(options, { id: operator.id, name: operator.name }),
+    (operatorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name })),
+  );
+
   const [form] = Form.useForm<CreateObjectInput>();
 
   const openCreate = () => {
@@ -285,6 +291,7 @@ export function ObjectsTab() {
             <Select
               mode="multiple"
               options={operatorOptions}
+              loading={operatorsLoading}
               showSearch
               optionFilterProp="label"
               placeholder="Не ограничивать"

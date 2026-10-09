@@ -120,7 +120,7 @@ export function ServiceRequestForm({
    */
   const draft = Form.useWatch('equipmentCandidate', { form, preserve: true });
   const site = selected ?? draft?.site;
-  const customer = useServiceRequestCustomer({ request, equipment: site, withoutEquipment });
+  const customer = useServiceRequestCustomer({ request, equipment: site, withoutEquipment, open });
 
   // Подразделение заявителя (Н11): поле и тело запроса — из одной оси. Спрашивается только там,
   // где у учётки не одна привязка; при правке не спрашивается вовсе — оно снято снимком.

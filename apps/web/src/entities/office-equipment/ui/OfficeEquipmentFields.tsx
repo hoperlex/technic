@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { OfficeEquipmentModelRefDto } from '@technic/contracts';
 import { AutoSelect } from '@shared/ui';
 import { withSavedOption } from '@shared/lib';
+import { QUERY_PROFILE } from '@shared/config';
 import { officeEquipmentModelOptionsQuery } from '../api/queries';
 import { OfficeEquipmentModelFormModal } from './OfficeEquipmentModelFormModal';
 
@@ -18,6 +19,9 @@ interface Props {
   typesLoading: boolean;
   objectOptions: Option[];
   departmentOptions: Option[];
+  open?: boolean;
+  typesCurrent?: boolean;
+  objectsCurrent?: boolean;
   /**
    * Модель уже заведённой карточки — только для правки. Список выбора собирается из действующих
    * моделей (Р11), а у карточки может стоять погашенная: без сохранённого варианта правка кабинета
@@ -35,15 +39,17 @@ interface Props {
  * Формой владеет вкладка (`Form form={form}` там же): здесь только `Form.Item`, поэтому компонент
  * одинаково работает и при заведении, и при правке.
  *
- * Единственный собственный запрос — перечень моделей выбранного типа (Р1): он зависит от поля,
- * которое компонент же и рисует, и вынести его наружу значило бы попросить обоих вызывающих
- * следить за типом за него.
+ * The model query stays with the type field (R1). Its key follows the field's value, so neither
+ * caller has to duplicate that dependency.
  */
 export function OfficeEquipmentFields({
   typeOptions,
   typesLoading,
   objectOptions,
   departmentOptions,
+  open = true,
+  typesCurrent = true,
+  objectsCurrent = true,
   savedModel,
 }: Props) {
   const form = Form.useFormInstance();
@@ -56,14 +62,13 @@ export function OfficeEquipmentFields({
    */
   const [createdModel, setCreatedModel] = useState<OfficeEquipmentModelRefDto | null>(null);
 
-  const { data: modelOptions = [], isFetching: modelsLoading } = useQuery(
-    officeEquipmentModelOptionsQuery(equipmentTypeId),
-  );
-  /**
-   * Сохранённая и только что заведённая модели добавляются к списку, если из него выпали.
-   * Обычными вариантами, а не выключенными: сервер обе принимает — правку, не меняющую ссылку, он
-   * не перепроверяет вовсе (Р11), а свежезаведённая модель активна по определению.
-   */
+  const { data: modelOptions = [], isLoading: modelsLoading } = useQuery({
+    ...officeEquipmentModelOptionsQuery(equipmentTypeId),
+    ...QUERY_PROFILE.PICK,
+    enabled: open && !!equipmentTypeId,
+  });
+  // An unchanged saved model remains valid after deactivation, and a model created in this window
+  // must be selectable before its invalidated directory answer returns (R11).
   const models = withSavedOption(
     withSavedOption(modelOptions, { id: savedModel?.id, name: savedModel?.name }),
     { id: createdModel?.id, name: createdModel?.name },
@@ -79,6 +84,7 @@ export function OfficeEquipmentFields({
         <AutoSelect
           options={typeOptions}
           loading={typesLoading}
+          autoSelectSole={typesCurrent}
           showSearch
           optionFilterProp="label"
           /*
@@ -181,7 +187,12 @@ export function OfficeEquipmentFields({
         label="Объект"
         rules={[{ required: true, message: 'Выберите объект' }]}
       >
-        <AutoSelect options={objectOptions} showSearch optionFilterProp="label" />
+        <AutoSelect
+          options={objectOptions}
+          autoSelectSole={objectsCurrent}
+          showSearch
+          optionFilterProp="label"
+        />
       </Form.Item>
       <Form.Item
         name="departmentId"

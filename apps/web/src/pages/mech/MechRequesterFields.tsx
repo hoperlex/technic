@@ -3,9 +3,10 @@ import { Form } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { mechRequesterKeyOf, parseCostTargetKey, type MechRequestDto } from '@technic/contracts';
 import { departmentPlatformQuery } from '@entities/department';
-import { objectOptionsQuery } from '@entities/object';
+import { objectRecordsQuery } from '@entities/object';
 import { RequestCustomerSelect, useRequestCustomerOptions } from '@features/request-customer';
 import { AutoSelect } from '@shared/ui';
+import { isCurrentPickAnswer, QUERY_PROFILE } from '@shared/config';
 
 /**
  * Заявитель и площадка формы (Р17, Р20) — два поля, а не одно, и это главная особенность модуля.
@@ -40,6 +41,7 @@ export function useMechRequesterFields({
   request,
   customerKey,
   disabled,
+  open,
 }: {
   /** `null` — заведение новой заявки. */
   request: MechRequestDto | null;
@@ -47,6 +49,7 @@ export function useMechRequesterFields({
   customerKey: string | undefined;
   /** Правка закрыта состоянием записи (Р19): поля видны, но не меняются. */
   disabled: boolean;
+  open: boolean;
 }): MechRequesterFieldsApi {
   /*
    * Заказчик правимой записи держится в списке, даже выпав из состава поля (К7): площадку могли
@@ -69,21 +72,32 @@ export function useMechRequesterFields({
     objects: 'scope',
     departments: 'scope',
     saved,
+    enabled: open,
+    pick: true,
+    activeObjectsFromAll: true,
   });
 
   const chosen = customerKey ? parseCostTargetKey(customerKey) : null;
   const isDepartment = chosen?.kind === 'department';
 
-  // Справочник объектов и карта площадок отдела — один и тот же запрос списка отделов и списка
-  // объектов, которыми живёт и подбор выше: лишнего похода на сервер здесь не возникает.
-  const { data: objectOptions = [] } = useQuery({
-    ...objectOptionsQuery(),
-    enabled: isDepartment,
+  // The customer and department-place fields project the same site and department answers; a
+  // separate active-site key would ask /objects twice and could disagree with the filter.
+  const objectsQuery = useQuery({
+    ...objectRecordsQuery(false),
+    ...QUERY_PROFILE.PICK,
+    enabled: open && isDepartment,
   });
-  const { data: platforms, isFetching: platformsLoading } = useQuery({
+  const objectOptions = (objectsQuery.data?.items ?? [])
+    .filter((object) => object.isActive)
+    .map((object) => ({ value: object.id, label: `${object.code} — ${object.name}` }));
+  const platformsQuery = useQuery({
     ...departmentPlatformQuery(),
-    enabled: isDepartment,
+    ...QUERY_PROFILE.PICK,
+    enabled: open && isDepartment,
   });
+  const platforms = platformsQuery.data;
+  const platformsLoading = platformsQuery.isFetching;
+  const placeCurrent = isCurrentPickAnswer(objectsQuery) && isCurrentPickAnswer(platformsQuery);
   const ownIds = isDepartment && chosen ? (platforms?.get(chosen.id) ?? []) : [];
   const placeOptions = objectOptions.filter((o) => ownIds.includes(o.value));
 
@@ -108,7 +122,7 @@ export function useMechRequesterFields({
           name="placeObjectId"
           label="Площадка"
           extra={
-            !platformsLoading && placeOptions.length === 0
+            placeCurrent && placeOptions.length === 0
               ? 'За этим отделом не закреплено ни одной площадки — обратитесь к администратору.'
               : 'Техника едет на стройку: выбирают из площадок, закреплённых за отделом.'
           }
@@ -120,6 +134,7 @@ export function useMechRequesterFields({
             placeholder="Куда везти технику"
             options={placeOptions}
             loading={platformsLoading}
+            autoSelectSole={placeCurrent}
             disabled={disabled}
           />
         </Form.Item>

@@ -20,13 +20,10 @@ import {
   officeEquipmentConsumableKeys,
   officeEquipmentKeys,
   officeEquipmentModelKeys,
-  officeEquipmentTypeOptionsQuery,
   officeEquipmentCard,
   officeEquipmentColumns,
   OfficeEquipmentSpecsView,
 } from '@entities/office-equipment';
-import { objectOptionsQuery } from '@entities/object';
-import { departmentOptionsQuery } from '@entities/department';
 import { useAuth } from '@entities/session';
 import { officeEquipmentErrorMessage as errorMessage } from '@entities/office-equipment';
 import {
@@ -41,6 +38,7 @@ import { OfficeEquipmentSupplies } from './OfficeEquipmentSupplies';
 import { EquipmentMoveModal } from '@features/equipment-move';
 import { EquipmentHistoryModal } from '@features/equipment-history';
 import { OfficeEquipmentDeviceBlocks } from './OfficeEquipmentDeviceBlocks';
+import { useOfficeEquipmentChoices } from './useOfficeEquipmentChoices';
 
 /**
  * Справочник оргтехники (ADR 0085): что стоит по кабинетам и площадкам, за каким отделом
@@ -54,17 +52,14 @@ import { OfficeEquipmentDeviceBlocks } from './OfficeEquipmentDeviceBlocks';
  * продлевать», и ответ на него — не число, а цвет. Считает состояние общая функция контрактов —
  * подсветка обязана совпадать со списком заявок и реестром гарантий.
  */
-
 export function OfficeEquipmentTab() {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
   const canWrite = can('officeEquipment.write');
-  // Перемещение — своё право (план перемещения из карточки заявки, Р1): справочник и карточка
-  // заявки спрашивают одно и то же, иначе у действия два замка разной строгости.
+  // Both this registry and the request card ask the same move grant (move plan R1).
   const canMove = can('officeEquipment.move');
   const qc = useQueryClient();
 
-  // Filter fields share one definition with the toolbar so its controls and request parameters agree.
   const { params, setParams, setSort, onTableChange } = useListParams<OfficeEquipmentFilterParams>(
     {},
     {
@@ -80,14 +75,6 @@ export function OfficeEquipmentTab() {
       queryFn: () => officeEquipmentApi.list(params),
     }),
   );
-  const { data: typeOptions = [], isLoading: typesLoading } = useQuery(
-    officeEquipmentTypeOptionsQuery(),
-  );
-  // Закрытые площадки из списка не убираем: техника на них заведена, и в форме правки привязка
-  // осталась бы без наименования — та же оговорка, что у складов приостановленного поставщика.
-  const { data: objectOptions = [] } = useQuery(objectOptionsQuery({ activeOnly: false }));
-  const { data: departmentOptions = [] } = useQuery(departmentOptionsQuery());
-
   const [typesOpen, setTypesOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [consumablesOpen, setConsumablesOpen] = useState(false);
@@ -95,6 +82,21 @@ export function OfficeEquipmentTab() {
   const [record, setRecord] = useState<OfficeEquipmentDto | null>(null);
   const [form] = Form.useForm<OfficeEquipmentFormValues>();
   const blockers = useFormBlockers(form);
+  const {
+    typeOptions,
+    typesLoading,
+    typesCurrent,
+    objectsCurrent,
+    objectOptions,
+    departmentOptions,
+    onOpen: openFilter,
+  } = useOfficeEquipmentChoices({
+    params,
+    record,
+    formOpen: open,
+    typesOpen,
+    modelsOpen,
+  });
 
   /**
    * Карточка правящейся единицы — ради истории обслуживания, по которой считается предупреждение о
@@ -212,7 +214,6 @@ export function OfficeEquipmentTab() {
       onOk: () => removeMut.mutateAsync(r.id),
     });
 
-  /** Что открыто в окне перемещения и в ленте истории; `null` — окно закрыто (Р59, Р62). */
   const [moving, setMoving] = useState<OfficeEquipmentDto | null>(null);
   const [historyOf, setHistoryOf] = useState<OfficeEquipmentDto | null>(null);
 
@@ -225,9 +226,6 @@ export function OfficeEquipmentTab() {
     onHistory: setHistoryOf,
   };
   const columns = officeEquipmentColumns(grid);
-
-  // Полоса отборов десктопа и её описание для шита живут отдельным модулем: шесть полей дважды
-  // — это сто строк разметки посреди работы с данными.
   const { filters, mobileFilters } = useOfficeEquipmentFilters({
     params,
     apply: applyFilter,
@@ -235,10 +233,10 @@ export function OfficeEquipmentTab() {
     typeOptions,
     typesLoading,
     departmentOptions,
+    onOpen: openFilter,
   });
 
   const card = officeEquipmentCard(grid);
-
   return (
     <PageTableLayout
       filters={filters}
@@ -363,6 +361,9 @@ export function OfficeEquipmentTab() {
       >
         <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
           <OfficeEquipmentFields
+            open={open}
+            typesCurrent={typesCurrent}
+            objectsCurrent={objectsCurrent}
             typeOptions={typeOptions}
             typesLoading={typesLoading}
             objectOptions={objectOptions}
