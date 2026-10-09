@@ -25,7 +25,8 @@ import {
  * switch). The neighbours answer empty lists (`VISITED_TAB_ROUTES`).
  *
  * Changes are tied to the plan: 3а stops clearing SIGNAL badges, 3б narrows the Directories and
- * Administration refresh, and 5а removes the closed Users form and filter dictionaries.
+ * Administration refresh, 5а removes the closed Users form and filter dictionaries, and 5б
+ * removes the closed Objects form's operator directory.
  */
 
 /** One switch there and back, as sorted request lists; `back` is the cost of a switch. */
@@ -55,7 +56,15 @@ const EXPECTED: Record<string, { visit: string[]; back: string[] }> = {
   },
   'Орг.техника, ИТ-служба (№8)': {
     // The two SIGNAL shell badges remain fresh on a section-tab switch (wave 3a1, R2).
-    visit: ['GET /service-requests', 'GET /service-requests/warranties'],
+    // Warranties owns these three filter dictionaries on its first visit; returning to Requests
+    // does not re-enable its closed filters or invalidate the dictionaries.
+    visit: [
+      'GET /departments',
+      'GET /objects',
+      'GET /office-equipment-types',
+      'GET /service-requests',
+      'GET /service-requests/warranties',
+    ],
     back: ['GET /service-requests', 'GET /service-requests/warranties'],
   },
   'Орг.техника, диспетчер (№9)': {
@@ -81,23 +90,10 @@ const EXPECTED: Record<string, { visit: string[]; back: string[] }> = {
     ],
   },
   'Справочники, directories.write (№10)': {
-    // Both visited tabs refresh; the shell's release notes keep their own freshness policy.
-    visit: [
-      'GET /counterparties',
-      'GET /departments',
-      'GET /objects',
-      'GET /objects',
-      'GET /users',
-      'GET /users',
-    ],
-    back: [
-      'GET /counterparties',
-      'GET /departments',
-      'GET /objects',
-      'GET /objects',
-      'GET /users',
-      'GET /users',
-    ],
+    // Both visited tabs refresh; the closed Objects form no longer observes operators.
+    // The shell's release notes keep their own freshness policy.
+    visit: ['GET /departments', 'GET /objects', 'GET /objects', 'GET /users', 'GET /users'],
+    back: ['GET /departments', 'GET /objects', 'GET /objects', 'GET /users', 'GET /users'],
   },
   'Администрирование, администратор (№12)': {
     // Both visited tabs refresh; closed form and filter observers do not join the refresh.
