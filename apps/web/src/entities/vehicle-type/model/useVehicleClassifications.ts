@@ -1,6 +1,6 @@
 import { vehicleClassificationsForSelectQuery } from '../api/queries';
 import { useQuery } from '@tanstack/react-query';
-import { QUERY_PROFILE } from '@shared/config';
+import { isCurrentPickAnswer, QUERY_PROFILE } from '@shared/config';
 import {
   classificationFilterKey,
   classificationPriceHint,
@@ -132,10 +132,7 @@ export function useVehicleClassifications(enabled = true, pick = false) {
     // Disabled observers report isStale=false even for data older than PICK. The age check keeps
     // that old answer from looking fresh during the transition to an open editor.
     fresh:
-      isSuccess &&
-      !isFetching &&
-      !isStale &&
-      Date.now() - dataUpdatedAt < QUERY_PROFILE.PICK.staleTime,
+      pick && enabled && isCurrentPickAnswer({ isSuccess, isFetching, isStale, dataUpdatedAt }),
   };
 }
 

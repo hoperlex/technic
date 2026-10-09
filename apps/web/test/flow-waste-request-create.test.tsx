@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { QueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { minRequestDateKey, type WasteRequestDto } from '@technic/contracts';
-import { json, mockHttp } from './http';
-import { renderWithUser } from './render';
+import { json, mockHttp, type MockResponse, type RouteMap } from './http';
+import { createTestQueryClient, renderWithUser } from './render';
 import { list } from './factories/common';
 import { objectDto, operator, wasteRequest, wasteSummary, wasteType } from './factories/waste';
 import { WasteRequestsPage } from '../src/pages/waste';
+import { objectRecordsQuery } from '../src/entities/object';
 import { expectModalClosed } from './antd';
 
 /**
@@ -32,7 +34,7 @@ const EXPECTED_DELIVERY_AT = dayjs.tz(`${DELIVERY_DAY} 09:30`, 'Europe/Moscow').
  * Справочники отдаются по два значения: с единственным вариантом `AutoSelect` заполнил бы поле
  * сам (в этом его работа), и тест перестал бы проверять выбор человека.
  */
-function setup() {
+function setup(over: RouteMap = {}, queryClient?: QueryClient) {
   const http = mockHttp({
     'GET /waste-requests': () => json(list<WasteRequestDto>([])),
     'GET /waste-requests/summary': () => json(wasteSummary()),
@@ -79,8 +81,9 @@ function setup() {
       }),
     'POST /waste-requests': ({ body }) =>
       json(wasteRequest({ ...(body as Partial<WasteRequestDto>), id: 'wr-new' }), 201),
+    ...over,
   });
-  renderWithUser(<WasteRequestsPage />);
+  renderWithUser(<WasteRequestsPage />, { queryClient });
   return http;
 }
 
@@ -143,6 +146,35 @@ async function fillRequestForm() {
 /** Окно с таким заголовком; заголовок ищется по тексту — так его видит и человек. */
 
 describe('заведение заявки на вывоз мусора', () => {
+  it('does not auto-select a sole site from stale PICK data', async () => {
+    const queryClient = createTestQueryClient();
+    const queryKey = objectRecordsQuery(true).queryKey;
+    queryClient.setQueryData([...queryKey], list([objectDto()]), {
+      updatedAt: Date.now() - 61_000,
+    });
+    let respond!: (response: MockResponse) => void;
+    const pending = new Promise<MockResponse>((resolve) => {
+      respond = resolve;
+    });
+    const http = setup({ 'GET /objects': () => pending }, queryClient);
+    await waitFor(() => expect(http.countOf('GET /waste-requests')).toBe(1));
+    fireEvent.click(screen.getByText('Создать заявку'));
+    expect(await screen.findByText('Новая заявка')).toBeDefined();
+    await waitFor(() => expect(document.querySelector('#objectId')).toBeTruthy());
+    await waitFor(() => expect(http.countOf('GET /objects')).toBe(1));
+    const chosenSite = () =>
+      document
+        .querySelector('#objectId')
+        ?.closest('.ant-select')
+        ?.querySelector('.ant-select-selection-item');
+    expect(chosenSite()).toBeNull();
+
+    respond(json(list([])));
+    await waitFor(() => expect(queryClient.getQueryData(queryKey)).toEqual(list([])));
+    expect(chosenSite()).toBeNull();
+    expect(http.countOf('POST /waste-requests')).toBe(0);
+  });
+
   it('уходит одним POST с предметом заявки, сроком в МСК и контактом площадки', async () => {
     const http = setup();
     await waitFor(() => expect(http.countOf('GET /waste-requests')).toBe(1));

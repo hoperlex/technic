@@ -12,7 +12,7 @@ import {
 } from '@technic/contracts';
 import { departmentRecordsQuery } from '@entities/department';
 import { grantFormCatalogQuery } from '@entities/grant';
-import { QUERY_PROFILE } from '@shared/config';
+import { useDeferredOptions } from '@shared/lib';
 import {
   matchReasonLabels,
   NO_SUGGESTION,
@@ -232,11 +232,7 @@ export function useActivationDefaults(params: Params): ActivationControl {
    * dropdown, so no extra server round trip occurs. Objects and counterparties are passed in as
    * params because the form holds them itself.
    */
-  const { data: departments } = useQuery({
-    ...departmentRecordsQuery(),
-    ...QUERY_PROFILE.PICK,
-    enabled: open,
-  });
+  const departmentRead = useDeferredOptions(departmentRecordsQuery(), open, (data) => data, 'pick');
 
   /** A request under review is the only thing there is anything to prefill from (§3.5). */
   const request = open && record && isPendingRegistration(record) ? record : null;
@@ -250,7 +246,11 @@ export function useActivationDefaults(params: Params): ActivationControl {
         ? 'departmentIds'
         : null;
   const subdivisionRecords =
-    detail === 'object' ? objects : detail === 'department' ? departments : undefined;
+    detail === 'object'
+      ? objects
+      : detail === 'department' && departmentRead.current
+        ? departmentRead.data
+        : undefined;
   const expectedType = expectedCounterpartyType(request?.requestedRole);
 
   const subdivision = useMemo(
@@ -300,7 +300,8 @@ export function useActivationDefaults(params: Params): ActivationControl {
       if (role && fill(form, 'role', role)) setApplied((was) => ({ ...was, role }));
     }
 
-    // Object or department: wait for its directory to respond, since an empty list is not "no match".
+    // Object or department: wait for a current PICK answer. A cached stale match can name a site
+    // removed by the answer in flight, and the one-shot progress flag would keep that wrong scope.
     if (!done.current.subdivision && subdivisionField && subdivisionRecords) {
       done.current.subdivision = true;
       if (subdivision.kind === 'match' && fill(form, subdivisionField, [subdivision.record.id])) {

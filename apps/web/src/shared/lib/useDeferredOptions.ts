@@ -1,5 +1,5 @@
 import { useQuery, type QueryKey, type UseQueryOptions } from '@tanstack/react-query';
-import { QUERY_PROFILE } from '@shared/config';
+import { isCurrentPickAnswer, QUERY_PROFILE } from '@shared/config';
 
 /** A filter and a form observe the same directory key independently. */
 export function useDeferredOptions<TData, TSelected, TError, TKey extends QueryKey, TOption>(
@@ -20,5 +20,6 @@ export function useDeferredOptions<TData, TSelected, TError, TKey extends QueryK
       'idle' | 'loading' | 'ready',
     loading: result.isLoading,
     isSuccess: result.isSuccess,
+    current: freshness === 'pick' && enabled && isCurrentPickAnswer(result),
   };
 }

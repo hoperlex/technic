@@ -85,6 +85,7 @@ export function WasteRequestEditorRemovalFields({ form, record, wasteTypes }: Pr
             <AutoSelect
               options={formWasteTypes}
               loading={wasteTypes.loading}
+              autoSelectSole={wasteTypes.current}
               showSearch
               optionFilterProp="label"
               placeholder="Что вывозим"

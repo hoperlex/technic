@@ -38,6 +38,7 @@ interface Props {
   departmentOptions: Option[];
   departmentsLoading: boolean;
   executorCount: number;
+  executorsCurrent: boolean;
   executorGroups: OptionGroup[];
   executorsLoading: boolean;
   form: FormInstance<UserFormValues>;
@@ -61,6 +62,7 @@ export function UserAccountEditorModal({
   departmentOptions,
   departmentsLoading,
   executorCount,
+  executorsCurrent,
   executorGroups,
   executorsLoading,
   form,
@@ -203,7 +205,7 @@ export function UserAccountEditorModal({
             tooltip="Тип контрагента задаёт раздел: оператор вывоза ведёт заявки на вывоз мусора, арендодатель — заявки на технику, куда вышли его машины"
             rules={[{ required: true, message: 'Выберите контрагента' }]}
             extra={
-              executorCount === 0
+              executorsCurrent && executorCount === 0
                 ? 'Нет активных контрагентов-исполнителей — заведите оператора вывоза или арендодателя в справочнике'
                 : activation.hint('counterpartyId')
             }
@@ -211,6 +213,7 @@ export function UserAccountEditorModal({
             <AutoSelect
               options={executorGroups}
               loading={executorsLoading}
+              autoSelectSole={executorsCurrent}
               showSearch
               optionFilterProp="label"
             />

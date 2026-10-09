@@ -186,6 +186,7 @@ export function WasteRequestEditorModal({
             <AutoSelect
               options={sources.objectOptions}
               loading={sources.objectsLoading}
+              autoSelectSole={sources.objectsCurrent}
               showSearch
               optionFilterProp="label"
               disabled={sources.objectFieldDisabled}
@@ -226,6 +227,7 @@ export function WasteRequestEditorModal({
                 // A type disabled in the directory stays visible on an existing request.
                 options={withSavedOption(sources.containerTypes.cont, savedContainerType)}
                 loading={sources.containerTypes.loading}
+                autoSelectSole={sources.containerTypes.current}
                 showSearch
                 optionFilterProp="label"
               />

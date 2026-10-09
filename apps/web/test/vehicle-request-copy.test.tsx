@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type { QueryClient } from '@tanstack/react-query';
 import type { VehicleRequestDto } from '@technic/contracts';
-import { typeDate } from './antd';
+import { selectOption, typeDate } from './antd';
 import {
   json,
   mockHttp,
@@ -801,6 +801,53 @@ describe('копия заявки на технику', () => {
     fireEvent.click(button('Сохранить')!);
     await waitFor(() => expect(http.countOf(CREATE)).toBe(1));
     expect(http.lastCall(CREATE)?.body).toMatchObject({ vehicleCategoryId: 'vc-3' });
+  });
+
+  it('keeps the copied position empty after the request type changes during PICK', async () => {
+    const queryClient = createTestQueryClient();
+    staleClassifierCache(queryClient);
+    let respond!: (response: MockResponse) => void;
+    const classifierResponse = new Promise<MockResponse>((resolve) => {
+      respond = resolve;
+    });
+    const http = renderTab(
+      [SPECIAL],
+      authUser(),
+      { 'GET /vehicle-classifications': () => classifierResponse },
+      queryClient,
+    );
+    await openCopy('Т-42');
+    await waitFor(() => expect(http.countOf('GET /vehicle-classifications')).toBe(1));
+    await selectOption('Тип заявки', 'Грузоперевозка');
+    expect(selectedValue('Тип/категория ТС')).toBe('');
+
+    respond(
+      json(
+        list([
+          classification({ vehicleTypeId: 'vt-1', vehicleCategoryId: 'vc-1' }),
+          classification({
+            vehicleTypeId: 'vt-2',
+            typeName: 'Самосвалы',
+            vehicleCategoryId: 'vc-2',
+            categoryName: '20 м³',
+            kindCode: 'freight',
+          }),
+          classification({
+            vehicleTypeId: 'vt-2',
+            typeName: 'Самосвалы',
+            vehicleCategoryId: 'vc-4',
+            categoryName: '30 м³',
+            kindCode: 'freight',
+          }),
+        ]),
+      ),
+    );
+    await waitFor(() =>
+      expect(queryClient.getQueryState(vehicleClassificationKeys.forSelect())?.fetchStatus).toBe(
+        'idle',
+      ),
+    );
+    expect(selectedValue('Тип/категория ТС')).toBe('');
   });
 
   it('у грузоперевозки переносит ездки — без чужих идентификаторов', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Form } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { QUERY_PROFILE } from '@shared/config';
@@ -35,6 +35,7 @@ import { withSavedOption } from '@shared/lib';
 import { useFileEditor, type EditorFile } from './useFileEditor';
 import { requestTypeChangeHandler } from './requestTypeChange';
 import { useRequestEditorCalendar } from './useRequestEditorCalendar';
+import { useCopyClassificationSync } from './useCopyClassificationSync';
 
 /**
  * The comment is the only place where the author explains the substance of the order, and the
@@ -75,7 +76,6 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
   // The request a copy was taken from, with the frozen calendar (`CopySource` explains the freeze).
   // Kept apart from `record`, which answers whether saving is an edit or a creation.
   const [copy, setCopy] = useState<CopySource | null>(null);
-  const copyClassificationChecked = useRef(false);
   const [tripsExpanded, setTripsExpanded] = useState(false);
   /*
    * ADR 0101 R31: one idempotency key per dialog. A retry after a lost response must reuse it,
@@ -87,21 +87,13 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
   const [form] = Form.useForm<FormValues>();
   const files = useFileEditor();
 
-  // A cached successful answer may be stale when PICK opens. Reconcile the copied position only
-  // against a fresh answer: a removed source must not be submitted, and a choice made while the
-  // answer was loading must not be replaced.
-  useEffect(() => {
-    if (!open || !copy || !classificationsFresh) return;
-    const firstCheck = !copyClassificationChecked.current;
-    copyClassificationChecked.current = true;
-    const key = classificationKeyOf(copy.source);
-    const current = form.getFieldValue('classificationKey');
-    if (current === key && !classificationByKey.has(key)) {
-      form.setFieldValue('classificationKey', '');
-    } else if (firstCheck && current === '' && classificationByKey.has(key)) {
-      form.setFieldValue('classificationKey', key);
-    }
-  }, [open, copy, classificationsFresh, classificationByKey, form]);
+  const copyClassification = useCopyClassificationSync({
+    open,
+    copy,
+    fresh: classificationsFresh,
+    classifications: classificationByKey,
+    form,
+  });
 
   // The request type is chosen first: it drives the fields, the vehicle-type list and the customer
   // picker — on-site equipment goes to a site, and departments are not offered for it at all (R4).
@@ -261,12 +253,16 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
       )
     : [];
 
-  const handleRequestTypeChange = requestTypeChangeHandler({
+  const changeRequestType = requestTypeChangeHandler({
     classificationByKey,
     customer,
     form,
     minDate,
   });
+  const handleRequestTypeChange = (next: VehicleRequestType) => {
+    copyClassification.markTypeChanged();
+    changeRequestType(next);
+  };
 
   const resetWindow = () => {
     form.resetFields();
@@ -309,7 +305,7 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
    */
   const openCopy = (request: VehicleRequestDto) => {
     const today = moscowDateKeyOf(new Date());
-    copyClassificationChecked.current = false;
+    copyClassification.reset();
     setRecord(null);
     setCopy({ source: request, minDate, today });
     resetWindow();

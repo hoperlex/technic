@@ -62,6 +62,25 @@ export const QUERY_PROFILE = {
 } as const;
 
 /**
+ * A disabled observer reports cached success as non-stale, even when its answer exceeds PICK's
+ * term. Automatic form decisions must also check the answer's age and wait for an in-flight
+ * refetch; selectors may still display cached labels while that answer is pending.
+ */
+export function isCurrentPickAnswer(result: {
+  isSuccess: boolean;
+  isFetching: boolean;
+  isStale: boolean;
+  dataUpdatedAt: number;
+}): boolean {
+  return (
+    result.isSuccess &&
+    !result.isFetching &&
+    !result.isStale &&
+    Date.now() - result.dataUpdatedAt < QUERY_PROFILE.PICK.staleTime
+  );
+}
+
+/**
  * Defaults of the portal's query client. Retries are kept out of the LIVE profile: a profile says
  * how old data may be, not how a failed request is handled, and every profile shares this policy.
  */

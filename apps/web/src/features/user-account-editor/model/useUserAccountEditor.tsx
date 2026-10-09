@@ -51,12 +51,11 @@ export function useUserAccountEditor(): UserAccountEditorController {
   const [record, setRecord] = useState<UserAccountDto | null>(null);
   const [form] = Form.useForm<UserFormValues>();
 
-  const { data: objects, loading: objectsLoading } = useDeferredOptions(
-    objectRecordsQuery(true),
-    open,
-    (data) => data.items,
-    'pick',
-  );
+  const {
+    data: objects,
+    loading: objectsLoading,
+    current: objectsCurrent,
+  } = useDeferredOptions(objectRecordsQuery(true), open, (data) => data.items, 'pick');
   const { data: departmentOptions, loading: departmentsLoading } = useDeferredOptions(
     departmentOptionsQuery(),
     open,
@@ -65,12 +64,11 @@ export function useUserAccountEditor(): UserAccountEditorController {
   );
   // An executor account is bound to the counterparty it works for in the portal: a waste operator
   // or a vehicle lessor (ADR 0038). A contractor has no requests in any module.
-  const { data: executors, loading: executorsLoading } = useDeferredOptions(
-    counterpartyActiveOptionsQuery(),
-    open,
-    (data) => data.items,
-    'pick',
-  );
+  const {
+    data: executors,
+    loading: executorsLoading,
+    current: executorsCurrent,
+  } = useDeferredOptions(counterpartyActiveOptionsQuery(), open, (data) => data.items, 'pick');
 
   const objectOptions = (objects?.items ?? []).map((object) => ({
     value: object.id,
@@ -110,8 +108,8 @@ export function useUserAccountEditor(): UserAccountEditorController {
     open,
     record,
     form,
-    objects: objects?.items,
-    counterparties: executors?.items,
+    objects: objectsCurrent ? objects?.items : undefined,
+    counterparties: executorsCurrent ? executors?.items : undefined,
   });
   const grants = useUserGrantsField({
     open,
@@ -288,6 +286,7 @@ export function useUserAccountEditor(): UserAccountEditorController {
         departmentOptions={departmentOptions ?? []}
         departmentsLoading={departmentsLoading}
         executorCount={executorCount}
+        executorsCurrent={executorsCurrent}
         executorGroups={executorGroups}
         executorsLoading={executorsLoading}
         form={form}

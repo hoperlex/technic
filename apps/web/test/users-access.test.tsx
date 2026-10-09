@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import type { QueryClient } from '@tanstack/react-query';
 import {
   PERMISSION_CATALOG,
   permissionModuleLabels,
@@ -11,14 +12,17 @@ import {
   type UserAccountDto,
   type UserGrantRefDto,
 } from '@technic/contracts';
-import { json, mockHttp, type HttpMock, type RouteMap } from './http';
-import { renderWithUser } from './render';
+import { json, mockHttp, type HttpMock, type MockResponse, type RouteMap } from './http';
+import { createTestQueryClient, renderWithUser } from './render';
 import { selectOption } from './antd';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { AccessTab } from '../src/pages/admin/AccessTab';
 import { AdministrationPage } from '../src/pages/admin';
 import { UsersTab } from '../src/pages/admin/UsersTab';
+import { objectRecordsQuery } from '../src/entities/object';
+import { departmentRecordsQuery } from '../src/entities/department';
+import { counterpartyActiveOptionsQuery } from '../src/entities/counterparty';
 
 /**
  * Вкладка «Права» — витрина модели доступа (`docs/permissions-tab-plan.md`).
@@ -615,7 +619,11 @@ const REQUEST_2 = user({
   requestedObject: '',
 });
 
-function renderUsers(accounts: UserAccountDto[], over: RouteMap = {}): HttpMock {
+function renderUsers(
+  accounts: UserAccountDto[],
+  over: RouteMap = {},
+  queryClient?: QueryClient,
+): HttpMock {
   const http = mockHttp({
     'GET /users': () => json(list(accounts)),
     'GET /users/pending-count': () => json({ count: accounts.length }),
@@ -628,7 +636,7 @@ function renderUsers(accounts: UserAccountDto[], over: RouteMap = {}): HttpMock 
     'PATCH /users/:id': () => json({ user: accounts[0], notified: 'not_requested' }),
     ...over,
   });
-  renderWithUser(<UsersTab />, { user: authUser({ role: 'admin' }) });
+  renderWithUser(<UsersTab />, { user: authUser({ role: 'admin' }), queryClient });
   return http;
 }
 
@@ -686,6 +694,84 @@ function clickButton(label: string): void {
 const banner = (): string => screen.getByRole('alert').textContent ?? '';
 
 describe('Подстановка по заявке в окне учётки', () => {
+  it.each([
+    {
+      name: 'object',
+      account: REQUEST,
+      queryKey: objectRecordsQuery(true).queryKey,
+      cached: [NORTH],
+      path: 'GET /objects',
+      field: `Объекты (для роли «${roleLabels.site}»)`,
+    },
+    {
+      name: 'department',
+      account: user({
+        ...REQUEST,
+        id: 'u-department-request',
+        requestedRole: 'department_staff',
+        requestedObject: 'Отдел снабжения',
+      }),
+      queryKey: departmentRecordsQuery().queryKey,
+      cached: [{ id: 'dep-1', code: 'О-1', name: 'Отдел снабжения' }],
+      path: 'GET /departments',
+      field: `Отделы (для роли «${roleLabels.department}»)`,
+    },
+    {
+      name: 'counterparty',
+      account: user({
+        ...REQUEST,
+        id: 'u-operator-request',
+        requestedRole: 'waste_operator',
+        requestedObject: '',
+        requestedCompany: 'ООО Ромашка',
+      }),
+      queryKey: counterpartyActiveOptionsQuery().queryKey,
+      cached: [{ id: 'cp-1', name: 'ООО Ромашка', type: 'operator', inn: '7700000001' }],
+      path: 'GET /counterparties',
+      field: `Контрагент (для роли «${roleLabels.operator}»)`,
+    },
+  ])('$name: a stale match is not applied before or after the current PICK answer', async (s) => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData([...s.queryKey], list<{ id: string; name: string }>(s.cached), {
+      updatedAt: Date.now() - 61_000,
+    });
+    let respond!: (response: MockResponse) => void;
+    const pending = new Promise<MockResponse>((resolve) => {
+      respond = resolve;
+    });
+    const http = renderUsers([s.account], { [s.path]: () => pending }, queryClient);
+    await openAccount(s.account.fullName, 'Рассмотреть заявку');
+    await waitFor(() => expect(http.countOf(s.path)).toBe(1));
+    expect(chosen(s.field)).not.toContain(s.cached[0]!.name);
+
+    respond(json(emptyList()));
+    await waitFor(() => expect(queryClient.getQueryData(s.queryKey)).toEqual(emptyList()));
+    expect(chosen(s.field)).not.toContain(s.cached[0]!.name);
+  });
+
+  it('keeps a manual scope choice made while the old PICK answer is refetching', async () => {
+    const queryClient = createTestQueryClient();
+    const queryKey = objectRecordsQuery(true).queryKey;
+    queryClient.setQueryData([...queryKey], list([NORTH, NORTH_2]), {
+      updatedAt: Date.now() - 61_000,
+    });
+    let respond!: (response: MockResponse) => void;
+    const pending = new Promise<MockResponse>((resolve) => {
+      respond = resolve;
+    });
+    const http = renderUsers([REQUEST], { 'GET /objects': () => pending }, queryClient);
+    await openAccount(REQUEST.fullName, 'Рассмотреть заявку');
+    await waitFor(() => expect(http.countOf('GET /objects')).toBe(1));
+    const field = `Объекты (для роли «${roleLabels.site}»)`;
+    await selectOption(field, 'С-14 — ЖК Северный-2');
+    expect(chosen(field)).toContain('ЖК Северный-2');
+
+    respond(json(list([NORTH, NORTH_2])));
+    await waitFor(() => expect(queryClient.getQueryState(queryKey)?.fetchStatus).toBe('idle'));
+    expect(chosen(field)).toContain('ЖК Северный-2');
+    expect(chosen(field)).not.toContain('С-12 — ЖК Северный');
+  });
+
   it('окно заявки открывается ролью пожелания, наборами и объектом — но не активацией', async () => {
     renderUsers([REQUEST]);
     await openAccount(REQUEST.fullName, 'Рассмотреть заявку');

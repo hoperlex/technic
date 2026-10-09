@@ -47,10 +47,12 @@ export interface WasteRequestEditorSources {
   containerTypes: {
     cont: FilterOption[];
     loading: boolean;
+    current: boolean;
   };
   objectFieldDisabled: boolean;
   objectOptions: FilterOption[];
   objectsLoading: boolean;
+  objectsCurrent: boolean;
   operatorOptionsFor: (objectId: string | undefined, assigned?: SavedOperator) => FilterOption[];
   operatorsLoading: boolean;
   operatorsReady: boolean;
@@ -58,6 +60,7 @@ export interface WasteRequestEditorSources {
   wasteTypes: {
     loading: boolean;
     options: FilterOption[];
+    current: boolean;
   };
 }
 

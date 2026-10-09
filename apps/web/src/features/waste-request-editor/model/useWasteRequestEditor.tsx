@@ -86,6 +86,7 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
         .filter((type) => type.type === 'cont')
         .map((type) => ({ value: type.id, label: type.name })),
       loading: types.loading,
+      current: types.current,
     },
     objectFieldDisabled: scope.objectFieldDisabled,
     objectOptions: scope.limitObjectOptions(
@@ -95,13 +96,15 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
       })),
     ),
     objectsLoading: objects.loading,
+    objectsCurrent: objects.current,
     operatorOptionsFor,
     operatorsLoading: operators.loading,
-    operatorsReady: operators.state === 'ready',
+    operatorsReady: operators.current,
     soleObjectId: scope.soleObjectId,
     wasteTypes: {
       options: (wasteTypes.options ?? []).map((type) => ({ value: type.id, label: type.name })),
       loading: wasteTypes.loading,
+      current: wasteTypes.current,
     },
   };
   const blockers = useFormBlockers(form, {
