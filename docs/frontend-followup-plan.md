@@ -6,6 +6,11 @@
 Работы Р5 (загрузка) и Р7 (монолиты) с 30.09.2026 объединены в отдельный
 [этап 3](frontend-fsd-stage-3.md); их прежние формулировки ниже сохраняются как история решения.
 
+**Stage 5 update (09.10.2026):** The R5 query and render follow-up is implemented on the Stage 5
+integration branch after Stage 3 split the initial bundle. The accepted policy and render
+measurement are in [ADR 0222](adr/0222-frontend-query-freshness-and-render.md). The dated
+baseline and queue below remain a record of the 19.08.2026 decision, not today's system state.
+
 **Редакция 4 от 19.08.2026** — по сопоставлению плана с состоянием кода через девять дней после
 редакции 3. За это время прошло 86 коммитов чужой разработки, и они проверили план лучше любого
 ревью: часть предсказаний подтвердилась, часть опровергнута фактами. Журнал — §8.

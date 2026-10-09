@@ -6,7 +6,7 @@
 
 Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями (в скобках — граница, если решение правится не целиком) · миграции · пути, названные областью. **⛔ стоит только у решения, которое само объявило себя отменённым или заменённым.** Входящая связь показывает, кто его правил, но насколько — знает лишь текст самого решения: ADR 0141 отменяет приём ADR 0053 в модуле оргтехники, а в вывозе мусора тот приём работает.
 
-Решений: 221. Доменов: 16.
+Решений: 222. Доменов: 16.
 
 ## ⚠ Номера, занятые дважды
 
@@ -305,16 +305,17 @@
 - [0195](0195-waste-ticket-review-cross.md) — Колонка «Талоны»: крестик вместо разбивки значков · реализовано · код: `apps/web/src/features/waste-ticket-review/ui/ticketBadgeLegend.ts`, `apps/web/src/features/waste-ticket-review/ui/TicketBadge.tsx`, `apps/web/src/features/waste-ticket-review/ui/TicketCell.tsx`, `apps/web/src/widgets/waste-request-feed/ui/feedColumns.tsx`, `apps/web/src/widgets/waste-request-view/model/useWasteRequestView.tsx`, `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`, `apps/web/src/shared/lib/useScrollIntoViewWhen.ts`, `apps/web/test/waste-ticket-cell-review.test.tsx`, `apps/web/test/waste-ticket-confirm-button.test.tsx`
 - [0203](0203-auto-part-receipt-recognition.md) — Распознавание чеков на автозапчасти · реализовано · код: `packages/contracts/src/recognition.ts`, `packages/contracts/src/auto-part-receipt-recognition.ts`, `apps/worker/src/ocr-engine`, `apps/worker/src/receipt-ocr`, `apps/api/src/services/auto-part-receipt-recognition.ts`, `apps/api/src/routes/auto-part-receipts.ts`, `apps/web/src/pages/garage/ReceiptRecognitionPanel.tsx`, `apps/web/src/pages/garage/AutoPartReceiptFormModal.tsx`
 
-## каркас-портала (8)
+## каркас-портала (9)
 
 - [0030](0030-responsive-layout.md) — Адаптивная вёрстка: мобильный режим поверх десктопа, а не вместо него · изменён 0102 · код: `apps/web/src/hooks/useIsMobile.ts`, `apps/web/src/theme.ts`, `apps/web/src/main.tsx`, `apps/web/src/components/AppLayout.tsx`, `apps/web/src/components/DataTable.tsx`, `apps/web/src/components/FormModal.tsx`, `apps/web/src/components/PageTableLayout.tsx`, `apps/web/test/setup.ts`
 - [0042](0042-directories-on-phone.md) — Справочники и администрирование на телефоне — карточками · код: `apps/web/src/shared/ui/ListToolbar.tsx`, `apps/web/src/shared/ui/listControls.ts`, `apps/web/src/widgets/user-account-registry/ui/UserAccountRegistry.tsx`
-- [0074](0074-entity-links-between-tabs.md) — Переход по номеру записи: вкладка и открытая карточка в адресе страницы · изменён 0120 · код: `apps/web/src/utils/links.ts`, `apps/web/src/shared/lib/useOpenedRecord.ts`, `apps/web/src/shared/ui/EntityLink.tsx`, `apps/web/src/components/PageTabs.tsx`, `apps/api/src/routes/waybills.ts`
+- [0074](0074-entity-links-between-tabs.md) — Переход по номеру записи: вкладка и открытая карточка в адресе страницы · изменён 0120, 0222 · код: `apps/web/src/utils/links.ts`, `apps/web/src/shared/lib/useOpenedRecord.ts`, `apps/web/src/shared/ui/EntityLink.tsx`, `apps/web/src/components/PageTabs.tsx`, `apps/api/src/routes/waybills.ts`
 - [0079](0079-list-filters-panel.md) — Фильтры списка — полосой полей над таблицей, а не выпадашками в заголовках · код: `apps/web/src/pages/waybills/WaybillsPage.tsx`, `apps/api/src/routes/waybills.ts`
 - [0094](0094-form-blockers.md) — Отказ формы называет поле, а не показывает тост · код: `apps/web/src/shared/ui/formBlockers.ts`, `apps/web/src/shared/config/forms.ts`, `apps/web/src/main.tsx`
 - [0121](0121-portal-sections-registry.md) — Разделы портала описаны одним реестром; учётке без разделов портал показывает экран, а не редирект · код: `packages/contracts/src/portal-sections.ts`, `apps/web/src/App.tsx`, `apps/web/src/components/AppLayout.tsx`, `apps/web/src/app/routing/ProtectedRoute.tsx`, `apps/web/src/pages/no-sections/NoSectionsPage.tsx`, `apps/api/test/portal-sections.test.ts`
 - [0136](0136-select-popup-width.md) — Ширина раскрытого списка — правило портала, а не свойство поля · код: `apps/web/src/main.tsx`, `apps/web/src/widgets/waste-request-feed/ui/feedFilters.tsx`, `apps/web/src/pages/waste/WasteHistoryTab.tsx`
 - [0139](0139-list-filters-persist.md) — Набор отборов списка живёт дольше сеанса
+- [0222](0222-frontend-query-freshness-and-render.md) — Portal query freshness, deferred options, and list rendering · код: `apps/web/src/shared/config/query.ts`, `apps/web/src/app/providers/query.tsx`, `apps/web/src/shared/api/listQueryOptions.ts`, `apps/web/src/shared/lib/useDeferredOptions.ts`, `apps/web/scripts/check-cache-invalidation.mjs`
 
 ## схема-и-выкат (10)
 
@@ -329,9 +330,10 @@
 - [0205](0205-device-network-poll.md) — Показание снимается опросом аппарата по сети, и записывается оно только при сверенном серийнике · код: `packages/contracts/src/device-poll.ts`, `apps/api/src/services/device-snmp`, `apps/api/src/routes/device-poll.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/features/device-poll`, `apps/web/src/pages/service/EquipmentTab.tsx`
 - [0208](0208-service-work-completed-document-flow.md) — Исполнитель завершает денежный шаг кнопкой «Работы выполнены» и сразу подшивает акт · код: `apps/api/drizzle/0341_service_estimate_document_workflow_enable.sql`, `apps/api/drizzle/0342_releases_service_estimate_document_workflow.sql`, `apps/web/src/pages/service/serviceRequestEstimateMenu.tsx`, `apps/web/src/pages/service/serviceRequestModals.tsx`
 
-## качество (4)
+## качество (5)
 
 - [0147](0147-quality-gates.md) — Ворота качества: две команды, отметка о прогоне и ни одного хука
 - [0176](0176-docs-navigation-layer.md) — Навигацию по документации держит генерируемый указатель и проверяемая карта, а не рукописный каталог · код: `scripts/check-docs.mjs`, `scripts/gen-adr-index.mjs`, `scripts/lib/docs-navigation.mjs`, `scripts/lib/docs-legacy-domains.mjs`, `scripts/docs-navigation.test.mjs`, `AGENTS.md`
 - [0191](0191-version-numbering.md) — Версия портала: линия, выпуск и решение — правило, а не договорённость на словах · код: `architecture/policies/versioning.yaml`, `VERSION`, `scripts/check-version.mjs`
 - [0196](0196-assignment-cutover-command.md) — Окно переключения чтения истории назначения — одной командой · код: `apps/api/scripts/assignment-cutover.ts`, `apps/api/scripts/assignment-cutover-plan.ts`, `apps/api/scripts/assignment-history-run.ts`, `apps/api/scripts/assignment-backfill.ts`, `deploy/docker-compose.yml`, `apps/api/test/assignment-cutover-plan.test.ts`
+- [0222](0222-frontend-query-freshness-and-render.md) — Portal query freshness, deferred options, and list rendering · код: `apps/web/src/shared/config/query.ts`, `apps/web/src/app/providers/query.tsx`, `apps/web/src/shared/api/listQueryOptions.ts`, `apps/web/src/shared/lib/useDeferredOptions.ts`, `apps/web/scripts/check-cache-invalidation.mjs`
