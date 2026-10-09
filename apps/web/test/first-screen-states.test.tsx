@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { fireEvent, screen } from '@testing-library/react';
 import type { AuthUser } from '@technic/contracts';
 import { MOBILE_PAGE_SIZE } from '@shared/config';
 import { writeListParams } from '@shared/lib';
 import { MechRequestsPage } from '../src/pages/mech';
+import { AdministrationPage } from '../src/pages/admin';
 import { ServiceRequestsPage } from '../src/pages/service';
 import { VehicleRequestsPage } from '../src/pages/vehicle';
 import { WasteRequestsPage } from '../src/pages/waste';
@@ -20,10 +22,9 @@ import { SERVICE_COUNTERPARTY, serviceInHouseExecutor } from './factories/servic
  * appendix A1) leaves out — a measurement, not a ban.
  *
  * Saved filters (rows №7–№9): the three lists that remember their filters between sessions
- * (ADR 0139) open with one and with two saved fields, each pointing at a dictionary. Today every
- * dictionary of those screens is asked anyway, so a saved field changes the parameters of the list,
- * not the count; the plan's target — "+1 per saved field" — appears with waves 5а/5б, when a filter
- * asks its dictionary only once it has a value or is expanded.
+ * (ADR 0139) open with one and with two saved fields, each pointing at a dictionary. These sections
+ * belong to wave 5b; until then, each dictionary is already requested, so a saved field changes
+ * list parameters rather than the count. Wave 5b adds one directory request per saved field.
  *
  * The phone (rows №1–№5): the same sections in the mobile mode of ADR 0030.
  *
@@ -136,22 +137,18 @@ describe('первый экран с сохранённым отбором (ADR 
 describe('первый экран на телефоне (ADR 0030)', () => {
   const phone = { viewport: MOBILE_VIEWPORT };
 
-  it('№1 Вывоз мусора, диспетчер — 7, как на десктопе', async () => {
+  it('№1 Вывоз мусора, диспетчер — 3, как на десктопе', async () => {
     const { http, queryClient } = mountSection(<WasteRequestsPage />, 'waste', authUser(), phone);
     await settle(queryClient);
     expect(requestsSince(http)).toEqual([
-      'GET /container-types',
-      'GET /counterparties',
-      'GET /objects',
       'GET /waste-requests',
       'GET /waste-requests/summary',
       'GET /waste-requests/ticket-recognition/health',
-      'GET /waste-types',
     ]);
     expectPhonePage(http, 'GET /waste-requests');
   });
 
-  it('№2 Вывоз мусора, штаб площадки — 5, как на десктопе', async () => {
+  it('№2 Вывоз мусора, штаб площадки — 3, как на десктопе', async () => {
     const { http, queryClient } = mountSection(
       <WasteRequestsPage />,
       'waste',
@@ -160,16 +157,14 @@ describe('первый экран на телефоне (ADR 0030)', () => {
     );
     await settle(queryClient);
     expect(requestsSince(http)).toEqual([
-      'GET /container-types',
       'GET /objects',
       'GET /waste-requests',
       'GET /waste-requests/summary',
-      'GET /waste-types',
     ]);
     expectPhonePage(http, 'GET /waste-requests');
   });
 
-  it('№3 Заказ ТС, диспетчер — 6, как на десктопе', async () => {
+  it('№3 Заказ ТС, диспетчер — 4, как на десктопе', async () => {
     const { http, queryClient } = mountSection(
       <VehicleRequestsPage />,
       'vehicle-requests',
@@ -180,15 +175,13 @@ describe('первый экран на телефоне (ADR 0030)', () => {
     expect(requestsSince(http)).toEqual([
       'GET /departments',
       'GET /objects',
-      'GET /vehicle-classifications',
       'GET /vehicle-requests/feed',
       'GET /vehicle-requests/summary',
-      'GET /vehicles',
     ]);
     expectPhonePage(http, 'GET /vehicle-requests/feed');
   });
 
-  it('№4 Заказ ТС, штаб площадки — 6, как на десктопе', async () => {
+  it('№4 Заказ ТС, штаб площадки — 3, как на десктопе', async () => {
     const { http, queryClient } = mountSection(
       <VehicleRequestsPage />,
       'vehicle-requests',
@@ -197,25 +190,59 @@ describe('первый экран на телефоне (ADR 0030)', () => {
     );
     await settle(queryClient);
     expect(requestsSince(http)).toEqual([
-      'GET /departments',
       'GET /objects',
-      'GET /vehicle-classifications',
       'GET /vehicle-requests/feed',
       'GET /vehicle-requests/summary',
-      'GET /vehicles',
     ]);
     expectPhonePage(http, 'GET /vehicle-requests/feed');
   });
 
-  it('№5 Путевые листы, диспетчер — 4, как на десктопе', async () => {
+  it('№5 Путевые листы, диспетчер — 1, как на десктопе', async () => {
     const { http, queryClient } = mountSection(<WaybillsPage />, 'waybills', authUser(), phone);
     await settle(queryClient);
-    expect(requestsSince(http)).toEqual([
-      'GET /drivers',
-      'GET /objects',
-      'GET /vehicles',
-      'GET /waybills',
-    ]);
+    expect(requestsSince(http)).toEqual(['GET /waybills']);
     expectPhonePage(http, 'GET /waybills');
+  });
+});
+
+describe('телефонный шит впервые включает справочники фильтров (волна 5а)', () => {
+  it.each([
+    {
+      name: 'Вывоз',
+      page: <WasteRequestsPage />,
+      section: 'waste' as const,
+      user: authUser(),
+      requested: ['GET /container-types', 'GET /counterparties', 'GET /objects'],
+    },
+    {
+      name: 'Заказ ТС',
+      page: <VehicleRequestsPage />,
+      section: 'vehicle-requests' as const,
+      user: authUser(),
+      requested: ['GET /vehicle-classifications', 'GET /vehicles'],
+    },
+    {
+      name: 'Путевые листы',
+      page: <WaybillsPage />,
+      section: 'waybills' as const,
+      user: authUser(),
+      requested: ['GET /drivers', 'GET /objects', 'GET /vehicles'],
+    },
+    {
+      name: 'Пользователи',
+      page: <AdministrationPage />,
+      section: 'admin' as const,
+      user: authUser({ role: 'admin' }),
+      requested: ['GET /counterparties', 'GET /objects'],
+    },
+  ])('$name: opening the sheet starts only its missing dictionaries', async (scenario) => {
+    const { http, queryClient } = mountSection(scenario.page, scenario.section, scenario.user, {
+      viewport: MOBILE_VIEWPORT,
+    });
+    await settle(queryClient);
+    const from = http.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: /Фильтры/ }));
+    await settle(queryClient);
+    expect(requestsSince(http, from)).toEqual(scenario.requested);
   });
 });

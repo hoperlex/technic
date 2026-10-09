@@ -9,7 +9,14 @@ import {
   type WasteRequestDto,
 } from '@technic/contracts';
 import { filesApi } from '@entities/file';
+import {
+  counterpartyActiveOperatorOptionsQuery,
+  operatorOptionsForObject,
+} from '@entities/counterparty';
+import { containerTypeOptionsQuery } from '@entities/container-type';
+import { objectRecordsQuery } from '@entities/object';
 import { useAuth } from '@entities/session';
+import { wasteTypeOptionsQuery } from '@entities/waste-type';
 import {
   containerGroupKey,
   minRequestDate,
@@ -21,19 +28,23 @@ import {
   type WasteRequestUpdatePayload,
 } from '@entities/waste-request';
 import { MOSCOW_TZ } from '@shared/config';
-import { useFormBlockers } from '@shared/ui';
+import { useDeferredOptions } from '@shared/lib';
+import { useFormBlockers, type FilterOption } from '@shared/ui';
 import { DeferredWasteRequestEditor as WasteRequestEditorModal } from '../ui/DeferredWasteRequestEditor';
 import type {
   WasteRequestEditorController,
   WasteRequestEditorFile,
-  WasteRequestEditorSources,
   WasteRequestFormValues,
 } from './types';
 
+interface EditorScope {
+  objectFieldDisabled: boolean;
+  limitObjectOptions: (options: FilterOption[]) => FilterOption[];
+  soleObjectId?: string;
+}
+
 /** Own create/edit state and commands; field presentation stays in the feature's UI module. */
-export function useWasteRequestEditor(
-  sources: WasteRequestEditorSources,
-): WasteRequestEditorController {
+export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorController {
   const { message } = App.useApp();
   const { can } = useAuth();
   const qc = useQueryClient();
@@ -44,6 +55,55 @@ export function useWasteRequestEditor(
   const [removedIds, setRemovedIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [form] = Form.useForm<WasteRequestFormValues>();
+  // The mounted controller survives closing the lazy editor. Its own PICK observers switch off
+  // with the dialog and recheck an old cached choice on the next opening.
+  const objects = useDeferredOptions(objectRecordsQuery(true), open, (data) => data.items, 'pick');
+  const types = useDeferredOptions(
+    containerTypeOptionsQuery({ activeOnly: true }),
+    open,
+    (data) => data.items,
+    'pick',
+  );
+  const wasteTypes = useDeferredOptions(
+    wasteTypeOptionsQuery({ pricedOnly: true }),
+    open,
+    (data) => data.items,
+    'pick',
+  );
+  const operators = useDeferredOptions(
+    counterpartyActiveOperatorOptionsQuery(),
+    open && canAssignOperator,
+    (data) => data.items,
+    'pick',
+  );
+  const operatorOptionsFor = (
+    objectId: string | undefined,
+    assigned?: { id: string | null; name: string | null },
+  ) => operatorOptionsForObject(operators.options ?? [], objectId, assigned);
+  const sources = {
+    containerTypes: {
+      cont: (types.options ?? [])
+        .filter((type) => type.type === 'cont')
+        .map((type) => ({ value: type.id, label: type.name })),
+      loading: types.loading,
+    },
+    objectFieldDisabled: scope.objectFieldDisabled,
+    objectOptions: scope.limitObjectOptions(
+      (objects.options ?? []).map((object) => ({
+        value: object.id,
+        label: `${object.code} — ${object.name}`,
+      })),
+    ),
+    objectsLoading: objects.loading,
+    operatorOptionsFor,
+    operatorsLoading: operators.loading,
+    operatorsReady: operators.state === 'ready',
+    soleObjectId: scope.soleObjectId,
+    wasteTypes: {
+      options: (wasteTypes.options ?? []).map((type) => ({ value: type.id, label: type.name })),
+      loading: wasteTypes.loading,
+    },
+  };
   const blockers = useFormBlockers(form, {
     // A different site may make the selected operator invalid, so clear it before submission.
     onValuesChange: (changed: Partial<WasteRequestFormValues>) => {

@@ -12,9 +12,8 @@ interface Props {
 const DATE_FORMAT = 'DD.MM.YYYY';
 
 /**
- * Сколько тегов набора видно до «+N», когда описание не задало своего числа. Фиксированное
- * число, а не `responsive` десктопной полосы: в шите поле растянуто во всю ширину, и десяток
- * тегов вырос бы на пол-экрана, оттеснив остальные фильтры за нижний край.
+ * A fixed tag limit keeps a full-width field from pushing the other phone filters below the
+ * sheet's visible area. The desktop bar can instead size tags responsively.
  */
 const SHEET_MAX_TAGS = 4;
 
@@ -27,7 +26,7 @@ function draftOf(filters: FilterDefinition[]): Record<string, FilterDraftValue> 
   return draft;
 }
 
-/** Значение фильтра по умолчанию — то, к которому его возвращает «Сбросить». */
+/** The draft value that the reset action restores. */
 function emptyValue(filter: FilterDefinition): FilterDraftValue {
   if (filter.kind === 'dateRange') return {};
   if (filter.kind === 'toggle') return false;
@@ -36,10 +35,8 @@ function emptyValue(filter: FilterDefinition): FilterDraftValue {
 }
 
 /**
- * Совпадает ли состав наборов. Сравниваем состав, а не ссылку: описания пересобираются на каждом
- * рендере страницы, и по ссылке «Применить» дёргал бы список после каждого открытия шита. Порядок
- * тоже не в счёт — снятая и заново отмеченная позиция встаёт в конец, а отбор от порядка не
- * зависит, и «изменилось» тут означало бы перезапрос ради того же самого.
+ * Compare a set by members: descriptors are rebuilt on every page render, while their identity
+ * and selection order do not change which rows the filter asks for.
  */
 function sameSelection(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
@@ -48,29 +45,30 @@ function sameSelection(a: string[], b: string[]): boolean {
 }
 
 /**
- * Фильтры списка на телефоне (ADR 0030): те же значения, что в панели над таблицей на десктопе,
- * но во всю ширину экрана и с черновиком.
+ * Phone filters (ADR 0030) use the same values as the desktop bar and fill the sheet width.
  *
- * Черновик здесь принципиален. На десктопе каждый выбор сразу уходит в запрос — это дёшево,
- * панель видна целиком, и промах виден сразу. В шите список закрыт, и «выбрал — запрос, выбрал —
- * ещё запрос» означал бы четыре загрузки на один заход. Поэтому значения копятся, а список
- * перезапрашивается один раз, по «Применить»; «Отмена» не меняет ничего.
+ * The draft is essential here: the list is covered by the sheet, so each choice would otherwise
+ * reload an invisible list. Apply sends the accumulated changes once; cancel discards them.
  */
 export function FilterSheet({ open, onClose, filters }: Props) {
   const [draft, setDraft] = useState<Record<string, FilterDraftValue>>({});
-  // Массив описаний пересобирается на каждый рендер страницы: держим его в ref, иначе черновик
-  // затирался бы сам собой между открытием шита и нажатием «Применить».
+  // Descriptors are rebuilt on each page render. A ref keeps an in-progress draft from being
+  // overwritten before Apply.
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
 
   useEffect(() => {
-    if (open) setDraft(draftOf(filtersRef.current));
+    if (open) {
+      setDraft(draftOf(filtersRef.current));
+      // The sheet exposes every field at once, even though no individual Select popup is open.
+      for (const filter of filtersRef.current) filter.onOpen?.();
+    }
   }, [open]);
 
   const set = (key: string, value: FilterDraftValue) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
 
-  /** Применяются только изменённые: лишний вызов onChange сбрасывал бы страницу без причины. */
+  /** Unchanged values must not reset the list page. */
   const apply = () => {
     for (const filter of filtersRef.current) {
       const next = draft[filter.key];
@@ -97,8 +95,7 @@ export function FilterSheet({ open, onClose, filters }: Props) {
     onClose();
   };
 
-  /** Сброс чистит черновик, а не параметры: пока не нажали «Применить», список не трогаем.
-      Зафиксированный ролью фильтр (объект у штаба) остаётся — его и менять нельзя. */
+  /** Reset clears only the draft; a role-locked site remains selected. */
   const reset = () => {
     const cleared: Record<string, FilterDraftValue> = {};
     for (const filter of filtersRef.current) {

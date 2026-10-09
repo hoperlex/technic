@@ -40,6 +40,7 @@ export function registryMobileFilters(model: UserAccountRegistryModel): FilterDe
       options: model.objectOptions,
       placeholder: 'Все объекты',
       loading: model.objectsLoading,
+      onOpen: model.openObjects,
       onChange: (constructionObjectId) => applyFilter({ constructionObjectId }),
     },
     {
@@ -50,6 +51,7 @@ export function registryMobileFilters(model: UserAccountRegistryModel): FilterDe
       options: model.executorGroups,
       placeholder: 'Все контрагенты',
       loading: model.executorsLoading,
+      onOpen: model.openExecutors,
       onChange: (counterpartyId) => applyFilter({ counterpartyId }),
     },
     ...(model.showPending
@@ -143,6 +145,7 @@ export function UserAccountRegistryFilters({ model }: { model: UserAccountRegist
         style={{ width: 220 }}
         options={model.objectOptions}
         loading={model.objectsLoading}
+        onOpenChange={(open) => open && model.openObjects()}
         value={params.constructionObjectId}
         onChange={(constructionObjectId: string | undefined) =>
           applyFilter({ constructionObjectId })
@@ -156,6 +159,7 @@ export function UserAccountRegistryFilters({ model }: { model: UserAccountRegist
         style={{ width: 240 }}
         options={model.executorGroups}
         loading={model.executorsLoading}
+        onOpenChange={(open) => open && model.openExecutors()}
         value={params.counterpartyId}
         onChange={(counterpartyId: string | undefined) => applyFilter({ counterpartyId })}
       />

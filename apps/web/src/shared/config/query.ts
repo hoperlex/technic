@@ -9,8 +9,8 @@ import type { DefaultOptions, Query } from '@tanstack/react-query';
  *
  * A profile is a set of query options that a read takes as a whole. LIVE is the client default and
  * covers every read that does not name another profile: feeds, summaries, registers, record cards.
- * SIGNAL, DICTIONARY and STATIC live here as objects that query factories spread; PICK is added
- * with the deferred selectors in wave 5. A freshness number written anywhere else is an exception
+ * SIGNAL, DICTIONARY and STATIC live here as objects that query factories spread; PICK is used by
+ * an open form's own observer of a dictionary key. A freshness number written anywhere else is an exception
  * and has to say why next to it.
  */
 export const QUERY_PROFILE = {
@@ -46,6 +46,11 @@ export const QUERY_PROFILE = {
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,
     meta: { profile: 'DICTIONARY' },
+  },
+  // PICK changes only the observer's age threshold. The cache entry keeps the directory factory's
+  // metadata so a closed filter and an open form cannot reclassify the same key by mount order.
+  PICK: {
+    staleTime: 60_000,
   },
   STATIC: {
     staleTime: Infinity,

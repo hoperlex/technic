@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useDeferredOptions } from '@shared/lib';
 import { driverOptionsQuery } from '../api/queries';
 
 /**
@@ -10,16 +10,12 @@ import { driverOptionsQuery } from '../api/queries';
  * eligibility check (ADR 0037, ADR 0064, ADR 0192).
  */
 export function useDriverOptions(enabled = true) {
-  const { data, isFetching } = useQuery({
-    ...driverOptionsQuery(),
-    enabled,
-  });
+  const { options, loading } = useDeferredOptions(driverOptionsQuery(), enabled, (data) =>
+    data.items.map((driver) => ({ value: driver.id, label: driver.fullName })),
+  );
 
   return {
-    options: (data?.items ?? []).map((driver) => ({
-      value: driver.id,
-      label: driver.fullName,
-    })),
-    loading: isFetching,
+    options: options ?? [],
+    loading,
   };
 }

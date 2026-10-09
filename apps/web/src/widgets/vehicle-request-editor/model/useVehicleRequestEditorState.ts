@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Form } from 'antd';
 import { useQuery } from '@tanstack/react-query';
+import { QUERY_PROFILE } from '@shared/config';
 import {
   allowedVehicleRequestTypes,
   canOrderVehicleRequestType,
@@ -62,13 +63,19 @@ export interface VehicleRequestEditorStateInput {
 export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequestEditorStateInput) {
   const { user, can } = useAuth();
   const { ownObjectIds: ownPlaceObjectIds } = usePlaceObjectScope();
-  const { byKey: classificationByKey, groups, loading: typesLoading } = useVehicleClassifications();
   const requestTypeOptions = canOrderOptions(user);
   const [open, setOpen] = useState(false);
+  const {
+    byKey: classificationByKey,
+    groups,
+    loading: typesLoading,
+    ready: classificationsReady,
+  } = useVehicleClassifications(open, true);
   const [record, setRecord] = useState<VehicleRequestDto | null>(null);
   // The request a copy was taken from, with the frozen calendar (`CopySource` explains the freeze).
   // Kept apart from `record`, which answers whether saving is an edit or a creation.
   const [copy, setCopy] = useState<CopySource | null>(null);
+  const copyClassificationChecked = useRef(false);
   const [tripsExpanded, setTripsExpanded] = useState(false);
   /*
    * Backdate operation key (ADR 0101, R31) — one per open dialog, not per click.
@@ -89,6 +96,17 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
   const [form] = Form.useForm<FormValues>();
   const files = useFileEditor();
+
+  // Copy opens from a feed row before the deferred classifier has answered. An active source
+  // position is restored after that answer; an inactive one stays empty, and a choice made while
+  // loading is never overwritten by the late response.
+  useEffect(() => {
+    if (!open || !copy || !classificationsReady || copyClassificationChecked.current) return;
+    copyClassificationChecked.current = true;
+    const key = classificationKeyOf(copy.source);
+    if (form.getFieldValue('classificationKey') !== '') return;
+    if (classificationByKey.has(key)) form.setFieldValue('classificationKey', key);
+  }, [open, copy, classificationsReady, classificationByKey, form]);
 
   // The request type is chosen first: it drives the fields, the vehicle-type list and the customer
   // picker — on-site equipment goes to a site, and departments are not offered for it at all (R4).
@@ -141,7 +159,11 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
    * and the field component itself rejects entries without an address.
    */
   const formCustomer = customer.customerPairOf(Form.useWatch('customerKey', form));
-  const { data: departmentPlatforms } = useQuery(departmentPlatformQuery());
+  const { data: departmentPlatforms } = useQuery({
+    ...departmentPlatformQuery(),
+    ...QUERY_PROFILE.PICK,
+    enabled: open,
+  });
   const suggestObjectIds = useMemo(() => {
     const departmentObjectIds = formCustomer.departmentId
       ? (departmentPlatforms?.get(formCustomer.departmentId) ?? [])
@@ -292,6 +314,7 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
    */
   const openCopy = (request: VehicleRequestDto) => {
     const today = moscowDateKeyOf(new Date());
+    copyClassificationChecked.current = false;
     setRecord(null);
     setCopy({ source: request, minDate, today });
     resetWindow();

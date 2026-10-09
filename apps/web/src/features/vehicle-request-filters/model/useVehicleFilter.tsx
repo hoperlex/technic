@@ -1,8 +1,9 @@
 import { Select } from 'antd';
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
 import { vehicleOptionLabel } from '@technic/contracts';
 import { allVehicleOptionsQuery } from '@entities/vehicle';
 import type { FilterDefinition } from '@shared/ui';
+import { useDeferredOptions } from '@shared/lib';
 
 /**
  * Filter by the assigned vehicle for the request list and the closed-requests journal (ADR 0098).
@@ -26,13 +27,17 @@ export function useVehicleFilter({
   vehicleId: string | undefined;
   onChange: (patch: { vehicleId?: string }) => void;
 }) {
-  const { data, isFetching } = useQuery({
-    ...allVehicleOptionsQuery(),
-  });
+  const [opened, setOpened] = useState(!!vehicleId);
+  const { options: loadedOptions, loading } = useDeferredOptions(
+    allVehicleOptionsQuery(),
+    opened || !!vehicleId,
+    (data) =>
+      data.items.map((vehicle) => ({ value: vehicle.id, label: vehicleOptionLabel(vehicle) })),
+  );
   // Sorted by label rather than directory order: people look a vehicle up by its plate number.
-  const options = (data?.items ?? [])
-    .map((vehicle) => ({ value: vehicle.id, label: vehicleOptionLabel(vehicle) }))
-    .sort((left, right) => left.label.localeCompare(right.label, 'ru'));
+  const options = (loadedOptions ?? []).sort((left, right) =>
+    left.label.localeCompare(right.label, 'ru'),
+  );
 
   const controls = (
     <Select
@@ -42,7 +47,8 @@ export function useVehicleFilter({
       placeholder="Вся техника"
       style={{ width: 240 }}
       options={options}
-      loading={isFetching}
+      loading={loading}
+      onOpenChange={(open) => open && setOpened(true)}
       value={vehicleId}
       onChange={(value: string | undefined) => onChange({ vehicleId: value })}
     />
@@ -55,7 +61,8 @@ export function useVehicleFilter({
     value: vehicleId,
     options,
     placeholder: 'Вся техника',
-    loading: isFetching,
+    loading,
+    onOpen: () => setOpened(true),
     onChange: (value) => onChange({ vehicleId: value }),
   };
 

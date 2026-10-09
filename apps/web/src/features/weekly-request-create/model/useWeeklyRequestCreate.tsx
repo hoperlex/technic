@@ -16,6 +16,7 @@ import {
   weekSelectOptions,
 } from '@entities/weekly-request';
 import { isApiError } from '@shared/api';
+import { QUERY_PROFILE } from '@shared/config';
 import { FormModal } from '@shared/ui';
 
 function hasStatus(error: unknown, status: number): boolean {
@@ -46,7 +47,7 @@ export function useWeeklyRequestCreate(): {
   const [form] = Form.useForm<{ objectId: string; weekStart: string }>();
   const [open, setOpen] = useState(false);
   const { soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
-  const objects = useQuery(objectOptionsQuery());
+  const objects = useQuery({ ...objectOptionsQuery(), ...QUERY_PROFILE.PICK, enabled: open });
   const objectOptions = limitObjectOptions(objects.data ?? []);
   const weeks = weekSelectOptions();
   const backdate = weeklyBackdateAccess(can);

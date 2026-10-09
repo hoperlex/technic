@@ -1,6 +1,6 @@
 import { ownVehicleOptionsQuery } from '../api/queries';
-import { useQuery } from '@tanstack/react-query';
 import { vehicleOptionLabel } from '@technic/contracts';
+import { useDeferredOptions } from '@shared/lib';
 
 /**
  * The complete company-owned fleet for route and waybill history filters.
@@ -9,18 +9,15 @@ import { vehicleOptionLabel } from '@technic/contracts';
  * not disappear with the current fleet status. Rental vehicles are excluded: their lessor owns
  * route and waybill operations. The shared query key keeps both consumers on the same cache cell.
  */
-export function useOwnVehicleOptions() {
-  const { data, isFetching } = useQuery({
-    ...ownVehicleOptionsQuery(),
-  });
+export function useOwnVehicleOptions(enabled = true) {
+  const { options, loading } = useDeferredOptions(ownVehicleOptionsQuery(), enabled, (data) =>
+    data.items
+      .map((vehicle) => ({ value: vehicle.id, label: vehicleOptionLabel(vehicle) }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru')),
+  );
 
   return {
-    options: (data?.items ?? [])
-      .map((vehicle) => ({
-        value: vehicle.id,
-        label: vehicleOptionLabel(vehicle),
-      }))
-      .sort((a, b) => a.label.localeCompare(b.label, 'ru')),
-    loading: isFetching,
+    options: options ?? [],
+    loading,
   };
 }

@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { parseWasteRequestNumberSearch, type ContainerKind } from '@technic/contracts';
+import { counterpartyActiveOperatorOptionsQuery } from '@entities/counterparty';
+import { containerTypeOptionsQuery } from '@entities/container-type';
+import { objectFilterOptionLabel, objectRecordsQuery } from '@entities/object';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { listQueryOptions } from '@shared/api';
-import { dayEnd, dayStart, useListParams } from '@shared/lib';
+import { dayEnd, dayStart, useDeferredOptions, useListParams } from '@shared/lib';
 import type {
   WasteFilterOptions,
   WasteFilterValues,
@@ -34,6 +37,28 @@ export function useWasteRequestFeedState(
   );
   const [objectFilter, setObjectFilter] = useState(sources.initialObjectId);
   const [numberInput, setNumberInput] = useState('');
+  const [objectOpened, setObjectOpened] = useState(false);
+  const [subjectOpened, setSubjectOpened] = useState(false);
+  const [operatorOpened, setOperatorOpened] = useState(false);
+  const objects = useDeferredOptions(
+    objectRecordsQuery(true),
+    objectOpened || !!params.objectId,
+    (data) =>
+      data.items.map((object) => ({
+        value: object.id,
+        label: objectFilterOptionLabel(object),
+      })),
+  );
+  const types = useDeferredOptions(
+    containerTypeOptionsQuery({ activeOnly: true }),
+    subjectOpened || !!params.containerTypeId || !!params.containerKind,
+    (data) => data.items,
+  );
+  const operators = useDeferredOptions(
+    counterpartyActiveOperatorOptionsQuery(),
+    sources.canAssignOperator && (operatorOpened || !!params.operatorCounterpartyId),
+    (data) => data.items.map((operator) => ({ value: operator.id, label: operator.name })),
+  );
 
   /** Any filter change returns the list to the first page. */
   const applyFilter = (patch: Partial<typeof params>) =>
@@ -71,23 +96,40 @@ export function useWasteRequestFeedState(
     }),
   );
 
-  const subjectOptions = subjectFilterOptions(sources.subjectTypes);
+  const subjectTypes = {
+    cont: (types.options ?? [])
+      .filter((type) => type.type === 'cont')
+      .map((type) => ({ value: type.id, label: type.name })),
+    truck: (types.options ?? [])
+      .filter((type) => type.type === 'truck')
+      .map((type) => ({ value: type.id, label: type.name })),
+  };
+  const subjectOptions = subjectFilterOptions(subjectTypes);
   const filterOptions: WasteFilterOptions = {
     values: params,
     onChange: applyFilter,
     objects: {
-      options: sources.objectOptions,
-      loading: sources.objectsLoading,
+      options: sources.limitObjectOptions(objects.options ?? []),
+      loading: objects.loading,
       value: objectFilter,
       disabled: sources.objectFilterDisabled,
       onChange: applyObjectFilter,
+      onOpen: () => setObjectOpened(true),
     },
     subject: {
       options: subjectOptions,
       value: subjectFilterValue(params),
       onChange: (value) => applyFilter(subjectFilterPatch(value)),
+      onOpen: () => setSubjectOpened(true),
+      loading: types.loading,
     },
-    operators: sources.operators,
+    operators: sources.canAssignOperator
+      ? {
+          options: operators.options ?? [],
+          loading: operators.loading,
+          onOpen: () => setOperatorOpened(true),
+        }
+      : null,
     num: { text: numberInput, onChange: applyNumberFilter },
     ticketReview: canReviewTickets,
   };

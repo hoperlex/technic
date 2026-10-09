@@ -12,6 +12,7 @@ import {
 } from '@technic/contracts';
 import { departmentRecordsQuery } from '@entities/department';
 import { grantFormCatalogQuery } from '@entities/grant';
+import { QUERY_PROFILE } from '@shared/config';
 import {
   matchReasonLabels,
   NO_SUGGESTION,
@@ -231,7 +232,11 @@ export function useActivationDefaults(params: Params): ActivationControl {
    * dropdown, so no extra server round trip occurs. Objects and counterparties are passed in as
    * params because the form holds them itself.
    */
-  const { data: departments } = useQuery(departmentRecordsQuery());
+  const { data: departments } = useQuery({
+    ...departmentRecordsQuery(),
+    ...QUERY_PROFILE.PICK,
+    enabled: open,
+  });
 
   /** A request under review is the only thing there is anything to prefill from (§3.5). */
   const request = open && record && isPendingRegistration(record) ? record : null;

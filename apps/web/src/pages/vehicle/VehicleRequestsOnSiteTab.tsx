@@ -73,6 +73,7 @@ export function VehicleRequestsOnSiteTab() {
   const classificationFilter = useVehicleClassificationFilter({
     classifications: params.classifications,
     onChange: applyFilter,
+    deferred: true,
   });
   // Бланк спрашивают тем же слайсом, что и гараж (`features/waybill-form-filter`): вопрос «чем
   // закрывается этот день» на обоих экранах один, и второй его разбор разошёлся бы с первым на

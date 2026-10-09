@@ -9,18 +9,13 @@ import { objectDto } from './factories/waste';
 import { WaybillsPage } from '../src/pages/waybills';
 
 /**
- * Журнал путевых листов глазами площадки (ADR 0192): раздел открыт набором полномочия, а справочник
- * водителей — нет.
+ * The waybill journal as seen by a site grant holder (ADR 0192): the section is available, but the
+ * driver directory is outside this grant.
  *
- * До этого выката журнал видели только роли без оси области, у которых есть всё, чем он пользуется:
- * `drivers.read` для фильтра по водителю, `vehicleRequests.status` для окна рейса. Держатель набора
- * приходит сюда с ОДНИМ правом — `waybills.read`, — и каждая из этих мелочей становится вопросом
- * доступа: запрос за карточками водителей ответил бы ему 403, а фильтр, показанный пустым, читался
- * бы как «водителей в портале нет».
+ * The holder has only `waybills.read`; asking for driver cards would return 403, and showing an
+ * empty driver filter would suggest that no drivers exist. Route windows require a separate right.
  *
- * Фамилия водителя в строке журнала при этом остаётся: она напечатана в бланке, который у площадки
- * на руках, и прятать её значило бы выдавать бумагу, не говоря, кто по ней поехал. Закрыт именно
- * СПРАВОЧНИК — список людей компании, к бумаге отношения не имеющий.
+ * A driver's name stays in the issued sheet row; the restricted data is the company directory.
  */
 
 const SHEET: WaybillDto = {
@@ -67,9 +62,8 @@ const SHEET: WaybillDto = {
 };
 
 /**
- * Площадка с набором «Путевые листы: просмотр и печать»: право приходит выдачей, а не ролью, —
- * поэтому `grantPermissions`, а не `permissions`. Роль `site` своего `waybills.read` не имеет, и
- * учётка, собранная иначе, описывала бы человека, которого в портале не бывает.
+ * The site gets waybill access through a grant, not its role. A fixture with role permissions
+ * would represent an account the portal cannot actually create.
  */
 function siteHolder() {
   return authUser({
@@ -111,17 +105,16 @@ describe('журнал листов у держателя набора (ADR 0192
     const { http } = renderFor(siteHolder());
     await waitFor(() => expect(http.countOf('GET /waybills')).toBe(1));
 
-    // Бумага на месте: номер, машина и фамилия водителя — то, ради чего набор и выдан.
+    // The granted sheet still shows its number, vehicle and driver's name.
     await waitFor(() => expect(screen.getByText('260604-646-00000001')).toBeDefined());
     expect(screen.getByText('Иванов Иван Иванович')).toBeDefined();
 
-    // Фильтра нет ни одной из двух половин — ни полем панели, ни строкой шита телефона.
+    // Neither desktop nor phone exposes the unavailable driver filter.
     const placeholders = [...document.querySelectorAll<HTMLElement>('.ant-select')].map((el) =>
       el.textContent?.trim(),
     );
     expect(placeholders).not.toContain('Все водители');
-    // И главное: запрос за карточками людей не уходит вовсе — 403 в журнале сервера на каждое
-    // открытие страницы был бы следом права, которого у держателя нет и не должно быть.
+    // No driver directory request is sent under a grant that lacks `drivers.read`.
     expect(http.countOf('GET /drivers')).toBe(0);
   });
 
@@ -133,6 +126,11 @@ describe('журнал листов у держателя набора (ADR 0192
       el.textContent?.trim(),
     );
     expect(placeholders).toContain('Все водители');
+    expect(http.countOf('GET /drivers')).toBe(0);
+    const field = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
+      (el) => el.textContent?.trim() === 'Все водители',
+    );
+    fireEvent.mouseDown(field!.querySelector('.ant-select-selector') ?? field!);
     await waitFor(() => expect(http.countOf('GET /drivers')).toBe(1));
   });
 
@@ -143,13 +141,15 @@ describe('журнал листов у держателя набора (ADR 0192
    */
   it('площадке в отборе предлагаются только её площадки, и выбранная уходит в запрос журнала', async () => {
     const { http } = renderFor(siteHolder());
-    await waitFor(() => expect(http.countOf('GET /objects')).toBe(1));
+    await waitFor(() => expect(http.countOf('GET /waybills')).toBe(1));
+    expect(http.countOf('GET /objects')).toBe(0);
 
     const field = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
       (el) => el.textContent?.trim() === 'Все площадки',
     );
     expect(field, 'site filter').toBeTruthy();
     fireEvent.mouseDown(field!.querySelector('.ant-select-selector') ?? field!);
+    await waitFor(() => expect(http.countOf('GET /objects')).toBe(1));
     const option = await waitFor(() => {
       const options = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')];
       expect(options.map((o) => o.textContent)).toEqual(['ОБ-1 — Своя площадка']);
@@ -163,23 +163,18 @@ describe('журнал листов у держателя набора (ADR 0192
   });
 
   /**
-   * Рейс и заявка остаются подписями, а не ссылками: окно рейса закрыто правом
-   * `vehicleRequests.status`, которого у площадки нет, а читалка заявки — `vehicleRequests.read`,
-   * который приходит отдельным набором «Заказ техники». Проверяется отсутствие именно ссылки:
-   * номер в строке обязан остаться, иначе журнал перестал бы отвечать, по какому рейсу выдан лист.
+   * Route and request numbers remain text: their windows require separate rights. The numbers
+   * must remain visible because the journal still has to identify the trip behind a sheet.
    */
   it('номер рейса и номер заявки показаны, но никуда не ведут', async () => {
     renderFor(siteHolder());
     await waitFor(() => expect(screen.getByText('260604-646-00000001')).toBeDefined());
 
     const row = screen.getByText('260604-646-00000001').closest('tr')!;
-    // Оба номера в строке есть — журнал по-прежнему отвечает, по какому рейсу и какой заявке выдан
-    // лист. Проверяется по тексту строки целиком: талон собран из нескольких узлов («1. № 12 —
-    // Площадка 1»), и поиск по точному совпадению нашёл бы разве что подпись площадки.
+    // The request caption spans several nodes, so inspect the row text as a whole.
     expect(row.textContent).toContain('Р-12');
     expect(row.textContent).toContain('№ 12');
-    // А ссылок в ней нет ни одной: и рейс, и заявка закрыты правами, которых у держателя набора
-    // нет, — `EntityLink` в этом случае оставляет номер обычным текстом.
+    // EntityLink leaves both numbers as text without the corresponding window rights.
     expect(row.querySelectorAll('a')).toHaveLength(0);
   });
 });

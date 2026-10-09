@@ -1,49 +1,37 @@
 import type { ReactNode } from 'react';
+import { useState } from 'react';
 import { Select } from 'antd';
 import { CLASSIFICATION_FILTER_MAX, serializeClassificationFilter } from '@technic/contracts';
 import type { FilterDefinition } from '@shared/ui';
 import { useVehicleClassifications } from '../model/useVehicleClassifications';
 
 /**
- * Фильтр по технике классификатора — общий для списка заявок, журнала и гаража: вопрос «какая это
- * техника» в них один и тот же.
+ * A shared classification filter for requests, history and garage. Multiple positions combine by
+ * OR; a whole type and one of its categories are choices in the same field (ADR 0028). A cascade
+ * would require another interaction in the phone sheet (ADR 0030).
  *
- * Выбирают несколько позиций сразу, объединяемых по ИЛИ: «покажи автокраны и самосвалы» — один
- * вопрос к списку, а не два захода с переписыванием фильтра между ними. Позиция при этом та же,
- * что и раньше, — тип целиком («Автокраны — все категории») либо одна его категория.
- *
- * Один список на оба уровня, а не «тип, затем категория» двумя полями: выбор и в форме заявки
- * один (ADR 0028), и в фильтре читается так же — «Автокраны — все категории» рядом с «Автокраны,
- * г/п 130 т». Каскад из двух полей стоил бы двух касаний в шите на телефоне (ADR 0030), где
- * второе поле появлялось бы только после «Применить».
- *
- * Список не сужается ничем: фильтры независимы, а пустой результат читается сам.
- *
- * Живёт рядом с `useVehicleClassifications`, а не в странице заказа ТС: раздел «Гараж» (ADR 0076)
- * спрашивает тот же фильтр, а импорт из соседней страницы запрещён границами слоёв — и правильно
- * запрещён: общее двух разделов не может принадлежать одному из них.
- *
- * Подсказка называет классификатор, а не технику вообще (ADR 0098). «Вся техника» в соседних
- * списках раздела — «Маршруты», журнал путевых листов, а теперь и сам «Заказ автотехники» —
- * означает единицу парка, конкретную машину с госномером. Одна подсказка на два разных вопроса
- * читалась бы как поломка фильтра: человек ищет свой КамАЗ, а список предлагает «Самосвалы».
+ * The filter lives with the classifier because both requests and garage use it. Its prompt names
+ * a classifier position: the neighbouring vehicle filter names a specific fleet unit (ADR 0098).
  */
 export function useVehicleClassificationFilter({
   classifications,
   onChange,
+  deferred = false,
 }: {
-  /** Набор канонической строкой — ровно тем, что уходит в запрос: разбирать его тут и негде. */
+  /** The canonical set string sent to the list request. */
   classifications: string | undefined;
   /**
-   * Пустой набор отдаётся как `undefined` (`serializeClassificationFilter`): пустая строка и
-   * отсутствие параметра означают для списка одно, а лишний параметр — ещё один ключ кэша и ещё
-   * один запрос за тем же самым.
+   * An empty set becomes undefined: an empty query parameter would create a second cache key for
+   * the same list.
    */
   onChange: (patch: { classifications?: string }) => void;
+  deferred?: boolean;
 }): { controls: ReactNode; mobileFilter: FilterDefinition } {
-  const { filterGroups, loading } = useVehicleClassifications();
-  // Значение поля — тот же набор массивом. Ключи самодостаточны, и показать выбранное можно, не
-  // дожидаясь справочника: подписи подтянутся, когда он придёт.
+  const [opened, setOpened] = useState(!!classifications);
+  const { filterGroups, loading } = useVehicleClassifications(
+    !deferred || opened || !!classifications,
+  );
+  // Keys can be shown immediately; labels arrive with the deferred directory response.
   const value = classifications ? classifications.split(',') : [];
   const pick = (keys: string[]) =>
     onChange({ classifications: serializeClassificationFilter(keys) });
@@ -55,21 +43,20 @@ export function useVehicleClassificationFilter({
       showSearch
       optionFilterProp="label"
       placeholder="Любой тип ТС"
-      // Шире прежнего одиночного поля: набор показывается тегами, и в 250 они схлопывались бы в
-      // «+N» уже на второй позиции. Дальше их прячет `responsive` — по месту, которое реально есть.
+      // The multi-choice field needs enough width for its tags; the remaining tags collapse to fit.
       style={{ width: 320 }}
       maxTagCount="responsive"
-      // Потолок держится полем, а не только схемой: упереться в предел выбора понятнее, чем
-      // получить 400 на уже собранный набор.
+      // Enforce the request limit while choosing, before the server rejects the assembled set.
       maxCount={CLASSIFICATION_FILTER_MAX}
       options={filterGroups}
       loading={loading}
+      onOpenChange={(open) => open && setOpened(true)}
       value={value}
       onChange={pick}
     />
   );
 
-  /** Тот же фильтр описанием — для шита на телефоне (ADR 0030). */
+  /** The same filter as a phone sheet descriptor (ADR 0030). */
   const mobileFilter: FilterDefinition = {
     kind: 'multiSelect',
     key: 'classification',
@@ -78,8 +65,8 @@ export function useVehicleClassificationFilter({
     options: filterGroups,
     placeholder: 'Любой тип ТС',
     loading,
-    // Фиксированные четыре, а не `responsive`: в drawer поле во всю ширину, и теги растут вниз —
-    // десяток выбранных позиций вытеснил бы с экрана остальные фильтры и саму кнопку «Применить».
+    onOpen: () => setOpened(true),
+    // Four visible tags keep the full-width phone field from covering the other filters.
     maxTagCount: 4,
     maxCount: CLASSIFICATION_FILTER_MAX,
     onChange: pick,

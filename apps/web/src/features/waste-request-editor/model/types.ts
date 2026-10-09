@@ -53,6 +53,7 @@ export interface WasteRequestEditorSources {
   objectsLoading: boolean;
   operatorOptionsFor: (objectId: string | undefined, assigned?: SavedOperator) => FilterOption[];
   operatorsLoading: boolean;
+  operatorsReady: boolean;
   soleObjectId?: string;
   wasteTypes: {
     loading: boolean;

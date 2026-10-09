@@ -46,7 +46,7 @@ export type WaybillDateRange = [dayjs.Dayjs | null, dayjs.Dayjs | null] | null;
  * has no right to the directory, and a filter answering with an empty list is worse than none —
  * it reads as "there are no drivers/sites in the portal".
  */
-type DirectoryFilter = { options: FilterOption[]; loading: boolean } | null;
+type DirectoryFilter = { options: FilterOption[]; loading: boolean; onOpen: () => void } | null;
 
 interface Options {
   values: WaybillFilterValues;
@@ -56,7 +56,7 @@ interface Options {
   onSearchTextChange: (text: string) => void;
   range: WaybillDateRange;
   onRangeChange: (range: WaybillDateRange) => void;
-  vehicles: { options: FilterOption[]; loading: boolean };
+  vehicles: NonNullable<DirectoryFilter>;
   /** Holders of the "view and print" grant have no `drivers.read` (ADR 0192). */
   drivers: DirectoryFilter;
   /** Sites of the orders the sheet serves; `null` without `directories.read`. */
@@ -117,6 +117,7 @@ export function waybillFiltersBar(o: Options): ReactNode {
           style={{ width: 260 }}
           options={o.objects.options}
           loading={o.objects.loading}
+          onOpenChange={(open) => open && o.objects?.onOpen()}
           value={o.values.objectId}
           onChange={(v: string | undefined) => o.onChange({ objectId: v })}
         />
@@ -129,6 +130,7 @@ export function waybillFiltersBar(o: Options): ReactNode {
         style={{ width: 220 }}
         options={o.vehicles.options}
         loading={o.vehicles.loading}
+        onOpenChange={(open) => open && o.vehicles.onOpen()}
         value={o.values.vehicleId}
         onChange={(v: string | undefined) => o.onChange({ vehicleId: v })}
       />
@@ -141,6 +143,7 @@ export function waybillFiltersBar(o: Options): ReactNode {
           style={{ width: 220 }}
           options={o.drivers.options}
           loading={o.drivers.loading}
+          onOpenChange={(open) => open && o.drivers?.onOpen()}
           value={o.values.driverPersonId}
           onChange={(v: string | undefined) => o.onChange({ driverPersonId: v })}
         />
@@ -197,6 +200,7 @@ export function waybillMobileFilters(o: Options): FilterDefinition[] {
             options: o.objects.options,
             placeholder: 'Все площадки',
             loading: o.objects.loading,
+            onOpen: o.objects.onOpen,
             onChange: (v: string | undefined) => o.onChange({ objectId: v }),
           },
         ]
@@ -209,6 +213,7 @@ export function waybillMobileFilters(o: Options): FilterDefinition[] {
       options: o.vehicles.options,
       placeholder: 'Вся техника',
       loading: o.vehicles.loading,
+      onOpen: o.vehicles.onOpen,
       onChange: (v) => o.onChange({ vehicleId: v }),
     },
     ...(o.drivers
@@ -221,6 +226,7 @@ export function waybillMobileFilters(o: Options): FilterDefinition[] {
             options: o.drivers.options,
             placeholder: 'Все водители',
             loading: o.drivers.loading,
+            onOpen: o.drivers.onOpen,
             onChange: (v: string | undefined) => o.onChange({ driverPersonId: v }),
           },
         ]

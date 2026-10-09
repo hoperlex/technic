@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { screen } from '@testing-library/react';
 import { AdministrationPage } from '../src/pages/admin';
 import { DirectoriesPage } from '../src/pages/directories';
 import { GaragePage } from '../src/pages/garage';
@@ -37,65 +38,42 @@ import { serviceInHouseExecutor, serviceOperator } from './factories/service';
  */
 
 describe('первый экран раздела: запросы до первого действия', () => {
-  it('№1 Вывоз мусора, диспетчер — 7', async () => {
+  it('№1 Вывоз мусора, диспетчер — 3', async () => {
     expect(await firstScreen(<WasteRequestsPage />, 'waste', authUser())).toEqual([
-      'GET /container-types',
-      // Operators: the dispatcher assigns the executor, so the operator filter and the assignment
-      // window are his alone — the fullest set of any role.
-      'GET /counterparties',
-      'GET /objects',
       'GET /waste-requests',
       'GET /waste-requests/summary',
       // The recognition banner (ADR 0114, R29): a silent recognition must not look like a calm day.
       // It costs one request per portal; the request card shares the answer.
       'GET /waste-requests/ticket-recognition/health',
-      'GET /waste-types',
     ]);
   });
 
-  it('№2 Вывоз мусора, штаб площадки — 5: ни операторов, ни состояния распознавания', async () => {
+  it('№2 Вывоз мусора, штаб площадки — 3: свой объект подписан сразу', async () => {
     expect(await firstScreen(<WasteRequestsPage />, 'waste', shtabUser('obj-1'))).toEqual([
-      'GET /container-types',
       'GET /objects',
       'GET /waste-requests',
       'GET /waste-requests/summary',
-      'GET /waste-types',
     ]);
+    expect(screen.getByText('ОБ-1 — ЖК Северный — г. Москва, ул. Северная, 1')).toBeDefined();
   });
 
-  it('№3 Заказ ТС, диспетчер — 6', async () => {
+  it('№3 Заказ ТС, диспетчер — 4', async () => {
     expect(await firstScreen(<VehicleRequestsPage />, 'vehicle-requests', authUser())).toEqual([
       'GET /departments',
       'GET /objects',
-      'GET /vehicle-classifications',
       'GET /vehicle-requests/feed',
       'GET /vehicle-requests/summary',
-      'GET /vehicles',
     ]);
   });
 
-  it('№4 Заказ ТС, штаб площадки — 6, тот же состав', async () => {
+  it('№4 Заказ ТС, штаб площадки — 3', async () => {
     expect(
       await firstScreen(<VehicleRequestsPage />, 'vehicle-requests', shtabUser('obj-1')),
-    ).toEqual([
-      // Departments for a site role as well: the request editor's controller is mounted with the
-      // dialog closed and reads department platforms (`departmentPlatformQuery`).
-      'GET /departments',
-      'GET /objects',
-      'GET /vehicle-classifications',
-      'GET /vehicle-requests/feed',
-      'GET /vehicle-requests/summary',
-      'GET /vehicles',
-    ]);
+    ).toEqual(['GET /objects', 'GET /vehicle-requests/feed', 'GET /vehicle-requests/summary']);
   });
 
-  it('№5 Путевые листы, диспетчер — 4', async () => {
-    expect(await firstScreen(<WaybillsPage />, 'waybills', authUser())).toEqual([
-      'GET /drivers',
-      'GET /objects',
-      'GET /vehicles',
-      'GET /waybills',
-    ]);
+  it('№5 Путевые листы, диспетчер — 1', async () => {
+    expect(await firstScreen(<WaybillsPage />, 'waybills', authUser())).toEqual(['GET /waybills']);
   });
 
   it('№6 Гараж, диспетчер — 6', async () => {
@@ -168,12 +146,9 @@ describe('первый экран раздела: запросы до перво
     ]);
   });
 
-  it('№12 Администрирование «Пользователи», администратор — 5', async () => {
+  it('№12 Администрирование «Пользователи», администратор — 2', async () => {
     const admin = authUser({ role: 'admin' });
     expect(await firstScreen(<AdministrationPage />, 'admin', admin)).toEqual([
-      'GET /counterparties',
-      'GET /departments',
-      'GET /objects',
       'GET /users',
       'GET /users/pending-count',
     ]);

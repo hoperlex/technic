@@ -88,6 +88,7 @@ export function useVehicleRequestFeedState() {
   const classificationFilter = useVehicleClassificationFilter({
     classifications: params.classifications,
     onChange: applyFilter,
+    deferred: true,
   });
   // The assigned-vehicle filter (ADR 0098) is the second equipment question next to the first:
   // "what was ordered" is asked by the classifier, "what closed it" by this one.

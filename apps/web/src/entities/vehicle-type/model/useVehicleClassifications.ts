@@ -1,5 +1,6 @@
 import { vehicleClassificationsForSelectQuery } from '../api/queries';
 import { useQuery } from '@tanstack/react-query';
+import { QUERY_PROFILE } from '@shared/config';
 import {
   classificationFilterKey,
   classificationPriceHint,
@@ -7,9 +8,8 @@ import {
   type VehicleClassificationDto,
 } from '@technic/contracts';
 
-// Классификатор ТС для списков выбора (ADR 0028): позиции — категории типа, а у типа без ТТХ
-// сам тип. Правило «общий тип при наличии категорий не выводится» держит сервер, клиент только
-// раскладывает готовые позиции по видам ТС.
+// The server decides which classifier positions are selectable (ADR 0028); this module only groups
+// those positions by vehicle kind.
 
 /** Позиции одного вида ТС — группа в Select. `kindCode` нужен, чтобы сузить список типом заявки. */
 export interface VehicleClassificationGroup {
@@ -106,14 +106,14 @@ export function classificationFilterGroups(
 }
 
 /**
- * Все активные позиции классификатора, сгруппированные по виду ТС.
- *
- * Вид ТС не задаёт тип заявки — его выбирают в форме явно: техникой любого вида работают на
- * объекте, а грузоперевозку выполняют только грузовым видом.
+ * Active classifier positions grouped by vehicle kind. The request type is chosen separately:
+ * on-site work can use any kind, while freight transport accepts cargo kinds.
  */
-export function useVehicleClassifications() {
-  const { data, isFetching } = useQuery({
+export function useVehicleClassifications(enabled = true, pick = false) {
+  const { data, isLoading, isSuccess } = useQuery({
     ...vehicleClassificationsForSelectQuery(),
+    ...(pick ? QUERY_PROFILE.PICK : {}),
+    enabled,
   });
   const items = data?.items ?? [];
 
@@ -125,7 +125,8 @@ export function useVehicleClassifications() {
     groups: classificationGroups(items),
     /** Те же позиции для фильтра списка: вариант «весь тип» и свой ключ фильтра. */
     filterGroups: classificationFilterGroups(items),
-    loading: isFetching,
+    loading: isLoading,
+    ready: isSuccess,
   };
 }
 

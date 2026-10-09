@@ -24,8 +24,8 @@ import {
  * neighbour's own first screen), then back (both tabs mounted: the clearing alone, the cost of one
  * switch). The neighbours answer empty lists (`VISITED_TAB_ROUTES`).
  *
- * Only these waves change the expected lists: 3а (`PageTabs` stops clearing the SIGNAL badges) and
- * 3б (the clearing of Directories and Administration by R5); the commit says which.
+ * Changes are tied to the plan: 3а stops clearing SIGNAL badges, 3б narrows the Directories and
+ * Administration refresh, and 5а removes the closed Users form and filter dictionaries.
  */
 
 /** One switch there and back, as sorted request lists; `back` is the cost of a switch. */
@@ -100,9 +100,9 @@ const EXPECTED: Record<string, { visit: string[]; back: string[] }> = {
     ],
   },
   'Администрирование, администратор (№12)': {
-    // Both visited tabs refresh; three shell badges and release notes stay fresh.
-    visit: ['GET /counterparties', 'GET /departments', 'GET /objects', 'GET /users', 'GET /users'],
-    back: ['GET /counterparties', 'GET /departments', 'GET /objects', 'GET /users', 'GET /users'],
+    // Both visited tabs refresh; closed form and filter observers do not join the refresh.
+    visit: ['GET /users', 'GET /users'],
+    back: ['GET /users', 'GET /users'],
   },
 };
 

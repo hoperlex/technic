@@ -75,7 +75,12 @@ export function WaybillsPage() {
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
-  const { options: vehicleOptions, loading: vehiclesLoading } = useOwnVehicleOptions();
+  const [vehiclesOpen, setVehiclesOpen] = useState(!!params.vehicleId);
+  const [driversOpen, setDriversOpen] = useState(!!params.driverPersonId);
+  const [objectsOpen, setObjectsOpen] = useState(!!params.objectId);
+  const { options: vehicleOptions, loading: vehiclesLoading } = useOwnVehicleOptions(
+    vehiclesOpen || !!params.vehicleId,
+  );
   /**
    * Not every journal reader has the driver filter (ADR 0192). Sites and departments come with the
    * "view and print" grant and have no `drivers.read` (ADR 0037): they see the surname printed on
@@ -83,7 +88,9 @@ export function WaybillsPage() {
    * directory request is not even sent, rather than just hidden.
    */
   const canReadDrivers = can('drivers.read');
-  const { options: driverOptions, loading: driversLoading } = useDriverOptions(canReadDrivers);
+  const { options: driverOptions, loading: driversLoading } = useDriverOptions(
+    canReadDrivers && (driversOpen || !!params.driverPersonId),
+  );
 
   /*
    * Closed sites included: the journal is history, and a closed site's sheets stay in it. Options
@@ -94,10 +101,10 @@ export function WaybillsPage() {
    */
   const canReadObjects = can('directories.read');
   const { limitObjectOptions } = usePlaceObjectScope();
-  const { data: objectOptions = [], isFetching: objectsLoading } = useQuery({
+  const { data: objectOptions = [], isLoading: objectsLoading } = useQuery({
     ...objectOptionsQuery({ activeOnly: false }),
     select: (r) => r.items.map((o) => ({ value: o.id, label: objectFilterOptionLabel(o) })),
-    enabled: canReadObjects,
+    enabled: canReadObjects && (objectsOpen || !!params.objectId),
   });
 
   /**
@@ -251,10 +258,20 @@ export function WaybillsPage() {
       setRange(next);
       applyFilter({});
     },
-    vehicles: { options: vehicleOptions, loading: vehiclesLoading },
-    drivers: canReadDrivers ? { options: driverOptions, loading: driversLoading } : null,
+    vehicles: {
+      options: vehicleOptions,
+      loading: vehiclesLoading,
+      onOpen: () => setVehiclesOpen(true),
+    },
+    drivers: canReadDrivers
+      ? { options: driverOptions, loading: driversLoading, onOpen: () => setDriversOpen(true) }
+      : null,
     objects: canReadObjects
-      ? { options: limitObjectOptions(objectOptions), loading: objectsLoading }
+      ? {
+          options: limitObjectOptions(objectOptions),
+          loading: objectsLoading,
+          onOpen: () => setObjectsOpen(true),
+        }
       : null,
   };
 

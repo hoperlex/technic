@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { App, Form } from 'antd';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   counterpartyTypeLabels,
@@ -28,6 +28,7 @@ import {
   withMailOutcome,
 } from '@entities/user-account';
 import { isApiError } from '@shared/api';
+import { useDeferredOptions } from '@shared/lib';
 import { UserAccountEditorModal } from '../ui/UserAccountEditorModal';
 import { useUserGrantsField } from '../ui/UserGrantsField';
 import type { UserFormValues } from './types';
@@ -50,16 +51,26 @@ export function useUserAccountEditor(): UserAccountEditorController {
   const [record, setRecord] = useState<UserAccountDto | null>(null);
   const [form] = Form.useForm<UserFormValues>();
 
-  const { data: objects, isLoading: objectsLoading } = useQuery({
-    ...objectRecordsQuery(true),
-  });
-  const { data: departmentOptions, isLoading: departmentsLoading } =
-    useQuery(departmentOptionsQuery());
+  const { data: objects, loading: objectsLoading } = useDeferredOptions(
+    objectRecordsQuery(true),
+    open,
+    (data) => data.items,
+    'pick',
+  );
+  const { data: departmentOptions, loading: departmentsLoading } = useDeferredOptions(
+    departmentOptionsQuery(),
+    open,
+    (data) => data,
+    'pick',
+  );
   // An executor account is bound to the counterparty it works for in the portal: a waste operator
   // or a vehicle lessor (ADR 0038). A contractor has no requests in any module.
-  const { data: executors, isLoading: executorsLoading } = useQuery({
-    ...counterpartyActiveOptionsQuery(),
-  });
+  const { data: executors, loading: executorsLoading } = useDeferredOptions(
+    counterpartyActiveOptionsQuery(),
+    open,
+    (data) => data.items,
+    'pick',
+  );
 
   const objectOptions = (objects?.items ?? []).map((object) => ({
     value: object.id,

@@ -1,5 +1,6 @@
 import { listQueryOptions } from '@shared/api';
 import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
 import {
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   counterpartyTypeLabels,
@@ -12,7 +13,7 @@ import { counterpartyActiveOptionsQuery } from '@entities/counterparty';
 import { objectRecordsQuery } from '@entities/object';
 import { useAuth } from '@entities/session';
 import { userAccountKeys, usersApi, pendingUsersCountQuery } from '@entities/user-account';
-import { useListParams } from '@shared/lib';
+import { useDeferredOptions, useListParams } from '@shared/lib';
 
 interface RegistryFilters {
   role?: string;
@@ -35,6 +36,8 @@ export function useUserAccountRegistry() {
   const { can } = useAuth();
   const list = useListParams<RegistryFilters>({}, { searchKeys: [] });
   const { params, setParams } = list;
+  const [objectsOpen, setObjectsOpen] = useState(!!params.constructionObjectId);
+  const [executorsOpen, setExecutorsOpen] = useState(!!params.counterpartyId);
   // Any filter change returns to the first page: the same page number over a different set already
   // means different records.
   const applyFilter = (patch: Partial<typeof params>) =>
@@ -51,12 +54,16 @@ export function useUserAccountRegistry() {
   const { data: pending } = useQuery({
     ...pendingUsersCountQuery(),
   });
-  const { data: objects, isLoading: objectsLoading } = useQuery({
-    ...objectRecordsQuery(true),
-  });
-  const { data: executors, isLoading: executorsLoading } = useQuery({
-    ...counterpartyActiveOptionsQuery(),
-  });
+  const { data: objects, loading: objectsLoading } = useDeferredOptions(
+    objectRecordsQuery(true),
+    objectsOpen || !!params.constructionObjectId,
+    (data) => data.items,
+  );
+  const { data: executors, loading: executorsLoading } = useDeferredOptions(
+    counterpartyActiveOptionsQuery(),
+    executorsOpen || !!params.counterpartyId,
+    (data) => data.items,
+  );
 
   const objectOptions = (objects?.items ?? []).map((object) => ({
     value: object.id,
@@ -95,6 +102,8 @@ export function useUserAccountRegistry() {
     isFetching,
     objectOptions,
     objectsLoading,
+    openObjects: () => setObjectsOpen(true),
+    openExecutors: () => setExecutorsOpen(true),
     pending,
     // A wish is stated only at self-registration (ADR 0034); administrator-created accounts have
     // none, so this filter is shown only in pending mode — in the full list it would silently cut

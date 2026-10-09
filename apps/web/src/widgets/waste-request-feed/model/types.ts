@@ -31,18 +31,21 @@ export interface WasteFilterOptions {
     value: string;
     disabled: boolean;
     onChange: (value: string) => void;
+    onOpen: () => void;
   };
   /** Container or truck: options and parsing of the choice live in subjectFilter. */
   subject: {
     options: FilterOptionGroup[];
     value: string | undefined;
     onChange: (value: string | undefined) => void;
+    onOpen: () => void;
+    loading: boolean;
   };
   /**
    * Waste operators. null means no filter at all: the operator is chosen by whoever assigns it, and
    * in an operator's own list every request is theirs anyway (ADR 0010).
    */
-  operators: { options: FilterOption[]; loading: boolean } | null;
+  operators: { options: FilterOption[]; loading: boolean; onOpen: () => void } | null;
   /** Request number: a string in the field ("М-128"), a number in the parameters. */
   num: { text: string; onChange: (raw: string) => void };
   /**
@@ -86,13 +89,8 @@ export interface WasteRequestFeedSources {
    */
   initialObjectId: string;
   objectFilterDisabled: boolean;
-  objectOptions: FilterOption[];
-  objectsLoading: boolean;
-  subjectTypes: {
-    cont: FilterOption[];
-    truck: FilterOption[];
-  };
-  operators: { options: FilterOption[]; loading: boolean } | null;
+  limitObjectOptions: (options: FilterOption[]) => FilterOption[];
+  canAssignOperator: boolean;
 }
 
 export interface WasteRequestFeedList {

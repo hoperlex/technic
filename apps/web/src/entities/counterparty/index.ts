@@ -19,3 +19,4 @@ export {
 } from './api/queries';
 export { counterpartyTypeOptions } from './model/options';
 export { counterpartyErrorMessage } from './model/errorMessage';
+export { operatorOptionsForObject } from './model/operatorOptions';

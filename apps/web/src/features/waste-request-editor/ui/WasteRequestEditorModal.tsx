@@ -294,7 +294,7 @@ export function WasteRequestEditorModal({
               // Who already works on the site is shown where the executor is chosen (ADR 0054): it
               // answers both "whom to call" and "why not this one".
               extra={
-                operatorOptions.length === 0
+                sources.operatorsReady && operatorOptions.length === 0
                   ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
                   : presentGroupsHint(groups)
               }

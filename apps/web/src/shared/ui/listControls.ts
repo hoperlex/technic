@@ -2,12 +2,8 @@ import type { ReactNode } from 'react';
 import type { TableColumnsType } from 'antd';
 
 /**
- * Описания фильтров и сортировки списка для мобильного режима (ADR 0030).
- *
- * На десктопе фильтры стоят панелью над таблицей и живут произвольной разметкой; посчитать по
- * ней, сколько фильтров сейчас задано, и переложить их в шит нельзя — это набор React-элементов,
- * а не данные. Поэтому список описывает свои фильтры явно, а панель над таблицей на десктопе
- * по-прежнему собирается из тех же значений — руками страницы.
+ * Phone filter and sort descriptors (ADR 0030). Desktop controls are arbitrary React elements,
+ * so the phone sheet needs explicit values to count and present active filters.
  */
 
 export interface FilterOption {
@@ -15,7 +11,7 @@ export interface FilterOption {
   label: string;
 }
 
-/** Группа вариантов («Контейнеры», «Самосвалы») — тот же вид, что принимает Select antd. */
+/** An option group in the shape accepted by Ant Design Select. */
 export interface FilterOptionGroup {
   label: string;
   options: FilterOption[];
@@ -24,10 +20,12 @@ export interface FilterOptionGroup {
 export interface FilterBase {
   key: string;
   label: string;
-  /** Считается ли фильтр заданным. По умолчанию — по непустому значению. */
+  /** Override the default rule that a nonempty value makes a filter active. */
   isActive?: boolean;
-  /** Фильтр, зафиксированный ролью (объект у штаба): показывается, но не меняется. */
+  /** A role-locked filter stays visible but cannot be changed. */
   disabled?: boolean;
+  /** A phone sheet opens all of its visible directory selectors together. */
+  onOpen?: () => void;
 }
 
 export type FilterDefinition =
@@ -78,11 +76,7 @@ export type FilterDefinition =
 
 /** Значение фильтра в черновике шита: до нажатия «Применить» в параметры списка оно не уходит. */
 export type FilterDraftValue =
-  | string
-  | string[]
-  | boolean
-  | undefined
-  | { from?: string; to?: string };
+  string | string[] | boolean | undefined | { from?: string; to?: string };
 
 export interface SortOption {
   /** Ключ колонки — он же поле сортировки на сервере. */

@@ -44,6 +44,8 @@ export function WasteRequestFeedFilterBar({ options }: { options: WasteFilterOpt
         showSearch
         optionFilterProp="label"
         disabled={options.objects.disabled}
+        loading={options.objects.loading}
+        onOpenChange={(open) => open && options.objects.onOpen()}
       />
       <Select
         style={{ width: 190 }}
@@ -68,6 +70,8 @@ export function WasteRequestFeedFilterBar({ options }: { options: WasteFilterOpt
         optionFilterProp="label"
         placeholder="Контейнер / машина"
         options={options.subject.options}
+        loading={options.subject.loading}
+        onOpenChange={(open) => open && options.subject.onOpen()}
         value={options.subject.value}
         onChange={options.subject.onChange}
       />
@@ -100,6 +104,7 @@ export function WasteRequestFeedFilterBar({ options }: { options: WasteFilterOpt
           placeholder="Все операторы"
           options={options.operators.options}
           loading={options.operators.loading}
+          onOpenChange={(open) => open && options.operators?.onOpen()}
           value={options.values.operatorCounterpartyId}
           onChange={(value: string | undefined) =>
             options.onChange({ operatorCounterpartyId: value })
@@ -152,6 +157,7 @@ export function wasteRequestFeedMobileFilters(options: WasteFilterOptions): Filt
       options: options.objects.options,
       placeholder: 'Все объекты',
       loading: options.objects.loading,
+      onOpen: options.objects.onOpen,
       // With one object the filter is shown but fixed; with several it chooses among the own ones.
       disabled: options.objects.disabled,
       onChange: (value) => options.objects.onChange(value ?? ''),
@@ -180,6 +186,8 @@ export function wasteRequestFeedMobileFilters(options: WasteFilterOptions): Filt
       label: 'Контейнер / машина',
       value: options.subject.value,
       options: options.subject.options,
+      loading: options.subject.loading,
+      onOpen: options.subject.onOpen,
       placeholder: 'Любой',
       onChange: options.subject.onChange,
     },
@@ -201,6 +209,7 @@ export function wasteRequestFeedMobileFilters(options: WasteFilterOptions): Filt
             options: options.operators.options,
             placeholder: 'Все операторы',
             loading: options.operators.loading,
+            onOpen: options.operators.onOpen,
             onChange: (value: string | undefined) =>
               options.onChange({ operatorCounterpartyId: value }),
           },

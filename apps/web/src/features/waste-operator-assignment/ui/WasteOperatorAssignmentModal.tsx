@@ -78,7 +78,7 @@ export function WasteOperatorAssignmentModal({
           // Site containers are shown here because assignment is when the crew is decided, and
           // "whoever installed it removes it" is part of that decision (ADR 0054).
           extra={
-            options.length === 0
+            !loading && options.length === 0
               ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
               : presentGroupsHint(groups ?? [])
           }

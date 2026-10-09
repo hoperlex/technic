@@ -90,6 +90,7 @@ export function VehicleRequestHistory({
   const classificationFilter = useVehicleClassificationFilter({
     classifications: params.classifications,
     onChange: applyFilter,
+    deferred: true,
   });
   // "Which vehicle" is a question separate from "rented from whom" (the lessor filter below): one
   // unit is rented from one lessor, and one lessor rents out different units (ADR 0098).
