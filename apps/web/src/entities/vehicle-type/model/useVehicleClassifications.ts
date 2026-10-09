@@ -110,7 +110,7 @@ export function classificationFilterGroups(
  * on-site work can use any kind, while freight transport accepts cargo kinds.
  */
 export function useVehicleClassifications(enabled = true, pick = false) {
-  const { data, isLoading, isSuccess } = useQuery({
+  const { data, dataUpdatedAt, isFetching, isLoading, isStale, isSuccess } = useQuery({
     ...vehicleClassificationsForSelectQuery(),
     ...(pick ? QUERY_PROFILE.PICK : {}),
     enabled,
@@ -123,10 +123,19 @@ export function useVehicleClassifications(enabled = true, pick = false) {
     items,
     byKey,
     groups: classificationGroups(items),
-    /** Те же позиции для фильтра списка: вариант «весь тип» и свой ключ фильтра. */
+    /** The same positions for list filters, including the whole-type option and its filter key. */
     filterGroups: classificationFilterGroups(items),
     loading: isLoading,
     ready: isSuccess,
+    // A disabled PICK observer may expose an older successful answer while the next opening
+    // refetches it. Copying from that answer could submit a position since deactivated.
+    // Disabled observers report isStale=false even for data older than PICK. The age check keeps
+    // that old answer from looking fresh during the transition to an open editor.
+    fresh:
+      isSuccess &&
+      !isFetching &&
+      !isStale &&
+      Date.now() - dataUpdatedAt < QUERY_PROFILE.PICK.staleTime,
   };
 }
 

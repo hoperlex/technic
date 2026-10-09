@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { QueryClient } from '@tanstack/react-query';
 import type { VehicleRequestDto } from '@technic/contracts';
 import { typeDate } from './antd';
-import { json, mockHttp, type HttpMock, type RecordedCall, type RouteMap } from './http';
-import { renderWithUser } from './render';
+import {
+  json,
+  mockHttp,
+  type HttpMock,
+  type MockResponse,
+  type RecordedCall,
+  type RouteMap,
+} from './http';
+import { createTestQueryClient, renderWithUser } from './render';
 import { authUser, shtabUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
@@ -18,6 +26,7 @@ import {
   vehicleSummary,
 } from './factories/vehicle';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
+import { vehicleClassificationKeys } from '../src/entities/vehicle-type';
 
 /**
  * Копия заявки на технику (ADR 0173, ADR 0206): «Завести такую же» в карточке открывает форму
@@ -256,6 +265,7 @@ function renderTab(
   items: VehicleRequestDto[] = [SPECIAL],
   user = authUser(),
   over: RouteMap = {},
+  queryClient?: QueryClient,
 ): HttpMock {
   const http = mockHttp({
     'GET /vehicle-requests/feed': () => json(vehicleFeed(items)),
@@ -289,7 +299,7 @@ function renderTab(
     ...CARD_ROUTES,
     ...over,
   });
-  renderWithUser(<VehicleRequestsTab />, { user });
+  renderWithUser(<VehicleRequestsTab />, { user, queryClient });
   return http;
 }
 
@@ -340,6 +350,40 @@ function selectedValue(label: string): string {
     .find((el) => el.querySelector('label')?.textContent === label)
     ?.querySelector('.ant-select-content');
   return item?.textContent ?? '';
+}
+
+async function pickClassification(text: string) {
+  const field = [...document.querySelectorAll('.ant-modal .ant-form-item')].find(
+    (el) => el.querySelector('label')?.textContent === 'Тип/категория ТС',
+  );
+  fireEvent.mouseDown(field!.querySelector('.ant-select-content') ?? field!);
+  const option = await waitFor(() => {
+    const found = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find(
+      (el) => el.textContent?.includes(text),
+    );
+    if (!found) throw new Error(`Classification option ${text} is not open`);
+    return found;
+  });
+  fireEvent.click(option);
+}
+
+function staleClassifierCache(queryClient: QueryClient, single = false) {
+  queryClient.setQueryData(
+    vehicleClassificationKeys.forSelect(),
+    list([
+      classification({ vehicleTypeId: 'vt-1', vehicleCategoryId: 'vc-1' }),
+      ...(!single
+        ? [
+            classification({
+              vehicleTypeId: 'vt-1',
+              vehicleCategoryId: 'vc-3',
+              categoryName: 'г/п 50 т',
+            }),
+          ]
+        : []),
+    ]),
+    { updatedAt: Date.now() - 61_000 },
+  );
 }
 
 /**
@@ -645,6 +689,118 @@ describe('копия заявки на технику', () => {
     fireEvent.click(button('Сохранить')!);
     await waitFor(() => expect(http.countOf(CREATE)).toBe(1));
     expect(http.lastCall(CREATE)?.body).toMatchObject({ vehicleCategoryId: 'vc-1' });
+  });
+
+  it('не отправляет позицию копии, выключенную после устаревшего ответа из кэша', async () => {
+    const queryClient = createTestQueryClient();
+    staleClassifierCache(queryClient, true);
+    let respond!: (response: MockResponse) => void;
+    const classifierResponse = new Promise<MockResponse>((resolve) => {
+      respond = resolve;
+    });
+    const http = renderTab(
+      [SPECIAL],
+      authUser(),
+      { 'GET /vehicle-classifications': () => classifierResponse },
+      queryClient,
+    );
+    await openCopy('Т-42');
+    await waitFor(() => expect(http.countOf('GET /vehicle-classifications')).toBe(1));
+    // A sole stale option must not be chosen automatically while its freshness is unknown.
+    expect(selectedValue('Тип/категория ТС')).toBe('');
+    fireEvent.click(button('Сохранить')!);
+    await waitFor(() =>
+      expect(document.querySelector('.ant-form-item-explain-error')?.textContent).toContain(
+        'Выберите тип или категорию',
+      ),
+    );
+    expect(http.countOf(CREATE)).toBe(0);
+
+    respond(json(emptyList()));
+    await waitFor(() =>
+      expect(queryClient.getQueryData(vehicleClassificationKeys.forSelect())).toEqual(emptyList()),
+    );
+
+    expect(selectedValue('Тип/категория ТС')).toBe('');
+    expect(http.countOf(CREATE)).toBe(0);
+  });
+
+  it('подставляет позицию источника после свежего ответа PICK', async () => {
+    const queryClient = createTestQueryClient();
+    staleClassifierCache(queryClient);
+    const http = renderTab([SPECIAL], authUser(), {}, queryClient);
+    await openCopy('Т-42');
+    await waitFor(() => expect(http.countOf('GET /vehicle-classifications')).toBe(1));
+    await waitFor(() => expect(selectedValue('Тип/категория ТС')).toContain('г/п 25 т'));
+
+    fireEvent.click(button('Сохранить')!);
+    await waitFor(() => expect(http.countOf(CREATE)).toBe(1));
+    expect(http.lastCall(CREATE)?.body).toMatchObject({ vehicleCategoryId: 'vc-1' });
+  });
+
+  it('снимает только прежнюю позицию копии, если открытый список обновился без неё', async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(
+      vehicleClassificationKeys.forSelect(),
+      list([
+        classification({ vehicleTypeId: 'vt-1', vehicleCategoryId: 'vc-1' }),
+        classification({
+          vehicleTypeId: 'vt-1',
+          vehicleCategoryId: 'vc-3',
+          categoryName: 'г/п 50 т',
+        }),
+      ]),
+    );
+    const http = renderTab([SPECIAL], authUser(), {}, queryClient);
+    await openCopy('Т-42');
+    await waitFor(() => expect(selectedValue('Тип/категория ТС')).toContain('г/п 25 т'));
+
+    http.use({ 'GET /vehicle-classifications': () => json(emptyList()) });
+    await queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.forSelect() });
+    await waitFor(() => expect(selectedValue('Тип/категория ТС')).toBe(''));
+    fireEvent.click(button('Сохранить')!);
+    expect(http.countOf(CREATE)).toBe(0);
+  });
+
+  it('сохраняет выбор человека, сделанный до свежего ответа PICK', async () => {
+    const queryClient = createTestQueryClient();
+    staleClassifierCache(queryClient);
+    let respond!: (response: MockResponse) => void;
+    const classifierResponse = new Promise<MockResponse>((resolve) => {
+      respond = resolve;
+    });
+    const http = renderTab(
+      [SPECIAL],
+      authUser(),
+      { 'GET /vehicle-classifications': () => classifierResponse },
+      queryClient,
+    );
+    await openCopy('Т-42');
+    await waitFor(() => expect(http.countOf('GET /vehicle-classifications')).toBe(1));
+    await pickClassification('г/п 50 т');
+    expect(selectedValue('Тип/категория ТС')).toContain('г/п 50 т');
+
+    respond(
+      json(
+        list([
+          classification({ vehicleTypeId: 'vt-1', vehicleCategoryId: 'vc-1' }),
+          classification({
+            vehicleTypeId: 'vt-1',
+            vehicleCategoryId: 'vc-3',
+            categoryName: 'г/п 50 т',
+          }),
+        ]),
+      ),
+    );
+    await waitFor(() =>
+      expect(queryClient.getQueryState(vehicleClassificationKeys.forSelect())?.fetchStatus).toBe(
+        'idle',
+      ),
+    );
+    expect(selectedValue('Тип/категория ТС')).toContain('г/п 50 т');
+    fireEvent.click(button('Сохранить')!);
+    await waitFor(() => expect(http.countOf(CREATE)).toBe(1));
+    expect(http.lastCall(CREATE)?.body).toMatchObject({ vehicleCategoryId: 'vc-3' });
   });
 
   it('у грузоперевозки переносит ездки — без чужих идентификаторов', async () => {

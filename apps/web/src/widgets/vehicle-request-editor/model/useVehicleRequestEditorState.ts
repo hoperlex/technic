@@ -69,7 +69,7 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     byKey: classificationByKey,
     groups,
     loading: typesLoading,
-    ready: classificationsReady,
+    fresh: classificationsFresh,
   } = useVehicleClassifications(open, true);
   const [record, setRecord] = useState<VehicleRequestDto | null>(null);
   // The request a copy was taken from, with the frozen calendar (`CopySource` explains the freeze).
@@ -78,35 +78,30 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
   const copyClassificationChecked = useRef(false);
   const [tripsExpanded, setTripsExpanded] = useState(false);
   /*
-   * Backdate operation key (ADR 0101, R31) — one per open dialog, not per click.
-   *
-   * That is how it works: the connection dropped, no answer came, the person presses "Save" again,
-   * and the server returns the previous result for the same key instead of a second request and a
-   * second burnt strict-reporting form number. A new uuid per click would make the key useless in
-   * exactly the case it exists for. `resetWindow` issues a fresh key only when a dialog is opened.
-   *
-   * A failed attempt does not burn the key: the operation row is written in the same transaction
-   * as the edit and rolls back with it, so "fixed the reason and saved again" goes through normally
-   * instead of hitting "key taken by another command".
-   *
-   * The 4-P day batch deliberately does the opposite — a key per click (ADR 0207, decision 11, see
-   * `dayBatchBody` in `features/vehicle-assignment`): there a repeated click collects the remainder
-   * of the period, which is a different operation, while here a repeated click is the same edit.
+   * ADR 0101 R31: one idempotency key per dialog. A retry after a lost response must reuse it,
+   * or strict reporting could burn a second form number. `resetWindow` replaces it for a new dialog.
+   * Failed edits roll back the operation row, so correcting the form keeps the key. The 4-P day
+   * batch uses a key per click because each click collects the remaining period (ADR 0207 §11).
    */
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
   const [form] = Form.useForm<FormValues>();
   const files = useFileEditor();
 
-  // Copy opens from a feed row before the deferred classifier has answered. An active source
-  // position is restored after that answer; an inactive one stays empty, and a choice made while
-  // loading is never overwritten by the late response.
+  // A cached successful answer may be stale when PICK opens. Reconcile the copied position only
+  // against a fresh answer: a removed source must not be submitted, and a choice made while the
+  // answer was loading must not be replaced.
   useEffect(() => {
-    if (!open || !copy || !classificationsReady || copyClassificationChecked.current) return;
+    if (!open || !copy || !classificationsFresh) return;
+    const firstCheck = !copyClassificationChecked.current;
     copyClassificationChecked.current = true;
     const key = classificationKeyOf(copy.source);
-    if (form.getFieldValue('classificationKey') !== '') return;
-    if (classificationByKey.has(key)) form.setFieldValue('classificationKey', key);
-  }, [open, copy, classificationsReady, classificationByKey, form]);
+    const current = form.getFieldValue('classificationKey');
+    if (current === key && !classificationByKey.has(key)) {
+      form.setFieldValue('classificationKey', '');
+    } else if (firstCheck && current === '' && classificationByKey.has(key)) {
+      form.setFieldValue('classificationKey', key);
+    }
+  }, [open, copy, classificationsFresh, classificationByKey, form]);
 
   // The request type is chosen first: it drives the fields, the vehicle-type list and the customer
   // picker — on-site equipment goes to a site, and departments are not offered for it at all (R4).
@@ -327,7 +322,9 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
       copyFormValues(request, {
         minDate,
         today,
-        hasClassification: classificationByKey.has(classificationKeyOf(request)),
+        // Fill only after this opening's PICK observer has accepted the list. Even a cache entry
+        // fresh at the last render may have aged or been invalidated by the time of this click.
+        hasClassification: false,
         hasCustomer: !!pair.objectId || !!pair.departmentId,
       }),
     );
@@ -385,7 +382,9 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     suggestObjectIds,
     tripsExpanded,
     typeGroups,
-    typesLoading,
+    // A stale cached list is still visible in the open copy. Keep its sole option from being
+    // chosen automatically before PICK has checked that it remains active.
+    typesLoading: typesLoading || (!!copy && !classificationsFresh),
   };
 }
 
