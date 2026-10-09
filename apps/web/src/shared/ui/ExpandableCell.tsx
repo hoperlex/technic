@@ -1,24 +1,15 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { DownOutlined, UpOutlined } from '@ant-design/icons';
 
 /**
- * Ячейка таблицы, которая не растит строку. Свёрнутой она занимает столько же строк, сколько
- * соседние колонки (номер и автор, техника и ставка), а всё, что не поместилось, открывается
- * нажатием — по строке.
- *
- * Так показывают длинное содержимое, которое читают не всегда: комментарий к заявке и контакты на
- * концах маршрута. Обрезать их многоточием нельзя — там, где начинается отличие одной заявки от
- * другой, текст как раз и кончается; но и пустить их в высоту значит раздуть каждую строку списка
- * под самую многословную заявку.
- *
- * Переключатель стоит поверх правого края и высоты не добавляет: подпись «ещё» отдельной строкой
- * сама сделала бы строки таблицы толще ровно на неё — то есть ровно то, от чего ячейка и заведена.
+ * Long comments and route contacts must remain available without making every feed row as tall as
+ * its longest cell. The toggle overlays the edge so it does not add another line to the row.
  */
 export function ExpandableCell({
   lines = 2,
   children,
 }: {
-  /** Сколько строк видно свёрнутой; по умолчанию две — обычная высота строки этих списков. */
+  /** The collapsed row height matches the two-line cells alongside it. */
   lines?: number;
   children: ReactNode;
 }) {
@@ -26,19 +17,33 @@ export function ExpandableCell({
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
 
+  const measure = useCallback(() => {
+    const el = bodyRef.current;
+    // Expanded content has no clipping to measure. Preserve the last collapsed result so the
+    // toggle remains available until the cell is collapsed and measured again.
+    if (!el?.classList.contains('expandable-cell__body--clamped')) return;
+    setClipped(el.scrollHeight - el.clientHeight > 1);
+  }, []);
+
   useLayoutEffect(() => {
     const el = bodyRef.current;
-    // Развёрнутая ячейка себя не мерит: в ней видно всё, и замер сказал бы, что прятать нечего, —
-    // переключатель исчез бы вместе с возможностью вернуть строке прежнюю высоту. Пока ячейка
-    // развёрнута, `clipped` держит последний замер свёрнутого состояния.
-    if (!el || expanded) return;
-    const measure = () => setClipped(el.scrollHeight - el.clientHeight > 1);
-    measure();
-    // Ширина колонки меняется вместе с окном: то, что помещалось в две строки, перестаёт.
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [children, expanded, lines]);
+    if (!el) return;
+    // A clamped cell can change text without changing its size, so resize alone misses the new
+    // overflow state. Keep both observers for the cell lifetime, independent of React children.
+    const resizeObserver = new ResizeObserver(measure);
+    const mutationObserver = new MutationObserver(measure);
+    resizeObserver.observe(el);
+    mutationObserver.observe(el, { subtree: true, characterData: true, childList: true });
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, [measure]);
+
+  useLayoutEffect(() => {
+    // The observer cannot detect a new clamp limit or the transition back from expanded content.
+    if (!expanded) measure();
+  }, [expanded, lines, measure]);
 
   return (
     <div className="expandable-cell">
@@ -55,8 +60,7 @@ export function ExpandableCell({
           className="expandable-cell__toggle"
           aria-label={expanded ? 'Свернуть' : 'Показать полностью'}
           title={expanded ? 'Свернуть' : 'Показать полностью'}
-          // Нажатие остаётся в ячейке: строка списка по клику открывает карточку записи, а
-          // разворачивают текст, чтобы его прочитать здесь, — не вместо этого.
+          // The row click opens the record; this click must only reveal text in the same row.
           onClick={(e) => {
             e.stopPropagation();
             setExpanded((v) => !v);
