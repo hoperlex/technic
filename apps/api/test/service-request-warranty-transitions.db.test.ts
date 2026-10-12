@@ -1,9 +1,13 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  WARRANTY_EXPIRING_DAYS,
   warrantyToday,
+  type EquipmentRequestsPageDto,
+  type OfficeEquipmentDto,
+  type OfficeEquipmentServiceEntryDto,
   type ServiceRequestDto,
   type ServiceRequestItemDto,
   type ServiceWarrantyRowDto,
@@ -210,7 +214,7 @@ async function lastAudit(action: string, requestId: string): Promise<Record<stri
 
 /** Своя единица на каждый случай: по технике разрешена одна открытая заявка на ремонт (Р21). */
 let unitNo = 0;
-async function makeEquipment(tag: string): Promise<string> {
+async function makeEquipment(tag: string, extra: Record<string, unknown> = {}): Promise<string> {
   unitNo += 1;
   const res = await inject('POST', EQUIPMENT, ctx.operator.auth, {
     equipmentTypeId: ctx.typeId,
@@ -218,6 +222,7 @@ async function makeEquipment(tag: string): Promise<string> {
     inventoryNumber: `WT-${RUN}-${unitNo}`,
     objectId: ctx.objectId,
     location: 'кабинет 214',
+    ...extra,
   });
   expect(res.statusCode, res.body).toBe(201);
   return (res.json() as { id: string }).id;
@@ -960,9 +965,9 @@ describe.skipIf(!DB_URL)('гарантии в переходах заявки н
       });
       expect(rows.map((row) => row.itemId)).not.toContain(yesterday.itemId);
 
-      // Обращение по гарантии — второе, независимое от реестра утверждение о той же границе.
-      // Оно же честнее по календарю: реестр режет выборку по `CURRENT_DATE` базы, а обращение —
-      // по московскому «сегодня» (`warrantyToday`), и в ночные часы эти два ответа разойдутся.
+      // The warranty claim is a second statement about the same boundary, independent of the
+      // registry. Both count from the Moscow day (`warrantyToday`); the night case below proves
+      // that the registry does not fall back to the database clock.
       const claim = await createRequest(today.equipmentId, 'Та же неисправность — по гарантии', {
         warrantyClaim: { source: 'item', itemId: today.itemId },
       });
@@ -979,6 +984,136 @@ describe.skipIf(!DB_URL)('гарантии в переходах заявки н
       );
       expect(expired.statusCode, expired.body).toBe(422);
       expect(expired.json().message).toContain('истекла');
+    });
+
+    it('at 01:30 MSK, while the database session is still on yesterday, every cut counts from the Moscow day', async () => {
+      /*
+       * The night window of the registry bug: app sessions run in UTC, so from 00:00 to 03:00 MSK
+       * CURRENT_DATE is still yesterday while `warrantyToday` has already moved on. Five readers
+       * cut warranties by date in SQL — the registry, its "expiring" horizon, the three list
+       * filters of the directory, the service history of the card and the requests block — and
+       * each of them must agree with the state the row itself carries.
+       *
+       * The moment is anchored to the database's own date (D at 22:30Z, that is 01:30 MSK on D+1)
+       * and not to a fixed calendar day, so the split exists on every run whatever the real clock
+       * says: against a fixed date a reader comparing with the database clock would pass on
+       * exactly the day the database reached it.
+       *
+       * Only `Date` is faked (the driver's timers stay real), and the login is redone under the
+       * fake clock: the access token lives fifteen minutes, and the moment may be hours away from
+       * the real one. Everything is prepared before the clock moves, with real handles.
+       */
+      const dbDay = (
+        await ctx.db.execute<{ d: string }>(sql`SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS d`)
+      ).rows[0]!.d;
+      const moment = new Date(`${dbDay}T22:30:00.000Z`);
+      const moscowDay = warrantyToday(moment);
+      expect(moscowDay, 'the scene must be a Moscow day the database has not reached').toBe(
+        plusDays(dbDay, 1),
+      );
+      const windowEdge = plusDays(moscowDay, WARRANTY_EXPIRING_DAYS);
+      const beyondWindow = plusDays(windowEdge, 1);
+
+      // Supplier warranties: ended yesterday (Moscow), ends today, last expiring day, first
+      // day past the window.
+      const unitYesterday = await makeEquipment('night-yesterday', { warrantyUntil: dbDay });
+      const unitToday = await makeEquipment('night-today', { warrantyUntil: moscowDay });
+      const unitEdge = await makeEquipment('night-edge', { warrantyUntil: windowEdge });
+      const unitBeyond = await makeEquipment('night-beyond', { warrantyUntil: beyondWindow });
+
+      // Repair warranties: two performed items of one request, one ended yesterday (Moscow), one
+      // ends today. The closing handle refuses a date before the completion day, so the dates are
+      // put in place afterwards, as in the case above.
+      const requestId = await requestReadyToComplete('night-repair', [
+        { kind: 'part', name: 'Ролик подачи', unitPrice: 1800 },
+        { kind: 'part', name: 'Тормозная площадка', unitPrice: 900 },
+      ]);
+      const closed = await complete(requestId, [
+        { name: 'Ролик подачи', performed: true, warrantyUntil: TODAY },
+        { name: 'Тормозная площадка', performed: true, warrantyUntil: TODAY },
+      ]);
+      expect(closed.statusCode, closed.body).toBe(200);
+      const closedDto = closed.json() as ServiceRequestDto;
+      const repairUnit = closedDto.equipment!.id;
+      const itemToday = itemNamed(closedDto, 'Ролик подачи').id;
+      const itemYesterday = itemNamed(closedDto, 'Тормозная площадка').id;
+      await ctx.db.execute(sql`
+        UPDATE service_request_items SET warranty_until = ${moscowDay} WHERE id = ${itemToday}`);
+      await ctx.db.execute(sql`
+        UPDATE service_request_items SET warranty_until = ${dbDay} WHERE id = ${itemYesterday}`);
+
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(moment);
+      try {
+        const login = await ctx.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/login',
+          payload: { email: ctx.operator.email, password: PASSWORD },
+          remoteAddress: nextAddress(),
+        });
+        expect(login.statusCode, login.body).toBe(200);
+        const auth = { authorization: `Bearer ${login.json().accessToken}` };
+        const read = async <T>(url: string): Promise<T> => {
+          const res = await inject('GET', url, auth);
+          expect(res.statusCode, res.body).toBe(200);
+          return res.json() as T;
+        };
+
+        // The registry lists warranties in force: no row of it may carry the expired state.
+        const registry = (
+          await read<{ items: ServiceWarrantyRowDto[] }>(`${REQUESTS}/warranties?pageSize=200`)
+        ).items;
+        expect(registry.filter((row) => row.state === 'expired')).toEqual([]);
+        const unitRow = (id: string) =>
+          registry.find((row) => row.kind === 'equipment' && row.equipmentId === id);
+        const itemRow = (id: string) => registry.find((row) => row.itemId === id);
+        expect(unitRow(unitYesterday)).toBeUndefined();
+        expect(itemRow(itemYesterday)).toBeUndefined();
+        expect(unitRow(unitToday)).toMatchObject({ state: 'expiring', daysLeft: 0 });
+        expect(itemRow(itemToday)).toMatchObject({ state: 'expiring', daysLeft: 0 });
+
+        // The "expiring" horizon is the Moscow day plus the threshold, both ends inclusive.
+        const expiring = (
+          await read<{ items: ServiceWarrantyRowDto[] }>(
+            `${REQUESTS}/warranties?pageSize=200&kind=equipment&expiring=true`,
+          )
+        ).items.map((row) => row.equipmentId);
+        expect(expiring).toEqual(expect.arrayContaining([unitToday, unitEdge]));
+        expect(expiring).not.toContain(unitYesterday);
+        expect(expiring).not.toContain(unitBeyond);
+
+        // The directory filters answer the same three questions from the same day.
+        const listed = async (filter: string) =>
+          (
+            await read<{ items: OfficeEquipmentDto[] }>(
+              `${EQUIPMENT}?pageSize=200&warranty=${filter}`,
+            )
+          ).items.map((row) => row.id);
+        const expiredUnits = await listed('expired');
+        expect(expiredUnits).toContain(unitYesterday);
+        expect(expiredUnits).not.toContain(unitToday);
+        const activeUnits = await listed('active');
+        expect(activeUnits).toEqual(expect.arrayContaining([unitToday, unitEdge, unitBeyond]));
+        expect(activeUnits).not.toContain(unitYesterday);
+        const expiringUnits = await listed('expiring');
+        expect(expiringUnits).toEqual(expect.arrayContaining([unitToday, unitEdge]));
+        expect(expiringUnits).not.toContain(unitYesterday);
+        expect(expiringUnits).not.toContain(unitBeyond);
+
+        // The card's service history and the requests block show only the warranty in force.
+        const card = await read<{ serviceHistory?: OfficeEquipmentServiceEntryDto[] }>(
+          `${EQUIPMENT}/${repairUnit}`,
+        );
+        const entry = card.serviceHistory?.find((row) => row.id === requestId);
+        expect(entry?.warranties.map((w) => w.itemId)).toEqual([itemToday]);
+        const block = await read<EquipmentRequestsPageDto>(
+          `${EQUIPMENT}/${repairUnit}/requests?pageSize=50`,
+        );
+        const blockRow = block.items.find((row) => row.id === requestId);
+        expect(blockRow?.warranties.map((w) => w.itemId)).toEqual([itemToday]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
