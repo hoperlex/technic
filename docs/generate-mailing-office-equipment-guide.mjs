@@ -133,17 +133,6 @@ function iconEnvelope(x, y, size = 32, color = C.blue) {
   );
 }
 
-function iconGear(x, y, size = 32, color = C.blue) {
-  return (
-    circle(x + size / 2, y + size / 2, size * 0.34, { fill: 'none', stroke: color, sw: 3 }) +
-    circle(x + size / 2, y + size / 2, size * 0.12, { fill: 'none', stroke: color, sw: 3 }) +
-    path(
-      `M ${x + size / 2} ${y} V ${y + 6} M ${x + size / 2} ${y + size - 6} V ${y + size} M ${x} ${y + size / 2} H ${x + 6} M ${x + size - 6} ${y + size / 2} H ${x + size}`,
-      { stroke: color, sw: 3 },
-    )
-  );
-}
-
 function numberDot(number, x, y, color = C.blue, radius = 18) {
   return (
     circle(x, y, radius, { fill: color, stroke: '#fff', sw: 4, shadow: true }) +
