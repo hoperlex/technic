@@ -142,15 +142,28 @@ export function useWeeklyRequestWorkspace() {
     clearApplyError();
     invalidate();
   };
-  const onError = (error: unknown) => {
+  /**
+   * One refusal handler for every command of the page, told which kind of command failed.
+   *
+   * The reversals of an applied week (annulment ADR 0218, return ADR 0219) share the 409 reread
+   * with the composition commands, but not their words: a reversal neither edits the composition
+   * nor applies the week. The "your edits are not saved" notice and the apply-refusal banner would
+   * both be false after it, so a reversal refusal is the server's own text — "the consequences
+   * changed, look again" for a 409 — while its window stays open on the reread plan.
+   */
+  const failed = (command: 'composition' | 'reversal') => (error: unknown) => {
     if (hasApiStatus(error, 409)) {
+      // The request prefix covers the card and both reversal previews: an open reversal window
+      // gets the recomputed plan, and its retry carries the new version and fingerprint.
       void queryClient.invalidateQueries({ queryKey: weeklyRequestKeys.root });
-      // Not "the page was refreshed": an edited composition stays on screen under the notice, and
-      // "Reload" there is the person's choice (stage 5 plan §4.5, decision R6-a).
-      message.error('Заявку изменил другой пользователь — ваши правки не сохранены');
-      return;
+      if (command === 'composition') {
+        // Not "the page was refreshed": an edited composition stays on screen under the notice,
+        // and "Reload" there is the person's choice (stage 5 plan §4.5, decision R6-a).
+        message.error('Заявку изменил другой пользователь — ваши правки не сохранены');
+        return;
+      }
     }
-    if (hasApiStatus(error, 422) && request) {
+    if (command === 'composition' && hasApiStatus(error, 422) && request) {
       // The server lists reasons in the message itself and per row where it can name them as
       // fields. Both are taken: the banner explains the whole refusal, rows say what to fix.
       setApplyError(weeklyRequestErrorMessage(error));
@@ -162,6 +175,7 @@ export function useWeeklyRequestWorkspace() {
     }
     message.error(weeklyRequestErrorMessage(error));
   };
+  const onError = failed('composition');
 
   /*
    * The composition is sent whole; version is a lock token, not a column value. Every command of
@@ -184,8 +198,19 @@ export function useWeeklyRequestWorkspace() {
    * Reversals of an applied week — annulment (ADR 0218) and return for re-approval (ADR 0219) — in
    * their own module: the workspace is dense enough, and both share the engine and the window.
    */
-  const annul = useWeeklyReversal({ intent: 'annul', request, onSettled: settled, onError });
-  const returning = useWeeklyReversal({ intent: 'return', request, onSettled: settled, onError });
+  const reversalError = failed('reversal');
+  const annul = useWeeklyReversal({
+    intent: 'annul',
+    request,
+    onSettled: settled,
+    onError: reversalError,
+  });
+  const returning = useWeeklyReversal({
+    intent: 'return',
+    request,
+    onSettled: settled,
+    onError: reversalError,
+  });
 
   const saveMutation = useMutation({
     mutationFn: saveComposition,

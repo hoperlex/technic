@@ -10,7 +10,7 @@ import {
   type WeeklyAnnulPreviewDto,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
-import { json, mockHttp, type RouteMap } from './http';
+import { apiError, json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
@@ -179,6 +179,31 @@ describe('возврат применённой недели на согласо
     // The tag comes from the contract predicate the server drops the row by.
     await within(dialog).findByText('уйдёт из состава');
     expect(within(dialog).getByText(/уйдут из состава/)).toBeTruthy();
+  });
+
+  it('отказ возврата показан словами сервера и не выдаётся на карточке за отказ применения', async () => {
+    const message =
+      'Вернуть неделю на согласование нельзя: Заказ тронут неделей НЗ-14, применённой позже — разверните сначала её';
+    const http = mockHttp({
+      ...routes(week()),
+      'POST /weekly-vehicle-requests/:id/return': () =>
+        apiError(422, { code: 'unprocessable', message }),
+    });
+    renderPage(dispatcher);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Вернуть на согласование' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(await within(dialog).findByLabelText(/Причина возврата/), {
+      target: { value: 'Забыли экскаватор' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: /Вернуть на согласование/ }));
+
+    // The toast, not the card: the refusal is answered where the person clicked.
+    await screen.findByText(message, { selector: '.ant-message *' });
+    expect(http.countOf('POST /weekly-vehicle-requests/:id/return')).toBe(1);
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    // Nothing was being applied, and an applied card has no composition to mark rows in.
+    expect(screen.queryByText('Применение не прошло — неделя осталась там, где была')).toBeNull();
   });
 
   it('руководитель строительства возврата не видит, а аннулирование у него остаётся', async () => {

@@ -666,6 +666,12 @@ describe('аннулирование применённой недели: ком
     );
     expect(http.countOf('GET /weekly-vehicle-requests/:id/annul')).toBe(2);
     expect(screen.getByRole('dialog')).toBe(dialog);
+    // The server's words, not the composition's notice: the window has no edits to lose.
+    await screen.findByText(
+      'Последствия изменились с момента просмотра: посмотрите перечень заново',
+      { selector: '.ant-message *' },
+    );
+    expect(screen.queryByText(/ваши правки не сохранены/)).toBeNull();
     // The reason the person typed survives the reread: the window session is the same.
     expect(within(dialog).getByLabelText<HTMLTextAreaElement>('Причина аннулирования').value).toBe(
       'Ошиблись площадкой',
@@ -715,15 +721,11 @@ describe('аннулирование применённой недели: ком
   });
 
   /*
-   * Defect found by this test (F6, 12.10.2026), kept failing on purpose until the product is fixed.
-   * The workspace's shared error handler (useWeeklyRequestWorkspace, onError) treats every 422 as
-   * a refusal of the week's APPLICATION: it stores the message as applyError, and the card shows
-   * the banner "Применение не прошло — неделя осталась там, где была" with "Строки, которые больше
-   * не годятся, помечены причиной прямо в составе". After an annulment refusal both sentences are
-   * false: nothing was being applied, and an applied card has no composition editor to mark rows
-   * in. The toast with the server's words is right (the case above); only the banner is wrong.
+   * A reversal refusal belongs to the window, not to the card. The apply-refusal banner would say
+   * "the application failed, the rows are marked in the composition" — nothing was being applied,
+   * and an applied card has no composition editor to mark rows in (found by this test, F6).
    */
-  it.fails('отказ аннулирования не выдаётся на карточке за отказ применения', async () => {
+  it('отказ аннулирования не выдаётся на карточке за отказ применения', async () => {
     const message =
       'Аннулировать неделю нельзя: Заказ тронут неделей НЗ-14, применённой позже — разверните сначала её';
     mockHttp(
