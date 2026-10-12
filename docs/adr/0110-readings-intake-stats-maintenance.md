@@ -295,8 +295,37 @@
    ожидаемых (бумага именная), показание прежнего водителя остаётся в числах, но требовать
    показание не с кого. Кабинет ведёт себя так же ([ADR 0105](0105-driver-cabinet-documentary.md)),
    и для реестра приёма это тихая потеря: ловить такой рейс отдельной пометкой — отложенное
-   решение, а не сделанное.
+   решение, а не сделанное. _Decided 2026-10-12 (survey S-9): no separate mark — see «Owner
+   decisions 2026-10-12» below._
 6. **Адресуемость сводки ТО сделана только для гаража.** Из строки «Техника» она открывается
    параметром `?maintenance=<id>` и пересылается ссылкой, из справочника техники — состоянием
    компонента: там окно не переживает перезагрузку страницы и ссылкой не отправляется. Правило
    «адрес открывает предмет» действует, стало быть, на одном входе из двух.
+
+## Owner decisions 2026-10-12 (survey S-9): plan §14 closed with the defaults
+
+The product questions of [plan §14](../vehicle-readings-stats-plan.md) are answered with the
+defaults the code already implements. Each one was checked against the code on 2026-10-12, and
+none of them changes it.
+
+1. **`missing_source` is red at once**, not after three days (§14.1). The intake marks it red as
+   soon as the discrepancy exists, with no day count:
+   `level: d.kind === 'missing_source' ? 'red' : 'yellow'` in `apps/api/src/services/readings-intake.ts`
+   (`issuesOf`); `READING_OVERDUE_DAYS` applies to the overdue reason only (decision 7).
+2. **«Due soon» is 1 000 km before the norm** (§14.2): `MAINTENANCE_DUE_SOON_KM = 1_000` in
+   `packages/contracts/src/vehicle-maintenance.ts` (decision 9). The number is now agreed, not
+   picked.
+3. **A maintenance record is deleted under `vehicleMaintenance.write`**, not by the administrator
+   only (§14.3): `DELETE /vehicle-maintenance/:id` uses the same `write` guard as the other
+   writes (`apps/api/src/routes/vehicle-maintenance.ts`).
+4. **The garage keeps the unified rule** (§14.4): a route without an issued waybill is not an
+   expected shift, so it no longer turns the garage red (decision 15, known limitation 2). The
+   garage filter and its missing-source query ask the shared `EXPECTED_ROUTE_FILTER`
+   (`apps/api/src/services/readings-aggregate.ts`, read by `pendingReadingsSql` and
+   `loadMissingSourceVehicles` in `readings-stats.ts`).
+5. **No extra mark.** Neither «рейс есть, лист не выписали» (§14.4) nor «рейс есть, действующего
+   листа нет» after a reassignment without reissue (§14.6, known limitation 5) gets a mark of its
+   own; the question «why is there no paper for the route» stays with the route journal's «Без
+   листа» filter.
+
+Plan §14.5 was closed earlier, at stage 7.
