@@ -5651,16 +5651,17 @@ const CHAT_MAIL_TARGETS: Record<ServiceChatSide, ChatMailTarget[]> = {
   service: ['service'],
 };
 
-/** Что уходит письмом по реплике: стороны и поимённые адресаты, названные в самой реплике. */
+/** What a message mails: the targets of its sides and the named addressees of the message. */
 export interface ChatMailPlan {
   targets: ChatMailTarget[];
-  /** Поимённые адресаты: письмо получает только назначенная учётка (проверяет сервер). */
+  /** Named addressees: only an assigned account gets the letter (the server checks it). */
   userIds: string[];
 }
 
 /**
- * План письма по адресатам реплики. Перенесённые примечания (`origin='import'`) писем не ставят
- * никогда — у них приблизительное время и часто нет автора, а переносятся они пачкой.
+ * The letter plan of a message's addressees. Imported executor notes (`origin='import'`) never
+ * mail anyone, the author included: their time is approximate, they often have no author, and they
+ * moved in as a batch.
  */
 export function chatMailTargets(
   addressees: { sides: readonly ServiceChatSide[]; users: readonly string[] },

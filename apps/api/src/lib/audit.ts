@@ -122,19 +122,19 @@ export async function writeAudit(entry: AuditEntry): Promise<void> {
  *    остальные девять мутаций разбора в перечень НЕ входят: там журнал — вторая копия того, что и
  *    так видно в строке талона.
  *
- * 8. **итог планирования письма модуля «Орг.техника»** — `serviceRequest.mailPlanned`
- *    (`services/service-request-mail.ts`) и `officeEquipmentCandidate.mailPlanned`
- *    (`services/office-equipment-candidate-mail.ts`, план кандидатов §10), план расширения почты
- *    §5.10. Два действия в одном пункте, а не два пункта: факт у них один — «письмо по событию
- *    модуля запланировано вот с таким исходом», — и разнеси мы их, второй пункт слово в слово
- *    повторял бы первый, а третье письмо модуля завело бы третий такой же. Проверено тем же вопросом:
- *    **является ли событие единственным носителем факта**. У исхода `no_recipients` — является
- *    буквально: строк `mail_messages` при нём не возникает вовсе, и «письма не было» не остаётся
- *    больше нигде, кроме этой записи. Разбирают её тогда же, когда и всё в этом перечне: месяцем
- *    позже, на вопрос «почему подрядчик не приехал». Запись идёт той же транзакцией, что и само
- *    событие заявки, — иначе она пережила бы откат и рассказывала бы о письме, которого не
- *    планировалось. Цена принята осознанно: отказ вставки журнала откатит бизнес-операцию, ровно
- *    как отказ вставки самой очереди, который этот путь уже принимает.
+ * 8. **the planning outcome of an office equipment module letter** — `serviceRequest.mailPlanned`
+ *    (`services/service-request-mail.ts`, and the letters to the request author from
+ *    `services/service-request-requester-mail.ts`, ADR 0227) and
+ *    `officeEquipmentCandidate.mailPlanned` (`services/office-equipment-candidate-mail.ts`,
+ *    candidate plan §10), mail expansion plan §5.10. One item, not three: the fact is the same —
+ *    "a module letter about an event was planned with this outcome" — and separate items would
+ *    repeat each other word for word. Checked by the same question: **is the event the only carrier
+ *    of the fact**. For `no_recipients` literally so: no `mail_messages` row exists at all, and
+ *    "there was no letter" survives nowhere but here. It is read when everything in this list is
+ *    read: a month later, on "why did the contractor not come" or "why did the author hear
+ *    nothing". The row goes in the same transaction as the request event — otherwise it would
+ *    survive a rollback and tell of a letter that was never planned. The price is accepted: a
+ *    failed audit insert rolls the business operation back, as a failed queue insert already does.
  *
  * 9. **решения по сообщению об отсутствующей технике** — `officeEquipmentCandidate.confirm`,
  *    `.merge`, `.reject`, парная им `officeEquipment.create` и след решения в истории связанной

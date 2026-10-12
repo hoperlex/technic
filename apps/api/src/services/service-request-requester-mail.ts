@@ -102,7 +102,7 @@ type RequesterLetterStatus = {
 export function requesterHearsAbout(
   from: ServiceRequestStatus | null,
   to: ServiceRequestStatus,
-): to is RequesterLetterStatus {
+): boolean {
   return REQUESTER_STATUS_LETTERS[to] && from !== to;
 }
 

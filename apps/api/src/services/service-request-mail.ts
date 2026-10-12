@@ -1269,15 +1269,15 @@ export function requestDetailLines(
 ): string[] {
   return [
     /**
-     * Предмет заявки. У заявки без аппарата (Р8) строка не исчезает, а говорит это словами: письмо
-     * читают в сервисной компании, у которой портала может не быть вовсе, и пропавшая строка была
-     * бы прочитана как потерянные данные, а не как законное состояние.
+     * The subject of the request. A request without a unit (R8) keeps the line and says so in
+     * words: a contractor without a portal reads the letter, and a missing line would read as lost
+     * data rather than a legitimate state.
      */
     `Техника: ${data.officeEquipmentId === null ? SERVICE_REQUEST_NO_EQUIPMENT : `${data.equipmentName}${numbersOf(data) ? ` · ${numbersOf(data)}` : ''}`}`,
     /**
-     * А вот «Где стоит» без площадки уходит целиком, и это не то же самое: у заявки без аппарата
-     * места нет ни в каком виде, и строка «Где стоит: —» отвечала бы на вопрос, которого никто не
-     * задавал. Откуда заявка, читается строкой «Отдел» ниже.
+     * «Где стоит» without a site goes entirely, and that is not the same: a request without a unit
+     * has no place in any form, and «Где стоит: —» would answer a question nobody asked. Where the
+     * request comes from reads in the «Отдел» line below.
      */
     ...(fields.place && (data.objectCode !== null || data.objectName !== null)
       ? placeLinesOf(data)
@@ -1289,7 +1289,7 @@ export function requestDetailLines(
     ...(fields.author && data.authorName ? [`Заявку завёл: ${data.authorName}`] : []),
     ...(fields.attachments && data.attachments > 0
       ? [
-          // «См. в портале» — только тем, у кого портал есть. Копия читает его наравне со службой.
+          // «См. в портале» only to those who have the portal.
           audience === 'internal'
             ? `Вложений в заявке: ${data.attachments} (см. в портале)`
             : `Вложений в заявке: ${data.attachments} (запросите их ответом на письмо)`,
