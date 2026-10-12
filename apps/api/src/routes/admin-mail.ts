@@ -201,9 +201,9 @@ async function contentFor(
     /**
      * Letters to the request author (ADR 0227): the requester body of a REAL request, with the
      * Reply-To the author gets — the portal's general address (D4, E5). The point of this sample
-     * is checking From, Reply-To and the link before the pilot (§8 of the decision), and a sample
-     * left with the channel's own Reply-To would show the service mailbox, the opposite of the
-     * letter people get.
+     * is checking From, Reply-To and the link before the pilot (the decision's administrator
+     * steps), and a sample left with the channel's own Reply-To would show the service mailbox,
+     * the opposite of the letter people get.
      *
      * The status letter is rendered as «Отложена» with a sample reason whatever the sample's own
      * state: that wording carries the most (the reason line), and a sample in «Новая» would have

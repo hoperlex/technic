@@ -1,6 +1,6 @@
 # ADR 0227. The requester gets letters about messages and state changes of his office equipment request
 
-- Статус: Принято (12.10.2026). Implemented in branch `m1-requester-mail` (four commits from
+- Статус: Принято (12.10.2026). Implemented in branch `m1-requester-mail` (from commit
   `08db31db`), not yet in `origin/main`; the two events arrive switched on with the release
   migration (D6), and the release record is written by the integrator at the push
 - Домены: оргтехника, почта
@@ -105,7 +105,7 @@ service event, and D5 requires independence. Three hook points:
   `toStatus` through a closed `Record<ServiceRequestStatus, boolean>` (`REQUESTER_STATUS_LETTERS`):
   a new status must answer whether the requester hears about it. `new` → false (D3). _In code:_
   `requesterHearsAbout(from, to)` also refuses a row with `from = to` — the executors handle writes
-  such a row for a reassignment, and assignment letters are out of scope (§ Out of scope); the
+  such a row for a reassignment, and assignment letters are out of scope (see «Out of scope»); the
   rule is by the entered status, so an administrative rollback into `done`, `in_work` or
   `accepted` also tells the author, and a rollback into `new` does not.
 - **auto-close:** `runAutoClose` — `RETURNING id` added to the history insert, the planner called

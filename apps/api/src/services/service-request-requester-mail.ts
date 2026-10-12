@@ -74,8 +74,9 @@ export type RequesterMailEvent =
  *
  * Four groups: «В работе» (taken into work, back from «Решена» for rework, resumed from hold),
  * «Отложена» (with the reason), «Решена» and «Закрыта» (including auto-close), «Отменена» (any arc,
- * including the estimate refusal). «Новая» is out (D3, §7): creation is the author's own act, and a
- * rollback into it is the service re-reading the request. The dead statuses never occur.
+ * including the estimate refusal). «Новая» is out (D3, the decision's «Out of scope»): creation is
+ * the author's own act, and a rollback into it is the service re-reading the request. The dead
+ * statuses never occur.
  */
 export const REQUESTER_STATUS_LETTERS = {
   new: false,
@@ -97,7 +98,7 @@ type RequesterLetterStatus = {
 /**
  * Whether a history row means a letter to the author. Entering the SAME status is not a state
  * change: the executors handle writes `from = to` for a reassignment, and assignment letters are
- * out of scope for the requester (§7) — «your request was taken into work» on every reassignment
+ * out of scope for the requester — «your request was taken into work» on every reassignment
  * would be false.
  */
 export function requesterHearsAbout(

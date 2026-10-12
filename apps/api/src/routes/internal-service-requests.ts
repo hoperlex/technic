@@ -348,7 +348,7 @@ async function runAutoClose(limit: number): Promise<{ stats: AutoCloseStats; clo
            * savepoint: a SQL failure of the letter rolls back this one closure and leaves the
            * rest of the batch alone, exactly like a database refusal of the closure itself. The
            * actor is the portal (`null`), so the author is never "the actor" here, and the
-           * service side stays silent on auto-close, as it was (§7 of the decision).
+           * service side stays silent on auto-close, as it was (the decision's «Out of scope»).
            */
           await queueRequesterMail(one, {
             event: 'service_request_requester_status',

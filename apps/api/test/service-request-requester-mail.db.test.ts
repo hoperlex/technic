@@ -9,7 +9,7 @@ import type { db as AppDb } from '../src/db/client';
 
 /**
  * Letters to the request author (ADR 0227) on the live schema and through the real routes — the
- * test matrix of the decision (§5), row by row.
+ * decision's test matrix («Tests»), row by row.
  *
  * What is worth checking is not that a letter was composed, but WHEN, HOW MANY and TO WHOM: the
  * author is the only addressee (D1), his own act never mails him, a staff member who already gets
@@ -533,7 +533,7 @@ describe.skipIf(!DB_URL)('письма заявителю (живая схема
     const letters = await requesterLetters(request.id);
     expect(letters).toHaveLength(before + 1);
     expect(letters.at(-1)!.subject).toBe(`${request.displayNumber} · Заявка закрыта автоматически`);
-    // The service side stays silent on auto-close, as before (§7 of the decision).
+    // The service side stays silent on auto-close, as before (the decision's «Out of scope»).
     expect(
       (await lettersOf(request.id)).filter(
         (l) => l.kind === 'service_request_status_changed' && l.body_text.includes('Закрыта'),
