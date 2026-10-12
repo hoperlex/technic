@@ -152,3 +152,42 @@
   выводится из прайсов (ADR 0023), а не из потребности пометки.
 - **Отчёт «заказано против исполненного»** по типам и категориям.
 - **Ограничение замены одним бланком** — сейчас смена бланка называется, но не запрещается.
+
+## Implemented 2026-10-12: `ordered_vehicle_type_id` is NOT NULL
+
+The NOT NULL half of decision 14 shipped two months late and under another number: `0084` was
+never written, and the number stayed unused. The contract step is the migration
+`assignment_ordered_type_not_null` of release R1 (roadmap item C10b), one file, one transaction:
+
+1. **backfill** `ordered_vehicle_type_id` from `vehicle_requests.vehicle_type_id` where it is NULL;
+2. **guard**: a DO block that raises with the count and the first twenty `request_id`s of rows
+   still NULL;
+3. **`SET NOT NULL`**, with the column comment rewritten.
+
+**The backfill covers every row, so the guard cannot fire on a consistent database.**
+`request_id` is the primary key and references `vehicle_requests (id)`
+(`vehicle_request_assignments_request_fk`, migration `0083`), and `vehicle_requests.vehicle_type_id`
+has been NOT NULL since `0012`. Each NULL row therefore has exactly one request with a type, and
+the value written satisfies `vehicle_request_assignments_ordered_type_fk` by construction. The
+guard exists for the inconsistent case only (the request FK dropped or bypassed by hand): then it
+names the rows instead of the bare "column contains null values" of `SET NOT NULL`, and the file
+rolls back with the old code still serving. That is why it ships in R1 and not in a guard-only
+release.
+
+The value is the request's **current** type, not the vehicle type of the row: for a NULL row the
+composite FK was never checked, so the order could have been changed under it, and the lock must
+hold the order as it stands now.
+
+**The migration window is safe.** The code serving during it (`dc647215`) inserts assignments in
+one place, `saveAssignment` in `routes/vehicle-requests.ts`, and writes `orderedVehicleTypeId`
+there on both the insert and the upsert branch (typed `string`, taken from the request's NOT NULL
+type). Its three UPDATE writers (`vehicle-routes.ts`, `vehicle-route-correction.ts`,
+`vehicle-request-assignment-repair.ts`) never touch the column. A rollback to that release stays
+safe for the same reason; nothing older can run on this schema anyway.
+
+With it the consequence above «Пока `0084` не выкачена, `ordered_vehicle_type_id` допускает
+`NULL`» no longer holds: the lock «the order cannot change under an assignment» is physical for
+every row. `schema.ts` declares the column `.notNull()`, so a writer that forgets it no longer
+compiles; `apps/api/test/assignment-ordered-type-not-null.db.test.ts` runs the migration file on
+its own database (backfill from the request type, untouched filled rows, the guard's message on a
+row without a request).

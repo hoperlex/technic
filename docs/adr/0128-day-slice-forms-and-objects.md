@@ -236,3 +236,50 @@ ADR описывает **чем срез дня отвечает и по чем�
 была в шаге от порога и отошла от него. Иначе любая положительная дельта валила бы проверку
 качества, а зафиксированное уменьшение до числа выше 400 закрыло бы дорогу следующему коммиту так
 же надёжно.
+
+## Implemented 2026-10-12: the type's form is narrow in code, the CHECK waits for its own release
+
+The «known debt» above is closed in code by release R1 (roadmap item C10c) and left open in the
+database on purpose. The status line in the header is unchanged: the CHECK part is not done yet.
+
+**Narrowed to `TypeWaybillFormCode` in R1.** The projections listed above, plus one reader:
+
+- the Drizzle column `vehicle_types.waybillFormCode` (`$type<TypeWaybillFormCode>()`);
+- `VehicleTypeDto.waybillFormCode` and the internal `DtoRow` of `routes/vehicle-types.ts`;
+- `VehicleDto.waybillFormCode`;
+- `VehicleClassificationDto.waybillFormCode`;
+- the occupancy field `GarageBusyVehicle.vehicleWaybillFormCode` and its mapper in
+  `services/garage.ts`: `busyWaybillForm` can no longer see a freight route as the weekly sheet;
+- `assertTypeExists` in `routes/vehicles.ts`, which returns the type's form to the hitch rule.
+
+**The import channel.** `WAYBILL_FORM_CELLS` in `services/directory-transfer/defs/vehicles.ts` is
+now `Record<TypeWaybillFormCode, string>` without «ЭСМ-2», and `TypeModel` is narrow with it, so
+`parseChoice` refuses both the word and the code `esm2` with the list of allowed values. That was
+the only writer that bypassed the input schemas. Since the database may still hold `esm2` (see
+below), the export writes such a row's raw code instead of crashing or printing an empty cell,
+which would read as «4-П by default»; on the way back the code is refused by name, so whoever
+edits the file has to pick 4-П or «Форма № 3». An empty cell keeps the stored value, as it does for
+every column of the exchange.
+
+**Old bundles: refused, not mapped.** The server's input schemas for a type have accepted only
+`4p | leg3` since ADR 0065 (2026-08-05), whatever the bundle, and the type editor derives the code
+from a checkbox, so it can send nothing else. A client or script that still sends `esm2` gets
+`400 validation_error` with the field message «Типу закрепляют бланк 4-П или форму № 3: ЭСМ-2 портал выписывает сам по заявке». Mapping
+`esm2` to `4p` was rejected: which form a type gets decides the paper of every future route of its
+vehicles, and this decision says that such rows are settled by the owner and rewritten by a
+migration, not guessed by the portal.
+
+**The CHECK is prepared, not released.** `apps/api/drizzle/pending/vehicle-type-waybill-form-check.sql`
+narrows `vehicle_types_waybill_form_check` to `('4p', 'leg3')` behind a guard that names every type
+(code, name, form, id) still carrying another value. It goes in release R2, after R1 is deployed:
+releases up to `dc647215` still offered «ЭСМ-2» in the import, production could not be queried, and
+a guard that may fire on real data must not hold the whole R1 hostage. If it fires, the owner picks
+4p or leg3 for each named type by survey, a separate migration rewrites those rows, and the file is
+promoted after it. `apps/api/test/vehicle-type-waybill-form-pending.db.test.ts` runs the file on its
+own database: the gap before it, the guard naming two types, the narrowed CHECK refusing `esm2`.
+
+**What still reads the raw column.** The two SQL writings of the day form rule,
+`driverDayFormsSql` (`services/garage.ts`) and `onSiteDayFormsSql` (`routes/vehicle-requests.ts`),
+take `vehicle_types.waybill_form_code` as stored, so a type with `esm2` would still reach the form
+filters through them until the CHECK ships. Until then the narrow types are a promise kept by every
+writer, not by the database; the CHECK turns it into a constraint.
