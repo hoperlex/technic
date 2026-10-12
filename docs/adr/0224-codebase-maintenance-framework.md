@@ -177,19 +177,23 @@ touched, because undoing the permitted half would leave a state that never exist
 measured once per run: the same failures are not the batch's fault, new ones roll it back, and a
 base that fails without the edit is reported as such instead of punishing the batch.
 
-### 6. Work happens in a workshop; accepted work leaves as a local commit, never a push
+### 6. The cycle works in a workshop and commits locally; nothing pushes
 
-With `workshop.enabled` (on in this repository) a run works in a separate git worktree built from
-`HEAD` under `.maintenance/tmp/workshop/`, and the shared working tree is touched neither by file
-nor by index. The scope is taken from **cooled** code: files of queued commits (or the last ten),
-minus everything dirty or edited on disk in the last ten minutes.
+With `workshop.enabled` (on in this repository) `converge` works in a separate git worktree built
+from `HEAD` under `.maintenance/tmp/workshop/`, and the shared working tree is touched neither by
+file nor by index. Its scope is taken from **cooled** code: files of queued commits (or the last
+ten), minus everything dirty or edited on disk in the last ten minutes.
 
-With `workshop.commit` (also on) an accepted batch leaves as a commit `refactor(maintain): …` that
-contains only the batch files (`git/handoff.ts`): the branch ref moves by compare-and-swap, a
-branch that moved meanwhile gets the commit replayed on top once, untouched working files are
-synced to the new tip, and files busy with someone's work are named instead. Without the workshop
-(the manual `maintain verify`) an accepted edit stays in the tree for the person to commit.
-**Nothing in `tools/maintenance` pushes.**
+With `workshop.commit` (also on) an accepted `converge` batch leaves as a commit
+`refactor(maintain): …` that contains only the batch files (`git/handoff.ts`): the branch ref moves
+by compare-and-swap, a branch that moved meanwhile gets the commit replayed on top once, untouched
+working files are synced to the new tip, and files busy with someone's work are named instead.
+
+The deep window and the manual `maintain verify` do not use the workshop. They edit the shared
+tree under the per-file checkpoint, run the gates in an isolated tree of `HEAD` plus the batch
+files (`analysis.isolateVerification`), and leave an accepted edit in the working tree for the
+person to commit; concurrent changes there need `--allow-concurrent`. **Nothing in
+`tools/maintenance` pushes.**
 
 Derived run state — facts, tasks, results, reports, checkpoints, the ledger, logs, the workshop —
 lives in `.maintenance/`, which git and lint both ignore.

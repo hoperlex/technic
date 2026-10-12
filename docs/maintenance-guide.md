@@ -22,9 +22,13 @@ The decision behind the system, its limits and what was deliberately left out �
 политик. Рабочий каталог `.maintenance/` создаётся, если его нет, и проверяется, что git его
 игнорирует: производное состояние прогона в историю попасть не должно.
 
-**2. Называет стартовую точку.** Выпуск из `VERSION`, тег `v{version}`, если он есть, чистота дерева.
-Красная вершина — единственное, что запрещает старт: на ней каждая партия краснела бы не по своей
-вине. Чужая незавершённая работа рядом только предупреждает.
+**2. Names the starting point.** The release from `VERSION`, the tag `v{version}` if it exists,
+whether the tree is clean. Gates that are red on the tip are the only thing that blocks the start:
+on such a tip every batch would fail through no fault of its own. But `converge` runs the gates
+before starting only when `start.requireGreen` is on, and it is off
+(`architecture/policies/maintenance.yaml`): by default the cycle does not know the colour of the tip
+and starts with a warning. The deep window (§7) always runs the full gates first and refuses a red
+tip. Someone else's unfinished work nearby only warns.
 
 **3. Открывает прогон и цех.** Состояние ложится в `.maintenance/state/run.json` и переживает выход
 из процесса: команда, запущенная снова, продолжит с того же места. Одновременно открывается **цех** —
@@ -154,7 +158,10 @@ tail -f .maintenance/logs/maintain.log
 | Отчёт текущего прогона                         | `pnpm maintain report`          | мгновенно     |
 | Проверить саму систему                         | `pnpm maintain doctor`          | секунды       |
 
-Ни цикл, ни окно не начинаются сами: ни по расписанию, ни по хуку. Их созывает человек.
+Neither the cycle nor the window runs on a schedule; a person starts them. The one exception is
+opt-in: a hook installed with `pnpm maintain hook --install --auto` starts `converge` in the
+background after every commit (the run lock still admits one run at a time, and the system's own
+commits are skipped). The plain `--install` hook only queues commits for the next `converge`.
 
 Полезное по ходу: `--status` покажет, где прогон сейчас; `--abort` снимет его (отчёт всё равно
 запишется); `--allow-concurrent` — ваше согласие на то, что рядом идёт чужая работа.
@@ -182,29 +189,36 @@ tail -f .maintenance/logs/maintain.log
 Дальше — три лимита бюджета: находок за проход, файлов в партии, строк по оценке. Отклонённое и
 отложенное не исчезает: оно в отчёте с причиной.
 
-## 4. Три исхода проверки
+## 4. Three outcomes of verification
 
-После правки система гоняет ворота качества **в отдельном рабочем дереве** — `HEAD` плюс файлы
-партии. Это и есть вопрос, на который нужен ответ: зелено ли то, что уедет в коммит. Ответов три:
+After the edit the system runs the quality gates **in a separate tree**: the workshop of `converge`,
+or, for `deep` and the manual `maintain verify`, an isolated tree of `HEAD` plus the batch files.
+That is the question that needs an answer: is what goes into the commit green. The terminal prints
+one of three answers:
 
-| Исход             | Что сделала система                               | Что делать вам                                                  |
-| ----------------- | ------------------------------------------------- | --------------------------------------------------------------- |
-| **ПРИНЯТО**       | сняла контрольную точку, правка осталась в дереве | посмотреть диф и закоммитить                                    |
-| **ОТКАЧЕНО**      | вернула файлы партии байт в байт                  | ничего: следующий круг начнётся с анализа, а не с правки поверх |
-| **НУЖЕН ЧЕЛОВЕК** | **не тронула ничего**                             | разобраться самому: см. ниже                                    |
+| Outcome           | What the system did                                                                                                                                                                      | What you do                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| **ПРИНЯТО**       | dropped the checkpoint. In `converge` the batch left as a local commit `refactor(maintain): …` on the current branch; in `deep` and `maintain verify` the edit stays in the working tree | review the commit and push it yourself, or commit the diff     |
+| **ОТКАЧЕНО**      | restored the batch files byte for byte                                                                                                                                                   | nothing: the next round starts from analysis, not from an edit |
+| **НУЖЕН ЧЕЛОВЕК** | **touched nothing**                                                                                                                                                                      | sort it out yourself, see below                                |
 
-«Нужен человек» бывает по четырём причинам, и они разные:
+"Needs a human" has four causes, and they differ:
 
-1. _правка вышла за границы партии_ — исполнитель тронул файлы, которых ему не разрешали; система
-   их не сохраняла и откатить не может;
-2. _тронуты тесты или защищённая область_ — доказательство поведения подгонять под правку нельзя;
-3. _рядом чужая работа_ — в дереве изменилось то, чего исполнитель не называл. Если это правда
-   чужое, повторите с `--allow-concurrent`;
-4. _база сама красная_ — упавший шаг падает и без этой правки. Система перезапустила его на голой
-   базе и убедилась. Чинить надо базу, а не партию.
+1. _the edit left the batch_ — the fixer touched files it was not allowed to; the system did not
+   save them and can neither roll them back nor accept them;
+2. _tests or a protected area were touched_ — the proof of behaviour must not be adjusted to the
+   edit;
+3. _someone else's work nearby_ — something changed in the tree that the fixer did not name. This
+   can happen only outside the workshop (`deep`, `maintain verify`); if it really is someone
+   else's, repeat with `--allow-concurrent`;
+4. _the base is red itself_ — the failing step fails without this edit too. The system re-ran it on
+   the bare base and made sure. Fix the base, not the batch.
 
-Коммит система не делает никогда. Это граница: принять правку — её работа, положить её в историю —
-ваша.
+The commit is local and is the only one the system makes: with the workshop on (`workshop.enabled`
+and `workshop.commit` in [maintenance.config.ts](../maintenance.config.ts), both on here) an
+accepted batch of `converge` leaves as a commit that contains only the batch files. The deep window
+and the manual `maintain verify` work in the shared tree under the per-file checkpoint and never
+commit. Nothing in the system pushes: whether a commit goes out is your decision.
 
 ## 5. Решения по находкам: журнал
 
@@ -364,14 +378,15 @@ tools/maintenance/               само ядро (переносимое) + к
   state/run.lock                 пропуск прогона: второй не начнётся, пока идёт первый
 ```
 
-## 10. Чего система не сделает никогда
+## 10. What the system never does
 
-- не изменит наблюдаемое поведение: продукт, UX, семантику API, бизнес-правила, схему данных;
-- не тронет миграции, права, ворота качества, решения и другие защищённые области — ни при какой
-  уверенности агента;
-- не поправит тест, чтобы проверка прошла;
-- не закоммитит и не запушит;
-- не начнёт прогон сама.
+- change observable behaviour: the product, UX, API semantics, business rules, the data schema;
+- touch migrations, permissions, quality gates, decisions or other protected areas, whatever the
+  agent's confidence;
+- adjust a test so that the check passes;
+- push. It commits only locally, and only an accepted batch of `converge` (§4);
+- start a run on its own. A person starts every run, unless a person installed the hook with
+  `--auto` (§2).
 
 ## 11. Если что-то пошло не так
 
