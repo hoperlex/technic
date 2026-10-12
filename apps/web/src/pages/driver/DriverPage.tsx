@@ -7,7 +7,7 @@ import type {
   DriverAssignmentPoint,
 } from '@technic/contracts';
 import { errorMessage } from '@shared/lib';
-import { cabinetRead, driverCabinetApi, driverCabinetKeys } from './api';
+import { cabinetRead, driverCabinetApi, driverCabinetKeys } from '@entities/driver-cabinet';
 import { useDriverDate } from './DriverLayout';
 
 /**

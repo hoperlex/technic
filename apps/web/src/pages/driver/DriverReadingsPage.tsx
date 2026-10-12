@@ -12,7 +12,8 @@ import { type TransferMode } from './DriverOrphanBlock';
 import { useDriverDate } from './DriverLayout';
 import { useAssignment, useAutoOpen, useDayState, usePreviousOf, useReadGate } from './dayState';
 import { useKeyboardInset } from './keyboardInset';
-import { driverCabinetApi, driverCabinetKeys, newIdempotencyKey, type DraftItem } from './api';
+import { driverCabinetApi, driverCabinetKeys } from '@entities/driver-cabinet';
+import { newIdempotencyKey, type DraftItem } from './api';
 import {
   bodyFingerprint,
   draftPrefix,
