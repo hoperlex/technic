@@ -76,10 +76,18 @@ export function useWaybillJournalColumns({
       render: (_v, r) => (
         <Space orientation="vertical" size={0}>
           {/* The number opens the sheet's view window: the row has no room for the printed trips
-            and the issue check, and the journal stays the list it was. */}
-          <Typography.Link title="Открыть лист" onClick={() => onOpen(r)}>
+            and the issue check, and the journal stays the list it was. A button, not a link: it
+            opens a window over the page and leads nowhere, so it is open to every journal reader,
+            while the anchors of the row stay the navigation that needs its own rights. */}
+          <Button
+            type="link"
+            size="small"
+            title="Открыть лист"
+            style={{ padding: 0, height: 'auto' }}
+            onClick={() => onOpen(r)}
+          >
             {r.number}
-          </Typography.Link>
+          </Button>
           {/* Метка стоит у номера, а не в столбце статуса: статус отвечает, действует ли бланк, а
             это — откуда он такой взялся. Признак считает сервер (`isCorrection`) по трём
             источникам, поэтому метку получает и списанный задним числом лист, у которого замены
