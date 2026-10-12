@@ -235,3 +235,20 @@ _Изменено [ADR 0210](0210-assignment-correction-shift-approvals-by-day.m
   намеренно, подпись ставят по дню. Отдельных тестов на само окно ведения смен и на отбор среза по
   долгу подписей в прогоне тоже нет: окно проверяется вручную, а правило отбора — контрактным
   тестом `onSitePresence` и порталом.
+
+## Owner decision 2026-10-12 (survey S-8): the plan defaults stand
+
+The three open questions of [vehicle-shifts-plan.md](../vehicle-shifts-plan.md) are closed with
+the plan's defaults. Nothing in the code changes: each default is what the module does today.
+
+- **One shift per day.** The key `(request_id, shift_date)` stays (decision 2); an excavator worked
+  by two crews in one day is one row with the summed hours. Plan §0 question 3 is closed, and the
+  rejected alternative «Две смены в сутки» stays rejected.
+- **No per-period report** on machine-hours and refuelling (plan §0 question 4). The module gets
+  none; «Чего в модуле нет» above stays true. The cross-module summary book of
+  [ADR 0182](0182-analytics-summary-export.md) counts shift rows among its facts — that is not this
+  report and is not affected.
+- **The ESM-2 back side is not printed from shifts.** Plan §9 expected the ESM-2 print to take the
+  back side («Заполняется заказчиком») from this table once ESM-2 existed. ESM-2 has since been
+  built with its own paper ([ADR 0060](0060-esm2-weekly-waybill.md)), its print does not read
+  `vehicle_request_shifts`, and so it stays: the expectation of plan §9 is withdrawn.
