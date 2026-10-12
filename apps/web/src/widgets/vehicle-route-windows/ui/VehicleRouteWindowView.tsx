@@ -21,6 +21,7 @@ import { RouteAddRequestBlock } from './RouteAddRequestBlock';
 import { RoutePointsBlock } from './RoutePointsBlock';
 import { RouteRequestRow } from './RouteRequestRow';
 import { RouteTaskRowsBlock } from './RouteTaskRowsBlock';
+import { RouteWaybillCheckBlock } from './RouteWaybillCheckBlock';
 import { VehicleRouteCorrectionModal } from './VehicleRouteCorrectionModal';
 import { VehicleRouteTransferCorrectionModal } from './VehicleRouteTransferCorrectionModal';
 
@@ -231,6 +232,9 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
           </Descriptions>
 
           {frozen && <Alert type="info" showIcon title={ROUTE_FROZEN_MESSAGE} />}
+          {route.waybill?.status === 'issued' && (
+            <RouteWaybillCheckBlock waybillId={route.waybill.id} number={route.waybill.number} />
+          )}
           {!frozen && readiness && !readiness.ok && (relocation || route.requests.length > 0) && (
             <Alert type="warning" showIcon title={readiness.reason} />
           )}

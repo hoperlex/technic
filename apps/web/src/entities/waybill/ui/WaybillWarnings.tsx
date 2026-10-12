@@ -32,7 +32,8 @@ export function waybillWarningLines(warnings: readonly WaybillWarning[]): Warned
   }));
 }
 
-function WarnedLineList({ lines }: { lines: readonly WarnedLine[] }) {
+/** Lines as a bulleted list; the issue record of a spent number reads them in the same form. */
+export function WarnedLineList({ lines }: { lines: readonly WarnedLine[] }) {
   return (
     <ul style={{ margin: 0, paddingInlineStart: 20 }}>
       {lines.map((line) => (

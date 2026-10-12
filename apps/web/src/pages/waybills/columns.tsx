@@ -16,7 +16,7 @@ import {
 import { WaybillFilesCell } from '@features/waybill-files';
 import { EntityLink } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
-import { ExportWaybillButton, PrintWaybillButton } from '@entities/waybill';
+import { ExportWaybillButton, PrintWaybillButton, WaybillIssueCheckTag } from '@entities/waybill';
 import { useAuth } from '@entities/session';
 import { correctionHint, trimmedPrintHint } from './hints';
 import { vehicleRequestViewLink } from '@entities/vehicle-request';
@@ -47,6 +47,8 @@ export interface WaybillColumnsDeps {
   /** Номер связанного документа ссылкой: нажатие сужает журнал до него. */
   numberLink: (label: string, number: string) => ReactNode;
   onCancel: (waybill: WaybillDto) => void;
+  /** Read the sheet in full: printed trips and the issue check (ADR 0108 items 20–21). */
+  onOpen: (waybill: WaybillDto) => void;
   openRequest: (requestId: string) => void;
   openRoute: (routeId: string) => void;
 }
@@ -58,6 +60,7 @@ export function useWaybillJournalColumns({
   canCorrectDeep,
   numberLink,
   onCancel,
+  onOpen,
   openRequest,
   openRoute,
 }: WaybillColumnsDeps) {
@@ -72,7 +75,11 @@ export function useWaybillJournalColumns({
       searchable: false,
       render: (_v, r) => (
         <Space orientation="vertical" size={0}>
-          <span>{r.number}</span>
+          {/* The number opens the sheet's view window: the row has no room for the printed trips
+            and the issue check, and the journal stays the list it was. */}
+          <Typography.Link title="Открыть лист" onClick={() => onOpen(r)}>
+            {r.number}
+          </Typography.Link>
           {/* Метка стоит у номера, а не в столбце статуса: статус отвечает, действует ли бланк, а
             это — откуда он такой взялся. Признак считает сервер (`isCorrection`) по трём
             источникам, поэтому метку получает и списанный задним числом лист, у которого замены
@@ -84,6 +91,9 @@ export function useWaybillJournalColumns({
               </Tag>
             </Tooltip>
           )}
+          {/* Only a sheet issued under confirmed warnings is marked: the other two states would
+            tag almost every row, and the view window names all three. */}
+          <WaybillIssueCheckTag check={r.issueWarnings} />
           {r.correctsNumber && numberLink('заменил', r.correctsNumber)}
           {r.correctedByNumber && numberLink('заменён', r.correctedByNumber)}
         </Space>
@@ -207,19 +217,34 @@ export function useWaybillJournalColumns({
               (`vehicleRequestViewLink`): вкладку выбирать не для чего, а `status` талона отвечает
               на другой вопрос. У механика обёртка вернёт `null` — `vehicleRequests.read` у него
               нет, и номер останется текстом, каким и был. */}
-            {r.requests.map((link) => (
-              <span key={link.requestId}>
-                {link.slot}.{' '}
-                <EntityLink
-                  to={vehicleRequestViewLink(can, link.requestId)}
-                  title="Открыть заявку"
-                  onActivate={() => openRequest(link.requestId)}
-                >
-                  {link.displayNumber}
-                </EntityLink>{' '}
-                — {link.objectName}
-              </span>
-            ))}
+            {r.requests.map((link) => {
+              /*
+               * A request with several printed trips takes several task rows under one coupon
+               * (ADR 0108 item 20); the row numbers are named here, the trip of each row in the
+               * view window. One trip is its coupon's own row and adds nothing to say.
+               */
+              // `?? []`: an API older than the bundle (a rollback window) sends no trips.
+              const rows = (r.trips ?? []).filter((trip) => trip.requestId === link.requestId);
+              return (
+                <span key={link.requestId}>
+                  {link.slot}.{' '}
+                  <EntityLink
+                    to={vehicleRequestViewLink(can, link.requestId)}
+                    title="Открыть заявку"
+                    onActivate={() => openRequest(link.requestId)}
+                  >
+                    {link.displayNumber}
+                  </EntityLink>{' '}
+                  — {link.objectName}
+                  {rows.length > 1 && (
+                    <Typography.Text type="secondary">
+                      {' '}
+                      · строки {rows.map((trip) => trip.slot).join(', ')}
+                    </Typography.Text>
+                  )}
+                </span>
+              );
+            })}
           </Space>
         ),
     }),

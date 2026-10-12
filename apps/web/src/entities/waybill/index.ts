@@ -37,6 +37,13 @@ export {
 } from './ui/WaybillWarnings';
 
 /*
+ * The other half of the same handshake: what a spent number was issued under and which trip it
+ * printed as which row (ADR 0108 items 20–21) — the journal, its view window and the route card
+ * read it in one wording.
+ */
+export { WaybillIssueCheck, WaybillIssueCheckTag, WaybillTripRows } from './ui/WaybillIssueRecord';
+
+/*
  * Право перейти к бланку по его номеру. Журнал листов — отдельный экран без окна, и номер уводит
  * туда же, куда уводил; `null` вместо адреса оставляет номер текстом у роли, которой журнал не
  * положен.

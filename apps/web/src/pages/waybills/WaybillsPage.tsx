@@ -25,6 +25,7 @@ import { useRouteModal } from '@features/route-modal';
 import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './filters';
 // Подсказки метки «коррекция» и печати сокращённого листа — соседним файлом (Р12, Р13).
 import { useWaybillJournalColumns } from './columns';
+import { WaybillViewModal } from './WaybillViewModal';
 import { useListParams } from '@shared/lib';
 import { waybillErrorMessage as errorMessage } from '@entities/waybill';
 
@@ -137,6 +138,12 @@ export function WaybillsPage() {
    */
   const [selected, setSelected] = useState<string[]>([]);
   const [printing, setPrinting] = useState<PrintTarget | null>(null);
+  /**
+   * The sheet being read in full. Kept by id and looked up in the current page: the window shows
+   * the row as the journal answers now, and a sheet that left the page with a filter change closes
+   * the window instead of showing a stale copy.
+   */
+  const [viewingId, setViewingId] = useState<string | null>(null);
 
   const query = {
     ...params,
@@ -244,6 +251,7 @@ export function WaybillsPage() {
     canCorrectDeep,
     numberLink,
     onCancel: confirmCancel,
+    onOpen: (w) => setViewingId(w.id),
     openRequest,
     openRoute,
   });
@@ -345,6 +353,10 @@ export function WaybillsPage() {
       {/* Пачка печатается тем же окном, что и один лист: сервер собирает бланки в один PDF, и
         диалог печати браузера остаётся один. */}
       <WaybillPrintModal target={printing} onClose={() => setPrinting(null)} />
+      <WaybillViewModal
+        waybill={data?.items.find((w) => w.id === viewingId) ?? null}
+        onClose={() => setViewingId(null)}
+      />
       {/* Откуда берутся номера, которых в журнале не выписывают. Кнопки «Маршруты» здесь нет
         намеренно: список рейсов вызывают оттуда, где их ведут, а журнал читают механик и главный
         механик, у которых прав на рейсы нет вовсе, — кнопка обещала бы им запертую дверь. */}
