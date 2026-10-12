@@ -3,16 +3,16 @@ import type { DirectoryKey } from '@technic/contracts';
 import type { AnyDirectory, RowContext } from '../src/services/directory-transfer/types';
 
 /**
- * Описания кадровых справочников обмена (ADR 0073): специализации, виды документов, категории
- * квалификаций и водители.
+ * Staff directory definitions of the exchange (ADR 0073): specializations, document kinds,
+ * qualification categories and drivers.
  *
- * Проверяется здесь то же, что и в разборе кадровой выгрузки (`driver-import.test.ts`), и по той
- * же причине: этим кодом в справочник попадают ФИО, СНИЛС и допуски живых людей, а запускают его
- * файлом — сразу на сотню строк. Ошибку такого разбора некому заметить по нарастающим жалобам: она
- * становится записью, которую потом сверяют глазами по бумаге.
+ * This is the only test of the rules by which the full names, SNILS and grants of living people
+ * enter the directory — the JSON import that used to share them is gone (ADR 0073, decision 14).
+ * The code runs on a file of a hundred rows at once, and a parsing mistake is not noticed through
+ * growing complaints: it becomes a record that is later checked by eye against paper.
  *
- * База не нужна: описание справочника — это набор правил «строка файла ↔ строка портала», и
- * проверяются именно они. Строки базы и окружение собираются здесь фикстурами.
+ * No database: a directory definition is a set of "file row ↔ portal row" rules, and those are
+ * what is tested. Database rows and the environment are built here as fixtures.
  */
 
 // Описания лежат рядом с клиентом БД, а тот при импорте читает конфиг: без переменных окружения
@@ -473,6 +473,17 @@ describe('водители', () => {
     expect(problems[0]).toMatch(/«X9»/u);
   });
 
+  it('category codes are case-blind, skip empty items and collapse repeats', () => {
+    // HR exports spell codes as the licence prints them and leave separator noise («C,C1,,BE»);
+    // a repeat in another case must not become a second grant.
+    const model = def.blank();
+    const { ctx, problems, warnings } = rowContext();
+    applyCells(def, env, model, newDriverCells({ 'Категории ВУ': 'b, C1E;ce;;CE' }), ctx);
+    expect(problems).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(cellsOf(def, env, model)['Категории ВУ']).toBe('B; C1E; CE');
+  });
+
   it('меньший набор категорий не снимает заведённые, а даёт предупреждение', () => {
     const model = def.model(row, env);
     const { ctx, problems, warnings } = rowContext();
@@ -539,6 +550,14 @@ describe('водители', () => {
     applyCells(def, env, model, newDriverCells({ Email: 'нет' }), ctx);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatch(/Email/u);
+  });
+
+  it('an address is trimmed: spaces around it are cell noise, not part of the address', () => {
+    const model = def.blank();
+    const { ctx, problems } = rowContext();
+    applyCells(def, env, model, newDriverCells({ Email: '  petrov@example.com ' }), ctx);
+    expect(problems).toEqual([]);
+    expect(cellsOf(def, env, model)['Email']).toBe('petrov@example.com');
   });
 
   it('у незнакомой должности категории в ВУ не заводятся, и об этом сказано (ADR 0049)', () => {

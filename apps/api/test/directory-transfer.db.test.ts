@@ -9,6 +9,7 @@ import {
   directoryTitles,
   isValidInn,
   isValidSnils,
+  normalizeSnils,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -442,6 +443,144 @@ suite('обмен справочниками на живой схеме', () => 
         await ctx.db.execute(sql`DELETE FROM person_employments WHERE person_id IN ${person}`);
         await ctx.db.execute(sql`DELETE FROM person_specializations WHERE person_id IN ${person}`);
         await ctx.db.execute(sql`DELETE FROM persons WHERE snils = ${snilsDigits}`);
+        await ctx.db.execute(sql`DELETE FROM users WHERE id = ${actorUserId}::uuid`);
+      }
+    },
+  );
+
+  /**
+   * A driver's e-mail on the live schema. It took over from `driver-import-email.db.test.ts`, which
+   * went with the JSON import (ADR 0073, decision 14). The trip assignment is sent to this address,
+   * and the parts of its rule only a write can show are: a new person gets the address from the
+   * row; a changed address reaches `persons` and raises the card version — otherwise a card form
+   * open elsewhere would save over it and bring the old address back; an empty cell does not erase
+   * it; the preview writes nothing.
+   *
+   * The file holds only the header and this test's rows. The engine leaves alone what the file
+   * omits, and a full export would race with neighbour files adding and removing people in the
+   * shared database.
+   */
+  it(
+    'driver e-mail: set on creation, changed with a version bump, never erased by an empty cell',
+    { timeout: 30_000 },
+    async () => {
+      /**
+       * Generated, not fixed: an aborted run leaves its person behind, and a fixed number would turn
+       * the next run's creation into an update. The «9xx» block is never issued by the pension fund,
+       * so no living person owns such a number; the checksum is real, or `check()` rejects the row.
+       */
+      const syntheticSnils = (): string => {
+        const body = `9${String(Math.floor(Math.random() * 1e8)).padStart(8, '0')}`;
+        const sum = [...body].reduce((acc, digit, i) => acc + Number(digit) * (9 - i), 0);
+        const rest = sum < 100 ? sum : sum % 101;
+        return `${body}${String(rest === 100 ? 0 : rest).padStart(2, '0')}`;
+      };
+      const withEmail = syntheticSnils();
+      let withoutEmail = syntheticSnils();
+      while (withoutEmail === withEmail) withoutEmail = syntheticSnils();
+      expect(isValidSnils(withEmail) && isValidSnils(withoutEmail)).toBe(true);
+      const firstAddress = `driver-${randomUUID()}@example.invalid`;
+      const nextAddress = `driver-${randomUUID()}@example.invalid`;
+
+      const def = ctx.directories.find((d) => d.key === 'drivers')!;
+      const header = (await exportFit(def)).rows[0]!;
+      const at = (column: string): number => {
+        const index = header.indexOf(column);
+        expect(index, `the drivers export has no «${column}» column`).toBeGreaterThan(0);
+        return index;
+      };
+      const newRow = (fullName: string, snils: string, email: string): string[] => {
+        const row = header.map(() => '');
+        row[at('ФИО')] = fullName;
+        row[at('СНИЛС')] = snils;
+        row[at('Email')] = email;
+        return row;
+      };
+      const withEmailCell = (row: string[], email: string): string[] =>
+        row.map((cell, index) => (index === at('Email') ? email : cell));
+      const personOf = async (snils: string) =>
+        (
+          await ctx.db.execute<{ email: string; version: number }>(
+            sql`SELECT email, version FROM persons WHERE snils = ${snils} AND deleted_at IS NULL`,
+          )
+        ).rows[0];
+
+      // `persons.created_by` and `updated_by` point at `users`, so the author is a real account
+      // that cannot sign in and goes away with the people it created.
+      const actor = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO users (email, last_name, first_name, password_hash)
+        VALUES (${`directory-transfer-${randomUUID()}@example.invalid`},
+                'Обменов', 'Тест', 'не пароль: учётка нужна только как автор записи')
+        RETURNING id`);
+      const actorUserId = actor.rows[0]!.id;
+      const apply = (rows: string[][], dryRun: boolean) =>
+        ctx.engine.importDirectory(def, bookOf([header, ...rows]), { dryRun, actorUserId });
+
+      try {
+        const created = await apply(
+          [
+            newRow('Почтов Иван Иванович', withEmail, firstAddress),
+            newRow('Безадресов Пётр Петрович', withoutEmail, ''),
+          ],
+          false,
+        );
+        expect(created.problems).toEqual([]);
+        expect(created.created).toHaveLength(2);
+        expect((await personOf(withEmail))?.email).toBe(firstAddress);
+        expect((await personOf(withoutEmail))?.email).toBe('');
+        const createdVersion = (await personOf(withEmail))!.version;
+
+        // The row as the portal exports it, with the id column filled in: this is the file a person
+        // downloads, edits and loads back.
+        const exported = (await exportFit(def)).rows.find(
+          (row) => normalizeSnils(row[at('СНИЛС')] ?? '') === withEmail,
+        );
+        expect(exported, 'the created driver is missing from the export').toBeDefined();
+        const changed = withEmailCell(exported!, nextAddress);
+
+        const preview = await apply([changed], true);
+        expect(preview.updated).toHaveLength(1);
+        expect(preview.updated[0]!.changes).toEqual([
+          { column: 'Email', from: firstAddress, to: nextAddress },
+        ]);
+        expect(await personOf(withEmail)).toMatchObject({
+          email: firstAddress,
+          version: createdVersion,
+        });
+
+        const applied = await apply([changed], false);
+        expect(applied.updated).toHaveLength(1);
+        expect(await personOf(withEmail)).toMatchObject({
+          email: nextAddress,
+          version: createdVersion + 1,
+        });
+
+        // The same address again and an empty cell are both «no change»: nothing is written and
+        // the version stays, so an open card form is not invalidated by a no-op load.
+        for (const row of [changed, withEmailCell(changed, '')]) {
+          const again = await apply([row], false);
+          expect(again.problems).toEqual([]);
+          expect(again.updated).toEqual([]);
+          expect(again.unchanged).toBe(1);
+        }
+        expect(await personOf(withEmail)).toMatchObject({
+          email: nextAddress,
+          version: createdVersion + 1,
+        });
+      } finally {
+        // The database is shared, and no person with personal data stays in it in any form:
+        // everything the rows created is deleted bottom-up along the foreign keys.
+        const people = sql`(SELECT id FROM persons WHERE snils IN (${withEmail}, ${withoutEmail}))`;
+        await ctx.db.execute(
+          sql`DELETE FROM person_credential_categories WHERE credential_id IN
+                (SELECT id FROM person_credentials WHERE person_id IN ${people})`,
+        );
+        await ctx.db.execute(sql`DELETE FROM person_credentials WHERE person_id IN ${people}`);
+        await ctx.db.execute(sql`DELETE FROM person_employments WHERE person_id IN ${people}`);
+        await ctx.db.execute(sql`DELETE FROM person_specializations WHERE person_id IN ${people}`);
+        await ctx.db.execute(
+          sql`DELETE FROM persons WHERE snils IN (${withEmail}, ${withoutEmail})`,
+        );
         await ctx.db.execute(sql`DELETE FROM users WHERE id = ${actorUserId}::uuid`);
       }
     },
