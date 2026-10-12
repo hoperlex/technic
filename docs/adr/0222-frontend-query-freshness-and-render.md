@@ -123,3 +123,15 @@ wave 6 measured 558,637 gzip bytes (545.5 KiB), below the Stage 3 ceiling of 555
 - List placeholders keep visual context but cannot be selected or used for bulk commands.
 - The browser render result supports stable cell observers. It does not support retaining
   `memo(DataTable)` or a claim of production latency improvement.
+
+## Cache check completed (12.10.2026)
+
+Roadmap item Q9 brought the cache-invalidation check to zero unread sites. Slices with several
+query roots (8 of 40) mark each writing API object or handle with
+`cache-home: <root> — reason`, the root the write lands in; rule 2 (`home-root-missed`) now checks
+those writes too (99 mutations, previously reported as `homeAmbiguous`). The budget file is now
+`apps/web/cache-budget.json`, renamed from `cache-read-budget.json`. Next to the four read rules it
+holds two named lists, `unresolved` and `home-ambiguous`, both empty; a new entry or a stale one
+fails the run. The new rule `opaque-marker-excuses-nothing` fails a `cache-invalidation: opaque`
+marker left on a mutation the check now reads in full. Mapping server tables to query roots is
+still not done; it waits for the realtime-events decision.
