@@ -3,8 +3,10 @@
 - Статус: Принято (реализовано двумя коммитами: `f852ff3` — этапы Э1–Э3 и первая половина Э5 плана,
   `3b9bacb` — Э4, выгрузка книгой из четырёх листов; `69b9437` — точность отметки в курсоре).
   Схему база **не меняет**: ни таблиц, ни
-  колонок, ни индексов волна не заводит. Записи выпуска (ADR 0077) у неё пока нет. Впереди вторая
-  половина Э5 и Э6 (снятие устаревшего среза `serviceHistory` из ответа карточки)
+  колонок, ни индексов волна не заводит. Записи выпуска (ADR 0077) у неё пока нет. E5 is complete
+  since 2026-10-12 (commit `056e0832`: the card sends `openServiceRequestNumbers`, and the
+  deactivation guard reads them, see the last section). E6, removing the stale `serviceHistory`
+  slice from the card answer, waits for release R2
 - Область: новый `apps/api/src/services/office-equipment-blocks.ts`, три ручки в
   `apps/api/src/routes/office-equipment.ts` (`GET /:id/{requests,changes,movements}`) и сборка книги
   в `history.xlsx`, `apps/api/src/services/office-equipment-history-export.ts` (четыре листа),
@@ -237,9 +239,10 @@ read model, дороже, чем назвать их тремя.
 только у выгрузки, и то прибавлением листов: «Полная история» осталась строка в строку прежней, а имя
 листа перестало нести модель аппарата.
 
-Снятие среза `serviceHistory` из ответа карточки — **ломающее** изменение контракта, и оно разведено
-на два выпуска: сперва все потребители переходят на блок, потом сервер перестаёт считать срез. Первый
-выпуск сделан наполовину (см. ниже), поэтому второго ещё не было.
+Removing the `serviceHistory` slice from the card answer is a **breaking** contract change, so it is
+split into two releases: first every consumer moves to the block or to the open-request numbers,
+then the server stops computing the slice. The first release (E5) is complete since 2026-10-12 (see
+the last section); the second (E6) waits for release R2.
 
 ## Последствия
 
@@ -264,10 +267,11 @@ read model, дороже, чем назвать их тремя.
   применяется до отсечения курсором, и потолок за всю пагинацию равен размеру страницы плюс один.
   Правка — отдельная работа над самой лентой; блоки ею не болеют по построению, а выгрузка от неё
   закрыта тем, что берёт ленту одним заходом на весь потолок и честно говорит об обрезке.
-- **Срез `serviceHistory` из ответа карточки не снят**, и снять его сейчас нельзя: на нём держится
-  предупреждение при выключении карточки техники — оно называет номера незакрытых заявок. Обещанного
-  планом отдельного поля с номерами открытых заявок в контракте нет, поэтому вторая половина Э5 и
-  весь Э6 остаются закрытыми, а секция карточки и guard деактивации временно читают разные источники.
+- **The `serviceHistory` slice is still in the card answer**, but no portal code reads it any more:
+  since E5 was completed on 2026-10-12 the card section reads the requests block and the
+  deactivation guard reads `openServiceRequestNumbers` (see the last section). Removing the slice
+  (E6) waits for release R2; bundles built before E5b read it only in the deactivation warning, with
+  an empty fallback, so they lose the numbers there instead of breaking.
 - Имя заводившего карточку в шапке не показывается: в ответе карточки его нет — оно живёт событием
   полной ленты, — и портал печатает только дату, а не придумывает имя.
 - Записи выпуска (ADR 0077) у волны нет.
@@ -323,3 +327,23 @@ plan's defaults. Each is today's behaviour, checked on 2026-10-12; nothing in th
 3. **В3 — archived requests are not shown** in the requests block, to holders of `archive.read`
    either — the same as the timeline (`isNull(serviceRequests.deletedAt)` in
    `apps/api/src/services/office-equipment-blocks.ts`).
+
+## E5b, 2026-10-12: the card sends the open request numbers, and the deactivation guard reads them
+
+`GET /office-equipment/:id` now returns `openServiceRequestNumbers`: the display numbers of the
+unit's open requests (not accepted, not cancelled, decided by the contract predicate
+`isServiceRequestClosed`) that the viewer may see. The list is scoped by the same
+`serviceRequestVisibilityWhere` as the requests block, has no limit, is ordered by number, and is
+sent only with `serviceRequests.read` (absent otherwise, like `serviceHistory`). The portal's
+deactivation warning (`apps/web/src/entities/office-equipment/model/deactivation.tsx`) reads this
+field instead of filtering the ten-row `serviceHistory` slice, so an open request beyond the slice
+is no longer missing from it; without the field (no permission, or a server older than E5b during a
+deploy window or after a rollback) it keeps the general conditional phrase, and an empty list still
+never claims "no open requests", because the list is narrowed by the request scope. The card
+deletion guard takes its closed statuses from the same predicate.
+`equipment-history-blocks.db.test.ts` compares a fourth place for the four subjects: the card
+numbers equal the open subset of the requests block, and the directory keeper without
+`serviceRequests.read` gets no field. This finishes E5: no portal code reads `serviceHistory` any
+more. E6 (removing the slice from the card answer) stays for the next release; bundles built before
+E5b read the slice only in the deactivation warning, with an empty fallback, so after E6 they fall
+back to the general phrase instead of breaking, and E6 needs no client floor.
