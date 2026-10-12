@@ -449,8 +449,8 @@ suite('обмен справочниками на живой схеме', () => 
   );
 
   /**
-   * A driver's e-mail on the live schema. It took over from `driver-import-email.db.test.ts`, which
-   * went with the JSON import (ADR 0073, decision 14). The trip assignment is sent to this address,
+   * A driver's e-mail on the live schema. It took over from the e-mail test of the JSON import,
+   * deleted together with it (ADR 0073, decision 14). The trip assignment is sent to this address,
    * and the parts of its rule only a write can show are: a new person gets the address from the
    * row; a changed address reaches `persons` and raises the card version — otherwise a card form
    * open elsewhere would save over it and bring the old address back; an empty cell does not erase
