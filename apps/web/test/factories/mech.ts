@@ -46,6 +46,8 @@ export function mechRequest(overrides: Partial<MechRequestDto> = {}): MechReques
     updatedAt: '2026-08-01T08:00:00.000Z',
     deletedAt: null,
     deletedByName: null,
+    // No extension request: the state every rental starts in (ADR 0171, stage 3).
+    extension: null,
     ...overrides,
   };
 }

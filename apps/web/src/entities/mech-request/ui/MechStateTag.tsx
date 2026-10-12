@@ -4,6 +4,7 @@ import {
   mechStateTagLabels,
   requestStatusColors,
   requestStatusLabels,
+  type MechStateTagKind,
   type MechTransitionState,
 } from '@technic/contracts';
 
@@ -16,10 +17,12 @@ export type MechStateRow = MechTransitionState & { cancelReason?: string | null 
  * не возьмут в работу; «ждёт подачи» оранжевым, как всякое ожидание в портале; «коррекция
  * завершения» — `volcano`: это не ожидание чужого действия, а недоделанная работа своей стороны.
  */
-const STATE_COLORS: Record<'awaitingApproval' | 'awaitingIssue' | 'correction', string> = {
+const STATE_COLORS: Record<MechStateTagKind, string> = {
   awaitingApproval: 'gold',
   awaitingIssue: 'orange',
   correction: 'volcano',
+  // The same gold as the request visa: both wait for the site's signature (ADR 0171, stage 3).
+  extensionPending: 'gold',
 };
 
 /**

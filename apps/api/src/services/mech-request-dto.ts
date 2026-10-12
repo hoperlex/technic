@@ -1,6 +1,11 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
-import { type FileDto, formatMechRequestNumber, type MechRequestDto } from '@technic/contracts';
+import {
+  type FileDto,
+  formatMechRequestNumber,
+  type MechRequestDto,
+  type MechRequestExtensionDto,
+} from '@technic/contracts';
 import { db } from '../db/client';
 import {
   constructionObjects,
@@ -8,6 +13,7 @@ import {
   departments,
   files,
   mechModels,
+  mechRequestExtensions,
   mechRequestFiles,
   mechRequestStatusHistory,
   mechRequests,
@@ -38,6 +44,14 @@ const deleters = alias(users, 'mech_deleters');
  * автора встало бы на место подписи.
  */
 const approvers = alias(users, 'mech_approvers');
+
+/*
+ * Who asked for the current extension and who decided it (ADR 0171, stage 3) — the fourth and
+ * fifth join on `users`, named for the same reason as the two above: unnamed, the joins would
+ * overwrite each other's columns and the card would show the author's name as the visa holder's.
+ */
+const extensionRequesters = alias(users, 'mech_extension_requesters');
+const extensionDeciders = alias(users, 'mech_extension_deciders');
 
 /** numeric в БД принимает и отдаёт строку; `null` остаётся `null`. */
 export function toNum(v: string | null): number | null {
@@ -100,6 +114,19 @@ const requestSelect = {
   updatedAt: mechRequests.updatedAt,
   deletedAt: mechRequests.deletedAt,
   deletedByName: deleters.fullName,
+  // The current extension request, one row per request by its primary key — so the outer join
+  // never multiplies rows of the list. Empty columns mean "never asked through the visa".
+  extensionStatus: mechRequestExtensions.status,
+  extensionNewPlannedTo: mechRequestExtensions.newPlannedTo,
+  extensionPreviousPlannedTo: mechRequestExtensions.previousPlannedTo,
+  extensionReason: mechRequestExtensions.reason,
+  extensionRequestedBy: mechRequestExtensions.requestedBy,
+  extensionRequestedByName: extensionRequesters.fullName,
+  extensionRequestedAt: mechRequestExtensions.requestedAt,
+  extensionDecidedBy: mechRequestExtensions.decidedBy,
+  extensionDecidedByName: extensionDeciders.fullName,
+  extensionDecidedAt: mechRequestExtensions.decidedAt,
+  extensionDecisionComment: mechRequestExtensions.decisionComment,
 };
 
 /**
@@ -120,6 +147,9 @@ export function mechBaseQuery(reader: MechReader = db) {
     .leftJoin(mechModels, eq(mechRequests.mechModelId, mechModels.id))
     .leftJoin(deleters, eq(mechRequests.deletedBy, deleters.id))
     .leftJoin(approvers, eq(mechRequests.approvedBy, approvers.id))
+    .leftJoin(mechRequestExtensions, eq(mechRequestExtensions.requestId, mechRequests.id))
+    .leftJoin(extensionRequesters, eq(mechRequestExtensions.requestedBy, extensionRequesters.id))
+    .leftJoin(extensionDeciders, eq(mechRequestExtensions.decidedBy, extensionDeciders.id))
     .innerJoin(users, eq(mechRequests.createdBy, users.id));
 }
 
@@ -154,6 +184,28 @@ export async function mechFilesByRequestIds(
     map.set(row.requestId, list);
   }
   return map;
+}
+
+/**
+ * The extension half of the row, or `null` when there is none. Asked by the status column: it is
+ * `NOT NULL` in the table, so an empty one means the outer join found no row.
+ */
+function extensionOf(r: MechRequestRow): MechRequestExtensionDto | null {
+  if (!r.extensionStatus) return null;
+  return {
+    status: r.extensionStatus,
+    newPlannedTo: r.extensionNewPlannedTo!,
+    previousPlannedTo: r.extensionPreviousPlannedTo!,
+    reason: r.extensionReason!,
+    requestedBy: r.extensionRequestedBy!,
+    // `RESTRICT` on the author keeps the account; the fallback is only the shape of the type.
+    requestedByName: r.extensionRequestedByName ?? '—',
+    requestedAt: r.extensionRequestedAt!.toISOString(),
+    decidedBy: r.extensionDecidedBy,
+    decidedByName: r.extensionDecidedByName,
+    decidedAt: r.extensionDecidedAt ? r.extensionDecidedAt.toISOString() : null,
+    decisionComment: r.extensionDecisionComment ?? '',
+  };
 }
 
 export function toMechRequestDto(r: MechRequestRow, requestFiles: FileDto[]): MechRequestDto {
@@ -198,6 +250,7 @@ export function toMechRequestDto(r: MechRequestRow, requestFiles: FileDto[]): Me
     updatedAt: r.updatedAt.toISOString(),
     deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,
     deletedByName: r.deletedByName,
+    extension: extensionOf(r),
   };
 }
 

@@ -94,6 +94,11 @@ export const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
   // Отдельно от выдачи: от неё снятие отличается не значением поля, а смыслом — «этого не было».
   mechIssueRevoked: 'Снята отметка выдачи',
   mechExtended: 'Срок аренды продлён',
+  // The extension visa (ADR 0171, stage 3): the office asks, the site signs. «Продлён» above is
+  // now the approval itself — the term moved; these three are the rest of the cycle.
+  mechExtendRequested: 'Запрошено продление аренды',
+  mechExtendRejected: 'Продление аренды отклонено',
+  mechExtendDropped: 'Запрос продления снят',
   // Талоны, доложенные к выполненной заявке (ADR 0189): бумага пришла позже закрытия, и в ленте
   // она читается своей строкой — «чем подтверждён вывоз» и «что в заявке правили» разные вопросы.
   ticketsAdded: 'Приложены талоны',
@@ -153,6 +158,11 @@ export const KIND_TAGS: Record<string, { label: string; color?: string }> = {
   mechIssued: { label: 'Выдана', color: 'green' },
   mechIssueRevoked: { label: 'Выдача снята', color: 'orange' },
   mechExtended: { label: 'Продление', color: 'blue' },
+  // Waiting for the visa — orange, like the early end request of a vehicle order and like every
+  // wait for someone's signature; a refusal red, a drop without a decision grey.
+  mechExtendRequested: { label: 'Продление', color: 'orange' },
+  mechExtendRejected: { label: 'Продление', color: 'red' },
+  mechExtendDropped: { label: 'Продление' },
   // Талоны — голубым: зелёный в этой ленте занят предъявленным фактом, и доложенная бумага не
   // должна читаться как второе закрытие. Ярлык тот же, каким подписан блок талонов в карточке.
   ticketsAdded: { label: 'Талоны', color: 'cyan' },

@@ -1,5 +1,7 @@
 import {
   formatPhone,
+  type MechExtensionDropReason,
+  mechExtensionDropReasonLabels,
   type MechRequestDto,
   mechRequesterOf,
   mechRateUnitLabels,
@@ -195,6 +197,44 @@ export function mechExtendChanges(
   const diff = changeSet();
   diff.changed('plannedTo', day(before), day(after));
   diff.listed('extendReason', [reason]);
+  return diff.changes;
+}
+
+/**
+ * The extension visa (ADR 0171, stage 3; plan R12). The request (`mech_request.extend_request`)
+ * carries the same shape as the old immediate extension — `mechExtendChanges` above: the current and
+ * the asked date as a pair, the reason as a list row. The approval keeps writing
+ * `mech_request.extend` ("the term moved"), so the old meaning of that event does not change; it adds
+ * the visa holder's remark when there is one. The request row is overwritten by the next request and
+ * deleted when withdrawn, so these events are the only carriers of the chain.
+ */
+export function mechExtendApprovalChanges(
+  before: string,
+  after: string,
+  reason: string,
+  remark: string,
+): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.changed('plannedTo', day(before), day(after));
+  diff.listed('extendReason', [reason]);
+  if (remark) diff.listed('extendApproveComment', [remark]);
+  return diff.changes;
+}
+
+/** Refusal (`mech_request.extend_reject`): the reason as a list row — it has no "before". */
+export function mechExtendRejectChanges(reason: string): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.listed('extendRejectReason', [reason]);
+  return diff.changes;
+}
+
+/**
+ * A pending request went away without a decision (`mech_request.extend_drop`): withdrawn, or dropped
+ * with the rental's end. The words go to the history, the code to the event's metadata.
+ */
+export function mechExtendDropChanges(reason: MechExtensionDropReason): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.listed('extendDropReason', [mechExtensionDropReasonLabels[reason]]);
   return diff.changes;
 }
 

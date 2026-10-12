@@ -258,10 +258,15 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
    * согласие платить дальше (Р9). Попади право в «Ход», витрина сказала бы, что продлевает всякий,
    * кто ведёт аренду, — то есть ровно то смешение с `.status`, ради которого право и разведено.
    */
+  /*
+   * Since the extension visa (ADR 0171, stage 3) the holder asks for an extension and the site signs
+   * it; the label says so. Until release R2 the same permission still opens the old immediate door
+   * for tabs of older bundles — the portal itself no longer offers it.
+   */
   'mechRequests.extend': {
     module: 'mech',
     action: 'manage',
-    label: 'Продлевает аренду механизации',
+    label: 'Запрашивает продление аренды механизации',
   },
   /*
    * Виза площадки — своё действие витрины, как у заказа ТС и недельной заявки: подпись не входит

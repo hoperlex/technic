@@ -14,11 +14,10 @@ import { HISTORY_LIMIT, loadAuditEvents, mergeHistory } from './request-history'
 // таблицы истории статусов, где лежат оба, — событие аудита их бы только продублировало.
 
 /**
- * События аудита, попадающие в историю заявки. Восемь — ровно те, что перечислены каноническим
- * реестром плана (Р11).
+ * Audit events that reach the card history — exactly the card registry of the module plan (R11)
+ * and of the visa plan (R12).
  *
- * Пропущенное здесь действие в карточку не попадёт вовсе: `loadAuditEvents` отбирает журнал по
- * этому списку. Поэтому он и сверяется тестом с реестром до элемента.
+ * An action missing here never reaches the card: `loadAuditEvents` selects the log by this list.
  */
 const AUDIT_ACTIONS = [
   'mech_request.update',
@@ -38,6 +37,12 @@ const AUDIT_ACTIONS = [
   // Без вида в реестре оно приехало бы в карточку как «изменено», то есть срок аренды читался бы
   // правкой формы.
   'mech_request.extend',
+  // The extension visa (ADR 0171, stage 3): the request, the refusal and the drop. The approval is
+  // `mech_request.extend` above — it still means "the term moved". The request row is overwritten
+  // and deleted, so these events are the only memory of the chain.
+  'mech_request.extend_request',
+  'mech_request.extend_reject',
+  'mech_request.extend_drop',
   // Завершение, в том числе повторное после отката: прежние числа не сохранит ничто, кроме этой
   // записи, а именно их спрашивают, разбирая счёт.
   'mech_request.complete',
@@ -64,6 +69,9 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'mech_request.approve': 'approved',
   'mech_request.approval_revoke': 'approvalRevoked',
   'mech_request.extend': 'mechExtended',
+  'mech_request.extend_request': 'mechExtendRequested',
+  'mech_request.extend_reject': 'mechExtendRejected',
+  'mech_request.extend_drop': 'mechExtendDropped',
   'mech_request.complete': 'completed',
   'mech_request.soft_delete': 'deleted',
   'mech_request.restore': 'restored',

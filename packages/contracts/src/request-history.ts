@@ -184,6 +184,20 @@ export type RequestHistoryKind =
   | 'mechIssueRevoked'
   | 'mechExtended'
   /**
+   * The extension visa (ADR 0171, stage 3): the office asks, the site signs. `mechExtended` keeps
+   * its meaning "the term moved" and is now written at the moment of the visa; the three kinds below
+   * are the rest of the cycle, each the only carrier of its fact once the request row is
+   * overwritten or deleted:
+   *
+   * - `mechExtendRequested` — asked (or asked again): the current and the asked date, the reason;
+   * - `mechExtendRejected` — refused by the visa holder, with the reason;
+   * - `mechExtendDropped` — a pending request went away: withdrawn by the office, or dropped with the
+   *   rental's end (completion, revoked issue mark).
+   */
+  | 'mechExtendRequested'
+  | 'mechExtendRejected'
+  | 'mechExtendDropped'
+  /**
    * Добавочные талоны выполненной заявки (ADR 0189). Своё событие, а не `updated`: заявку оно не
    * меняет вовсе — предмет, срок и факт остаются прежними, — а «Заявка отредактирована» в этом
    * месте ленты звало бы искать правку, которой не было. И не `completed`: факт предъявлен

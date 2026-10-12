@@ -115,6 +115,8 @@ export * from './vehicle-request-feed';
  * а не частью «Заказа ТС», потому что общего у модулей только это: у аренды малой механизации свой
  * цикл, своя область и свой заказчик (план `docs/mechanization-module-plan.md`, Р1, Р10). */
 export * from './mech-requests';
+// The extension visa of a running rental (ADR 0171, stage 3) — next to the request it belongs to.
+export * from './mech-request-extensions';
 /* Справочник моделей механизации — сразу за заявкой: этап Э2 сделает его источником поля
  * «Модель», а пока справочник живёт сам по себе (план `docs/mechanization-models-directory-plan.md`). */
 export * from './mech-models';

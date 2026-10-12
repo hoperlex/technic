@@ -29,6 +29,7 @@ import {
 } from './cost-target';
 import type { CounterpartyType } from './counterparties';
 import type { FileDto } from './files';
+import type { MechExtensionStatus, MechRequestExtensionDto } from './mech-request-extensions';
 import { dateKeySpan, moscowDateKeyOf } from './time';
 import { isClosedRequestStatus, workedAmountLabel } from './vehicle-requests';
 
@@ -149,7 +150,15 @@ export function isMechCompletionCorrection(row: MechRentalState): boolean {
  * учить визе каждое место, которое спрашивает только присутствие техники (сводка, частичная
  * выборка, расчёт просрочки), значило бы требовать от них колонку, которая им не нужна.
  */
-export type MechTransitionState = MechRentalState & { approvedAt: string | null };
+export type MechTransitionState = MechRentalState & {
+  approvedAt: string | null;
+  /**
+   * The rental's extension request (ADR 0171, stage 3). Optional: the transition barrier does not
+   * ask it, only the state tag does, and a caller that knows nothing about extensions (a summary
+   * row, the server's locked row) is not made to load it.
+   */
+  extension?: { status: MechExtensionStatus } | null;
+};
 
 /**
  * **Визу ставят и снимают, пока заявка «Новая»** (план визы, Р3) — то же правило и та же причина,
@@ -169,32 +178,36 @@ export function isMechAwaitingApproval(row: MechTransitionState): boolean {
   return row.status === 'new' && row.approvedAt === null;
 }
 
+export type MechStateTagKind =
+  'awaitingApproval' | 'awaitingIssue' | 'correction' | 'extensionPending';
+
 /**
- * Тег состояния для строки списка: `null` — состояние читается по самому статусу, и второй ярлык
- * рядом с ним был бы шумом.
+ * The state tag of a list row: `null` — the state reads from the status itself, and a second label
+ * next to it would be noise.
  *
- * Собирается здесь, а не в вёрстке: тегов три, показываются они в трёх местах (таблица, карточка
- * на телефоне, окно заявки), и разойтись подписи не должны.
+ * Built here, not in the markup: the tags are shown in three places (the table, the phone card, the
+ * request window), and their labels must not drift apart.
  *
- * Порядок веток — порядок жизни заявки, и пересечься они не могут: «ждёт визы» бывает только у
- * «Новой», два других состояния — только у «В работе».
+ * The order of the branches is the order of the request's life, and they cannot overlap: "awaiting
+ * approval" exists only for «Новая», the other three only for «В работе».
  */
-export function mechStateTag(
-  row: MechTransitionState,
-): 'awaitingApproval' | 'awaitingIssue' | 'correction' | null {
+export function mechStateTag(row: MechTransitionState): MechStateTagKind | null {
   if (isMechAwaitingApproval(row)) return 'awaitingApproval';
   if (isMechAwaitingIssue(row)) return 'awaitingIssue';
   if (isMechCompletionCorrection(row)) return 'correction';
+  // A running rental whose extension waits for the site's visa (ADR 0171, stage 3). The fourth
+  // value of the same tag, not a second column: the row has one state, and the visa holder finds
+  // the rentals waiting for him in the list by it. A running rental is the only state that can
+  // hold a pending extension — the request is refused otherwise and dropped when the rental ends.
+  if (isMechRentalRunning(row) && row.extension?.status === 'pending') return 'extensionPending';
   return null;
 }
 
-export const mechStateTagLabels: Record<
-  'awaitingApproval' | 'awaitingIssue' | 'correction',
-  string
-> = {
+export const mechStateTagLabels: Record<MechStateTagKind, string> = {
   awaitingApproval: 'ждёт визы',
   awaitingIssue: 'ждёт подачи',
   correction: 'коррекция завершения',
+  extensionPending: 'продление ждёт визы',
 };
 
 // ── Просрочка и остаток срока (Р12) ──
@@ -774,11 +787,14 @@ export const MECH_EXTEND_NOT_LATER_MESSAGE =
   'Новая дата возврата должна быть позже прежней: сокращение срока оформляется завершением с фактической датой';
 
 /**
- * Продление аренды (Р9, Р11): право своё (`.extend`, у диспетчера), причина обязательна, событие
- * истории своё. Причину нельзя положить в комментарий заявки — она перезаписала бы его.
+ * The body of the OLD door `PATCH /:id/extend`, which moves the term at once with `.extend` and no
+ * visa. The portal no longer calls it (ADR 0171, stage 3): it requests an extension
+ * (`requestMechExtensionSchema`) and the site signs it. The door is kept only for tabs of bundles
+ * with contract 6 or older until release R2 removes it under client floor 7 (ADR 0226, decision
+ * S-21); removing it together with this schema is R2's work.
  *
- * Продлевается только действующая аренда: у коррекции завершения и у заявки, которую ещё не
- * подали, продлевать нечего. Что новая дата позже прежней, проверяет сервер — прежней у схемы нет.
+ * Причину нельзя положить в комментарий заявки — она перезаписала бы его. Продлевается только
+ * действующая аренда; что новая дата позже прежней, проверяет сервер — прежней у схемы нет.
  */
 export const extendMechRequestSchema = z.object({
   plannedTo: dateOnlySchema,
@@ -1102,6 +1118,11 @@ export interface MechRequestDto {
   deletedAt: string | null;
   /** Кто отправил заявку в архив (ADR 0070); пусто у живой и у той, чей автор удаления не сохранился. */
   deletedByName: string | null;
+  /**
+   * The current extension request (ADR 0171, stage 3): pending, or the last decided one until the
+   * next request overwrites it. `null` — the rental was never asked to be extended through the visa.
+   */
+  extension: MechRequestExtensionDto | null;
 }
 
 // ── История заявки (ADR 0012, Р11) ──
@@ -1147,6 +1168,13 @@ export const mechRequestChangeLabels: Record<string, string> = {
   // списком. Ключ `plannedTo` тот же, что у правки формы: поле одно, а событий два, и различает их
   // вид истории, а не имя ключа.
   extendReason: 'Причина продления',
+  // The extension visa (ADR 0171, stage 3). The request event carries the same `plannedTo` pair
+  // ("current → asked") and `extendReason`; the approval writes `mech_request.extend` as before,
+  // with the visa holder's remark when there is one. The refusal and the drop carry their reasons
+  // as list rows: they have no "before".
+  extendApproveComment: 'Комментарий к визе продления',
+  extendRejectReason: 'Причина отказа в продлении',
+  extendDropReason: 'Почему запрос продления снят',
   // Завершение (`mech_request.complete`), в том числе повторное после отката: прежние числа не
   // сохранит ничто, кроме этой записи, а именно их спрашивают, разбирая счёт.
   actualTo: 'Возвращена',
