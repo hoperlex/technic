@@ -1,4 +1,4 @@
-import { Alert, Button, Form, Input, Radio, Space, Switch } from 'antd';
+import { Alert, Button, Form, Input, InputNumber, Radio, Space, Switch } from 'antd';
 import { DeleteFilled } from '@ant-design/icons';
 import type { FormInstance } from 'antd';
 import {
@@ -13,7 +13,7 @@ import {
 } from '@technic/contracts';
 import { wasteTariffKindLabels } from '@entities/waste-tariff';
 import { formatMoney } from '@shared/lib';
-import { AddonInputNumber, AutoSelect, FormModal, type FormBlockersApi } from '@shared/ui';
+import { AutoSelect, FieldAddons, FormModal, type FormBlockersApi } from '@shared/ui';
 
 const kindOptions = CONTAINER_KINDS.map((kind) => ({
   value: kind,
@@ -311,13 +311,9 @@ export function WasteTariffEditorModal({
             }
             rules={[{ required: true, message: 'Укажите цену за контейнер' }]}
           >
-            <AddonInputNumber
-              style={{ width: '100%' }}
-              min={0.01}
-              precision={2}
-              step={100}
-              after="₽"
-            />
+            <FieldAddons after="₽">
+              <InputNumber style={{ width: '100%' }} min={0.01} precision={2} step={100} />
+            </FieldAddons>
           </Form.Item>
         ) : (
           <Form.Item
@@ -325,13 +321,9 @@ export function WasteTariffEditorModal({
             label="Цена за м³"
             rules={[{ required: true, message: 'Укажите цену за м³' }]}
           >
-            <AddonInputNumber
-              style={{ width: '100%' }}
-              min={0.01}
-              precision={2}
-              step={50}
-              after="₽/м³"
-            />
+            <FieldAddons after="₽/м³">
+              <InputNumber style={{ width: '100%' }} min={0.01} precision={2} step={50} />
+            </FieldAddons>
           </Form.Item>
         )}
 

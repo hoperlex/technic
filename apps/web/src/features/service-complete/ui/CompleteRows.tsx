@@ -31,7 +31,7 @@ export function CompleteRows({
             </Checkbox>
           </Col>
           <Col xs={10} sm={5}>
-            {/* Inline rather than `AddonInputNumber`: no `Form.Item` here, so the cell has no
+            {/* Inline rather than `FieldAddons`: no `Form.Item` here, so the cell has no
                 validation status to carry — only the field's own `disabled`. */}
             <Space.Compact>
               <Space.Addon disabled={!row.performed}>факт</Space.Addon>

@@ -41,7 +41,7 @@ export function ServiceConsumableFactRows({
               <Typography.Text>{consumableLabel(row)}</Typography.Text>
             </Col>
             <Col xs={10} sm={5}>
-              {/* Inline rather than `AddonInputNumber`: no `Form.Item` here, so the cell has no
+              {/* Inline rather than `FieldAddons`: no `Form.Item` here, so the cell has no
                   validation status to carry. */}
               <Space.Compact>
                 <Space.Addon>выдано</Space.Addon>

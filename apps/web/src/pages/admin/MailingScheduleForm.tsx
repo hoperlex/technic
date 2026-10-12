@@ -26,7 +26,7 @@ import {
 } from '@technic/contracts';
 import { driverOptionsQuery } from '@entities/driver';
 import { mailingsApi } from '@entities/mailing';
-import { AddonInputNumber, FormModal } from '@shared/ui';
+import { FieldAddons, FormModal } from '@shared/ui';
 import { MailingAudienceFields } from './MailingAudienceFields';
 import {
   ALL_WEEKDAYS,
@@ -85,14 +85,15 @@ export function WindowFromField({
         }}
       />
       {custom ? (
-        <AddonInputNumber
-          min={0}
-          max={MAILING_WINDOW_MAX_FROM}
-          value={value}
-          onChange={(v) => onChange?.(v ?? 0)}
-          after="дн."
-          style={{ width: 120 }}
-        />
+        <FieldAddons after="дн.">
+          <InputNumber
+            min={0}
+            max={MAILING_WINDOW_MAX_FROM}
+            value={value}
+            onChange={(v) => onChange?.(v ?? 0)}
+            style={{ width: 120 }}
+          />
+        </FieldAddons>
       ) : null}
     </Space>
   );

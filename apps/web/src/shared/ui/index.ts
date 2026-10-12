@@ -4,7 +4,6 @@
  * changing their callers.
  */
 export * from './ActionSheet';
-export * from './AddonInputNumber';
 export * from './ActiveWindowContent';
 export * from './actionMenu';
 export * from './AutoSelect';
@@ -18,6 +17,7 @@ export * from './DeferredContent';
 export * from './EntityLink';
 export * from './ExpandableCell';
 export * from './Fab';
+export * from './FieldAddons';
 export * from './FilterReset';
 export * from './FilterSheet';
 export * from './formBlockers';

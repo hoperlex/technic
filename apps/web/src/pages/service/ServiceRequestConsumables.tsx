@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App, Button, Checkbox, Col, Form, Row, Typography } from 'antd';
+import { App, Button, Checkbox, Col, Form, InputNumber, Row, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestConsumableDto, ServiceRequestDto } from '@technic/contracts';
@@ -10,7 +10,7 @@ import {
 } from '@entities/office-equipment';
 import { consumableLabel, serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { useAuth } from '@entities/session';
-import { AddonInputNumber, AutoSelect, FormModal } from '@shared/ui';
+import { AutoSelect, FieldAddons, FormModal } from '@shared/ui';
 import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
 
 /** Строка формы: позиция справочника и сколько её просят. Пустая строка — только что добавленная. */
@@ -131,14 +131,15 @@ export function ServiceRequestConsumablesField({
                     rules={[{ required: true, message: 'Сколько нужно' }]}
                     style={{ marginBottom: 8 }}
                   >
-                    <AddonInputNumber
-                      style={{ width: '100%' }}
-                      min={1}
-                      max={1000}
-                      precision={0}
-                      before="шт"
-                      aria-label="Сколько нужно"
-                    />
+                    <FieldAddons before="шт">
+                      <InputNumber
+                        style={{ width: '100%' }}
+                        min={1}
+                        max={1000}
+                        precision={0}
+                        aria-label="Сколько нужно"
+                      />
+                    </FieldAddons>
                   </Form.Item>
                 </Col>
                 <Col xs={8} sm={2} style={{ textAlign: 'right' }}>

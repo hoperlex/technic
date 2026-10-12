@@ -1,35 +1,47 @@
 import { describe, expect, it } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { Button, Form } from 'antd';
-import { AddonInputNumber, ItemList, ItemListMeta } from '../src/shared/ui';
+import { Button, Form, InputNumber } from 'antd';
+import { FieldAddons, ItemList, ItemListMeta } from '../src/shared/ui';
 
 /**
  * The portal's stand-ins for antd props and components deprecated in antd 6 (roadmap Q8). Each one
  * repeats what antd 6.5 itself did for the old API, and what is checked here is the part that is
  * easy to lose silently when the composition is rewritten by hand:
  *
- * 1. `AddonInputNumber` under a `Form.Item`: the value reaches the form, and the addon turns red
- *    together with the field. `Space.Addon` reads no form context, so without the status handed to
- *    it the cell would stay grey next to a red field.
+ * 1. `FieldAddons` under a `Form.Item`: the value reaches the form through the wrapper, the
+ *    control's own `onChange` still runs after the form's one, and the addon turns red together
+ *    with the field. `Space.Addon` reads no form context, so without the status handed to it the
+ *    cell would stay grey next to a red field.
  * 2. `ItemList`: actions are divided by a rule between them, not after the last one; a missing
  *    list shows the given text or antd's empty picture; while loading with no rows yet, no empty
  *    text flashes before the rows; the rows stay inside the polite live region `Spin` gives.
  */
-describe('AddonInputNumber', () => {
-  function PriceForm({ onFinish }: { onFinish: (values: { price: number }) => void }) {
+describe('FieldAddons', () => {
+  function PriceForm({
+    onFinish,
+    onTyped,
+  }: {
+    onFinish: (values: { price: number }) => void;
+    onTyped: (value: number | null) => void;
+  }) {
     return (
       <Form onFinish={onFinish}>
         <Form.Item name="price" label="Цена" rules={[{ required: true, message: 'Укажите цену' }]}>
-          <AddonInputNumber min={0.01} after="₽" />
+          <FieldAddons after="₽">
+            <InputNumber<number> min={0.01} onChange={onTyped} />
+          </FieldAddons>
         </Form.Item>
         <Button htmlType="submit">Сохранить</Button>
       </Form>
     );
   }
 
-  it('turns the addon red with a failed field and passes the value to the form', async () => {
+  it('turns the addon red with a failed field, passes the value on and keeps the own onChange', async () => {
     const values: { price: number }[] = [];
-    const { container } = render(<PriceForm onFinish={(v) => values.push(v)} />);
+    const typed: (number | null)[] = [];
+    const { container } = render(
+      <PriceForm onFinish={(v) => values.push(v)} onTyped={(v) => typed.push(v)} />,
+    );
     const addon = () => screen.getByText('₽');
 
     expect(addon().className).not.toContain('ant-space-addon-status-error');
@@ -47,6 +59,7 @@ describe('AddonInputNumber', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
     });
     expect(values).toEqual([{ price: 120 }]);
+    expect(typed).toEqual([120]);
     expect(addon().className).not.toContain('ant-space-addon-status-error');
   });
 });
