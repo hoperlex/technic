@@ -14,19 +14,23 @@ import { useRecordSession } from '@shared/lib';
 import { useEstimatePresentation } from './useEstimatePresentation';
 import { useEstimateFailure } from './conflict';
 import {
-  estimateDraftIssue,
-  estimateIssue,
-  initialEstimateMode,
   newEstimateRow,
-  rowsChanged,
   rowsForSave,
-  rowsFromItems,
-  rowsToPayload,
   rowsTotal,
-  toFreeRows,
   type EstimateMode,
   type EstimateRow,
 } from './rows';
+import { estimateDraftIssue, estimateIssue } from './estimateRules';
+import {
+  breakdownBody,
+  documentSubmitBody,
+  estimateFill,
+  estimateNeedsSave,
+  estimateSaveBody,
+  itemsSubmitBody,
+  switchedRows,
+  warrantySubmitBody,
+} from './estimateForm';
 
 /**
  * The entry intent selects both the presentation and the command semantics.
@@ -146,15 +150,7 @@ export function useEstimateEditor({
     isDirty: () =>
       rows !== filled?.rows || mode !== filled?.mode || comment !== '' || presentation.changed,
     fill: (r, reason) => {
-      const initial = rowsFromItems(r.items);
-      /*
-       * THE BREAKDOWN ALWAYS OPENS BY COLUMNS, and that is its whole point: the coordinator pressed
-       * "Break down by columns" precisely to unfold a one-line entry — and a one-line entry is
-       * exactly what passes `fitsFreeMode`, so without this branch the window would open as two
-       * fields with nothing to break down.
-       */
-      const startMode = breakdown ? 'rows' : initialEstimateMode(initial);
-      const startRows = startMode === 'free' ? toFreeRows(initial) : initial;
+      const { mode: startMode, rows: startRows } = estimateFill(r.items, breakdown);
       // Our own draft came back: the rows are refilled only if not edited since they were sent; the
       // comment and the submission method are not part of a draft and stay as they are.
       if (reason === 'own' && rows !== sentRows.current) return;
@@ -188,28 +184,18 @@ export function useEstimateEditor({
     mutationFn: async (submit: boolean) => {
       let current = version;
       sentRows.current = rows;
-      if (rowsChanged(saved, request!.items)) {
-        const stored = await serviceRequestsApi.saveEstimate(request!.id, {
-          items: rowsToPayload(saved),
-          version: current,
-        });
+      if (estimateNeedsSave(rows, mode, request!.items)) {
+        const stored = await serviceRequestsApi.saveEstimate(
+          request!.id,
+          estimateSaveBody(rows, mode, current),
+        );
         current = stored.version;
       }
       if (!submit) return { version: current, submitted: false };
-      const sent = await serviceRequestsApi.submitEstimate(request!.id, {
-        // Формат предъявления — внешний дискриминатор тела (Р2 плана
-        // `docs/office-equipment-on-site-and-invoice-estimate-plan.md`), и построчная раскладка
-        // называет его прямо. Прежнее `warrantyRepair: false` говорило то же самое отрицанием второго
-        // формата, а форматов теперь три: «не гарантийный» перестало быть ответом на вопрос «каким
-        // предъявлено».
-        mode: 'items',
-        // Освобождение законно и у построчного предъявления, и это главный сценарий разбора
-        // (Р2): мелкий ремонт на месте вписывают строками и тут же помечают «согласование не
-        // требуется». Требование «при освобождении обязателен счёт» заказчик отверг 11.09.2026.
-        ...(exemptionBody() ? { exemption: exemptionBody() } : {}),
-        comment: comment.trim(),
-        version: current,
-      });
+      const sent = await serviceRequestsApi.submitEstimate(
+        request!.id,
+        itemsSubmitBody({ exemption: exemptionBody(), comment, version: current }),
+      );
       return { version: sent.version, submitted: true };
     },
     onSuccess: (result) => {
@@ -232,11 +218,7 @@ export function useEstimateEditor({
   /** Гарантийный ремонт (Р27): объём работ из служебной нулевой строки, его собирает сервер. */
   const warrantyMutation = useMutation({
     mutationFn: () =>
-      serviceRequestsApi.submitEstimate(request!.id, {
-        mode: 'warranty',
-        comment: comment.trim(),
-        version,
-      }),
+      serviceRequestsApi.submitEstimate(request!.id, warrantySubmitBody({ comment, version })),
     onSuccess: () => {
       message.success('Гарантийный ремонт предъявлен без оплаты');
       refresh();
@@ -257,13 +239,15 @@ export function useEstimateEditor({
    */
   const documentMutation = useMutation({
     mutationFn: () =>
-      serviceRequestsApi.submitEstimate(request!.id, {
-        mode: 'document',
-        fileIds: presentation.files.map((file) => file.id),
-        ...(exemptionBody() ? { exemption: exemptionBody() } : {}),
-        comment: comment.trim(),
-        version,
-      }),
+      serviceRequestsApi.submitEstimate(
+        request!.id,
+        documentSubmitBody({
+          fileIds: presentation.files.map((file) => file.id),
+          exemption: exemptionBody(),
+          comment,
+          version,
+        }),
+      ),
     onSuccess: (result) => {
       session.accept(result.version);
       refresh();
@@ -295,10 +279,7 @@ export function useEstimateEditor({
    */
   const breakdownMutation = useMutation({
     mutationFn: () =>
-      serviceRequestsApi.saveEstimateBreakdown(request!.id, {
-        items: rowsToPayload(saved),
-        version,
-      }),
+      serviceRequestsApi.saveEstimateBreakdown(request!.id, breakdownBody(rows, mode, version)),
     onSuccess: (result) => {
       session.accept(result.version);
       refresh();
@@ -379,7 +360,7 @@ export function useEstimateEditor({
      */
     switchMode: (next: EstimateMode) => {
       setMode(next);
-      setRows((prev) => (next === 'free' ? toFreeRows(prev) : rowsForSave(prev, 'free')));
+      setRows((prev) => switchedRows(prev, next));
     },
     addRow: (kind: ServiceItemKind) => setRows((prev) => [...prev, newEstimateRow(kind)]),
     changeRow: (key: string, patch: Partial<EstimateRow>) =>
