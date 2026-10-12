@@ -114,7 +114,9 @@
 **Switched on 2026-10-12** (stage Э8 of the [lint plan](../lint-debt-plan.md), roadmap item Q3):
 the lint step of `pnpm check` now fails the run on ESLint errors. Warnings remain debt and never
 fail it, and rule levels are unchanged. Exit code 2 and an unreadable report stay fatal, and the
-line `линт: N ошибок, M предупреждений` is printed as before.
+line `линт: N ошибок, M предупреждений` is printed as before. Which rules are errors, what a level
+means and why a cleanup never raises one is [ADR 0225](0225-lint-policy.md); this section keeps
+only the gate mechanics.
 
 ### 5. Отметка о зелёном прогоне — только выкатам без отката
 
@@ -202,8 +204,8 @@ line `линт: N ошибок, M предупреждений` is printed as be
   сознательно: у него своя цена (машина, доступ к кластеру, время прогона на каждый push).
 - **Переключение линта в блокирующий.** Ошибок ноль (Э7); нужна правка `check.mjs` на одну строку
   и решение, что делать с предупреждениями — их 111, и ратчет для них живёт отдельно
-  (`quality-budget.json`, барьер Б2 плана фронта). _Done 2026-10-12 for errors; warnings stay debt
-  (§4)._
+  (`quality-budget.json`, барьер Б2 плана фронта). _Done 2026-10-12 for errors (§4); the warnings
+  question is answered by [ADR 0225](0225-lint-policy.md): they stay debt, with no ratchet._
 - **Необработанные исключения `57P01` в db-наборе** (этап Э6). Пока они есть, `check:db` умеет
   упасть без единого красного файла — команда это честно сообщает, но лечится это владением
   ресурсами в тестах, а не воротами.

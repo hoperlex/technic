@@ -227,4 +227,4 @@
 - Остальной API: —
 - Web: [scripts](../apps/web/scripts)
 - Тесты: `pnpm check`, `pnpm check:db`, `pnpm check:docs`, `pnpm test:docs`, `bundle-size.test.ts`
-- Решения: [ADR 0147](adr/0147-quality-gates.md)
+- Решения: [ADR 0147](adr/0147-quality-gates.md), [ADR 0224](adr/0224-codebase-maintenance-framework.md), [ADR 0225](adr/0225-lint-policy.md)
