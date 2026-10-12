@@ -356,3 +356,31 @@ ADR описывает **переписку по заявке**: ленту ре
   выкатов; отказываться от отката здесь не за что.
 - **Письма о репликах сразу.** Отложены заказчиком; заводить их «раз уж всё равно делаем» значило
   бы выкатить рассылку, объём и адресность которой никто не проверял на живой переписке.
+
+## Release B (2026-10-12)
+
+Release B (decision 7, contract of code) is done in code; the database is not touched and the
+release carries no migration. Removed: the adapter route `PATCH /:id/service-comment` with its rows
+in both access manifests (`access-manifest.ts`, `service-access-manifest.ts`), the adapter's message
+import `importServiceCommentMessage`, `serviceCommentSchema`, the `serviceComment` field of
+`ServiceRequestDto` and of the requester audience map, the `serviceComment` column from
+`apps/api/src/db/schema.ts`, and the last portal trace, a dead field label in the request error
+dictionary. Kept on purpose: the audit action `serviceRequest.service_comment` in the request
+history parser, because audit rows already in the database are read by it.
+
+Why it is safe in the deploy window. The database column stays `service_comment text NOT NULL
+DEFAULT ''` (migration `0105`, never altered): inserts by the new code omit it and get the default,
+and no `SELECT` lists it any more, which is exactly what lets release C drop it unnoticed. Until the
+restart the previous server (release A code) still serves the adapter and may write the column and
+an `import` message for an old bundle; release C's repeated transfer and its "current value moved"
+check absorb that write. The bundles still allowed by the client floor (contract 4 and above)
+neither call the route nor read the field: the slice and the client call left in release A
+(`3e75362`), and every commit with `CLIENT_CONTRACT >= 4` up to the production build has no live
+reference to either, only a comment in `ServiceChatFeed.tsx` and the error label removed now.
+Rolling the code back to release A stays free, since the column is still there.
+
+The db tests of items 10–12 no longer call the route: they write the column and the feed by SQL that
+mirrors the release A adapter statement for statement, which is what the previous server does in the
+window. Release C is unchanged and still waits in
+`apps/api/drizzle/pending/service-chat-drop-service-comment.sql`: it is promoted in the release
+after release B is deployed, never together with it.
