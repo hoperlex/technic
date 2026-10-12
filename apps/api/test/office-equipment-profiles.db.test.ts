@@ -382,9 +382,9 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
       INSERT INTO user_departments (user_id, department_id)
       VALUES (${itAdmin.id}, ${itDepartmentId})`);
 
-    // «Ведение» — надстройкой через сервис, а не прямой вставкой: с шага 1a реформы (ADR 0106)
-    // выдача пишет и `user_role_addons`, и `user_grants` одной транзакцией, а половина записи
-    // означала бы права, которых сервер не увидит.
+    // The operator add-on goes through the service, not a direct insert: the service is the only
+    // writer of add-on assignments (ADR 0106), and a hand-written row could grant rights in a shape
+    // the server does not read.
     const { replaceUserAddons } = await import('../src/services/user-scopes');
     await db.transaction(async (tx) => {
       await replaceUserAddons(tx, operator.id, ['office_equipment_operator'], admin.id);

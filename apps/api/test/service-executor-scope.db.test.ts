@@ -425,13 +425,13 @@ describe.skipIf(!DB_URL)('область исполнителя за рубил�
     };
 
     /*
-     * НАДСТРОЙКИ ВЫДАЮТСЯ ПЕРВЫМИ, И ПОРЯДОК ЗДЕСЬ НЕ КОСМЕТИКА. `replaceUserAddons` — это ЗАМЕНА
-     * набора надстроек: коды, которых нет в переданном списке, она снимает вместе с их строками в
-     * `user_grants`. А `office_equipment_it_approver` — это одновременно и надстройка, и системный
-     * набор, то есть выданный вручную ИТ-набор она сняла бы, оставив профиль без карты сквозной
-     * области. Выданный ПОСЛЕ — переживает: разницу она считает по `user_role_addons`, и о ручной
-     * строке там ничего нет. Собранный не в том порядке `itOperator` тихо превратился бы в
-     * «исполнитель + Ведение», а parity-тест на нём зеленел бы, проверяя не тот профиль.
+     * ADD-ONS ARE GRANTED FIRST, AND THE ORDER IS NOT COSMETIC. `replaceUserAddons` REPLACES the
+     * add-on set: codes missing from the given list are revoked together with their `user_grants`
+     * rows. `office_equipment_it_approver` is both an add-on and a system grant, so an IT grant
+     * issued by hand BEFORE this call would be revoked, leaving the profile without the module-wide
+     * scope. Issued AFTER, it survives because no later add-on edit runs. Built in the wrong order,
+     * `itOperator` would silently turn into "executor + operator", and the parity test on it would
+     * stay green while checking the wrong profile.
      */
     const { replaceUserAddons } = await import('../src/services/user-scopes');
     await db.transaction(async (tx) => {

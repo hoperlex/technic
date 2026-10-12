@@ -31,19 +31,18 @@ import type * as SchemaNs from '../src/db/schema';
  * `authVersion` — то есть гасит выданные токены. Последнее и связывает выдачу с безопасностью:
  * назначение, записанное без отзыва токенов, начинает действовать не тогда, когда его выдали.
  *
- * **Что изменил шаг 1d.** Единственным писателем назначений стал `applyAddonGrants`, а
- * `user_role_addons` не пишется вовсе — и утверждений о её строках здесь не осталось: доказывали бы
- * они теперь не запись, а её отсутствие, и предмет этот чужой (`user-grants-single-write`). Заодно
- * лишились второй половины две сверки времени: «одна транзакция — одно время» сравнивало отметки
- * двух таблиц, а сравнивать стало не с чем. Обе переформулированы на соседнюю строку, которую та же
- * транзакция датирует своим `now()`, — саму учётку при заведении и запись журнала о рассмотрении
- * заявки.
+ * **What steps 1d and 1e changed.** `applyAddonGrants` is the only writer of assignments, and the old
+ * add-on table is gone (step 1e), so no claims about its rows remain here; the single writer is the
+ * subject of `user-grants-single-write`. Two time checks lost their second half with it: "one
+ * transaction, one time" compared the stamps of two tables. Both are restated against a neighbour row
+ * that the same transaction stamps with its `now()`: the account itself on creation and the journal
+ * entry about the registration request review.
  *
- * **Что добавилось на шаге 1c.** Витрина учёток (карточка и список) читает пометки рядом с ролью из
- * назначенных полномочий — и проверяется это здесь же, потому что источник у неё тот же самый
- * маршрут. Прав по новой схеме файл по-прежнему не касается: `can`
- * проверяют `access-matrix` и `access-scope`, состав системных наборов — `grants-catalog.db.test.ts`,
- * перенос — `backfill-grants.db.test.ts`, сами выражения чтения — `user-grants-read.db.test.ts`.
+ * **What step 1c added.** The account registry (card and list) reads the marks next to the role from
+ * assigned grants, and that is checked here because its source is the same route. Rights under the
+ * new scheme are still not this file's subject: `can` is checked by `access-matrix` and
+ * `access-scope`, the system grant composition by `grants-catalog.db.test.ts`, the read expressions
+ * by `user-grants-read.db.test.ts`.
  *
  * **Общий прогон.** Свой префикс адресов, уборка до и после по нему же; ни одного утверждения обо
  * всей базе — все выборки идут по идентификатору своей учётки.
@@ -647,21 +646,16 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
   });
 
   /*
-   * ── Витрина учёток читает назначения (шаг 1c) ──────────────────────────────────────────────────
+   * ── The account registry reads assignments (step 1c) ──────────────────────────────────────────
    *
-   * Пометки рядом с ролью — единственное, что портал видит о выданном, и форма правки присылает их
-   * обратно. На шаге 1c переключение источника проверялось расхождением таблиц: обе писались, и
-   * «читает новую» от «читает старую» отличимо было только там, где содержимое у них разное.
+   * The marks next to the role are all the portal sees of what was granted, and the edit form sends
+   * them back. At step 1c the source switch was checked by a mismatch between the two tables: both
+   * were written, and "reads the new one" differed from "reads the old one" only where their content
+   * differed. Since step 1d such a mismatch cannot be created at all: assignments have one writer,
+   * and step 1e dropped the old table.
    *
-   * С шага 1d такого расхождения не завести вовсе — писатель у назначений один, и старая таблица
-   * пуста. Заводить его легаси-строкой (прямая вставка в `user_role_addons`) нельзя по другой
-   * причине: `backfill:grants` идёт по всей базе, соседний файл гоняет его настоящим переносом, и
-   * подложенная надстройка уехала бы в назначения посреди проверки — вернув пометку, которой тест
-   * ждёт пустой. Что легаси-строка ничего не значит, проверяется отдельно и с другой стороны — в
-   * `user-grants-single-write.db.test.ts`, на разнице, а не на витрине.
-   *
-   * Отсюда и остаток предмета: пометка равна **системным** назначениям, показывается в порядке
-   * словаря, и снятое мимо формы назначение её убирает (следующий тест).
+   * Hence what remains of the subject: the mark equals the **system** assignments, is shown in
+   * dictionary order, and an assignment revoked outside the form removes it (the next test).
    */
   it('карточка и список берут пометку из назначений', async () => {
     const { id, email } = await createAccount(ctx.admin, { addons: [OPERATOR, IT_APPROVER] });

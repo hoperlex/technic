@@ -810,13 +810,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     // остаётся `shtab` — именно это и проверяет коридор: право статуса у надстройки есть, а шаги
     // исполнителя ей всё равно не положены.
     //
-    // Заводится она **сервисом**, а не прямым SQL, — единственное исключение среди декораций этого
-    // блока, и вот почему. С шага 1a перехода на назначаемые полномочия (ADR 0106, решение 9)
-    // выдача надстройки пишет две таблицы одной транзакцией: `user_role_addons` и `user_grants`.
-    // Прямая вставка в старую таблицу оставила бы половину — на шаге 1c, когда права читаются уже
-    // из назначений, оператор и виза ИТ молча лишились бы своих прав, и сценарий упал бы шагов на
-    // двадцать ниже, в проверке чужого правила. Заодно такая фикстура — расхождение для сверки шага
-    // 1b (`backfill:grants`), которая идёт по всей базе и о чужих тестах ничего не знает.
+    // It is created by the **service**, not by direct SQL — the only exception among this block's
+    // fixtures. The service is the only writer of add-on assignments (ADR 0106, decision 9): it finds
+    // the system grant by code and writes the `user_grants` row the way production does. A
+    // hand-written row that got any of that wrong would silently leave the operator and the IT visa
+    // without rights, and the scenario would fail twenty steps below, in someone else's rule.
     const { replaceUserAddons } = await import('../src/services/user-scopes');
     await db.transaction(async (tx) => {
       await replaceUserAddons(tx, operator.id, ['office_equipment_operator'], admin.id);

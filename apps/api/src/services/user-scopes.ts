@@ -25,34 +25,26 @@ import {
   userConstructionObjects,
   userDepartments,
   userGrants,
-  userRoleAddons,
   users,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { revokeAllForUsersTx } from '../auth/sessions';
 
-// Область учётки: объекты (ADR 0039) или отделы (ADR 0040) — две связи «учётка ↔ подразделение»,
-// многие-ко-многим. Отдельным сервисом, а не внутри routes/users.ts, по той же причине, что и
-// связь «объект ↔ оператор»: набор правится не из одного места — отделы правятся ещё и из
-// карточки справочника, — и правила синхронизации должны быть одни и те же с любой стороны.
+// Account scope: objects (ADR 0039) or departments (ADR 0040), two many-to-many links "account ↔
+// unit". A separate service rather than part of routes/users.ts, for the same reason as the "object ↔
+// operator" link: the set is edited from more than one place (departments also from the directory
+// card), and the sync rules must be the same from either side.
 //
-// Здесь же живут надстройки роли (ADR 0086): область они не меняют, но читаются и синхронизируются
-// тем же приёмом и в тех же местах — принципал на каждом запросе и карточка учётки.
+// Role add-ons (ADR 0086) live here too: they do not change the scope, but they are read and synced
+// the same way and in the same places — the principal on every request and the account card.
 //
-// Надстройки переезжают в назначаемые полномочия (ADR 0106), и переход идёт шагами. С 1c доступ
-// считается по `user_grants` (`grantCodesExpr`, `grantPermissionsExpr`, `grantCodesByUserIds`,
-// `grantPermissionsByUserIds` — их читают принципал, вход и витрина учёток), а с 1d туда же ушла и
-// запись: единственный писатель назначений — `applyAddonGrants`, и `user_role_addons` не пишется
-// вовсе. Снаружи путь `addons` при этом прежний — старый портал шлёт тот же набор, и выдача из него
-// по-прежнему даёт и отнимает права.
-//
-// **Откат «через шаг» с 1d перестал быть безопасным.** Старая таблица отстаёт на всё, что выдано
-// после прекращения записи, поэтому версия, читающая надстройки (1b и глубже), молча отберёт доступ
-// у этих учёток; вернуться туда можно только после обратной сверки — из новых таблиц в старую
-// (§15 плана реструктуризации). Откат на 1c безопасен: та версия старую таблицу тоже не читает.
-//
-// Мёртвые читатели старой таблицы (`roleAddonsExpr`, `addonsByUserIds`) оставлены до 1e, который
-// уносит их вместе с самой таблицей.
+// The add-ons have moved into assignable grants (ADR 0106, five expand/contract steps, finished by
+// step 1e). Access is computed from `user_grants` (`grantCodesExpr`, `grantPermissionsExpr`,
+// `grantCodesByUserIds`, `grantPermissionsByUserIds` — read by the principal, sign-in and the account
+// registry), and the only writer of assignments is `applyAddonGrants`. The former `user_role_addons`
+// table and its `role_addon` type are dropped by the step 1e migration: a version that still reads
+// them (1c and older) cannot run on this schema, only 1d can. The `addons` path stays outwardly the
+// same: the portal sends the same set, and granting through it still grants and revokes rights.
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 /** Читателю транзакция не нужна: наборы учёток спрашивают и вне правки (список учёток, карточка). */
@@ -310,77 +302,28 @@ export async function replaceUserDepartments(
   return true;
 }
 
-/**
- * Надстройки учётки (ADR 0086) одним выражением — рядом с объектами и отделами и по той же
- * причине: принципал читается на каждом запросе, и размножать строку пользователя ради набора
- * из нескольких значений незачем.
- *
- * `::text` обязателен: pg разбирает только встроенные типы массивов, а у массива пользовательского
- * enum'а OID свой в каждой базе — такой столбец вернулся бы строкой `{office_equipment_operator}`
- * вместо массива, и `can` молча не нашёл бы ни одной надстройки.
- *
- * **Читателей у выражения с шага 1c нет** (см. заголовок файла): принципал и вход спрашивают
- * `grantCodesExpr`. Оставлено до шага 1e, который уносит его вместе с таблицей, — но вернуть чтение
- * сюда уже нельзя: с 1d в `user_role_addons` никто не пишет, и всё выданное после того релиза
- * выражение попросту не покажет. Это был бы не откат, а тихое снятие доступа.
- */
-export const roleAddonsExpr = sql<RoleAddon[]>`(
-  SELECT coalesce(array_agg(ura.addon::text ORDER BY ura.addon), '{}')
-  FROM user_role_addons ura
-  WHERE ura.user_id = ${users.id}
-)`;
-
-/**
- * Надстройки учёток одним запросом — то же, что objectsByUserIds, третьей осью.
- *
- * Как и `roleAddonsExpr`, с шага 1c никем не читается: список и карточка учёток спрашивают
- * `grantCodesByUserIds`, — и так же, как у него, вернуть чтение сюда с шага 1d нельзя: старая
- * таблица отстала на всё выданное после прекращения записи.
- */
-export async function addonsByUserIds(userIds: string[]): Promise<Map<string, RoleAddon[]>> {
-  const map = new Map<string, RoleAddon[]>();
-  if (userIds.length === 0) return map;
-  const rows = await db
-    .select({ userId: userRoleAddons.userId, addon: userRoleAddons.addon })
-    .from(userRoleAddons)
-    .where(inArray(userRoleAddons.userId, userIds))
-    // Порядок — объявления enum'а: набор показывается пометками рядом с ролью, и он не должен
-    // переставляться от того, в каком порядке надстройки выдавали.
-    .orderBy(userRoleAddons.addon);
-  for (const row of rows) {
-    const list = map.get(row.userId) ?? [];
-    list.push(row.addon);
-    map.set(row.userId, list);
-  }
-  return map;
-}
-
 /*
- * ── Чтение назначаемых полномочий (ADR 0106, шаг 1c) ─────────────────────────────────────────────
+ * ── Reading assignable grants (ADR 0106) ──────────────────────────────────────────────────────────
  *
- * Выражения ниже — действующий источник прав: их читают принципал на каждом запросе
- * (`auth/principal.ts`), вход со сменой пароля (`routes/auth.ts`) и витрина учёток
- * (`routes/users.ts`). Разрешила переключение нулевая двусторонняя сверка (`backfill:grants
- * --check`, шаг 1b), а не готовность кода; сами выражения по-прежнему проверяются своим db-тестом
- * (`user-grants-read.db.test.ts`) — он единственный, где видны гейт по роли, фильтр `deleted_at` и
- * право-сирота.
+ * The expressions below are the only source of granted rights: the principal reads them on every
+ * request (`auth/principal.ts`), as do sign-in with password change (`routes/auth.ts`) and the
+ * account registry (`routes/users.ts`). Their own db test (`user-grants-read.db.test.ts`) is the only
+ * place where the role gate, the `deleted_at` filter and the orphan right are all visible.
  */
 
 /**
- * Коды наборов учётки одним выражением — рядом с `roleAddonsExpr` и по той же причине: принципал
- * читается на каждом запросе, и размножать строку пользователя ради набора из нескольких значений
- * незачем.
+ * Grant codes of an account as one expression, next to the objects and departments: the principal is
+ * read on every request, and multiplying the user row for a set of a few values is pointless.
  *
  * `deleted_at IS NULL` — единственный фильтр здесь и стоит он на **наборе**, а не на назначении:
  * мягко удалённый набор перестаёт действовать у всех держателей сразу, а строки `user_grants`
  * остаются — реестр выдач обязан объяснять прошлые назначения (`grant_id` под RESTRICT именно
  * ради этого).
  *
- * Порядок — по коду: ответ не должен переставляться от того, в каком порядке наборы выдавали.
- * Пометки рядом с ролью упорядочивает при этом не он, а словарь (`systemAddonsOf`): у надстроек
- * порядок был enum'ный, и алфавит кодов переставил бы две пометки местами на ровном месте.
- * `::text` здесь, в отличие от надстроек, не нужен — код набора и в базе `text`, а не значение
- * пользовательского enum'а.
+ * Ordered by code: the answer must not reorder with the order in which grants were issued. The
+ * add-on marks next to the role are ordered by the dictionary instead (`systemAddonsOf`): the old
+ * add-ons were ordered by enum declaration, and the alphabet of codes would swap the two marks for no
+ * reason. No `::text` cast is needed: the grant code is `text` in the database, not a user enum.
  *
  * Совместимости с ролью выражение не спрашивает намеренно: коды отвечают на «что учётке выдано», и
  * витрина обязана показывать выданный набор даже тогда, когда роль сменили и права он больше не
@@ -445,13 +388,11 @@ export const grantPermissionsExpr = sql<string[]>`(
 )`;
 
 /**
- * Коды наборов у списка учёток одним запросом — то же, что `addonsByUserIds`, но по новой схеме:
- * список учёток не должен порождать запрос на строку.
+ * Grant codes of a list of accounts in one query: the account list must not issue a query per row.
  *
- * Читатель приходит параметром, а не берётся из модуля, в отличие от `addonsByUserIds`: наборы
- * спрашивает и список учёток (вне транзакции), и правка, которой нужно увидеть состояние внутри
- * своей (пересчёт прав перед `authVersion`). Второй функции ради этого не заводится — `Reader`
- * принимает и то и другое.
+ * The reader is a parameter rather than the module `db`: grants are asked both by the account list
+ * (outside a transaction) and by an edit that must see the state inside its own transaction
+ * (recomputing rights before `authVersion`). `Reader` accepts both, so no second function is needed.
  *
  * Возвращает строки, а не `SystemGrantCode`: рядом с системными в базе лежат наборы, собранные
  * администратором, и сузить тип здесь значило бы соврать про содержимое.
@@ -612,15 +553,16 @@ export async function grantPermissionsByUserIds(
  * `undefined` — пустую пометку рядом с ролью, — а вернувшись из формы правки, был бы отклонён схемой
  * как значение вне enum'а, то есть учётку стало бы нельзя сохранить, не сняв набор.
  *
- * **Перебор идёт по словарю, а не по кодам учётки, и это не стилевая мелочь — это порядок пометок.**
- * `roleAddonsExpr` отдавал надстройки в порядке объявления enum'а («Оператор (оргтехника)», потом
- * «Согласование ИТ»), а `grantCodesExpr` сортирует по коду, где алфавит переставляет их местами.
- * Держателю обоих наборов пометки после переключения источника поменялись бы местами ни от чего —
- * шаг обязан менять хранение и ничего больше. Порядок словаря к тому же и есть тот, который нужен:
- * пометки не должны переставляться от того, в каком порядке наборы выдавали.
+ * **The loop runs over the dictionary, not over the account's codes, because that is the order of
+ * the marks.** The former add-on table returned add-ons in enum declaration order ("Оператор
+ * (оргтехника)", then "Согласование ИТ"), while `grantCodesExpr` sorts by code, where the alphabet
+ * swaps them. Following the dictionary keeps the marks where they always were and independent of the
+ * order in which grants were issued.
  *
- * Совпадение кодов держится не соглашением, а `SYSTEM_GRANT_CODES ... satisfies readonly RoleAddon[]`
- * в контрактах — оттуда же и тип результата. Функция уходит вместе с полем `addons` на шаге 1e.
+ * The codes match by `SYSTEM_GRANT_CODES ... satisfies readonly RoleAddon[]` in the contracts, not by
+ * convention; the result type comes from there too. The function lives as long as the `addons` DTO
+ * field: that field is read by the portal bundles in the field, and dropping it is its own step
+ * behind the client floor (§10.1 of the restructuring plan), not part of step 1e.
  */
 export function systemAddonsOf(codes: readonly string[]): RoleAddon[] {
   // `includes` по двум системным кодам: множество на каждый запрос дороже самого перебора.
@@ -632,10 +574,9 @@ export function systemAddonsOf(codes: readonly string[]): RoleAddon[] {
  * видно, менялись ли права (отзыв токенов), и он же служит «итоговым состоянием», с которым
  * сверяется новая роль, когда набор не прислали (`routes/users.ts`).
  *
- * **Читает назначения, а не `user_role_addons`, и это требование шага 1d.** С прекращением записи
- * старая таблица перестала описывать что бы то ни было, а разница правки считается именно отсюда:
- * читай мы мёртвое состояние, снятая надстройка молча возвращалась бы при первой же правке
- * карточки, а выданную не удалось бы снять. Источник у чтения и у записи обязан быть один.
+ * **Reads assignments, the same store `applyAddonGrants` writes.** The edit diff is computed from
+ * here, so reading any other state would silently bring back a revoked add-on on the next card save
+ * and make a granted one impossible to revoke. Reads and writes must share one source.
  *
  * Отсюда и пересечение с системными кодами (`systemAddonsOf`), а не весь список: рядом с двумя
  * системными наборами у учётки лежат собранные администратором, и надстройками они не являются —
@@ -650,11 +591,11 @@ export async function addonsOfUser(tx: Tx, userId: string): Promise<RoleAddon[]>
 /**
  * Записывает выдачу и отзыв надстроек назначениями полномочий (ADR 0106, решение 9).
  *
- * **С шага 1d это и есть запись, а не отражение чужой.** До него функция звалась
- * `mirrorAddonGrants` и дублировала в `user_grants` то, что `replaceUserAddons` писала в
- * `user_role_addons`; теперь старая таблица не пишется вовсе, и единственный след выданной из
- * карточки надстройки — заведённая здесь строка назначения. Отсюда и цена ошибки: пропущенная
- * вставка означает не расхождение двух таблиц, а невыданное право.
+ * **This is the only write of an add-on, not a mirror of another one.** Until step 1d the function
+ * was `mirrorAddonGrants` and duplicated into `user_grants` what `replaceUserAddons` wrote to the old
+ * add-on table; that table is gone, and the only trace of an add-on granted from the card is the
+ * assignment row created here. Hence the cost of a bug: a skipped insert is not a mismatch of two
+ * tables but a right that was never granted.
  *
  * Зовётся только из `replaceUserAddons` и **той же транзакцией**: `tx` приходит снаружи, потому что
  * правку учётки составляют ещё пять действий рядом — область, работник, строка `users`,
@@ -706,10 +647,9 @@ async function applyAddonGrants(
     // требует, уже работает. Это сломанный выкат, а не рабочее состояние: деплой накатывает
     // миграции ДО перезапуска приложения, поэтому к первой же выдаче набор обязан существовать.
     //
-    // Отсюда выбор — падать, а не пропускать молча. До шага 1d пропуск оставлял выдачу хотя бы в
-    // старой таблице и подделывал сигнал сверки; теперь он не оставляет её нигде — администратор
-    // видит сохранённую карточку, а прав у человека не появляется, и объяснить это будет нечем.
-    // Отказ операции здесь дешевле тихо потерянного права.
+    // Hence failing instead of skipping silently: a skip would leave the grant nowhere — the
+    // administrator sees a saved card, the person gets no rights, and nothing explains why. Failing
+    // the operation is cheaper than a silently lost right.
     //
     // Отзыв (выше) при этом не падает: если набора нет, то и назначения на него быть не может —
     // снимать нечего, и упираться в отсутствующую строку каталога снятие доступа не должно.
@@ -745,16 +685,13 @@ async function applyAddonGrants(
  * Совместимость с ролью проверяет маршрут: она зависит от роли, которая правится той же ручкой, и
  * ответ обязан назвать поле формы, а не прийти общим 400 из глубины сервиса.
  *
- * **Пишет только назначения (ADR 0106, шаг 1d).** Прежняя `user_role_addons` не заполняется и не
- * чистится: с этого релиза она мёртвая и ждёт удаления (1e). Снаружи путь не изменился — старый
- * портал шлёт тот же `addons`, и надстройка, выданная из него, по-прежнему даёт права: читаются
- * они с шага 1c уже из назначений. Записью занимается `applyAddonGrants`, и идёт она разницей, а
- * не «снести и вставить заново», — почему именно так, сказано там же.
+ * **Writes assignments only (ADR 0106).** The outward path is unchanged: the portal sends the same
+ * `addons`, and an add-on granted through it still grants rights, read from assignments. The write is
+ * done by `applyAddonGrants` as a diff, not "delete and insert again" — the reason is given there.
  *
- * **Разница считается от назначений** (`addonsOfUser`), а не от старой таблицы, и это не деталь
- * реализации: состояние обязано читаться оттуда же, куда пишется. Читай мы `user_role_addons`,
- * разница выходила бы «ничего не менялось» — то есть снятая надстройка возвращалась бы при первой
- * же правке карточки, а выданную нельзя было бы снять, и оба раза молча.
+ * **The diff is computed from assignments** (`addonsOfUser`): the state must be read from where it
+ * is written, or a revoked add-on would come back on the next card save and a granted one could not
+ * be revoked, both silently.
  *
  * **Требует блокировки строки учётки снаружи.** Разница считается от прочитанного здесь `before`, и
  * между чтением и записью не должно втиснуться второе изменение набора: оба вызова этой функции

@@ -457,9 +457,9 @@ describe.skipIf(!DB_URL)('формат ревизии объёма работ с
       INSERT INTO user_construction_objects (user_id, construction_object_id)
       VALUES (${customer.id}, ${objectRow.rows[0]!.id}), (${operator.id}, ${objectRow.rows[0]!.id})`);
     /*
-     * Надстройка роли — сервисом, а не вставкой в таблицу: с шагом 1a реформы доступа выдача пишет
-     * две таблицы одной транзакцией (`user_role_addons` и `user_grants`), и половина оставила бы
-     * оператора без прав там, где права читаются из назначений.
+     * The role add-on goes through the service, not a table insert: the service is the only writer
+     * of add-on assignments (ADR 0106), and a hand-written row could leave the operator without the
+     * rights that are read from assignments.
      */
     await db.transaction(async (tx) => {
       await replaceUserAddons(tx, operator.id, ['office_equipment_operator'], admin.id);

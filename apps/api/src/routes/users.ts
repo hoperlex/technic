@@ -1844,9 +1844,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
                   ...(nextIsActive !== existing.isActive
                     ? { isActive: { from: existing.isActive, to: nextIsActive } }
                     : {}),
-                  // Что именно осталось у учётки — только когда набор менялся: снятие надстройки
-                  // уносит из `user_role_addons` и строку с `granted_by`, и без этой записи в журнале
-                  // не осталось бы следа, чем доступ был до правки.
+                  // What the account kept, only when the set changed: revoking an add-on deletes its
+                  // assignment row together with `granted_by`, and without this journal entry no
+                  // trace of the access before the edit would remain.
                   ...(addonsSetChanged && nextAddons !== null ? { addons: nextAddons } : {}),
                   // Множество назначений менялось: признак стоит рядом с `addonsChanged` и по той же
                   // причине — по нему видно, что правка трогала доступ, а не только карточку.

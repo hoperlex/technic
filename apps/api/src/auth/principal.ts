@@ -199,16 +199,18 @@ export interface Principal extends AccessSubject {
    */
   grantPermissions: Permission[];
   /**
-   * Надстройки роли (ADR 0086): пометки рядом с ролью в ответах API. Массив всегда, пусть и пустой.
+   * Role add-ons (ADR 0086): the marks next to the role in API responses. Always an array, possibly
+   * empty.
    *
-   * С шага 1c это **производное** поле — пересечение `grantCodes` с системными кодами
-   * (`systemAddonsOf`), а не отдельный запрос в `user_role_addons`. Источник у прав один, и второй
-   * ответ на «что учётке выдано» разошёлся бы с ним ровно в тот момент, когда таблицы разъедутся.
+   * A **derived** field since step 1c: the intersection of `grantCodes` with the system codes
+   * (`systemAddonsOf`), with no store of its own (the former add-on table is dropped by step 1e).
+   * Rights have one source, and a second answer to "what is granted to the account" would drift from
+   * it.
    *
-   * Оставлено потому, что поле читают ответы API (`AuthUser.addons`, карточка и список учёток) и
-   * форма правки присылает его обратно; `can` тоже по-прежнему его спрашивает — на переходных шагах
-   * 1a–1d одна выдача видна и надстройкой, и набором, и оба источника отвечают на право одинаково.
-   * Уходит вместе с `role-addons.ts` на шаге 1e.
+   * It stays because API responses carry it (`AuthUser.addons`, the account card and list), portal
+   * bundles in the field read it and the edit form sends it back; `can` still asks it too, and the
+   * same grant answers identically as an add-on and as a grant. Removing the field is its own step
+   * behind the client floor, not part of step 1e.
    */
   addons: RoleAddon[];
   /**

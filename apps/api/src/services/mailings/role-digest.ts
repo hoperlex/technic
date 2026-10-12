@@ -146,9 +146,8 @@ function counterpartyTypesWithAnyPermission(
  * своему модулю. Матрица разворачивается в список имён ролей прямо в запросе, потому что живёт
  * статикой в коде; наборы и контрагент спрашиваются `EXISTS`-подзапросами.
  *
- * Надстроек роли (`user_role_addons`) здесь нет намеренно: с шага 1c перехода доступ считается по
- * `user_grants`, куда надстройки отражаются двойной записью (ADR 0106, шаг 1a). Второй источник
- * того же права давал бы тот же ответ и разошёлся бы с принципалом на шаге 1d.
+ * Role add-ons are not a separate term on purpose: they are stored as system grants in `user_grants`
+ * (ADR 0106; the former add-on table is dropped by step 1e), so the grant term already covers them.
  *
  * Экспортируется, потому что тем же условием форма показывает администратору, кого зацепит
  * расписание (`GET /admin/mail/recipient-candidates`), и им же считает обе стороны сверка

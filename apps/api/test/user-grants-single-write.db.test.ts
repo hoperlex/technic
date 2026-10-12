@@ -11,46 +11,44 @@ import type * as SchemaNs from '../src/db/schema';
 import type * as UserScopesNs from '../src/services/user-scopes';
 
 /**
- * Единственный писатель назначений (ADR 0106, шаг 1d; план реструктуризации §15) — на живой схеме.
+ * The only writer of assignments (ADR 0106, steps 1d and 1e; restructuring plan §15), on a live
+ * schema.
  *
- * До этого шага файл назывался `user-grants-dual-write.db.test.ts` и проверял двойную запись: та же
- * надстройка заводила строку и в `user_role_addons`, и в `user_grants`. Запись в старую таблицу
- * прекращена, поэтому и утверждение теста стало обратным — её строк правка учётки не заводит и не
- * убирает вовсе, — а имя файла обязано называть проверяемое свойство, а не бывшее.
+ * Before step 1d the file was `user-grants-dual-write.db.test.ts` and checked the dual write into the
+ * old add-on table and `user_grants`. The old table is dropped by step 1e, so what remains is the
+ * single writer, and the file name names the property under test, not the former one.
  *
- * Зачем база. Предмет теста и есть база: `replaceUserAddons` пишет разницу строками, и всё, что
- * здесь проверяется, — их свойства, которых на подменах не существует. Собственный `id` назначения
- * выдаёт `gen_random_uuid()`, время выдачи — умолчание `now()`, повторную выдачу гасит
- * `UNIQUE (user_id, grant_id)`, а сами системные наборы завела миграция 0145. Мок ответил бы
- * «функция вызвана» на любую из ошибок, ради которых шаг и написан так.
+ * Why a database. The database is the subject: `replaceUserAddons` writes the diff as rows, and every
+ * property checked here belongs to those rows and does not exist on mocks. The assignment `id` comes
+ * from `gen_random_uuid()`, the grant time from the `now()` default, a repeated grant is absorbed by
+ * `UNIQUE (user_id, grant_id)`, and the system grants themselves come from migration 0145. A mock
+ * would answer "function called" to every bug this step is written against.
  *
- * **Главных утверждений здесь два.**
+ * **There are two main claims.**
  *
- * Первое — разница считается **от назначений**. С прекращением записи `user_role_addons` перестала
- * что-либо описывать, и читай `addonsOfUser` по-прежнему её, каждая правка карточки считала бы
- * разницу от мёртвого состояния: снятая надстройка возвращалась бы, а выданную нельзя было бы
- * снять. Ловят это два теста — снятие и легаси-строка в старой таблице, которая на разницу влиять
- * не должна.
+ * First, the diff is computed **from assignments**. If `addonsOfUser` read any other state, every
+ * card save would diff against it: a revoked add-on would come back and a granted one could not be
+ * revoked. The revocation test catches this.
  *
- * Второе — добавление второй надстройки **не трогает первую**. Запись «снести всё и вставить
- * заново» прошла бы остальные проверки и при этом каждый раз выдавала бы уцелевшему назначению
- * новый `id`, нового автора и новое время. На неизменности `id` держится откат будущего перевода
- * ролей: он снимает свои строки и не трогает выданное вручную, а найти их он может только по
- * идентификаторам.
+ * Second, adding a second add-on **does not touch the first**. A "delete all and insert again" write
+ * would pass every other check while giving the surviving assignment a new `id`, a new author and a
+ * new time on each edit. The rollback of the future role migration relies on unchanged `id`s: it
+ * removes its own rows and leaves manual grants alone, and it can find them only by id.
  *
- * Рядом проверяется граница пути надстроек: собранный администратором набор он не снимает. Разница
- * берётся не из всех кодов учётки, а из пересечения с системными (`systemAddonsOf`), и без этого
- * фильтра сохранение карточки отзывало бы всё, что выдали реестром.
+ * Next to it the boundary of the add-on path is checked: it does not revoke a grant assembled by an
+ * administrator. The diff is taken from the intersection with the system codes (`systemAddonsOf`),
+ * not from all of the account's codes; without that filter a card save would revoke everything
+ * granted through the registry.
  *
- * Чтение прав здесь не проверяется намеренно: `can` и выражения источника — предмет
- * `access-matrix` и `user-grants-read.db.test.ts`.
+ * Reading rights is deliberately not checked here: `can` and the source expressions belong to
+ * `access-matrix` and `user-grants-read.db.test.ts`.
  *
- * Запуск (миграции тест накатывает сам):
+ * Run (the test applies migrations itself):
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/technic_archive_test \
  *     npx vitest run apps/api/test/user-grants-single-write.db.test.ts
  *
- * Без `TEST_DATABASE_URL` файл пропускается — как и остальные `*.db.test.ts`.
+ * Without `TEST_DATABASE_URL` the file is skipped, like the other `*.db.test.ts`.
  */
 
 const DB_URL = process.env.TEST_DATABASE_URL;
@@ -109,9 +107,9 @@ async function migrate(databaseUrl: string): Promise<void> {
 }
 
 /**
- * Уборка своих строк — и перед прогоном тоже. Учёток достаточно: назначения и надстройки уходят
- * каскадом (`user_grants.user_id`, `user_role_addons.user_id` — оба `ON DELETE CASCADE`), а
- * `granted_by` у чужих строк каскад не трогает вовсе.
+ * Removes this file's rows, before the run as well. Deleting the accounts is enough: assignments go by
+ * cascade (`user_grants.user_id` is `ON DELETE CASCADE`), and the cascade never touches `granted_by`
+ * of other rows.
  *
  * Свой набор удаляется после учёток: `grant_id` стоит под RESTRICT, и выданный набор не удалить,
  * пока жив хоть один держатель.
@@ -146,63 +144,15 @@ type Tx = Parameters<Parameters<typeof AppDb.transaction>[0]>[0];
 type Reader = typeof AppDb | Tx;
 
 /**
- * Правка набора надстроек так, как её делает маршрут учёток.
- *
- * Транзакция своя, если её не дали снаружи: маршрут открывает её сам и передаёт сервису готовой,
- * поэтому оба способа вызова здесь равноправны, а сценарий, которому нужна **одна** транзакция на
- * все шаги, приносит её с собой (см. `inRolledBackTx`).
+ * Edits the add-on set the way the account route does: the route opens the transaction itself and
+ * hands it to the service.
  */
 async function setAddons(
   userId: string,
   addons: RoleAddon[],
   actorUserId: string,
-  tx?: Tx,
 ): Promise<boolean> {
-  return tx
-    ? ctx.service.replaceUserAddons(tx, userId, addons, actorUserId)
-    : ctx.db.transaction((own) => ctx.service.replaceUserAddons(own, userId, addons, actorUserId));
-}
-
-/** Старая таблица: с шага 1d правка учётки её не касается, и проверяется здесь именно это. */
-async function addonRows(userId: string, reader: Reader = ctx.db): Promise<RoleAddon[]> {
-  const rows = await reader
-    .select({ addon: ctx.schema.userRoleAddons.addon })
-    .from(ctx.schema.userRoleAddons)
-    .where(eq(ctx.schema.userRoleAddons.userId, userId))
-    .orderBy(asc(ctx.schema.userRoleAddons.addon));
-  return rows.map((row) => row.addon);
-}
-
-/**
- * Сценарий целиком в одной транзакции, которую в конце откатывают.
- *
- * Нужно это ровно одному тесту — тому, что заводит легаси-строку `user_role_addons` **без** парного
- * назначения, — и причина не в чистоте, а в соседях по базе. `backfill-grants.db.test.ts` гоняет
- * настоящий перенос по всей таблице, файлы vitest идут параллельно, и попади перенос в это окно —
- * он честно сделает свою работу: заведёт по легаси-строке назначение. Тест покраснеет на ровном
- * месте, и виноват будет не он.
- *
- * Развести их можно только тем свойством, на котором держится сам перенос: он берёт
- * `LOCK TABLE user_role_addons IN SHARE MODE` и потому видит лишь **зафиксированные** правки
- * надстроек — «начатая до нас к этой секунде зафиксировала обе стороны, начатая после — ждёт»
- * (`src/backfill-grants.ts`). Половинчатое состояние, живущее внутри незакоммиченной транзакции,
- * переносу не видно ни при каком расписании, а откат не оставляет от него следа. Порядок файлов или
- * `fileParallelism: false` чинили бы то же самое ценой всего прогона и держались бы на честном
- * слове.
- *
- * Откат — исключением, а не `tx.rollback()`: то бросает своё, и отличать его от настоящей ошибки
- * теста пришлось бы по типу чужого модуля.
- */
-async function inRolledBackTx(body: (tx: Tx) => Promise<void>): Promise<void> {
-  class Rollback extends Error {}
-  try {
-    await ctx.db.transaction(async (tx) => {
-      await body(tx);
-      throw new Rollback('сценарий закончен, откатываемся');
-    });
-  } catch (e) {
-    if (!(e instanceof Rollback)) throw e;
-  }
+  return ctx.db.transaction((tx) => ctx.service.replaceUserAddons(tx, userId, addons, actorUserId));
 }
 
 interface GrantRow {
@@ -283,7 +233,7 @@ describe.skipIf(!DB_URL)('назначения: единственный пис�
     }
   });
 
-  it('выдача надстройки заводит назначение и не пишет в старую таблицу', async () => {
+  it('выдача надстройки заводит назначение', async () => {
     const userId = await newUser();
     expect(await setAddons(userId, [OPERATOR], ctx.adminId)).toBe(true);
 
@@ -295,10 +245,6 @@ describe.skipIf(!DB_URL)('назначения: единственный пис�
     expect(granted[0]!.origin).toBe('manual');
     expect(granted[0]!.migrationId).toBeNull();
     expect(granted[0]!.grantedBy).toBe(ctx.adminId);
-
-    // Главное отличие шага 1d от 1a: старая таблица не заполняется. Строка в ней означала бы, что
-    // прекращение записи не состоялось, — а обнаружилось бы это только на удалении таблицы (1e).
-    expect(await addonRows(userId)).toEqual([]);
   });
 
   /**
@@ -328,9 +274,9 @@ describe.skipIf(!DB_URL)('назначения: единственный пис�
   });
 
   /**
-   * Снятие — и есть проверка того, что состояние читается из назначений. Читай `addonsOfUser`
-   * мёртвую `user_role_addons`, `before` вышло бы пустым: снимать было бы нечего, а `IT_APPROVER`
-   * выглядел бы новой выдачей — то есть правка не сняла бы ничего и вернула бы обе надстройки.
+   * Revocation is the check that the state is read from assignments. Read from anywhere else, `before`
+   * would come out empty: there would be nothing to revoke, and `IT_APPROVER` would look like a new
+   * grant, so the edit would revoke nothing and bring both add-ons back.
    */
   it('снятие одной надстройки удаляет ровно её назначение', async () => {
     const userId = await newUser();
@@ -346,41 +292,6 @@ describe.skipIf(!DB_URL)('назначения: единственный пис�
     expect(after[0]!.grantedAt.getTime()).toBe(kept.grantedAt.getTime());
     // Снятое не возвращается следующей же правкой: разницы больше нет, и писать нечего.
     expect(await setAddons(userId, [IT_APPROVER], ctx.adminId)).toBe(false);
-  });
-
-  /**
-   * Легаси-строка старой таблицы — та самая, что осталась у живых учёток от шагов 1a–1c. С шага 1d
-   * она не значит ничего: ни на разницу не влияет, ни убираться не должна. Второе не мелочь —
-   * `user_role_addons` живёт до 1e, и до тех пор она свидетельство прошлых выдач (`granted_by`,
-   * `granted_at`), которым объясняется история доступа; чистка «за компанию» уносила бы его молча.
-   *
-   * **Сценарий целиком идёт одной откатываемой транзакцией**, и это не оформление, а развод с
-   * соседом по общей базе: половинчатое состояние «надстройка без назначения» — ровно то, что
-   * переносит `backfill-grants`, и параллельный прогон переноса завёл бы по нашей строке назначение
-   * между шагами. Почему транзакции достаточно и почему её хватает надёжнее порядка файлов —
-   * см. `inRolledBackTx`.
-   */
-  it('надстройка в старой таблице не считается выданной и не убирается', async () => {
-    const userId = await newUser();
-
-    await inRolledBackTx(async (tx) => {
-      await tx
-        .insert(ctx.schema.userRoleAddons)
-        .values({ userId, addon: OPERATOR, grantedBy: ctx.adminId });
-
-      // Назначений нет — снимать нечего, сколько бы строк ни лежало в старой таблице.
-      expect(await setAddons(userId, [], ctx.otherAdminId, tx)).toBe(false);
-      expect(await grantRows(userId, tx)).toHaveLength(0);
-
-      // И выдать ту же надстройку она не мешает: разница считается не по ней.
-      expect(await setAddons(userId, [OPERATOR], ctx.otherAdminId, tx)).toBe(true);
-      expect((await grantRows(userId, tx)).map((row) => row.code)).toEqual([OPERATOR]);
-      expect(await addonRows(userId, tx)).toEqual([OPERATOR]);
-    });
-
-    // Откат ничего не оставил — ни в новой таблице, ни в старой: свидетелей у сценария нет.
-    expect(await grantRows(userId)).toHaveLength(0);
-    expect(await addonRows(userId)).toEqual([]);
   });
 
   /**

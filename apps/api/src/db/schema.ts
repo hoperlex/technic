@@ -1227,48 +1227,14 @@ export const userDepartments = pgTable(
 );
 
 /**
- * Надстройки роли (ADR 0086, миграция 0106) — третья ось субъекта доступа рядом с ролью и типом
- * контрагента. Хранится набором, как объекты и отделы учётки: одному человеку ничто не мешает
- * отвечать и за оргтехнику, и за то, что появится следующим.
+ * Assignable grants (ADR 0106, migration 0145): a role add-on that stopped being an enum value. Free
+ * assembly means a grant is created in production, while an enum value can be neither created from
+ * the UI nor removed at all.
  *
- * Совместимость надстройки с базовой ролью держит API (`ROLE_ADDON_BASE_ROLES` в контрактах), а не
- * CHECK: условие читало бы колонку соседней таблицы — тот же случай, из-за которого миграция 0063
- * сняла `users_rukstroy_object_check`.
- */
-export const roleAddonEnum = pgEnum('role_addon', [
-  'office_equipment_operator',
-  // Согласование ИТ (миграция 0117): вторая надстройка и первая, которая меняет область — в
-  // пределах модуля оргтехники (`ADDON_MODULE_WIDE_SCOPE` в контрактах).
-  'office_equipment_it_approver',
-]);
-
-export const userRoleAddons = pgTable(
-  'user_role_addons',
-  {
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    addon: roleAddonEnum('addon').notNull(),
-    // Кто и когда выдал: надстройка расширяет доступ, и в журнале учёток это должно читаться так
-    // же ясно, как смена роли. Отсюда и имена, отличные от `created_by`/`created_at` соседних
-    // связей: там привязка описывает область, здесь — выданное полномочие.
-    grantedBy: uuid('granted_by').references(() => users.id, { onDelete: 'set null' }),
-    grantedAt: timestamp('granted_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    pk: primaryKey({ columns: [t.userId, t.addon] }),
-  }),
-);
-
-/**
- * Назначаемые полномочия (ADR 0106, миграция 0145) — надстройка роли, переставшая быть значением
- * enum. Свободная сборка означает, что набор заводится в проде, а значение `role_addon` нельзя ни
- * создать из интерфейса, ни удалить вовсе.
- *
- * Шаг 1d перехода expand/contract: `user_role_addons` не пишется и не читается больше нигде — и
- * права (шаг 1c), и разница правки карточки считаются отсюда. Старая таблица стоит рядом мёртвой до
- * шага 1e, который снимет её вместе с полем `addons`; вернуть чтение к ней уже нельзя — выданное
- * после прекращения записи в ней не выражается вовсе, и такой откат был бы тихим снятием доступа.
+ * The only store of assignments since step 1e of the expand/contract transition: the former
+ * `user_role_addons` table and its `role_addon` type are dropped by a migration, and both access
+ * (step 1c) and the account-card diff (step 1d) are computed from here. The `addons` field of the
+ * account DTO stays: it is derived from the system grant codes (`systemAddonsOf`), not stored.
  *
  * Совместимость набора с ролью и состав прав держит сервер, а не CHECK: оба условия кросс-табличные
  * — тот же случай, из-за которого миграция 0063 сняла `users_rukstroy_object_check`.
@@ -9629,7 +9595,6 @@ export type UserRow = typeof users.$inferSelect;
 export type UserConstructionObjectRow = typeof userConstructionObjects.$inferSelect;
 export type DepartmentRow = typeof departments.$inferSelect;
 export type UserDepartmentRow = typeof userDepartments.$inferSelect;
-export type UserRoleAddonRow = typeof userRoleAddons.$inferSelect;
 export type GrantRow = typeof grants.$inferSelect;
 export type GrantPermissionRow = typeof grantPermissions.$inferSelect;
 export type GrantRoleRow = typeof grantRoles.$inferSelect;

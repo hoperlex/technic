@@ -113,12 +113,14 @@
 надстройки. Список допустимых базовых ролей — `ROLE_ADDON_BASE_ROLES`; несовместимую пару не создаёт
 API учёток и не признаёт сама матрица.
 
-**Надстройка при этом доживает переход и больше нигде не хранится.** С шага 1c ADR 0106 обе
-надстройки живут в базе как системные **наборы** с теми же кодами, поле `addons` у принципала —
-производное (пересечение выданных наборов с системными кодами, `systemAddonsOf`), а сквозная область
-читается по кодам наборов (`hasModuleWideScope(p.grantCodes, …)`). Одна и та же выдача видна поэтому
-и надстройкой, и набором, и оба источника отвечают на право одинаково: совпадение — норма перехода,
-а не ошибка. Уйдут надстройки вместе с `role-addons.ts` на шаге 1e.
+**An add-on is no longer stored anywhere of its own.** Both add-ons live in the database as system
+**grants** with the same codes (ADR 0106; step 1e dropped the former `user_role_addons` table and
+its `role_addon` type). The principal's `addons` field is derived (the intersection of granted codes
+with the system codes, `systemAddonsOf`), and the module-wide scope is read by grant codes
+(`hasModuleWideScope(p.grantCodes, …)`). The same grant is therefore visible both as an add-on and
+as a grant, and both sources answer a right identically. `role-addons.ts` and the `addons` field
+stay while portal bundles in the field read them; removing them is a separate step behind the
+client floor.
 
 **Назначаемое полномочие (набор)** — четвёртый источник
 ([ADR 0106](adr/0106-assignable-permission-grants.md)): именованный список прав, который выдаётся
@@ -821,8 +823,9 @@ ACCESS_PROFILES                — 24 различимых поставочны�
 - `grantPermissions` — что **действует**: гейт совместимости стоит внутри выражения. Здесь же
   проходит граница «база → код»: право хранится текстом, и строку-сироту (право, снятое из словаря
   выкатом) отсеивает `isPermission`. Дальше по коду фильтровать нечего — тип это и обещает;
-- `addons` — производное поле: пересечение `grantCodes` с системными кодами (`systemAddonsOf`).
-  Собственная таблица `user_role_addons` больше не читается.
+- `addons` — a derived field: the intersection of `grantCodes` with the system codes
+  (`systemAddonsOf`). The add-ons have no table of their own: step 1e of ADR 0106 dropped
+  `user_role_addons`.
 
 `authVersion` — то, чем гасятся сессии при смене прав: `app.authenticate` сверяет его с `av` из
 токена на каждом запросе, и несовпадение означает 401. Поднимает его всё, что меняет доступ, —
@@ -1148,12 +1151,13 @@ return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
 кодом — их не собрать в интерфейсе и не обойти им: невыдаваемые права, требования, конфликты
 обязанностей и матрица «ось × модуль» (§7.1).
 
-**Новая надстройка роли не заводится вовсе**: наборы пришли надстройкам на смену
-([ADR 0106](adr/0106-assignable-permission-grants.md) развивает
-[ADR 0086](adr/0086-role-addons.md)), и то, что раньше было надстройкой, теперь набор. Две живые
-дорабатывают переход: хранятся системными наборами с теми же кодами, читаются из них же и уйдут с
-`role-addons.ts` на шаге 1e. Единственное, что от них останется в коде, — сквозная область
-ИТ-набора, и она уже переехала на коды наборов (`GRANT_MODULE_WIDE_SCOPE`).
+**No new role add-on is ever created**: grants replaced add-ons
+([ADR 0106](adr/0106-assignable-permission-grants.md) develops
+[ADR 0086](adr/0086-role-addons.md)), and what used to be an add-on is now a grant. The two live ones
+are stored as system grants with the same codes and read from them; their own table is gone (step
+1e), and `role-addons.ts` stays only for the derived `addons` field read by portal bundles in the
+field. The only thing of them that will remain in code is the module-wide scope of the IT grant, and
+it already moved to grant codes (`GRANT_MODULE_WIDE_SCOPE`).
 
 ## 13. Связанные ADR
 

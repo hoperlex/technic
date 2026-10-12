@@ -13,8 +13,9 @@ import {
 import { applyMigrations, migrationsDir, readMigration } from '../src/db/migration-journal';
 
 /**
- * Подготовленный, но не выкаченный SQL перевода ролей — шаги `migrate` и `cleanup` этапов 8 и 9 и
- * шаг 1e (`apps/api/drizzle/pending/`, план реструктуризации §13.2 и §15; ADR 0113).
+ * Prepared but not deployed role-migration SQL: the `migrate` and `cleanup` steps of stages 8 and 9
+ * (`apps/api/drizzle/pending/`, restructuring plan §13.2 and §15; ADR 0113). Step 1e left this
+ * directory and became a numbered migration; the scratch database below runs it with the rest.
  *
  * **Зачем тест на то, что ещё не едет.** Между написанием этих файлов и их выкатом пройдёт
  * несколько релизов, за которые изменятся и снимок, и каталог наборов, и сам перечень ролей.
@@ -264,7 +265,9 @@ describe.skipIf(!DB_URL)('подготовленный SQL перевода ро
   });
 
   it('шаг 1e убирает таблицу надстроек вместе с её типом', async () => {
-    await runPending('step1e-drop-user-role-addons.sql');
+    // Step 1e is a numbered migration now, applied by `applyMigrations` in `beforeAll`. The check
+    // stays here because this scratch database is the one that also re-runs the prepare files
+    // (0155/0156) after the drop: neither of them may need the add-on table or its type.
     const { rows } = await client.query<{
       table_exists: string | null;
       type_exists: string | null;

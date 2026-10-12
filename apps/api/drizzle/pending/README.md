@@ -49,13 +49,16 @@ git mv apps/api/drizzle/pending/<файл>.sql apps/api/drizzle/<NNNN>_<имя>.
 Содержимое при этом не правится: номер — единственное, что файл получает при выкате. Условие
 готовности шага и порядок относительно выката — в `docs/runbook.md`, раздел «Перевод ролей».
 
-## Что здесь лежит
+## What lies here
 
-| Файл                                    | Шаг                         | Релиз                                            |
-| --------------------------------------- | --------------------------- | ------------------------------------------------ |
-| `stage8-migrate-site-role.sql`          | этап 8, `migrate`           | следующий после prepare (`0154`–`0156`)          |
-| `stage9-migrate-department-role.sql`    | этап 9, `migrate`           | тот же или следующий                             |
-| `stage8-cleanup-site-role.sql`          | этап 8, `cleanup`           | следующий после `migrate` этапа 8                |
-| `stage9-cleanup-department-role.sql`    | этап 9, `cleanup`           | следующий после `migrate` этапа 9                |
-| `step1e-drop-user-role-addons.sql`      | шаг 1e                      | следующий после 1d (1d — релиз без миграций)     |
-| `service-chat-drop-service-comment.sql` | обсуждение заявки, выпуск C | следующий после выпуска B (ADR 0141, план §3.10) |
+| File                                    | Step                                         | Release                                           |
+| --------------------------------------- | -------------------------------------------- | ------------------------------------------------- |
+| `stage8-migrate-site-role.sql`          | stage 8, `migrate`                           | the one after prepare (`0154`–`0156`)             |
+| `stage9-migrate-department-role.sql`    | stage 9, `migrate`                           | the same one or the next                          |
+| `stage8-cleanup-site-role.sql`          | stage 8, `cleanup`                           | the one after stage 8 `migrate`                   |
+| `stage9-cleanup-department-role.sql`    | stage 9, `cleanup`                           | the one after stage 9 `migrate`                   |
+| `service-chat-drop-service-comment.sql` | request discussion, release C                | the one after release B (ADR 0141, plan §3.10)    |
+| `department-object-column-drop.sql`     | department objects stage 9, release B        | the one after release A (ADR 0144)                |
+
+Step 1e (`step1e-drop-user-role-addons.sql`) left this directory: it became a numbered migration in
+the release after 1d, by the procedure above.

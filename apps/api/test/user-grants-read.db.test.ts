@@ -355,7 +355,7 @@ describe.skipIf(!DB_URL)('назначения: чтение наборов уч
     const map = await ctx.service.grantCodesByUserIds(ctx.db, [holder, empty]);
     expect(map.get(holder)).toEqual((await read(holder)).codes);
     expect(map.get(holder)).toHaveLength(1);
-    // Учётка без наборов в карте отсутствует — как и в `addonsByUserIds`: читатель подставляет `[]`.
+    // An account without grants is absent from the map; the caller substitutes `[]`.
     expect(map.get(empty)).toBeUndefined();
     expect(await ctx.service.grantCodesByUserIds(ctx.db, [])).toEqual(new Map());
   });
