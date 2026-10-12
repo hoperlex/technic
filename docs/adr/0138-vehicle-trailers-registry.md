@@ -317,3 +317,27 @@ B — `PATCH` упирается в индекс и возвращает нар�
   связь прицепа — привязка к тягачу, а совпадение текста граф связью не считается (история хранит
   свободный ввод, опечатки и написания, которых в реестре нет). Запрет, построенный на сравнении
   строк, создавал бы видимость гарантии, и с этим решением он не вернётся.
+
+## Owner decision 2026-10-12 (survey S-6): one plate key, kept in the contracts
+
+The portal compares registration plates by two rules. The database function
+`vehicle_reg_normalize` (migration `0015`) drops separators, upper-cases and replaces the twelve
+Cyrillic look-alikes with Latin letters; it backs the generated `registration_number_normalized`
+columns and the unique index of the registry. Its TS twin `normalizeRegistration` lives in
+`apps/api/src/services/directory-transfer/defs/vehicles.ts`, where only the API can import it (the
+exchange and the fuel-norms directory use it). The trailer picker of the route form
+(`apps/web/src/features/vehicle-route-trailer/ui/TrailerPicker.tsx`) cannot reach it and compares
+with its own `squash` (case and spaces only), so a trailer typed as `ЕН806277` is not recognised
+when the registry holds it in Latin letters (plan §14.6).
+
+**Decision.** `normalizeRegistration` moves to `packages/contracts`, and a db test pins it to
+`vehicle_reg_normalize`: the same inputs go through both and must give the same key (an empty key
+is `NULL` in the database and `''` in TS, and the test has to state that, not hide it). The database
+function stays the authority — uniqueness and lookup are computed by Postgres — and the TS rule is
+its pinned copy, so a change on either side fails the test instead of drifting silently.
+
+The key is for comparison only. The form and the registry keep the plate as it was typed: the
+contracts test «приводить госномер к латинице и верхнему регистру форме не поручено» stays as it is.
+
+**State:** decided, implementation pending (roadmap item F2c). Until it lands, the rule stays in
+`defs/vehicles.ts` and the picker mismatch above remains.
