@@ -1,4 +1,4 @@
-import { Alert, Button, Form, Input, InputNumber, Radio, Space, Switch } from 'antd';
+import { Alert, Button, Form, Input, Radio, Space, Switch } from 'antd';
 import { DeleteFilled } from '@ant-design/icons';
 import type { FormInstance } from 'antd';
 import {
@@ -13,7 +13,7 @@ import {
 } from '@technic/contracts';
 import { wasteTariffKindLabels } from '@entities/waste-tariff';
 import { formatMoney } from '@shared/lib';
-import { AutoSelect, FormModal, type FormBlockersApi } from '@shared/ui';
+import { AddonInputNumber, AutoSelect, FormModal, type FormBlockersApi } from '@shared/ui';
 
 const kindOptions = CONTAINER_KINDS.map((kind) => ({
   value: kind,
@@ -311,12 +311,12 @@ export function WasteTariffEditorModal({
             }
             rules={[{ required: true, message: 'Укажите цену за контейнер' }]}
           >
-            <InputNumber
+            <AddonInputNumber
               style={{ width: '100%' }}
               min={0.01}
               precision={2}
               step={100}
-              addonAfter="₽"
+              after="₽"
             />
           </Form.Item>
         ) : (
@@ -325,12 +325,12 @@ export function WasteTariffEditorModal({
             label="Цена за м³"
             rules={[{ required: true, message: 'Укажите цену за м³' }]}
           >
-            <InputNumber
+            <AddonInputNumber
               style={{ width: '100%' }}
               min={0.01}
               precision={2}
               step={50}
-              addonAfter="₽/м³"
+              after="₽/м³"
             />
           </Form.Item>
         )}

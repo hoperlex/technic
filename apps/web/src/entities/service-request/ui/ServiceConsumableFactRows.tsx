@@ -1,4 +1,4 @@
-import { Col, Input, InputNumber, Row, Typography } from 'antd';
+import { Col, Input, InputNumber, Row, Space, Typography } from 'antd';
 import { consumableFactDelta, consumableLabel, type ConsumableFactRow } from '../model/consumables';
 
 /** Куда уйдёт разница: событие журнала пишется на неё, а не на всё количество (Р6). */
@@ -41,15 +41,19 @@ export function ServiceConsumableFactRows({
               <Typography.Text>{consumableLabel(row)}</Typography.Text>
             </Col>
             <Col xs={10} sm={5}>
-              <InputNumber
-                style={{ width: '100%' }}
-                min={0}
-                max={1000}
-                value={row.issuedQuantity}
-                addonBefore="выдано"
-                aria-label={`Выдано: ${row.name}`}
-                onChange={(v) => onChange(row.id, { issuedQuantity: v })}
-              />
+              {/* Inline rather than `AddonInputNumber`: no `Form.Item` here, so the cell has no
+                  validation status to carry. */}
+              <Space.Compact>
+                <Space.Addon>выдано</Space.Addon>
+                <InputNumber
+                  style={{ width: '100%' }}
+                  min={0}
+                  max={1000}
+                  value={row.issuedQuantity}
+                  aria-label={`Выдано: ${row.name}`}
+                  onChange={(v) => onChange(row.id, { issuedQuantity: v })}
+                />
+              </Space.Compact>
             </Col>
             <Col xs={14} sm={8}>
               {/* Причина живёт в самой строке заявки, а не только в событии журнала (Р3): её

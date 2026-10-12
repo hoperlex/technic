@@ -1,4 +1,4 @@
-import { Checkbox, Col, DatePicker, InputNumber, Row, Typography } from 'antd';
+import { Checkbox, Col, DatePicker, InputNumber, Row, Space, Typography } from 'antd';
 import dayjs from 'dayjs';
 import type { FactRow } from '../model/fact';
 
@@ -31,18 +31,22 @@ export function CompleteRows({
             </Checkbox>
           </Col>
           <Col xs={10} sm={5}>
-            <InputNumber
-              style={{ width: '100%' }}
-              min={0.01}
-              // Больше согласованного не бывает: удорожание проходит переоткрытием сметы, а не
-              // закрытием работ, — поэтому верхняя граница стоит прямо в поле.
-              max={row.quantity}
-              value={row.actualQuantity}
-              disabled={!row.performed}
-              addonBefore="факт"
-              aria-label={`Фактическое количество: ${row.name}`}
-              onChange={(v) => onChange(row.id, { actualQuantity: v })}
-            />
+            {/* Inline rather than `AddonInputNumber`: no `Form.Item` here, so the cell has no
+                validation status to carry — only the field's own `disabled`. */}
+            <Space.Compact>
+              <Space.Addon disabled={!row.performed}>факт</Space.Addon>
+              <InputNumber
+                style={{ width: '100%' }}
+                min={0.01}
+                // Never above the agreed quantity: a price rise goes through reopening the
+                // estimate, not through closing the work, so the upper bound sits in the field.
+                max={row.quantity}
+                value={row.actualQuantity}
+                disabled={!row.performed}
+                aria-label={`Фактическое количество: ${row.name}`}
+                onChange={(v) => onChange(row.id, { actualQuantity: v })}
+              />
+            </Space.Compact>
           </Col>
           <Col xs={14} sm={9}>
             {/* Дата из талона: пусто — сервер посчитает её от даты выполнения и обещанного срока. */}
