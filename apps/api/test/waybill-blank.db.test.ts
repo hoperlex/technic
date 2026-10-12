@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { unzipSync } from 'fflate';
 import {
   moscowDateKeyOf,
   WAYBILL_ACK_REQUIRED_CODE,
@@ -439,6 +440,29 @@ describe.skipIf(!DB_URL)('пустой путевой лист по рейсу �
     expect(row.data.trailer1_reg_number).toBe('ВХ933277');
     expect(row.data.trailer2_brand).toBe('КРОНА SDP27');
     expect(row.data.trailer2_reg_number).toBe('ЕН806277');
+    // The tear-off coupons name the same pair in one row (ADR 0138).
+    expect(row.data.trailers_brands).toBe('ШМИТЦ SPR-24, КРОНА SDP27');
+    expect(row.data.trailers_reg_numbers).toBe('ВХ933277, ЕН806277');
+
+    // And the file reaches paper: the export renders the snapshot into the template from disk,
+    // and both coupons carry the row. R98/BN98 is the left coupon, CX98/ET98 the right one.
+    const exported = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/waybills/${waybill.id}/export`,
+      headers: ctx.admin,
+    });
+    expect(exported.statusCode, exported.body).toBe(200);
+    const sheet = new TextDecoder().decode(
+      unzipSync(new Uint8Array(exported.rawPayload))['xl/worksheets/sheet1.xml']!,
+    );
+    const cell = (address: string): string =>
+      new RegExp(`<c r="${address}"[^>]*?(?:/>|>([\\s\\S]*?)</c>)`).exec(sheet)?.[1] ?? '';
+    for (const address of ['R98', 'CX98']) {
+      expect(cell(address), address).toContain('ШМИТЦ SPR-24, КРОНА SDP27');
+    }
+    for (const address of ['BN98', 'ET98']) {
+      expect(cell(address), address).toContain('ВХ933277, ЕН806277');
+    }
 
     // Журнал листов называет оба — та самая подпись, которая до этой работы знала первый.
     const listed = await ctx.app.inject({

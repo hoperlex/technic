@@ -23,6 +23,7 @@ import {
   taskRefKey,
   taskRowLayout,
   taskRowLayoutKind,
+  trailerCouponLines,
   type TaskRowNotes,
   type VehicleRequestType,
   type VehicleRoutePointDto,
@@ -1106,6 +1107,10 @@ function collectSnapshot(
       ? new Date(header.scheduledAt.getTime() + 3 * 60 * 60 * 1000).toISOString().slice(11, 16)
       : '';
   const departure = context.points[0]?.arrivalTime || scheduled;
+  const coupon = trailerCouponLines([
+    { model: fields.trailer1Model, regNumber: fields.trailer1RegNumber },
+    { model: fields.trailer2Model, regNumber: fields.trailer2RegNumber },
+  ]);
 
   return {
     org_name: context.organization?.name ?? '',
@@ -1136,6 +1141,9 @@ function collectSnapshot(
     trailer1_reg_number: fields.trailer1RegNumber,
     trailer2_brand: fields.trailer2Model,
     trailer2_reg_number: fields.trailer2RegNumber,
+    // The tear-off coupons name the same trailers as the header, one row for both (ADR 0138).
+    trailers_brands: coupon.brands,
+    trailers_reg_numbers: coupon.regNumbers,
 
     // Реквизиты водителя — снимком: удостоверение сменят, а лист остаётся с тем, по которому ехали.
     // Не внесённая графа остаётся пустой строкой (ADR 0064): бланк печатается с пустым местом, а не

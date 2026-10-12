@@ -576,6 +576,91 @@ describe('разметка бланков', () => {
   });
 
   /**
+   * Tear-off coupons of 4-P (ADR 0138): rows 96–98 of both halves — the coupon of the first and
+   * second customer on the left, of the third and fourth on the right — name the organisation, the
+   * make, the trailers and the plate after each of the last two. Before this work they printed
+   * empty on every sheet, old and new.
+   *
+   * Each address is pinned three ways: by the label it follows (an address one row off lands under
+   * another label and still prints plausibly), by the merge whose top-left cell it is (inside a
+   * merge a value does not print at all, ADR 0041), and — for lines whose length the form does not
+   * choose — by the shrink flag, without which a merge clips the tail at its edge.
+   */
+  const COUPON_CELLS = [
+    // [address, placeholder, label cell, label, fill-line merge, shrinks]
+    ['M96', '{{org_name}}', 'A96', 'Организация', 'M96:CD96', true],
+    ['R97', '{{vehicle_brand}}', 'A97', 'Марка автомобиля', 'R97:AL97', true],
+    ['BN97', '{{vehicle_reg_number}}', 'AM97', 'Государственный номерной знак', 'BN97:CC97', false],
+    ['R98', '{{trailers_brands}}', 'A98', 'Прицепы', 'R98:AL98', true],
+    [
+      'BN98',
+      '{{trailers_reg_numbers}}',
+      'AM98',
+      'Государственный номерной знак',
+      'BN98:CC98',
+      true,
+    ],
+    ['CS96', '{{org_name}}', 'CG96', 'Организация', 'CS96:FJ96', true],
+    ['CX97', '{{vehicle_brand}}', 'CG97', 'Марка автомобиля', 'CX97:DR97', true],
+    ['ET97', '{{vehicle_reg_number}}', 'DS97', 'Государственный номерной знак', 'ET97:FI97', false],
+    ['CX98', '{{trailers_brands}}', 'CG98', 'Прицепы', 'CX98:DR98', true],
+    [
+      'ET98',
+      '{{trailers_reg_numbers}}',
+      'DS98',
+      'Государственный номерной знак',
+      'ET98:FI98',
+      true,
+    ],
+  ] as const;
+
+  it('в 4-П отрывные талоны размечены: организация, марка, прицепы и оба госномера', () => {
+    const files = unzipSync(template('4p'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const dictionary = dictionaryOf(decoder.decode(files['xl/sharedStrings.xml']!));
+    const merges = mergesOf(sheet).map((m) => `${m.from}:${m.to}`);
+    const labelOf = (address: string): string => {
+      const index = /<v>(\d+)<\/v>/.exec(bodyOf(sheet, address))?.[1];
+      return index === undefined ? '' : dictionary[Number(index)]!.trim();
+    };
+
+    for (const [address, placeholder, labelCell, label, merge, shrinks] of COUPON_CELLS) {
+      expect(bodyOf(sheet, address), address).toContain(placeholder);
+      expect(labelOf(labelCell), `${address} стоит за подписью ${labelCell}`).toBe(label);
+      expect(merges, `${address} — левый верхний угол линии ${merge}`).toContain(merge);
+      if (shrinks) expect(xfOf(files, address), address).toMatch(/shrinkToFit="(1|true)"/);
+    }
+  });
+
+  it('заполненный 4-П печатает в талонах тот же состав, что в шапке', () => {
+    const values = Object.fromEntries(WAYBILL_SNAPSHOT_KEYS.map((k) => [k, '']));
+    Object.assign(values, {
+      org_name: 'ООО «СУ-10»',
+      vehicle_brand: 'КамАЗ 65116-N3',
+      vehicle_reg_number: 'Е646СК799',
+      trailer1_brand: 'ШМИТЦ SPR-24',
+      trailer1_reg_number: 'ВХ933277',
+      trailer2_brand: 'КРОНА SDP27',
+      trailer2_reg_number: 'ЕН806277',
+      trailers_brands: 'ШМИТЦ SPR-24, КРОНА SDP27',
+      trailers_reg_numbers: 'ВХ933277, ЕН806277',
+    });
+    const rendered = renderOfficeTemplate(template('4p'), values);
+    expect(rendered.missing).toEqual([]);
+    const sheet = decoder.decode(unzipSync(rendered.bytes)['xl/worksheets/sheet1.xml']!);
+    const printed: Record<string, string> = {
+      '{{org_name}}': 'ООО «СУ-10»',
+      '{{vehicle_brand}}': 'КамАЗ 65116-N3',
+      '{{vehicle_reg_number}}': 'Е646СК799',
+      '{{trailers_brands}}': 'ШМИТЦ SPR-24, КРОНА SDP27',
+      '{{trailers_reg_numbers}}': 'ВХ933277, ЕН806277',
+    };
+    for (const [address, placeholder] of COUPON_CELLS) {
+      expect(bodyOf(sheet, address), address).toContain(printed[placeholder]!);
+    }
+  });
+
+  /**
    * Форма № 3 печатается реквизитами, но без задания (ADR 0071): ни таблицы оборота «Место
    * отправления / назначения, время убытия, груз, заказчик», ни «Адреса подачи» на лицевой.
    * Порядок поездок легкового портал не решает — напечатанная последовательность выдавала бы за

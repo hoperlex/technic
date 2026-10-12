@@ -624,6 +624,29 @@ export function formatWaybillDate(iso: string): string {
 }
 
 /**
+ * The trailer row of the 4-P tear-off coupons: makes on one line, plates on the other
+ * («ШМИТЦ SPR-24, КРОНА SDP27» and «ВХ933277, ЕН806277»), in slot order.
+ *
+ * A pair with a missing half keeps its place with a dash while the other trailer fills that line:
+ * otherwise the second trailer's plate would print under the first one's make, and the coupon would
+ * pair them wrongly. A line no trailer fills stays empty and is written by hand, like an empty box
+ * of the header (ADR 0064).
+ */
+export function trailerCouponLines(
+  pairs: readonly { model?: string | null; regNumber?: string | null }[],
+): { brands: string; regNumbers: string } {
+  const filled = pairs
+    .map((p) => ({ model: (p.model ?? '').trim(), regNumber: (p.regNumber ?? '').trim() }))
+    .filter((p) => p.model || p.regNumber);
+  const line = (values: string[]): string =>
+    values.some(Boolean) ? values.map((v) => v || '—').join(', ') : '';
+  return {
+    brands: line(filled.map((p) => p.model)),
+    regNumbers: line(filled.map((p) => p.regNumber)),
+  };
+}
+
+/**
  * Ключи снимка — они же плейсхолдеры бланка. Объявлены списком, а не выводятся из кода сборки:
  * по нему тест сверяет шаблон, и графа, которой в снимке нет, не доедет до бумаги молча
  * (ADR 0037 п. 10).
@@ -645,6 +668,15 @@ export const WAYBILL_SNAPSHOT_KEYS = [
   'trailer1_reg_number',
   'trailer2_brand',
   'trailer2_reg_number',
+  /*
+   * The trailers in the tear-off coupons of the 4-P form (ADR 0138): one line of makes and one of
+   * plates, because a coupon has a single "Прицепы ___ Государственный номерной знак ___" row
+   * where the header has a pair of boxes per trailer. Assembled by the server
+   * (`trailerCouponLines`), not glued from the two pairs in the template: a cell joining two
+   * placeholders would print an orphaned comma under a single trailer.
+   */
+  'trailers_brands',
+  'trailers_reg_numbers',
   'driver_fio',
   /*
    * «Дегтярь И.В.» — тем видом расшифровку подписи пишут от руки, и графа под неё узкая: полное
@@ -763,29 +795,34 @@ export const WAYBILL_SNAPSHOT_KEYS = [
 export type WaybillSnapshotKey = (typeof WAYBILL_SNAPSHOT_KEYS)[number];
 
 /**
- * Что достаётся графам бланка, которых на момент выдачи листа в снимке ещё не было.
+ * What the form boxes get when the sheet's snapshot predates them.
  *
- * Повторная печать обязана давать тот же документ, что выдан на руки (ADR 0037 п. 10), — но
- * печатается он **новым бланком**: файл шаблона читается с диска на каждый запрос, а снимок берётся
- * из `waybills.data`. Размеченная после выдачи графа ищет в старом снимке ключ, которого там нет, и
- * выходит из принтера пустой. Ходов, которые это чинят, ровно три, и каждый ставится только там, где
- * пустая графа означала бы **потерю** напечатанного прежде, а не законное «в заявке этого не было».
+ * A reprint must give the document handed out (ADR 0037 item 10), but it is printed on the
+ * **current template**: the template file is read from disk on every request, the snapshot from
+ * `waybills.data`. A box marked up after issue looks for a key the old snapshot lacks and prints
+ * empty. The moves below fill such boxes, each only where an empty box would print less than the
+ * sheet carries — something printed before and lost, or something the same button prints on the
+ * neighbouring sheet — and never where emptiness lawfully means "the request had no such data".
  *
- * Признаком служит отсутствие самого ключа, а не пустое значение в нём: у нового листа пустая графа
- * значит «данных в заявке не было», и подменять её чем бы то ни было нельзя.
+ * The sign is the absence of the key, not an empty value: on a new sheet an empty box means "no
+ * data in the request", and nothing may be put in its place.
  *
- * Даты этими ходами не перекладываются вовсе. Лист, выписанный до `formatWaybillDate`, печатается
- * с ISO-датой, как выдан: правило «повторная печать даёт тот же документ» сильнее единообразия
- * бумаг разных лет.
+ * Dates are never rewritten by these moves. A sheet issued before `formatWaybillDate` prints with
+ * the ISO date, as issued: "a reprint gives the same document" outranks uniform papers across years.
  */
 export function snapshotForPrint(data: Record<string, string>): Record<string, string> {
-  if ('task_contacts' in data && 'object_line' in data && 'driver_short_name' in data) {
+  if (
+    'task_contacts' in data &&
+    'object_line' in data &&
+    'driver_short_name' in data &&
+    'trailers_brands' in data
+  ) {
     return data;
   }
   const patched = { ...data };
   /*
-   * Лист, выписанный до того, как графа «заказчик, телефон» стала печатать контакты рейса: графе
-   * достаётся то, чем она была на момент выдачи, — наименование заказчика талона.
+   * A sheet issued before the "customer, phone" box began to print the route contacts: the box
+   * gets what it held at issue — the coupon customer's name.
    */
   if (!('task_contacts' in data)) {
     patched.task_contacts = data.customer_name ?? '';
@@ -794,26 +831,41 @@ export function snapshotForPrint(data: Record<string, string>): Record<string, s
     patched.task4_contacts = data.task4_customer ?? '';
   }
   /*
-   * Лист ЭСМ-2, выписанный до того, как объект переехал из семи дневных граф в шапку графы работ.
-   * В старом снимке он лежит там, где стояла графа «Заказчик», — в `customer_name` и
-   * `customer_address`, — и склеивается тем же правилом, каким его собирают сборщики.
+   * An ESM-2 sheet issued before the site moved from the seven day boxes into the header of the
+   * work box. In the old snapshot it lies where the "Customer" box stood — `customer_name` and
+   * `customer_address` — and is joined by the same rule the collectors use.
    *
-   * Без этого хода повторная печать старого недельного листа вышла бы **без объекта вовсе**:
-   * дневные графы в новом бланке не размечены, а шапка ждёт ключа, которого в снимке нет. Что у
-   * такого листа объект напечатается дважды — и в графе заказчика, и в шапке, — принято сознательно:
-   * повтор лучше потери.
+   * Without this move a reprint of an old weekly sheet would come out **with no site at all**: the
+   * day boxes are not marked up in the current template, and the header waits for a key the
+   * snapshot lacks. That such a sheet prints the site twice — in the customer box and in the
+   * header — is accepted on purpose: a repeat is better than a loss.
    */
   if (!('object_line' in data)) {
     patched.object_line = [data.customer_name, data.customer_address].filter(Boolean).join(', ');
   }
   /*
-   * Лист, выписанный до того, как расшифровки подписи стали печатать имя водителя. Полное ФИО в
-   * снимке есть всегда, и сокращается оно тем же правилом, каким его собирают сборщики: иначе
-   * повторная печать оставила бы графы пустыми — то есть напечатала бы меньше, чем печатает
-   * сегодня та же кнопка на соседнем листе.
+   * A sheet issued before the signature transcripts began to print the driver's name. The full
+   * name is always in the snapshot and is shortened by the collectors' rule: otherwise a reprint
+   * would leave the boxes empty, printing less than the same button prints on the neighbouring
+   * sheet today.
    */
   if (!('driver_short_name' in data)) {
     patched.driver_short_name = formatNameWithInitials(data.driver_fio ?? '');
+  }
+  /*
+   * A sheet issued before the tear-off coupons named the trailers (ADR 0138). Its coupons came out
+   * empty, so nothing printed is restored here — the reason is the neighbour's: a reprint of an
+   * old sheet already fills the coupon's organisation, make and plate from keys it always had (the
+   * template is read from disk), and leaving the trailer row alone empty would print a coupon that
+   * contradicts its own header. The row is assembled from that header's boxes by the issue rule.
+   */
+  if (!('trailers_brands' in data)) {
+    const coupon = trailerCouponLines([
+      { model: data.trailer1_brand, regNumber: data.trailer1_reg_number },
+      { model: data.trailer2_brand, regNumber: data.trailer2_reg_number },
+    ]);
+    patched.trailers_brands = coupon.brands;
+    patched.trailers_reg_numbers = coupon.regNumbers;
   }
   return patched;
 }

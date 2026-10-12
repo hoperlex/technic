@@ -210,10 +210,44 @@ const FORM_4P: Blank = {
     CG76: '{{task5_line}}',
     CG77: '{{task6_line}}',
     CG78: '{{task7_line}}',
+    /*
+     * Tear-off coupons below the second cut line (rows 96–98, ADR 0138): the left one goes to the
+     * first and second customer, the right one to the third and fourth. Each repeats the vehicle
+     * the customer signs for — "Организация", "Марка автомобиля", "Прицепы" and the plate after
+     * each of the last two — because a coupon travels on its own once it is torn off.
+     *
+     * Every value goes to the top-left cell of the merge that draws its fill line: M96:CD96 and
+     * CS96:FJ96 for the organisation; R97:AL97 / CX97:DR97 for the make and BN97:CC97 / ET97:FI97
+     * for its plate; R98:AL98 / CX98:DR98 and BN98:CC98 / ET98:FI98 for the trailer row. Between
+     * the "Прицепы" label and its line lie a few cells with no line (J98:Q98, CP98:CW98), so the
+     * trailer line starts under the make line, not right after the label.
+     *
+     * Only the organisation's name: its address and phone are in the sheet header, and the coupon
+     * line is half the header's width. The trailers come as one row of makes and one of plates
+     * (`trailers_brands`, `trailers_reg_numbers`), because the coupon has one row for both
+     * trailers where the header has a pair of boxes each.
+     */
+    M96: '{{org_name}}',
+    R97: '{{vehicle_brand}}',
+    BN97: '{{vehicle_reg_number}}',
+    R98: '{{trailers_brands}}',
+    BN98: '{{trailers_reg_numbers}}',
+    CS96: '{{org_name}}',
+    CX97: '{{vehicle_brand}}',
+    ET97: '{{vehicle_reg_number}}',
+    CX98: '{{trailers_brands}}',
+    ET98: '{{trailers_reg_numbers}}',
   },
   // Строка задания идёт во всю ширину блока и в одну строку не встаёт; стиль бланка перенос не
   // несёт — без флага хвост срезался бы по границе объединения.
   wrap: ['CG76', 'CG77', 'CG78'],
+  /*
+   * Coupon lines whose length the form does not choose: the organisation and the make come from
+   * the directory, and the trailer row holds two trailers in a line sized for one. A merge clips
+   * what does not fit at its edge, so LibreOffice is told to shrink the type instead. The vehicle
+   * plate is not shrunk: it is a dozen characters at most, and its line holds twenty.
+   */
+  shrink: ['M96', 'R97', 'R98', 'BN98', 'CS96', 'CX97', 'CX98', 'ET98'],
   /*
    * Блок выдачи задания под таблицей — целиком (ADR 0071). Это две строки подписи
    * («Водительское удостоверение проверил, / задание выдал, выдать горючего ___ литр») и графа

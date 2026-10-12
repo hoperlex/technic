@@ -31,6 +31,7 @@ import {
   waybillRequirement,
   waybillStatusLabels,
   snapshotForPrint,
+  trailerCouponLines,
 } from '@technic/contracts';
 
 /*
@@ -1315,6 +1316,9 @@ describe('снимок старого листа при печати', () => {
       // Снимок нового листа несёт все ключи разом — в том числе расшифровку подписи: её пустота
       // тоже значит «данных не было», и достраивать её из полного ФИО нельзя.
       driver_short_name: '',
+      // Likewise the coupons' trailer row: empty on a new sheet means "no trailer on the trip".
+      trailers_brands: '',
+      trailers_reg_numbers: '',
     };
     expect(snapshotForPrint(fresh)).toBe(fresh);
   });
@@ -1377,6 +1381,96 @@ describe('снимок старого листа при печати', () => {
       object_line: '',
     };
     expect(snapshotForPrint(fresh).driver_short_name).toBe('');
+  });
+
+  /*
+   * A sheet issued before the tear-off coupons named the trailers (ADR 0138). The coupon's
+   * organisation, make and plate print from keys every snapshot has, so the trailer row is
+   * assembled from the sheet's own header boxes — otherwise the coupon would contradict its header.
+   */
+  it('старому листу строка прицепов в талонах собирается из граф шапки', () => {
+    const legacy = {
+      task_contacts: '',
+      object_line: '',
+      driver_short_name: '',
+      trailer1_brand: 'ШМИТЦ SPR-24',
+      trailer1_reg_number: 'ВХ933277',
+      trailer2_brand: 'КРОНА SDP27',
+      trailer2_reg_number: 'ЕН806277',
+    };
+    expect(snapshotForPrint(legacy)).toMatchObject({
+      trailers_brands: 'ШМИТЦ SPR-24, КРОНА SDP27',
+      trailers_reg_numbers: 'ВХ933277, ЕН806277',
+      // The header boxes print as issued.
+      trailer1_brand: 'ШМИТЦ SPR-24',
+      trailer2_reg_number: 'ЕН806277',
+    });
+    // A sheet without trailers, and an ESM-2 sheet, get an empty row — not a pair of dashes.
+    expect(snapshotForPrint({ task_contacts: '', object_line: '' })).toMatchObject({
+      trailers_brands: '',
+      trailers_reg_numbers: '',
+    });
+  });
+
+  it('пустая строка прицепов нового листа не достраивается из граф шапки', () => {
+    const fresh = {
+      task_contacts: '',
+      object_line: '',
+      driver_short_name: '',
+      trailer1_brand: 'ШМИТЦ SPR-24',
+      trailers_brands: '',
+      trailers_reg_numbers: '',
+    };
+    expect(snapshotForPrint(fresh).trailers_brands).toBe('');
+  });
+});
+
+/**
+ * The trailer row of the 4-P tear-off coupons (ADR 0138): one line of makes and one of plates,
+ * because the coupon has a single row where the header has a pair of boxes per trailer.
+ */
+describe('строка прицепов в отрывных талонах 4-П', () => {
+  const pair = (model: string, regNumber: string) => ({ model, regNumber });
+
+  it('два прицепа — через запятую, в порядке слотов', () => {
+    expect(
+      trailerCouponLines([pair('ШМИТЦ SPR-24', 'ВХ933277'), pair('КРОНА SDP27', 'ЕН806277')]),
+    ).toEqual({ brands: 'ШМИТЦ SPR-24, КРОНА SDP27', regNumbers: 'ВХ933277, ЕН806277' });
+  });
+
+  it('один прицеп — без разделителя в хвосте, пустой слот не печатается', () => {
+    expect(trailerCouponLines([pair('ШМИТЦ SPR-24', 'ВХ933277'), pair('', '')])).toEqual({
+      brands: 'ШМИТЦ SPR-24',
+      regNumbers: 'ВХ933277',
+    });
+    // The sheet takes what it was given (ADR 0138 §6): a lone second slot prints alone.
+    expect(trailerCouponLines([pair('  ', ''), pair('КРОНА SDP27', 'ЕН806277')])).toEqual({
+      brands: 'КРОНА SDP27',
+      regNumbers: 'ЕН806277',
+    });
+  });
+
+  it('недостающая половина держит место прочерком, пока соседний прицеп заполняет строку', () => {
+    // Without the dash the second plate would print under the first make.
+    expect(trailerCouponLines([pair('ШМИТЦ SPR-24', ''), pair('КРОНА SDP27', 'ЕН806277')])).toEqual(
+      { brands: 'ШМИТЦ SPR-24, КРОНА SDP27', regNumbers: '—, ЕН806277' },
+    );
+  });
+
+  it('строка, которую не заполняет ни один прицеп, остаётся пустой — её допишут от руки', () => {
+    expect(trailerCouponLines([pair('ШМИТЦ SPR-24', ''), pair('КРОНА SDP27', '')])).toEqual({
+      brands: 'ШМИТЦ SPR-24, КРОНА SDP27',
+      regNumbers: '',
+    });
+    expect(trailerCouponLines([pair('', 'ВХ933277')])).toEqual({
+      brands: '',
+      regNumbers: 'ВХ933277',
+    });
+    expect(trailerCouponLines([])).toEqual({ brands: '', regNumbers: '' });
+    expect(trailerCouponLines([{ model: null, regNumber: undefined }])).toEqual({
+      brands: '',
+      regNumbers: '',
+    });
   });
 });
 

@@ -496,6 +496,8 @@ function sheetSnapshotDraftOf(
     trailer1_reg_number: '',
     trailer2_brand: '',
     trailer2_reg_number: '',
+    trailers_brands: '',
+    trailers_reg_numbers: '',
 
     driver_fio: machinist.fullName,
     /*
