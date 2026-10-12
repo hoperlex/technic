@@ -700,10 +700,10 @@ function compare(actual, budget, places) {
   if (actual.rawKeyFiles < budget.rawKeyFiles)
     improved.push(`сырые ключи: ${budget.rawKeyFiles} → ${actual.rawKeyFiles}`);
 
-  // Wave Э8 took `Space direction`, `Divider type` and `Alert message` down to zero; `Space` and
-  // `Divider` are also guarded by no-restricted-syntax. The rest — `List`, `Drawer width`,
-  // `InputNumber addon*` and small things — is fixed when touched, and the figure keeps the debt
-  // from growing: the portal is on antd 6.5 already, and the next major drops these props.
+  // The figure is at zero since 2026-10-12 (roadmap Q8: `List` became `ItemList`, `InputNumber`
+  // addons `FieldAddons` / `Space.Compact`, the rest the current prop names), and its budget keeps it
+  // there: the portal is on antd 6.5 already, and the next major drops these props. `Space` and
+  // `Divider` are also guarded by no-restricted-syntax.
   // The figure is new and the budget may not know it yet. That is not growth: in `grown` it would
   // block the very `quality:update` that records it, so it goes to `improved`.
   if (budget.antdDeprecated === undefined)
