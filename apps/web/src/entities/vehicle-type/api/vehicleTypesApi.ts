@@ -45,6 +45,8 @@ export const vehicleKindsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleKindDto>>('/vehicle-kinds', { query: q }),
 };
 
+// cache-home: vehicle-types — a type's own fields, linearity and purge change the type list; the
+// spec links below say where their writes land instead.
 export const vehicleTypesApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleTypeDto>>('/vehicle-types', { query: q }),
   create: (body: CreateVehicleTypeInput) =>
@@ -83,13 +85,16 @@ export const vehicleTypesApi = {
   // ТТХ типа (ADR 0016): привязка означает обязательность значения у каждой категории типа,
   // поэтому все четыре ручки возвращают актуальный набор ТТХ целиком.
   specs: (id: string) => apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs`),
+  // cache-home: vehicle-type-specs — the spec links of a type are read under their own root.
   attachSpec: (id: string, body: AttachVehicleTypeSpecInput) =>
     apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs`, { method: 'POST', body }),
+  // cache-home: vehicle-type-specs — the same spec links.
   updateSpec: (id: string, specId: string, body: UpdateVehicleTypeSpecInput) =>
     apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs/${specId}`, {
       method: 'PATCH',
       body,
     }),
+  // cache-home: vehicle-type-specs — the same spec links.
   detachSpec: (id: string, specId: string) =>
     apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs/${specId}`, { method: 'DELETE' }),
   /** Удаление насовсем (ADR 0060): категории и привязки ТТХ уходят вместе с типом. */
@@ -98,6 +103,7 @@ export const vehicleTypesApi = {
 };
 
 // ── ТТХ и категории типов ТС (ADR 0016) ──
+// cache-home: vehicle-specs — the specification dictionary itself.
 export const vehicleSpecsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleSpecDto>>('/vehicle-specs', { query: q }),
   create: (body: CreateVehicleSpecInput) =>
@@ -109,6 +115,7 @@ export const vehicleSpecsApi = {
     apiFetch<{ ok: boolean }>(`/vehicle-specs/${id}/purge`, { method: 'DELETE' }),
 };
 
+// cache-home: vehicle-categories — the category rows of a type.
 export const vehicleCategoriesApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleCategoryDto>>('/vehicle-categories', { query: q }),
   create: (body: CreateVehicleCategoryInput) =>

@@ -24,6 +24,8 @@ import { vehicleRequestLists } from './lists';
  * публичный вход слайса один, и разведи тип с его ручкой по двум адресам — `index.ts` переписывали
  * бы вслед за каждым внутренним разрезом.
  */
+// cache-home: vehicle-requests — every part writes the request or what hangs on it; `route-prefill`
+// answers about the routes of a day and is read, not written, through this object.
 export const vehicleRequestsApi = {
   ...vehicleRequestLists,
   ...vehicleRequestLifecycle,

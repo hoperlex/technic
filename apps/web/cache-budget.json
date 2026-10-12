@@ -2,5 +2,7 @@
   "read-under-foreign-root": [],
   "foreign-bare-path-in-queries": [],
   "profiled-read-bypasses-factory": [],
-  "second-family-factory": []
+  "second-family-factory": [],
+  "unresolved": [],
+  "home-ambiguous": []
 }

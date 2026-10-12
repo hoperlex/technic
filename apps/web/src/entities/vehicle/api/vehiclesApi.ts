@@ -46,6 +46,8 @@ export const vehicleModelsApi = {
  * Голый «ADR 0060» ниже — это `docs/adr/0060-directory-record-purge.md`: номер занят дважды, и
  * второй его хозяин (недельный лист ЭСМ-2) к удалению записи отношения не имеет.
  */
+// cache-home: vehicles — every write here changes a vehicle row; `vehicle-models` is read through
+// `vehicleModelsApi`, a dictionary filled by migration with no write route.
 export const vehiclesApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleDto>>('/vehicles', { query: q }),
   create: (body: CreateVehicleInput) => apiFetch<VehicleDto>('/vehicles', { method: 'POST', body }),

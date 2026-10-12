@@ -70,6 +70,8 @@ export interface MailingRunStats {
  * расписаниями, но отвечает на другой вопрос — «как письмо выглядит в почтовом клиенте», тогда
  * как расписание отвечает «кому и когда оно уходит само».
  */
+// cache-home: mailing-schedules — the object's writes edit schedules; the two members below say
+// where theirs land instead.
 export const mailingsApi = {
   testRecipients: () => apiFetch<MailTestRecipient[]>('/admin/mail/test-recipients'),
   /** Водители с рейсами на дату: список зависит от даты, поэтому запрашивается вместе с ней. */
@@ -83,6 +85,7 @@ export const mailingsApi = {
   digestSampleUsers: () => apiFetch<MailDigestSampleUser[]>('/admin/mail/digest-sample-users'),
   /** Какие каналы отправки настроены на сервере: список известен контрактами, признак — только ему. */
   accounts: () => apiFetch<MailAccountStatusDto[]>('/admin/mail/accounts'),
+  // cache-home: mail-log — a test letter is one row of the mail log (ADR 0199), not a mailing.
   sendTest: (body: MailTestBody) =>
     apiFetch<{ ok: boolean; message: string }>('/admin/mail/test', { method: 'POST', body }),
   /** Расписания приходят целиком и вместе с исключениями: их в портале единицы, листать нечего. */
@@ -109,6 +112,7 @@ export const mailingsApi = {
   /** История запусков — с пагинацией, в отличие от расписаний: она прирастает каждый день. */
   runs: (q: Query) => apiFetch<ListResult<MailingRunDto>>('/admin/mail/runs', { query: q }),
   /** Запуск «сейчас»: письма уходят настоящим получателям, поэтому кнопка спрашивает подтверждение. */
+  // cache-home: mailing-runs — a manual run adds a run and leaves the schedule row as it was.
   runNow: (id: string) =>
     apiFetch<{ ok: boolean; runId: string; stats: MailingRunStats }>(
       `/admin/mail/schedules/${id}/run`,

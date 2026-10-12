@@ -72,6 +72,8 @@ const patch = <T>(id: string, tail: string, body: unknown) =>
  * работ сразу после его правки) требует новой версии, а перезапрашивать карточку ради номера
  * версии значило бы гонку с самим собой.
  */
+// cache-home: service-requests — every write here changes a request; `service-executor-candidates`
+// is derived from accounts and grants, which this object does not write.
 export const serviceRequestsApi = {
   ...createListApi<ServiceRequestDto>(PATH),
   ...createGetApi<ServiceRequestDto>(PATH),

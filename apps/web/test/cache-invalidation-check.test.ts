@@ -18,7 +18,7 @@ function runFixtureFiles(
     writeFileSync(full, source);
   }
   if (options.budget)
-    writeFileSync(path.join(root, 'cache-read-budget.json'), JSON.stringify(options.budget));
+    writeFileSync(path.join(root, 'cache-budget.json'), JSON.stringify(options.budget));
   const result = spawnSync(process.execPath, [CHECK, ...(options.mapOnly ? ['--map'] : [])], {
     cwd: root,
     encoding: 'utf8',
@@ -28,8 +28,19 @@ function runFixtureFiles(
   return { result, map };
 }
 
-function runFixture(source: string) {
-  return runFixtureFiles({ 'features/example/fixture.ts': source });
+/** The budget a red run asks for: every `[rule] id — what` line of its stderr, by rule. */
+function listedFindings(stderr: string) {
+  const budget: Record<string, string[]> = {};
+  for (const line of stderr.split('\n')) {
+    const match = /^ {2}— \[([^\]]+)\] (.*?) — /.exec(line);
+    if (!match) continue;
+    (budget[match[1]!] ??= []).push(match[2]!);
+  }
+  return budget;
+}
+
+function runFixture(source: string, options: { budget?: Record<string, string[]> } = {}) {
+  return runFixtureFiles({ 'features/example/fixture.ts': source }, options);
 }
 
 describe('cache invalidation check', () => {
@@ -168,13 +179,39 @@ export function useRemove(props: { refresh: () => void }) {
 }
 `;
     expect(runFixture(source('// cache-invalidation: opaque')).result.status).toBe(1);
-    const marked = runFixture(
-      source('// cache-invalidation: opaque — the parent refetches its list'),
-    );
-    expect(marked.result.status).toBe(0);
-    expect(marked.map.mutations[0].unresolved).toContain(
+    const explained = source('// cache-invalidation: opaque — the parent refetches its list');
+    // The marker excuses rule 4 only: the site stays unresolved, and the budget must name it.
+    const marked = runFixture(explained);
+    expect(marked.result.status).toBe(1);
+    expect(marked.result.stderr).not.toContain('[cache-effect-unproven]');
+    const budget = listedFindings(marked.result.stderr);
+    expect(budget).toEqual({
+      unresolved: [
+        'features/example/fixture.ts|useRemove (useMutation)|call-of-a-value-this-walk-cannot-open:reload',
+      ],
+    });
+    const budgeted = runFixture(explained, { budget });
+    expect(budgeted.result.status).toBe(0);
+    expect(budgeted.map.mutations[0].unresolved).toContain(
       'call-of-a-value-this-walk-cannot-open:reload',
     );
+  });
+
+  it('fails an opaque marker once the scan reads the mutation in full', () => {
+    const { result } = runFixture(`
+declare function useMutation(options: unknown): unknown;
+declare function apiFetch(url: string, init?: unknown): Promise<unknown>;
+declare const qc: { invalidateQueries(value: unknown): void };
+const itemKeys = ['items'] as const;
+const itemsApi = { remove: () => apiFetch('/items', { method: 'DELETE' }) };
+// cache-invalidation: opaque — the keys used to come from a list the scan could not read.
+export const remove = useMutation({
+  mutationFn: () => itemsApi.remove(),
+  onSuccess: () => qc.invalidateQueries({ queryKey: itemKeys }),
+});
+`);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('[opaque-marker-excuses-nothing]');
   });
 
   it('reads the drop of a portal hook result through the hook body', () => {
@@ -198,6 +235,264 @@ export function useRemove() {
 `);
     expect(result.status).toBe(0);
     expect(map.mutations[0].invalidates).toEqual(['items']);
+  });
+});
+
+/*
+ * Shapes the scan learned when the last unresolved sites were cleared (roadmap Q9). Each one used to
+ * leave a correct mutation "unresolved", which kept rules 1 and 2 away from it.
+ */
+describe('cache invalidation check: shapes a correct mutation is written in', () => {
+  const ITEM_KEYS = `
+declare function createQueryKeys(root: string, families: unknown): unknown;
+export const itemKeys = createQueryKeys('items', {});
+`;
+
+  it('opens a key list a slice returns and a hook walks in a loop', () => {
+    const { result, map } = runFixtureFiles({
+      'entities/item/api/keys.ts': `
+declare function createQueryKeys(root: string, families: unknown): unknown;
+export const itemKeys = createQueryKeys('items', {});
+export function itemInvalidation(change: { id: string; ownerIds: string[] }) {
+  const always = [itemKeys.lists(), itemKeys.detail(change.id)];
+  if (!change.ownerIds.length) return always;
+  return [...always, ...change.ownerIds.map((id) => itemKeys.owner(id))];
+}
+`,
+      'entities/item/api/itemsApi.ts': `
+declare function apiFetch(url: string, init?: unknown): Promise<unknown>;
+export const itemsApi = { remove: () => apiFetch('/items', { method: 'DELETE' }) };
+`,
+      'pages/items/itemCache.ts': `
+import { useQueryClient } from '@tanstack/react-query';
+import { itemInvalidation } from '@entities/item';
+export function useItemInvalidation() {
+  const qc = useQueryClient();
+  return (change: { id: string; ownerIds: string[] }) => {
+    for (const queryKey of itemInvalidation(change)) void qc.invalidateQueries({ queryKey });
+  };
+}
+`,
+      'pages/items/ItemCard.tsx': `
+import { useMutation } from '@tanstack/react-query';
+import { useItemInvalidation } from './itemCache';
+export function ItemCard() {
+  const invalidate = useItemInvalidation();
+  return useMutation({
+    mutationFn: () => itemsApi.remove(),
+    onSuccess: () => invalidate({ id: 'a', ownerIds: [] }),
+  });
+}
+`,
+    });
+    expect(result.status).toBe(0);
+    expect(map.unresolved).toEqual([]);
+    expect(map.mutations[0]).toMatchObject({ invalidates: ['items'], homeRoots: ['items'] });
+  });
+
+  it('credits a loop over the invalidate option to the call sites that hand the keys in', () => {
+    const { result, map } = runFixtureFiles({
+      'entities/item/api/keys.ts': ITEM_KEYS,
+      'entities/item/api/itemsApi.ts': `
+declare function apiFetch(url: string, init?: unknown): Promise<unknown>;
+export const itemsApi = { purge: (id: string) => apiFetch('/items/' + id, { method: 'DELETE' }) };
+`,
+      'features/purge/usePurge.ts': `
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+export function usePurge({ purge, invalidate }: { purge: (id: string) => Promise<unknown>; invalidate: unknown[][] }) {
+  const qc = useQueryClient();
+  // cache-write: delegated — the caller supplies the purge command and the keys.
+  return useMutation({
+    mutationFn: (id: string) => purge(id),
+    onSuccess: () => {
+      for (const key of invalidate) void qc.invalidateQueries({ queryKey: key });
+    },
+  });
+}
+`,
+      'pages/items/ItemsTab.tsx': `
+import { usePurge } from '@features/purge';
+export function ItemsTab(version: number) {
+  return usePurge({ purge: (id) => itemsApi.purge(id, version), invalidate: [itemKeys.root] });
+}
+`,
+    });
+    expect(result.status).toBe(0);
+    expect(map.unresolved).toEqual([]);
+    const hook = map.mutations.find((m: { kind: string }) => m.kind === 'useMutation');
+    expect(hook.keysFromCallSites).toEqual(['invalidate']);
+    // The purge written inside the options belongs to the call-site record, not to a second
+    // direct-call writer of the whole component.
+    expect(map.mutations.map((m: { kind: string }) => m.kind).sort()).toEqual([
+      'invalidate-option',
+      'useMutation',
+    ]);
+  });
+
+  it('knows state setters, useCallback values and router hook results', () => {
+    const { result, map } = runFixtureFiles({
+      'entities/item/api/keys.ts': ITEM_KEYS,
+      'entities/item/api/itemsApi.ts': `
+declare function apiFetch(url: string, init?: unknown): Promise<unknown>;
+export const itemsApi = {
+  preview: () => apiFetch('/items/preview', { method: 'POST' }),
+  start: (id: string) => apiFetch('/items/' + id + '/start', { method: 'POST' }),
+};
+`,
+      'pages/items/ItemStart.tsx': `
+import { useCallback, useState } from 'react';
+import { useNavigate } from 'react-router';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+export function useItemStart() {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const [step, setStep] = useState(0);
+  const preview = useMutation({ mutationFn: () => itemsApi.preview(), onSuccess: setStep });
+  const start = useCallback(
+    (id: string) => {
+      void itemsApi.start(id).then(() => qc.invalidateQueries({ queryKey: itemKeys.root }));
+    },
+    [qc],
+  );
+  const save = useMutation({
+    mutationFn: (id: string) => itemsApi.start(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: itemKeys.root });
+      void navigate('/items');
+    },
+  });
+  return { step, preview, start: () => start('a'), save };
+}
+`,
+    });
+    expect(result.status).toBe(0);
+    expect(map.unresolved).toEqual([]);
+  });
+
+  it('reads a conflicting helper name the file does not import as a parameter', () => {
+    const { result, map } = runFixtureFiles({
+      'entities/item/api/itemsApi.ts': `
+declare function apiFetch(url: string, init?: unknown): Promise<unknown>;
+export const itemsApi = { preview: () => apiFetch('/items/preview', { method: 'POST' }) };
+`,
+      'pages/a/A.tsx':
+        'export function A() { const onSubmit = () => qc.invalidateQueries(); return onSubmit; }',
+      'pages/b/B.tsx':
+        'export function B() { const onSubmit = () => qc.invalidateQueries(); return onSubmit; }',
+      'widgets/item-dialog/useConsequences.ts': `
+import { useMutation } from '@tanstack/react-query';
+export function useConsequences({ onSubmit }: { onSubmit: (v: unknown) => void }) {
+  return useMutation({ mutationFn: () => itemsApi.preview(), onSuccess: (v) => onSubmit(v) });
+}
+`,
+    });
+    expect(result.status).toBe(0);
+    expect(map.unresolved).toEqual([]);
+    expect(
+      map.mutations.find((m: { file: string }) => m.file.startsWith('widgets/')).handsUp,
+    ).toEqual(['onSubmit']);
+  });
+
+  it('keeps a literal of spreads out of the API objects', () => {
+    const { result, map } = runFixtureFiles({
+      'entities/item/api/itemsApi.ts': `
+declare function apiFetch(url: string, init?: unknown): Promise<unknown>;
+export function send(options: { headers?: Record<string, string> }, extra: () => object) {
+  const headers = { ...options.headers, ...extra() };
+  return apiFetch('/items', { headers });
+}
+`,
+      'pages/items/ItemsTab.tsx': `
+export function ItemsTab(params: object) {
+  const query = { ...params, sortBy: 'name' };
+  return query;
+}
+`,
+    });
+    expect(result.status).toBe(0);
+    expect(map.unresolved).toEqual([]);
+  });
+});
+
+/*
+ * The home root of a write in a slice with several roots (`cache-home`), and the budget that keeps
+ * every such write declared.
+ */
+describe('cache invalidation check: declared home roots', () => {
+  const files = (marker: string, memberMarker = '') => ({
+    'entities/mail/api/keys.ts': `
+declare function createQueryKeys(root: string, families: unknown): unknown;
+export const scheduleKeys = createQueryKeys('schedules', {});
+export const accountKeys = createQueryKeys('accounts', {});
+`,
+    'entities/mail-log/api/keys.ts': `
+declare function createQueryKeys(root: string, families: unknown): unknown;
+export const mailLogKeys = createQueryKeys('mail-log', {});
+`,
+    'entities/mail/api/mailApi.ts': `
+declare function apiFetch(url: string, init?: unknown): Promise<unknown>;
+${marker}
+export const mailApi = {
+  saveSchedule: () => apiFetch('/schedules', { method: 'POST' }),
+  ${memberMarker}
+  sendTest: () => apiFetch('/test', { method: 'POST' }),
+};
+`,
+    'pages/admin/Mail.tsx': `
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+export function Mail() {
+  const qc = useQueryClient();
+  const save = useMutation({
+    mutationFn: () => mailApi.saveSchedule(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: accountKeys.root }),
+  });
+  const send = useMutation({
+    mutationFn: () => mailApi.sendTest(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: mailLogKeys.root }),
+  });
+  return { save, send };
+}
+`,
+  });
+
+  it('budgets every write of a several-root slice that declares no home', () => {
+    const { result } = runFixtureFiles(files(''));
+    expect(result.status).toBe(1);
+    expect(listedFindings(result.stderr)).toEqual({
+      'home-ambiguous': ['mailApi.saveSchedule', 'mailApi.sendTest'],
+    });
+  });
+
+  it('applies rule 2 to the declared home, a member marker first', () => {
+    const declared = runFixtureFiles(
+      files(
+        '// cache-home: schedules — the object writes schedules.',
+        '// cache-home: mail-log — a test letter lands in the log of another slice.',
+      ),
+    );
+    expect(declared.result.status).toBe(1);
+    // `save` drops a neighbour root and misses its declared home; `send` drops the root its
+    // member marker names, so it passes.
+    expect(listedFindings(declared.result.stderr)).toEqual({
+      'home-root-missed': ['pages/admin/Mail.tsx:5'],
+    });
+    expect(
+      declared.map.mutations.map((m: { name: string; homeRoots: string[] }) => [
+        m.name,
+        m.homeRoots,
+      ]),
+    ).toEqual([
+      ['save', ['schedules']],
+      ['send', ['mail-log']],
+    ]);
+  });
+
+  it('refuses a home that names no known root', () => {
+    const { result, map } = runFixtureFiles(files('// cache-home: schedule — a typo.'));
+    expect(result.status).toBe(1);
+    expect(map.unresolved.map((u: { why: string }) => u.why)).toContain(
+      'write-handle-home-is-not-a-known-root:mailApi.saveSchedule:schedule',
+    );
   });
 });
 
@@ -554,16 +849,6 @@ useQuery(objectOptionsQuery());
 useQuery({ queryKey: objectKeys.options(), queryFn: () => objectsApi.list() });
 `,
   };
-
-  function listedFindings(stderr: string) {
-    const budget: Record<string, string[]> = {};
-    for (const line of stderr.split('\n')) {
-      const match = /^ {2}— \[([^\]]+)\] (.*?) — /.exec(line);
-      if (!match) continue;
-      (budget[match[1]!] ??= []).push(match[2]!);
-    }
-    return budget;
-  }
 
   it('requires an exact named budget for all four rules and rejects a dead entry', () => {
     const missing = runFixtureFiles(FILES);

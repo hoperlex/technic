@@ -15,7 +15,8 @@
  * known handle but also calls a value the scan cannot open. `cache-effect-unproven` catches a writer
  * whose cache effect the scan cannot see at all. The first two rules require a fully resolved
  * mutation; blaming application code for scanner uncertainty would get the check disabled. The last
- * two rules prevent that uncertainty from making the check green.
+ * two rules prevent that uncertainty from making the check green. `opaque-marker-excuses-nothing`
+ * catches an `opaque` marker left on a mutation the scan now reads in full.
  *
  * ЧЕМ ОПРАВДАНО МОЛЧАНИЕ. Первая очередь была 28 мест, и ни одно не оказалось дефектом — это были
  * четыре разных вида законного молчания, и каждый пришлось назвать, иначе правило сняли бы целиком:
@@ -59,9 +60,11 @@
  *     первый смысл.
  *   — `setQueryData` считается эффектом кэша наравне с гашением: правка строки на месте — законный
  *     способ, и требовать поверх неё `invalidateQueries` проверка не вправе.
- *   — Правило 2 молчит там, где у слайса НЕСКОЛЬКО корней (9 слайсов из 39: у рассылок их семь, у
- *     типов техники шесть). «Погаси хоть один свой корень» для них не значит ничего, и сказанное
- *     полем `homeAmbiguous` в карте честнее сработавшего наугад правила.
+ *   — Свой корень записи у слайса с НЕСКОЛЬКИМИ корнями (8 слайсов из 40: у рассылок их семь, у
+ *     типов техники шесть) из кода не выводится: «погаси хоть один свой корень» там не значит
+ *     ничего. Его называет автор маркером `cache-home: <корень> — причина` у объекта ручек или у
+ *     ручки (`declaredHome`), и правило 2 проверяет запись по нему. Запись без маркера видна полем
+ *     `homeAmbiguous` в карте и не проходит бюджет `home-ambiguous`.
  *
  * THE PATH TABLE answers "which slice owns this API path", the question a handle name cannot
  * answer for a read that bypasses the handles: `apiFetch('/counterparties')` in the service-request
@@ -85,11 +88,13 @@
  * and competing factories for one family. The checked-in budget names every existing finding; a
  * new finding or an obsolete budget entry fails the run.
  *
- * WHY `unresolved` IS ALWAYS PRINTED. This check can decay by understanding less code and becoming
- * greener. Every unresolved site gets a class (`unknown-write`, `cache-effect`, `ownership`,
- * `api-inventory`, `scanner-limit`) in addition to its technical reason. Unknown writes fail the
- * run; other limitations stay visible by count and class so a parsing collapse cannot be mistaken
- * for “nothing to report”.
+ * WHY `unresolved` IS ALWAYS PRINTED AND BUDGETED. This check can decay by understanding less code
+ * and becoming greener. Every unresolved site gets a class (`unknown-write`, `cache-effect`,
+ * `ownership`, `api-inventory`, `scanner-limit`) in addition to its technical reason. Unknown writes
+ * fail the run by rule; every unresolved site of any class is also a named entry of the
+ * `unresolved` budget in `cache-budget.json`, which reached zero with roadmap item Q9 — so a parsing
+ * collapse, or a new shape the scan cannot read, turns the run red instead of quietly shrinking what
+ * the rules see.
  *
  * ГДЕ ЖИВЁТ. Рядом с `lib/source-scan.mjs` и на его частях: разборщик, таблица локальных имён и, что
  * важнее всего, три набора, называющие ТОЧКИ ВХОДА В КЭШ. Второй список этих точек — та самая
@@ -117,7 +122,7 @@ import {
 const WEB = path.resolve(process.cwd());
 const SRC = path.join(WEB, 'src');
 const MAP_FILE = path.join(WEB, 'cache-invalidation-map.json');
-const READ_BUDGET_FILE = path.join(WEB, 'cache-read-budget.json');
+const BUDGET_FILE = path.join(WEB, 'cache-budget.json');
 
 /** Layers a mutation may live in. `shared` is excluded: it knows no domain and owns no key. */
 const LAYERS = ['entities', 'features', 'widgets', 'pages'];
@@ -312,18 +317,24 @@ function harvestApi(sf, file, objects, unresolved) {
 
   const scope = { sf, consts: topLevelConsts(sf), senders: senderFns, usedSenders: new Set() };
   const ranges = [];
-  const visit = (node) => {
+  // The statement travels down for the same reason as in `scanFileMutations`: a marker comment
+  // above `export const x = {` is leading trivia of the statement, not of the declaration.
+  const visit = (node, stmt) => {
+    const nextStmt = ts.isVariableStatement(node) ? node : stmt;
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const obj = unwrap(node.initializer);
       if (
         ts.isObjectLiteralExpression(obj) &&
-        harvestApiObject(node.name.text, obj, file, objects, unresolved, localVerbs, scope)
+        harvestApiObject(node.name.text, obj, file, objects, unresolved, localVerbs, {
+          ...scope,
+          home: declaredHome(sf, nextStmt ?? node),
+        })
       )
         ranges.push([obj.pos, obj.end]);
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => visit(child, nextStmt));
   };
-  visit(sf);
+  visit(sf, undefined);
   for (const name of scope.usedSenders) {
     const fn = senderFns.get(name);
     if (fn) ranges.push([fn.pos, fn.end]);
@@ -349,6 +360,7 @@ function harvestApi(sf, file, objects, unresolved) {
 function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs, scope) {
   const members = new Map();
   const spreads = [];
+  const expressionSpreads = [];
   for (const member of obj.properties) {
     if (ts.isSpreadAssignment(member)) {
       const spread = unwrap(member.expression);
@@ -365,12 +377,7 @@ function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs, s
             requests: [{ verb, file: rel(file), ...normalizePath([...base, ...tailPieces(tail)]) }],
           });
       } else if (ts.isIdentifier(spread)) spreads.push(spread.text);
-      else
-        unresolved.push({
-          file: rel(file),
-          form: `${objName} spreads an expression`,
-          why: 'api-spread-not-a-name-and-not-a-known-factory',
-        });
+      else expressionSpreads.push(spread);
       continue;
     }
     if (!ts.isPropertyAssignment(member) && !ts.isMethodDeclaration(member)) continue;
@@ -382,13 +389,28 @@ function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs, s
       members.set(name, {
         verb,
         requests: memberRequests(body, scope).map((r) => ({ ...r, file: rel(file) })),
+        home: declaredHome(scope.sf, member) ?? scope.home,
       });
   }
-  // An `*Api` wrapper may delegate to another API object and send no request directly. Its slice
-  // still owns the read; keep the declaration for ownership without adding a path or verb.
-  // Other request-free literals are configs and dictionaries, not API objects.
-  if (members.size === 0 && spreads.length === 0 && !/Api$/.test(objName)) return false;
-  objects.add(objName, { members, spreads, file: rel(file) });
+  /*
+   * An `*Api` wrapper may delegate to another API object and send no request directly. Its slice
+   * still owns the read; keep the declaration for ownership without adding a path or verb.
+   *
+   * Any other literal is an API object only if it sends a request of its own. Spreads alone do not
+   * make one: `{ ...params, sortBy }` (a list query) and `{ ...options.headers, ...extra() }` (the
+   * request headers in `shared/api/http.ts`) spread values, not handles, and recording them sent
+   * three such literals to `unresolved` as API spreads the scan could not follow. The parts a slice
+   * API is assembled from (`vehicleRequestLifecycle`) always declare members, so they stay.
+   */
+  if (members.size === 0 && !/Api$/.test(objName)) return false;
+  if (scope.home) for (const member of members.values()) member.home ??= scope.home;
+  for (const spread of expressionSpreads)
+    unresolved.push({
+      file: rel(file),
+      form: `${objName} spreads ${scope.sf.text.slice(spread.pos, spread.end).trim()}`,
+      why: 'api-spread-not-a-name-and-not-a-known-factory',
+    });
+  objects.add(objName, { members, spreads, file: rel(file), home: scope.home });
   // Reported once, where the request is written, and not once per object that spreads it.
   for (const [m, { requests }] of members)
     for (const r of requests)
@@ -412,7 +434,7 @@ function harvestApiObject(objName, obj, file, objects, unresolved, localVerbs, s
  * keeps the file it was WRITTEN in rather than the file of the object that spreads it, because the
  * path belongs to the slice that declares the request.
  */
-function flattenApiObjects(objects, api, unresolved, handleRequests) {
+function flattenApiObjects(objects, api, unresolved, handleRequests, handleHomes) {
   const cache = new Map();
   const computing = new Set();
   const resolve = (name, depth) => {
@@ -447,9 +469,13 @@ function flattenApiObjects(objects, api, unresolved, handleRequests) {
   for (const [name, entry] of objects.byName) {
     const members = resolve(name, 0);
     if (!members) continue;
-    for (const [member, { verb, requests }] of members) {
+    for (const [member, { verb, requests, home }] of members) {
       api.add(`${name}.${member}`, verb, entry.value.file);
       handleRequests.set(`${name}.${member}`, requests);
+      // Most specific first: the member's own marker, the part that declares it, then the object
+      // that spreads the part (`vehicleRequestsApi` over its four parts).
+      const declared = home ?? (entry.conflict ? undefined : entry.value.home);
+      if (declared) handleHomes.set(`${name}.${member}`, declared);
     }
   }
 }
@@ -693,8 +719,8 @@ function memberRequests(node, scope) {
 /**
  * The table matched by `matchApiPath`: one entry per template and owner, bucketed by the first
  * segment. The owner is the slice of the file that writes the request; a request written outside a
- * slice (`pages/driver/api.ts`) is owned by its file and has no slice — saying so beats lending it
- * the nearest slice.
+ * slice (a page declaring its own handles, as `pages/driver` did before `entities/driver-cabinet`)
+ * is owned by its file and has no slice — saying so beats lending it the nearest slice.
  */
 function buildApiPathTable(handleRequests, rootsBySlice) {
   const entries = new Map();
@@ -917,6 +943,11 @@ function resolveRoots(node, ctx, hops = 0) {
       if (owner && ts.isIdentifier(owner)) return fromName(owner.text, ctx, hops);
     }
     if (callee && ts.isIdentifier(callee)) {
+      // The factory itself, met when a key is read inside the file that declares it — a slice's
+      // own invalidation matrix next to its keys (`autoPartReceiptInvalidation`).
+      const first = expr.arguments[0] && unwrap(expr.arguments[0]);
+      if (callee.text === 'createQueryKeys' && first && ts.isStringLiteral(first))
+        return { roots: [first.text], why: null };
       const local = ctx.bindings.get(callee.text);
       if (local) return resolveRoots(local, ctx, hops + 1);
       return { roots: [], why: `key-built-by-an-unresolved-factory:${callee.text}` };
@@ -946,10 +977,205 @@ function resolveRoots(node, ctx, hops = 0) {
 function fromName(name, ctx, hops) {
   const local = ctx.bindings.get(name);
   if (local) return resolveRoots(local, ctx, hops + 1);
+  // `for (const queryKey of keys)`: the name is one element of the list the loop walks.
+  const loop = ctx.loops?.get(name);
+  if (loop === null) return { roots: [], why: `key-name-declared-twice:${name}` };
+  if (loop) return resolveListRoots(loop, ctx, hops + 1);
   const known = ctx.keys.get(name);
   if (known === null) return { roots: [], why: `key-name-declared-twice:${name}` };
   if (known === undefined) return { roots: [], why: `key-name-not-declared-in-src:${name}` };
   return { roots: [known], why: null };
+}
+
+/**
+ * The roots of a LIST of keys: what a loop over it hands to `invalidateQueries`, one key at a time.
+ *
+ * A slice that keeps its invalidation matrix in one place returns the keys rather than dropping them
+ * (`autoPartReceiptInvalidation`: the entity layer does not know whose query client it is), and the
+ * mutation walks that list. Read as a bare loop variable, every such key came out "a name not
+ * declared in src", and four receipt writes with a complete matrix were reported unresolved. The
+ * list is opened instead: an array literal element by element, a spread as a list of its own, a
+ * `.map` by its callback's key, a function by every list it returns — locally, or through the
+ * portal-wide table when the function is imported.
+ *
+ * One list is not opened, on purpose: the `invalidate` option a hook receives from its caller
+ * (`usePurgeAction`). Its keys are written at each call site, and the scan already reads every call
+ * site as a mutation of its own (`readDeclaredHook`); the hook's loop answers `fromCallSites`, which
+ * proves the effect elsewhere and excuses the hook's own record from the empty-invalidation rules.
+ */
+function resolveListRoots(node, ctx, hops = 0) {
+  const expr = unwrap(node);
+  if (!expr) return { roots: [], why: 'empty-key-list-expression' };
+  if (hops > MAX_HOPS) return { roots: [], why: 'key-resolution-too-deep' };
+  const merge = (parts) => {
+    const fromCallSites = parts.flatMap((p) => p.fromCallSites ?? []);
+    return {
+      roots: parts.flatMap((p) => p.roots),
+      why: parts.find((p) => p.why)?.why ?? null,
+      ...(fromCallSites.length > 0 ? { fromCallSites } : {}),
+    };
+  };
+
+  if (ts.isArrayLiteralExpression(expr))
+    return merge(
+      expr.elements.map((el) =>
+        ts.isSpreadElement(el)
+          ? resolveListRoots(el.expression, ctx, hops + 1)
+          : resolveRoots(el, ctx, hops + 1),
+      ),
+    );
+
+  if (ts.isIdentifier(expr)) {
+    const local = ctx.bindings.get(expr.text);
+    if (local) return resolveListRoots(local, ctx, hops + 1);
+    if (local === undefined && KEY_LIST_PROPS.has(expr.text) && !ctx.imports?.has(expr.text))
+      return { roots: [], why: null, fromCallSites: [expr.text] };
+    return { roots: [], why: `key-list-name-not-resolved:${expr.text}` };
+  }
+
+  if (ts.isCallExpression(expr)) {
+    const callee = unwrap(expr.expression);
+    if (callee && ts.isPropertyAccessExpression(callee) && callee.name.text === 'map') {
+      const fn = expr.arguments[0] && unwrap(expr.arguments[0]);
+      const returned = fn && isFunctionNode(fn) ? returnedExpressions(fn) : [];
+      if (returned.length === 0) return { roots: [], why: 'key-list-map-without-a-key-callback' };
+      return merge(returned.map((r) => resolveRoots(r, ctx, hops + 1)));
+    }
+    if (callee && ts.isIdentifier(callee)) {
+      const local = ctx.bindings.get(callee.text);
+      const target =
+        local !== undefined
+          ? local && { node: unwrap(local), ctx }
+          : ctx.imports?.has(callee.text)
+            ? ctx.helpers?.declaration(callee.text)
+            : undefined;
+      if (target === null)
+        return { roots: [], why: `key-list-function-declared-twice:${callee.text}` };
+      if (target && isFunctionNode(target.node)) {
+        const returned = returnedExpressions(target.node);
+        if (returned.length === 0)
+          return { roots: [], why: `key-list-function-returns-nothing:${callee.text}` };
+        return merge(returned.map((r) => resolveListRoots(r, target.ctx, hops + 1)));
+      }
+      return { roots: [], why: `key-list-built-by-an-unresolved-function:${callee.text}` };
+    }
+  }
+
+  if (ts.isConditionalExpression(expr))
+    return merge([
+      resolveListRoots(expr.whenTrue, ctx, hops + 1),
+      resolveListRoots(expr.whenFalse, ctx, hops + 1),
+    ]);
+
+  return { roots: [], why: `key-list-of-an-unhandled-shape:${ts.SyntaxKind[expr.kind]}` };
+}
+
+function isFunctionNode(node) {
+  return (
+    !!node &&
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node))
+  );
+}
+
+/** Every value a function returns: its expression body, or each `return` outside nested functions. */
+function returnedExpressions(fn) {
+  if (!fn.body) return [];
+  if (!ts.isBlock(fn.body)) return [fn.body];
+  const out = [];
+  const visit = (node) => {
+    if (node !== fn.body && ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node) && node.expression) out.push(node.expression);
+    else ts.forEachChild(node, visit);
+  };
+  visit(fn.body);
+  return out;
+}
+
+/** `for (const queryKey of keys)`: each loop variable of the file with the list it walks. */
+function collectLoopBindings(sf) {
+  const loops = new Map();
+  const visit = (node) => {
+    if (ts.isForOfStatement(node) && ts.isVariableDeclarationList(node.initializer))
+      for (const d of node.initializer.declarations)
+        if (ts.isIdentifier(d.name))
+          loops.set(d.name.text, loops.has(d.name.text) ? null : node.expression);
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return loops;
+}
+
+/**
+ * `const [step, setStep] = useState(…)`: the setters of a file. Calling one changes the screen's
+ * own state and never the query cache, and `onSuccess: setStep` used to read as "a handler this
+ * walk cannot open" — the one shape of a handler that is fully known.
+ */
+function collectStateSetters(sf, imports) {
+  const setters = new Set();
+  const visit = (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isArrayBindingPattern(node.name) &&
+      node.initializer &&
+      ts.isCallExpression(unwrap(node.initializer))
+    ) {
+      const callee = unwrap(unwrap(node.initializer).expression);
+      const setter = node.name.elements[1];
+      if (
+        callee &&
+        ts.isIdentifier(callee) &&
+        STATE_HOOKS.has(callee.text) &&
+        imports.get(callee.text) === 'react' &&
+        setter &&
+        ts.isBindingElement(setter) &&
+        ts.isIdentifier(setter.name)
+      )
+        setters.add(setter.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return setters;
+}
+
+/** React state hooks whose second tuple element is a setter (`collectStateSetters`). */
+const STATE_HOOKS = new Set(['useState', 'useReducer']);
+
+/**
+ * React hooks that return their first argument as the value: `useCallback(fn)` IS `fn`, and so is
+ * the stable callback of `useEffectEvent(fn)`. A call of such a value is opened like a local
+ * function — `const start = useCallback(…)` hid a receipt recognition write and its cache answer.
+ */
+const FUNCTION_HOOKS = new Set(['useCallback', 'useEffectEvent']);
+
+/**
+ * Packages whose hooks cannot reach the portal query cache. `const navigate = useNavigate()` is a
+ * value the walk cannot open, and calling it in `onSuccess` used to make the whole mutation
+ * unresolved; a router knows nothing of the query client. Named one by one rather than "every
+ * package": `@tanstack/react-query` hooks return the client and its handles, which do drop it.
+ */
+const CACHE_BLIND_MODULES = new Set(['react-router']);
+
+/** The function a `useCallback(fn)` / `useEffectEvent(fn)` binding holds, or undefined. */
+function hookWrappedFunction(init, ctx) {
+  const call = init && ts.isCallExpression(init) ? init : undefined;
+  const callee = call && unwrap(call.expression);
+  if (!callee || !ts.isIdentifier(callee) || !FUNCTION_HOOKS.has(callee.text)) return undefined;
+  if (ctx.imports?.get(callee.text) !== 'react') return undefined;
+  const fn = call.arguments[0] && unwrap(call.arguments[0]);
+  return fn && (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) ? fn : undefined;
+}
+
+/** `const navigate = useNavigate()` — a hook result from a package that cannot touch the cache. */
+function isCacheBlindHookResult(init, ctx) {
+  const call = init && ts.isCallExpression(init) ? init : undefined;
+  const callee = call && unwrap(call.expression);
+  return (
+    !!callee &&
+    ts.isIdentifier(callee) &&
+    /^use[A-Z]/.test(callee.text) &&
+    CACHE_BLIND_MODULES.has(ctx.imports?.get(callee.text))
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -991,11 +1217,8 @@ function collectCacheEffects(node, ctx, acc, hops = 0, seen = new Set()) {
     if (ts.isPropertyAssignment(n) && KEY_LIST_PROPS.has(propertyName(n.name) ?? '')) {
       const list = unwrap(n.initializer);
       if (ts.isArrayLiteralExpression(list))
-        for (const el of list.elements) {
-          const { roots, why } = resolveRoots(ts.isSpreadElement(el) ? el.expression : el, ctx);
-          roots.forEach((r) => acc.roots.add(r));
-          if (why) acc.why.add(why);
-        }
+        for (const el of list.elements)
+          addRoots(acc, resolveRoots(ts.isSpreadElement(el) ? el.expression : el, ctx));
       else acc.why.add('invalidate-option-is-not-a-list-literal');
     }
 
@@ -1003,6 +1226,13 @@ function collectCacheEffects(node, ctx, acc, hops = 0, seen = new Set()) {
   };
 
   visit(node);
+}
+
+/** One key's answer into the accumulator: its roots, why it is incomplete, whose list it is. */
+function addRoots(acc, { roots, why, fromCallSites }) {
+  roots.forEach((r) => acc.roots.add(r));
+  if (why) acc.why.add(why);
+  (fromCallSites ?? []).forEach((name) => acc.fromCallSites.add(name));
 }
 
 function readKeyArgument(call, ctx, acc) {
@@ -1017,18 +1247,14 @@ function readKeyArgument(call, ctx, acc) {
       (p) => ts.isPropertyAssignment(p) && propertyName(p.name) === 'queryKey',
     );
     if (keyProp) {
-      const { roots, why } = resolveRoots(keyProp.initializer, ctx);
-      roots.forEach((r) => acc.roots.add(r));
-      if (why) acc.why.add(why);
+      addRoots(acc, resolveRoots(keyProp.initializer, ctx));
       return;
     }
     const shorthand = arg.properties.find(
       (p) => ts.isShorthandPropertyAssignment(p) && p.name.text === 'queryKey',
     );
     if (shorthand) {
-      const { roots, why } = resolveRoots(shorthand.name, ctx);
-      roots.forEach((r) => acc.roots.add(r));
-      if (why) acc.why.add(why);
+      addRoots(acc, resolveRoots(shorthand.name, ctx));
       return;
     }
     if (arg.properties.some((p) => propertyName(p.name ?? undefined) === 'predicate')) {
@@ -1038,25 +1264,42 @@ function readKeyArgument(call, ctx, acc) {
     acc.wholeCache = true;
     return;
   }
-  const { roots, why } = resolveRoots(arg, ctx);
-  roots.forEach((r) => acc.roots.add(r));
-  if (why) acc.why.add(why);
+  addRoots(acc, resolveRoots(arg, ctx));
 }
 
-/** A bare call inside a handler: a local helper, a portal-wide helper, or someone else's business. */
+/** A resolved helper's effects merged into the accumulator. */
+function addHelperEffects(acc, helper) {
+  helper.roots.forEach((r) => acc.roots.add(r));
+  helper.why.forEach((w) => acc.why.add(w));
+  (helper.handsUp ?? []).forEach((h) => acc.handsUp.add(h));
+  (helper.fromCallSites ?? []).forEach((n) => acc.fromCallSites.add(n));
+  if (helper.wholeCache) acc.wholeCache = true;
+}
+
+/**
+ * A bare call inside a handler: a local helper, a portal-wide helper, or someone else's business.
+ *
+ * Returns whether the name was UNDERSTOOD — opened, or known to touch no cache (a state setter, a
+ * router hook's result). A handler given as a name (`onSuccess: setStep`) needs that answer: an
+ * understood name with no effect is a finding, an unknown one is a gap in the evidence.
+ */
 function followCall(name, call, ctx, acc, hops, seen) {
-  if (seen.has(name)) return;
+  if (seen.has(name)) return true;
+  if (ctx.stateSetters?.has(name)) return true;
 
   const local = ctx.bindings.get(name);
   if (local) {
     const fn = unwrap(local);
-    if (
-      fn &&
-      (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn) || ts.isFunctionDeclaration(fn))
-    ) {
+    if (isFunctionNode(fn)) {
       collectCacheEffects(fn.body, ctx, acc, hops + 1, new Set([...seen, name]));
-      return;
+      return true;
     }
+    const wrapped = hookWrappedFunction(fn, ctx);
+    if (wrapped) {
+      collectCacheEffects(wrapped.body, ctx, acc, hops + 1, new Set([...seen, name]));
+      return true;
+    }
+    if (isCacheBlindHookResult(fn, ctx)) return true;
     /*
      * The RESULT OF A PORTAL HOOK: `const invalidate = useServiceChatInvalidate()`. The hook is a
      * registered helper, and its body contains the function it returns, so the helper's effects are
@@ -1069,14 +1312,11 @@ function followCall(name, call, ctx, acc, hops, seen) {
       const hook = ctx.helpers.resolve(hookCall.text);
       if (hook === null) {
         acc.why.add(`helper-name-declared-twice:${hookCall.text}`);
-        return;
+        return true;
       }
       if (hook) {
-        hook.roots.forEach((r) => acc.roots.add(r));
-        hook.why.forEach((w) => acc.why.add(w));
-        (hook.handsUp ?? []).forEach((h) => acc.handsUp.add(h));
-        if (hook.wholeCache) acc.wholeCache = true;
-        return;
+        addHelperEffects(acc, hook);
+        return true;
       }
     }
     /*
@@ -1087,20 +1327,30 @@ function followCall(name, call, ctx, acc, hops, seen) {
      * whose whole invalidation lives inside that hook. Unresolved is the honest answer.
      */
     acc.why.add(`call-of-a-value-this-walk-cannot-open:${name}`);
-    return;
+    return true;
   }
 
+  /*
+   * A CONFLICT in the portal-wide table counts only for a name this file could reach it by: one it
+   * imports, or declares twice itself. A helper of another file cannot be called here without an
+   * import, so a conflicting name that is neither local nor imported is a parameter or a
+   * destructured prop — `onSubmit` handed to a hook met two screens' own `onSubmit` in the table and
+   * left the hook's mutation unresolved as "declared twice", for a name the table does not own. It
+   * falls through to the callback convention below instead.
+   *
+   * A UNIQUE entry is still credited without an import, deliberately: `afterChange` handed to a
+   * route hook is the caller's own function of that name, and the match by name is what lets the
+   * hook's mutation see the drop one file up. The optimistic direction is the one the header names.
+   */
+  const reachable = local === null || !ctx.imports || ctx.imports.has(name);
   const helper = ctx.helpers.resolve(name);
-  if (helper === null) {
+  if (helper === null && reachable) {
     acc.why.add(`helper-name-declared-twice:${name}`);
-    return;
+    return true;
   }
   if (helper) {
-    helper.roots.forEach((r) => acc.roots.add(r));
-    helper.why.forEach((w) => acc.why.add(w));
-    (helper.handsUp ?? []).forEach((h) => acc.handsUp.add(h));
-    if (helper.wholeCache) acc.wholeCache = true;
-    return;
+    addHelperEffects(acc, helper);
+    return true;
   }
 
   /*
@@ -1116,6 +1366,7 @@ function followCall(name, call, ctx, acc, hops, seen) {
   // A prop callback by the portal's own naming convention (`onSaved`, `onChanged`, `onUploaded`):
   // the effect lives in the caller, one file up, and is unknowable from here.
   else if (isCallbackName(name)) acc.handsUp.add(name);
+  return false;
 }
 
 /**
@@ -1171,6 +1422,30 @@ function delegatedWriteReason(sf, ...nodes) {
     if (match?.[1]?.trim()) return match[1].trim();
   }
   return undefined;
+}
+
+/**
+ * `cache-home: <root> — <reason>` above an API object or one of its members: the root a write
+ * through that handle lands in.
+ *
+ * Rule 2 needs ONE home root per write, and it used to read it off the slice: the slice's only
+ * root, or nothing. Eight slices keep several (`entities/office-equipment` five, one per
+ * dictionary it writes), and every write through them — 99 mutations — went unchecked as
+ * `homeAmbiguous`. Which root an object writes is not derivable from the code: paths do not tell
+ * (`/vehicle-types/:id` reads closer to the type-specs list than to the type list), and the read
+ * inventory knows only that both roots are read through the same object. It is a statement of the
+ * author, so it is written where the author wrote the handles, with its reason.
+ *
+ * Read from the LEADING comment only, so a marker inside a member's body never applies to the
+ * object. A member's marker overrides its object's (`mailingsApi.sendTest` lands in the mail log of
+ * another slice, while the rest of `mailingsApi` writes schedules). A reason is required: the
+ * marker turns "the rule does not apply" into "the rule applies to this root", and only the reason
+ * tells a reviewer why that root.
+ */
+function declaredHome(sf, node) {
+  const leading = sf.text.slice(node.pos, ts.skipTrivia(sf.text, node.pos));
+  const match = leading.match(/cache-home:\s*([a-z0-9][a-z0-9-]*)\s*[—-]\s*(\S[^\r\n*]*)/);
+  return match ? { root: match[1], reason: match[2].trim() } : undefined;
 }
 
 function isCallbackName(name) {
@@ -1555,6 +1830,7 @@ function scanReads(readFiles, keys, keyFamilies, api, objects, pathTable) {
       rel: rel(file),
       sf,
       bindings: collectBindings(sf),
+      loops: collectLoopBindings(sf),
       imports: collectImports(sf),
       keys,
       keyFamilies,
@@ -1666,7 +1942,13 @@ function optionProp(obj, name) {
 }
 
 function emptyAcc() {
-  return { roots: new Set(), why: new Set(), wholeCache: false, handsUp: new Set() };
+  return {
+    roots: new Set(),
+    why: new Set(),
+    wholeCache: false,
+    handsUp: new Set(),
+    fromCallSites: new Set(),
+  };
 }
 
 function finish(acc) {
@@ -1677,6 +1959,9 @@ function finish(acc) {
     // it excuses a mutation from rule 1 (its effect is one file up) but leaves rule 2 in force — a
     // screen that drops a neighbour's root itself is still answerable for missing its own.
     handsUp: [...acc.handsUp].sort(),
+    // The keys are the caller's `invalidate` option (`resolveListRoots`): each call site is its own
+    // `invalidate-option` record, under rules 1 and 2, so this one is excused like `handsUp`.
+    keysFromCallSites: [...acc.fromCallSites].sort(),
     unresolved: [...acc.why].sort(),
   };
 }
@@ -1729,7 +2014,14 @@ function scanFileMutations(ctx) {
         const declared = options.properties.some(
           (p) => ts.isPropertyAssignment(p) && KEY_LIST_PROPS.has(propertyName(p.name) ?? ''),
         );
-        if (declared) mutations.push(readDeclaredHook(node, options, name, ctx));
+        if (declared) {
+          mutations.push(readDeclaredHook(node, options, name, ctx));
+          // The write inside these options (`purge: (id) => mechRequestsApi.purge(id, version)`) is
+          // the declared hook's own: the record above carries it with its keys. Read again as a
+          // direct call of the enclosing component, it came out a second writer of the same purge,
+          // walked over the whole component body and the hook's internals.
+          mutationFnRanges.push([options.pos, options.end]);
+        }
       }
     }
 
@@ -1781,10 +2073,11 @@ function readUseMutation(call, options, owner, ctx, mutationFnRanges) {
           whole: acc.wholeCache,
           up: acc.handsUp.size,
         };
-        followCall(named.text, undefined, ctx, acc, 0, new Set());
+        const understood = followCall(named.text, undefined, ctx, acc, 0, new Set());
         // Nothing came back — neither an effect nor a reason. The name was a prop or a value this
         // walk cannot open, and calling that "no invalidation" is a verdict on evidence we lack.
         if (
+          !understood &&
           acc.why.size === seen.why &&
           acc.roots.size === seen.roots &&
           acc.wholeCache === seen.whole &&
@@ -1887,7 +2180,16 @@ function scanDirectWrites(ctx, mutationFnRanges) {
         if (obj && ts.isIdentifier(obj) && /Api$/.test(obj.text)) {
           const handle = `${obj.text}.${callee.name.text}`;
           const verb = ctx.api.get(handle);
-          if (verb && WRITING_METHODS.has(verb) && next) {
+          // The same three exclusions as `classifyWrites`: a preview or a file-storage call is not
+          // a write, and a "writer" holding only those was a record with an empty `writes` list
+          // whose body walk could still report what it failed to open.
+          if (
+            verb &&
+            WRITING_METHODS.has(verb) &&
+            !isPreviewHandle(handle) &&
+            !STORAGE_HANDLES.has(handle) &&
+            next
+          ) {
             const entry = found.get(next.name) ?? { owner: next, handles: new Set() };
             entry.handles.add(handle);
             found.set(next.name, entry);
@@ -1981,6 +2283,7 @@ function buildMap() {
   const rootOwners = new Map();
   const unresolved = [];
   const parsed = new Map();
+  const declaring = new Map();
   const reaching = new Map();
   const calling = new Map();
   const readFiles = new Map();
@@ -2012,6 +2315,7 @@ function buildMap() {
       unresolved.push({ file: rel(file), form: 'whole file', why: 'file-does-not-parse-cleanly' });
 
     if (declares) {
+      declaring.set(file, sf);
       harvestKeyRoots(sf, file, keys, rootOwners, keyFamilies);
       ownedRanges.set(file, harvestApi(sf, file, objects, unresolved));
     }
@@ -2024,7 +2328,8 @@ function buildMap() {
   // Spreads are followed only now: a slice API may be assembled from parts declared in files read
   // after it.
   const handleRequests = new Map();
-  flattenApiObjects(objects, api, unresolved, handleRequests);
+  const handleHomes = new Map();
+  flattenApiObjects(objects, api, unresolved, handleRequests, handleHomes);
 
   /*
    * The HOME roots of a slice: the key roots declared in it. `driversApi` lives in
@@ -2058,10 +2363,14 @@ function buildMap() {
   const helpers = {
     resolve(name) {
       if (helperCache.has(name)) return helperCache.get(name);
-      const decl = helperNodes.get(name);
+      // A function of a file that only declares keys (an invalidation matrix) is a helper too: it is
+      // called inside the handlers that loop over its list, and walking it answers "no effect"
+      // instead of the "may drop the cache" its name would otherwise earn.
+      const decl = helperNodes.has(name) ? helperNodes.get(name) : declarationNodes.get(name);
       if (decl === undefined) return undefined;
       if (decl === null) return null;
-      if (computing.has(name)) return { roots: [], why: [], wholeCache: false, handsUp: [] };
+      if (computing.has(name))
+        return { roots: [], why: [], wholeCache: false, handsUp: [], fromCallSites: [] };
       computing.add(name);
       const acc = emptyAcc();
       collectCacheEffects(decl.node.body ?? decl.node, decl.ctx, acc);
@@ -2071,6 +2380,7 @@ function buildMap() {
         why: [...acc.why],
         wholeCache: acc.wholeCache,
         handsUp: [...acc.handsUp],
+        fromCallSites: [...acc.fromCallSites],
       };
       helperCache.set(name, value);
       return value;
@@ -2087,35 +2397,46 @@ function buildMap() {
     node(name) {
       return apiReachNodes.get(name);
     },
+    /**
+     * A function by its portal-wide name, with the context it was declared in — for a key LIST a
+     * mutation walks (`resolveListRoots`). Read from every file that declares keys as well as from
+     * the acting ones: the invalidation matrix of a slice lives next to its keys
+     * (`entities/auto-part-receipt/api/keys.ts`), and whether that file also happens to mention
+     * `invalidateQueries` in a comment must not decide whether the matrix can be read.
+     */
+    declaration(name) {
+      return declarationNodes.get(name);
+    },
   };
 
   const contexts = new Map();
-  for (const [file, sf] of parsed) {
+  const contextOf = (file, sf) => {
+    if (contexts.has(file)) return contexts.get(file);
+    const imports = collectImports(sf);
     const ctx = {
       rel: rel(file),
       sf,
       bindings: collectBindings(sf),
-      imports: collectImports(sf),
+      loops: collectLoopBindings(sf),
+      stateSetters: collectStateSetters(sf, imports),
+      imports,
       keys,
       api,
       helpers,
     };
     contexts.set(file, ctx);
+    return ctx;
+  };
+  const declarationNodes = new Map();
+  for (const [file, sf] of parsed) {
+    const ctx = contextOf(file, sf);
     registerHelpers(sf, ctx, helperNodes);
+    registerHelpers(sf, ctx, declarationNodes);
   }
+  for (const [file, sf] of declaring)
+    if (!parsed.has(file)) registerHelpers(sf, contextOf(file, sf), declarationNodes);
   const apiReachNodes = new Map();
-  for (const [file, sf] of reaching) {
-    const ctx = contexts.get(file) ?? {
-      rel: rel(file),
-      sf,
-      bindings: collectBindings(sf),
-      imports: collectImports(sf),
-      keys,
-      api,
-      helpers,
-    };
-    registerHelpers(sf, ctx, apiReachNodes);
-  }
+  for (const [file, sf] of reaching) registerHelpers(sf, contextOf(file, sf), apiReachNodes);
 
   // Pass 3: the mutations themselves.
   const mutations = [];
@@ -2141,6 +2462,7 @@ function buildMap() {
   for (const m of mutations) {
     const home = new Set();
     const ambiguous = new Set();
+    const undeclared = new Set();
     for (const write of m.writes) {
       if (write === '<delegated> WRITE') continue;
       const handle = write.slice(0, write.indexOf(' '));
@@ -2156,6 +2478,14 @@ function buildMap() {
         m.unresolved.push(`write-handle-outside-a-slice:${handle}`);
         continue;
       }
+      // A declared home (`cache-home: <root> — reason` on the API object or the member) answers
+      // before the slice's roots are counted: it is the author's statement of where the write lands.
+      const declared = handleHomes.get(handle);
+      if (declared) {
+        if (rootOwners.has(declared.root)) home.add(declared.root);
+        else m.unresolved.push(`write-handle-home-is-not-a-known-root:${handle}:${declared.root}`);
+        continue;
+      }
       const roots = rootsBySlice.get(slice) ?? [];
       /*
        * ONE root in the slice, or no home root at all — and that limit is the rule's honesty.
@@ -2167,12 +2497,19 @@ function buildMap() {
        * the root are the two halves of one act, and that is the case the rule reasons about.
        */
       if (roots.length === 1) home.add(roots[0]);
-      else if (roots.length > 1) ambiguous.add(slice);
+      else if (roots.length > 1) {
+        ambiguous.add(slice);
+        undeclared.add(handle);
+      }
     }
     m.homeRoots = [...home].sort();
     // Printed in the map rather than dropped: "the rule did not apply here, and why" is the part a
-    // reader needs to trust the green.
-    if (ambiguous.size > 0) m.homeAmbiguous = [...ambiguous].sort();
+    // reader needs to trust the green. Budgeted by handle (`home-ambiguous`): the fix is a marker
+    // on the handle, not on the mutation.
+    if (ambiguous.size > 0) {
+      m.homeAmbiguous = [...ambiguous].sort();
+      m.homeUndeclared = [...undeclared].sort();
+    }
   }
 
   for (const m of mutations)
@@ -2278,6 +2615,7 @@ function ruleWritesNothingDropped(map) {
         !m.declaredNoop &&
         m.unresolved.length === 0 &&
         m.handsUp.length === 0 &&
+        (m.keysFromCallSites ?? []).length === 0 &&
         !m.wholeCache &&
         m.invalidates.length === 0,
     )
@@ -2364,6 +2702,7 @@ function ruleCacheEffectUnproven(map) {
         !m.wholeCache &&
         m.invalidates.length === 0 &&
         m.handsUp.length === 0 &&
+        (m.keysFromCallSites ?? []).length === 0 &&
         m.unresolved.some((why) => classifyUnresolved(why) === 'cache-effect'),
     )
     .map((m) => ({
@@ -2372,6 +2711,25 @@ function ruleCacheEffectUnproven(map) {
       what: `${m.name} пишет ${m.writes.join(', ')}, а эффект на кэш не виден (${m.unresolved
         .filter((why) => classifyUnresolved(why) === 'cache-effect')
         .join(', ')})`,
+    }));
+}
+
+/**
+ * RULE 5 — an `opaque` marker on a mutation the scan now reads in full.
+ *
+ * The marker says "the drop is real but unreadable; look here". Once the scan learns the shape (a key
+ * list returned by the slice, a hook result it can open), the marker excuses nothing and keeps
+ * telling the next reader to distrust a mutation that is fully visible — the receipt card's
+ * unmarking carried one after the receipt matrix became readable. A marker that no longer applies
+ * is removed, as a comment that no longer matches the code is.
+ */
+function ruleOpaqueMarkerExcusesNothing(map) {
+  return map.mutations
+    .filter((m) => m.declaredOpaque && m.unresolved.length === 0)
+    .map((m) => ({
+      rule: 'opaque-marker-excuses-nothing',
+      at: `${m.file}:${m.line}`,
+      what: `${m.name} разобрана полностью (гасит ${m.invalidates.join(', ') || 'ничего'}), а маркер cache-invalidation: opaque остался`,
     }));
 }
 
@@ -2489,16 +2847,51 @@ const READ_RULES = [
   'second-family-factory',
 ];
 
-/** Both a new finding and a dead budget entry fail, so the baseline can only shrink. */
-function checkReadBudget(findings) {
-  const budget = existsSync(READ_BUDGET_FILE)
-    ? JSON.parse(readFileSync(READ_BUDGET_FILE, 'utf8'))
-    : {};
+/**
+ * What the scan could not read, as budget findings. A line number is not part of the id: the
+ * budget names a site, and an edit above it must not turn a known entry into a "new" one.
+ */
+function unresolvedFindings(map) {
+  return map.unresolved.map((item) => ({
+    rule: 'unresolved',
+    id: `${item.file}|${item.form.replace(/\s*\(line \d+\)|, line \d+/g, '')}|${item.why}`,
+    what: `${item.form} — ${item.why} (${item.class})`,
+  }));
+}
+
+/** Write handles of a multi-root slice without a declared home (`declaredHome`), one per handle. */
+function homeAmbiguousFindings(map) {
+  const byHandle = new Map();
+  for (const m of map.mutations)
+    for (const handle of m.homeUndeclared ?? [])
+      byHandle.set(handle, [...(byHandle.get(handle) ?? []), `${m.file}:${m.line}`]);
+  return [...byHandle].map(([handle, sites]) => ({
+    rule: 'home-ambiguous',
+    id: handle,
+    what: `${handle} пишет слайс с несколькими корнями без cache-home (${sites.join(', ')})`,
+  }));
+}
+
+/**
+ * The named budgets of `cache-budget.json`: the four read rules, the unresolved sites and the
+ * write handles without a home.
+ *
+ * Both a new finding and a dead budget entry fail, so the baseline can only shrink — the ratchet of
+ * `quality-budget.json`, by names rather than by counts, so that a new site cannot hide behind an
+ * old one going away. `unresolved` and `home-ambiguous` joined the read rules when both reached
+ * zero: until then they were printed and counted, and a run that understood less code came out the
+ * same colour as one that understood more. A relaxation is an entry added by hand, where review
+ * sees it.
+ */
+const BUDGET_RULES = [...READ_RULES, 'unresolved', 'home-ambiguous'];
+
+function checkBudget(findings) {
+  const budget = existsSync(BUDGET_FILE) ? JSON.parse(readFileSync(BUDGET_FILE, 'utf8')) : {};
   const errors = [];
-  for (const rule of READ_RULES) {
+  for (const rule of BUDGET_RULES) {
     const listed = budget[rule] ?? [];
     if (!Array.isArray(listed) || listed.some((id) => typeof id !== 'string'))
-      throw new Error(`Invalid cache read budget for ${rule}`);
+      throw new Error(`Invalid cache budget for ${rule}`);
     const allowed = new Set(listed);
     if (allowed.size !== listed.length) errors.push(`duplicate budget entry: ${rule}`);
     const actual = new Set(findings.filter((f) => f.rule === rule).map((f) => f.id));
@@ -2508,7 +2901,7 @@ function checkReadBudget(findings) {
       if (!actual.has(id)) errors.push(`stale budget entry: [${rule}] ${id}`);
   }
   for (const rule of Object.keys(budget))
-    if (!READ_RULES.includes(rule)) errors.push(`unknown budget rule: ${rule}`);
+    if (!BUDGET_RULES.includes(rule)) errors.push(`unknown budget rule: ${rule}`);
   return errors;
 }
 
@@ -2528,6 +2921,7 @@ const findings = [
   ...ruleHomeRootMissed(map),
   ...ruleUnknownWrite(map),
   ...ruleCacheEffectUnproven(map),
+  ...ruleOpaqueMarkerExcusesNothing(map),
 ].sort((a, b) => a.rule.localeCompare(b.rule) || a.at.localeCompare(b.at));
 const profiled = profiledFamilies(map);
 const readFindings = [
@@ -2536,7 +2930,11 @@ const readFindings = [
   ...ruleProfiledReadBypassesFactory(map, profiled),
   ...ruleSecondFactory(map, profiled),
 ].sort((a, b) => a.rule.localeCompare(b.rule) || a.id.localeCompare(b.id));
-const readBudgetErrors = checkReadBudget(readFindings);
+const budgetErrors = checkBudget([
+  ...readFindings,
+  ...unresolvedFindings(map),
+  ...homeAmbiguousFindings(map),
+]);
 
 const t = map.totals;
 console.log(
@@ -2579,9 +2977,9 @@ if (map.unresolved.length > 0) {
 // Inventory mode (step Ш0): take the picture, pass no verdict. Used to read the map without the
 // queue of known findings standing in the way.
 if (args.has('--map')) process.exitCode = 0;
-else if (findings.length > 0 || readBudgetErrors.length > 0) {
-  console.error(`\nИнвалидация кэша нарушена (${findings.length + readBudgetErrors.length}):`);
+else if (findings.length > 0 || budgetErrors.length > 0) {
+  console.error(`\nИнвалидация кэша нарушена (${findings.length + budgetErrors.length}):`);
   for (const f of findings) console.error(`  — [${f.rule}] ${f.at} — ${f.what}`);
-  for (const error of readBudgetErrors) console.error(`  — ${error}`);
+  for (const error of budgetErrors) console.error(`  — ${error}`);
   process.exitCode = args.has('--report-only') ? 0 : 1;
 } else console.log('Инвалидация кэша в порядке.');

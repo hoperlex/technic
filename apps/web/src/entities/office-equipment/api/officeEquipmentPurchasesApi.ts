@@ -27,6 +27,7 @@ const PATH = '/office-equipment-purchases';
  * а правка — версию содержимого в теле. Фабрика, не знающая ни того, ни другого, дала бы `create`
  * без ключа — то есть ручку, которая компилируется и всегда отказывает.
  */
+// cache-home: office-equipment-purchases — the purchase documents and their prefill.
 export const officeEquipmentPurchasesApi = {
   ...createListApi<OfficeEquipmentPurchaseDto>(PATH),
   ...createGetApi<OfficeEquipmentPurchaseDetailDto>(PATH),

@@ -15,6 +15,7 @@ const PATH = '/admin/mail/recipients';
  * настройки единицы — вкладку открывают, чтобы увидеть их все разом. Страничный ответ пришлось бы
  * разворачивать на каждом экране, притом что второй страницы у него не бывает.
  */
+// cache-home: module-mail-recipients — the recipient rows of module letters.
 export const moduleMailApi = {
   list: () => apiFetch<ModuleMailRecipientDto[]>(PATH),
   create: (body: CreateModuleMailRecipientBody) =>

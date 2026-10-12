@@ -23,6 +23,7 @@ const PATH = '/admin/mail/events';
  * событием и живёт, пока событие есть в реестре. Кнопка «добавить рубильник» означала бы, что
  * реестр событий редактируется из портала, — а он закрыт `Record` в контрактах.
  */
+// cache-home: module-mail-events — which module events send a letter.
 export const moduleMailEventsApi = {
   list: () => apiFetch<ModuleMailEventSettingDto[]>(PATH),
   /**

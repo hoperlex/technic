@@ -147,9 +147,8 @@ export function AutoPartReceiptCardModal({
 
   /**
    * Unmarking sends the version in the address (`DELETE ?version=`): the request has no body (R12).
-   *
-   * cache-invalidation: opaque — the keys come from autoPartReceiptInvalidation('mark'), a list the
-   * scanner cannot read: receipt lists, summaries and this receipt's detail.
+   * The keys are `autoPartReceiptInvalidation({ kind: 'mark' })`: receipt lists, summaries and this
+   * receipt's detail — a mark changes no sums.
    */
   const unmark = useMutation({
     mutationFn: (r: AutoPartReceiptDto) => autoPartReceiptApi.unmarkDeletion(r.id, r.version),

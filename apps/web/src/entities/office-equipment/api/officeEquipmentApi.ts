@@ -63,6 +63,7 @@ const CONSUMABLES_PATH = '/office-equipment-consumables';
  * знать их фабрике в `shared` нечем. Ответы у них разные и не случайно: восстановление возвращает
  * карточку (её тут же показывают в списке), а после `purge` показывать нечего.
  */
+// cache-home: office-equipment — the units themselves: their list, card, selector and history.
 export const officeEquipmentApi = {
   ...createListApi<OfficeEquipmentDto>(PATH),
   ...createGetApi<OfficeEquipmentDto>(PATH),
@@ -140,6 +141,7 @@ export const officeEquipmentApi = {
  * вычищают. Тип, на который уже ссылаются карточки, сервер удалить не даёт — его выключают
  * отметкой «Активен». Отсюда и `{ ok }` в ответе: возвращать после удаления нечего.
  */
+// cache-home: office-equipment-types — the type dictionary.
 export const officeEquipmentTypesApi = {
   ...createListApi<OfficeEquipmentTypeDto>(TYPES_PATH),
   ...createWriteApi<
@@ -173,6 +175,7 @@ export const officeEquipmentSpecsApi = {
     apiFetch<OfficeEquipmentSpecDto[]>(`${TYPES_PATH}/${equipmentTypeId}/specs`),
 };
 
+// cache-home: office-equipment-models — the model dictionary.
 export const officeEquipmentModelsApi = {
   ...createListApi<OfficeEquipmentModelDto>(MODELS_PATH),
   ...createWriteApi<
@@ -218,6 +221,7 @@ export type OfficeEquipmentConsumableCreateBody = Omit<
   'quantity'
 >;
 
+// cache-home: office-equipment-consumables — consumables, their stock and its entries.
 export const officeEquipmentConsumablesApi = {
   ...createListApi<OfficeEquipmentConsumableDto>(CONSUMABLES_PATH),
   ...createGetApi<OfficeEquipmentConsumableDetailDto>(CONSUMABLES_PATH),

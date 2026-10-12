@@ -23,6 +23,8 @@ import { apiFetch, type Query } from '@shared/api';
  * завёл бы вторую ячейку кэша с теми же персональными данными, гасить её пришлось бы отдельно от
  * списка, и разойтись с таблицей она могла бы молча.
  */
+// cache-home: drivers — every write here changes a driver card; `license-categories` is a static
+// dictionary the portal never writes.
 export const driversApi = {
   list: (q: Query) => apiFetch<ListResult<DriverDto>>('/drivers', { query: q }),
   create: (body: CreateDriverBody) => apiFetch<DriverDto>('/drivers', { method: 'POST', body }),
