@@ -25,9 +25,9 @@ export const departmentOptionsQuery = () =>
 
 /**
  * A department request has no object of its own (ADR 0040), so address suggestions use every
- * object linked to that department (ADR 0144). An empty set is meaningful. The legacy singular
- * `DepartmentDto.object` is null for departments with several objects and would lose those sites.
- * This observer projects the same cached department response as the standard options picker.
+ * object linked to that department (ADR 0144). An empty set is meaningful, and a department may have
+ * several sites, so the whole set is mapped. This observer projects the same cached department
+ * response as the standard options picker.
  */
 export const departmentPlatformQuery = () => {
   const base = departmentOptionsQuery();

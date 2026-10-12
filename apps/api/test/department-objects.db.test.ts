@@ -34,8 +34,9 @@ import type * as TokensNs from '../src/auth/tokens';
  *    только двумя соединениями и откатом;
  * 4. **`RESTRICT` на объекте** (Р2) и человеческий текст отказа — это про схему и про перевод
  *    ошибки БД, а не про правила;
- * 5. **409 старой вкладке** (Р11) и канонизация набора (шаг 1 сервиса) — про HTTP поверх живого
- *    состояния: и то и другое сравнивает присланное с ТЕКУЩИМ набором из базы.
+ * 5. **canonicalization of the set** (service step 1) is about HTTP over live state: it compares
+ *    what was sent with the CURRENT set in the database. Next to it, the former single-site key is
+ *    checked to be ignored since stage 9 release A (no 409, no change).
  *
  * **Чего файл не проверяет.** Порядок блокировок `users` → `refresh_sessions` под конкуренцией —
  * `session-locking.db.test.ts`; область как функцию (`canUse`, `placeObjectScopeIds`) —
@@ -151,20 +152,36 @@ async function newObject(tag: string, active = true): Promise<TestObject> {
 }
 
 /**
- * Отдел. `columnObjectId` — это запись КОЛОНКИ, то есть ровно то, что делает код предыдущей версии:
- * набора он не знает и пишет площадку одним полем. Набор при этом появляется сам — триггером.
+ * A department. `columnObjectId` is a write of the COLUMN, exactly what code predating ADR 0144 does:
+ * it does not know the set and writes the site as one field, and the set appears by itself through
+ * the trigger. Raw SQL, because the column is no longer in the drizzle schema (stage 9 release A).
  */
 async function newDepartment(tag: string, columnObjectId?: string): Promise<string> {
   seq += 1;
+  const code = `${CODE_PREFIX}-${RUN}-D${seq}-${tag}`;
+  const name = `Отдел ${tag} ${RUN}`;
+  if (columnObjectId !== undefined) {
+    const { rows } = await ctx.db.execute<{ id: string }>(
+      sql`INSERT INTO departments (code, name, construction_object_id)
+          VALUES (${code}, ${name}, ${columnObjectId}) RETURNING id`,
+    );
+    return rows[0]!.id;
+  }
   const [row] = await ctx.db
     .insert(ctx.schema.departments)
-    .values({
-      code: `${CODE_PREFIX}-${RUN}-D${seq}-${tag}`,
-      name: `Отдел ${tag} ${RUN}`,
-      constructionObjectId: columnObjectId ?? null,
-    })
+    .values({ code, name })
     .returning({ id: ctx.schema.departments.id });
   return row!.id;
+}
+
+/** A write of the column the way code predating ADR 0144 did it, optionally with the name. */
+async function writeColumn(departmentId: string, objectId: string | null, name?: string) {
+  await ctx.db.execute(
+    name === undefined
+      ? sql`UPDATE departments SET construction_object_id = ${objectId} WHERE id = ${departmentId}`
+      : sql`UPDATE departments SET construction_object_id = ${objectId}, name = ${name}
+            WHERE id = ${departmentId}`,
+  );
 }
 
 async function newUser(tag: string, role: 'admin' | 'department' = 'department'): Promise<string> {
@@ -219,13 +236,12 @@ async function linksOf(
     .orderBy(asc(ctx.schema.departmentConstructionObjects.constructionObjectId));
 }
 
-/** Колонка-проекция (Р9) — её пишет сервис и читает предыдущая версия кода. */
+/** The leftover column (R9): only the compatibility trigger and old code care about it. */
 async function columnOf(departmentId: string): Promise<string | null> {
-  const [row] = await ctx.db
-    .select({ objectId: ctx.schema.departments.constructionObjectId })
-    .from(ctx.schema.departments)
-    .where(eq(ctx.schema.departments.id, departmentId));
-  return row!.objectId;
+  const { rows } = await ctx.db.execute<{ object_id: string | null }>(
+    sql`SELECT construction_object_id AS object_id FROM departments WHERE id = ${departmentId}`,
+  );
+  return rows[0]!.object_id;
 }
 
 async function nameOf(departmentId: string): Promise<string> {
@@ -612,10 +628,7 @@ describe.skipIf(!DB_URL)('площадки отдела множеством (AD
       const dept = await newDepartment('trg-move');
       await setObjects(dept, [a.id, b.id]);
 
-      await ctx.db
-        .update(ctx.schema.departments)
-        .set({ constructionObjectId: c.id })
-        .where(eq(ctx.schema.departments.id, dept));
+      await writeColumn(dept, c.id);
 
       expect(await objectsOf(dept)).toEqual([c.id]);
     });
@@ -624,22 +637,19 @@ describe.skipIf(!DB_URL)('площадки отдела множеством (AD
       // `UPDATE OF construction_object_id` срабатывает от одного УПОМИНАНИЯ колонки в `SET`, а не
       // от смены значения. Отсечка `TG_OP` внутри функции — единственное, что отличает правку
       // площадки от правки названия, пришедшей вместе с прежним значением колонки.
+      // The column holds `a` from the old-code insert; the set writer no longer touches it.
       const a = await newObject('trg-same');
-      const dept = await newDepartment('trg-same');
+      const dept = await newDepartment('trg-same', a.id);
       await setObjects(dept, [a.id]);
       const before = (await linksOf(dept))[0]!;
 
-      await ctx.db
-        .update(ctx.schema.departments)
-        .set({ constructionObjectId: a.id, name: `Отдел переименован ${RUN}` })
-        .where(eq(ctx.schema.departments.id, dept));
+      await writeColumn(dept, a.id, `Отдел переименован ${RUN}`);
 
       const after = (await linksOf(dept))[0]!;
       expect(await objectsOf(dept)).toEqual([a.id]);
       // Строку не пересоздавали: сработавший триггер снёс бы привязку и вставил свою — без автора
       // и с новым временем, то есть подменил бы историю «кто и когда выдал отделу эту площадку».
       expect(after.createdBy).toBe(before.createdBy);
-      expect(after.createdBy).toBe(ctx.adminId);
       expect(after.createdAt.getTime()).toBe(before.createdAt.getTime());
     });
 
@@ -653,10 +663,7 @@ describe.skipIf(!DB_URL)('площадки отдела множеством (AD
       await setObjects(dept, [a.id, b.id]);
       expect(await columnOf(dept)).toBeNull();
 
-      await ctx.db
-        .update(ctx.schema.departments)
-        .set({ constructionObjectId: null, name: `Отдел с прежним NULL ${RUN}` })
-        .where(eq(ctx.schema.departments.id, dept));
+      await writeColumn(dept, null, `Отдел с прежним NULL ${RUN}`);
 
       expect(await objectsOf(dept)).toEqual([a.id, b.id].sort());
       expect((await linksOf(dept)).map((l) => l.createdBy)).toEqual([ctx.adminId, ctx.adminId]);
@@ -666,36 +673,35 @@ describe.skipIf(!DB_URL)('площадки отдела множеством (AD
       // А вот это уже настоящая смена значения: предыдущая версия сняла отделу площадку, и набор
       // обязан опустеть — иначе снятая площадка продолжала бы давать область.
       const a = await newObject('trg-clear');
-      const dept = await newDepartment('trg-clear');
-      await setObjects(dept, [a.id]);
+      const dept = await newDepartment('trg-clear', a.id);
+      expect(await objectsOf(dept)).toEqual([a.id]);
 
-      await ctx.db
-        .update(ctx.schema.departments)
-        .set({ constructionObjectId: null })
-        .where(eq(ctx.schema.departments.id, dept));
+      await writeColumn(dept, null);
 
       expect(await objectsOf(dept)).toEqual([]);
     });
 
-    it('набор из нескольких оставляет в колонке NULL, набор из одной — саму площадку', async () => {
-      // Обратное направление держит сервис: он пишет проекцию ПЕРВЫМ шагом, а набор — вторым,
-      // поверх того, что оставил триггер. Переставь шаги местами — набор схлопнулся бы сразу
-      // после записи, причём только на боевой схеме.
+    it('the set writer leaves the column alone, and the trigger does not collapse the set', async () => {
+      // Stage 9 release A: `replaceDepartmentObjects` no longer projects the set into the column,
+      // so the code serving during the column drop never names it. The column keeps whatever old
+      // code wrote last, and since nothing writes it now, the trigger never fires on a set change.
       const a = await newObject('proj-a');
       const b = await newObject('proj-b');
-      const dept = await newDepartment('proj');
+      const dept = await newDepartment('proj', a.id);
+      expect(await objectsOf(dept)).toEqual([a.id]);
 
       await setObjects(dept, [a.id, b.id]);
       expect(await objectsOf(dept)).toEqual([a.id, b.id].sort());
-      expect(await columnOf(dept)).toBeNull();
+      expect(await columnOf(dept)).toBe(a.id);
 
       await setObjects(dept, [b.id]);
       expect(await objectsOf(dept)).toEqual([b.id]);
-      expect(await columnOf(dept)).toBe(b.id);
+      expect(await columnOf(dept)).toBe(a.id);
 
-      await setObjects(dept, []);
-      expect(await objectsOf(dept)).toEqual([]);
-      expect(await columnOf(dept)).toBeNull();
+      // A department created by the current code never gets a column value at all.
+      const fresh = await newDepartment('proj-fresh');
+      await setObjects(fresh, [b.id]);
+      expect(await columnOf(fresh)).toBeNull();
     });
   });
 
@@ -706,8 +712,8 @@ describe.skipIf(!DB_URL)('площадки отдела множеством (AD
       const a = await newObject('purge-a', false);
       const b = await newObject('purge-b', false);
       const dept = await newDepartment('purge');
-      // Набор из двух намеренно: при наборе из одного объект держала бы ещё и колонка-проекция,
-      // и отказ мог бы прийти от неё — то есть от связи, которой через релиз не будет.
+      // A set of two on purpose, kept from the projection era: the column could hold the object
+      // only for a set of one, so the refusal must come from the link table count.
       await setObjects(dept, [a.id, b.id]);
 
       const res = await ctx.app.inject({
@@ -758,105 +764,51 @@ describe.skipIf(!DB_URL)('площадки отдела множеством (AD
     });
   });
 
-  describe('старая вкладка справочника: совместимость на один релиз (Р11)', () => {
-    it('старое поле против набора из нескольких — 409, и набор на месте', async () => {
-      // Старая форма выражает ровно одну площадку и шлёт её при КАЖДОМ сохранении карточки — даже
-      // когда правят одно название. Против набора из трёх это означало бы «оставить одну», чего
-      // человек за старой формой не выбирал и выбрать не мог: набора он не видит.
+  describe('the former single-site key (stage 9 release A)', () => {
+    it('constructionObjectId is ignored: no 409, no change to the set', async () => {
+      // Until release A the old tab's key got 409 against a set of several and replaced a smaller
+      // set. Now zod strips it as an unknown key: no bundle at or above the client floor sends it,
+      // and a hand-made request must neither shrink the set nor be read as "clear it".
       const a = await newObject('legacy-a');
       const b = await newObject('legacy-b');
-      const dept = await newDepartment('legacy-conflict');
+      const dept = await newDepartment('legacy-ignored');
       await setObjects(dept, [a.id, b.id]);
-      const nameBefore = await nameOf(dept);
 
       const res = await patchDepartment(await authHeaders(ctx.adminId), dept, {
-        name: `Переименовано старой вкладкой ${RUN}`,
+        name: `Renamed with the old key ${RUN}`,
         constructionObjectId: a.id,
       });
 
-      expect(res.statusCode, res.body).toBe(409);
-      expect(res.json<{ message: string }>().message).toBe(
-        'У отдела несколько площадок — обновите страницу',
-      );
-      // Отказ вместо потери: название не сохранилось, зато площадки не исчезли.
+      expect(res.statusCode, res.body).toBe(200);
+      expect(
+        res
+          .json<DepartmentDto>()
+          .objects.map((o) => o.id)
+          .sort(),
+      ).toEqual([a.id, b.id].sort());
+      expect(res.json<Record<string, unknown>>()).not.toHaveProperty('object');
       expect(await objectsOf(dept)).toEqual([a.id, b.id].sort());
-      expect(await nameOf(dept)).toBe(nameBefore);
+      expect(await nameOf(dept)).toBe(`Renamed with the old key ${RUN}`);
     });
 
-    it('старое поле при наборе не больше одного принимается как набор из одного', async () => {
-      // Иначе совместимость не давала бы работать вовсе: набор из одного и пустой набор старая
-      // форма выражает верно.
-      const a = await newObject('legacy-set');
-      const dept = await newDepartment('legacy-set');
-
-      const res = await patchDepartment(await authHeaders(ctx.adminId), dept, {
-        constructionObjectId: a.id,
-      });
-
-      expect(res.statusCode, res.body).toBe(200);
-      const dto = res.json<DepartmentDto>();
-      expect(dto.objects.map((o) => o.id)).toEqual([a.id]);
-      // Выходная половина совместимости: при наборе из одного старая вкладка видит свою площадку.
-      expect(dto.object?.id).toBe(a.id);
-      expect(await objectsOf(dept)).toEqual([a.id]);
-    });
-
-    it('null старого поля снимает единственную площадку', async () => {
-      // `null` означал «площадки нет» — рабочее состояние ПТО и АХО, а не пропуск поля. В наборе
-      // это пустой список, а не список из одного `null`.
-      const a = await newObject('legacy-null');
-      const dept = await newDepartment('legacy-null');
-      await setObjects(dept, [a.id]);
-
-      const res = await patchDepartment(await authHeaders(ctx.adminId), dept, {
-        constructionObjectId: null,
-      });
-
-      expect(res.statusCode, res.body).toBe(200);
-      expect(res.json<DepartmentDto>().objects).toEqual([]);
-      expect(res.json<DepartmentDto>().object).toBeNull();
-      expect(await objectsOf(dept)).toEqual([]);
-    });
-
-    it('оба поля разом — 400, и набор не тронут', async () => {
-      // Тело задаёт два итога сразу, и вопрос «какой из них главный» ответа не имеет. Старый
-      // клиент нового поля не знает и под это правило не попадает никогда — попадает только новый
-      // код, написавший лишнее.
-      const a = await newObject('legacy-both-a');
-      const b = await newObject('legacy-both-b');
-      const dept = await newDepartment('legacy-both');
-      await setObjects(dept, [a.id]);
-
-      const res = await patchDepartment(await authHeaders(ctx.adminId), dept, {
-        constructionObjectId: a.id,
-        constructionObjectIds: [b.id],
-      });
-
-      expect(res.statusCode, res.body).toBe(400);
-      expect(Object.keys(res.json<{ fields: Record<string, string> }>().fields)).toContain(
-        'constructionObjectId',
-      );
-      expect(await objectsOf(dept)).toEqual([a.id]);
-    });
-
-    it('POST с одним старым полем правилом «оба сразу» не ловится', async () => {
-      // У схемы создания набор объявлен с `.default([])`, и после разбора «поля не было»
-      // неотличимо от «прислали пустой список»: нормализация обязана идти ДО применения
-      // умолчания, иначе legacy-запрос выглядел бы запросом с обоими полями и получал 400.
+    it('POST with only the old key creates the department without sites', async () => {
+      // The create schema defaults the set to `[]`, so the stripped key leaves an empty set rather
+      // than a 400 — the same answer a client gets for not sending sites at all.
       const a = await newObject('legacy-post');
       seq += 1;
       const code = `${CODE_PREFIX}-${RUN}-D${seq}-legacy-post`;
 
       const res = await postDepartment(await authHeaders(ctx.adminId), {
         code,
-        name: `Отдел старой вкладкой ${RUN}`,
+        name: `Created with the old key ${RUN}`,
         constructionObjectId: a.id,
       });
 
       expect(res.statusCode, res.body).toBe(201);
       const dto = res.json<DepartmentDto>();
-      expect(dto.objects.map((o) => o.id)).toEqual([a.id]);
-      expect(await objectsOf(dto.id)).toEqual([a.id]);
+      expect(dto.objects).toEqual([]);
+      expect(await objectsOf(dto.id)).toEqual([]);
+      expect(await columnOf(dto.id)).toBeNull();
     });
   });
 
@@ -884,7 +836,7 @@ describe.skipIf(!DB_URL)('площадки отдела множеством (AD
   });
 
   describe('дубли в присланном наборе', () => {
-    it('дубль не роняет запись, не удваивается в журнале и не портит проекцию', async () => {
+    it('дубль не роняет запись и не удваивается в журнале', async () => {
       // Схема допускает одинаковые UUID в присланном списке. Без канонизации они упёрлись бы в
       // первичный ключ таблицы связи, а сравнение «изменилось ли» соврало бы ещё раньше — на
       // длине списка.
@@ -898,10 +850,6 @@ describe.skipIf(!DB_URL)('площадки отдела множеством (AD
       expect(res.statusCode, res.body).toBe(200);
       expect(res.json<DepartmentDto>().objects.map((o) => o.id)).toEqual([a.id]);
       expect(await objectsOf(dept)).toEqual([a.id]);
-      // Проекция в колонку считается по ДЛИНЕ набора: `[A, A]` без канонизации выглядит набором из
-      // двух, и в колонке оказался бы `NULL` — то есть предыдущая версия кода перестала бы видеть
-      // единственную площадку отдела.
-      expect(await columnOf(dept)).toBe(a.id);
       // Разница в журнале — то, чем задним числом объясняют смену области; дубль в ней означал бы
       // «выдали одну и ту же площадку дважды».
       const audit = await lastDepartmentAudit(dept);

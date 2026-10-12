@@ -236,11 +236,11 @@ interface DepartmentModel {
 interface DepartmentEnv {
   objectIdByCode: Map<string, string>;
   /**
-   * Набор площадок каждого отдела кодами — источником служит таблица связи, а не колонка
-   * `departments.construction_object_id`: колонка живёт один релиз совместимой ПРОЕКЦИЕЙ набора
-   * (ADR 0144, решение 4) и при наборе из нескольких площадок стоит в `NULL`. Читай мы её,
-   * выгрузка показывала бы пустую ячейку у отдела с тремя площадками, а загрузка того же файла
-   * ничего бы не заметила — пустая ячейка набор не трогает.
+   * Each department's site set as codes. The source is the link table, not the column
+   * `departments.construction_object_id`: that column is a leftover no code writes since stage 9
+   * release A of ADR 0144 (stale, `NULL` for any set of several). Read from it, the export would show
+   * a wrong or empty cell, and loading the same file back would not notice — an empty cell leaves the
+   * set alone.
    */
   objectCodesByDepartmentId: Map<string, string[]>;
 }
@@ -444,13 +444,12 @@ const departmentsDirectory = directory<DepartmentRow, DepartmentModel, Departmen
     }
   },
   /*
-   * Набор площадок пишется ТОЛЬКО через `replaceDepartmentObjects` — единственного писателя
-   * (ADR 0144, Р3). Своей записи в таблицу связи и в колонку совместимости у обмена нет, и это не
-   * стилистика: писателей два — карточка справочника и этот файл, — а на смене области отдела
-   * висит ещё пять обязательств (блокировка отдела, проверка объектов, порог, проекция в колонку
-   * под триггером совместимости, `authVersion + 1` с отзывом сессий в той же транзакции).
-   * Обязательство, оставленное вызывающему, второму вызывающему не достаётся: первый же импорт
-   * сменил бы область молча, не погасив ни одной сессии.
+   * The site set is written ONLY through `replaceDepartmentObjects`, the single writer (ADR 0144,
+   * R3). The import has no write of its own into the link table, and that is not style: there are
+   * two callers — the directory card and this file — and a department scope change carries four more
+   * duties (locking the department, checking the objects, the limit, `authVersion + 1` with session
+   * revocation in the same transaction). A duty left to a caller does not reach the other one: the
+   * first import would change the scope silently without revoking a single session.
    *
    * Отсюда же и запись в журнал доступа. Событие предметное — `department.create` /
    * `department.update` с разницей набора кодами (ADR 0144, решение 8): сводное `directory.import`
@@ -463,8 +462,8 @@ const departmentsDirectory = directory<DepartmentRow, DepartmentModel, Departmen
    * загрузку повторят.
    */
   create: async (tx, m, env, actorUserId) => {
-    // Отдел заводится без площадок, набор ставится следом: колонку `construction_object_id` пишет
-    // проекцией сам сервис, и вписать её здесь значило бы завести второй источник одного значения.
+    // The department is created without sites and the set follows through the single writer, the
+    // same order as the directory card.
     const [row] = await tx
       .insert(departments)
       .values({ code: m.code, name: m.name, isActive: m.isActive })

@@ -91,7 +91,6 @@ const WARRANTY_DEPARTMENT: DepartmentDto = {
     { id: OWN_OBJECT.id, code: OWN_OBJECT.code, name: OWN_OBJECT.name },
     { id: OTHER_OBJECT.id, code: OTHER_OBJECT.code, name: OTHER_OBJECT.name },
   ],
-  object: null,
   heads: [],
   createdAt: '2026-08-01T10:00:00.000Z',
   updatedAt: '2026-08-01T10:00:00.000Z',

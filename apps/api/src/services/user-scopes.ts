@@ -174,13 +174,12 @@ export const departmentIdsExpr = sql<string[]>`(
  * пределах роль отдела ведёт вывоз мусора. Считается из справочника, а не хранится у учётки:
  * объекты задаются отделу, и второе хранилище разошлось бы с ним при первой же правке.
  *
- * **Источник — таблица связи `department_construction_objects`, а не колонка
- * `departments.construction_object_id`.** Площадок у отдела теперь столько, сколько нужно
- * (ADR 0144, решение 1), и колонка осталась лишь совместимой проекцией набора на один релиз: при
- * наборе из нескольких она равна `NULL`, то есть чтение по ней отдало бы гарантийному отделу
- * пустую область. Механика доступа при этом не меняется ни строкой — `Principal
- * .departmentObjectIds` был массивом с самого начала, менялось только то, откуда он берётся
- * (ADR 0144, решение 3).
+ * **The source is the link table `department_construction_objects`, not the column
+ * `departments.construction_object_id`.** A department has as many sites as it needs (ADR 0144,
+ * decision 1); the column is a leftover that no code writes since stage 9 release A and that its own
+ * release drops, so reading it would give a stale or empty scope. The access mechanics did not change
+ * by a line: `Principal.departmentObjectIds` was an array from the start, only its source changed
+ * (ADR 0144, decision 3).
  *
  * `DISTINCT`: два отдела учётки могут стоять на одной площадке, и дубль в наборе означал бы
  * лишнее значение в `IN` и лишнюю строку в токене — не ошибку, но и не правду о числе объектов.
@@ -782,19 +781,26 @@ export interface DepartmentObjectsDiff {
 export const NO_OBJECT_CHANGES: DepartmentObjectsDiff = { added: [], removed: [] };
 
 /**
- * Заменяет набор площадок отдела целиком (ADR 0144) — **единственный писатель набора**.
+ * Replaces a department's site set whole (ADR 0144): **the only writer of the set**.
  *
- * Писателей у набора два: карточка справочника (`routes/departments.ts`) и загрузка справочника
- * файлом (`directory-transfer/defs/org.ts`). Поэтому здесь лежит всё, что обязано случиться при
- * смене области отдела, — блокировка, разница, проекция, `authVersion` и отзыв сессий, — а не
- * раздаётся обязательствами по вызывающим: обязательство, живущее у одного из двух, второму не
- * достанется, и первый же импорт сменил бы область молча, не погасив ни одной сессии (Р3).
+ * The set has two callers: the directory card (`routes/departments.ts`) and the directory file
+ * import (`directory-transfer/defs/org.ts`). So everything that must happen when a department's
+ * scope changes lives here — the lock, the diff, `authVersion` and session revocation — instead of
+ * being handed to callers as duties: a duty kept by one of the two would not reach the other, and
+ * the first import would change the scope silently without revoking a single session (R3).
  *
- * Возвращает разницу кодами объектов для предметного аудита (Р10): нигде больше она не хранится —
- * карточка отдела показывает только «сейчас», и вопрос «кто и когда снял отделу эту площадку»
- * отвечается единственно журналом.
+ * It does not write `departments.construction_object_id` (stage 9 release A of ADR 0144). The
+ * column stays in the database until its drop (`pending/department-object-column-drop.sql`), but the
+ * code that runs while that drop migrates must not name it, so neither this writer nor the drizzle
+ * schema mentions it any more. Its value goes stale on the next set change; nothing reads it, and the
+ * compatibility trigger `department_object_sync_trg` only reacts to writes of the column, which no
+ * code makes now.
  *
- * Порядок шагов ниже — не стилистика, каждый стоит там, где стоит, по своей причине.
+ * Returns the diff as object codes for the domain audit (R10): it is stored nowhere else — the
+ * department card shows only "now", and "who removed this site from the department and when" is
+ * answered by the journal alone.
+ *
+ * The order of the steps below is not style: each stands where it stands for its own reason.
  */
 export async function replaceDepartmentObjects(
   tx: Tx,
@@ -803,12 +809,11 @@ export async function replaceDepartmentObjects(
   actorUserId: string,
 ): Promise<DepartmentObjectsDiff> {
   /*
-   * 1. Канонизация — та же и по той же причине, что у `replaceUserObjects`: схема допускает
-   *    одинаковые UUID в присланном списке. Упасть на них вставка не упадёт — дубль проглотит
-   *    `onConflictDoNothing`, — и вред тише: сравнение «изменилось ли» врёт на длине (`[A, A]`
-   *    против текущего `{A}` читается изменением, гасит сессии и пишет пустой аудит), проекция в
-   *    колонку считает набор из двух и ставит `NULL` вместо единственной площадки, а в журнал
-   *    доступа уезжает `added: [A, A, B]`. Всё это закреплено db-тестом набора.
+   * 1. Canonicalization, the same and for the same reason as in `replaceUserObjects`: the schema
+   *    allows equal UUIDs in the sent list. The insert would not fail on them — `onConflictDoNothing`
+   *    swallows the duplicate — and the harm is quieter: the "did it change" comparison lies on the
+   *    length (`[A, A]` against the current `{A}` reads as a change, revokes sessions and writes an
+   *    empty audit), and `added: [A, A, B]` goes to the access journal. The set's db test pins this.
    */
   const ids = [...new Set(objectIds)];
 
@@ -859,30 +864,8 @@ export async function replaceDepartmentObjects(
    */
   if (addedIds.length === 0 && removedIds.length === 0) return NO_OBJECT_CHANGES;
 
-  /*
-   * 5. Проекция в колонку `departments.construction_object_id` (Р9) — единственный объект, когда в
-   *    наборе ровно один, иначе `NULL`. Колонка живёт один релиз ради предыдущей версии кода,
-   *    которая набора не знает и читает только её.
-   *
-   *    ⚠ ШАГИ 5 И 6 МЕСТАМИ НЕ МЕНЯТЬ. На колонке висит триггер совместимости
-   *    `department_object_sync_trg` (миграция 0221): он ловит запись колонки и ЗЕРКАЛИТ её в
-   *    таблицу связи — сносит набор целиком и кладёт вместо него одну строку проекции. Он не
-   *    отличает запись старого кода от нашей и не должен: его задача — не потерять правку
-   *    предыдущей версии в окне выката. Поэтому проекция пишется ПЕРВОЙ, а полный набор ложится
-   *    ПОСЛЕ неё, поверх того, что оставил триггер. Переставь шаги местами — и набор из нескольких
-   *    площадок схлопнулся бы в одну (или в ноль) сразу после записи, причём молча и только на
-   *    боевой схеме: без триггера тесты на голой таблице этого не покажут.
-   */
-  await tx
-    .update(departments)
-    .set({
-      constructionObjectId: ids.length === 1 ? ids[0]! : null,
-      updatedAt: new Date(),
-    })
-    .where(eq(departments.id, departmentId));
-
-  // 6. Замена набора — целиком, приёмом `replaceUserObjects`: клиент прислал то, что должно
-  //    остаться, разницу посчитал сервер.
+  // 5. The set is replaced whole, the `replaceUserObjects` way: the client sent what must remain,
+  //    the server computed the diff.
   await tx
     .delete(departmentConstructionObjects)
     .where(eq(departmentConstructionObjects.departmentId, departmentId));
@@ -900,29 +883,30 @@ export async function replaceDepartmentObjects(
   }
 
   /*
-   * 7. Область сменилась — гасим доступ, и обязательны оба действия, потому что отвечают они на
-   *    разное: `authVersion + 1` обесценивает уже выданные access-токены (иначе прежняя область
-   *    дожила бы до их истечения), а отзыв refresh-сессий не даёт молча выписать новый токен по
-   *    живой сессии.
+   * 6. The scope changed, so access is revoked, and both actions are required because they answer
+   *    different things: `authVersion + 1` invalidates access tokens already issued (otherwise the
+   *    old scope would live until they expire), and revoking refresh sessions stops a new token from
+   *    being issued silently from a live session.
    *
-   *    Порядок именно такой: `markDepartmentScopeChanged` блокирует строки учёток (`UPDATE users`),
-   *    и только после этого трогаются `refresh_sessions` — единый порядок блокировок
-   *    `users` → `refresh_sessions` (Р12), встречный к которому даёт взаимную блокировку с входом
-   *    и ротацией токена, то есть случайные 500 в портале.
+   *    The order is exactly this: `markDepartmentScopeChanged` locks the account rows (`UPDATE
+   *    users`), and only then `refresh_sessions` are touched — the single lock order `users` →
+   *    `refresh_sessions` (R12); the opposite order deadlocks with sign-in and token rotation, i.e.
+   *    random 500s in the portal.
    *
-   *    Отзыв идёт В ЭТОЙ ЖЕ транзакции (Р6, пересмотр прежнего правила «чистка сессий живёт вне
-   *    транзакции»): после коммита он негарантирован — правка записана, `UPDATE` по сессиям упал,
-   *    и повторный прогон импорта изменений уже не увидит, — а откат правки обязан откатывать и
-   *    отзыв: если область не сменилась, гасить нечего.
+   *    Revocation runs IN THIS SAME transaction (R6, revising the former rule "session cleanup lives
+   *    outside the transaction"): after commit it is not guaranteed — the edit is written, the
+   *    session `UPDATE` failed, and a repeated import no longer sees a change — and rolling the edit
+   *    back must roll the revocation back too: if the scope did not change, there is nothing to
+   *    revoke.
    */
   const members = await markDepartmentScopeChanged(tx, departmentId);
   await revokeAllForUsersTx(tx, members);
 
   /*
-   * 8. Разница — кодами объектов: журнал читает человек, и «снята площадка 0f3a-…» ему не
-   *    отвечает ни на что. Снятые объекты заведомо существуют (внешний ключ `RESTRICT` не даёт
-   *    удалить объект, пока он числится площадкой), выданные проверены шагом 4, поэтому запрос
-   *    один на обе половины разницы.
+   * 7. The diff as object codes: a person reads the journal, and "site 0f3a-… removed" answers
+   *    nothing for them. Removed objects surely exist (the `RESTRICT` foreign key keeps an object
+   *    from being deleted while it is a site), added ones were checked by step 4, so one query
+   *    serves both halves of the diff.
    */
   const rows = await tx
     .select({ id: constructionObjects.id, code: constructionObjects.code })

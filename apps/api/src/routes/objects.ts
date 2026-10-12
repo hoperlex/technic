@@ -205,10 +205,11 @@ export default async function objectsRoutes(app: FastifyInstance): Promise<void>
       // целостности. Отдел на этой площадке даёт своим сотрудникам права по вывозу мусора, и
       // снимают их в карточке отдела.
       //
-      // Счёт по таблице связи, а не по колонке `departments.construction_object_id`: колонка
-      // осталась совместимой проекцией набора на один релиз и при наборе из нескольких площадок
-      // равна `NULL`. Считай мы по ней — отдел с тремя гарантийными объектами не насчитался бы
-      // вовсе, и человек получил бы вместо внятного отказа нарушение целостности от RESTRICT.
+      // Counted by the link table, not by the column `departments.construction_object_id`: no code
+      // writes that column since stage 9 release A of ADR 0144, so it is stale and `NULL` for any set
+      // of several. Counted by it, a department with three warranty objects would not be counted
+      // at all. Until the column drop a stale value can still hold an object through its `RESTRICT`
+      // key; that failure is labelled «площадки отделов» (`REFERENCING_TABLE_LABELS`).
       const departmentsOnObject = await tx
         .select({ c: count() })
         .from(departmentConstructionObjects)

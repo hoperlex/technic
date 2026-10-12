@@ -298,23 +298,17 @@ export const departments = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     code: text('code').notNull(),
     name: text('name').notNull(),
-    /**
-     * Площадка отдела (ADR 0062, миграция 0092): на ней его сотрудники заказывают вывоз мусора
-     * наравне со штабом. NULL — рабочее состояние, а не незаполненность: отдел без площадки
-     * (ПТО, АХО) объектных прав не даёт вовсе.
-     *
-     * Колонка у отдела, а не набор у учётки: у объекта отделов несколько, у отдела объект — один.
-     *
-     * С ADR 0144 (миграция 0221) это СОВМЕСТИМАЯ ПРОЕКЦИЯ набора `department_construction_objects`,
-     * а не источник области: здесь лежит единственная площадка набора, если она одна, и NULL, если
-     * площадок ноль или больше одной. Прямое направление (колонка → набор) держит триггер
-     * `department_object_sync_trg`, обратное (набор → колонка) — `replaceDepartmentObjects`.
-     * Колонка живёт один переходный релиз — ради кода предыдущей версии, работающего на новой
-     * схеме в окне выката, — и снимается вместе с триггером. Новым кодом не читается и не пишется.
+    /*
+     * The database still has `construction_object_id` (ADR 0062, migration 0092; a compatibility
+     * projection of the site set since ADR 0144) with its trigger `department_object_sync_trg`, the
+     * `RESTRICT` key to `construction_objects` and the partial index
+     * `departments_construction_object_idx`. It is deliberately absent here (stage 9 release A):
+     * drizzle names every schema column in `select()` and `insert()`, so a column listed here would
+     * make the code serving during the drop migration (`pending/department-object-column-drop.sql`,
+     * which runs before the restart) fail on every department read and insert. The column is
+     * nullable without a default, so inserts that omit it stay valid, and no code writes it any more:
+     * the sites live in `department_construction_objects` only.
      */
-    constructionObjectId: uuid('construction_object_id').references(() => constructionObjects.id, {
-      onDelete: 'restrict',
-    }),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -322,11 +316,6 @@ export const departments = pgTable(
   (t) => ({
     codeUnique: uniqueIndex('departments_code_unique').on(t.code),
     nameTrgm: index('departments_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
-    // «Какие отделы у объекта» — вопрос карточки объекта и производной области учётки.
-    // Частичный: отделы без площадки в этот запрос не входят никогда.
-    objectIdx: index('departments_construction_object_idx')
-      .on(t.constructionObjectId)
-      .where(sql`${t.constructionObjectId} IS NOT NULL`),
   }),
 );
 

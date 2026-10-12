@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { and, count, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
@@ -25,7 +25,6 @@ import { registerPurgeRoute } from '../services/directory-purge';
 import {
   headsByDepartmentIds,
   NO_OBJECT_CHANGES,
-  objectIdsOfDepartment,
   replaceDepartmentHeads,
   replaceDepartmentObjects,
 } from '../services/user-scopes';
@@ -70,20 +69,6 @@ function toDto(
     name: r.name,
     isActive: r.isActive,
     objects,
-    /*
-     * Совместимая проекция набора на один релиз (ADR 0144, решение 5): один элемент, когда в
-     * наборе ровно один объект, и `null` при пустом наборе и при наборе из нескольких.
-     *
-     * Считается из уже загруженного набора, а не из колонки `departments.construction_object_id`:
-     * колонка — такая же проекция, только записанная, и читать её значило бы держать два
-     * источника одного значения, расходящиеся при первой же правке мимо `replaceDepartmentObjects`
-     * (перенос, триггер совместимости, ручной `UPDATE` в базе).
-     *
-     * `null` при наборе из нескольких — намеренно: старая форма такой набор не выражает, и,
-     * показав ей одну площадку из трёх, мы получили бы обратно её же одну, а сохранение названия
-     * схлопнуло бы набор. Её PATCH со старым полем против такого набора встречает 409 ниже.
-     */
-    object: objects.length === 1 ? objects[0]! : null,
     heads,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
@@ -138,43 +123,6 @@ async function getDto(id: string): Promise<DepartmentDto | null> {
     headsByDepartmentIds([id]),
   ]);
   return toDto(row, objects.get(id) ?? [], heads.get(id) ?? []);
-}
-
-/**
- * Запросы, приславшие **старое** поле площадки (`constructionObjectId`, ADR 0062).
- *
- * Зачем признак вообще. Контракт нормализует старое поле в набор ещё до маршрута
- * (`withLegacyObjectId`, `z.preprocess`): наружу схема отдаёт только `constructionObjectIds`, и
- * legacy-запрос `{ constructionObjectId: X }` к моменту обработчика неотличим от нового
- * `{ constructionObjectIds: [X] }`. А различать их обязательно: для нового клиента `[X]` — это
- * осознанное «оставить одну площадку из трёх», для старой вкладки — то единственное, что она
- * вообще способна выразить, и против набора из нескольких площадок такой запрос обязан получить
- * 409, а не молча снести две из трёх (ADR 0144, решение 5).
- *
- * Почему `preValidation`, а не флаг из контракта. Пометка в разобранном теле означала бы поле,
- * которого нет в предметной модели: `CreateDepartmentInput`/`UpdateDepartmentInput` читают ещё и
- * загрузка справочника файлом, и портал, и всем им пришлось бы про алиас знать — а снимается он
- * через релиз (этап 9 плана). `preValidation` — единственная точка лайфцикла, где исходное тело
- * ещё видно целиком, и вся совместимость остаётся в двух местах: предобработка схемы и вот этот
- * хук, оба с одним сроком жизни.
- *
- * `WeakSet` по объекту запроса, а не `decorateRequest`: признак нужен ровно одному маршруту на
- * один релиз, а декоратор пришлось бы объявлять расширением типа `FastifyRequest` на весь портал
- * и потом не забыть убрать. Ссылок `WeakSet` не держит — запрос уходит вместе с ответом.
- */
-const legacyObjectIdRequests = new WeakSet<FastifyRequest>();
-
-/**
- * Тот же признак «поле пришло», что и у предобработки контракта, — и условие обязано совпадать с
- * ней слово в слово (`legacy === undefined` — «поля не было»), иначе схема и маршрут разошлись бы
- * в понимании одного и того же тела.
- */
-async function markLegacyObjectId(req: FastifyRequest): Promise<void> {
-  const body = req.body;
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) return;
-  if ((body as Record<string, unknown>).constructionObjectId !== undefined) {
-    legacyObjectIdRequests.add(req);
-  }
 }
 
 const idParams = z.object({ id: z.string().uuid() });
@@ -240,15 +188,15 @@ export default async function departmentsRoutes(app: FastifyInstance): Promise<v
         if (dup.length > 0) throw err.conflict('Отдел с таким кодом уже существует');
         const [row] = await tx.insert(departments).values(body).returning({ id: departments.id });
         /*
-         * Порядок «отдел → площадки → руководители» (этап 3 плана) не произволен. Оба набора
-         * поднимают `authVersion` тем, кого затрагивают, и площадки поднимают его ВСЕМ, кто в
-         * отделе состоит. Назначь мы руководителей первыми — их учётки получили бы версию дважды:
-         * привязкой и следом сменой площадок, случившейся уже после них. Итог тот же, но лишний
-         * скачок версии выглядит в журнале второй правкой доступа, которой не было.
+         * The order "department → sites → heads" (plan stage 3) is not arbitrary. Both sets raise
+         * `authVersion` for whom they touch, and the sites raise it for EVERYONE in the department.
+         * With heads assigned first, their accounts would get the version twice: by the link and
+         * then by the site change after it. The result is the same, but the extra bump reads in the
+         * journal as a second access edit that never happened.
          *
-         * Отдел заводится без площадок, а набор ставится следом отдельным вызовом, потому что
-         * писатель набора один и делает он больше, чем `INSERT`: проверку объектов, порог,
-         * проекцию в колонку совместимости и разницу для аудита.
+         * The department is created without sites and the set follows in a separate call because
+         * the set has one writer, and it does more than an `INSERT`: object checks, the limit, the
+         * audit diff, `authVersion` and session revocation.
          */
         const objects = await replaceDepartmentObjects(tx, row!.id, constructionObjectIds, p.id);
         await replaceDepartmentHeads(tx, row!.id, headUserIds, p.id);
@@ -273,9 +221,6 @@ export default async function departmentsRoutes(app: FastifyInstance): Promise<v
   r.patch(
     '/:id',
     {
-      // Признак «пришло старое поле площадки» снимается ДО разбора тела — после него алиас уже
-      // нормализован в набор и отличить одно от другого нечем (см. `legacyObjectIdRequests`).
-      preValidation: markLegacyObjectId,
       preHandler: [app.authenticate, canWrite],
       schema: { params: idParams, body: updateDepartmentSchema },
     },
@@ -283,14 +228,12 @@ export default async function departmentsRoutes(app: FastifyInstance): Promise<v
       const p = requirePrincipal(req);
       const { id } = req.params;
       const { headUserIds, constructionObjectIds, ...body } = req.body;
-      const sentLegacyObjectId = legacyObjectIdRequests.has(req);
       await db.transaction(async (tx) => {
         /*
-         * Строка отдела берётся `FOR UPDATE` с самого начала — той же блокировкой, что возьмёт
-         * внутри себя `replaceDepartmentObjects`. Взять её здесь нужно ради проверки ниже: она
-         * сравнивает присланное с ТЕКУЩИМ набором, и без блокировки этот набор мог бы смениться
-         * между сравнением и записью. Повторная блокировка внутри сервиса ничего не стоит —
-         * транзакция уже держит строку.
+         * The department row is taken `FOR UPDATE` first, the same lock `replaceDepartmentObjects`
+         * takes inside: the whole edit (row, sites, heads, audit) is serialized against a concurrent
+         * edit of the same department, and a missing row answers 404 before anything is written.
+         * The second lock inside the service costs nothing: the transaction already holds the row.
          */
         const [before] = await tx
           .select({ id: departments.id })
@@ -298,24 +241,6 @@ export default async function departmentsRoutes(app: FastifyInstance): Promise<v
           .where(eq(departments.id, id))
           .for('update');
         if (!before) throw err.notFound('Отдел не найден');
-
-        /*
-         * Совместимость на один релиз (ADR 0144, решение 5). Старая вкладка справочника выражает
-         * ровно одну площадку и шлёт её при КАЖДОМ сохранении карточки — даже когда правят одно
-         * название. Против набора из нескольких площадок такой запрос означал бы «оставить одну из
-         * трёх», чего человек за старой формой не выбирал и выбрать не мог: он просто не видит
-         * набора. Отказ вместо молчаливой потери — сознательный размен: название не сохранится,
-         * пока вкладку не обновят, зато площадки не исчезнут.
-         *
-         * Набор из одного и пустой набор старая форма выражает верно, и её PATCH принимается как
-         * есть — иначе совместимость не давала бы работать вовсе.
-         */
-        if (sentLegacyObjectId) {
-          const current = await objectIdsOfDepartment(tx, id);
-          if (current.length > 1) {
-            throw err.conflict('У отдела несколько площадок — обновите страницу');
-          }
-        }
 
         await tx
           .update(departments)

@@ -35,13 +35,14 @@ const REFERENCING_TABLE_LABELS: Record<string, string> = {
   construction_object_operators: 'привязки операторов вывоза к объектам',
   counterparty_synonyms: 'синонимы контрагентов',
   /*
-   * Отдел ссылается на объект дважды: таблицей связи и совместимой проекцией
-   * `departments.construction_object_id` (ADR 0144, решение 4). При наборе из ОДНОЙ площадки
-   * `RESTRICT` первым срабатывает у колонки, и без этой строки человек получил бы безликое «на
-   * запись ссылаются другие данные». Подпись говорит про площадки, а не про отделы вообще:
-   * единственная ссылка `departments` на справочник объектов — эта колонка. Строка уходит вместе
-   * с колонкой следующим релизом; путь пользователя при этом другой — маршрут объекта отказывает
-   * раньше и подробнее, и сюда доходит только прямой `DELETE` мимо него.
+   * A department can reference an object twice: by the link table and by the leftover column
+   * `departments.construction_object_id` (ADR 0144, decision 4). No code writes the column since
+   * stage 9 release A, so its value may be stale — an object the department no longer has — and its
+   * `RESTRICT` key can still block a purge that the object route's link-table count let through.
+   * Without this line the person would get a faceless "other data references the record". The label
+   * speaks of sites, not departments in general: the column is the only reference from `departments`
+   * to the object directory. The line leaves with the column
+   * (`apps/api/drizzle/pending/department-object-column-drop.sql`).
    */
   departments: 'площадки отделов',
   // Площадки отдела держат объект `RESTRICT` (ADR 0144, решение 2): каскад снял бы площадку у

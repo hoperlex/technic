@@ -43,74 +43,12 @@ export const departmentListQuerySchema = baseListQuery(DEPARTMENT_SORT_FIELDS).e
 });
 
 /**
- * Старое имя поля — одна площадка (`constructionObjectId`, ADR 0062). Принимается ещё один релиз:
- * уже открытая вкладка портала переживает парный выкат сервера и клиента, а баннер обновления
- * ненавязчив и имеет «Позже» — гарантии, что старая форма перестанет слать старое поле, нет.
- *
- * Обе половины совместимости — входной алиас здесь и выходная проекция `DepartmentDto.object` —
- * снимаются одним релизом с колонкой `departments.construction_object_id` (этап 9 плана).
+ * Body of `POST /departments`. The former single-site key `constructionObjectId` (ADR 0062) is no
+ * longer accepted (ADR 0144, stage 9 release A): zod strips it as an unknown key, so it neither sets
+ * nor clears anything. That is safe only because no portal bundle at or above the client floor sends
+ * it: every bundle since client contract 4 sends the whole set.
  */
-const LEGACY_OBJECT_ID_KEY = 'constructionObjectId';
-const OBJECT_IDS_KEY = 'constructionObjectIds';
-
-/**
- * Перевод старого поля в набор — предобработкой, до разбора тела.
- *
- * Почему `z.preprocess`, а не `superRefine` поверх разобранного тела: у схемы создания
- * `constructionObjectIds` объявлено с `.default([])`, и после разбора «поля не было» неотличимо
- * от «прислали пустой список». Legacy-запрос `{ constructionObjectId: X }` к этому моменту уже
- * выглядел бы запросом, где заданы оба поля сразу, и получал бы 400 вместо площадки X. Место, где
- * исходное тело ещё видно целиком, ровно одно — предобработка, поэтому нормализация идёт **до**
- * применения умолчания.
- *
- * Оба поля в одном теле — отказ, а не правило старшинства: тело задаёт два итога сразу, и вопрос
- * «какой из них главный» ответа не имеет (тот же довод, что у `grants` и `addons` в учётках).
- * Старый клиент нового поля не знает и под это правило не попадает никогда — под него попадает
- * только новый код, написавший лишнее.
- *
- * Чего здесь нет: отказа старому полю против набора из нескольких площадок — 409 «У отдела
- * несколько площадок — обновите страницу». Он сравнивает присланное с текущим набором из базы,
- * а схема тела прошлого не знает; проверка живёт в маршруте `routes/departments.ts`.
- */
-function normalizeLegacyObjectId(raw: unknown, ctx: z.RefinementCtx): unknown {
-  // Не объект — судить не о чем: пусть об этом скажет сама схема, своим обычным сообщением.
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
-  const body = raw as Record<string, unknown>;
-  const legacy = body[LEGACY_OBJECT_ID_KEY];
-  if (legacy === undefined) return raw;
-  if (body[OBJECT_IDS_KEY] !== undefined) {
-    ctx.addIssue({
-      code: 'custom',
-      message:
-        'Площадка отдела задана дважды: устаревшее поле «constructionObjectId» и набор ' +
-        '«constructionObjectIds» — оставьте только набор',
-      path: [LEGACY_OBJECT_ID_KEY],
-    });
-    return raw;
-  }
-  /*
-   * `null` у старого поля означало «площадки нет» — рабочее состояние ПТО и АХО, а не пропуск.
-   * В наборе это пустой список, а не список из одного `null`.
-   *
-   * Значение здесь не проверяется: непохожее на UUID дойдёт до `uuidSchema` внутри набора и
-   * вернётся обычной ошибкой поля. Путь в ней будет новый (`constructionObjectIds.0`) — старый
-   * клиент такого поля у себя не найдёт, но за год работы формы ни одного не-UUID в этом поле не
-   * бывало: она шлёт сюда идентификатор из своего же списка объектов.
-   */
-  return { ...body, [OBJECT_IDS_KEY]: legacy === null ? [] : [legacy] };
-}
-
-/**
- * Обёртка над телом запроса: снаружи схема принимает и старое поле, и новое, а наружу отдаёт
- * только нормализованный `constructionObjectIds`. Устаревший ключ в объявлении тела не описан и
- * потому отбрасывается разбором — потребителю `CreateDepartmentInput` и `UpdateDepartmentInput`
- * про алиас знать не нужно, и снятие совместимости не заставит его переписывать ветки.
- */
-function withLegacyObjectId<T extends z.ZodType>(schema: T) {
-  return z.preprocess(normalizeLegacyObjectId, schema);
-}
-
-const createDepartmentFields = z.object({
+export const createDepartmentSchema = z.object({
   code: z.string().trim().min(1).max(50),
   name: z.string().trim().min(1).max(255),
   /**
@@ -123,13 +61,12 @@ const createDepartmentFields = z.object({
   headUserIds: headUserIdsSchema.optional().default([]),
 });
 
-export const createDepartmentSchema = withLegacyObjectId(createDepartmentFields);
 export type CreateDepartmentInput = z.infer<typeof createDepartmentSchema>;
 
 // `.partial()` снимает обязательность, но не `.default()` (тот же подвох, что в updateObjectSchema),
 // поэтому поля со значением по умолчанию объявлены заново: PATCH без `headUserIds` иначе снимал
 // бы всех руководителей отдела, а PATCH без `constructionObjectIds` — все его площадки.
-const updateDepartmentFields = createDepartmentFields.partial().extend({
+export const updateDepartmentSchema = createDepartmentSchema.partial().extend({
   isActive: z.boolean().optional(),
   /** Полный список руководителей; отсутствие поля — не трогать привязки. */
   headUserIds: headUserIdsSchema.optional(),
@@ -143,7 +80,6 @@ const updateDepartmentFields = createDepartmentFields.partial().extend({
   constructionObjectIds: departmentObjectIdsSchema.optional(),
 });
 
-export const updateDepartmentSchema = withLegacyObjectId(updateDepartmentFields);
 export type UpdateDepartmentInput = z.infer<typeof updateDepartmentSchema>;
 
 /** Руководитель в карточке отдела: столько, сколько нужно для показа и повторного выбора. */
@@ -166,28 +102,6 @@ export interface DepartmentDto {
   isActive: boolean;
   /** Площадки отдела (ADR 0144); порядок — по коду объекта. Пустой набор — офис без площадок. */
   objects: DepartmentObjectRefDto[];
-  /**
-   * Единственная площадка отдела — совместимая проекция набора: один элемент, когда в наборе
-   * ровно один объект, и `null` при пустом наборе и при наборе из нескольких.
-   *
-   * Поле осталось в ответе не для порядка: старая вкладка справочника заполняет форму значением
-   * `r.object?.id ?? null` и отправляет его **при каждом** сохранении карточки. Убери мы проекцию
-   * — уже открытая вкладка увидела бы `undefined`, послала бы `null`, и правка одного лишь
-   * названия отдела снесла бы весь набор площадок. Молчаливая потеря доступа хуже отказа, поэтому
-   * входного алиаса без выходной проекции недостаточно.
-   *
-   * `null` при наборе из нескольких — потому что старая форма такой набор не выражает: показав ей
-   * одну площадку из трёх, мы получили бы обратно её же одну, и сохранение названия схлопнуло бы
-   * набор. `null` там честнее — вкладка покажет «Площадки нет», а её PATCH со старым полем против
-   * такого набора маршрут встретит 409 «У отдела несколько площадок — обновите страницу». Отказ
-   * вместо потери — сознательный размен на один релиз.
-   *
-   * @deprecated Совместимость с вкладкой, пережившей выкат. Снимается вместе с входным алиасом и
-   * колонкой `departments.construction_object_id` следующим релизом (этап 9 плана); читателям
-   * переходить на `objects` — набор из одного объекта здесь неотличим от одного объекта, а набор
-   * из трёх выглядит пустым.
-   */
-  object: DepartmentObjectRefDto | null;
   /** Руководители отдела (ADR 0040); порядок — по ФИО. */
   heads: DepartmentHeadRefDto[];
   createdAt: string;

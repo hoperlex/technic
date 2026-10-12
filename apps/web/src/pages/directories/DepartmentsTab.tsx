@@ -77,9 +77,8 @@ export function DepartmentsTab() {
       code: r.code,
       name: r.name,
       isActive: r.isActive,
-      // Набор целиком (ADR 0144), а не устаревшая проекция `r.object`: при нескольких площадках
-      // сервер отдаёт в ней `null`, и форма показала бы отдел без площадок — а сохранение,
-      // отправив пустой набор, их бы и сняло.
+      // The whole set (ADR 0144): the form sends it back on every save, so a site missing here
+      // would be removed by a save that only meant to rename the department.
       constructionObjectIds: r.objects.map((o) => o.id),
       headUserIds: r.heads.map((h) => h.id),
     });
