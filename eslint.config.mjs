@@ -139,6 +139,73 @@ const compositionPolicies = [
   },
 ];
 
+/**
+ * ADR 0223: the portal asks a permission of the list the server computed — `can` and `canUse` from
+ * `useAuth`, built by `permissionChecks` — and never of the contracts matrix over the session's
+ * subject. Both answers agree only while the bundle and the running API come from one build;
+ * inside a deploy window the bundle is newer, and a matrix that already knows a permission the
+ * server does not grant yet opens a door with a 403 behind it. A contract predicate that needs a
+ * permission takes the portal's `can` as its `has` parameter instead.
+ *
+ * The three names below are the contracts' matrix readers: each answers «does this subject hold
+ * P» by recomputing the matrix. An import of one of them is the cheapest moment to catch the rule
+ * being broken; a review would see only a call that looks like every other `can`.
+ *
+ * Exceptions are by file AND by name, so an exception never opens the other two readers. Each one
+ * is still used: `apps/web/test/permission-oracle.test.ts` fails on an exception whose file no
+ * longer imports the name, so a stale hole does not outlive its reason.
+ */
+const MATRIX_READERS = ['can', 'canUse', 'permissionsFor'];
+const MATRIX_READER_EXCEPTIONS = {
+  // The scope half of the portal's `canUse`: membership is already the server's, and the matrix is
+  // given only that one permission, so it answers the scope and nothing else.
+  'apps/web/src/entities/session/model/authContext.tsx': ['canUse'],
+  // Administration screens describe OTHER accounts and the access profiles, not the session: what
+  // a role or an assembled grant gives is a question for the matrix by definition.
+  'apps/web/src/pages/admin/accessOverview.ts': ['can'],
+  'apps/web/src/pages/admin/permissionRows.ts': ['permissionsFor'],
+  'apps/web/src/pages/admin/profileRows.ts': ['permissionsFor'],
+  'apps/web/src/features/user-account-editor/model/userGrantsModel.ts': ['permissionsFor'],
+};
+
+/*
+ * The typescript-eslint copy of `no-restricted-imports`, not the core rule: the core rule already
+ * carries the slice entry-point patterns for `apps/web/**`, and a flat config replaces a rule's
+ * options instead of merging them, so a second core entry would silently drop either those
+ * patterns or this guard on the files both match.
+ */
+const matrixReaderGuard = (names) => [
+  'error',
+  {
+    paths: [
+      {
+        name: '@technic/contracts',
+        importNames: names,
+        message:
+          'ADR 0223: ask permissions of the server list (can/canUse from useAuth) and pass can to a contract predicate as its has parameter; the contracts matrix is not the portal oracle.',
+      },
+    ],
+  },
+];
+
+const permissionOracleBlocks = [
+  {
+    files: ['apps/web/src/**/*.{ts,tsx}'],
+    ignores: Object.keys(MATRIX_READER_EXCEPTIONS),
+    rules: { '@typescript-eslint/no-restricted-imports': matrixReaderGuard(MATRIX_READERS) },
+  },
+  ...Object.entries(MATRIX_READER_EXCEPTIONS).map(([file, allowed]) => ({
+    files: [file],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': matrixReaderGuard(
+        MATRIX_READERS.filter((name) => !allowed.includes(name)),
+      ),
+    },
+  })),
+];
+
+export { MATRIX_READERS, MATRIX_READER_EXCEPTIONS };
+
 export default tseslint.config(
   {
     ignores: [
@@ -294,6 +361,7 @@ export default tseslint.config(
       ],
     },
   },
+  ...permissionOracleBlocks,
   {
     /*
      * Нижний слой не знает правил портала. `no-unknown-dependencies` этого не покажет:

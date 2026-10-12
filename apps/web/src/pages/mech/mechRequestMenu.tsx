@@ -88,8 +88,9 @@ export interface MechMenuOptions {
   user: AuthUser | null;
   /**
    * The portal's `can` — membership in the list the server computed (ADR 0223). Every permission
-   * this menu asks goes through it, including the ones the contract predicates need (the visa, the
-   * extension): `user` supplies only the scope and the role's axis, never a permission.
+   * this menu asks goes through it, and so do the visa and extension predicates of the contracts:
+   * they take it as their `has`. The status corridor is the one exception left — see the
+   * transitions below.
    */
   can: (permission: Permission) => boolean;
   open: MechMenuTargets;
@@ -129,8 +130,15 @@ export function mechMenuItems(
   const placeScoped = isPlaceScopedRole(user?.role);
 
   /*
-   * Ходы по циклу — коридором прав, а барьер состояния вычитается из него отдельно: коридор
-   * отвечает «что за чем идёт», а «можно ли отсюда именно этой заявке» знает только строка.
+   * Moves along the cycle come from the permission corridor, and the state barrier is subtracted
+   * from it separately: the corridor answers «what follows what», and only the row knows «may this
+   * request move from here».
+   *
+   * The corridor still reads the contracts matrix over `user` (`allowedStatusTransitions` asks
+   * `mechRequests.status` and `requests.rollbackStatus` inside the contracts): it is one of the
+   * shared predicates ADR 0223 names as the remaining matrix readers. Its answer is the server's
+   * only because the session ships the whole subject beside the list (guard G1,
+   * `apps/api/test/auth-session-permissions.test.ts`), until the corridor takes `has` as well.
    */
   const transitions = user ? allowedStatusTransitions(request.status, user, 'mech') : [];
   for (const to of transitions) {
