@@ -15,24 +15,28 @@ import { officeEquipmentKeys } from '../src/entities/office-equipment';
 import { OfficeEquipmentTab } from '../src/pages/directories/OfficeEquipmentTab';
 
 /**
- * Снятая галочка «Активна» называет своё последствие (план
- * `docs/office-equipment-candidate-plan.md`, §13 Ф4).
+ * An unchecked "Active" switch names its consequence (plan `docs/office-equipment-candidate-plan.md`,
+ * §13 Ф4).
  *
- * Закрепляется ровно то, что легко потерять при следующей правке этой формы.
+ * This pins exactly what is easy to lose on the next edit of this form.
  *
- * Первое — **окно предупреждает, а не запрещает**. Выключение карточки законно и обязано
- * проходить: гасят её как раз у аппарата, который уехал в ремонт по живой заявке. Если тест на
- * «подтверждение отправляет правку» однажды покраснеет из-за нового отказа, чинить нужно отказ, а
- * не тест: запрет здесь означал бы «пока техника чинится, вывести её из эксплуатации нельзя».
+ * First, **the window warns, it does not forbid**. Deactivating a card is legitimate and must pass:
+ * it is done precisely to a unit that went to repair on a live request. If the "confirmation sends
+ * the edit" test ever turns red because of a new refusal, fix the refusal, not the test: a ban here
+ * would mean "while equipment is being repaired it cannot be taken out of service".
  *
- * Второе — **разница между «незакрытые заявки вот эти» и «про них ничего не известно»**. Номера
- * берутся из среза `serviceHistory`, которого в ответе нет вовсе у оператора без
- * `serviceRequests.read`, — а такие справочник как раз и ведут. Молчание вместо фразы означало бы,
- * что человек без права заявок закрывает вход новым заявкам, ничего об этом не узнав.
+ * Second, **"these requests are open" differs from "nothing is known about them"**. The numbers come
+ * from `openServiceRequestNumbers` (ADR 0169, E5b), which the answer lacks for an operator without
+ * `serviceRequests.read`, and exactly such people keep the directory. Silence instead of the phrase
+ * would mean a person without the request permission closes the door to new requests unaware.
  *
- * Третье — **«не видно» не выдаётся за «нет»**. Срез сужен областью заявок и обрезан десятью
- * последними, поэтому пустой список открытых говорит ту же общую фразу, что и отсутствие права:
- * утверждать «незакрытых заявок нет» портал не вправе.
+ * Third, **"not visible" is not passed off as "none"**. The list is narrowed by the request scope, so
+ * an empty list says the same general phrase as a missing permission: the portal may not claim
+ * "there are no open requests".
+ *
+ * Fourth, **the numbers are the server's exact list, not the card slice**. `serviceHistory` was cut
+ * at ten rows, so an open request beyond them was silently missing from the warning; E6 removes the
+ * slice altogether, and the warning must not notice.
  */
 
 const OPERATOR: AuthUser = authUser({
@@ -91,8 +95,8 @@ function entry(over: Partial<OfficeEquipmentServiceEntryDto> = {}): OfficeEquipm
 }
 
 /**
- * Вкладка справочника со списком из одной карточки. `card` — ответ `GET /office-equipment/:id`:
- * именно его срез `serviceHistory` (или его отсутствие) и решает, что скажет предупреждение.
+ * The directory tab with a list of one card. `card` is the `GET /office-equipment/:id` answer: its
+ * `openServiceRequestNumbers` (or their absence) decides what the warning says.
  */
 function renderTab(card: OfficeEquipmentDto): { http: HttpMock; queryClient: QueryClient } {
   const http = mockHttp({
@@ -121,13 +125,12 @@ function renderTab(card: OfficeEquipmentDto): { http: HttpMock; queryClient: Que
 }
 
 /**
- * Дождаться карточки единицы — той самой, по срезу которой считается предупреждение.
+ * Wait for the unit card, the answer the warning is computed from.
  *
- * Раньше её приход был виден на экране: секция «Обслуживание и гарантии» рисовала номера из того
- * же `serviceHistory`. С переводом секции на блок «Связанные заявки» (план
- * `docs/office-equipment-history-blocks-plan.md`, Р7) на экране этого больше нет, а предупреждение
- * по-прежнему считает срез ответа карточки. Поэтому ждём ровно то, по чему оно считается, —
- * запись в кэше запросов: нажатие до ответа проверяло бы гонку, а не ветку с номерами.
+ * Its arrival is not visible on screen (the "service and warranties" section reads the requests
+ * block, plan `docs/office-equipment-history-blocks-plan.md`, Р7), so the test waits for exactly
+ * what the warning reads, the query cache entry: a click before the answer would test a race, not
+ * the branch with numbers.
  */
 async function awaitCard(queryClient: QueryClient): Promise<void> {
   await waitFor(() =>
@@ -174,10 +177,10 @@ function acceptConfirm(): void {
 
 describe('выключение карточки оргтехники', () => {
   it('называет незакрытые заявки и не сохраняет, пока человек не подтвердил', async () => {
-    const { http, queryClient } = renderTab(equipmentDto({ serviceHistory: [entry()] }));
+    const { http, queryClient } = renderTab(equipmentDto({ openServiceRequestNumbers: ['СО-14'] }));
     await openEdit();
-    // Дожидаемся самой карточки: до её прихода номеров у предупреждения нет, и тест проверял бы
-    // не ветку с номерами, а гонку.
+    // Wait for the card itself: before it arrives the warning has no numbers, and the test would
+    // check a race instead of the branch with numbers.
     await awaitCard(queryClient);
     switchOffAndSave();
 
@@ -191,7 +194,7 @@ describe('выключение карточки оргтехники', () => {
   });
 
   it('подтверждение выключает карточку — это предупреждение, а не запрет', async () => {
-    const { http, queryClient } = renderTab(equipmentDto({ serviceHistory: [entry()] }));
+    const { http, queryClient } = renderTab(equipmentDto({ openServiceRequestNumbers: ['СО-14'] }));
     await openEdit();
     await awaitCard(queryClient);
     switchOffAndSave();
@@ -204,8 +207,9 @@ describe('выключение карточки оргтехники', () => {
   });
 
   it('без права на заявки предупреждает общей фразой, а не молчит', async () => {
-    // Ответ без среза `serviceHistory` — так сервер отвечает тому, у кого нет
-    // `serviceRequests.read`. Номера показать нечем, последствие — то же самое.
+    // An answer without `openServiceRequestNumbers` is what the server gives a viewer without
+    // `serviceRequests.read` (and what a server older than E5b gives everyone). There are no
+    // numbers to show, the consequence is the same.
     const { queryClient } = renderTab(equipmentDto());
     await openEdit();
     await awaitCard(queryClient);
@@ -216,12 +220,10 @@ describe('выключение карточки оргтехники', () => {
     expect(text).toContain('новую заявку на этот аппарат завести будет нельзя');
   });
 
-  it('пустой срез не выдаётся за «незакрытых заявок нет»', async () => {
-    // Право есть, открытых в срезе не видно — но срез сужен областью и обрезан десятью
-    // последними, поэтому фраза та же сослагательная.
-    const { queryClient } = renderTab(
-      equipmentDto({ serviceHistory: [entry({ status: 'accepted' })] }),
-    );
+  it('пустой список не выдаётся за «незакрытых заявок нет»', async () => {
+    // The permission is there and no open request is visible, but the list is narrowed by the
+    // request scope, so the phrase stays conditional.
+    const { queryClient } = renderTab(equipmentDto({ openServiceRequestNumbers: [] }));
     await openEdit();
     await awaitCard(queryClient);
     switchOffAndSave();
@@ -231,8 +233,26 @@ describe('выключение карточки оргтехники', () => {
     expect(text).not.toContain('заявок нет');
   });
 
+  it('номера — точный список сервера, а не срез `serviceHistory` карточки (E5b)', async () => {
+    // The slice still arrives until E6 and disagrees with the list on purpose: an open request in
+    // the slice that the server no longer reports, and two open ones beyond the slice's ten rows.
+    const { queryClient } = renderTab(
+      equipmentDto({
+        serviceHistory: [entry({ displayNumber: 'СО-14', status: 'in_work' })],
+        openServiceRequestNumbers: ['СО-31', 'СО-32'],
+      }),
+    );
+    await openEdit();
+    await awaitCard(queryClient);
+    switchOffAndSave();
+
+    const text = await confirmText();
+    expect(text).toContain('Незакрытые заявки на обслуживание: СО-31, СО-32.');
+    expect(text).not.toContain('СО-14');
+  });
+
   it('правка при включённой галочке идёт сразу, без лишнего окна', async () => {
-    const { http, queryClient } = renderTab(equipmentDto({ serviceHistory: [entry()] }));
+    const { http, queryClient } = renderTab(equipmentDto({ openServiceRequestNumbers: ['СО-14'] }));
     await openEdit();
     await awaitCard(queryClient);
     const save = [...document.querySelectorAll<HTMLButtonElement>('.ant-modal-footer button')].find(

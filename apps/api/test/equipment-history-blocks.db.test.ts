@@ -8,12 +8,14 @@ import {
   encodeEquipmentRequestsCursor,
   equipmentRequestOutcomeLabels,
   EQUIPMENT_WARRANTY_CHANGE_FIELD,
+  isServiceRequestClosed,
   type EquipmentChangeRowDto,
   type EquipmentChangesPageDto,
   type EquipmentHistoryPageDto,
   type EquipmentMovementsPageDto,
   type EquipmentRequestRowDto,
   type EquipmentRequestsPageDto,
+  type OfficeEquipmentDto,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -283,6 +285,16 @@ async function movementsPage(
   expect(res.statusCode, res.body).toBe(200);
   return res.json() as EquipmentMovementsPageDto;
 }
+
+/** The unit card (`GET /office-equipment/:id`), where `openServiceRequestNumbers` lives (E5b). */
+async function cardOf(auth: Auth, unitId = ctx.unitId): Promise<OfficeEquipmentDto> {
+  const res = await inject('GET', `${EQUIPMENT}/${unitId}`, auth);
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json() as OfficeEquipmentDto;
+}
+
+/** The digits of a display number such as `СО-14`: the server orders the list by number. */
+const numberOf = (display: string): number => Number(display.replace(/\D/g, ''));
 
 /**
  * Все строки блока — через курсор, а не одной большой страницей: множество, собранное `pageSize=200`,
@@ -746,34 +758,46 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
   // ── 1. ГЛАВНЫЙ СЛУЧАЙ: область не расширилась ни на строку (тест 1, критерий К3) ──
 
   describe('множество заявок блока = множеству ленты = множеству реестра', () => {
-    const subjects: { name: string; auth: () => Auth; expected: () => string[] }[] = [
+    // `expectedOpen`: the fixture's open requests (`done` awaiting acceptance and the `new`
+    // consumables one); the other four are accepted or cancelled.
+    const subjects: {
+      name: string;
+      auth: () => Auth;
+      expected: () => string[];
+      expectedOpen: () => string[];
+    }[] = [
       {
         name: 'ведение справочника (объектная область площадки)',
         auth: () => ctx.operator.auth,
         expected: () => [...ctx.requests.values()].map((r) => r.id),
+        expectedOpen: () => ['awaiting', 'open'].map((tag) => ctx.requests.get(tag)!.displayNumber),
       },
       {
         name: 'заказчик той же площадки',
         auth: () => ctx.requester.auth,
         expected: () => [...ctx.requests.values()].map((r) => r.id),
+        expectedOpen: () => ['awaiting', 'open'].map((tag) => ctx.requests.get(tag)!.displayNumber),
       },
       {
         name: 'ИТ-служба (сквозная область модуля с чужой площадки)',
         auth: () => ctx.itApprover.auth,
         expected: () => [...ctx.requests.values()].map((r) => r.id),
+        expectedOpen: () => ['awaiting', 'open'].map((tag) => ctx.requests.get(tag)!.displayNumber),
       },
       {
         name: 'подрядчик: только назначенные ему',
         auth: () => ctx.contractor.auth,
         expected: () =>
           ['warranty', 'accepted', 'awaiting'].map((tag) => ctx.requests.get(tag)!.id),
+        expectedOpen: () => [ctx.requests.get('awaiting')!.displayNumber],
       },
     ];
 
     for (const subject of subjects) {
       it(`${subject.name}`, async () => {
         const auth = subject.auth();
-        const block = idsOf(await walkRequests(auth));
+        const rows = await walkRequests(auth);
+        const block = idsOf(rows);
         const feed = await feedRequestIds(auth);
         const registry = await registryIds(auth);
 
@@ -784,6 +808,20 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
         // чужим ремонтам через справочник, открытый почти каждой роли портала.
         expect(sorted(feed.ids)).toEqual(sorted(block));
         expect(sorted(registry)).toEqual(sorted(block));
+
+        // The fourth place (E5b): the card's open-request numbers are exactly the open subset of
+        // the same block, so the deactivation warning reads the same scope and the contract's
+        // notion of "open". The neighbour unit's open request stays out: it is about the subject,
+        // not the scope.
+        const open = (await cardOf(auth)).openServiceRequestNumbers;
+        expect(open).toBeDefined();
+        expect(sorted(open!)).toEqual(sorted(subject.expectedOpen()));
+        expect(sorted(open!)).toEqual(
+          sorted(
+            rows.filter((row) => !isServiceRequestClosed(row.status)).map((r) => r.displayNumber),
+          ),
+        );
+        expect(open!.map(numberOf)).toEqual([...open!.map(numberOf)].sort((a, b) => a - b));
       });
     }
 
@@ -845,6 +883,13 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
       expect(page.serviceVisible).toBe(false);
       expect(page.items.map((e) => e.kind)).not.toContain('service_request');
       expect(page.items.map((e) => e.kind)).toContain('movement');
+
+      // The card opens, but without the service part: no open-request numbers (E5b) and no slice.
+      // Absent, not empty: an empty list would claim "no open requests" to someone not entitled
+      // to know.
+      const card = await cardOf(ctx.keeper.auth);
+      expect(card).not.toHaveProperty('openServiceRequestNumbers');
+      expect(card).not.toHaveProperty('serviceHistory');
     });
 
     it('поставочный подрядчик до блоков не доходит вовсе: справочник ему закрыт', async () => {

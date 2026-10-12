@@ -28,6 +28,7 @@ import {
   type EquipmentHistoryPageDto,
   equipmentHistoryQuerySchema,
   formatServiceRequestNumber,
+  isServiceRequestClosed,
   moveOfficeEquipmentSchema,
   officeEquipmentStateLabels,
   OFFICE_EQUIPMENT_MOVE_CONFLICT_CODE,
@@ -43,6 +44,7 @@ import {
   type OfficeEquipmentItemWarrantyDto,
   type OfficeEquipmentServiceEntryDto,
   type OfficeEquipmentWarrantyFilter,
+  SERVICE_REQUEST_STATUSES,
   updateOfficeEquipmentSchema,
   WARRANTY_EXPIRING_DAYS,
   warrantyToday,
@@ -349,6 +351,13 @@ function warrantyCondition(filter: OfficeEquipmentWarrantyFilter | undefined): S
 // метаданные для него собирает `insertEquipmentCard` и возвращает готовыми.
 
 /**
+ * Closed statuses come from the contract predicate instead of a list written here: the deletion
+ * guard and the card's open-request numbers must agree with `isServiceRequestClosed`, which the
+ * portal asks too, and a copy of the list would silently diverge once a new closing status appears.
+ */
+const CLOSED_SERVICE_REQUEST_STATUSES = SERVICE_REQUEST_STATUSES.filter(isServiceRequestClosed);
+
+/**
  * Единицу с незакрытой заявкой на обслуживание не удаляют (ADR 0085 Р33): пока аппарат в сервисе,
  * его карточка — единственное, чем заявка объясняет, что именно чинят. Удалив её, диспетчер получил
  * бы заявку на исчезнувшую технику, а сервис — заявку без предмета.
@@ -365,7 +374,7 @@ async function assertNoOpenServiceRequest(equipmentId: string): Promise<void> {
       and(
         eq(serviceRequests.officeEquipmentId, equipmentId),
         isNull(serviceRequests.deletedAt),
-        notInArray(serviceRequests.status, ['accepted', 'cancelled']),
+        notInArray(serviceRequests.status, CLOSED_SERVICE_REQUEST_STATUSES),
       ),
     )
     .limit(1);
@@ -563,6 +572,34 @@ async function loadServiceHistory(
       audiences.get(row.id) ?? 'requester',
     ),
   );
+}
+
+/**
+ * Numbers of the open requests on the unit that the viewer may see (ADR 0169, E5b): what the
+ * deactivation warning names. It is the current state, not history, so it has no limit and does not
+ * depend on the five-row card section or on the ten-row `serviceHistory` slice (which E6 removes):
+ * a number cut off by a limit would make the warning promise less than the server knows.
+ *
+ * Scoped by the same `serviceRequestVisibilityWhere` as the requests block and the registry, and
+ * asked only with `serviceRequests.read` (the caller omits the field otherwise): the directory card
+ * is open far wider than the request module, and an unscoped list would leak request numbers of
+ * other departments through it. That is also why an empty list means "no open request visible to
+ * you", not "no open request": the deletion guard above checks without the viewer's scope.
+ */
+async function loadOpenServiceRequestNumbers(p: Principal, equipmentId: string): Promise<string[]> {
+  const rows = await db
+    .select({ num: serviceRequests.num })
+    .from(serviceRequests)
+    .where(
+      and(
+        eq(serviceRequests.officeEquipmentId, equipmentId),
+        isNull(serviceRequests.deletedAt),
+        notInArray(serviceRequests.status, CLOSED_SERVICE_REQUEST_STATUSES),
+        serviceRequestVisibilityWhere(p),
+      ),
+    )
+    .orderBy(asc(serviceRequests.num));
+  return rows.map((row) => formatServiceRequestNumber(row.num));
 }
 
 /** Транзакция перемещения: помощник сверки зовётся уже изнутри неё и под взятой блокировкой. */
@@ -887,11 +924,15 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
       // Расходники — тем же правом, что и сама карточка: см. `loadConsumables`. Поле есть в ответе
       // всегда, в том числе пустым списком у карточки без модели.
       const card = { ...dto, consumables: await loadConsumables(dto.model?.id ?? null) };
-      // Секция обслуживания — по праву модуля, а не справочника (§8.2): менеджер и диспетчер ведут
-      // карточки техники, но ремонтом не занимаются, и заявки с суммами им знать незачем. Поля
-      // просто нет в ответе — пустой список означал бы «ремонтов не было».
+      // The service part goes by the module permission, not the directory one (§8.2): managers and
+      // dispatchers keep equipment cards but do no repairs and need no requests with amounts. Both
+      // fields are simply absent from the answer: an empty list would mean "no requests".
       if (!can(p, 'serviceRequests.read')) return card;
-      return { ...card, serviceHistory: await loadServiceHistory(p, dto.id) };
+      const [serviceHistory, openServiceRequestNumbers] = await Promise.all([
+        loadServiceHistory(p, dto.id),
+        loadOpenServiceRequestNumbers(p, dto.id),
+      ]);
+      return { ...card, serviceHistory, openServiceRequestNumbers };
     },
   );
 

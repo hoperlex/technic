@@ -387,11 +387,11 @@ describe('officeEquipmentSpecLine', () => {
  */
 describe('проекция единицы для выбора предмета заявки', () => {
   /**
-   * Что именно не отдаётся и почему это дорого:
-   * комментарий и дата покупки — учётные данные компании; состояние с уточнением — «у Иванова»,
-   * то есть человек; характеристики и модель — карточка модели целиком; расходники — остаток
-   * склада; история обслуживания — деньги и работы по чужим заявкам; отметки времени и архива —
-   * жизнь записи, к выбору предмета отношения не имеющая.
+   * What exactly is not sent and why it is costly: the comment and the purchase date are company
+   * accounting data; the state with its note is "with Ivanov", that is, a person; specs and the
+   * model are the whole model card; consumables are warehouse stock; the service history is money
+   * and work on other people's requests, and so are the open request numbers (ADR 0169, E5b);
+   * timestamps and the archive mark are the record's life, unrelated to picking a request subject.
    */
   const HEAVY_FIELDS = [
     'comment',
@@ -403,6 +403,7 @@ describe('проекция единицы для выбора предмета �
     'type',
     'consumables',
     'serviceHistory',
+    'openServiceRequestNumbers',
     'createdAt',
     'updatedAt',
     'deletedAt',

@@ -99,11 +99,11 @@ export function OfficeEquipmentTab() {
   });
 
   /**
-   * Карточка правящейся единицы — ради истории обслуживания, по которой считается предупреждение о
-   * выключении (§13 Ф4). Ключ тот же, каким её спрашивают секции «Чем заправлять» и «Обслуживание
-   * и гарантии» внутри окна: react-query отдаёт всем троим один ответ, и второго похода на сервер
-   * подтверждение не стоит. Запрос свой, а не чтение чужого кэша: у оператора без
-   * `serviceRequests.read` соседних секций нет вовсе, а окно правки есть.
+   * The card of the edited unit, for the open request numbers the deactivation warning names (§13 Ф4,
+   * ADR 0169 E5b). The key is the one the "what to refill with" and "service and warranties"
+   * sections inside the window ask, so react-query gives all three one answer and the confirmation
+   * costs no second trip to the server. It is its own query, not a read of someone else's cache: an
+   * operator without `serviceRequests.read` has no service section at all, but has the edit window.
    */
   const { data: openCard } = useQuery({
     queryKey: officeEquipmentKeys.detail(record?.id ?? ''),

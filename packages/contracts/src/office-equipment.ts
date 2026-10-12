@@ -652,6 +652,21 @@ export interface OfficeEquipmentDto {
    */
   serviceHistory?: OfficeEquipmentServiceEntryDto[];
   /**
+   * Display numbers of the open (not accepted, not cancelled) requests on this unit that the viewer
+   * may see, in number order (ADR 0169, E5b). The deactivation warning names them: a current-state
+   * guard, not history, so it has no limit, unlike the card section (five rows of the requests
+   * block) and the `serviceHistory` slice (ten rows, removed by E6).
+   *
+   * Optional for the same reason as `serviceHistory`: absent means "not yours to see" (no
+   * `serviceRequests.read`), and also comes from a server older than E5b during a deploy window or
+   * after a rollback; an empty list means "no open request visible to you". It is never "no open
+   * request at all": it is narrowed by the request scope, which for department roles differs from
+   * the directory scope.
+   *
+   * Only the card (`GET /office-equipment/:id`) sends it.
+   */
+  openServiceRequestNumbers?: string[];
+  /**
    * Чем этот аппарат заправлять (Р15): расходники, привязанные к его модели, — код, наименование,
    * цвет и остаток. Порядок — по наименованию; погашенные позиции сюда не попадают: их больше не
    * покупают, и предлагать их тому, кто пришёл за картриджем, значит звать к пустой полке.

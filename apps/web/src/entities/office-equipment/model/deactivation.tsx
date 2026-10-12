@@ -1,9 +1,5 @@
 import { App, Typography } from 'antd';
-import {
-  isServiceRequestClosed,
-  officeEquipmentTitle,
-  type OfficeEquipmentDto,
-} from '@technic/contracts';
+import { officeEquipmentTitle, type OfficeEquipmentDto } from '@technic/contracts';
 
 /**
  * ПРЕДУПРЕЖДЕНИЕ ПЕРЕД ВЫКЛЮЧЕНИЕМ КАРТОЧКИ ОРГТЕХНИКИ (план
@@ -28,26 +24,28 @@ import {
  * у входа, правку и ход цикла она не трогает). Терять здесь нечего, знать — есть что, поэтому окно
  * называет последствие словами и пропускает.
  *
- * Номера незакрытых заявок берутся из СЕКЦИИ КАРТОЧКИ (`serviceHistory` ответа
- * `GET /office-equipment/:id`), которую окно правки и так запрашивает ради блока «Обслуживание и
- * гарантии». Второй ручки «сколько по ней открытых» не заводилось намеренно: она стоила бы поля в
- * контракте, запроса в маршруте и собственного правила видимости рядом с уже существующим — то
- * есть третьей записи одного правила, которая разойдётся с двумя первыми.
+ * The open request numbers come from `openServiceRequestNumbers` of `GET /office-equipment/:id`
+ * (ADR 0169, E5b), which the edit window fetches anyway. The server computes the list exactly, with
+ * no limit, in the request scope, and decides "open" by the contract predicate. The portal neither
+ * filters statuses nor reads the card section or the `serviceHistory` slice for it: the slice was
+ * cut at ten rows and the section at five, so a number beyond them was silently missing from the
+ * warning, and E6 removes `serviceHistory` from the answer altogether.
  *
- * **ПОЧЕМУ ТЕКСТ ДЕГРАДИРУЕТ ДО ОБЩЕЙ ФРАЗЫ.** Поля `serviceHistory` в ответе нет вовсе, если у
- * смотрящего нет `serviceRequests.read`, и это осознанный ответ сервера: пустой массив означал бы
- * «ремонтов не было». А справочник ведут как раз такие люди — карточки техники заводит и правит
- * тот же оператор, что объекты и контрагентов, ремонтом он не занимается. Числа ему показать
- * нечем, но последствие от этого никуда не девается, и молчание было бы худшим из исходов: он
- * просто не узнал бы. Поэтому ветка без номеров говорит то же самое сослагательно — «если они
- * есть». Отказать ему в выключении из-за незнания тоже нельзя: это наказание за отсутствие чужого
- * права.
+ * **WHY THE TEXT FALLS BACK TO A GENERAL PHRASE.** The field is absent when the viewer has no
+ * `serviceRequests.read`, a deliberate server answer: an empty list would mean "no requests". And
+ * exactly such people keep the directory: the operator who maintains objects and counterparties
+ * also maintains equipment cards and does no repairs. There are no numbers to show them, but the
+ * consequence does not go away, and silence would be the worst outcome: they would simply not
+ * know. So the branch without numbers says the same thing conditionally, "if there are any". Nor
+ * may they be refused the deactivation for not knowing: that would punish them for a permission
+ * someone else has. The field is also absent from a server older than E5b (a deploy window or a
+ * rollback), and the same phrase covers it.
  *
- * Той же общей фразой отвечает и случай «право есть, а незакрытых в срезе не видно», и это сделано
- * НАРОЧНО, одной веткой. Сказать «незакрытых заявок нет» портал не вправе: срез сужен областью
- * заявок (у ролей отдела она своя) и обрезан десятью последними — «не видно» здесь не равно «нет».
- * Названные номера — нижняя граница факта, и фраза обещает ровно её: вот эти открыты. Обещания
- * полноты нет ни в одной ветке.
+ * The same general phrase answers "the permission is there, but no open request is visible", ON
+ * PURPOSE in one branch. The portal may not say "there are no open requests": the list is narrowed
+ * by the request scope (department roles have their own), so "not visible" is not "none". The named
+ * numbers are a lower bound of the fact, and the phrase promises exactly that: these are open. No
+ * branch promises completeness.
  */
 export interface OfficeEquipmentDeactivationWarning {
   title: string;
@@ -65,14 +63,9 @@ export interface OfficeEquipmentDeactivationWarning {
  */
 export function officeEquipmentDeactivationWarning(
   record: Pick<OfficeEquipmentDto, 'name' | 'serialNumber' | 'inventoryNumber'>,
-  card?: Pick<OfficeEquipmentDto, 'serviceHistory'>,
+  card?: Pick<OfficeEquipmentDto, 'openServiceRequestNumbers'>,
 ): OfficeEquipmentDeactivationWarning {
-  // «Закрыта» и «Отменена» считает контракт, а не перечисление статусов здесь: тем же условием
-  // сервер отбивает удаление карточки, и вторая копия списка разошлась бы с ним при появлении
-  // нового закрывающего статуса — молча и в сторону «предупреждать не о чем».
-  const open = (card?.serviceHistory ?? [])
-    .filter((entry) => !isServiceRequestClosed(entry.status))
-    .map((entry) => entry.displayNumber);
+  const open = card?.openServiceRequestNumbers ?? [];
 
   return {
     title: `Выключить карточку «${officeEquipmentTitle(record)}»?`,
@@ -90,7 +83,7 @@ export interface OfficeEquipmentDeactivationIntent {
   /** Карточка до правки; `null` — заведение новой единицы. */
   record: OfficeEquipmentDto | null;
   /** Ответ `GET /office-equipment/:id` той же единицы, если он уже приехал. */
-  card?: Pick<OfficeEquipmentDto, 'serviceHistory'>;
+  card?: Pick<OfficeEquipmentDto, 'openServiceRequestNumbers'>;
   /** Значение «Активна» в отправляемой форме. */
   next: boolean;
 }
