@@ -346,9 +346,13 @@ const fuelNormsDirectory = directory<NormRow, NormModel, Env>({
 
   async update(tx, row, model, _env, actorUserId) {
     if (model.unit === '' || model.winterRate === '' || model.summerRate === '') return;
-    // Новая версия — с 1-го числа текущего месяца (Р7); повтор того же месяца перезаписывает её.
-    const effectiveFrom = new Date();
-    const month = `${effectiveFrom.getFullYear()}-${String(effectiveFrom.getMonth() + 1).padStart(2, '0')}-01`;
+    /*
+     * A new version opens on the 1st of the current month (Р7); a repeat within the month rewrites
+     * it. The month is the Moscow one, not the process's local calendar: the API runs in UTC, and
+     * from 00:00 to 03:00 MSK on the 1st its calendar is still in the previous month, so the edit
+     * would rewrite last month's version and recount that month's shifts at the new rate.
+     */
+    const month = `${moscowDateKeyOf(new Date()).slice(0, 7)}-01`;
     const values = {
       vehicleId: row.vehicleId,
       effectiveFrom: month,
