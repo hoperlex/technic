@@ -2,7 +2,8 @@
 /**
  * Front-end quality budgets: figures that are only allowed to go down.
  *
- * Why this on top of the linter and the layout checks. `max-lines` is a warning and blocks nothing;
+ * Why this on top of the linter and the layout checks. `max-lines` was a warning then and blocked
+ * nothing (an error since ADR 0228, with a looser measure — see `LINE_LIMIT`);
  * `check-stage2-layout` is about what was postponed, not about what grows. Within one week three
  * pages gained 1369 lines and `resources.ts` 224, and not a single check turned red. A budget
  * catches exactly growth: it asks for no fix today, but does not let the debt grow unnoticed.
@@ -42,14 +43,16 @@ const SRC = path.join(WEB, 'src');
 const BUDGET_FILE = path.join(WEB, 'quality-budget.json');
 
 /*
- * Порог общий с `max-lines` в eslint.config.mjs: два числа разошлись бы при первой правке. А вот
- * мера разная: линт считает без пустых строк и комментариев, здесь строки сырые — те самые, что
- * видит человек в редакторе. Поэтому бюджет строго строже линта: файлы, сидящие здесь, у линта
- * молчат, обратных случаев нет.
+ * The threshold is shared with `max-lines` in eslint.config.mjs: two numbers would drift apart at
+ * the first edit. The measure differs: lint counts without blank lines and comments, here lines are
+ * raw — the ones a person sees in the editor. The budget is therefore strictly stricter than lint:
+ * a file over the limit here may be silent in lint, and a file lint reports is always over it here.
  *
- * Меры не выравниваются намеренно. Снять `skipComments` в линте значит наказывать за комментарий,
- * а он тут носитель проектного решения, а не шум; научить бюджет считать по-линтовски значит
- * вывести часть длинных файлов из-под ратчета вовсе. Ворота — здесь, линт только подсказывает.
+ * The measures are not aligned on purpose. Dropping `skipComments` in lint would punish a comment,
+ * and here a comment carries a design decision, not noise; counting the lint way here would take
+ * part of the long files out of the ratchet altogether. Both now fail a run — lint at `error`
+ * since ADR 0228 — but this is the gate: it holds the ratchet and the raw measure, while lint names
+ * the file in the editor.
  */
 const LINE_LIMIT = 400;
 

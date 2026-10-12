@@ -265,18 +265,26 @@ export default tseslint.config(
   },
   {
     /*
-     * Длина мерится только на исходниках портала. Свой блок, а не сужение блока React-правил:
-     * вместе с длиной оттуда ушли бы и проверки хуков, а тесты хуки как раз вызывают.
+     * Length is measured on portal sources only. A block of its own, not a narrower React block:
+     * narrowing that one would take the hook rules away from the tests, and tests call hooks.
      *
-     * `test/` из-под правила выведен осознанно: длинный сценарий читается сверху вниз и в монолит
-     * не превращается — он тридцать проверок подряд, а не сплетение состояний, и довод порога к
-     * нему не относится.
+     * `test/` is left out on purpose: a long scenario reads top to bottom and does not become a
+     * monolith — it is thirty checks in a row, not a tangle of state, so the reason behind the
+     * threshold does not apply to it.
      */
     files: ['apps/web/src/**/*.{ts,tsx}'],
     rules: {
-      // Файл длиннее 400 строк перестаёт читаться целиком — это порог, за которым страницы
-      // портала и превратились в монолиты на полторы тысячи строк.
-      'max-lines': ['warn', { max: 400, skipBlankLines: true, skipComments: true }],
+      /*
+       * Past 400 lines a file stops being readable as a whole: that is the threshold beyond which
+       * the portal pages grew into 1500-line monoliths.
+       *
+       * An error, not a warning (ADR 0228, amending ADR 0225): the `maxLines` list of
+       * quality-budget.json is empty, so a file over the limit is forbidden, not known debt. The
+       * budget already rejects every file this rule reports — it counts raw lines against the same
+       * threshold, and raw lines are never fewer — so the level adds no new demand on an author;
+       * it keeps lint from calling such a file debt and names it in the editor.
+       */
+      'max-lines': ['error', { max: 400, skipBlankLines: true, skipComments: true }],
     },
   },
   {
