@@ -6,6 +6,7 @@ import {
   vehicleCategoryKeys,
   vehicleCategoriesApi,
   vehicleClassificationKeys,
+  vehicleSpecKeys,
   vehicleTypeKeys,
   vehicleTypeSpecKeys,
   vehicleTypesApi,
@@ -35,7 +36,8 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   // The type leaves together with its specs and categories, so the classifier list goes stale as a
   // whole, not by one row. The same purge makes the server drop «нужна дополнительно» rows from
   // unapplied weekly requests — a purged position can no longer be ordered
-  // (docs/adr/0085-weekly-vehicle-request.md, R15).
+  // (docs/adr/0085-weekly-vehicle-request.md, R15). The spec directory counts the types each spec is
+  // attached to (`usedInTypes`), and the purge deletes this type's links.
   const purge = usePurgeAction({
     subject: 'тип',
     purge: vehicleTypesApi.purge,
@@ -44,6 +46,7 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
       vehicleTypeKeys.root,
       vehicleCategoryKeys.root,
       vehicleTypeSpecKeys.root,
+      vehicleSpecKeys.root,
       vehicleKeys.root,
       fuelNormKeys.root,
       weeklyRequestKeys.root,
