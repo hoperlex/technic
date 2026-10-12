@@ -339,5 +339,82 @@ its pinned copy, so a change on either side fails the test instead of drifting s
 The key is for comparison only. The form and the registry keep the plate as it was typed: the
 contracts test «приводить госномер к латинице и верхнему регистру форме не поручено» stays as it is.
 
-**State:** decided, implementation pending (roadmap item F2c). Until it lands, the rule stays in
-`defs/vehicles.ts` and the picker mismatch above remains.
+**State:** implemented 2026-10-12 (roadmap item F2c), see the next section.
+
+## Implemented 2026-10-12: one plate key, an honest caption, filled coupons (roadmap F2)
+
+The three leftovers of plan §14.6 and the S-6 decision above, done together because they meet in
+the same files.
+
+**One plate key (F2c).** `normalizeRegistration` now lives in `packages/contracts/src/vehicles.ts`
+and its API copy in `defs/vehicles.ts` is gone. Its callers: the vehicle exchange (row key of an
+own vehicle), the fuel-norms file (the key of a file row is looked up among the
+`registration_number_normalized` keys Postgres computed for the fleet — the place where a drifting
+copy would fail silently) and the trailer picker of the route form. The picker's own `squash` was
+a different rule, not a copy: it lower-cased and dropped whitespace only, keeping dashes and dots
+and never replacing Cyrillic look-alikes. It is replaced everywhere it was used — recognising the
+typed plate, excluding the neighbouring slot's trailer, and the list search, where needle and rows
+both go through the plate key (for a make that only drops case and separators). The SQL readers
+keep calling `vehicle_reg_normalize` directly; the waybill issue context in particular normalises
+the route boxes in its own query.
+
+The pin is `apps/api/test/vehicle-reg-normalize-parity.db.test.ts`: a named table of 22 cases
+(`registration-key-cases.ts`: Cyrillic and Latin look-alikes in both cases, mixed layouts, spaces,
+tabs, dashes, dots, slashes, underscores, Ё, Cyrillic letters without a twin, Latin letters outside
+the plate alphabet, non-ASCII digits, a character outside the BMP, empty, separators only, `NULL`)
+and a sweep over every code point from U+0001 to U+04FF. All three steps of the rule work character
+by character, so the sweep proves agreement for every string over that range. The unit test
+`vehicles-contracts.test.ts` runs the same table without a database on every `pnpm check`. The pin
+was seen failing on a real drift: a database function without `Х` in its `translate` fails the
+table and names U+0425 and U+0445 in the sweep.
+
+The empty key: the database returns `NULL` (nothing left after the separators, or `NULL` input),
+the contracts copy returns `''`, and `''` is treated as `NULL` is — it matches nothing, not even
+another empty key. Every caller already did so (the exchange engine skips `''` keys, the fuel-norms
+index is built from non-NULL columns, the picker recognises nothing in an empty box), so returning
+`null` would only have added a null check to each. The db test asserts that the database really
+answers `NULL` there, because the unique index of vehicles is partial on a non-NULL key.
+
+One property is outside this work and stays unverified: `upper()` follows the database's
+`LC_CTYPE`, and on a `C` ctype it leaves Cyrillic alone, so «в094ет77» and «B094ET77» would be two
+plates in the database itself. The test databases are `en_US.utf8`, and production's ctype was not
+read; the pin test would fail on such a database by design, naming the locale.
+
+**One "with trailer" caption (F2b).** `trailerCaption` in `packages/contracts/src/vehicle-routes.ts`
+returns nothing for a trip without a trailer, «с прицепом <состав>» with the label `trailerLabelOf`
+built, and «с прицепом — реквизиты не указаны» (`TRAILER_DETAILS_MISSING_CAPTION`) when the trip is
+ticked but the boxes are empty. Its three callers are the ones that drew the bare caption by the
+checkbox alone: the waybill journal (`pages/waybills/columns.tsx`), the route window
+(`widgets/vehicle-route-windows/ui/VehicleRouteWindowView.tsx`) and a vehicle's route list
+(`routeListView.tsx`). The driver cabinet and the on-site cells are unchanged: they print the label
+as a field and stay silent when it is empty, which is not the lie the bare caption told. A web test
+searches the portal source for a caption assembled by hand.
+
+**Filled tear-off coupons (F2a).** Rows 96–98 of both coupons below the second cut line now carry
+the organisation's name (`M96`, `CS96`), the make (`R97`, `CX97`) and plate (`BN97`, `ET97`) of the
+vehicle, and a trailer row: makes (`R98`, `CX98`) and plates (`BN98`, `ET98`). Each address is the
+top-left cell of the merge that draws its fill line; the trailer line starts under the make line,
+not right after the «Прицепы» label, because the cells between (`J98:Q98`, `CP98:CW98`) have no
+line. The organisation, the make and the trailer row get `shrinkToFit`: their length is chosen by
+the directory, and the trailer row holds two trailers in a line sized for one.
+
+The coupon has one trailer row where the header has a pair of boxes per trailer, so the snapshot
+gains two keys, `trailers_brands` and `trailers_reg_numbers`, assembled by `trailerCouponLines` in
+the contracts: pairs in slot order joined by commas, a missing half kept as «—» while the other
+trailer fills that line (otherwise the second plate would print under the first make), and a line
+no trailer fills left empty for the hand. ESM-2 snapshots carry both keys empty.
+
+Sheets issued earlier are reprinted from the current template, so their coupons now show the
+organisation, make and plate from keys every snapshot has (as ADR 0041 did for «Организация»).
+`snapshotForPrint` gets a fourth move for them: when `trailers_brands` is absent, the trailer row is
+assembled from the sheet's own header boxes by the same rule — a coupon whose trailer row alone
+stayed empty would contradict its header. As with the other moves, the sign is the absence of the
+key; an empty row on a new sheet is left alone.
+
+The template was regenerated by `pnpm --filter @technic/api template:waybill` from
+`templates/source/4П.xlsx`; the run is byte-for-byte reproducible (before the change it rewrote the
+three templates unchanged), and only `waybill-4p.xlsx` changed. A rendered sheet was converted to
+PDF with LibreOffice and checked by eye: all ten values sit on their lines. Tests:
+`waybill-template.test.ts` pins every coupon address by its label, its merge and its shrink flag
+and renders the coupons; `waybill-contracts.test.ts` pins the coupon rule and the reprint move;
+`waybill-blank.db.test.ts` issues a route with two trailers and reads the row from the exported file.
