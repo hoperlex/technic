@@ -202,7 +202,7 @@
   [listQueryOptions.ts](../apps/web/src/shared/api/listQueryOptions.ts),
   [useDeferredOptions.ts](../apps/web/src/shared/lib/useDeferredOptions.ts)
 - Тесты: `boundaries.test.ts`, `portal-sections.test.ts`, `chunk-recovery.test.tsx`, `app-update-banner.test.tsx`, `*-list.test.tsx`
-- Решения: [ADR 0030](adr/0030-responsive-layout.md), [ADR 0121](adr/0121-portal-sections-registry.md), [ADR 0136](adr/0136-select-popup-width.md), [ADR 0222](adr/0222-frontend-query-freshness-and-render.md)
+- Решения: [ADR 0030](adr/0030-responsive-layout.md), [ADR 0121](adr/0121-portal-sections-registry.md), [ADR 0136](adr/0136-select-popup-width.md), [ADR 0222](adr/0222-frontend-query-freshness-and-render.md), [ADR 0228](adr/0228-frontend-architecture.md)
 
 ## Схема, миграции и выкат
 
@@ -227,4 +227,4 @@
 - Остальной API: —
 - Web: [scripts](../apps/web/scripts)
 - Тесты: `pnpm check`, `pnpm check:db`, `pnpm check:docs`, `pnpm test:docs`, `bundle-size.test.ts`
-- Решения: [ADR 0147](adr/0147-quality-gates.md), [ADR 0224](adr/0224-codebase-maintenance-framework.md), [ADR 0225](adr/0225-lint-policy.md)
+- Решения: [ADR 0147](adr/0147-quality-gates.md), [ADR 0224](adr/0224-codebase-maintenance-framework.md), [ADR 0225](adr/0225-lint-policy.md), [ADR 0228](adr/0228-frontend-architecture.md)

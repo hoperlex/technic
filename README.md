@@ -18,7 +18,7 @@ passes through; **[docs/adr/README.md](docs/adr/README.md)** — the index of ac
 ## Layout
 
 ```text
-apps/web            React SPA (Vite + antd 6): pages, entities/features/shared layers
+apps/web            React SPA (Vite + antd 6): app/pages/widgets/features/entities/shared layers
 apps/api            Fastify REST API, services, migrations and the teardown suite, seed
 apps/worker         Background jobs (PostgreSQL jobs, mail, waste ticket recognition, S3 cleanup)
 packages/contracts  Shared language of server and portal: zod schemas, permissions, predicates, status corridors

@@ -20,18 +20,19 @@ version: 1
 
 policies:
   - id: web-layer-direction
-    title: Слой портала видит только то, что ниже него, и только через вход слайса
+    title: A portal layer sees only what is below it, and only through a slice entry
     status: active
     severity: hard
     scope: ['apps/web/src/**']
     enforcedBy: eslint
     source: eslint.config.mjs
-    adr: [docs/adr/draft-frontend-architecture.md]
+    adr: [docs/adr/0228-frontend-architecture.md]
     autofix: false
     rule: >
-      Импорт разрешён сверху вниз по порядку слоёв (shared → entities → features → widgets →
-      pages → app) и только через `index.ts` слайса. Импорт соседа по слою запрещён, кроме
-      единственного разрешения: виды заявок берут общее из `entities/request`.
+      A layer imports only the layers below it (bottom to top: shared → entities → features →
+      widgets → pages → app), and only through the slice's `index.ts`. Importing a neighbour on
+      the same layer is forbidden, with a single allowance: the request kinds take what they
+      share from `entities/request`.
     exceptions:
       requireReason: true
 

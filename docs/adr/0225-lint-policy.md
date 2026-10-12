@@ -10,7 +10,7 @@
 - Связано: [ADR 0224](0224-codebase-maintenance-framework.md) — the `release` lint profile adds
   warning-only signals in a separate overlay and leaves this profile untouched; plan
   [lint-debt-plan.md](../lint-debt-plan.md) (decisions Р1–Р7, stages Э1–Э10); the layer rules in the
-  same config — [draft frontend architecture](draft-frontend-architecture.md)
+  same config — [ADR 0228](0228-frontend-architecture.md)
 - Область: [eslint.config.mjs](../../eslint.config.mjs), [check.mjs](../../scripts/check.mjs),
   [quality.mjs](../../apps/web/scripts/quality.mjs),
   [quality-budget.json](../../apps/web/quality-budget.json)
@@ -51,6 +51,9 @@ The warning set is exactly four rules (`eslint --print-config` at `17f53f4a`):
 | `react-hooks/exhaustive-deps`                  | `apps/web/**`          | a narrow list is sometimes the point (decision 4); the rule cannot know it |
 | `max-lines` (400, without blanks and comments) | `apps/web/src/**` only | a signal; the gate for length is the quality budget (decision 3)           |
 
+**Changed on 12.10.2026 by [ADR 0228](0228-frontend-architecture.md) §3:** `max-lines` is an
+error, and the warning set is the other three rules. The quality budget stays the gate for length.
+
 Everything else that is on is an error: the error-level rules of `js.configs.recommended` and
 `tseslint.configs.recommended` (`no-undef` in plain JavaScript, `@typescript-eslint/no-explicit-any`
 and the rest), `react-hooks/rules-of-hooks`, `react/no-unstable-nested-components`, the
@@ -81,9 +84,14 @@ any number there is new. A future cleanup will be manual again.
 
 **Changing a level is changing this decision**, recorded by a new ADR that amends this one, not an
 edit to `eslint.config.mjs` on the way. The front-end layering plan intends exactly that for
-`max-lines` at its closing stage (roadmap item Q11).
+`max-lines` at its closing stage (roadmap item Q11) — done on 12.10.2026 by
+[ADR 0228](0228-frontend-architecture.md) §3.
 
 ### 3. `max-lines` warns in lint; length is gated by the quality budget
+
+_Changed on 12.10.2026 by [ADR 0228](0228-frontend-architecture.md) §3: lint reports length as an
+error now that the budget's `maxLines` list is empty. The block, the scope, the two measures and
+the budget as the gate below are unchanged._
 
 `max-lines` has its own config block on `apps/web/src/**` only (plan Р2): a test is a linear script
 read top to bottom, and the reason behind the threshold does not apply to it. A separate block, not

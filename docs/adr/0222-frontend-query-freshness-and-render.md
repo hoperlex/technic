@@ -19,9 +19,10 @@
 The portal used one ten-second freshness term for most reads. Identical HTTP reads could have
 different cache keys, while filters and closed forms loaded dictionaries on the first screen.
 Changing a list page or filter blanked its rows. Some forms copied refreshed data over unsaved
-input. `ExpandableCell` also recreated a `ResizeObserver` on rerenders. The earlier
-[frontend architecture draft](draft-frontend-architecture.md) addresses layer and import
-boundaries; this decision records the query and render policy introduced in Stage 5. The
+input. `ExpandableCell` also recreated a `ResizeObserver` on rerenders. The front-end
+architecture decision, [ADR 0228](0228-frontend-architecture.md) (drafted earlier, numbered later),
+addresses layer and import boundaries; this decision records the query and render policy introduced
+in Stage 5. The
 [Stage 5 plan](../frontend-fsd-plan.md) remains intent and measurement history, not runtime policy.
 
 ## Decision

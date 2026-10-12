@@ -468,7 +468,7 @@ Batch-ручку справочников на API (`GET /dictionaries?for=...`)
 | 4    | `features` + `widgets` + `pages` для заявок (самые горячие файлы — последними)                                                                                                                                                                                                                                                                                                                                      | 3 дня   |
 | 5    | Queries and render: completed on the Stage 5 integration branch; freshness profiles, deferred dictionaries, debounced search, retained lists, form protection and stable cell observers are recorded in [ADR 0222](adr/0222-frontend-query-freshness-and-render.md). Route and heavy-pane `lazy` work belongs to Stage 3. Four existing invalidation paths were adjusted. No `memo(DataTable)` change was retained. | 1,5 дня |
 | 6    | Стили в объёме §6                                                                                                                                                                                                                                                                                                                                                                                                   | 0,5 дня |
-| 7    | Закрепление: границы как `error`, `max-lines`, удаление заглушек, обновление `README`/`docs`, ADR получает номер                                                                                                                                                                                                                                                                                                    | 0,5 дня |
+| 7    | Closing: done on 12.10.2026 — boundaries are `error`, `max-lines` is `error`, no stubs remain, the README names the six layers, the draft ADR is numbered and in the code map: [ADR 0228](adr/0228-frontend-architecture.md)                                                                                                                                                                                        | 0,5 дня |
 
 Чистая оценка — 16 дней (этап 2 пересчитан подробным планом: 2,5 → 4). **С резервом 25–30 % — 20–21 день**; резерв заложен на то, что оценка
 делалась по коду, который за время работ продолжает расти (за неделю до пересъёма метрик было на
@@ -562,7 +562,8 @@ Batch-ручку справочников на API (`GET /dictionaries?for=...`)
 пишется документ. Черновик живёт как `docs/adr/draft-frontend-architecture.md` без номера; номер
 берётся в момент коммита по факту — последний **числовой** ADR плюс единица
 (`ls docs/adr | grep -E '^[0-9]{4}-' | sort -V | tail -1`; простой `tail -1` вернул бы сам
-черновик), с проверкой, что такого файла ещё нет.
+черновик), с проверкой, что такого файла ещё нет. Numbered on 12.10.2026 at stage 7:
+[ADR 0228](adr/0228-frontend-architecture.md).
 
 ## 11. Обоснование схемы работ
 

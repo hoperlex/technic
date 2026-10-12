@@ -6,23 +6,26 @@ import { deviceTelemetryKeys } from '@entities/device-telemetry';
 import { errorMessage } from '@shared/lib';
 
 /**
- * Действия реестра ключей (план `docs/office-equipment-mail-identity-ui-plan.md`, §6.1).
+ * Actions of the identity-key registry (plan `docs/office-equipment-mail-identity-ui-plan.md`,
+ * §6.1).
  *
- * ГАСИТСЯ ТО ЖЕ, ЧТО И ПОСЛЕ РАЗБОРА ПИСЬМА, и по той же причине: заведение ключа применяет
- * накопленные письма — делает ровно то, что «привязать» в очереди. Очередь от этого редеет, а
- * снимки писем ложатся наблюдениями и событиями ЖИВОЙ карточки: не погаси телеметрию — и открытый
- * рядом блок «Показания и события» продолжал бы уверять, что аппарат ещё не присылал писем, ровно
- * после того, как его почту разобрали.
+ * THE SAME IS INVALIDATED AS AFTER PARSING A MESSAGE, for the same reason: creating a key applies
+ * the accumulated messages — exactly what "bind" does in the queue. The queue shrinks, and the
+ * message snapshots land as observations and events of the LIVE device card: leave telemetry
+ * fresh, and the «Показания и события» block open next to it would keep claiming the device has
+ * sent no mail, right after its mail was parsed.
  *
- * Гасит СВОИМ вызовом, а не функцией соседнего слайса разбора, и общего носителя у них нет не по
- * недосмотру. Слайсы одного слоя друг друга не видят (`boundaries/dependencies`, п. 2 решения
- * `docs/adr/draft-frontend-architecture.md`), а спустить общее вниз некуда: функция гасит корни
- * ДВУХ РАЗНЫХ сущностей — `device-mail` и `device-telemetry`, — и в `entities` её кладёт тот же
- * запрет (сосед по слою), а в `shared` — запрет знать доменные ключи (п. 4 того же решения). Оба
- * переноса пробовались и отбиты линтом, повторять опыт не нужно. Так же, своим вызовом, называет
- * устаревшее и опрос аппарата по сети (`features/device-poll`) — там корень один, телеметрия, и
- * гасится он, только когда показание записано. Пока общего дома нет, каждый сценарий называет своё
- * устаревание сам; цена известна: появится третий корень — дописывать придётся в каждом из них.
+ * It invalidates by ITS OWN call, not through a function of the neighbouring parsing slice, and
+ * the missing shared home is not an oversight. Slices of one layer do not see each other
+ * (`boundaries/dependencies`, rule 2 of `docs/adr/0228-frontend-architecture.md`), and there is
+ * nowhere to move the shared part down: the function invalidates the roots of TWO DIFFERENT
+ * entities, `device-mail` and `device-telemetry`, so `entities` is closed by the same neighbour
+ * ban and `shared` by the ban on knowing domain keys (rule 4 of the same decision). Both moves
+ * were tried and rejected by lint; there is no need to repeat the experiment. The network poll of
+ * a device (`features/device-poll`) names what goes stale by its own call too — there the root is
+ * one, telemetry, and it is invalidated only once a reading is written. Until a shared home
+ * exists, each scenario names its own staleness; the known price is that a third root has to be
+ * added in each of them.
  */
 
 /**
