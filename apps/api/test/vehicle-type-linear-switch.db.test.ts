@@ -1,4 +1,3 @@
-import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -9,9 +8,8 @@ import {
   inLegacy,
   useReadModeDatabase,
 } from './assignment-read-mode';
-import { applyMigrations } from '../src/db/migration-journal';
-// Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
-// окружение, — конфиг проверяет его при импорте и без него падает.
+// Types only: the values of these modules come through `await import` after the environment is
+// set — the config validates it at import time and throws without it.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 
@@ -68,32 +66,6 @@ interface Ctx {
 }
 
 let ctx: Ctx;
-
-/** Конфиг читается при импорте, поэтому окружение выставляется до первого `import('../src/...')`. */
-function prepareEnv(databaseUrl: string): void {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  process.env.DATABASE_URL = databaseUrl;
-  process.env.PUBLIC_ORIGIN ??= 'http://localhost:5173';
-  process.env.COOKIE_SECRET ??= 'test-cookie-secret-0123456789abcdef';
-  process.env.CSRF_SECRET ??= 'test-csrf-secret-0123456789abcdef';
-  process.env.JWT_PRIVATE_KEY_PEM = String(privateKey.export({ type: 'pkcs8', format: 'pem' }));
-  process.env.JWT_PUBLIC_KEY_PEM = String(publicKey.export({ type: 'spki', format: 'pem' }));
-  process.env.S3_ENDPOINT ??= 'http://localhost:9000';
-  process.env.S3_BUCKET ??= 'test';
-  process.env.S3_ACCESS_KEY_ID ??= 'test';
-  process.env.S3_SECRET_ACCESS_KEY ??= 'test-secret';
-  process.env.LOG_LEVEL ??= 'error';
-}
-
-async function migrate(databaseUrl: string): Promise<void> {
-  const client = new pg.Client({ connectionString: databaseUrl });
-  await client.connect();
-  try {
-    await applyMigrations(client);
-  } finally {
-    await client.end();
-  }
-}
 
 async function seedAdmin(): Promise<string> {
   const { db } = await import('../src/db/client');
