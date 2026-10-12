@@ -1,6 +1,6 @@
 # ADR 0208. Исполнитель завершает денежный шаг кнопкой «Работы выполнены» и сразу подшивает акт
 
-- Статус: Принято (24.09.2026). Реализуется выпуском 110
+- Статус: Реализовано (выпуск 110, миграции `0341` и `0342`; на проде с 07.10.2026)
 - Домены: оргтехника, схема-и-выкат
 - Область: `apps/web/src/pages/service/serviceRequestEstimateMenu.tsx`,
   `apps/web/src/pages/service/serviceRequestModals.tsx`,
@@ -88,3 +88,18 @@
 данных: она понимает все записанные поля. Возврат к версии старше ADR 0183 разрешён только после
 разбора всех активных документных ревизий: счёт-основание для старого читателя снова выглядит
 закрывающим документом и может обойти требование акта.
+
+## Release B of ADR 0183 (2026-10-12)
+
+The signature and its source became one pair in the database
+([ADR 0183, "Release B"](0183-service-estimate-exemption-and-document-submit.md#release-b-the-signature-and-its-source-are-one-pair-2026-10-12)).
+Nothing in this decision changes: «Работы выполнены» still sends the declaration, the server still
+writes `auto` without an author when the exemption applies, and a person's signature after the
+dispute outcome "signature required" still writes `human`. Switching both keys off stays an
+emergency stop without a schema change — with the keys off no automatic signature is written, and
+every human one carries its source.
+
+One line of the rollback above becomes stricter: returning to a version older than ADR 0183 now
+also requires weakening `service_requests_estimate_approval_source_check` back to the release A text
+of `0306`, because such code signs without a source and would fail its first approval. Rolling back
+to ADR 0183's own release or to any later one needs nothing.

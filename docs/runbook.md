@@ -679,6 +679,22 @@ psql "$DATABASE_URL" -c "update feature_flags set is_enabled=false, updated_at=n
 ADR 0183 разрешён только после разбора всех активных документных ревизий: старый читатель не знает
 роль `estimate_basis` и может ошибочно принять счёт-основание за закрывающий документ.
 
+Since release B of ADR 0183 (the migration `…_service_estimate_approval_source_strict.sql`) the
+estimate signature and its source are one pair in the database. A rollback to any release that
+already writes the source — ADR 0183's own and every later one — needs nothing. Code older than
+ADR 0183 signs without a source, so before such a rollback, after the review above, weaken the
+constraint back to the release A text of `0306`:
+
+```bash
+psql "${DATABASE_MIGRATION_URL:-$DATABASE_URL}" -c "begin;
+  alter table service_requests drop constraint service_requests_estimate_approval_source_check;
+  alter table service_requests add constraint service_requests_estimate_approval_source_check check (
+    estimate_approval_source is null
+    or (estimate_approval_source in ('human','auto')
+        and (estimate_approval_source <> 'auto' or estimate_approved_by is null)));
+  commit;"
+```
+
 ### Первый прогон автозакрытия заявок оргтехники (ADR 0133)
 
 Заявка, простоявшая сутки в «Решена», закрывается порталом сама: worker раз в пять минут зовёт

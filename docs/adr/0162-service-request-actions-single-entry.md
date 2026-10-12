@@ -1,6 +1,6 @@
 # ADR 0162. Меню действий заявки оргтехники: у действия один основной вход, и место показа решается отдельно от доступности
 
-- Статус: Принято (первая волна реализована). План —
+- Статус: Принято (первая волна и этап Э6 реализованы, Э6 — 12.10.2026; Э3 ждёт выпуска R1g). План —
   [office-equipment-request-actions-menu-plan.md](../office-equipment-request-actions-menu-plan.md);
   постановка — [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
   пункт 8 («Очистка меню действий заявки»). Схему база не меняет: миграция у выпуска одна — запись
@@ -144,4 +144,42 @@ postponed (the third consequence above) is decided: stage Э6 of the
 - The plan's order holds: the admission checklist of Р5 is run by the §7.3 tests against the
   shipped code first, and an item whose row fails stays in the menu.
 
-**State:** decided, implementation pending (roadmap item C6, release R1).
+**State:** implemented 2026-10-12 (roadmap item C6, release R1) — see the next section.
+
+## Stage Э6 implemented (2026-10-12)
+
+**What changed.** The placement module
+([serviceMenuPlacement.ts](../../apps/web/src/pages/service/serviceMenuPlacement.ts)) holds a third
+set, `STATUS_TAG_ONLY`, with the six keys `complete`, `rollback-start`, `accept`, `rework`,
+`rollback-accept`, `reopen-request`. It is added to the list-wide set (row and phone list card) and
+to the card set, so the six items are filtered out of М1–М4 and nowhere else: the action set
+(`serviceRequestMenuItems`) is untouched, and so are the server, the predicates and the client
+contract. Decision 2 holds as written — the item may be struck because the action has another
+entry in the same place: each of the four places shows the status tag (the «Статус» column of the
+row, the badge of the phone list card, the «Статус» field of the card, which the card's phone sheet
+sits on), and the tag lists the transitions from the **full** set.
+
+**Why the admission checklist (plan Р5) holds by construction, not by promise.** The tag does not
+call anything of its own: `serviceStatusChoices` copies the item with its `onClick`, `disabled` and
+`disabledReason` and only relabels it. So the domain command, the reason window, the closing
+document bar, the history record, the mail and the executor rule of a transition are those of the
+item that used to sit in the menu. The checks are the existing tests of ADR 0161
+(`service-status-change.test.tsx`: domain commands, reason windows, the two roads into «Отменена»,
+`/resume`, refusals; `service-status-choices.test.ts`: projection completeness and the disabled
+«Закрыть работы»; `candidate-review.test.tsx`: the accept lock while the subject check is pending)
+plus the server suites, which this stage does not touch.
+
+**Guards.** The entries registry (`service-request-entries.test.tsx`) has a `tagOnly` mark: such a
+row is hidden in all three sets, sits on the tag, equals `STATUS_TAG_ONLY`, is offered by the tag
+projection somewhere in the matrix, and the three places that render the tag are checked to pass it
+the unfiltered set — a placement filter on the tag would remove these actions from the portal
+altogether. The menu suite (`service-request-actions-menu.test.tsx`) checks every arc in every place
+(absent from the menu, present on the tag of the same place) and that «Отложить», «Возобновить»
+and «Отменить заявку» stay in the menu while also on the tag. The disabled «Закрыть работы» with
+its reason moved in the accessibility suite from the menus to the tag of the row, of the card and
+of the card's phone sheet. Removing one key from `STATUS_TAG_ONLY` turns nine tests red.
+
+**What did not change.** Stage Э3 (removing `POST /:id/notify` behind an audit-log guard) is still
+pending — roadmap release R1g. The phone checklist
+([mobile-acceptance.md](../mobile-acceptance.md)) has a line for the six moves. This stage changes
+what users see, so the R1 release record should name it.

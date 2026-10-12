@@ -1,7 +1,8 @@
 # ADR 0183. Объём работ подают счётом, а подпись снимает заявление оператора сервиса
 
-- Статус: Реализовано (14.09.2026) — сервер и портал; оба рубильника ВЫКЛЮЧЕНЫ, наружу волна не
-  включена. План —
+- Статус: Реализовано (14.09.2026) — сервер и портал; оба рубильника включены миграцией `0341`
+  ([ADR 0208](0208-service-work-completed-document-flow.md)), на проде с 07.10.2026; выпуск B —
+  строгая пара подписи и её источника — 12.10.2026 (раздел «Release B» ниже). План —
   [office-equipment-on-site-and-invoice-estimate-plan.md](../office-equipment-on-site-and-invoice-estimate-plan.md),
   редакция 5, решения Р1–Р13. Схема: `0306` (форматы ревизии, роль файла, источник подписи,
   происхождение ожидания, окно приёмки, вид заморозки, карантин файла, ослабленный
@@ -168,3 +169,63 @@
 Откат к версии, читающей роль файла, свободен. Возврат к более старой — только после разбора всех
 активных документных ревизий, а не одних автопринятых: их счета для старого кода снова станут
 закрывающими.
+
+## Release B: the signature and its source are one pair (2026-10-12)
+
+Release A (`0306`) could not require "signed ⇔ source known": code that knew nothing about
+`estimate_approval_source` was still serving, signing without a source and clearing a signature with
+the source left behind. So release A read an empty source as `human`, and every reader had to apply
+that rule (`serviceEstimateApprovalSourceOf`). Release B, roadmap item C8 of release R1, closes it.
+
+**The audit that allows it.** Every code path that writes the signature snapshot was read at the tip
+and in the release serving prod (`dc647215`), and they are identical. Both signing paths name the
+source — the approval route (`PATCH /:id/estimate/approval`) writes `human` with the author, the
+applied exemption on submit (`PATCH /:id/estimate/submit`) writes `auto` without one. All five
+clearing paths clear the source with the date, the revision and the author: the transition reset
+matrix in `applyTransition` (flag `approval`), the handover to another contractor in `assignStep`
+(`PUT /:id/executors`, `POST /bulk`), the re-issue of a breakdown (`/:id/estimate/breakdown`), the
+return for editing (`/:id/estimate/reopen`) and the dispute outcome "signature required"
+(`/:id/estimate/dispute/resolution`). The reset matrix and a handler's patch are merged key by key,
+and no patch touches one half of the pair without the other. No trigger, SQL function, worker job
+or script writes these columns (the only triggers on `service_requests` are the IT signature guard
+of `0199` and the deferred executor trigger of `0178`, neither of which writes them). So the old
+server cannot write a row the strict constraint rejects during the migration window.
+
+**The migration** (`0366_service_estimate_approval_source_strict.sql` in the executor branch; the
+number is the next free one at writing time and moves if the integrator renumbers) locks
+`service_requests` exclusively, backfills the two leftovers of release A's window — a signature
+without a source becomes `human` (the old code could not auto-approve; the date is the test, not the
+author, which a deleted account nulls), a source without a signature is cleared (no reader looks at
+it) — then runs a fail-fast guard and replaces `service_requests_estimate_approval_source_check`
+with the strict text, word for word the 0198 shape: `(estimate_approved_at IS NULL) =
+(estimate_approval_source IS NULL)`, the value list, and no author for `auto`. The guard names up to
+twenty requests the backfill could not fix; it is unreachable — the two updates cover exactly the
+two mixed combinations, the release A constraint still enforces the value list and the authorless
+`auto` until it is replaced, and the lock keeps every other writer out. Neither update bumps
+`version`.
+
+**The code side.** `ServiceRequestApprovalDto.source` is required and `serviceEstimateApprovalSourceOf`
+is gone: the portal reads `approval.source` as sent. The server builds `approval` only when the
+date, the revision and the source are present, which the two constraints make one fact. The client
+contract does not change: bundles in the field already read the field, and the portal can meet
+only the previous release in the rollout window, which has sent it since release A.
+
+**Rollback.** To the previous release: free, it writes the pair consistently. Below this ADR's
+release: besides the review of active document revisions above, the constraint has to be weakened
+back to the release A text of `0306` first — such code signs without a source, and the strict pair
+would refuse its first approval.
+
+**Tests.** `service-estimate-approval-source-strict.db.test.ts` runs the migration file on a scene in
+a rolled-back transaction: both backfill cases (including a signer whose account is gone), rows that
+comply stay byte for byte, versions do not move, the strict pair refuses each of the four broken
+shapes, and the guard fires with the request number when the release A constraint is removed; a
+text check holds the guard predicates and the constraint body identical. The approval and revocation
+flows are covered by the existing db suites (`service-estimate-dispute`,
+`service-estimate-document-submit`, `service-estimate-document-complete`,
+`service-estimate-breakdown`, `service-request-flow`, `service-request-auto-close`,
+`service-auto-close-dispute` and the rest of the module), which now run against the strict
+constraint.
+
+**Not in this release.** The pending side has the same soft shape — `estimate_pending_source`
+without a pair with `estimate_pending_revision`, read as `submit` when empty. It is left for a
+separate item with its own audit.
