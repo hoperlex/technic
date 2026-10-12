@@ -6,7 +6,7 @@
 
 Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями (в скобках — граница, если решение правится не целиком) · миграции · пути, названные областью. **⛔ стоит только у решения, которое само объявило себя отменённым или заменённым.** Входящая связь показывает, кто его правил, но насколько — знает лишь текст самого решения: ADR 0141 отменяет приём ADR 0053 в модуле оргтехники, а в вывозе мусора тот приём работает.
 
-Решений: 225. Доменов: 16.
+Решений: 226. Доменов: 16.
 
 ## ⚠ Номера, занятые дважды
 
@@ -319,7 +319,7 @@
 - [0222](0222-frontend-query-freshness-and-render.md) — Portal query freshness, deferred options, and list rendering · код: `apps/web/src/shared/config/query.ts`, `apps/web/src/app/providers/query.tsx`, `apps/web/src/shared/api/listQueryOptions.ts`, `apps/web/src/shared/lib/useDeferredOptions.ts`, `apps/web/scripts/check-cache-invalidation.mjs`
 - [0223](0223-portal-permission-oracle.md) — The portal asks the server's permission list, never the contracts matrix · код: `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/entities/office-equipment-candidate/model/intake.ts`, `apps/web/src/entities/vehicle-request/model/dateRules.ts`, `apps/web/src/pages/mech/mechRequestMenu.tsx`, `apps/web/src/pages/service/serviceRequestGrid.tsx`, `packages/contracts/src/permissions.ts`
 
-## схема-и-выкат (10)
+## схема-и-выкат (11)
 
 - [0077](0077-release-notes.md) — Журнал обновлений: выпуск как логический блок, а не отрезок календаря · изменён 0191 · код: `apps/web/src/shared/lib/useVersionCheck.ts`, `apps/web/src/components/AppUpdateBanner.tsx`, `packages/contracts/src/releases.ts`, `apps/api/src/routes/releases.ts`
 - [0157](0157-maintenance-mode.md) — Портал закрывается на окно работ переменной окружения, а токены гасятся эпохой по `iat` · код: `apps/api/src/lib/maintenance.ts`, `apps/api/src/config.ts`, `apps/api/src/app.ts`, `apps/api/src/auth/tokens.ts`, `apps/api/src/auth/plugin.ts`, `apps/web/src/shared/api/maintenance.ts`, `apps/web/src/app/MaintenanceBoundary.tsx`, `apps/web/src/shared/api/http.ts`, `apps/web/src/main.tsx`, `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/shared/api/clientContract.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/maintenance.html`, `deploy/Dockerfile.web`, `deploy/docker-compose.yml`, `deploy/docker-compose.stand.yml`, `deploy/deploy-auto.sh`
@@ -331,6 +331,7 @@
 - [0198](0198-assignment-transition-without-actor.md) — Переход режима модуля истории назначения не требует автора · код: `apps/api/src/db/schema.ts`, `apps/api/src/services/assignment-mode.ts`, `apps/api/scripts/assignment-mode.ts`, `apps/api/scripts/assignment-cutover.ts`, `deploy/cutover.sh`, `apps/api/test/assignment-mode.db.test.ts`
 - [0205](0205-device-network-poll.md) — Показание снимается опросом аппарата по сети, и записывается оно только при сверенном серийнике · код: `packages/contracts/src/device-poll.ts`, `apps/api/src/services/device-snmp`, `apps/api/src/routes/device-poll.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/features/device-poll`, `apps/web/src/pages/service/EquipmentTab.tsx`
 - [0208](0208-service-work-completed-document-flow.md) — Исполнитель завершает денежный шаг кнопкой «Работы выполнены» и сразу подшивает акт · код: `apps/api/drizzle/0341_service_estimate_document_workflow_enable.sql`, `apps/api/drizzle/0342_releases_service_estimate_document_workflow.sql`, `apps/web/src/pages/service/serviceRequestEstimateMenu.tsx`, `apps/web/src/pages/service/serviceRequestModals.tsx`
+- [0226](0226-client-floor-seven-and-deploy-preflight.md) — Client floor 7 in one raise for every floor-gated debt, and deploy-auto compares floors before migrations · код: `apps/api/src/lib/client-floor.ts`, `apps/api/scripts/client-floor-check.ts`, `apps/api/src/config.ts`, `apps/api/package.json`, `apps/web/src/shared/api/clientContract.ts`, `deploy/deploy-auto.sh`, `apps/api/test/client-floor-preflight.test.ts`
 
 ## качество (7)
 

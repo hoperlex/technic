@@ -26,6 +26,11 @@ deploy-auto --cutover       # необратимый выкат с остано�
 deploy-auto --cutover-revert # откат незавершённого cutover, пока граница не записана
 ```
 
+**Client floor preflight (ADR 0226).** Right after the build every deploy compares the floor the
+release requires (`REQUIRED_CLIENT_FLOOR` of the candidate image) with `MIN_CLIENT_CONTRACT` in
+`prod.env` and refuses before any change if the API would not start with it. What the refusal says
+and what to run — [Client floor preflight and the raise to 7](#client-floor-preflight-and-the-raise-to-7-adr-0226).
+
 **Git-поток:** деплоится только ветка **main**; перед деплоем код должен быть в `origin/main`
 (скрипт откажет при ветке ≠ main или `HEAD ≠ origin/main` → `git checkout main` + push). Коммит,
 который привёз миграцию выпуска, сразу после пуша помечается тегом — см. «Тег выпуска» ниже.
@@ -585,6 +590,66 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST https://auto.su10.ru/api/v1/aut
 портал читает их неуспешный ответ не как отказ), а также `/health/*`, `/metrics` и `/internal/*` —
 ими ходят healthcheck контейнера и worker, а не браузер. Плата за освобождение — обязательство
 держать ответы этих двух ручек обратно совместимыми.
+
+### Client floor preflight and the raise to 7 (ADR 0226)
+
+**What `deploy-auto` checks.** Right after the build — before the captcha preflight, the vhost
+sync, `--cutover` and the migration status check — every deploy asks the candidate image whether
+its `technic-api` would start with the floor in `prod.env`: the release's `REQUIRED_CLIENT_FLOOR`
+against `MIN_CLIENT_CONTRACT`, read through the `migrate` service with the same `env_file` and the
+same parser as the API. A pass is one line:
+
+```text
+==> предпроверка пола клиента (образ кандидата <sha>, раздаётся контракт 7)
+  пол клиента: релиз требует не ниже 7, в prod.env MIN_CLIENT_CONTRACT=7 — пройдено
+```
+
+A refusal stops the deploy **before anything changes** — no dump, no migrations, the old containers
+keep serving — and prints the command that will work:
+
+```text
+  ОТКАЗ: релиз требует пол клиента не ниже 7 (REQUIRED_CLIENT_FLOOR), а в prod.env MIN_CLIENT_CONTRACT=6.
+  ...
+  Раздаётся контракт 7 — пол можно поднять, затем повторить выкат:
+    deploy-auto --client-floor=7
+    deploy-auto
+```
+
+What to do, by what the refusal says:
+
+- **«Раздаётся контракт N — пол можно поднять»** — run the two printed commands. `--client-floor=N`
+  recreates only `technic-api` and checks the outcome; the repeated `deploy-auto` builds the same
+  commit again and passes.
+- **«Раздаётся контракт S — ниже N»** — `--client-floor=N` would refuse (the portal would close for
+  everyone). The chain was skipped: deploy the release that carries `CLIENT_CONTRACT` N with the old
+  `REQUIRED_CLIENT_FLOOR` first, then the floor operation, then this release.
+- **«Контракт раздаваемой сборки прочитать не удалось»** — `deploy-auto --client-floor` (no value)
+  shows the floor and the served contract; continue by one of the two cases above.
+- **«MIN_CLIENT_CONTRACT в prod.env не читается»** — the line is empty or not an integer, and the API
+  would not start at all. `deploy-auto --client-floor=N` rewrites it.
+- **«предпроверку пола клиента выполнить не удалось»** — the check gave no answer (the image lacks
+  the script, it crashed, docker failed). The deploy refuses rather than guess; the message prints
+  the command to rerun the check by hand. There is no bypass flag: an API that fails the floor does
+  not start anyway.
+
+**The raise to 7 is three steps, each verified before the next** (owner decision of 12.10.2026: one
+raise for every debt that waits for the floor):
+
+```bash
+# 1. Release R1 — CLIENT_CONTRACT 7, REQUIRED_CLIENT_FLOOR still 3: an ordinary deploy.
+#    The preflight passes (required 3, production floor at least 4).
+deploy-auto
+# 2. The floor — only after the contract-7 static is verifiably served:
+deploy-auto --client-floor              # shows: floor <4..6>, served contract 7
+deploy-auto --client-floor=7            # tabs older than R1 get 426 and reload
+# 3. Release R2 — REQUIRED_CLIENT_FLOOR 7 and the removals (deprecated waste statistics fields and
+#    the other floor-gated debts). The preflight refuses it until step 2 is done.
+deploy-auto
+```
+
+Between steps 1 and 2 nothing changes for open tabs. After step 2 a tab opened before R1 sees the
+mandatory reload banner on its next request. Rolling step 2 back is `deploy-auto --client-floor=6`,
+and it is legal only while R2 is not deployed: R2 refuses to start below 7.
 
 ### Документ выполненных работ и автосогласование оргтехники (ADR 0208)
 
