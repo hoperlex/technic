@@ -1,8 +1,11 @@
 # ADR 0107. Признак линейности переключается под работающими заказами
 
-- Статус: Принято
+- Статус: Реализовано (14.08.2026, commit `fef8950c`, migration `0137`; release 22 in the record
+  `0159`). Permanent by the owner's decision of 2026-10-12 (survey S-13): switching linearity under
+  live orders stays a feature, and the cleanup chain N+1..N+3 is cancelled
 - Изменяет: [ADR 0100](0100-linear-vehicle-days.md) §1 — «сменить признак нельзя, пока у типа есть
-  заявки в работе». Запрет снимается на время; живое чтение справочника остаётся нормой
+  заявки в работе». Запрет снимается на время; живое чтение справочника остаётся нормой. Since
+  2026-10-12 the ban is lifted for good (survey S-13)
 - Связано: [ADR 0058](0058-request-rollback-to-new.md) (возврат в «Новую» стирает работу),
   [ADR 0101](0101-backdated-correction.md) (коррекция задним числом работает с заявками в работе),
   [ADR 0106](0106-assignable-permission-grants.md) (полномочия собираются поимённо — отсюда граница
@@ -82,6 +85,9 @@
    Уход из работы и есть условие смерти костыля: когда закроется последняя застигнутая заявка,
    колонки станут пусты целиком, и дроп будет чистой операцией, а не «почти чистой».
 
+   _Since 2026-10-12 (survey S-13) there is no drop: the columns stay, and leaving «В работе» only
+   clears the snapshot of that request — see the last section._
+
 5. **Переключение — своя ручка с подтверждением, а не поле общей правки.**
    `POST /vehicle-types/:id/linear` плюс предпросмотр `GET /:id/linear-switch-preview`. Полем в
    `PATCH` подтверждение обходится молча — старым клиентом, скриптом, вкладкой, открытой со вчера.
@@ -92,6 +98,9 @@
    Отказ временный и живёт ровно столько, сколько своя ручка: когда запрет вернётся, `/linear`
    снимется, а обработка признака вернётся в `PATCH` — иначе после уборки не осталось бы ни одного
    пути переключить признак даже у типа без единой заявки.
+
+   _Since 2026-10-12 (survey S-13) the ban does not return: `/linear` stays the only way to switch
+   the flag, and the `422` on the `PATCH` field is permanent._
 
 6. **Подтверждение — отпечаток множества, а не версия и не токен.**
    `md5(coalesce(string_agg(id::text, ',' ORDER BY id), ''))` считается предпросмотром и заново
@@ -178,7 +187,8 @@
 - Уборка идёт четырьмя релизами — возврат запрета, устойчивый ноль, снятие чтения, `DROP` — и
   сокращению не подлежит: деплой накатывает миграции до перезапуска, а релиз, разом вернувший
   запрет и переставший читать колонки, проглотил бы молча заявку, замороженную старым кодом в
-  последние минуты перед рестартом.
+  последние минуты перед рестартом. _Cancelled 2026-10-12 (survey S-13): no cleanup release
+  follows._
 - Возвращаемый запрет будет строже исходного: тот считал заявки `AND deleted_at IS NULL` и
   проверял их вне блокировки — обе половины дырявые.
 
@@ -186,8 +196,36 @@
 
 - **Ручная разморозка отдельной заявки.** Долгий заказ можно было бы перевести на дни, не дожидаясь
   его конца. Отвергнуто на время костыля: дверь, через которую заявку с выписанными недельными
-  листами переводят на дневной режим, у временного механизма быть не должна.
+  листами переводят на дневной режим, у временного механизма быть не должна. _Since 2026-10-12
+  the mechanism is permanent (survey S-13), so this reason no longer holds; the item stays in the
+  backlog and needs its own decision._
 - **Заморозка «Новых» и согласованных.** Заявитель заказывал по прежним правилам — довод есть, но
   работа не начиналась, а срок жизни костыля вырос бы на неопределённое «пока заявка висит».
 - **Предупреждение при восстановлении из архива.** Решением 3 этот путь перестал менять режим
   вовсе, и заводить предупреждение стало не для чего.
+
+## Owner decision 2026-10-12 (survey S-13): the workaround is permanent
+
+The owner keeps switching linearity under live orders as a permanent feature of the type
+directory. The ban of [ADR 0100](0100-linear-vehicle-days.md) §1 does not return, and the cleanup
+chain of the [hotfix plan](../vehicle-type-linear-switch-hotfix-plan.md) §9 is cancelled: release
+N+1 (the ban returns, reading stays), the wait for a steady zero, N+2 (the snapshot columns are no
+longer read) and N+3 (`DROP`). Roadmap item C2 goes with it.
+
+What this changes in the text above, which is kept as written:
+
+- `vehicle_requests.is_linear_frozen` and `linear_frozen_at` and the single mode expression of
+  decision 2 stay in the schema for good. A snapshot still lives exactly as long as the request it
+  caught: leaving «В работе» clears it (decision 4). What no longer follows is «the columns go
+  empty, then a clean drop»;
+- `POST /vehicle-types/:id/linear` with its preview stays the only way to switch the flag, and
+  `PATCH` answers `422` on the field permanently (decision 5);
+- the consequences «Уборка идёт четырьмя релизами» and «Возвращаемый запрет будет строже
+  исходного» describe the cancelled chain and no longer apply;
+- the backlog item «Ручная разморозка отдельной заявки» was rejected for the lifetime of a
+  temporary mechanism. That reason is gone; the item stays open and needs its own decision.
+
+Two code comments still describe the cleanup and are stale since this decision: the head of
+`apps/api/src/db/linear-mode.ts` (the file «lives as long as the snapshot columns», release N+2)
+and the note on the `frozenRequests` counter in `apps/api/src/routes/vehicle-types.ts` («можно
+ли убирать костыль»).
