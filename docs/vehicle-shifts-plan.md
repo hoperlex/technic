@@ -28,6 +28,12 @@
 - **§9 (стык с ЭСМ-2)** не сведён: ЭСМ-2 с тех пор реализован и живёт своей бумагой, а печать
   оборота значений отсюда не берёт.
 
+**State on 2026-10-12.** None of the four items above is open any more, and the source is
+[ADR 0184](adr/0184-vehicle-request-shifts.md): both term doors refuse to drop a filled day with
+422 naming the dates, and the shift window and the "On site" filter by the sign-off debt have their
+tests (section «Term edits refuse to drop a filled day», roadmap F5); §0 questions 3 and 4 and the
+§9 junction are closed by the owner with the plan's defaults (section «Owner decision 2026-10-12»).
+
 Задача: техника стоит на объекте неделями, а платят за работу по дням. Сегодня заявка отвечает
 только итогом — «26 ч» или «3 смены» в факте выполнения ([ADR 0029](adr/0029-vehicle-request-completion.md)),
 и вводит его один человек в момент закрытия по бумажкам, собранным с площадки. Нужен посуточный

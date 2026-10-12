@@ -39,7 +39,13 @@
   (подстановка часов и предупреждение),
   [labels.ts](../../apps/web/src/entities/request-history/model/labels.ts); тесты —
   `vehicle-request-shifts.test.ts`, `vehicle-shifts-tab.test.tsx`, `vehicle-complete-shifts.test.tsx`,
-  дополнены `access-matrix.test.ts`, `access-conditions.test.ts`, `vehicle-on-site.test.tsx`
+  дополнены `access-matrix.test.ts`, `access-conditions.test.ts`, `vehicle-on-site.test.tsx`;
+  the term refusal of 2026-10-12 —
+  [assignment-shifts.ts](../../apps/api/src/services/assignment-shifts.ts)
+  (`assertTermKeepsFilledShifts`), [assignment-period.ts](../../apps/api/src/services/assignment-period.ts)
+  (the term command asks it in its plan), tests
+  [vehicle-request-shifts.db.test.ts](../../apps/api/test/vehicle-request-shifts.db.test.ts) and
+  [vehicle-shifts-modal.test.tsx](../../apps/web/test/vehicle-shifts-modal.test.tsx)
 - Решение вырастает из: [ADR 0029](0029-vehicle-request-completion.md) (факт выполнения — итог, к
   которому смены становятся основанием), [0036](0036-vehicle-on-site.md) (срез «На объекте» и
   серверное «сегодня»), [0044](0044-vehicle-request-early-end.md) (приём «своего права не заводим»
@@ -214,6 +220,8 @@ _Изменено [ADR 0210](0210-assignment-correction-shift-approvals-by-day.m
   который выбрасывает заполненный день из периода; в коде такой проверки нет. Строка при этом не
   теряется и не врёт: и сводка, и отбор среза считают только дни внутри нынешнего срока
   (`withinTerm`), а вернувшись в срок, день снова виден со своими часами и подписью.
+  _Changed 2026-10-12 (section «Term edits refuse to drop a filled day» below):_ both term doors
+  now refuse such an edit with 422 naming the dates; nothing falls out of the term silently.
 - **Досрочное завершение (ADR 0044) смен не задевает** — его нижняя граница «сегодня», а заполненные
   дни всегда не позже сегодняшнего: снимаемый диапазон целиком лежит там, где смену не ведут.
   Отмена заявки смен тоже не требует: по отменённой работы не было, а если была — её закрывают
@@ -235,6 +243,8 @@ _Изменено [ADR 0210](0210-assignment-correction-shift-approvals-by-day.m
   намеренно, подпись ставят по дню. Отдельных тестов на само окно ведения смен и на отбор среза по
   долгу подписей в прогоне тоже нет: окно проверяется вручную, а правило отбора — контрактным
   тестом `onSitePresence` и порталом.
+  _Changed 2026-10-12:_ the shift window and the "On site" filter by the sign-off debt now have
+  their tests — `vehicle-shifts-modal.test.tsx` and `vehicle-request-shifts.db.test.ts`.
 
 ## Owner decision 2026-10-12 (survey S-8): the plan defaults stand
 
@@ -252,3 +262,55 @@ the plan's defaults. Nothing in the code changes: each default is what the modul
   back side («Заполняется заказчиком») from this table once ESM-2 existed. ESM-2 has since been
   built with its own paper ([ADR 0060](0060-esm2-weekly-waybill.md)), its print does not read
   `vehicle_request_shifts`, and so it stays: the expectation of plan §9 is withdrawn.
+
+## Term edits refuse to drop a filled day (2026-10-12, roadmap F5)
+
+Plan §5 promised a 422 when moving the start forward drops a filled day out of the term; the code
+never had it, and the consequence above recorded the gap. The row was not deleted, but it fell out
+of every reader — the summary, the "On site" filter, the card's shift table — so its hours and the
+object's sign-off disappeared from the request without a word: the very evidence the table is kept
+for. The owner's roadmap (item F5, with the survey S-8 defaults above) closes the gap.
+
+- **The rule.** A term edit is refused with 422 when a day of the current term that the new term
+  no longer covers has a shift row — signed or not: `filled_by` is NOT NULL, so a row is a filled
+  day. The refusal names the dates, marks the bound that drops them (`dateFrom` or `dateTo`) and
+  carries the days with their hours in `details.blockedShiftDays`; nothing is written. It names the
+  way out too: keep the days in the term, or first delete their shifts in the shift window of the
+  "On site" tab (a signed one after taking the sign-off back). Outside «В работе» the window is
+  closed (`shiftsBlocker`), and the text says so instead of sending the person to a missing button.
+- **One home.** Which days count is the contract's `shiftDaysDroppedByTerm`
+  ([vehicle-request-shifts.ts](../../packages/contracts/src/vehicle-request-shifts.ts)); the refusal
+  and its text are one server helper, `assertTermKeepsFilledShifts`
+  ([assignment-shifts.ts](../../apps/api/src/services/assignment-shifts.ts)), asked by both term
+  doors: the wide edit `PATCH /vehicle-requests/:id` — the term route of old tabs and, by survey
+  S-22 ([ADR 0214](0214-assignment-repair-door-paper.md)), permanently of a «Новая» order edited
+  without the waybill journal — under its row lock, and the term command
+  `PATCH /vehicle-requests/:id/period` in its plan. The shift handlers take the same row lock, so
+  no day is filled between the check and the write.
+- **The preview names the days by refusing.** The term command refuses in its plan, so
+  `POST /vehicle-requests/:id/period/preview` answers the same 422 as the apply, and the
+  consequences window shows its text in the error alert it shows for every refusal of the plan.
+  This is the closing door's way with its signed days ([ADR 0178](0178-completion-actual-end-date.md)):
+  the preview's `blockedShiftDays` stays empty in a successful answer, since such a command never
+  gets one. No portal change was needed, and the client floor does not move: an old tab shows the
+  wide edit's 422 as a message with the field label, a current one shows the door's in the window
+  or, for a «Новая» order, as a message.
+- **What does not count.** A row already outside the current term (left by an edit made before
+  this rule) is not this edit's drop: refusing for it would lock every later term edit, and the
+  window cannot reach a day outside the term to delete it. A term that only grows is not even read.
+  For an order in work the case left is the start moved forward — its shortened end is refused
+  earlier by [ADR 0044](0044-vehicle-request-early-end.md). Early end itself is unaffected: its new
+  end is today or later, and a filled day is never in the future.
+- **Why a refusal, not a delete.** The doors that shorten a term with consequences of their own
+  decided their own policy and name the days they touch: closing by the actual date erases unsigned
+  hours by a confirmed list and refuses signed ones (ADR 0178), the weekly annulment refuses signed
+  days ([ADR 0218](0218-weekly-request-annulment.md)). A plain term edit has no such list, and
+  deleting a day's hours is the shift window's own action, taken consciously.
+
+**Tests.** The rule's cases — in `vehicle-request-shifts.test.ts`. `vehicle-request-shifts.db.test.ts`
+proves the wiring on the live schema: in both read modes the wide edit and the term door — its
+preview and its apply — answer the one 422 for a signed and an unsigned day alike and write nothing,
+and pass once the day's shift is deleted; the same file proves the "On site" filter by the sign-off
+debt, in the list and in the summary's `shiftsPending`. `vehicle-shifts-modal.test.tsx` covers the
+shift window: a future day inactive in the server's words, a signed day read-only, zero hours asking
+for a reason, a sign-off needing a filled day and the right.
