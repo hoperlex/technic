@@ -14,7 +14,11 @@ import {
   serviceRequestsApi,
   type ConsumableFactRow,
 } from '@entities/service-request';
-import { officeEquipmentConsumableKeys, officeEquipmentKeys } from '@entities/office-equipment';
+import {
+  officeEquipmentConsumableKeys,
+  officeEquipmentKeys,
+  officeEquipmentPurchaseKeys,
+} from '@entities/office-equipment';
 import { useAuth } from '@entities/session';
 import { FormModal } from '@shared/ui';
 
@@ -78,6 +82,8 @@ export function ServiceConsumablesIssueModal({
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       // Событие журнала уже записано: остаток позиции и её лента в справочнике устарели.
       void qc.invalidateQueries({ queryKey: officeEquipmentConsumableKeys.root });
+      // A purchase card shows the position's stock of today next to its snapshot (`currentStock`).
+      void qc.invalidateQueries({ queryKey: officeEquipmentPurchaseKeys.root });
       onClose();
     },
     onError: (e) => {
