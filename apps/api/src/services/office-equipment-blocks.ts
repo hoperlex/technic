@@ -31,6 +31,7 @@ import {
   type EquipmentRequestsPageDto,
   type OfficeEquipmentItemWarrantyDto,
   type RequestChangeDto,
+  warrantyToday,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -368,12 +369,14 @@ async function executorNamesByRequest(ids: string[]): Promise<Map<string, string
 }
 
 /**
- * Действующие гарантии позиций страницы — той же пачкой (Р10, Р6).
+ * Warranties in force for the items of the page, in the same batch (Р10, Р6).
  *
- * Только выполненные и только не истёкшие: гарантия на невыполненную позицию невозможна, а
- * истёкшая — уже история, и её место в «Полной истории» отдельным событием (К5). Отбор дословно
- * повторяет `loadServiceHistory`, потому что блок эту секцию и заменяет (Р7): разойдись правило,
- * карточка и вкладка назвали бы разные гарантии одной заявки.
+ * Only performed and only not expired: an unperformed item cannot carry a warranty, and an expired
+ * one is history whose place is a separate event in the full history (К5). The selection repeats
+ * `loadServiceHistory` word for word, because this block replaces that section (Р7): if the rule
+ * diverged, the card and the tab would name different warranties of the same request. That
+ * includes the day: the Moscow date from `warrantyToday`, never `CURRENT_DATE`, which is the UTC
+ * session date and lags a day behind from 00:00 to 03:00 MSK.
  */
 async function activeItemWarrantiesByRequest(
   ids: string[],
@@ -393,7 +396,7 @@ async function activeItemWarrantiesByRequest(
         inArray(serviceRequestItems.requestId, ids),
         eq(serviceRequestItems.performed, true),
         isNotNull(serviceRequestItems.warrantyUntil),
-        sql`${serviceRequestItems.warrantyUntil} >= CURRENT_DATE`,
+        sql`${serviceRequestItems.warrantyUntil} >= ${warrantyToday()}::date`,
       ),
     )
     .orderBy(serviceRequestItems.sortOrder);

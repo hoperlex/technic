@@ -45,6 +45,7 @@ import {
   type OfficeEquipmentWarrantyFilter,
   updateOfficeEquipmentSchema,
   WARRANTY_EXPIRING_DAYS,
+  warrantyToday,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -304,27 +305,33 @@ function toRequestOption(p: Principal, row: SelectorRow): OfficeEquipmentRequest
 }
 
 /**
- * Три вопроса, которые задают гарантии в списке. Считает их БД, а не `warrantyState`: фильтр
- * отбирает строки до выдачи, и порог обязан быть выражен в SQL — тянуть весь справочник в память
- * ради сравнения дат нельзя. Общее с интерфейсом здесь одно и главное — сам порог
- * (`WARRANTY_EXPIRING_DAYS`), поэтому подсветка строки и её попадание в фильтр не разъедутся.
+ * The three warranty questions of the list. The database answers them, not `warrantyState`: the
+ * filter selects rows before the page is cut, so the threshold has to be expressed in SQL — pulling
+ * the whole directory into memory to compare dates is not an option. What the filter shares with
+ * the interface are the threshold (`WARRANTY_EXPIRING_DAYS`) and the day it counts from
+ * (`warrantyToday`), so a row's highlight and its membership in the filter cannot disagree.
  *
- * «Действует» намеренно включает истекающие: вопрос звучит «есть ли сейчас гарантия», и техника с
- * неделей до конца ей всё ещё покрыта (тот же ответ даёт `isWarrantyActive`). «Истекает» — срез
- * внутри «действует», а не соседняя с ним корзина.
+ * The day is the Moscow date passed in as a parameter, never `CURRENT_DATE`: app sessions run in
+ * UTC, so from 00:00 to 03:00 MSK the database is still on yesterday, and a warranty that ended
+ * yesterday would pass the "active" filter while its tag already says expired.
  *
- * Пустой срок (`NULL`) не попадает ни в один фильтр: «гарантия не заведена» — это не «гарантии
- * нет», и утверждать за портал то, чего он не знает, он не должен.
+ * "Active" deliberately includes expiring ones: the question is "is there a warranty right now", and
+ * equipment with a week left is still covered (`isWarrantyActive` gives the same answer). "Expiring"
+ * is a slice inside "active", not a neighbouring bucket.
+ *
+ * An empty term (`NULL`) falls into none of the filters: "no warranty recorded" is not "no
+ * warranty", and the portal must not claim what it does not know.
  */
 function warrantyCondition(filter: OfficeEquipmentWarrantyFilter | undefined): SQL | undefined {
   if (!filter) return undefined;
   const until = officeEquipment.warrantyUntil;
-  if (filter === 'expired') return and(isNotNull(until), sql`${until} < CURRENT_DATE`);
-  if (filter === 'active') return and(isNotNull(until), sql`${until} >= CURRENT_DATE`);
+  const today = sql`${warrantyToday()}::date`;
+  if (filter === 'expired') return and(isNotNull(until), sql`${until} < ${today}`);
+  if (filter === 'active') return and(isNotNull(until), sql`${until} >= ${today}`);
   return and(
     isNotNull(until),
-    // День окончания входит в гарантию, поэтому границы включающие — как в `warrantyState`.
-    sql`${until} BETWEEN CURRENT_DATE AND CURRENT_DATE + CAST(${WARRANTY_EXPIRING_DAYS} AS integer)`,
+    // The end day is still covered, so both bounds are inclusive, as in `warrantyState`.
+    sql`${until} BETWEEN ${today} AND ${today} + CAST(${WARRANTY_EXPIRING_DAYS} AS integer)`,
   );
 }
 
@@ -501,9 +508,10 @@ async function loadServiceHistory(
     .limit(SERVICE_HISTORY_LIMIT);
   if (rows.length === 0) return [];
 
-  // Гарантии одним запросом на все показанные заявки: строка на заявку превратила бы карточку в
-  // десять походов в базу ради двух строчек текста. Только выполненные и только действующие —
-  // гарантия на невыполненную позицию невозможна (Р12), а истёкшая здесь уже история.
+  // Warranties for all shown requests in one query: a query per request would turn the card into
+  // ten database trips for two lines of text. Only performed and only in force — an unperformed
+  // item cannot carry a warranty (Р12), and an expired one is history here. "In force" counts
+  // from the Moscow date, not CURRENT_DATE (UTC session date), as in the warranty registry.
   const warrantyRows = await db
     .select({
       requestId: serviceRequestItems.requestId,
@@ -520,7 +528,7 @@ async function loadServiceHistory(
         ),
         eq(serviceRequestItems.performed, true),
         isNotNull(serviceRequestItems.warrantyUntil),
-        sql`${serviceRequestItems.warrantyUntil} >= CURRENT_DATE`,
+        sql`${serviceRequestItems.warrantyUntil} >= ${warrantyToday()}::date`,
       ),
     )
     .orderBy(serviceRequestItems.sortOrder);

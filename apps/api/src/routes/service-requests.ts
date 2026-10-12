@@ -3542,18 +3542,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     };
   });
 
-  // ── Реестр действующих гарантий (§9.5) ──
+  // ── Registry of warranties in force (§9.5) ──
   /**
-   * Строка реестра — носитель гарантии: сама единица техники либо **выполненная** позиция ремонта.
-   * Два источника, а не один: гарантия поставщика существует и без единого ремонта, а гарантия на
-   * запчасть живёт в заявке.
+   * A registry row is a warranty carrier: the equipment unit itself or a **performed** repair item.
+   * Two sources, not one: a supplier warranty exists without a single repair, while a warranty on a
+   * part lives in the request.
    *
-   * Гарантии техники отдаются только тому, у кого есть `officeEquipment.read`: у сервисной компании
-   * его нет намеренно (Р7) — «её» техника в справочнике ничем не отмечена, и реестр по области
-   * справочника означал бы для неё весь парк компании. Гарантии своих ремонтов она видит.
+   * Equipment warranties go only to holders of `officeEquipment.read`: the service company lacks it
+   * on purpose (Р7) — "its" equipment is not marked in the directory, and a registry by directory
+   * scope would mean the company's whole fleet to it. It does see the warranties of its own repairs.
    *
-   * Реестр показывает **действующие** гарантии: истёкшие — это история, и в вопросе «что ещё
-   * покрыто» они только мешают.
+   * The registry shows warranties **in force**: expired ones are history and only get in the way of
+   * the question "what is still covered".
    */
   r.get(
     '/warranties',
@@ -3561,9 +3561,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const q = req.query;
+      /*
+       * Both the SQL cut and the row state are measured from this one Moscow date. CURRENT_DATE
+       * must not stand in for it: app sessions run in UTC, so from 00:00 to 03:00 MSK the database
+       * is still on yesterday, and a warranty that ended yesterday would be listed as in force while
+       * its own row says expired.
+       */
       const today = warrantyToday();
       const horizon = q.expiring
-        ? sql`CURRENT_DATE + CAST(${WARRANTY_EXPIRING_DAYS} AS integer)`
+        ? sql`${today}::date + CAST(${WARRANTY_EXPIRING_DAYS} AS integer)`
         : null;
       const rows: ServiceWarrantyRowDto[] = [];
 
@@ -3595,7 +3601,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
                 officeEquipment.ownerDepartmentId,
               ),
               isNotNull(officeEquipment.warrantyUntil),
-              sql`${officeEquipment.warrantyUntil} >= CURRENT_DATE`,
+              sql`${officeEquipment.warrantyUntil} >= ${today}::date`,
               horizon ? sql`${officeEquipment.warrantyUntil} <= ${horizon}` : undefined,
               q.objectId ? eq(officeEquipment.objectId, q.objectId) : undefined,
               q.departmentId ? eq(officeEquipment.ownerDepartmentId, q.departmentId) : undefined,
@@ -3678,11 +3684,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             and(
               isNull(serviceRequests.deletedAt),
               visibility(p),
-              // Гарантия бывает только у выполненной работы (Р12): на неустановленную запчасть её
-              // нет, и в реестре такой строке места тоже нет.
+              // Only performed work carries a warranty (Р12): a part that was not installed has
+              // none, and the registry has no place for such a row either.
               eq(serviceRequestItems.performed, true),
               isNotNull(serviceRequestItems.warrantyUntil),
-              sql`${serviceRequestItems.warrantyUntil} >= CURRENT_DATE`,
+              sql`${serviceRequestItems.warrantyUntil} >= ${today}::date`,
               horizon ? sql`${serviceRequestItems.warrantyUntil} <= ${horizon}` : undefined,
               q.objectId ? eq(serviceRequests.equipmentObjectId, q.objectId) : undefined,
               q.departmentId
