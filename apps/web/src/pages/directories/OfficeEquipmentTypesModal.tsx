@@ -1,21 +1,9 @@
 import { useState } from 'react';
-import {
-  App,
-  Button,
-  Form,
-  Input,
-  InputNumber,
-  List,
-  Modal,
-  Space,
-  Switch,
-  Tag,
-  Typography,
-} from 'antd';
+import { App, Button, Form, Input, InputNumber, Modal, Space, Switch, Tag, Typography } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateOfficeEquipmentTypeInput, OfficeEquipmentTypeDto } from '@technic/contracts';
-import { FormModal, useFormBlockers } from '@shared/ui';
+import { FormModal, ItemList, ItemListMeta, useFormBlockers } from '@shared/ui';
 import {
   officeEquipmentKeys,
   officeEquipmentModelKeys,
@@ -148,43 +136,40 @@ export function OfficeEquipmentTypesModal({ open, onClose }: Props) {
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
             Добавить тип
           </Button>
-          <List
-            size="small"
+          <ItemList
             loading={isFetching}
-            dataSource={types}
-            locale={{ emptyText: 'Типов пока нет' }}
+            items={types}
+            rowKey={(t) => t.id}
+            emptyText="Типов пока нет"
+            actions={(t) => [
+              <Button
+                key="edit"
+                size="small"
+                icon={<EditOutlined />}
+                aria-label="Редактировать"
+                onClick={() => openEdit(t)}
+              />,
+              <Button
+                key="delete"
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                aria-label="Удалить"
+                onClick={() => confirmDelete(t)}
+              />,
+            ]}
             renderItem={(t) => (
-              <List.Item
-                actions={[
-                  <Button
-                    key="edit"
-                    size="small"
-                    icon={<EditOutlined />}
-                    aria-label="Редактировать"
-                    onClick={() => openEdit(t)}
-                  />,
-                  <Button
-                    key="delete"
-                    size="small"
-                    danger
-                    icon={<DeleteOutlined />}
-                    aria-label="Удалить"
-                    onClick={() => confirmDelete(t)}
-                  />,
-                ]}
-              >
-                <List.Item.Meta
-                  title={
-                    <Space size={8}>
-                      {t.name}
-                      {/* Выключенный тип остаётся у заведённых карточек — строка обязана
-                          объяснить, почему его не предлагают в форме. */}
-                      {!t.isActive && <Tag>Не используется</Tag>}
-                    </Space>
-                  }
-                  description={`${t.code} · порядок ${t.sortOrder}`}
-                />
-              </List.Item>
+              <ItemListMeta
+                title={
+                  <Space size={8}>
+                    {t.name}
+                    {/* A switched-off type stays on the cards that already carry it, so the row
+                        has to explain why the form no longer offers it. */}
+                    {!t.isActive && <Tag>Не используется</Tag>}
+                  </Space>
+                }
+                description={`${t.code} · порядок ${t.sortOrder}`}
+              />
             )}
           />
         </Space>

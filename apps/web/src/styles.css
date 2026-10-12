@@ -471,6 +471,111 @@ body,
   color: rgba(0, 0, 0, 0.45);
 }
 
+/* Rows with actions at the end (shared/ui/ItemList.tsx), in place of antd `List`, deprecated in
+   antd 6. These are the antd 6.5 `List` rules for the one shape the portal used — size "small",
+   split by lines, horizontal — ported on the theme's CSS variables, so the rows look as before and
+   a nested theme (the driver cabinet) still sizes them. Values the antd rules took from component
+   tokens are spelled through the global tokens those were derived from. */
+.item-list {
+  position: relative;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  color: var(--ant-color-text);
+  font-family: var(--ant-font-family);
+  font-size: var(--ant-font-size);
+  line-height: var(--ant-line-height);
+  list-style: none;
+}
+/* Kept from antd `List`: focus inside the rows is shown by the controls' own styles. */
+.item-list * {
+  outline: none;
+}
+.item-list__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.item-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--ant-padding-content-vertical-sm) var(--ant-padding-content-horizontal);
+  color: var(--ant-color-text);
+  border-block-end: var(--ant-line-width) var(--ant-line-type) var(--ant-color-split);
+}
+.item-list__item:last-child {
+  border-block-end: none;
+}
+.item-list__actions {
+  flex: 0 0 auto;
+  margin-inline-start: var(--ant-margin-xxl);
+  padding: 0;
+  font-size: 0;
+  list-style: none;
+}
+.item-list__actions > li {
+  position: relative;
+  display: inline-block;
+  padding: 0 var(--ant-padding-xs);
+  color: var(--ant-color-text-description);
+  font-size: var(--ant-font-size);
+  line-height: var(--ant-line-height);
+  text-align: center;
+}
+.item-list__actions > li:first-child {
+  padding-inline-start: 0;
+}
+.item-list__split {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: 0;
+  width: var(--ant-line-width);
+  height: calc(var(--ant-font-height) - 2 * var(--ant-margin-xxs));
+  transform: translateY(-50%);
+  background-color: var(--ant-color-split);
+}
+.item-list__meta {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  max-width: 100%;
+}
+.item-list__meta-content {
+  flex: 1 0;
+  width: 0;
+  color: var(--ant-color-text);
+}
+.item-list__meta-title {
+  margin: 0 0 var(--ant-margin-xxs) 0;
+  color: var(--ant-color-text);
+  font-size: var(--ant-font-size);
+  line-height: var(--ant-line-height);
+}
+.item-list__meta-description {
+  color: var(--ant-color-text-description);
+  font-size: var(--ant-font-size);
+  line-height: var(--ant-line-height);
+}
+.item-list__empty {
+  padding: var(--ant-padding);
+  color: var(--ant-color-text-disabled);
+  font-size: var(--ant-font-size);
+  text-align: center;
+}
+/* antd's own `List` breakpoints (its screenMD and screenSM), not the portal's mobile switch: the
+   rows narrowed the gap before the actions, then wrapped, by the window width as before. */
+@media screen and (max-width: 768px) {
+  .item-list__actions {
+    margin-inline-start: var(--ant-margin-lg);
+  }
+}
+@media screen and (max-width: 576px) {
+  .item-list__item {
+    flex-wrap: wrap;
+  }
+}
+
 /* ─── Мобильный режим (ADR 0030) ────────────────────────────────────────────────────────────
    Все правила ниже действуют только при классе `is-mobile` на <html>: его ставит useIsMobile
    по единственному медиазапросу портала. Копии медиазапроса в стилях нет намеренно. */

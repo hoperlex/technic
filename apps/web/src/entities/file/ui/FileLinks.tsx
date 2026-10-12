@@ -1,10 +1,10 @@
-import { App, Alert, Button, List, Popover, Spin, Tooltip, Typography } from 'antd';
+import { App, Alert, Button, Popover, Spin, Tooltip, Typography } from 'antd';
 import { DownloadOutlined, EyeOutlined, PaperClipOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { isInlineViewable } from '@technic/contracts';
 import { errorMessage, formatBytes, useIsMobile } from '@shared/lib';
 import { filesApi } from '../api/filesApi';
-import { ViewModal } from '@shared/ui';
+import { ItemList, ViewModal } from '@shared/ui';
 
 /**
  * Минимум, которым описывается прикреплённый файл. `contentType` есть не везде (черновики
@@ -214,9 +214,9 @@ interface FileListProps<T extends FileRef> {
 }
 
 /**
- * Список вложений: имя ссылкой, размер и действия. Общий для заявок всех модулей.
- * Просмотр и скачивание стоят иконками у каждой строки — это разные действия (посмотреть
- * окном против сохранить на диск), и выбирать между ними приходится в любом списке.
+ * Attachments list: the name as a link, the size and the actions. Shared by the requests of every
+ * module. View and download are icons on every row because they are different actions (look at
+ * it in a window versus save it to disk), and every list has to offer the choice.
  */
 export function FileLinkList<T extends FileRef>({
   files,
@@ -225,31 +225,30 @@ export function FileLinkList<T extends FileRef>({
   maxNameWidth = 320,
 }: FileListProps<T>) {
   return (
-    <List
-      size="small"
-      dataSource={files}
-      locale={emptyText ? { emptyText } : undefined}
+    <ItemList
+      items={files}
+      rowKey={(f) => f.id}
+      emptyText={emptyText}
+      actions={(f) => [
+        <FileViewButton key="view" file={f} />,
+        <FileDownloadButton key="dl" file={f} />,
+        ...(onRemove
+          ? [
+              <Button key="rm" type="link" danger size="small" onClick={() => onRemove(f)}>
+                Удалить
+              </Button>,
+            ]
+          : []),
+      ]}
       renderItem={(f) => (
-        <List.Item
-          actions={[
-            <FileViewButton key="view" file={f} />,
-            <FileDownloadButton key="dl" file={f} />,
-            ...(onRemove
-              ? [
-                  <Button key="rm" type="link" danger size="small" onClick={() => onRemove(f)}>
-                    Удалить
-                  </Button>,
-                ]
-              : []),
-          ]}
-        >
+        <>
           <FileLink file={f} maxWidth={maxNameWidth} />
           {f.size != null && (
             <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
               {formatBytes(f.size)}
             </Typography.Text>
           )}
-        </List.Item>
+        </>
       )}
     />
   );

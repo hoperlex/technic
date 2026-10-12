@@ -350,7 +350,7 @@ describe('панель чтения скана', () => {
     });
     const apply = await screen.findByRole('button', { name: 'Заполнить форму' });
     expect(
-      [...container.querySelectorAll('.ant-list-items > .ant-list-item')].map(
+      [...container.querySelectorAll('.item-list__items > .item-list__item')].map(
         (item) => item.querySelector('a')?.textContent,
       ),
     ).toEqual(['first.jpg', 'second.jpg']);
