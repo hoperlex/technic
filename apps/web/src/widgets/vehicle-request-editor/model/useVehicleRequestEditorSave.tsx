@@ -79,7 +79,7 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
   };
 
   const save = useMutation({
-    mutationFn: ({ values, period, legacyTerm }: TermStepResult) => {
+    mutationFn: ({ values, period, termInBody }: TermStepResult) => {
       // One classifier position is chosen (ADR 0028); the API receives it as a "type + category"
       // pair, with an empty category for a type that has none.
       const picked = parseVehicleClassificationKey(values.classificationKey)!;
@@ -89,9 +89,10 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
        * record for ordinary daily work, and the form-correction journal would fill with requests
        * for tomorrow.
        *
-       * Only a body that carries a calendar sends them: creation, conversion and a freight edit.
-       * The wide edit of an on-site order carries no term (K3a) — its door has taken the reason
-       * already, and a second one here would be a second journal entry for the same edit.
+       * Only a body that carries a calendar sends them: creation, conversion, a freight edit and
+       * the wide edit that carries the term itself (`termInBody`). Otherwise the wide edit of an
+       * on-site order has no term (K3a): its door has taken the reason already, and a second one
+       * here would be a second journal entry for the same edit.
        */
       const backdate = state.backdated
         ? {
@@ -156,16 +157,16 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
           });
         }
         /*
-         * K3a (S-21 of 12.10.2026): the wide PATCH carries no term. It moved through its own door
-         * before this call (`useEditorTermDoor`) or did not change at all, and the server reads an
-         * absent `dateFrom`/`dateTo` as "untouched". Release R2 removes the dates from the wide
-         * schema under client floor 7, so a contract-7 bundle must not depend on them — the one
-         * exception is the transitional `legacyTerm` fallback, unreachable once the door admits
-         * every account that may edit the order.
+         * K3a (S-21, S-22 of 12.10.2026): the wide PATCH carries the term only for a «Новая» order
+         * of an account without the journal right (`termInBody`), the route the owner kept for it.
+         * Otherwise the term moved through its own door before this call (`useEditorTermDoor`) or
+         * did not change, and the server reads an absent `dateFrom`/`dateTo` as "untouched".
+         * Release R2 removes the dates from the wide PATCH for orders in work under client floor 7,
+         * so a contract-7 bundle must not send them there.
          */
         return vehicleRequestsApi.update(state.record.id, {
           ...base,
-          ...(legacyTerm ? term : {}),
+          ...(termInBody ? term : {}),
           ...edit,
         });
       }

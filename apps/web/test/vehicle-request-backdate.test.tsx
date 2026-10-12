@@ -22,9 +22,10 @@ import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
  *   прежний результат, а не заведёт вторую правку;
  * - тому, у кого права на коррекцию нет, прошлое в календаре заперто — он и выбрать его не может.
  *
- * Since K3a (S-21 of 12.10.2026) an on-site order's term moves only through its own door: the
- * reason typed in the form travels there as the operation of the correction journal, and the wide
- * PATCH carries neither the term nor a second declaration of it.
+ * Since K3a (S-21 of 12.10.2026) the term of an on-site order edited by a journal reader moves
+ * through its own door: the reason typed in the form travels there as the operation of the
+ * correction journal, and the wide PATCH carries neither the term nor a second declaration of it.
+ * (Only a «Новая» order of an account without the journal keeps the term in the wide PATCH, S-22.)
  *
  * Даты считаются от сегодняшнего дня по МСК, а не прибиты числами: правило живёт относительно
  * «сегодня», и фикстура с датой в коде протухла бы вместе с ним.

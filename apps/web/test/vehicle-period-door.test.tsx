@@ -10,9 +10,10 @@ import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 
 /**
  * The work term moves through its own door (wave 4a of `docs/assignment-periods-plan.md`; Ж4, З5,
- * Д2), and since K3a (S-21 of 12.10.2026) only through it: the wide `PATCH /vehicle-requests/:id`
- * carries no `dateFrom`/`dateTo` from the editor, because release R2 removes them from the wide
- * schema under client floor 7.
+ * Д2), and since K3a (S-21 of 12.10.2026) the editor sends no `dateFrom`/`dateTo` in the wide
+ * `PATCH /vehicle-requests/:id`, because release R2 removes them there for orders in work. The one
+ * exception (S-22): a «Новая» order of an account without `waybills.read` keeps its term in the
+ * wide PATCH — the door stays guarded by that right.
  *
  * Before the door the term rode the wide PATCH together with the comment and contacts, and the
  * person pressed "Save" without knowing the cost. The cost is of two kinds, and both are checked:
@@ -25,8 +26,8 @@ import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
  *
  * And the split save itself: the term first, the rest second with the door's version; an unchanged
  * term never touches the door; a refused term writes nothing; a rest that fails after the term is
- * named and re-sent alone; and a "new" order, which has nothing to show, goes through the door
- * without the window.
+ * named and re-sent alone; a «Новая» order, which has nothing to show, goes through the door
+ * without the window; and a refusal by right is shown, not retried through the wide route.
  *
  * Dates are counted from today in Moscow time: the form calendar lives relative to "today", and a
  * fixture pinned by a number would go stale with it.
@@ -491,15 +492,48 @@ describe('срок работ правится своей дверью', () => {
     expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(0);
   });
 
-  it('пока дверь отказывает учётке без журнала листов, срок уходит прежним путём', async () => {
-    // The site staff: edits its own "new" order and holds no `waybills.read`. Until the server
-    // asks that right by the plan instead of the route guard, the door answers 403 — and the
-    // transitional fallback keeps the edit working the way it worked before K3a.
+  it('«Новая» заявка учётки без журнала листов несёт срок в широком PATCH, дверь не спрашивается', async () => {
+    // The site staff edits its own «Новая» order and holds no `waybills.read`. S-22: the door stays
+    // guarded by that right, and the term of a «Новая» order rides the wide PATCH — one command.
+    const SITE = authUser({ role: 'shtab', constructionObjectIds: ['obj-1'] });
+    const http = renderTab({ user: SITE });
+    await openEdit('ТС-603');
+
+    typeDate(1, typed(day(5)));
+    fireEvent.click(button('Сохранить'));
+
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(1));
+    expect(http.countOf('POST /vehicle-requests/:id/period/preview')).toBe(0);
+    expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(0);
+    const rest = wideBody(http);
+    expect(rest.dateFrom).toBe(TODAY);
+    expect(rest.dateTo).toBe(day(5));
+    expect(rest.version).toBe(FRESH.version);
+    // Nothing goes into the past here, so there is nothing to declare.
+    expect(rest.backdateReason).toBeUndefined();
+    expect(rest.operationId).toBeUndefined();
+  });
+
+  it('та же учётка без изменения срока шлёт широкий PATCH без срока', async () => {
+    const http = renderTab({ user: authUser({ role: 'shtab', constructionObjectIds: ['obj-1'] }) });
+    await openEdit('ТС-603');
+
+    const comment = document.querySelector<HTMLTextAreaElement>('.ant-modal textarea#comment')!;
+    fireEvent.change(comment, { target: { value: 'заезд с ул. Ленина' } });
+    fireEvent.click(button('Сохранить'));
+
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(1));
+    expect(http.countOf('POST /vehicle-requests/:id/period/preview')).toBe(0);
+    const rest = wideBody(http);
+    expect(rest.comment).toBe('заезд с ул. Ленина');
+    expectNoTerm(rest);
+  });
+
+  it('отказ двери по праву показан как есть, срок широким PATCH не переотправляется', async () => {
     const http = renderTab({
-      user: authUser({ role: 'shtab', constructionObjectIds: ['obj-1'] }),
       routes: {
         'POST /vehicle-requests/:id/period/preview': () =>
-          apiError(403, { code: 'FORBIDDEN', message: 'Недостаточно прав' }),
+          apiError(403, { code: 'FORBIDDEN', message: 'Недостаточно прав для правки срока' }),
       },
     });
     await openEdit('ТС-603');
@@ -507,11 +541,9 @@ describe('срок работ правится своей дверью', () => {
     typeDate(1, typed(day(5)));
     fireEvent.click(button('Сохранить'));
 
-    await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(1));
+    await screen.findByText('Недостаточно прав для правки срока');
+    // No retry through the wide route: for an account the door serves, a refusal is an answer.
+    expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(0);
     expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(0);
-    const rest = wideBody(http);
-    expect(rest.dateTo).toBe(day(5));
-    expect(rest.version).toBe(FRESH.version);
-    expect(screen.queryByText('Недостаточно прав')).toBeNull();
   });
 });

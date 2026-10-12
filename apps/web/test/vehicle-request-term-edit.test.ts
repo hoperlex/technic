@@ -5,12 +5,14 @@ import {
   silentTermApplyBody,
   termCommandOf,
   termPreviewIsSilent,
+  termRidesWideEdit,
   type FormValues,
 } from '@features/vehicle-request-editor';
 
 /**
- * The term step of the editor as pure rules (K3a, S-21 of 12.10.2026): when the term door is asked
- * at all, when its preview may be applied without the window, and what goes back to it. The screen
+ * The term step of the editor as pure rules (K3a, S-21 and S-22 of 12.10.2026): when the term door
+ * is asked at all, when the term rides the wide PATCH instead, when the door's preview may be
+ * applied without the window, and what goes back to it. The screen
  * scenarios live in `vehicle-period-door.test.tsx`; here the boundaries are pinned one by one.
  */
 
@@ -59,6 +61,15 @@ describe('правка срока в форме заявки (K3a)', () => {
       dateFrom: '2026-10-12',
       dateTo: null,
     });
+  });
+
+  it('срок в широком PATCH — только «Новая» заявка учётки без журнала листов (S-22)', () => {
+    expect(termRidesWideEdit('new', false)).toBe(true);
+    // A paper reader keeps the door even for a «Новая» order.
+    expect(termRidesWideEdit('new', true)).toBe(false);
+    // An order in work never: R2 removes the dates from the wide PATCH there.
+    expect(termRidesWideEdit('confirmed', false)).toBe(false);
+    expect(termRidesWideEdit('confirmed', true)).toBe(false);
   });
 
   it('молчаливый предпросмотр — только когда показывать и подтверждать нечего', () => {

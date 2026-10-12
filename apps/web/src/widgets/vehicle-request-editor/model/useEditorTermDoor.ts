@@ -16,9 +16,9 @@ import {
   silentTermApplyBody,
   termCommandOf,
   termPreviewIsSilent,
+  termRidesWideEdit,
   type FormValues,
 } from '@features/vehicle-request-editor';
-import { isApiError } from '@shared/api';
 import type { PendingPeriodSave, VehicleRequestEditorPeriodModalProps } from './types';
 import type { VehicleRequestEditorState } from './useVehicleRequestEditorState';
 
@@ -28,10 +28,10 @@ export interface TermStepResult {
   /** The term applied by its door in this edit: the fresh version comes from it. */
   period?: VehicleRequestPeriodResultDto;
   /**
-   * Transitional (see `legacy` below): the door refused this account by right, and the term rides
-   * the wide `PATCH /:id` the way it did before K3a.
+   * The term rides the wide `PATCH /:id` itself: a «Новая» order edited by an account without the
+   * journal right (`termRidesWideEdit`, S-22). Not a fallback — the route the owner kept for it.
    */
-  legacyTerm?: boolean;
+  termInBody?: boolean;
 }
 
 /** A term applied during this edit, tied to the snapshot the editor opened with. */
@@ -42,20 +42,24 @@ interface AppliedTerm {
 }
 
 type SilentOutcome =
-  | { kind: 'applied'; result: VehicleRequestPeriodResultDto }
-  | { kind: 'window' }
-  | { kind: 'legacy' };
+  { kind: 'applied'; result: VehicleRequestPeriodResultDto } | { kind: 'window' };
 
 interface Input {
   state: VehicleRequestEditorState;
-  /** Saves the rest of the edit through the wide `PATCH /:id`, which no longer carries the term. */
+  /** Saves the rest of the edit through the wide `PATCH /:id`. */
   saveRest: (input: TermStepResult) => void;
 }
 
 /**
- * The term step of an edit (K3a, S-21 of 12.10.2026): the editor sends no `dateFrom`/`dateTo` in
- * the wide `PATCH /vehicle-requests/:id`; a changed term goes through its own door first, and the
- * rest follows with the version the door returned.
+ * The term step of an edit (K3a; owner surveys S-21 and S-22 of 12.10.2026): a changed term goes
+ * through its own door first, and the rest follows in the wide `PATCH /vehicle-requests/:id` with
+ * the version the door returned and without `dateFrom`/`dateTo`. Release R2 removes the dates from
+ * the wide PATCH for orders in work, so a contract-7 bundle must not send them there.
+ *
+ * THE ONE CASE THE DOOR IS NOT ASKED (S-22). A «Новая» order edited by an account without
+ * `waybills.read` — the site and the department — sends its term in the wide PATCH, one command.
+ * The door stays guarded by the journal right, R2 keeps the dates for «Новая» orders, and such an
+ * order has no paper or history for a preview to show (`termRidesWideEdit`).
  *
  * WHY THE TERM GOES FIRST. It is the step that can be refused on its own rules (lead time, the
  * ban on shortening a running order, backdate rights, a stale preview) and the only one the person
@@ -70,10 +74,14 @@ interface Input {
  * only the rest, with the door's version. Asking the door again would be an empty command (422).
  *
  * WHICH WAY THE DOOR OPENS. A running order of a paper reader opens the consequences window, as
- * before K3a. Everything that used to ride the wide route quietly — a "new" order, an account
- * without the journal right — asks the preview first and applies a silent one at once
- * (`termPreviewIsSilent`): a new order has neither vehicle nor paper, and a window saying "nothing
+ * before K3a. A «Новая» order of a paper reader asks the preview first and applies a silent one at
+ * once (`termPreviewIsSilent`): it has neither vehicle nor paper, and a window saying "nothing
  * happens" would only teach people to press without reading. A loud preview opens the window.
+ *
+ * NO FALLBACK ON 403. A refusal by right from the door is shown as it is, not retried through the
+ * wide PATCH. The only accounts it can reach edit an order in work without the journal — no
+ * shipped role does (site and department roles edit «Новая» only), a hand-made grant set could —
+ * and for an order in work S-22 keeps the door as the only route: R2 refuses dates there anyway.
  */
 export function useEditorTermDoor({ state, saveRest }: Input) {
   const { can } = useAuth();
@@ -109,25 +117,10 @@ export function useEditorTermDoor({ state, saveRest }: Input) {
 
   const silent = useMutation({
     mutationFn: async ({ request, command, values }: PendingPeriodSave): Promise<SilentOutcome> => {
-      let preview;
-      try {
-        preview = await vehicleRequestsApi.periodPreview(request.id, {
-          version: request.version,
-          ...command,
-        });
-      } catch (error) {
-        /*
-         * TRANSITIONAL — the only path left that sends the term in the wide PATCH. Today the door
-         * is guarded by `waybills.read` at the route, and the customer roles (site, department)
-         * hold `vehicleRequests.update` without the journal right: the door answers them 403
-         * while the wide route still moves their "new" order's term. The fallback keeps their
-         * edit working until the server asks that right by the plan instead (the open server
-         * prerequisite of K3a, ADR 0214, last section); then this preview answers them and the
-         * branch is never taken. R2 may drop the wide-PATCH dates only after that.
-         */
-        if (isApiError(error) && error.status === 403) return { kind: 'legacy' };
-        throw error;
-      }
+      const preview = await vehicleRequestsApi.periodPreview(request.id, {
+        version: request.version,
+        ...command,
+      });
       const reason = (values.backdateReason ?? '').trim();
       if (!termPreviewIsSilent(preview, reason)) return { kind: 'window' };
       const result = await vehicleRequestsApi.changePeriod(
@@ -140,10 +133,6 @@ export function useEditorTermDoor({ state, saveRest }: Input) {
       return { kind: 'applied', result };
     },
     onSuccess: (outcome, pending) => {
-      if (outcome.kind === 'legacy') {
-        saveRest({ values: pending.values, legacyTerm: true });
-        return;
-      }
       if (outcome.kind === 'window') {
         setWindowSave(pending);
         return;
@@ -167,12 +156,17 @@ export function useEditorTermDoor({ state, saveRest }: Input) {
 
   /**
    * Starts the term step. `false` — the form leaves the term as it is (or the edit is not of an
-   * on-site order), and the caller saves the rest at once with `applied`.
+   * on-site order), and the caller saves the rest at once with `applied`. `true` — the step has
+   * taken the save over: the door first, or the wide PATCH with the term in the S-22 case.
    */
   const start = (values: FormValues): boolean => {
     if (!current) return false;
     const command = termCommandOf(values, current);
     if (!command) return false;
+    if (termRidesWideEdit(current.status, can('waybills.read'))) {
+      saveRest({ values, termInBody: true });
+      return true;
+    }
     const pending: PendingPeriodSave = { request: current, command, values };
     if (current.status !== 'new' && can('waybills.read')) setWindowSave(pending);
     else silent.mutate(pending);

@@ -1,11 +1,12 @@
-import type { PeriodApplyBody, PeriodPreviewDto } from '@technic/contracts';
+import type { PeriodApplyBody, PeriodPreviewDto, RequestStatus } from '@technic/contracts';
 import type { FormValues } from './requestFormValues';
 import type { VehiclePeriodCommand } from './types';
 
 /**
- * The work term of an on-site order as an edit sees it (K3a of the assignment periods plan, S-21 of
- * 12.10.2026): the term moves only through its own door (`PATCH /vehicle-requests/:id/period`),
- * and the wide `PATCH /vehicle-requests/:id` carries everything else.
+ * The work term of an on-site order as an edit sees it (K3a of the assignment periods plan; owner
+ * surveys S-21 and S-22 of 12.10.2026): the term moves through its own door
+ * (`PATCH /vehicle-requests/:id/period`), and the wide `PATCH /vehicle-requests/:id` carries
+ * everything else — except the one case `termRidesWideEdit` names.
  *
  * `version` travels with the term because the door bumps it: the rest of the edit must go with the
  * version the door returned, or the server answers 409 to an edit the person has already started.
@@ -14,6 +15,25 @@ export interface EditorTerm {
   version: number;
   dateFrom: string;
   dateTo: string | null;
+}
+
+/**
+ * Whether this edit sends the term in the wide PATCH instead of the door (S-22 of 12.10.2026).
+ *
+ * The door is guarded by `waybills.read`: its preview shows sheet numbers and the people on them,
+ * and the owner kept that right as is. The customer roles — the site and the department, who edit
+ * their own «Новая» orders — hold `vehicleRequests.update` without the journal (ADR 0192), so for
+ * them the door is closed by design, not by an oversight. A «Новая» order has no vehicle, no paper
+ * and no history, so the door has nothing to show them either, and the owner decided that its term
+ * stays on the wide route: release R2 removes the dates from the wide PATCH only for orders in work.
+ *
+ * Both halves are needed. Without the status, a customer would send dates for an order in work,
+ * which R2 refuses; without the right, a dispatcher's «Новая» edit would skip the door that still
+ * serves him (and keeps the legacy-call metric honest). The right comes from the server's list
+ * (`can`, ADR 0223), the same list the door's guard reads.
+ */
+export function termRidesWideEdit(status: RequestStatus, canReadJournal: boolean): boolean {
+  return status === 'new' && !canReadJournal;
 }
 
 /**

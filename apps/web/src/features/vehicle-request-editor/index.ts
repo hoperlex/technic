@@ -23,7 +23,12 @@ export {
 } from './model/requestTripsForm';
 export type { TripFormValue } from './model/requestTripsForm';
 export type { VehiclePeriodCommand } from './model/types';
-export { silentTermApplyBody, termCommandOf, termPreviewIsSilent } from './model/termEdit';
+export {
+  silentTermApplyBody,
+  termCommandOf,
+  termPreviewIsSilent,
+  termRidesWideEdit,
+} from './model/termEdit';
 export type { EditorTerm } from './model/termEdit';
 export { retypeErases } from './model/retypeErases';
 export { copyNotice } from './ui/copyNotice';
