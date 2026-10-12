@@ -33,11 +33,11 @@ import { ServiceEstimateDisputeModal } from '../src/pages/service/ServiceEstimat
  * фикстуры здесь собраны той же четвёркой — `autoAcceptedServiceRequest` держит её целиком, потому
  * что порознь такого состояния в базе не бывает.
  *
- * СЦЕНАРИЙ «ПОДПИСЬ ЧЕЛОВЕКА» СТЕРЕЖЁТ САМУЮ ДОРОГУЮ ИЗ ЭТИХ ТОЧЕК. Пропади `approval.source` из
- * ответа — правило «пусто = человек» ответило бы `human` на каждой заявке, `exemptionApplied` стал
- * бы ложен всегда, и «Оспорить освобождение» исчезло бы молча: пункт, нарисованный в коде, но
- * недостижимый ни при каких данных. Именно так этот караул и краснеет — не на фикстуре без поля, а
- * на состоянии, где поле есть, но говорит другое.
+ * THE "PERSON'S SIGNATURE" CASE GUARDS THE MOST EXPENSIVE OF THESE POINTS. Read the source wrong
+ * and `exemptionApplied` would be false (or true) on every request, so «Оспорить освобождение» would
+ * vanish silently or show up at a person's signature. Since release B (ADR 0183) the source always
+ * comes with the signature, and the case states it explicitly — the state where the field is there
+ * but says something else.
  */
 
 /** «Ведение»: спор ведёт держатель `serviceRequests.assign` — тем же правом, каким распределяет. */
@@ -102,11 +102,10 @@ describe('«Оспорить освобождение» открыто тому 
 
   it('по подписи ЧЕЛОВЕКА — нет: такой объём работ возвращают в правку, а не оспаривают', () => {
     /*
-     * Источник подписи читается единственным носителем правила «пусто = человек»
-     * (`serviceEstimateApprovalSourceOf`), и здесь поле опущено намеренно — так отвечает приложение,
-     * не знающее про волну, в окне выката. Ответ обязан быть тот же, что у явного `human`: подпись
-     * настоящая, спорить не о чем. Тот же случай стережёт и обратное — пропади `source` из ответа
-     * нового сервера, пункт исчез бы на ВСЕХ заявках, и заметить это можно только здесь.
+     * A person signed the current revision — the state the dispute outcome "signature required"
+     * leaves behind. The source is `human`, and the item must not appear: the signature is real,
+     * there is nothing to dispute. The field is always sent since release B (ADR 0183), so the case
+     * no longer models a server that omits it.
      */
     const signed = autoAcceptedServiceRequest({
       approval: {
@@ -114,6 +113,7 @@ describe('«Оспорить освобождение» открыто тому 
         by: 'user-2',
         byName: 'Операторов О. О.',
         at: '2026-09-10T10:00:00.000Z',
+        source: 'human',
       },
     });
     expect(keysFor(signed, OPERATOR)).not.toContain('estimate-dispute');

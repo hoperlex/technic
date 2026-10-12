@@ -224,6 +224,7 @@ const APPROVAL = {
   byName: 'Операторов О. О.',
   at: '2026-08-05T10:00:00.000Z',
   revision: 1,
+  source: 'human' as const,
 };
 
 /**

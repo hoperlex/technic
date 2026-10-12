@@ -534,7 +534,8 @@ describe.skipIf(!DB_URL)('автозакрытие заявок оргтехни
     await ctx.db.execute(sql`
       UPDATE service_requests
          SET estimate_revision = 4, approved_estimate_revision = 3,
-             estimate_approved_at = now(), estimate_approved_by = NULL
+             estimate_approved_at = now(), estimate_approved_by = NULL,
+             estimate_approval_source = 'human'
        WHERE id = ${stale}`);
 
     const signed = await makeRequest('signed', { completedAgo: '200 days', service: true });
@@ -542,7 +543,8 @@ describe.skipIf(!DB_URL)('автозакрытие заявок оргтехни
     await ctx.db.execute(sql`
       UPDATE service_requests
          SET estimate_revision = 2, approved_estimate_revision = 2,
-             estimate_approved_at = now(), estimate_approved_by = NULL
+             estimate_approved_at = now(), estimate_approved_by = NULL,
+             estimate_approval_source = 'human'
        WHERE id = ${signed}`);
 
     await autoClose();

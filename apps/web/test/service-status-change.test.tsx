@@ -211,6 +211,7 @@ describe('перечень потерь перед отменой (ADR 0161, р�
         byName: 'Оператор О. О.',
         at: '2026-08-07T10:00:00.000Z',
         revision: 2,
+        source: 'human',
       },
     });
     renderTab(serviceOperator(), [inWork]);

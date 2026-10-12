@@ -1089,21 +1089,25 @@ function toDto(
     // эту дату не трогает, и у отозванного она непуста.
     estimateSubmittedAt: r.estimateSubmittedAt ? r.estimateSubmittedAt.toISOString() : null,
     estimatedTotalAmount: num(r.estimatedTotalAmount),
+    /*
+     * The three conjuncts are one fact. `service_requests_approval_check` pairs the date with the
+     * revision, and `service_requests_estimate_approval_source_check` (release B, ADR 0183) pairs it
+     * with the source, so a signed row always has all three; the last test only narrows the type
+     * and never hides a signature.
+     */
     approval:
-      r.estimateApprovedAt && r.approvedEstimateRevision !== null
+      r.estimateApprovedAt && r.approvedEstimateRevision !== null && r.estimateApprovalSource
         ? {
             by: r.estimateApprovedBy,
             byName: row.approvedByName ?? '',
             at: r.estimateApprovedAt.toISOString(),
             revision: r.approvedEstimateRevision,
             /*
-             * ЧЕМ ПОСТАВЛЕНА ПОДПИСЬ (Р11) — полем, а не выводом портала из пустого автора. Без него
-             * карточка читает подпись как человеческую ВСЕГДА (`serviceEstimateApprovalSourceOf`
-             * так и написана: пусто = `human`), то есть показывает подпись под автопринятием —
-             * ровно то обвинение, от которого правило и оберегает. И тем же признаком считается
-             * «освобождение применено» (`ServiceEstimateDisputeFacts.exemptionApplied`): без него
-             * портал не может позвать `canOpenServiceEstimateDispute` — вывести источник подписи из
-             * карточки больше неоткуда.
+             * WHAT SET THE SIGNATURE (Р11) — a field, not the portal's guess from an empty author:
+             * a human signature loses its author when the user is deleted, and an automatic one
+             * never had one. The same field makes "the exemption is applied"
+             * (`ServiceEstimateDisputeFacts.exemptionApplied`) — without it the portal could not
+             * call `canOpenServiceEstimateDispute` at all.
              */
             source: r.estimateApprovalSource,
           }
@@ -7457,12 +7461,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
                   ? { autoCloseNotBefore: signedAt }
                   : {}),
                 /*
-                 * ИСТОЧНИК НАЗЫВАЕТСЯ ЯВНО, хотя пустое значение и читается как `human` (Р11).
-                 * Причина не в красоте записи: подпись человека приходит и поверх автопринятой —
-                 * исход спора «нужна подпись» (Э5) снимает автоподпись и открывает ожидание, — а
-                 * `service_requests_estimate_approval_source_check` запрещает `auto` вместе с
-                 * автором. Оставь мы колонку нетронутой, первое же такое согласование упало бы
-                 * ошибкой БД.
+                 * THE SOURCE GOES WITH THE SIGNATURE, always (Р11):
+                 * `service_requests_estimate_approval_source_check` accepts a signature only with
+                 * its source (release B, ADR 0183) and forbids `auto` with an author. A person's
+                 * signature also lands on top of an automatic one — the dispute outcome "signature
+                 * required" (Э5) removes the automatic signature and opens the pending state — so
+                 * a column left untouched would fail that approval with a database error.
                  */
                 estimateApprovalSource: 'human',
                 estimatePendingRevision: null,

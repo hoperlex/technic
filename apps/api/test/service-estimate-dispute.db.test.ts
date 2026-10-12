@@ -1063,11 +1063,11 @@ describe.skipIf(!DB_URL)('спор об освобождении от подпи
     });
 
     /**
-     * ВТОРОЙ ПРИЗНАК, КОТОРОГО ПОРТАЛУ НЕ ХВАТАЛО, — ИСТОЧНИК ПОДПИСИ. «Освобождение применено»
-     * (`ServiceEstimateDisputeFacts.exemptionApplied`) складывается из следа заявления, равенства
-     * ревизий и источника `auto`; без источника в карточке портал не может позвать
-     * `canOpenServiceEstimateDispute` вовсе, а надпись читала бы автопринятие как подпись живого
-     * человека (`serviceEstimateApprovalSourceOf`: пусто = `human`).
+     * THE SECOND FACT THE PORTAL LACKED — THE SIGNATURE SOURCE. "The exemption is applied"
+     * (`ServiceEstimateDisputeFacts.exemptionApplied`) is made of the declaration trace, equal
+     * revisions and the source `auto`; without the source in the card the portal could not call
+     * `canOpenServiceEstimateDispute` at all, and the card would have no way to tell an automatic
+     * signature from a person's.
      */
     it('карточка называет источник подписи: автопринятие — `auto`, подпись после спора — `human`', async () => {
       const { id } = await exemptRequest('Источник подписи в карточке');

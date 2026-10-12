@@ -1933,14 +1933,12 @@ export const serviceEstimateExemptionOutcomeLabels: Record<
 };
 
 /**
- * ИСТОЧНИК ПОДПИСИ под ревизией (Р11): подпись поставил человек или её проставило автопринятие.
+ * SOURCE OF THE SIGNATURE under a revision (Р11): a person signed, or the automatic acceptance did.
  *
- * ПУСТО = `human`, И ЭТО НЕ МЯГКОСТЬ. Миграции идут при работающем портале и до перезапуска
- * приложения (AGENTS.md), поэтому заявки, подписанные старым кодом между накатом колонки и
- * перезапуском, живут с настоящей человеческой подписью и пустым источником; строгая связка
- * «подпись ⇔ источник» приходит только выпуском B (Э9). До него правило чтения обязано жить в
- * одном месте — `serviceEstimateApprovalSourceOf`, — иначе карточка, письмо и выгрузка разойдутся
- * в том, чем считать такую подпись.
+ * Present exactly when the request is signed (release B, ADR 0183): the database pairs the two
+ * (`service_requests_estimate_approval_source_check`). Release A had to read an empty source as
+ * `human` — code that knew nothing about the column signed in its rollout window — and that rule is
+ * gone with the pair: a reader takes the value as the server sends it.
  */
 export const SERVICE_ESTIMATE_APPROVAL_SOURCES = ['human', 'auto'] as const;
 export type ServiceEstimateApprovalSource = (typeof SERVICE_ESTIMATE_APPROVAL_SOURCES)[number];
@@ -4029,34 +4027,16 @@ export interface ServiceRequestApprovalDto {
   /** Какая именно ревизия согласована: по ней сервер и пускает работы к закрытию. */
   revision: number;
   /**
-   * ЧЕМ ПОСТАВЛЕНА ПОДПИСЬ (Р11): `human` — человеком, `auto` — автопринятием по заявлению оператора
-   * сервиса. У `auto` подписавшего нет вовсе (`by` пуст, `byName` пусто), и карточка обязана сказать
-   * это словами, а не показать подпись без имени.
+   * WHAT SET THE SIGNATURE (Р11): `human` — a person, `auto` — the automatic acceptance on the
+   * service operator's declaration. `auto` has no signer at all (`by` empty, `byName` empty), and the
+   * card must say so in words rather than show a signature without a name.
    *
-   * ПУСТО ЧИТАЕТСЯ КАК `human`, и причин этому две, обе внешние. `null` в колонке — заявка,
-   * подписанная старым кодом между накатом колонки и перезапуском приложения: подпись там настоящая
-   * человеческая, и назвать её «неизвестной» значило бы соврать про существующий факт. Отсутствие
-   * поля — ответ старого приложения новому порталу в окне выката. Читать это правило руками нельзя
-   * (`?? 'human'` по месту разойдётся), на него есть `serviceEstimateApprovalSourceOf`.
+   * Always present (release B, ADR 0183): the database keeps the signature and its source as one
+   * pair, and every server this portal can meet sends the field — the portal ships with its own
+   * server, and in the rollout window it meets only the previous release, which has sent the
+   * field since release A. So there is no "empty means a person" fallback to apply.
    */
-  source?: ServiceEstimateApprovalSource | null;
-}
-
-/**
- * ЧЕМ СЧИТАТЬ ПОДПИСЬ — единственное место правила «пусто = человек» (Р11).
- *
- * Своей функцией, а не `?? 'human'` по месту вызова: спрашивают это карточка, тег списка, письмо и
- * выгрузка истории, и разложенное по ним правило разъехалось бы — а расхождение здесь выглядит как
- * «принято без согласования» у заявки, которую согласовал живой человек, то есть как обвинение.
- *
- * Строгая связка «подпись ⇔ источник» приходит выпуском B (Э9): до неё `null` законен, и функция
- * обязана его переживать.
- */
-export function serviceEstimateApprovalSourceOf(
-  approval: Pick<ServiceRequestApprovalDto, 'source'> | null | undefined,
-): ServiceEstimateApprovalSource | null {
-  if (!approval) return null;
-  return approval.source ?? 'human';
+  source: ServiceEstimateApprovalSource;
 }
 
 /**

@@ -16,7 +16,6 @@ import {
   canSubmitServiceEstimate,
   evaluateExemption,
   hasFeature,
-  serviceEstimateApprovalSourceOf,
   type ServiceActionRequest,
   type ServiceEstimateDisputeFacts,
   type ServiceExecutorAssignment,
@@ -27,35 +26,36 @@ import type { serviceReasonPrompts } from './serviceRequestPrompts';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 
 /**
- * ПРИЗНАКИ, КОТОРЫМИ РЕШАЕТСЯ СПОР (Р9), — собранные из карточки, а не посчитанные своим правилом.
+ * THE FACTS THE DISPUTE IS DECIDED BY (Р9) — collected from the card, not computed by a rule of the
+ * portal's own.
  *
- * Предикаты спора принимают их готовыми именно затем, что спрашивают его двое: сервер читает
- * таблицы (`disputeFactsOf`), портал — поля DTO. Слагаемые здесь те же и в том же составе, что на
- * сервере, и каждое отсекает своё состояние:
+ * The dispute predicates take them ready-made precisely because two sides ask: the server reads the
+ * tables (`disputeFactsOf`), the portal reads the DTO fields. The terms here are the same and in the
+ * same composition as on the server, and each cuts off its own state:
  *
- *   · заявление с исходом `applied` по ДЕЙСТВУЮЩЕЙ ревизии — наблюдённое (`observed`) освобождением
- *     не является вовсе, а заявление по прошлой ревизии снято переизданием;
- *   · подпись стоит под той же ревизией — возврат в правку снимает её, ревизии не поднимая;
- *   · источник подписи — `auto`: подписанный человеком объём работ возвращают в правку, а не
- *     оспаривают, иначе спор шёл бы по кругу вокруг подписи, которую сам же спор и потребовал.
+ *   · a declaration with the outcome `applied` on the CURRENT revision — an `observed` one is not an
+ *     exemption at all, and a declaration on a past revision was superseded by a re-issue;
+ *   · the signature stands under the same revision — the return for editing removes it without
+ *     raising the revision;
+ *   · the signature source is `auto`: an estimate signed by a person is returned for editing, not
+ *     disputed, otherwise the dispute would circle around the very signature it demanded.
  *
- * Источник читается ЕДИНСТВЕННЫМ носителем правила «пусто = человек»
- * (`serviceEstimateApprovalSourceOf`), а не сравнением с `'auto'` по месту: расхождение здесь
- * выглядит как «принято без согласования» у заявки, которую подписал живой человек, — то есть как
- * обвинение.
+ * The source is read as the server sends it. Since release B (ADR 0183) a signature always comes
+ * with its source — the database pairs them (`service_requests_estimate_approval_source_check`) — so
+ * there is no "empty means a person" rule left to apply here.
  *
- * ЧЕТЫРЕ СЛАГАЕМЫХ — ЧЕТЫРЕ ПОЛЯ КАРТОЧКИ, И ВСЕ ЧЕТЫРЕ СЕРВЕР ОТДАЁТ: `exemption` (исход и его
- * ревизия), `approval.revision`, `approval.source` и `dispute.state`. Это не мелочь учёта, а условие
- * существования пункта: не отдай сервер источник подписи, правило «пусто = человек» ответило бы
- * `human` на КАЖДОЙ заявке, `exemptionApplied` был бы ложен всегда, и «Оспорить освобождение» не
- * появилось бы никогда — нарисованный пункт, недостижимый по построению. Признак открытого спора
- * держится на том же: `holdKind` в карточку не отдаётся вовсе, а выводить спор из «Отложена» нечем —
- * отложенной бывает и заявка, ждущая запчасть, и «Разрешить спор» на ней был бы вторым мнением
- * портала о правах.
+ * FOUR TERMS — FOUR CARD FIELDS, AND THE SERVER SENDS ALL FOUR: `exemption` (the outcome and its
+ * revision), `approval.revision`, `approval.source` and `dispute.state`. This is a condition of the
+ * item's existence, not bookkeeping: drop the source from the server's answer and
+ * `exemptionApplied` would be false on EVERY request, so «Оспорить освобождение» would never appear —
+ * an item drawn but unreachable by construction. The open-dispute fact rests on the same: `holdKind`
+ * is not sent to the card at all, and there is nothing to infer a dispute from «Отложена» with — a
+ * request waiting for a spare part is on hold too, and «Разрешить спор» on it would be a second
+ * opinion of the portal about rights.
  *
- * ОТСЮДА И ПРАВИЛО ДЛЯ ПРАВОК: убирая или переименовывая любое из четырёх полей на сервере, сперва
- * спросите этот пункт — он исчезает молча, и заметит это не прогон, а «Ведение», оставшееся без
- * единственного входа в контроль постфактум.
+ * HENCE THE RULE FOR EDITS: before removing or renaming any of the four fields on the server, ask
+ * this item — it disappears silently, and the one to notice is not a test run but «Ведение», left
+ * without its only entry into after-the-fact control.
  */
 export function serviceEstimateDisputeFacts(
   request: ServiceRequestDto,
@@ -67,7 +67,7 @@ export function serviceEstimateDisputeFacts(
       exemption?.outcome === 'applied' &&
       exemption.revision === request.estimateRevision &&
       approval?.revision === request.estimateRevision &&
-      serviceEstimateApprovalSourceOf(approval) === 'auto',
+      approval.source === 'auto',
     disputeOpen: request.dispute?.state === 'open',
   };
 }

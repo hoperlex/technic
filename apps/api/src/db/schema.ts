@@ -3217,19 +3217,16 @@ export const serviceRequests = pgTable(
       onDelete: 'set null',
     }),
     estimateApprovedAt: timestamp('estimate_approved_at', { withTimezone: true }),
-    // Источник подписи под объёмом работ (Р11 плана освобождения, миграция 0306): `human` —
-    // согласовал человек, `auto` — подпись проставлена заявлением «Согласование не требуется» (Р1).
-    // `NULL` читается как `human`: так выглядят все подписи до этого выпуска и все, что поставит
-    // старый код в окне выката, — этого обязан держаться весь код выпуска A.
+    // Source of the estimate signature (decision Р11 of the exemption plan, migration 0306):
+    // `human` — a person signed, `auto` — the signature was set by the declaration «Согласование не
+    // требуется» (Р1). Present EXACTLY when the request is signed (release B, ADR 0183): the strict
+    // pair is `service_requests_estimate_approval_source_check`, so a signed row never carries
+    // `NULL` here and code reads the value as it is, without a "null means human" rule.
     //
-    // У `auto` автора подписи нет и быть не может (тот же довод, что у `acceptance_source`): за
-    // автоподпись не отвечает ни один человек, а подставить в автора заявителя освобождения значило
-    // бы записать, что оператор сервиса согласовал смету сам себе, — ровно то, что
-    // `canApproveServiceEstimate` запрещает явно.
-    //
-    // Связки «подпись ⇔ источник» в выпуске A нет намеренно: старый код ставит и гасит подпись, про
-    // источник не зная, и равенство уронило бы у него первое же согласование. Она встаёт выпуском B
-    // (этап Э9 плана, образец — миграция 0198).
+    // `auto` has no author and cannot have one (the same argument as for `acceptance_source`): no
+    // person answers for an automatic signature, and putting the declaring operator there would
+    // record that the service operator approved his own estimate — exactly what
+    // `canApproveServiceEstimate` forbids.
     estimateApprovalSource: text('estimate_approval_source').$type<'human' | 'auto'>(),
     // Согласованная сумма и сумма по акту разведены: одной колонкой после закрытия уже не
     // ответить, ту ли сумму согласовывали. Итоги считает сервер из строк сметы; корректировка
@@ -3392,30 +3389,34 @@ export const serviceRequests = pgTable(
     // первом. Исключения по статусам остались прежними («Новая», «Согласована ИТ», «Отменена») и
     // считаются по «эффективному» статусу (миграция 0162) — отложенная из «Новой» исполнителя не
     // имеет и иметь не должна.
-    // Согласование — снимок «когда и что именно»: дата без ревизии не говорит, ЧТО согласовали, а
-    // ревизия без даты — что согласование вообще было. Эта пара нерушима.
+    // The approval is a snapshot of "when and what exactly": a date without a revision does not
+    // say WHAT was approved, and a revision without a date does not say that it was approved at
+    // all. This pair is unbreakable.
     //
-    // ПОДПИСЬ БЕЗ АВТОРА ЗАКОННА (Р11 плана освобождения, миграция 0306), и прежнее равенство по
-    // автору снято: у автопринятия (`estimate_approval_source = 'auto'`) автора нет вовсе — за него
-    // не отвечает ни один человек. Снятие попутно убирает мину, которая стояла и у обычной подписи:
-    // ссылка на автора объявлена `set null`, и удаление уволенной учётки обнуляло её у согласованной
-    // заявки — то есть упиралось в это ограничение (тот же разбор, что в 0198 про приёмку).
+    // A SIGNATURE WITHOUT AN AUTHOR IS LEGAL (decision Р11 of the exemption plan, migration 0306),
+    // and the former equality on the author is gone: an automatic signature
+    // (`estimate_approval_source = 'auto'`) has no author — no person answers for it. Dropping it
+    // also removed a mine under the ordinary signature: the author reference is `set null`, and
+    // deleting a dismissed user nulled it on an approved request, that is, ran into this very
+    // constraint (the same analysis as 0198 for the acceptance).
     //
-    // Уцелевшее направление прежней пары: «кто-то согласовал, но когда — неизвестно» было
-    // бессмыслицей и осталось ею. Строгая связка «подпись ⇔ источник» — выпуск B (этап Э9).
+    // The surviving direction of the former pair: "someone approved, but when is unknown" made no
+    // sense and still does not. The strict pair with the source is the next check.
     approval: check(
       'service_requests_approval_check',
       sql`(${t.estimateApprovedAt} IS NULL) = (${t.approvedEstimateRevision} IS NULL)
           AND (${t.estimateApprovedBy} IS NULL OR ${t.estimateApprovedAt} IS NOT NULL)`,
     ),
-    // Мягкая редакция выпуска A, дословно как у приёмки (0176): перечень значений и запрет автора у
-    // автоподписи — всё, что можно потребовать, пока старый код в окне выката ставит и гасит подпись,
-    // про источник не зная. Строгое «источник есть ровно у подписанной» — выпуск B (Э9).
+    // Signed exactly when the source is known — release B (ADR 0183), word for word as the
+    // acceptance pair of 0198. Release A (0306) could require only the value list and "no author
+    // for `auto`": code that knew nothing about the source still signed and cleared signatures in
+    // its rollout window. Every writer since then sets and clears the four snapshot columns together
+    // (the audit is in the migration that made the pair strict).
     estimateApprovalSource: check(
       'service_requests_estimate_approval_source_check',
-      sql`${t.estimateApprovalSource} IS NULL
-          OR (${t.estimateApprovalSource} IN ('human','auto')
-              AND (${t.estimateApprovalSource} <> 'auto' OR ${t.estimateApprovedBy} IS NULL))`,
+      sql`(${t.estimateApprovedAt} IS NULL) = (${t.estimateApprovalSource} IS NULL)
+          AND (${t.estimateApprovalSource} IS NULL OR ${t.estimateApprovalSource} IN ('human','auto'))
+          AND (${t.estimateApprovalSource} <> 'auto' OR ${t.estimateApprovedBy} IS NULL)`,
     ),
     // Перечень значений и ничего больше: связку с `estimate_pending_revision` нельзя поставить ни в
     // одну сторону, пока в проде живёт старый код. Он открывает ожидание без происхождения
