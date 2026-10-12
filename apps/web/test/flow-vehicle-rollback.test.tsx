@@ -240,6 +240,28 @@ async function openStatusMenu(target: string) {
   fireEvent.click(item);
 }
 
+/**
+ * The status menu of the row at `index`: with several rows the first "В работе" tag is not enough,
+ * and an earlier row's menu stays in the DOM — only the newest one is clicked.
+ */
+async function openRowStatusMenu(index: number, target: string) {
+  const tags = [...document.querySelectorAll('button')].filter(
+    (el) => el.textContent === 'В работе',
+  );
+  expect(tags[index], `тег статуса строки ${index}`).toBeTruthy();
+  fireEvent.click(tags[index]!);
+  const item = await waitFor(() => {
+    // The newest menu is the last one in the DOM: jsdom runs no closing animation, so an earlier
+    // row's menu keeps its items without the hidden class.
+    const found = [...document.querySelectorAll('.ant-dropdown-menu-item')]
+      .reverse()
+      .find((el) => el.textContent === target);
+    expect(found, `пункт меню «${target}»`).toBeTruthy();
+    return found!;
+  });
+  fireEvent.click(item);
+}
+
 /** The rollback dialog's button: its captions are "Вернуть в «Новую»" and "Не возвращать". */
 function submitRollbackModal() {
   clickButton('Вернуть в «Новую»');
@@ -407,6 +429,101 @@ describe('возврат заявки на технику в «Новую»', ()
     expect(await screen.findByText('Т-42')).toBeDefined();
     await openRollbackWindow();
     expect(screen.queryByText(ROLLBACK_WAYBILL_MESSAGE)).toBeNull();
+  });
+
+  it('отказ двери по названной помехе — её текст, а не «последствия пересчитаны»', async () => {
+    // The active-waybill refusal is a 409 with the same shared code as a stale fingerprint, but the
+    // door raises it before comparing fingerprints. The dialog already named it, so the honest
+    // answer is the door's text — not "the data changed" over data that did not change.
+    const refusal = `${ROLLBACK_WAYBILL_MESSAGE} (Т-42)`;
+    const http = renderTab({
+      [PREVIEW_ROUTE]: () =>
+        json({ ...PREVIEW, blockers: [{ code: 'active_waybill', message: refusal }] }),
+      [STATUS_ROUTE]: () => apiError(409, { code: 'version_conflict', message: refusal }),
+    });
+    expect(await screen.findByText('Т-42')).toBeDefined();
+    await openRollbackWindow();
+
+    typeReason();
+    submitRollbackModal();
+
+    await waitFor(() =>
+      expect(document.querySelector('.ant-message-notice')?.textContent).toContain(refusal),
+    );
+    expect(screen.queryByText('Последствия пересчитаны')).toBeNull();
+    expect(http.countOf(PREVIEW_ROUTE)).toBe(1);
+  });
+
+  it('строку решает план, даже если в строке списка нет названия', async () => {
+    // A list row that went stale before the dialog opened lacks the vehicle and the fact the
+    // server is about to remove. The plan says they go, so the dialog says so too, unnamed.
+    renderTab({
+      'GET /vehicle-requests/feed': () =>
+        json(
+          vehicleFeed([approvedVehicleRequest({ ...IN_WORK, assignment: null, completion: null })]),
+        ),
+      [PREVIEW_ROUTE]: () => json({ ...EMPTY_PREVIEW, assignment: true, completion: true }),
+    });
+    expect(await screen.findByText('Т-42')).toBeDefined();
+    await openRollbackWindow();
+
+    expect(screen.getByText('Назначенная техника со ставками')).toBeDefined();
+    expect(screen.getByText('Предъявленный факт')).toBeDefined();
+  });
+
+  it('запоздавший ответ о другой заявке окно не подменяет', async () => {
+    // The dialog is closed while the first answer is on its way and opened on another row. The late
+    // answer belongs to the first request: shown here, it would also send that request's version
+    // and fingerprint to the second one's door.
+    const OTHER = approvedVehicleRequest({
+      ...IN_WORK,
+      id: 'vr-2',
+      num: 43,
+      displayNumber: 'Т-43',
+      version: 9,
+    });
+    const OTHER_PREVIEW: VehicleRequestRollbackPreviewDto = {
+      ...EMPTY_PREVIEW,
+      routes: { detach: [{ routeNumber: 'Р-7', date: '2026-08-07' }], frozen: [] },
+      fingerprint: 'fp-other',
+    };
+    const held: { release?: () => void } = {};
+    const http = renderTab({
+      'GET /vehicle-requests/feed': () => json(vehicleFeed([IN_WORK, OTHER])),
+      [PREVIEW_ROUTE]: ({ params }) =>
+        params.id === IN_WORK.id
+          ? new Promise<MockResponse>((resolve) => {
+              held.release = () => resolve(json(PREVIEW));
+            })
+          : json(OTHER_PREVIEW),
+    });
+    expect(await screen.findByText('Т-43')).toBeDefined();
+
+    await openRowStatusMenu(0, 'Новая');
+    expect(await screen.findByText('Выясняем, что снимет возврат')).toBeDefined();
+    // Leaving stays possible while the answer is awaited: only the confirmation waits for it.
+    clickButton('Не возвращать');
+    await expectModalClosed('Возврат заявки в «Новую»');
+
+    await openRowStatusMenu(1, 'Новая');
+    expect(await screen.findByText('Место в рейсе Р-7 за 07.08.2026')).toBeDefined();
+    held.release!();
+    await waitFor(() => expect(http.countOf(PREVIEW_ROUTE)).toBe(2));
+    // Let the held answer settle before asserting that it changed nothing.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText('Место в рейсе Р-3 за 05.08.2026')).toBeNull();
+    expect(screen.getByText('Место в рейсе Р-7 за 07.08.2026')).toBeDefined();
+
+    fireEvent.change(screen.getByLabelText('Причина возврата заявки № Т-43'), {
+      target: { value: REASON },
+    });
+    submitRollbackModal();
+    await waitFor(() => expect(http.countOf(STATUS_ROUTE)).toBe(1));
+    expect(http.lastCall(STATUS_ROUTE)?.path).toBe(`/vehicle-requests/${OTHER.id}/status`);
+    expect(http.lastCall(STATUS_ROUTE)?.body).toMatchObject({
+      version: OTHER.version,
+      previewFingerprint: 'fp-other',
+    });
   });
 
   it('отказ предпросмотра показан вместо перечня: вслепую не подтверждают', async () => {

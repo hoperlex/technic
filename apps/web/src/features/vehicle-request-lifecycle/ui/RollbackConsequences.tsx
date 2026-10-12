@@ -17,10 +17,11 @@ import { consequencesListStyle as listStyle } from '@entities/vehicle-request';
  *
  * NOT A SECOND CARRIER OF THE RULE, and the line between the two sides is worth keeping: *whether*
  * a thing goes is the server's answer and is never recomputed here, while *how it is named* to the
- * human is the portal's business. That is why the vehicle and the presented fact are read off the
+ * human is the portal's business. That is why the vehicle and the presented fact are named from the
  * request itself: the preview says `assignment: true`, and the registration number with the rate
- * lives only in the request DTO. A line that told the human more than the plan does — «every
- * relocation goes» — is exactly the defect this window was built to end.
+ * lives only in the request DTO — but the line exists because the plan says so, named or not. A
+ * line that told the human more than the plan does — «every relocation goes» — is exactly the
+ * defect this window was built to end.
  *
  * A file of its own rather than lines inside the lifecycle hook: the hook is the conversation with
  * the server (ask on open, confirm with the fingerprint, ask again on a 409), and this is sixty
@@ -78,13 +79,21 @@ function sheetText(sheet: Esm2CancelPreviewDto): string {
  */
 function eraseLines(request: VehicleRequestDto, p: VehicleRequestRollbackPreviewDto): Line[] {
   const lines: Line[] = [];
-  if (p.assignment && request.assignment) {
+  /*
+   * The plan decides whether the line is there; the request only names it. A request row that went
+   * stale before the dialog opened may lack the vehicle the server is about to remove — then the
+   * line stays, without the name, rather than the window keeping silent about it.
+   */
+  if (p.assignment) {
+    const assignment = request.assignment;
     // Rates name the very commercial agreement being removed; a rental without agreed rates names
     // the lessor — the agreement was with them, and they are the one to call.
-    const detail = assignmentRateLabel(request.assignment) || request.assignment.lessorName;
+    const detail = assignment ? assignmentRateLabel(assignment) || assignment.lessorName : null;
     lines.push({
       key: 'assignment',
-      text: `Назначенная техника: ${assignmentTitle(request.assignment)}${detail ? ` — ${detail}` : ''}`,
+      text: assignment
+        ? `Назначенная техника: ${assignmentTitle(assignment)}${detail ? ` — ${detail}` : ''}`
+        : 'Назначенная техника со ставками',
     });
   }
   for (const r of p.routes.detach) {
@@ -135,10 +144,12 @@ function eraseLines(request: VehicleRequestDto, p: VehicleRequestRollbackPreview
       text: 'Снимется заморозка линейности: взятая в работу заново, заявка пойдёт по справочнику видов техники, каким он будет тогда',
     });
   }
-  if (p.completion && request.completion) {
+  if (p.completion) {
     lines.push({
       key: 'completion',
-      text: `Предъявленный факт: ${completionLabel(request.completion)}`,
+      text: request.completion
+        ? `Предъявленный факт: ${completionLabel(request.completion)}`
+        : 'Предъявленный факт',
     });
   }
   return lines;

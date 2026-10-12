@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { VehicleRequestDto, VehicleRequestRollbackPreviewDto } from '@technic/contracts';
 import { isApiError } from '@shared/api';
@@ -48,6 +48,13 @@ export function useRollbackConsequences({ target }: Input) {
   } | null>(null);
   const [staleReason, setStaleReason] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  /*
+   * The request the dialog is asking about now. An answer for any other request is dropped: closing
+   * the dialog and opening it on another row while the first answer is still on its way would
+   * otherwise show the first request's consequences — and send its version and fingerprint — under
+   * the second one's title.
+   */
+  const askedFor = useRef<string | null>(null);
 
   const mut = useMutation({
     mutationFn: async (v: { request: VehicleRequestDto; stale: string | null }) => ({
@@ -55,7 +62,8 @@ export function useRollbackConsequences({ target }: Input) {
       version: v.request.version,
       preview: await vehicleRequestsApi.rollbackPreview(v.request.id, v.request.version),
     }),
-    onSuccess: ({ preview, version, stale }) => {
+    onSuccess: ({ request, preview, version, stale }) => {
+      if (request.id !== askedFor.current) return;
       setFailure(null);
       setStaleReason(stale);
       setShown({ preview, version });
@@ -65,7 +73,8 @@ export function useRollbackConsequences({ target }: Input) {
      * decision "erase the work or not" is taken right here and now. The previous list is removed —
      * it described a state the server no longer confirmed.
      */
-    onError: (e) => {
+    onError: (e, { request }) => {
+      if (request.id !== askedFor.current) return;
       setShown(null);
       setFailure(errorMessage(e));
     },
@@ -78,7 +87,8 @@ export function useRollbackConsequences({ target }: Input) {
    * `version` catches none of these cases.
    */
   const targetId = target?.id ?? null;
-  const ask = useEffectEvent((_id: string | null) => {
+  const ask = useEffectEvent((id: string | null) => {
+    askedFor.current = id;
     setShown(null);
     setStaleReason(null);
     setFailure(null);
@@ -98,9 +108,10 @@ export function useRollbackConsequences({ target }: Input) {
     /** Fingerprint of the plan read; `undefined` — nothing to confirm, the door will not ask. */
     fingerprint: shown?.preview.fingerprint,
     /**
-     * The answer is still on its way. The dialog passes this to `confirmLoading`: while there are
+     * The answer is still on its way. The dialog disables its confirmation by it: while there are
      * no consequences the click must not go out — there is nothing to promise, while everything
-     * would be erased.
+     * would be erased. Only the confirmation: leaving the dialog stays possible, and an answer
+     * arriving after it is dropped (`askedFor`).
      */
     pending: mut.isPending,
     /**
@@ -108,9 +119,15 @@ export function useRollbackConsequences({ target }: Input) {
      * between reading and clicking, and the dialog's right answer is a fresh list with an
      * explanation, not a "try again" toast. Returns `true` when the refusal is taken over, so the
      * caller's toast stays silent. There are no loops: each round needs a new click.
+     *
+     * Not when the shown plan carries a blocker: the door refuses on a blocker before it compares
+     * fingerprints, and the active-waybill refusal is a 409 with the same shared code. Taken over,
+     * it would be announced as "the data changed" while nothing did — the toast with the door's own
+     * text, already named in the dialog, is the honest answer there.
      */
     recheck: (error: unknown) => {
       if (!target || !isApiError(error) || error.status !== 409) return false;
+      if (shown && shown.preview.blockers.length > 0) return false;
       mut.mutate({ request: target, stale: STALE_REASON });
       return true;
     },

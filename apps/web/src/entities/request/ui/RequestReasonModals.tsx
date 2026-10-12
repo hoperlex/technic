@@ -32,6 +32,8 @@ interface RollbackProps {
   onCancel: () => void;
   onSubmit: (reason: string) => void;
   confirmLoading?: boolean;
+  /** The return cannot be confirmed yet (`ReasonModal`), while the dialog can still be left. */
+  okDisabled?: boolean;
   /** Caption above the field: which request is being returned. */
   subject?: string;
   /**

@@ -17,6 +17,13 @@ interface ReasonProps {
   notice?: ReactNode;
   /** Действие необратимо — кнопка подтверждения красная. */
   danger?: boolean;
+  /**
+   * The confirmation cannot go out yet, while the dialog can still be left. Distinct from
+   * `confirmLoading`: a loading dialog also refuses "Cancel", Esc and the close icon, and a wait
+   * for something the dialog only reads must not lock the person inside it. The reason for the
+   * disabled button is the caller's to show in `notice`.
+   */
+  okDisabled?: boolean;
 }
 
 interface Values {
@@ -45,6 +52,7 @@ export function ReasonModal({
   placeholderHint,
   notice,
   danger,
+  okDisabled,
 }: ReasonProps) {
   const [form] = Form.useForm<Values>();
 
@@ -63,6 +71,7 @@ export function ReasonModal({
       okText={okText}
       cancelText={cancelText}
       okDanger={danger}
+      okDisabled={okDisabled}
       width={440}
     >
       {notice}

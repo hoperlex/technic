@@ -348,12 +348,15 @@ export function useVehicleRequestLifecycle({
           open={!!rollbackTarget}
           subject={rollbackTarget ? `№ ${rollbackTarget.displayNumber}` : ''}
           consequences={rollback.node}
+          confirmLoading={status.isPending}
           /*
-           * Until the consequences arrive the button shows a wait and the click does not go out:
-           * there is nothing to promise the person yet, while everything would be erased. Blockers
-           * live inside the notice too — the server names them in the words the door refuses with.
+           * Until the consequences arrive the click does not go out: there is nothing to promise
+           * the person yet, while everything would be erased. Disabled rather than loading — a
+           * loading dialog refuses "Не возвращать" too, and a hung preview would lock the person
+           * inside a dialog they want to leave. The notice says what is awaited; blockers live
+           * inside it too, in the words the door refuses with.
            */
-          confirmLoading={status.isPending || rollback.pending}
+          okDisabled={rollback.pending}
           onCancel={() => setRollbackTarget(null)}
           onSubmit={(reason) =>
             rollbackTarget &&
