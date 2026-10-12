@@ -169,15 +169,19 @@ describe('форма правки заявки на ТС: поля заявки,
 
     await waitFor(() => expect(screen.getByText('Заявка ТС-601')).toBeDefined());
     await screen.findByLabelText('Тип заявки');
-    expect(formLabels()).toEqual(
-      expect.arrayContaining([
-        'Объект/отдел',
-        'Тип заявки',
-        'Тип/категория ТС',
-        'Дата начала',
-        'Дата окончания',
-        'Ответственный на объекте',
-      ]),
+    // The term fields depend on the watched request type, which reaches the form one render after
+    // the type field's label appears; under load the synchronous check saw only the common fields.
+    await waitFor(() =>
+      expect(formLabels()).toEqual(
+        expect.arrayContaining([
+          'Объект/отдел',
+          'Тип заявки',
+          'Тип/категория ТС',
+          'Дата начала',
+          'Дата окончания',
+          'Ответственный на объекте',
+        ]),
+      ),
     );
   });
 
