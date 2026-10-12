@@ -117,6 +117,9 @@
     `driversImportSchema` их даёт лист «Данные»; маршрут `POST /api/v1/drivers/import` и окно
     `DriversImportModal.tsx` уходят вместе с прежним форматом.
 
+    _Changed by decision 14 (2026-10-12):_ the rules move into `defs/staff.ts`, and both modules
+    named here are deleted.
+
     Довод, на котором п. 9 держался, перевернулся. Он звучал так: файл готовит кадровая служба, а
     разбор XLSX завёл бы второй формат со своими правилами колонок. Теперь второй формат — это
     JSON: `.xlsx` читается для всех справочников одним кодом, и водители остались бы единственным
@@ -147,6 +150,24 @@
     `temp/`, чтобы случайно сохранённая рядом выгрузка не уехала в коммит. В аудите загрузки —
     справочник, имя файла и числа, без поимённого состава: заведённые записи и так видны в самом
     справочнике, а журнал не место для второй копии ФИО.
+
+14. **Owner decision 2026-10-12 (survey S-7): the dead JSON-import modules are deleted, and the
+    rules still needed move into `defs/staff.ts`.** Decision 11 left the parsing rules in
+    `services/driver-import.ts` and `services/driver-import-apply.ts` when the JSON route and its
+    window went away. Since then nothing in production code calls their entry points
+    (`prepareDriverImport`, `applyDriverImport`): only their own tests do, and the staff directory
+    of the exchange (`services/directory-transfer/defs/staff.ts`) imports a handful of helpers
+    from them — `parseCategoryCodes`, `DirectoriesNotSeededError`, `LICENSE_COMMENT`,
+    `licenseWithRequisitesComment`.
+
+    Decided: both modules, the contracts type `DriversImportReportDto` and
+    `driver-import-email.db.test.ts` are deleted; any rule the exchange still needs moves into
+    `defs/staff.ts`. It is a move, not a copy: the point of decision 11 — the file and the form
+    accept the same rows by one set of rules — stays, and only the place where those rules live
+    changes. Decision 11's sentence naming `driver-import.ts` and `driver-import-apply.ts` as that
+    place is superseded by this item.
+
+    **State:** decided, implementation pending (roadmap item F7).
 
 ## Последствия
 
