@@ -27,6 +27,7 @@ export function MechRequestViewModal({
   onEdit,
   actions,
   modals,
+  extension,
 }: {
   /** `null` — окно закрыто. Строка списка: с неё карточка рисуется, пока едет свежая. */
   request: MechRequestDto | null;
@@ -39,6 +40,11 @@ export function MechRequestViewModal({
   actions?: (request: MechRequestDto) => ActionSheetItem[];
   /** Окна действий карточки (ADR 0140): рендерятся внутри неё, иначе уходят под неё. */
   modals?: ReactNode;
+  /**
+   * The extension strip (ADR 0171, stage 3) above the fields: «Продление до … ждёт визы» with the
+   * buttons of whoever may act. Not passed — the card is read-only (the archive).
+   */
+  extension?: (request: MechRequestDto) => ReactNode;
 }) {
   const isMobile = useIsMobile();
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -123,7 +129,16 @@ export function MechRequestViewModal({
       {request && (
         <Tabs
           items={[
-            { key: 'request', label: 'Заявка', children: <ViewFields items={fields} /> },
+            {
+              key: 'request',
+              label: 'Заявка',
+              children: (
+                <>
+                  {extension?.(request)}
+                  <ViewFields items={fields} />
+                </>
+              ),
+            },
             {
               key: 'history',
               label: 'История',

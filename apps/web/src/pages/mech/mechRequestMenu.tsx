@@ -4,14 +4,17 @@ import {
   canApproveMechRequest,
   isMechApprovalChangeable,
   isMechAwaitingIssue,
+  isMechExtensionPending,
   isMechRentalRunning,
   MECH_DELETE_RUNNING_MESSAGE,
   mechDeleteScope,
   mechEditScope,
+  mechExtensionAccess,
   mechTransitionBlocker,
   isPlaceScopedRole,
   type AuthUser,
   type MechRequestDto,
+  type Permission,
   type RequestStatus,
 } from '@technic/contracts';
 import type { ActionSheetItem } from '@shared/ui';
@@ -52,7 +55,10 @@ export interface MechMenuTargets {
   editDeal: (request: MechRequestDto) => void;
   issue: (request: MechRequestDto) => void;
   revokeIssue: (request: MechRequestDto) => void;
+  /** Ask for an extension or change the pending request (ADR 0171, stage 3). */
   extend: (request: MechRequestDto) => void;
+  /** The visa holder's decision window, approval or refusal. */
+  decideExtension: (request: MechRequestDto, mode: 'approve' | 'reject') => void;
   complete: (request: MechRequestDto) => void;
   cancel: (request: MechRequestDto) => void;
   rollbackToNew: (request: MechRequestDto) => void;
@@ -75,10 +81,18 @@ export interface MechMenuRunners {
   setApproval: (request: MechRequestDto, approved: boolean) => void;
   duplicate: (request: MechRequestDto) => void;
   remove: (request: MechRequestDto) => void;
+  /** Withdraw the pending extension request; the caller asks for confirmation. */
+  withdrawExtension: (request: MechRequestDto) => void;
 }
 
 export interface MechMenuOptions {
   user: AuthUser | null;
+  /**
+   * The portal's `can` — membership in the list the server computed (ADR 0223). The extension
+   * items ask it; the older items of this menu still ask the contracts matrix with `user`, a debt
+   * the ADR names (roadmap item Q6) and not repeated by new code.
+   */
+  can: (permission: Permission) => boolean;
   open: MechMenuTargets;
   run: MechMenuRunners;
 }
@@ -93,11 +107,19 @@ export interface MechMenuOptions {
  * «Открыть заявку» в перечне нет: карточку вкладка открывает сама — это её собственное действие, а
  * не пункт цикла заявки.
  */
-export const MECH_RENTAL_ACTION_KEYS: readonly string[] = ['extend', 'status:done'];
+export const MECH_RENTAL_ACTION_KEYS: readonly string[] = [
+  'extend',
+  // The extension visa (ADR 0171, stage 3): the visa holder finds the rentals waiting for him in
+  // this tab by the state tag, and decides from the row as well as from the card.
+  'extension:approve',
+  'extension:reject',
+  'extension:withdraw',
+  'status:done',
+];
 
 export function mechMenuItems(
   request: MechRequestDto,
-  { user, open, run }: MechMenuOptions,
+  { user, can: canList, open, run }: MechMenuOptions,
 ): ActionSheetItem[] {
   // Архивная строка не ведётся вовсе (Б3): у неё есть только восстановление и удаление насовсем, и
   // живут они действиями вкладки «Архив», а не этим меню.
@@ -191,17 +213,45 @@ export function mechMenuItems(
   }
 
   /*
-   * «Продлить» (Р9, Р11) — единственное действие модуля со **своим** правом: продление стоит денег
-   * так же, как сама аренда, и решает его тот, кто говорит с арендодателем, а не тот, кто ведёт
-   * заявку. Поэтому `mechRequests.extend`, а не `mayStatus`, — и пункта нет даже у того, кто эту
-   * же заявку взял в работу и выдал.
-   *
-   * Условие состояния — **весь** предикат действующей аренды: у заявки без отметки выдачи срок ещё
-   * не начался, а у коррекции завершения техника уже вернулась — продлевать в обоих случаях
-   * нечего. Стоит пункт рядом с выдачей, а не среди переходов: продление не двигает статус.
+   * The extension visa (ADR 0171, stage 3): the dispatcher ASKS (`mechRequests.extend`), the site's
+   * visa holder decides (`mechRequests.approve`), and the term moves with the approval. Which items
+   * exist is `mechExtensionAccess` of the contracts — the same blockers the server answers with —
+   * over the server's permission list. The asking item is never shown to the one who only leads the
+   * rental (`.status`): an extension costs money as the rental does, and the one who talks to the
+   * lessor asks for it. It stands next to the issue, not among the transitions: it moves no status.
    */
-  if (can(user, 'mechRequests.extend') && isMechRentalRunning(request)) {
-    items.push({ key: 'extend', label: 'Продлить', onClick: () => open.extend(request) });
+  const extension = mechExtensionAccess(user, request, canList);
+  if (extension.request) {
+    items.push({
+      key: 'extend',
+      // A repeated request overwrites the pending one, so the item says so.
+      label: isMechExtensionPending(request.extension)
+        ? 'Изменить запрос продления'
+        : 'Запросить продление',
+      onClick: () => open.extend(request),
+    });
+  }
+  if (extension.approve) {
+    items.push({
+      key: 'extension:approve',
+      label: 'Согласовать продление',
+      primary: true,
+      onClick: () => open.decideExtension(request, 'approve'),
+    });
+  }
+  if (extension.reject) {
+    items.push({
+      key: 'extension:reject',
+      label: 'Отклонить продление',
+      onClick: () => open.decideExtension(request, 'reject'),
+    });
+  }
+  if (extension.withdraw) {
+    items.push({
+      key: 'extension:withdraw',
+      label: 'Отозвать запрос продления',
+      onClick: () => run.withdrawExtension(request),
+    });
   }
 
   /*

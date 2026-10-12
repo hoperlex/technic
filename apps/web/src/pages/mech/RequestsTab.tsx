@@ -240,6 +240,7 @@ export function RequestsTab() {
         }
         actions={(r) => cardActions.actionsFor(r).filter((item) => item.key !== 'edit')}
         modals={cardActions.modals}
+        extension={cardActions.extensionStrip}
         onClose={() => {
           setViewRecord(null);
           opened.clear();

@@ -1,12 +1,13 @@
 import type {
   ChangeMechRequestStatusInput,
   CreateMechRequestInput,
-  ExtendMechRequestInput,
+  DecideMechExtensionInput,
   IssueMechRequestInput,
   MechRequestDto,
   MechRequestHistorySummaryDto,
   MechRequestSummaryDto,
   RequestHistoryEntryDto,
+  RequestMechExtensionInput,
   RevokeMechIssueInput,
   SetMechRequestApprovalInput,
   UpdateMechDealInput,
@@ -25,19 +26,13 @@ import {
 const PATH = '/mech-requests';
 
 /**
- * Заявка на аренду малой механизации (план `docs/mechanization-module-plan.md`).
+ * A rental request for small mechanization (plan `docs/mechanization-module-plan.md`).
  *
- * Список, карточка и запись собраны фабриками — они у всех ресурсов одинаковы. Дальше начинается
- * своё, и различия эти содержательные, а не оформительские: у модуля восемь действий над уже
- * существующей строкой, и каждое из них **обязано нести версию** (Р21). Версия — не украшение
- * тела запроса: она отвечает на вопрос, на который замок `FOR UPDATE` не отвечает вовсе, —
- * «карточку открыли час назад, за это время её поменял кто-то ещё», — и сервер разводит 409
- * («перечитайте») с 422 («правило запрещает») ровно по ней.
- *
- * Отсюда и то, что у удаляющих ручек версия уходит **телом** `DELETE`, а не строкой запроса:
- * после них строки нет, увеличивать нечего, и CAS выражается условием самого `DELETE` с проверкой
- * числа удалённых строк. Параметром адреса версия читалась бы как фильтр выборки, а она — условие
- * записи.
+ * The list, the card and the write are built by factories — they are the same for every resource.
+ * Everything else is the module's own: every action on an existing row MUST carry the version
+ * (R21). The version answers the question the `FOR UPDATE` lock does not answer at all — "the card
+ * was opened an hour ago, has someone changed it since" — and the server tells 409 ("reread") from
+ * 422 ("the rule forbids") exactly by it. The doors without a body (`DELETE`) send it in the query.
  */
 export const mechRequestsApi = {
   ...createListApi<MechRequestDto>(PATH),
@@ -100,13 +95,21 @@ export const mechRequestsApi = {
   revokeIssue: (id: string, body: RevokeMechIssueInput) =>
     apiFetch<MechRequestDto>(`${PATH}/${id}/issue-revoke`, { method: 'POST', body }),
 
-  /**
-   * Продление аренды (Р9, Р11): своё право (`mechRequests.extend`), обязательная причина, своё
-   * событие истории. `PATCH`, а не `POST`, как у выдачи: продление правит уже существующее поле
-   * заявки (`planned_to`), а не отмечает новое событие в её жизни.
+  /*
+   * The extension visa (ADR 0171, stage 3): the dispatcher asks, the site signs, and the term moves
+   * with the signature. The old immediate `PATCH /:id/extend` is not called from here at all — the
+   * bundle of contract 7 must not depend on it, because release R2 removes it under floor 7
+   * (ADR 0226, S-21).
    */
-  extend: (id: string, body: ExtendMechRequestInput) =>
-    apiFetch<MechRequestDto>(`${PATH}/${id}/extend`, { method: 'PATCH', body }),
+  /** Ask for an extension, or change the pending request (a repeated request overwrites it). */
+  requestExtension: (id: string, body: RequestMechExtensionInput) =>
+    apiFetch<MechRequestDto>(`${PATH}/${id}/extension`, { method: 'POST', body }),
+  /** The visa holder's decision: approval moves the term, a refusal carries its reason. */
+  decideExtension: (id: string, body: DecideMechExtensionInput) =>
+    apiFetch<MechRequestDto>(`${PATH}/${id}/extension`, { method: 'PATCH', body }),
+  /** Withdraw the pending request; the version goes in the query, as with deletion. */
+  withdrawExtension: (id: string, version: number) =>
+    apiFetch<MechRequestDto>(`${PATH}/${id}/extension`, { method: 'DELETE', query: { version } }),
 
   /**
    * Дублирование (Р3): «нужны две виброплиты» — две заявки, потому что ставка задаётся за единицу.

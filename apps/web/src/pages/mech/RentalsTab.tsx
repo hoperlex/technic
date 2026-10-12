@@ -209,6 +209,7 @@ export function RentalsTab() {
         today={today}
         actions={rentalActions(cardActions.actionsFor)}
         modals={cardActions.modals}
+        extension={cardActions.extensionStrip}
         onClose={() => {
           setViewRecord(null);
           opened.clear();

@@ -3,6 +3,7 @@ import { App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   mechDeleteScope,
+  mechExtensionAccess,
   mechTransitionResetsDeal,
   type MechRequestDto,
   type RequestStatus,
@@ -12,7 +13,7 @@ import { useAuth } from '@entities/session';
 import { MechTakeInWorkModal } from '@features/mech-take-in-work';
 import { MechIssueModal, MechRevokeIssueModal } from '@features/mech-issue';
 import { MechCompleteModal } from '@features/mech-complete';
-import { MechExtendModal } from '@features/mech-extend';
+import { MechExtensionStrip, useMechExtensionActions } from '@features/mech-extend';
 import type { ActionSheetItem } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '@entities/request';
 import { mechMenuItems } from './mechRequestMenu';
@@ -38,20 +39,25 @@ export function useMechRequestActions({
   onEdit?: (request: MechRequestDto) => void;
 }): {
   actionsFor: (request: MechRequestDto) => ActionSheetItem[];
+  /**
+   * The card's extension strip (ADR 0171, stage 3) with the same actions as the menu, from the same
+   * `mechExtensionAccess`: two places, one answer.
+   */
+  extensionStrip: (request: MechRequestDto) => ReactNode;
   modals: ReactNode;
   /** Погасить все окна набора: нужно тому, чьи окна живут внутри карточки (ADR 0140). */
   close: () => void;
   pending: boolean;
 } {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
+  const extension = useMechExtensionActions();
 
   const [dealTarget, setDealTarget] = useState<MechRequestDto | null>(null);
   const [dealMode, setDealMode] = useState<'start' | 'deal'>('start');
   const [issueTarget, setIssueTarget] = useState<MechRequestDto | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<MechRequestDto | null>(null);
-  const [extendTarget, setExtendTarget] = useState<MechRequestDto | null>(null);
   const [completeTarget, setCompleteTarget] = useState<MechRequestDto | null>(null);
   const [cancelTarget, setCancelTarget] = useState<MechRequestDto | null>(null);
   /**
@@ -65,7 +71,7 @@ export function useMechRequestActions({
     setDealTarget(null);
     setIssueTarget(null);
     setRevokeTarget(null);
-    setExtendTarget(null);
+    extension.close();
     setCompleteTarget(null);
     setCancelTarget(null);
     setRollbackTarget(null);
@@ -178,6 +184,7 @@ export function useMechRequestActions({
   const actionsFor = (request: MechRequestDto): ActionSheetItem[] =>
     mechMenuItems(request, {
       user,
+      can,
       open: {
         takeInWork: (r) => {
           setDealMode('start');
@@ -189,7 +196,8 @@ export function useMechRequestActions({
         },
         issue: setIssueTarget,
         revokeIssue: setRevokeTarget,
-        extend: setExtendTarget,
+        extend: extension.openRequest,
+        decideExtension: extension.openDecision,
         complete: setCompleteTarget,
         cancel: setCancelTarget,
         rollbackToNew: setRollbackTarget,
@@ -200,8 +208,19 @@ export function useMechRequestActions({
         setApproval,
         duplicate: (r) => duplicateMutation.mutate(r),
         remove: confirmRemove,
+        withdrawExtension: extension.withdraw,
       },
     });
+
+  const extensionStrip = (request: MechRequestDto): ReactNode => (
+    <MechExtensionStrip
+      request={request}
+      access={mechExtensionAccess(user, request, can)}
+      onApprove={(r) => extension.openDecision(r, 'approve')}
+      onReject={(r) => extension.openDecision(r, 'reject')}
+      onWithdraw={extension.withdraw}
+    />
+  );
 
   const modals = (
     <>
@@ -212,7 +231,7 @@ export function useMechRequestActions({
       />
       <MechIssueModal request={issueTarget} onClose={() => setIssueTarget(null)} />
       <MechRevokeIssueModal request={revokeTarget} onClose={() => setRevokeTarget(null)} />
-      <MechExtendModal request={extendTarget} onClose={() => setExtendTarget(null)} />
+      {extension.modals}
       <MechCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
       <CancelReasonModal
         open={!!cancelTarget}
@@ -248,9 +267,11 @@ export function useMechRequestActions({
 
   return {
     actionsFor,
+    extensionStrip,
     modals,
     close,
     pending:
+      extension.pending ||
       statusMutation.isPending ||
       approvalMutation.isPending ||
       duplicateMutation.isPending ||
