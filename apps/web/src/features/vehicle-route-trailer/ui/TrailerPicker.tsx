@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Form, Select, Space, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
+  normalizeRegistration,
   trailerTitle,
   type VehicleTrailerDto,
   vehicleStatusColors,
@@ -60,23 +61,31 @@ export function TrailerPicker({
   const trailers = data ?? [];
 
   /**
-   * What the boxes hold — as a list row. The plate is compared without spaces and case: the form
-   * prints it in different ways ("АВ1234 77" and "ав123477" are one trailer), and the boxes are
-   * filled both by hand and by defaults.
+   * What the boxes hold — as a list row. Plates are compared by the portal's one plate key
+   * (`normalizeRegistration`, the pinned copy of `vehicle_reg_normalize`): the boxes are filled by
+   * hand and by defaults, so "АВ1234 77", "ав123477" and a Latin "AB123477" are one trailer. An
+   * empty key recognises nothing — the way SQL `NULL` matches nothing.
    */
-  const regKey = squash(regNumber);
-  const picked = regKey ? trailers.find((t) => squash(t.registrationNumber) === regKey) : undefined;
+  const regKey = normalizeRegistration(regNumber);
+  const picked = regKey
+    ? trailers.find((t) => normalizeRegistration(t.registrationNumber) === regKey)
+    : undefined;
   const typedTitle = trailerTitle({
     model: model ?? '',
     registrationNumber: regNumber ?? '',
   });
 
-  const excluded = squash(excludeRegNumber);
+  const excluded = normalizeRegistration(excludeRegNumber);
   const options: PickerEntry[] = trailers
     // An own choice does not fall out of the selection: if both boxes hold the same (inheritance or
     // someone's edit), the field must show what is there, not go empty.
-    .filter((t) => !excluded || t.id === picked?.id || squash(t.registrationNumber) !== excluded)
-    .map((t) => ({ value: t.id, label: rowOf(t), search: squash(trailerTitle(t)) }));
+    .filter(
+      (t) =>
+        !excluded ||
+        t.id === picked?.id ||
+        normalizeRegistration(t.registrationNumber) !== excluded,
+    )
+    .map((t) => ({ value: t.id, label: rowOf(t), search: normalizeRegistration(trailerTitle(t)) }));
 
   /*
    * Boxes with no registry record are shown by the field as they are — in their own group.
@@ -87,7 +96,9 @@ export function TrailerPicker({
   if (!picked && typedTitle) {
     options.push({
       label: TYPED_GROUP_LABEL,
-      options: [{ value: TYPED_VALUE, label: typedTitle, search: squash(typedTitle) }],
+      options: [
+        { value: TYPED_VALUE, label: typedTitle, search: normalizeRegistration(typedTitle) },
+      ],
     });
   }
 
@@ -124,9 +135,13 @@ export function TrailerPicker({
         options={options}
         showSearch
         // The row label is a node with a state mark, and filtering by it would compare markup. So
-        // the search runs over its own string: make and plate together, without spaces and case.
+        // the search runs over its own string: make and plate together through the plate key. The
+        // plate rule rather than a looser "case and spaces" one, because the needle is mostly a
+        // plate: "ен806" must find a registry trailer stored in Latin letters, the same one the
+        // boxes recognise above. For the make the rule only drops case and separators, on both
+        // sides alike ("spr24" finds "SPR-24").
         filterOption={(input, option) => {
-          const needle = squash(input);
+          const needle = normalizeRegistration(input);
           return !needle || (option?.search ?? '').includes(needle);
         }}
         onChange={(id: string) => {
@@ -180,11 +195,6 @@ interface PickerGroup {
 }
 
 type PickerEntry = PickerOption | PickerGroup;
-
-/** Plate and make for comparison: case and spaces in a form box mean nothing. */
-function squash(v: string | null | undefined): string {
-  return (v ?? '').toLowerCase().replace(/\s+/g, '');
-}
 
 /**
  * A list row: the same label the trailer has in the registry and under the boxes (`trailerTitle`),

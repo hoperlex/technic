@@ -98,11 +98,12 @@ describe('прицепы: заведение карточки', () => {
   });
 
   it('приводить госномер к латинице и верхнему регистру форме не поручено', () => {
-    // Это не пропуск: единственная нормализация госномера в портале — `vehicle_reg_normalize` в
-    // БД, и она же считает уникальность и ищет. Приведи форма номер к «BX933277» ещё и на входе —
-    // человек увидел бы в карточке не то, что переписал с бумаги, а реестр хранил бы два вида
-    // одного реквизита. Случай стоит здесь именно затем, чтобы правку «а давайте нормализуем
-    // заодно и тут» кто-нибудь заметил до выката.
+    // Not an omission: the plate key (`vehicle_reg_normalize` in the database and its pinned copy
+    // `normalizeRegistration` in the contracts, ADR 0138 S-6) is for comparison only — it decides
+    // uniqueness and lookup, not what is stored. Were the form to turn the plate into «BX933277» on
+    // input as well, the card would show not what the person copied from paper, and the registry
+    // would keep one detail in two spellings. The case stands here so that an edit "let's normalise
+    // it here too" is noticed before it ships.
     const v = createVehicleTrailerSchema.parse(create({ registrationNumber: 'вх 933277' }));
     expect(v.registrationNumber).toBe('вх 933277');
   });

@@ -366,6 +366,58 @@ export function vehicleOptionLabel(v: {
   return shown.length > 0 ? shown.join(' — ') : vehicleLabel(v);
 }
 
+// ── Registration plate key (ADR 0138, owner decision S-6) ──
+
+/**
+ * The Russian plate alphabet is АВЕКМНОРСТУХ, and every letter of it has a Latin look-alike, so
+ * the replacement is unambiguous. The pairs are the two strings `vehicle_reg_normalize` passes to
+ * `translate` (migration 0015).
+ */
+const PLATE_LOOKALIKES: Readonly<Record<string, string>> = {
+  А: 'A',
+  В: 'B',
+  Е: 'E',
+  К: 'K',
+  М: 'M',
+  Н: 'H',
+  О: 'O',
+  Р: 'P',
+  С: 'C',
+  Т: 'T',
+  У: 'Y',
+  Х: 'X',
+};
+
+/**
+ * The comparison key of a registration plate: separators dropped, upper case, Cyrillic look-alikes
+ * replaced with Latin letters. «В 094 ЕТ 77», «в094ет77» and «B094ET77» give one key, B094ET77, so
+ * one vehicle typed in two keyboard layouts is one vehicle.
+ *
+ * **The database function is the authority, this is its pinned copy.** `vehicle_reg_normalize`
+ * (migration 0015) backs the generated `registration_number_normalized` columns and the unique
+ * indexes of vehicles and trailers, so uniqueness and lookup are decided by Postgres. This copy
+ * serves the places that compare plates without a query: the directory exchange, the fuel-norms
+ * file, the trailer picker of the route form. `vehicle-reg-normalize-parity.db.test.ts` runs both
+ * over the same inputs, so a change on either side alone fails a test instead of drifting: a
+ * second, weaker rule in the picker is exactly how a trailer typed in Cyrillic went unrecognised
+ * when the registry held it in Latin letters.
+ *
+ * **The empty key.** For an input with nothing left after the separators the database returns
+ * `NULL` (and for `NULL` itself, the function being STRICT); this returns `''`. Both mean "no
+ * key", and `''` must be treated the way SQL treats `NULL`: it matches nothing, not even another
+ * empty key. Every caller does so — the exchange engine skips `''` keys, the fuel-norms index is
+ * built from non-NULL columns only, the picker recognises nothing in an empty box. Returning
+ * `null` would mirror the database more literally and buy nothing but a null check in each caller.
+ *
+ * The key is for comparison only: forms and the registry keep the plate as it was typed.
+ */
+export function normalizeRegistration(text: string | null | undefined): string {
+  return (text ?? '')
+    .replace(/[^0-9A-Za-zА-Яа-яЁё]+/gu, '')
+    .toUpperCase()
+    .replace(/[АВЕКМНОРСТУХ]/gu, (c) => PLATE_LOOKALIKES[c] ?? c);
+}
+
 // ── Замена заказанной техники: вид, тип, категория и «крупнее или меньше» (ADR 0045, 0059, 0063) ──
 //
 // Заявка заказывает позицию классификатора — тип ТС и, если у типа есть ТТХ, его категорию

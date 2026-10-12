@@ -193,3 +193,45 @@ describe('второй слот', () => {
     expect(screen.queryByText('ШМИТЦ SPR-24 ВХ933277')).toBeNull();
   });
 });
+
+/*
+ * The plate key of the list is the portal's one rule (`normalizeRegistration`, pinned to
+ * `vehicle_reg_normalize` by a db test), not a looser "case and spaces" of its own. The case is the
+ * one ADR 0138 (S-6) names: a plate typed in Cyrillic, a registry record in Latin letters. Under the
+ * old rule both assertions fail — the boxes show up as "typed by hand", and the search finds nothing.
+ */
+describe('ключ госномера', () => {
+  const latin = trailer({ id: 'tr-2', model: 'КРОНА SDP27', registrationNumber: 'EH806277' });
+
+  it('графа «ен 806277» узнаёт прицеп, записанный в реестре латиницей', async () => {
+    mockHttp({
+      'GET /vehicle-types': () => json(list([])),
+      'GET /vehicle-trailers': () => json(list([trailer({}), latin])),
+    });
+    renderWithUser(<Harness />);
+    fireEvent.change(await screen.findByLabelText('Прицеп 1: госномер'), {
+      target: { value: 'ен 806277' },
+    });
+    fireEvent.click(screen.getAllByRole('checkbox', { name: 'Из справочника' })[0]!);
+
+    expect(await screen.findByText('КРОНА SDP27 EH806277')).toBeTruthy();
+    expect(screen.queryByText('ен 806277')).toBeNull();
+  });
+
+  it('поиск по кириллице находит латинский госномер', async () => {
+    mockHttp({
+      'GET /vehicle-types': () => json(list([])),
+      'GET /vehicle-trailers': () => json(list([trailer({}), latin])),
+    });
+    renderWithUser(<Harness />);
+    fireEvent.click((await screen.findAllByRole('checkbox', { name: 'Из справочника' }))[0]!);
+    const field = await screen.findByLabelText('Прицеп 1');
+    fireEvent.mouseDown(field);
+    fireEvent.change(field, { target: { value: 'ен 806' } });
+
+    await waitFor(() =>
+      expect(screen.getAllByText('КРОНА SDP27 EH806277').length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText('ШМИТЦ SPR-24 ВХ933277')).toBeNull();
+  });
+});

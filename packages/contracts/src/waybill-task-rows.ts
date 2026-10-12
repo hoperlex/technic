@@ -1031,12 +1031,13 @@ export interface WaybillIssueSource {
 export type TrailerSlotNumber = 1 | 2;
 
 /**
- * Пара граф прицепа так, как её видят предупреждения: что напечатается и чем это сравнивать.
+ * A pair of trailer boxes as the warnings see it: what will be printed and what to compare it by.
  *
- * `regKey` приходит **готовым** — его считает `vehicle_reg_normalize` в запросе, собирающем
- * контекст выписки. Своей нормализации здесь нет и быть не должно: тождество госномера в этой базе
- * решает та функция (по ней стоит уникальный индекс реестра прицепов), и вторая реализация на
- * TypeScript разошлась бы с ней на первом же кириллическом двойнике латиницы («ЕН» против «EH»).
+ * `regKey` arrives **ready**: `vehicle_reg_normalize` computes it in the query that assembles the
+ * issue context. The rule compares keys and never normalises itself — plate identity in this
+ * database is decided by that function (the unique index of the trailer registry stands on it), and
+ * both sides of every comparison here come from it, so neither can be spelled differently («ЕН»
+ * against «EH»).
  */
 export interface WaybillTrailerSlotSource {
   slot: TrailerSlotNumber;

@@ -790,18 +790,20 @@ export async function loadWaybillIssueContext(
 }
 
 /**
- * Прицеп рейса глазами предупреждений (§14.5): графы бланка с ключами сравнения и закрепление.
+ * The route's trailer as the warnings see it (§14.5): the form boxes with their comparison keys,
+ * and the hitch.
  *
- * **Ключи считает Postgres, а не портал.** `vehicle_reg_normalize` — та самая функция, которой в
- * этой базе решается тождество госномера (по ней стоит уникальный индекс реестра прицепов), и
- * второй реализации у портала быть не должно: она разошлась бы с индексом на первом же
- * кириллическом двойнике латиницы. Поэтому графы рейса нормализует тот же запрос, а закрепление
- * приносит свою генерируемую колонку.
+ * **The keys are computed by Postgres.** `vehicle_reg_normalize` is the function that decides plate
+ * identity in this database (the unique index of the trailer registry stands on it), and the
+ * context is read by a query anyway, so the authority is asked directly: the route boxes are
+ * normalised by the same query, and the hitch brings its generated column. The contracts copy
+ * `normalizeRegistration` (pinned to the function by `vehicle-reg-normalize-parity.db.test.ts`)
+ * is for code that compares plates without a query.
  *
- * **Закрепление спрашивается только у листа за сегодня и вперёд.** Реестр хранит сегодняшнее
- * решение человека, а коррекция правит состоявшийся день: «сейчас закреплён» о прошлом вторнике не
- * говорит ничего, и подтверждать такое предупреждение человеку не за что. Решает это здесь,
- * вызывающий, — правило в контрактах ни дат, ни часов не знает вовсе.
+ * **The hitch is asked about only for a sheet dated today or later.** The registry holds today's
+ * decision, while a correction edits a day that has happened: "hitched now" says nothing about last
+ * Tuesday, and there is nothing for a person to confirm in such a warning. The caller decides this,
+ * here — the rule in the contracts knows neither dates nor clocks.
  */
 async function loadTrailerSource(
   tx: Tx,

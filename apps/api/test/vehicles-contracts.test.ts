@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   createVehicleSchema,
+  normalizeRegistration,
   rentalActivationBlockReason,
   updateVehicleSchema,
   updateVehicleSchemaByOwnership,
@@ -11,6 +12,7 @@ import {
   type UpdateVehicleResult,
   type VehicleDto,
 } from '@technic/contracts';
+import { REGISTRATION_KEY_CASES } from './registration-key-cases';
 
 const TYPE = '33333333-3333-4333-8333-333333333333';
 const MODEL = '44444444-4444-4444-8444-444444444444';
@@ -376,5 +378,21 @@ describe('vehicles: ответ архивации', () => {
       /const answer: DeleteVehicleResult = \{[\s\S]*?unhitchedTrailers[\s\S]*?\};/,
     );
     expect(deleteBranch).not.toMatch(/return \{ ok: true \};/);
+  });
+});
+
+/*
+ * The plate key against the shared table; the same table pins it to the database function in
+ * `vehicle-reg-normalize-parity.db.test.ts`. Here it runs on every `pnpm check`, so a change to the
+ * TS rule is caught without a database; the db test catches a change on the other side.
+ */
+describe('vehicles: ключ госномера', () => {
+  it.each(REGISTRATION_KEY_CASES)('$what', ({ input, key }) => {
+    // Where the database answers NULL, the contracts copy answers '' — the empty key (S-6).
+    expect(normalizeRegistration(input)).toBe(key ?? '');
+  });
+
+  it('undefined — тоже пустой ключ: графа формы, которой ещё не касались', () => {
+    expect(normalizeRegistration(undefined)).toBe('');
   });
 });

@@ -4,6 +4,7 @@ import {
   fuelNormUnitLabels,
   type FuelNormUnit,
   moscowDateKeyOf,
+  normalizeRegistration,
   vehicleLabel,
   type VehicleOwnership,
 } from '@technic/contracts';
@@ -11,7 +12,6 @@ import { db } from '../../../db/client';
 import { vehicleFuelNorms, vehicles } from '../../../db/schema';
 import { decimalCell, parseChoice, parseDecimal } from '../cells';
 import { directory, type AnyDirectory } from '../types';
-import { normalizeRegistration } from './vehicles';
 
 /**
  * Обмен файлом для норм расхода топлива (план `docs/fuel-norms-plan.md`, §6; ADR 0073).
@@ -62,7 +62,13 @@ interface NormRow {
 
 interface NormModel {
   vehicleId: string;
-  /** Нормализованный госномер — ключ строки; по нему же она ищется среди заведённых. */
+  /**
+   * The row key: the plate key of the file cell (`normalizeRegistration`), looked up among the
+   * keys Postgres computed for the fleet (`registration_number_normalized`). A key from one rule is
+   * searched among keys from the other, which is why the contracts copy is pinned to
+   * `vehicle_reg_normalize` by `vehicle-reg-normalize-parity.db.test.ts`: a plate typed in Cyrillic
+   * («У702АС 777») would otherwise miss its vehicle.
+   */
   registrationKey: string;
   registrationNumber: string;
   vehicleTitle: string;
@@ -78,13 +84,6 @@ interface Env {
   /** Госномер (нормализованный) → машина: по нему строка файла ищет карточку. */
   byRegistration: Map<string, { id: string; title: string }>;
 }
-
-/*
- * Нормализация госномера берётся у справочника техники, а не пишется заново: она обязана совпадать
- * с `vehicle_reg_normalize` базы знак в знак — кириллические буквы номера заменяются латинскими
- * двойниками, и своя копия правила разошлась бы с индексом на первом же «У702АС 777».
- */
-const normalizeReg = normalizeRegistration;
 
 /**
  * Подписи единиц для разбора: `parseChoice` принимает и подпись, и код, поэтому список — это ровно
@@ -132,7 +131,7 @@ const fuelNormsDirectory = directory<NormRow, NormModel, Env>({
         get: (m) => m.registrationNumber,
         set: (m, text) => {
           m.registrationNumber = text.trim();
-          m.registrationKey = normalizeReg(text);
+          m.registrationKey = normalizeRegistration(text);
         },
       },
       {
@@ -271,7 +270,7 @@ const fuelNormsDirectory = directory<NormRow, NormModel, Env>({
   model(row) {
     return {
       vehicleId: row.vehicleId,
-      registrationKey: normalizeReg(row.registrationNumber ?? ''),
+      registrationKey: normalizeRegistration(row.registrationNumber ?? ''),
       registrationNumber: row.registrationNumber ?? '',
       vehicleTitle: vehicleLabel({
         ownership: row.ownership,
