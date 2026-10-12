@@ -8,6 +8,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { pinExecutorScopeOff } from './executor-scope-flag';
 
 /**
  * ЗАЯВКУ МОЖНО ЗАВЕСТИ БЕЗ АППАРАТА (Р5, Р6, Р7 плана
@@ -214,6 +215,8 @@ describe.skipIf(!DB_URL)('заявка без аппарата: право, ос
 
     prepareEnv(OWN_DB!);
     const { db, closeDb } = await import('../src/db/client');
+    // Release A's scope model with the executor switch off (ADR 0179) — see the helper.
+    await pinExecutorScopeOff(db);
     const { hashPassword } = await import('../src/auth/password');
     const { buildApp } = await import('../src/app');
     const passwordHash = await hashPassword(PASSWORD);

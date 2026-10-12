@@ -28,6 +28,7 @@ import type { Principal } from '../src/auth/principal';
 // отдельно — встроенная аннотация `typeof import(...)` в этом наборе правил запрещена.
 import type * as OfficeEquipmentBlocks from '../src/services/office-equipment-blocks';
 import { officeEquipmentModelId } from './office-equipment-model';
+import { pinExecutorScopeOff } from './executor-scope-flag';
 
 /**
  * ИСТОРИЯ ЕДИНИЦЫ ОРГТЕХНИКИ ТРЕМЯ БИЗНЕС-БЛОКАМИ — серверные случаи §10.1 плана
@@ -387,6 +388,8 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
     const { db, closeDb, pool } = await import('../src/db/client');
     // До первого запроса: соединений в пуле ещё нет, и обёртку получат все до одного.
     installSqlCounter(pool);
+    // Release A's scope model with the executor switch off (ADR 0179) — see the helper.
+    await pinExecutorScopeOff(db);
     const { hashPassword } = await import('../src/auth/password');
     const { buildApp } = await import('../src/app');
     const passwordHash = await hashPassword(PASSWORD);

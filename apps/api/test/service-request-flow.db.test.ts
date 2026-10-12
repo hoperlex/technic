@@ -18,6 +18,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 import { officeEquipmentModelId } from './office-equipment-model';
+import { pinExecutorScopeOff } from './executor-scope-flag';
 
 /**
  * Заявка на обслуживание оргтехники от заведения до гарантийного обращения (ADR 0085, план §5) —
@@ -707,6 +708,10 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     await migrate(DB_URL!);
 
     const { db, closeDb } = await import('../src/db/client');
+
+    // Release A's scope model with the executor switch off (ADR 0179) — see the helper.
+
+    await pinExecutorScopeOff(db);
     const { hashPassword } = await import('../src/auth/password');
     const { buildApp } = await import('../src/app');
 

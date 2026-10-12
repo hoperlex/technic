@@ -5,8 +5,9 @@
   редакция 5, решения Р1–Р11. Схема: право «Ведению» (`0298`), след снятия исполнителя и индекс
   автора (`0299`), ключ рубильника (`0300`), запись выпуска (`0303`); номера взяты по файлам дерева
   непосредственно перед созданием — за время волны соседние потоки заняли `0292`, `0296`, `0301`,
-  `0302`. Выпуски **B** (уборка `serviceRequests` из карт сквозной области) и **C** (уборка самого
-  ключа) не сделаны и ждут стабилизации A
+  `0302`. Рубильник включён миграцией `0370` (12.10.2026, решение владельца S-12, едет выкатом R1).
+  Выпуски **B** (уборка `serviceRequests` из карт сквозной области) и **C** (уборка самого ключа) не
+  сделаны: B — следующим выкатом, если на включение не пожалуются, C — после него
 - Домены: оргтехника, доступ, схема-и-выкат
 - Область: контракты —
   [service-requests.ts](../../packages/contracts/src/service-requests.ts) (`itemNameSchema` до 2000
@@ -136,6 +137,56 @@ key = 'service_request_executor_scope'`, аварийное выключение
 
 Схему волна меняет тремя вещами, и все обратимы: право в наборе (строка каталога), таблица следа с
 индексом и индекс автора, второй ключ рубильника.
+
+## Switch ON (2026-10-12)
+
+**Decision.** Owner decision S-12 of 12.10.2026: switch the key on in the nearest release; release B
+one release later if nobody complains; release C after it. The switch is migration
+`0370_service_request_executor_scope_enable.sql`, the way 0297 opened the candidate intake: a manual
+`UPDATE` leaves no trace, and a database restored from an older backup or a second environment
+would differ from prod with nothing telling it.
+
+**Why the order of this ADR holds although the migration runs before the restart.** The order is
+"migrations → the whole API → the portal → the key". The first three steps shipped with release A
+on 10.09.2026, and the release serving the migration window (prod `dc647215`) is release A code: it
+reads the key per request inside `loadPrincipal` with no cache, writes the removal trace on all four
+removal paths, and its portal asks `hasFeature(user, 'service_request_executor_scope')`. The scope
+branch (`apps/api/src/lib/access.ts`, the predicates in `packages/contracts/src/service-requests.ts`,
+the session's `features`) did not change between `dc647215` and this release. So the key takes effect
+on the old server at commit, exactly as the documented manual `UPDATE` would.
+
+**What the migration does.** A precondition guard (the key row of 0300 and the trace table of 0299
+exist), a snapshot of all keys, then one statement that flips the key only if it is off and, in the
+same statement, raises `auth_version` of every holder of the two executor-profile grants
+(`office_equipment_it_approver`, `office_equipment_executor`), then a result guard: the key is on and
+no other key changed. A rerun on an open database changes nothing — neither `updated_at` of the key
+nor anybody's session.
+
+**Session refresh.** The server is safe at once; the portal is not, because an open tab keeps the
+`features` of its last session answer and would keep showing actions the server now refuses until
+its access token expires. Raising `auth_version` is the mechanism grant changes already use: the
+tab's next request gets 401, the transport refreshes silently, the refreshed `AuthUser` replaces
+the old one and drops the query cache. The set is a superset of `actsAsServiceExecutorOnly` on
+purpose — computing that predicate in SQL would be a second copy of a contract rule, and an
+administrator or operator who also holds one of the grants pays one silent refresh. Bumping every
+account was rejected: `POST /auth/refresh` is limited to 10 per minute per client address, and an
+office behind one NAT refreshing all its tabs at once would turn the 429 into a sign-out.
+
+**Smoke.** `service-executor-scope.db.test.ts`, block «миграция включения рубильника (S-12)»: a
+migrated database has the key on; switched back off and run through the migration's own text, the key flips, exactly the
+holders' versions rise, an existing access token of a system administrator gets 401, the refresh
+returns the key in `features`, and the refreshed session lists the administrator's own requests
+(assigned, authored, taken off) and none of the others; a rerun bumps nobody; without the key row
+the migration refuses in words instead of updating zero rows. Seven db files written against release
+A's model (the IT grant's module-wide scope over requests) pin the key off through
+`apps/api/test/executor-scope-flag.ts`; release B, which makes off equal to on, is where their scope
+expectations get rewritten.
+
+**Emergency off** stays the reverse `UPDATE … SET is_enabled = false` on the live database, without a
+deploy; the previous release reads the same key, so a code rollback needs nothing either. Release B
+(dropping `serviceRequests` from `GRANT_MODULE_WIDE_SCOPE` and `ADDON_MODULE_WIDE_SCOPE` together,
+with a guard "the key is on") is R2; release C (removing the key, never deleting the row while code
+reads it) is R3.
 
 ## Последствия
 

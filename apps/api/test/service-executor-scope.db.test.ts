@@ -5,11 +5,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   GRANT_MODULE_WIDE_SCOPE,
   hasModuleWideScope,
+  type AuthUser,
   type OfficeEquipmentCandidateDto,
   type ScopeModule,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import { applyMigrations } from '../src/db/migration-journal';
+import { applyMigrations, listMigrationFiles, readMigration } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { InjectOptions, LightMyRequestResponse } from 'fastify';
@@ -156,6 +157,12 @@ interface Fixtures {
 }
 
 let fx: Fixtures;
+
+/**
+ * The key as the migrations left it, read before the file touches it: since the switch migration
+ * (owner decision S-12) a migrated database arrives with the narrowing ON.
+ */
+let scopeAfterMigrations: boolean | null = null;
 
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -493,6 +500,14 @@ describe.skipIf(!DB_URL)('область исполнителя за рубил�
       counterpartyBId,
       typeId,
     };
+
+    const migrated = await db.execute<{ is_enabled: boolean }>(
+      sql`SELECT is_enabled FROM feature_flags WHERE key = ${EXECUTOR_SCOPE}`,
+    );
+    scopeAfterMigrations = migrated.rows[0]?.is_enabled ?? null;
+    // The switch migration opens the key on every migrated database; the fixtures below are made
+    // with it OFF, the state prod requests were created in before the switch.
+    await setExecutorScope(false);
 
     /*
      * ФИКСТУРЫ ЗАВОДЯТСЯ ПРИ ВЫКЛЮЧЕННОМ КЛЮЧЕ — так же, как заведены заявки на проде до выката, и
@@ -1584,6 +1599,175 @@ describe.skipIf(!DB_URL)('область исполнителя за рубил�
         ),
       );
       expect(answer.status).toBe(403);
+    });
+  });
+
+  // ── The switch migration (owner decision S-12) ──
+
+  describe('миграция включения рубильника (S-12): ключ, обновление сессий, smoke', () => {
+    /*
+     * The migration that switches the key on is checked by its own text — found by its name, not its
+     * number: a parallel stream may take the number, and the integrator renumbers. The journal has
+     * already applied it in `beforeAll` (that is what `scopeAfterMigrations` recorded), so to see the
+     * switch happen the key is put back off and the file is run again the way the migrator runs it:
+     * one transaction on its own connection.
+     *
+     * The block stands LAST in the file on purpose: the switch raises `auth_version` of four
+     * subjects, and every token issued before it is refused afterwards. The bumped subjects are
+     * logged in again at the end, so a case added below still has working sessions.
+     */
+    const MIGRATION_SUFFIX = '_service_request_executor_scope_enable.sql';
+
+    function migrationSql(): string {
+      const files = listMigrationFiles().filter((name) => name.endsWith(MIGRATION_SUFFIX));
+      expect(files, `exactly one migration *${MIGRATION_SUFFIX}`).toHaveLength(1);
+      return readMigration(files[0]!);
+    }
+
+    async function runMigration(prepare?: (client: pg.Client) => Promise<void>): Promise<void> {
+      const client = new pg.Client({ connectionString: OWN_DB });
+      await client.connect();
+      try {
+        await client.query('BEGIN');
+        await prepare?.(client);
+        await client.query(migrationSql());
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw e;
+      } finally {
+        await client.end();
+      }
+    }
+
+    async function authVersions(): Promise<Map<string, number>> {
+      const ids = [
+        ctx.admin,
+        ctx.customerA,
+        ctx.customerB,
+        ctx.sysadmin,
+        ctx.sysadminB,
+        ctx.execOnly,
+        ctx.itOperator,
+        ctx.operator,
+        ctx.serviceA,
+        ctx.serviceB,
+        ctx.mover,
+      ].map((u) => u.id);
+      const res = await ctx.db.execute<{ id: string; auth_version: number }>(sql`
+        SELECT id, auth_version FROM users
+         WHERE id IN (${sql.join(
+           ids.map((id) => sql`${id}::uuid`),
+           sql`, `,
+         )})`);
+      return new Map(res.rows.map((row) => [row.id, row.auth_version]));
+    }
+
+    async function scopeKey(): Promise<{ isEnabled: boolean; updatedAt: string }> {
+      const res = await ctx.db.execute<{ is_enabled: boolean; updated_at: string }>(sql`
+        SELECT is_enabled, updated_at::text AS updated_at FROM feature_flags
+         WHERE key = ${EXECUTOR_SCOPE}`);
+      return { isEnabled: res.rows[0]!.is_enabled, updatedAt: res.rows[0]!.updated_at };
+    }
+
+    /** A session the way a tab holds it: the access token and the refresh cookie. */
+    async function openSession(
+      user: TestUser,
+    ): Promise<{ auth: Auth; cookies: Record<string, string> }> {
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        remoteAddress: nextAddress(),
+        payload: { email: user.email, password: PASSWORD },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      const cookies = Object.fromEntries(
+        (res.cookies as { name: string; value: string }[]).map((c) => [c.name, c.value]),
+      );
+      return {
+        auth: { authorization: `Bearer ${(res.json() as { accessToken: string }).accessToken}` },
+        cookies,
+      };
+    }
+
+    it('база, доведённая до миграции, приезжает с включённым ключом', () => {
+      expect(scopeAfterMigrations).toBe(true);
+    });
+
+    it('выключенный ключ включается один раз: сессии профиля обновляются, область — своя', async () => {
+      await setExecutorScope(false);
+      const tab = await openSession(ctx.sysadmin);
+      // Before the switch the system administrator sees the company, foreign requests included.
+      expect(await listIds(tab.auth)).toEqual(
+        expect.arrayContaining([fx.foreign, fx.contractor, fx.pastExecOnly]),
+      );
+      const before = await authVersions();
+
+      await runMigration();
+
+      expect((await scopeKey()).isEnabled).toBe(true);
+      const opened = await scopeKey();
+      const after = await authVersions();
+      // Exactly the holders of the two executor-profile grants get a new session version.
+      const holders = new Set(
+        [ctx.sysadmin, ctx.sysadminB, ctx.execOnly, ctx.itOperator].map((u) => u.id),
+      );
+      for (const [id, version] of before) {
+        expect(after.get(id), id).toBe(holders.has(id) ? version + 1 : version);
+      }
+
+      // The open tab: its token is refused, the silent refresh brings the key in `features`.
+      const stale = await inject('GET', `${REQUESTS}?pageSize=200`, tab.auth);
+      expect(stale.statusCode, stale.body).toBe(401);
+      const refreshed = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/refresh',
+        remoteAddress: nextAddress(),
+        cookies: tab.cookies,
+      });
+      expect(refreshed.statusCode, refreshed.body).toBe(200);
+      const session = refreshed.json() as { accessToken: string; user: AuthUser };
+      expect(session.user.features).toContain(EXECUTOR_SCOPE);
+
+      // Smoke: the refreshed session sees exactly its scope — assigned, authored, taken off.
+      const visible = await listIds({ authorization: `Bearer ${session.accessToken}` });
+      expect(visible).toEqual(expect.arrayContaining([fx.assigned, fx.authored, fx.past]));
+      for (const other of [fx.foreign, fx.contractor, fx.pastExecOnly]) {
+        expect(visible).not.toContain(other);
+      }
+      const own = await ctx.db.execute<{ id: string }>(sql`
+        SELECT r.id FROM service_requests r
+         WHERE r.created_by = ${ctx.sysadmin.id}::uuid
+            OR EXISTS (SELECT 1 FROM service_request_executors e
+                        WHERE e.request_id = r.id AND e.user_id = ${ctx.sysadmin.id}::uuid)
+            OR EXISTS (SELECT 1 FROM service_request_past_executors p
+                        WHERE p.request_id = r.id AND p.user_id = ${ctx.sysadmin.id}::uuid)`);
+      const ownIds = new Set(own.rows.map((row) => row.id));
+      for (const id of visible) expect(ownIds.has(id), id).toBe(true);
+
+      // A rerun on the open database neither bumps anybody nor rewrites when the key was opened.
+      await runMigration();
+      expect(await authVersions()).toEqual(after);
+      expect(await scopeKey()).toEqual(opened);
+
+      for (const key of ['sysadmin', 'sysadminB', 'execOnly', 'itOperator'] as const) {
+        const fresh = await openSession(ctx[key]);
+        ctx[key] = { ...ctx[key], auth: fresh.auth };
+      }
+    });
+
+    it('без строки ключа миграция отказывает словами, а не обновляет ноль строк', async () => {
+      let message = '';
+      try {
+        await runMigration(async (client) => {
+          await client.query('DELETE FROM feature_flags WHERE key = $1', [EXECUTOR_SCOPE]);
+        });
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toContain('service_request_executor_scope_enable: too early to switch on');
+      // The refusal rolled the deletion back with it.
+      expect((await scopeKey()).isEnabled).toBe(true);
     });
   });
 });

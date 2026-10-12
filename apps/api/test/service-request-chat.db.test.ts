@@ -17,6 +17,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { pinExecutorScopeOff } from './executor-scope-flag';
 
 /**
  * Обсуждение заявки на обслуживание оргтехники (ADR 0141,
@@ -66,13 +67,16 @@ const PASSWORD = 'db-test-password-123';
  * C уронила бы накат. Поэтому блок вырезается из самого файла миграции.
  */
 const TRANSFER_SQL = (() => {
-  const path = fileURLToPath(new URL('../drizzle/0216_service_request_messages.sql', import.meta.url));
+  const path = fileURLToPath(
+    new URL('../drizzle/0216_service_request_messages.sql', import.meta.url),
+  );
   const text = readFileSync(path, 'utf8');
   // Начало блока ищется с НАЧАЛА СТРОКИ: те же слова стоят в комментарии выше («копируется он
   // целиком, от `DO $migrate$` до конца»), и простой `indexOf` вырезал бы полкомментария.
   const start = text.search(/^DO \$migrate\$/m);
   const end = text.indexOf('$migrate$;', start + 'DO $migrate$'.length);
-  if (start < 0 || end < 0) throw new Error('В миграции 0216 не найден DO-блок переноса примечаний');
+  if (start < 0 || end < 0)
+    throw new Error('В миграции 0216 не найден DO-блок переноса примечаний');
   return text.slice(start, end + '$migrate$;'.length);
 })();
 
@@ -338,11 +342,7 @@ async function said(auth: Auth, id: string, body: string, to: Addressees): Promi
   return payload.message.seq;
 }
 
-async function page(
-  auth: Auth,
-  id: string,
-  query = '',
-): Promise<ServiceChatPageDto> {
+async function page(auth: Auth, id: string, query = ''): Promise<ServiceChatPageDto> {
   const res = await inject('GET', `/api/v1/service-requests/${id}/messages${query}`, auth);
   expect(res.statusCode, res.body).toBe(200);
   return res.json() as ServiceChatPageDto;
@@ -468,6 +468,10 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
     await migrate(DB_URL!);
 
     const { db, closeDb } = await import('../src/db/client');
+
+    // Release A's scope model with the executor switch off (ADR 0179) — see the helper.
+
+    await pinExecutorScopeOff(db);
     const { hashPassword } = await import('../src/auth/password');
     const { buildApp } = await import('../src/app');
     const passwordHash = await hashPassword(PASSWORD);
@@ -564,7 +568,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       SELECT ${grantId}, permission
         FROM unnest(ARRAY['serviceRequests.read', 'serviceRequests.execute',
                           'serviceRequests.files']) AS permission`);
-    await db.execute(sql`INSERT INTO grant_roles (grant_id, role) VALUES (${grantId}, 'shtab'::role)`);
+    await db.execute(
+      sql`INSERT INTO grant_roles (grant_id, role) VALUES (${grantId}, 'shtab'::role)`,
+    );
     await db.execute(sql`
       INSERT INTO user_grants (user_id, grant_id, granted_by)
       VALUES (${exec1.id}, ${grantId}, ${admin.id}), (${exec2.id}, ${grantId}, ${admin.id})`);
@@ -621,15 +627,21 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
     if (ctx?.db) {
       const equipment = sql`SELECT id FROM office_equipment WHERE inventory_number LIKE ${`ОЧ-${RUN}-%`}`;
       const users = sql`SELECT id FROM users WHERE email LIKE ${`db-chat-%-${RUN}@example.invalid`}`;
-      await ctx.db.execute(sql`DELETE FROM service_requests WHERE office_equipment_id IN (${equipment})`);
-      await ctx.db.execute(sql`DELETE FROM office_equipment WHERE inventory_number LIKE ${`ОЧ-${RUN}-%`}`);
+      await ctx.db.execute(
+        sql`DELETE FROM service_requests WHERE office_equipment_id IN (${equipment})`,
+      );
+      await ctx.db.execute(
+        sql`DELETE FROM office_equipment WHERE inventory_number LIKE ${`ОЧ-${RUN}-%`}`,
+      );
       // Модели заводит триггер-зеркало карточки: удаление карточки их за собой не уносит.
       await ctx.db.execute(sql`
         DELETE FROM office_equipment_models m
          WHERE m.name LIKE ${`Чат-МФУ % ${RUN}`}
            AND NOT EXISTS (SELECT 1 FROM office_equipment e WHERE e.model_id = m.id)`);
       await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${users})`);
-      await ctx.db.execute(sql`DELETE FROM users WHERE email LIKE ${`db-chat-%-${RUN}@example.invalid`}`);
+      await ctx.db.execute(
+        sql`DELETE FROM users WHERE email LIKE ${`db-chat-%-${RUN}@example.invalid`}`,
+      );
       await ctx.db.execute(sql`DELETE FROM grants WHERE code = ${`oe-chat-exec-${RUN}`}`);
       await ctx.db.execute(sql`DELETE FROM counterparties WHERE name = ${`Сервис-Чат ${RUN}`}`);
       await ctx.db.execute(sql`DELETE FROM departments WHERE code = ${`OCH-D-${RUN}`}`);
@@ -644,13 +656,19 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
     it('все четыре стороны отправляют реплику, и номера идут подряд', async () => {
       const id = await makeFullRequest('четыре стороны');
       // Автор — сторона `customer`: участником её делает именно авторство, а не область.
-      expect(await said(ctx.author.auth, id, 'бумага снова зажевалась', { sides: ['all'] })).toBe(1);
+      expect(await said(ctx.author.auth, id, 'бумага снова зажевалась', { sides: ['all'] })).toBe(
+        1,
+      );
       // «Ведение» — `status` и `assign` разом, и ни одного из них по отдельности не хватило бы.
       expect(await said(ctx.operator.auth, id, 'передаю в сервис', { sides: ['service'] })).toBe(2);
       // ИТ-служба — по коду выданного набора (Р9), а не по праву: мёртвой визы в нём больше нет.
-      expect(await said(ctx.itSupport.auth, id, 'менять узел не будем', { sides: ['operator'] })).toBe(3);
+      expect(
+        await said(ctx.itSupport.auth, id, 'менять узел не будем', { sides: ['operator'] }),
+      ).toBe(3);
       // Сервисная компания — оператор НАЗНАЧЕННОГО контрагента.
-      expect(await said(ctx.service.auth, id, 'ждём ролик подачи', { sides: ['customer'] })).toBe(4);
+      expect(await said(ctx.service.auth, id, 'ждём ролик подачи', { sides: ['customer'] })).toBe(
+        4,
+      );
       // Поимённый исполнитель — сторона `service` строкой назначения, а не правом.
       expect(await said(ctx.exec1.auth, id, 'заеду завтра', { sides: ['all'] })).toBe(5);
 
@@ -707,7 +725,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
         'Поимённо адресовать реплику можно только исполнителю этой заявки',
       );
       // Назначенному — проходит: правило про назначение, а не про «знакомый uuid».
-      expect(await said(ctx.operator.auth, id, 'посмотрите, пожалуйста', { users: [ctx.exec1.id] })).toBe(1);
+      expect(
+        await said(ctx.operator.auth, id, 'посмотрите, пожалуйста', { users: [ctx.exec1.id] }),
+      ).toBe(1);
     });
 
     /**
@@ -814,11 +834,18 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
 
     it('повторная отметка меньшим номером курсор не откатывает', async () => {
       const id = await makeFullRequest('курсор назад');
-      for (let i = 1; i <= 5; i += 1) await said(ctx.operator.auth, id, `реплика ${i}`, { sides: ['all'] });
+      for (let i = 1; i <= 5; i += 1)
+        await said(ctx.operator.auth, id, `реплика ${i}`, { sides: ['all'] });
 
-      expect((await markRead(ctx.author.auth, id, 5)).json()).toEqual({ readThroughSeq: 5, lastSeq: 5 });
+      expect((await markRead(ctx.author.auth, id, 5)).json()).toEqual({
+        readThroughSeq: 5,
+        lastSeq: 5,
+      });
       // Вторая вкладка догрузила старую страницу и прислала свой, устаревший номер.
-      expect((await markRead(ctx.author.auth, id, 1)).json()).toEqual({ readThroughSeq: 5, lastSeq: 5 });
+      expect((await markRead(ctx.author.auth, id, 1)).json()).toEqual({
+        readThroughSeq: 5,
+        lastSeq: 5,
+      });
       expect((await chatOf(ctx.author.auth, id)).unreadMine).toBe(0);
       // Ноль законен и означает «не прочитано ничего» — но и он курсора не двигает назад.
       expect((await markRead(ctx.author.auth, id, 0)).json().readThroughSeq).toBe(5);
@@ -859,7 +886,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       ctx.operator,
     ];
     const replies = await Promise.all(
-      senders.map((who, i) => say(who.auth, id, `одновременная реплика ${i + 1}`, { sides: ['all'] })),
+      senders.map((who, i) =>
+        say(who.auth, id, `одновременная реплика ${i + 1}`, { sides: ['all'] }),
+      ),
     );
     for (const res of replies) expect(res.statusCode, res.body).toBe(200);
 
@@ -896,7 +925,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
     // Реплика — не правка заявки: поднимай она версию, всякая открытая форма получала бы конфликт
     // оптимистической блокировки на каждое чужое сообщение.
     expect(after.version).toBe(before.version);
-    expect(new Date(after.updated_at).toISOString()).toBe(new Date(before.updated_at).toISOString());
+    expect(new Date(after.updated_at).toISOString()).toBe(
+      new Date(before.updated_at).toISOString(),
+    );
     expect(after.updated_by).toBe(before.updated_by);
   });
 
@@ -1042,7 +1073,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
 
     /** Ленты вне разбираемых заявок быть не должно: DO-блок идёт по всей таблице. */
     const clearComments = () =>
-      ctx.db.execute(sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`);
+      ctx.db.execute(
+        sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`,
+      );
 
     it('повторный прогон дублей не даёт, изменённый текст даёт вторую реплику следующим номером', async () => {
       await clearComments();
@@ -1063,9 +1096,8 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       // Автора у примечания взять неоткуда: `updated_by` — общее поле заявки.
       expect(moved.author_id).toBeNull();
       expect(moved.body).toBe('ждём ролик подачи');
-      const hash = (
-        await ctx.db.execute<{ h: string }>(sql`SELECT md5('ждём ролик подачи') AS h`)
-      ).rows[0]!.h;
+      const hash = (await ctx.db.execute<{ h: string }>(sql`SELECT md5('ждём ролик подачи') AS h`))
+        .rows[0]!.h;
       expect(moved.imported_hash).toBe(hash);
       // Время — приблизительное, от самой заявки, а не «перенесено сегодня».
       const at = (
@@ -1107,7 +1139,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       expect(rows[0]!.origin).toBe('import');
       // У адаптера принципал под рукой: пустой автор там означал бы выдуманную анонимность.
       expect(rows[0]!.author_id).toBe(ctx.service.id);
-      expect(new Date(rows[0]!.created_at).getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
+      expect(new Date(rows[0]!.created_at).getTime()).toBeGreaterThanOrEqual(
+        before.getTime() - 1000,
+      );
       expect(new Date(rows[0]!.created_at).getTime()).toBeLessThanOrEqual(Date.now() + 1000);
 
       // Повторный прогон переноса встречает тот же хеш и молча проходит мимо.
@@ -1137,13 +1171,17 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
    * уронив миграцию на ровном месте.
    */
   it('п. 11. перенос, ждавший блокировки, не спорит с адаптером: в ленте ровно одна реплика', async () => {
-    await ctx.db.execute(sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`);
+    await ctx.db.execute(
+      sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`,
+    );
     const TEXT = 'запчасть выехала, ждём в среду';
     const a = await makeRequest({ tag: 'гонка A', withService: true, serviceComment: 'барьер' });
     const b = await makeRequest({ tag: 'гонка B', withService: true, serviceComment: 'барьер' });
     // Порядок цикла — по идентификатору: барьером становится та заявка, что идёт первой.
     const [barrier, target] = a < b ? [a, b] : [b, a];
-    await ctx.db.execute(sql`UPDATE service_requests SET service_comment = ${TEXT} WHERE id = ${target}`);
+    await ctx.db.execute(
+      sql`UPDATE service_requests SET service_comment = ${TEXT} WHERE id = ${target}`,
+    );
 
     const holder = new pg.Client({ connectionString: DB_URL! });
     const migration = new pg.Client({ connectionString: DB_URL! });
@@ -1154,7 +1192,8 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       await holder.query('BEGIN');
       await holder.query('SELECT id FROM service_requests WHERE id = $1 FOR UPDATE', [barrier]);
 
-      const pid = (await migration.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      const pid = (await migration.query<{ pid: number }>('SELECT pg_backend_pid() AS pid'))
+        .rows[0]!.pid;
       transfer = migration.query(TRANSFER_SQL);
 
       // Ждём, пока процедура упрётся в барьер: без этого «параллельность» была бы догадкой —
@@ -1165,7 +1204,8 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
           SELECT count(*)::int AS c FROM pg_stat_activity
            WHERE pid = ${pid} AND wait_event_type = 'Lock'`);
         if (Number(waiting.rows[0]!.c) > 0) break;
-        if (Date.now() > deadline) throw new Error('перенос не встал в очередь за барьерной заявкой');
+        if (Date.now() > deadline)
+          throw new Error('перенос не встал в очередь за барьерной заявкой');
         await pause(25);
       }
 
@@ -1191,7 +1231,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
     expect(rows[0]!.body).toBe(TEXT);
     // Барьерную заявку перенос всё-таки забрал: ждал он, а не пропускал.
     expect(await rowsOf(barrier)).toHaveLength(1);
-    await ctx.db.execute(sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`);
+    await ctx.db.execute(
+      sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`,
+    );
   });
 
   // ── п. 12. Миграция выпуска C ──
@@ -1225,7 +1267,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
     }
 
     it('перенос забирает написанное адаптером в окне выката B, и колонка снимается', async () => {
-      await ctx.db.execute(sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`);
+      await ctx.db.execute(
+        sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`,
+      );
       const byAdapter = await makeRequest({ tag: 'выкат B адаптер', withService: true });
       await oldAdapterWrite(byAdapter, ctx.service.id, 'написано в окне выката B');
       // И заявка, до которой адаптер не дошёл: её примечание заберёт сам перенос выпуска C.
@@ -1247,11 +1291,15 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       expect(Number(column.rows[0]!.c)).toBe(1);
       expect(await rowsOf(onlyColumn)).toHaveLength(0);
       expect(await rowsOf(byAdapter)).toHaveLength(1);
-      await ctx.db.execute(sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`);
+      await ctx.db.execute(
+        sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`,
+      );
     });
 
     it('перенесена прежняя редакция, а текущая нет — проверка падает, DROP не выполняется', async () => {
-      await ctx.db.execute(sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`);
+      await ctx.db.execute(
+        sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`,
+      );
       const id = await makeRequest({ tag: 'разошедшийся текст', withService: true });
       // Реплика с хешем ТЕКУЩЕГО значения, но другим телом. Перенос такую пропустит — хеш совпал, —
       // а проверка обязана поймать: `md5` не криптографическая гарантия, и расхождение текста
@@ -1281,7 +1329,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
          WHERE table_name = 'service_requests' AND column_name = 'service_comment'`);
       expect(Number(column.rows[0]!.c)).toBe(1);
       expect(await rowsOf(id)).toHaveLength(1);
-      await ctx.db.execute(sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`);
+      await ctx.db.execute(
+        sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`,
+      );
     });
   });
 
@@ -1295,7 +1345,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
 
       expect(
         await refused(() =>
-          ctx.db.execute(sql`UPDATE service_request_messages SET body = 'подменённый' WHERE id = ${row!.id}`),
+          ctx.db.execute(
+            sql`UPDATE service_request_messages SET body = 'подменённый' WHERE id = ${row!.id}`,
+          ),
         ),
       ).toContain('Реплика обсуждения неизменяема');
       expect(
@@ -1320,7 +1372,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       ).toContain('нельзя удалить отдельно от заявки');
       expect(
         await refused(() =>
-          ctx.db.execute(sql`DELETE FROM service_request_message_addressees WHERE message_id = ${row!.id}`),
+          ctx.db.execute(
+            sql`DELETE FROM service_request_message_addressees WHERE message_id = ${row!.id}`,
+          ),
         ),
       ).toContain('нельзя удалить отдельно от самой реплики');
 
@@ -1470,7 +1524,9 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
         return original(query);
       };
       try {
-        expect((await inject('GET', '/api/v1/service-requests/unread-count', auth)).statusCode).toBe(200);
+        expect(
+          (await inject('GET', '/api/v1/service-requests/unread-count', auth)).statusCode,
+        ).toBe(200);
       } finally {
         delete holder.execute;
       }
@@ -1508,7 +1564,7 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
     function nodes(node: Record<string, unknown>): Record<string, unknown>[] {
       return [
         node,
-        ...(((node.Plans as Record<string, unknown>[] | undefined) ?? []).flatMap(nodes)),
+        ...((node.Plans as Record<string, unknown>[] | undefined) ?? []).flatMap(nodes),
       ];
     }
 
@@ -1520,10 +1576,7 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
      */
     function repeatedSeqScans(plan: Record<string, unknown>): string[] {
       return nodes(plan)
-        .filter(
-          (n) =>
-            String(n['Node Type']) === 'Seq Scan' && Number(n['Actual Loops'] ?? 1) > 1,
-        )
+        .filter((n) => String(n['Node Type']) === 'Seq Scan' && Number(n['Actual Loops'] ?? 1) > 1)
         .map((n) => `${String(n['Relation Name'])} × ${String(n['Actual Loops'])}`);
     }
 
@@ -1763,7 +1816,10 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
                WHERE request_id = ${seen} AND user_id = ${reader.id}`)
           ).rows[0]!.read_at,
         ).toISOString();
-      expect((await markRead(reader.auth, seen, 1)).json()).toEqual({ readThroughSeq: 1, lastSeq: 1 });
+      expect((await markRead(reader.auth, seen, 1)).json()).toEqual({
+        readThroughSeq: 1,
+        lastSeq: 1,
+      });
       const before = await readAt();
 
       // Кнопка находит в отборе обе заявки, а двигает одну: вторая уже стоит на `lastSeq`.
