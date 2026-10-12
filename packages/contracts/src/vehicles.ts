@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, uuidSchema } from './common';
-import type { WaybillFormCode } from './waybills';
+import type { TypeWaybillFormCode } from './waybills';
 
 // ── Справочник «Техника»: конкретные ТС (ADR 0007) ──
 // Тип обязателен, марка/модель опциональна (в источнике есть машины без марки). Согласованность
@@ -195,12 +195,13 @@ export interface VehicleDto {
   vehicleTypeId: string;
   typeName: string;
   /**
-   * Бланк, закреплённый за типом машины (ADR 0037). Приезжает строкой справочника, потому что
-   * заявку закрывают и машиной другого типа (ADR 0059): бланк рейса задаёт та единица, которая
-   * поедет, а не тип, который заказали, — и форма назначения обязана назвать смену бланка сразу.
-   * Пустым не бывает (ADR 0065).
+   * The waybill form fixed to the vehicle's type (ADR 0037). It comes with the vehicle row because
+   * a request may be closed by a vehicle of another type (ADR 0059): the route's form is set by the
+   * unit that will drive, not by the ordered type, and the assignment form must name the change
+   * at once. Never empty (ADR 0065), and never `esm2`: a type carries only 4-P or form No. 3, the
+   * weekly ESM-2 sheet is issued by the request path (ADR 0128, "known debt").
    */
-  waybillFormCode: WaybillFormCode;
+  waybillFormCode: TypeWaybillFormCode;
   vehicleCategoryId: string | null;
   categoryName: string | null;
   /**

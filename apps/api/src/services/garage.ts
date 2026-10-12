@@ -17,6 +17,7 @@ import {
   vehicleLabel,
   type VehicleOwnership,
   waybillDisplayNumber,
+  type TypeWaybillFormCode,
   type WaybillFormCode,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -445,7 +446,7 @@ function busyVehicleOf(r: {
   typeName: string;
   registrationNumber: string | null;
   modelName: string | null;
-  waybillFormCode: WaybillFormCode;
+  waybillFormCode: TypeWaybillFormCode;
 }): Omit<GarageBusyVehicle, 'vehicleId'> {
   return {
     vehicleLabel: vehicleLabel(r),

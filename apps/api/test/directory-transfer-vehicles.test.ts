@@ -477,6 +477,41 @@ describe('типы ТС', () => {
   });
 
   /*
+   * The import writes the form straight into `vehicle_types`, past the input schemas, so the cell's
+   * set of choices is the channel's only gate (ADR 0128). ESM-2 is issued by the request path and
+   * a type never carries it: neither the word nor the code passes, and the refusal lists what does.
+   */
+  it('a file cannot fix ESM-2 to a type, neither as the word nor as the code', () => {
+    for (const cell of ['ЭСМ-2', 'esm2']) {
+      const { problems } = parseRow(def, typesEnv, { ...filled, 'Бланк путевого листа': cell });
+      expect(problems).toEqual([
+        `Бланк путевого листа — допустимые значения: 4-П, Форма № 3; получено «${cell}»`,
+      ]);
+    }
+    const hint = def.columns(typesEnv).find((c) => c.header === 'Бланк путевого листа')?.hint;
+    expect(hint).toContain('4-П, Форма № 3.');
+    expect(hint).not.toContain('ЭСМ-2');
+  });
+
+  it('a type still stored with esm2 is exported as the code, not as an empty cell', () => {
+    // Until the pending CHECK ships the database still admits the value; an empty cell would read
+    // as "4-P by default", and the code itself is refused on the way back.
+    const stored = def.model({ ...typeRow, waybillFormCode: 'esm2' }, typesEnv);
+    expect(cellsOf(def, typesEnv, stored)['Бланк путевого листа']).toBe('esm2');
+    const { problems } = editRow(
+      def,
+      typesEnv,
+      { ...typeRow, waybillFormCode: 'esm2' },
+      {
+        'Бланк путевого листа': 'esm2',
+      },
+    );
+    expect(problems).toEqual([
+      'Бланк путевого листа — допустимые значения: 4-П, Форма № 3; получено «esm2»',
+    ]);
+  });
+
+  /*
    * Признак линейности (ADR 0100) ездит файлом наравне с бланком: без колонки перенос справочника
    * между установками терял бы его молча — тип приезжал бы недельным, а заказы по нему уже ведутся
    * днями.

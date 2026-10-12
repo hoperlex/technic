@@ -40,6 +40,7 @@ import type {
   ServiceRequestBulkOperation,
   ServiceRequestBulkResultDto,
   ServiceRequestBulkRowResultDto,
+  TypeWaybillFormCode,
   WaybillCorrectionAuthorizationScope,
   WasteTicketBlindCheckField,
   WasteTicketField,
@@ -471,17 +472,21 @@ export const vehicleTypes = pgTable(
       { onDelete: 'restrict' },
     ),
     /**
-     * Каким бланком выписывается лист на машины этого типа (ADR 0037, миграции 0060 и 0094).
+     * Which form the waybill of this type's vehicles is issued on (ADR 0037, migrations 0060 and
+     * 0094).
      *
-     * Код формы, а не флаг: легковым отвечает 'leg3', и второй схемы для них не понадобилось.
-     * Пустым не бывает с 0094 (ADR 0065): «лист не выписывается» — это про принадлежность машины,
-     * а не про её тип, и NULL здесь означал бы, что тип отвечает на вопрос, которого ему не
-     * задавали. У собственной техники лист есть всегда, по умолчанию 4-П.
+     * A form code, not a flag: passenger cars answer 'leg3', and they needed no second schema.
+     * Never empty since 0094 (ADR 0065): "no waybill" is about the vehicle's ownership, not its
+     * type, and NULL here would mean the type answers a question nobody asked it. An own vehicle
+     * always has a waybill, 4-P by default.
+     *
+     * Typed `TypeWaybillFormCode` (ADR 0128): the inputs and the directory import accept only
+     * '4p' | 'leg3', so no current writer produces 'esm2'. The database CHECK below still allows
+     * three values; narrowing it needs a guard against rows the previous code may have written and
+     * ships later from `drizzle/pending/vehicle-type-waybill-form-check.sql`. Until then the type is
+     * a promise held by the writers, not by the database.
      */
-    waybillFormCode: text('waybill_form_code')
-      .$type<'4p' | 'leg3' | 'esm2'>()
-      .notNull()
-      .default('4p'),
+    waybillFormCode: text('waybill_form_code').$type<TypeWaybillFormCode>().notNull().default('4p'),
     /**
      * Линейная техника (миграция 0127): вечером возвращается на базу и за день работает на
      * нескольких объектах. Заказ такого типа на объект ведётся по дням — 4-П на каждый день, а

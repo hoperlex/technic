@@ -9,7 +9,7 @@ import type { CredentialTypeCode, DriverDocumentGap, LicenseDefect } from './per
 import type { RoutePurpose } from './vehicle-routes';
 import { routeWaybillForm } from './vehicle-routes';
 import type { VehicleOwnership, VehicleStatus } from './vehicles';
-import type { WaybillFormCode, WaybillStatus } from './waybills';
+import type { TypeWaybillFormCode, WaybillFormCode, WaybillStatus } from './waybills';
 import { WAYBILL_FORM_CODES, waybillFormCodeSchema } from './waybills';
 
 /**
@@ -109,13 +109,11 @@ export interface GarageBusyVehicle {
   /** Принадлежность машины: на арендную лист выписывает арендодатель, и бланка у работы нет. */
   vehicleOwnership: VehicleOwnership;
   /**
-   * Бланк, закреплённый за типом машины (4-П или форма № 3); ЭСМ-2 у типа не бывает (ADR 0065).
-   *
-   * Тип здесь широкий намеренно и временно: сужение до `TypeWaybillFormCode` приедет вместе со
-   * сквозной правкой всех проекций бланка типа — она гейтится preflight'ом по проду, который ещё
-   * не проведён.
+   * The form fixed to the vehicle's type (4-P or form No. 3); a type never carries ESM-2
+   * (ADR 0065, ADR 0128). Narrow so that `busyWaybillForm` cannot see a freight route as the weekly
+   * sheet: ESM-2 in the day slice comes only from the special equipment and weekly sheet branches.
    */
-  vehicleWaybillFormCode: WaybillFormCode;
+  vehicleWaybillFormCode: TypeWaybillFormCode;
 }
 
 /** Человек занятости: им строка техники называет, кто за рулём. */

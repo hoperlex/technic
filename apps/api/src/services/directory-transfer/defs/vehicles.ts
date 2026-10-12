@@ -11,8 +11,8 @@ import {
   type VehicleCategoryValueInput,
   type VehicleOwnership,
   type VehicleStatus,
+  type TypeWaybillFormCode,
   type VehicleTypeSpecDto,
-  type WaybillFormCode,
 } from '@technic/contracts';
 import { db } from '../../../db/client';
 import {
@@ -611,23 +611,38 @@ const vehicleSpecsDirectory = directory<VehicleSpecRow, SpecModel, SpecsEnv>({
 // ── Типы ТС и привязки ТТХ ──
 
 /**
- * Бланк путевого листа словом. Не `waybillFormLabels` — там подписи с пояснением в скобках
- * («Форма 4-П (грузовой автомобиль)»), для ячейки это слишком длинно; и не
- * `waybillFormShortLabels` — «№ 3» в отрыве от столбца журнала не читается. `parseChoice`
- * принимает и сам код ('leg3'), так что выгрузка из другой системы тоже пройдёт.
+ * The waybill form as a word. Not `waybillFormLabels`: those carry an explanation in brackets
+ * ("Форма 4-П (грузовой автомобиль)"), too long for a cell; and not `waybillFormShortLabels`:
+ * "№ 3" apart from the journal column does not read. `parseChoice` also accepts the code itself
+ * ('leg3'), so an export from another system passes too.
+ *
+ * Only the two forms a type may carry (ADR 0065, ADR 0128). The import writes this value straight
+ * into `vehicle_types`, past the input schemas, so this record is the channel's only gate: an
+ * "ЭСМ-2" option here let a weekly-sheet type be created by a regular tool. Now `parseChoice`
+ * refuses both "ЭСМ-2" and 'esm2' with the list of allowed values.
  */
-const WAYBILL_FORM_CELLS: Record<WaybillFormCode, string> = {
+const WAYBILL_FORM_CELLS: Record<TypeWaybillFormCode, string> = {
   '4p': '4-П',
   leg3: 'Форма № 3',
-  esm2: 'ЭСМ-2',
 };
+
+/**
+ * The cell of a stored form. The column is typed narrow, but until the pending CHECK
+ * (`drizzle/pending/vehicle-type-waybill-form-check.sql`) ships, the database still admits
+ * 'esm2', which the import of earlier releases could write. Such a row is exported with its raw
+ * code rather than an empty cell (which would read as "4-P by default") or a crash; on the way
+ * back `parseChoice` refuses that code by name, so whoever edits the file picks 4-P or form No. 3.
+ */
+function waybillFormCell(code: TypeWaybillFormCode): string {
+  return Object.hasOwn(WAYBILL_FORM_CELLS, code) ? WAYBILL_FORM_CELLS[code] : code;
+}
 
 interface TypeModel {
   code: string;
   kindCode: string;
   name: string;
   description: string;
-  waybillFormCode: WaybillFormCode;
+  waybillFormCode: TypeWaybillFormCode;
   /** Линейная ли техника (ADR 0100): заказ такого типа ведётся днями, а не неделями. */
   isLinear: boolean;
   /**
@@ -934,7 +949,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
       header: 'Бланк путевого листа',
       width: 18,
       hint: `Каким бланком выписывается лист на машины этого типа: ${Object.values(WAYBILL_FORM_CELLS).join(', ')}. По умолчанию 4-П.`,
-      get: (m) => WAYBILL_FORM_CELLS[m.waybillFormCode],
+      get: (m) => waybillFormCell(m.waybillFormCode),
       set: (m, text, ctx) => {
         const v = parseChoice(text, WAYBILL_FORM_CELLS, ctx, 'Бланк путевого листа');
         if (v !== undefined) m.waybillFormCode = v;
@@ -1795,7 +1810,7 @@ interface VehiclesEnv {
    * Типы по коду. Бланк лежит рядом с идентификатором, потому что читаются они вместе: тип машины
    * — это и есть её бланк, а у бланка «форма № 3» граф прицепа нет вовсе (ADR 0071).
    */
-  types: Map<string, { id: string; waybillFormCode: WaybillFormCode }>;
+  types: Map<string, { id: string; waybillFormCode: TypeWaybillFormCode }>;
   typeCodeById: Map<string, string>;
   /** Категория ищется внутри типа: одноимённые категории разных типов — разные записи. */
   categories: Map<string, { id: string; isActive: boolean }>;
@@ -1822,7 +1837,7 @@ interface VehiclesEnv {
  * Мягкого удаления среди состояний нет, и это не пропуск: удалённой техники в файле не бывает
  * (`load` берёт только живые строки), а загрузка не удаляет — она заводит и правит.
  */
-function releasesHitches(status: VehicleStatus, form: WaybillFormCode | undefined): boolean {
+function releasesHitches(status: VehicleStatus, form: TypeWaybillFormCode | undefined): boolean {
   return status === 'retired' || form === 'leg3';
 }
 
@@ -1831,7 +1846,7 @@ function releasesHitches(status: VehicleStatus, form: WaybillFormCode | undefine
  * нет, а обе половины уже есть. Нужен для прежнего состояния машины: в модели лежит код нового
  * типа, а в строке базы — идентификатор старого.
  */
-function waybillFormOfTypeId(typeId: string, env: VehiclesEnv): WaybillFormCode | undefined {
+function waybillFormOfTypeId(typeId: string, env: VehiclesEnv): TypeWaybillFormCode | undefined {
   return env.types.get(env.typeCodeById.get(typeId) ?? '')?.waybillFormCode;
 }
 

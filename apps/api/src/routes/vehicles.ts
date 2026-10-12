@@ -13,7 +13,7 @@ import {
   type UpdateVehicleResult,
   type VehicleDto,
   vehicleListQuerySchema,
-  type WaybillFormCode,
+  type TypeWaybillFormCode,
 } from '@technic/contracts';
 import { z } from 'zod';
 import { db } from '../db/client';
@@ -139,7 +139,7 @@ async function getById(id: string): Promise<VehicleDto | null> {
  * тем же запросом, которым тип и так проверяется на существование, — второй за тем же ответом
  * ходил бы зря.
  */
-async function assertTypeExists(typeId: string): Promise<WaybillFormCode> {
+async function assertTypeExists(typeId: string): Promise<TypeWaybillFormCode> {
   const [t] = await db
     .select({ id: vehicleTypes.id, waybillFormCode: vehicleTypes.waybillFormCode })
     .from(vehicleTypes)

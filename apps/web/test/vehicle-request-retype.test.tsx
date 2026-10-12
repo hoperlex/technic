@@ -57,7 +57,8 @@ const CRANE: VehicleClassificationDto = {
   categoryName: 'Автокраны, г/п 25 т',
   label: 'Автокраны, г/п 25 т',
   specCount: 1,
-  waybillFormCode: 'esm2',
+  // A type carries 4-P or form No. 3 only (ADR 0128): ESM-2 comes from the request path.
+  waybillFormCode: '4p',
 } as unknown as VehicleClassificationDto;
 
 /** Заказ техники на объект самосвалом — «Новая»: ровно та заявка, которую переоформляют. */

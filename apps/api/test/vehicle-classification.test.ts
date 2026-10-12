@@ -132,6 +132,22 @@ describe('vehicle_types: обновление (strict, без структурн
   });
 
   /*
+   * An old bundle, a script or a tab open since yesterday that still sends 'esm2' gets a 400 whose
+   * field message says what to do, not a bare "invalid enum value" (ADR 0128): the value is
+   * refused, never mapped, because which form such a type gets is the owner's decision.
+   */
+  it('the esm2 refusal says which forms a type may carry', () => {
+    const result = updateVehicleTypeSchema.safeParse({ waybillFormCode: 'esm2' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((i) => [i.path.join('.'), i.message])).toEqual([
+      [
+        'waybillFormCode',
+        'Типу закрепляют бланк 4-П или форму № 3: ЭСМ-2 портал выписывает сам по заявке',
+      ],
+    ]);
+  });
+
+  /*
    * Линейность правится так же — и так же не подставляется молча: PATCH без поля не переводит тип
    * обратно на недельный режим. Запрет «пока есть заявки в работе» (ADR 0100 §1) схема не знает:
    * он про состояние базы и живёт в маршруте — здесь проверяется, что поле вообще открыто.

@@ -17,7 +17,7 @@ import {
   type VehicleTypeLinearSwitchRequestDto,
   type VehicleTypeLinearSwitchResultDto,
   type MaintenanceBasis,
-  type WaybillFormCode,
+  type TypeWaybillFormCode,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -126,7 +126,9 @@ type DtoRow = {
   description: string;
   isActive: boolean;
   sortOrder: number;
-  waybillFormCode: WaybillFormCode;
+  // Narrow like the DTO: the row is assembled from the select, not from the input schema, and a
+  // wide type here would carry 'esm2' on into the response (ADR 0128).
+  waybillFormCode: TypeWaybillFormCode;
   isLinear: boolean;
   maintenanceBasis: MaintenanceBasis;
   frozenRequests: number;

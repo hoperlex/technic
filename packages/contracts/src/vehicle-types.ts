@@ -4,7 +4,7 @@ import { MAINTENANCE_BASES, type MaintenanceBasis } from './vehicle-maintenance'
 import {
   DEFAULT_TYPE_WAYBILL_FORM,
   typeWaybillFormCodeSchema,
-  type WaybillFormCode,
+  type TypeWaybillFormCode,
 } from './waybills';
 
 export const VEHICLE_TYPE_SORT_FIELDS = [
@@ -259,11 +259,14 @@ export interface VehicleTypeDto {
   isActive: boolean;
   sortOrder: number;
   /**
-   * Каким бланком выписывается лист на машины этого типа (ADR 0065). Пустым не бывает: «лист не
-   * выписывается» — это про принадлежность машины, а не про её тип. В форме справочника поле
-   * стоит признаком «легковой транспорт» (`isPassengerTypeForm`).
+   * Which form the waybill of this type's vehicles is issued on (ADR 0065). Never empty: "no
+   * waybill" is about the vehicle's ownership, not its type. The directory form shows it as the
+   * "passenger transport" flag (`isPassengerTypeForm`).
+   *
+   * Narrow on purpose, like the input schemas (ADR 0128): a type with `esm2` would make a freight
+   * route of its vehicles count as the weekly sheet in the day slice filters.
    */
-  waybillFormCode: WaybillFormCode;
+  waybillFormCode: TypeWaybillFormCode;
   /**
    * Линейная техника (ADR 0100): вечером возвращается на базу и за день работает на нескольких
    * объектах. Заказ такого типа на объект ведётся по дням — 4-П на каждый день, ЭСМ-2 только по

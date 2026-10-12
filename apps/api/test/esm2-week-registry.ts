@@ -723,4 +723,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
       'определённости сцены, а не второго набора ожиданий, — и на cutover этот пин уходит вместе ' +
       'с самим режимом. Утверждений переключение не двигает',
   },
+  {
+    file: 'directory-transfer-vehicles.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note:
+      'the directory import refuses "ЭСМ-2" and \'esm2\' as a vehicle type form (ADR 0128); the ' +
+      'code is a cell value of the types sheet, no waybill and no period exist in the file',
+  },
 ];

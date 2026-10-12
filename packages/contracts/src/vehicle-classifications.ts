@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, uuidSchema } from './common';
-import type { WaybillFormCode } from './waybills';
+import type { TypeWaybillFormCode } from './waybills';
 
 // ── Классификатор ТС: тип и его категории одним списком ──
 //
@@ -56,14 +56,14 @@ export interface VehicleClassificationDto {
   /** ТТХ у типа (ADR 0016): 0 — категорий у типа нет и быть не может. */
   specCount: number;
   /**
-   * Бланк путевого листа типа (`vehicle_types.waybill_form_code`). Форме заявки он нужен не ради
-   * документа: бланком тип отличается по существу — у формы № 3 (легковой автомобиль) не
-   * спрашивают груз, потому что его не бывает (`isCargoAmountRequired`).
+   * The type's waybill form (`vehicle_types.waybill_form_code`). The request form needs it not for
+   * the document: the form tells types apart in substance, and form No. 3 (passenger car) asks for
+   * no cargo because there is none (`isCargoAmountRequired`).
    *
-   * Пустым не бывает с ADR 0065: у собственной техники лист есть всегда, и тип отвечает только на
-   * вопрос, каким бланком.
+   * Never empty since ADR 0065: an own vehicle always has a waybill, and the type answers only
+   * which form. Never `esm2` either (ADR 0128): the weekly sheet is chosen by the request path.
    */
-  waybillFormCode: WaybillFormCode;
+  waybillFormCode: TypeWaybillFormCode;
   /**
    * Порядок цены этой позиции: средняя ставка активной техники, у которой она заполнена. Считается
    * по всему парку — и по аренде, и по своим машинам: заказчику отвечают на «во сколько обойдётся»,
