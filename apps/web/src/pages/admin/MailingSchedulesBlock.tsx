@@ -9,6 +9,7 @@ import {
   type MailingScheduleDto,
 } from '@technic/contracts';
 import { mailingRunKeys, mailingsApi, mailingScheduleKeys } from '@entities/mailing';
+import { mailLogKeys } from '@entities/mail-log';
 import { useAuth } from '@entities/session';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { actionsColumn, DataTable, RowActionButton, textColumn } from '@shared/ui';
@@ -162,6 +163,8 @@ export function MailingSchedulesBlock() {
       setRunsPage(1);
       void qc.invalidateQueries({ queryKey: mailingRunKeys.root });
       void qc.invalidateQueries({ queryKey: mailingScheduleKeys.root });
+      // A run queues a letter per recipient, and the «Аудит» tab of the same section lists them.
+      void qc.invalidateQueries({ queryKey: mailLogKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
