@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { App, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -17,7 +16,6 @@ import {
   vehicleRequestErrorMessage as errorMessage,
   vehicleRequestKeys,
   vehicleRequestsApi,
-  type VehicleRequestPeriodResultDto,
 } from '@entities/vehicle-request';
 import { vehicleRouteKeys, vehicleRouteLink } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
@@ -26,25 +24,10 @@ import {
   newTripBody,
   retypeErases,
   type FormValues,
-  type VehiclePeriodCommand,
 } from '@features/vehicle-request-editor';
 import { MOSCOW_TZ } from '@shared/config';
-import type { PendingPeriodSave, VehicleRequestEditorPeriodModalProps } from './types';
+import { useEditorTermDoor, type TermStepResult } from './useEditorTermDoor';
 import type { VehicleRequestEditorState } from './useVehicleRequestEditorState';
-
-/**
- * Save input: form values plus an already applied term change (wave 4a of
- * `docs/assignment-periods-plan.md`).
- *
- * `period` arrives when the term went through its own door and carries two things the form no
- * longer has: the **fresh version** of the request (the door bumped it — the old one would answer
- * 409) and the fact that the calendar has already been moved by this edit, so no second entry in
- * the correction journal is due.
- */
-interface SaveInput {
-  period?: VehicleRequestPeriodResultDto;
-  values: FormValues;
-}
 
 interface Input {
   openRoute: (routeId: string) => void;
@@ -56,15 +39,6 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
   const { can } = useAuth();
   const qc = useQueryClient();
   const canApprove = can('vehicleRequests.approve');
-  /**
-   * A term change waiting for its door: the request, the new term and the form values to be saved
-   * right after (wave 4a of `docs/assignment-periods-plan.md`).
-   *
-   * State, not a flag inside the mutation: a dialog stands between "pressed Save" and "confirmed
-   * the consequences", and the form values must survive it — the form has already run its rules,
-   * and asking them again would be a second pass over the same fields.
-   */
-  const [periodSave, setPeriodSave] = useState<PendingPeriodSave | null>(null);
 
   /**
    * The request was moved to another date while it sits in the previous day's route.
@@ -105,7 +79,7 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
   };
 
   const save = useMutation({
-    mutationFn: ({ values, period }: SaveInput) => {
+    mutationFn: ({ values, period, legacyTerm }: TermStepResult) => {
       // One classifier position is chosen (ADR 0028); the API receives it as a "type + category"
       // pair, with an empty category for a type that has none.
       const picked = parseVehicleClassificationKey(values.classificationKey)!;
@@ -115,17 +89,16 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
        * record for ordinary daily work, and the form-correction journal would fill with requests
        * for tomorrow.
        *
-       * A term already applied through its own door no longer moves the calendar of this edit: the
-       * body's dates equal those stored on the request, and a reason here would mean a second
-       * journal entry for the same edit — the person explained it to the term door already.
+       * Only a body that carries a calendar sends them: creation, conversion and a freight edit.
+       * The wide edit of an on-site order carries no term (K3a) — its door has taken the reason
+       * already, and a second one here would be a second journal entry for the same edit.
        */
-      const backdate =
-        state.backdated && !period
-          ? {
-              backdateReason: values.backdateReason?.trim(),
-              operationId: state.operationId,
-            }
-          : {};
+      const backdate = state.backdated
+        ? {
+            backdateReason: values.backdateReason?.trim(),
+            operationId: state.operationId,
+          }
+        : {};
       /*
        * The customer as a column pair from the selected option (R2, R2a): kind and id are stored in
        * it as data, and parsing the string on every save is pointless.
@@ -138,7 +111,6 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
         vehicleTypeId: picked.vehicleTypeId,
         vehicleCategoryId: picked.vehicleCategoryId,
         comment: values.comment ?? '',
-        ...backdate,
       };
       // A type change of an existing request is a conversion, not an edit (ADR 0091): it has its
       // own handler because the previous type's detail is dropped whole and the new one arrives in
@@ -161,17 +133,41 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
           requestType: 'special_equipment' as const,
           objectId: pair.objectId!,
           ...common,
-          dateFrom: values.dateFrom!.format('YYYY-MM-DD'),
-          dateTo: values.dateTo ? values.dateTo.format('YYYY-MM-DD') : null,
           responsibleName: values.responsibleName!,
           responsiblePhone: values.responsiblePhone!,
         };
+        const term = {
+          dateFrom: values.dateFrom!.format('YYYY-MM-DD'),
+          dateTo: values.dateTo ? values.dateTo.format('YYYY-MM-DD') : null,
+          ...backdate,
+        };
         if (!state.record || !edit) {
-          return vehicleRequestsApi.create({ ...base, fileIds: state.editor.newFileIds() });
+          return vehicleRequestsApi.create({
+            ...base,
+            ...term,
+            fileIds: state.editor.newFileIds(),
+          });
         }
-        return retyping
-          ? vehicleRequestsApi.changeRequestType(state.record.id, { ...base, ...edit })
-          : vehicleRequestsApi.update(state.record.id, { ...base, ...edit });
+        if (retyping) {
+          return vehicleRequestsApi.changeRequestType(state.record.id, {
+            ...base,
+            ...term,
+            ...edit,
+          });
+        }
+        /*
+         * K3a (S-21 of 12.10.2026): the wide PATCH carries no term. It moved through its own door
+         * before this call (`useEditorTermDoor`) or did not change at all, and the server reads an
+         * absent `dateFrom`/`dateTo` as "untouched". Release R2 removes the dates from the wide
+         * schema under client floor 7, so a contract-7 bundle must not depend on them — the one
+         * exception is the transitional `legacyTerm` fallback, unreachable once the door admits
+         * every account that may edit the order.
+         */
+        return vehicleRequestsApi.update(state.record.id, {
+          ...base,
+          ...(legacyTerm ? term : {}),
+          ...edit,
+        });
       }
 
       // A freight customer is an object or a department, exactly one (ADR 0040): the server rejects
@@ -191,6 +187,7 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
         ...common,
         scheduledAt,
         scheduledTimeUnspecified: time === undefined,
+        ...backdate,
       };
       /*
        * Trips from the form list (R1, R2): addresses, cargo and contacts moved from the request to
@@ -239,6 +236,7 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
       });
     },
     onSuccess: (saved) => {
+      term.reset();
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       // A changed work term reconciles ESM-2 again (`afterWorkPeriodChanged`), like an early end:
@@ -253,34 +251,17 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
       state.setOpen(false);
       warnRouteDateMismatch(saved);
     },
-    onError: (error) => message.error(errorMessage(error)),
+    onError: (error, { period }) =>
+      message.error(
+        // The one half-applied state of a split save (see `useEditorTermDoor`): it is named, not
+        // hidden — the editor stays open, and the next "Save" sends only the rest.
+        period
+          ? `Срок работ изменён, но остальные правки не сохранены: ${errorMessage(error)}`
+          : errorMessage(error),
+      ),
   });
 
-  /**
-   * Whether this term edit goes through its own door, and what the term becomes (Ж4, З5, И5 of
-   * `docs/assignment-periods-plan.md`).
-   *
-   * `null` means no door here, and the term goes the old broad way. That happens in four cases,
-   * each a property of the edit itself, not "not done yet":
-   *
-   * - **the term did not change**: the door would not accept an empty command — it would bump the
-   *   request version and leave a journal row with no subject;
-   * - **not an on-site order**: freight has no work term at all;
-   * - **the request is "new"**: no vehicle, no paper, no history — the preview has nothing to show
-   *   and nothing to cancel. Until cutover its term follows the broad route, legitimately (И5);
-   * - **no permission to read paperwork**: consequences are shown by the preview, which lives on
-   *   `waybills.read`; a role without it would hit 403 in the middle of saving.
-   */
-  const periodDoorCommand = (values: FormValues): VehiclePeriodCommand | null => {
-    const { record } = state;
-    if (!record || record.requestType !== 'special_equipment') return null;
-    if (values.requestType !== 'special_equipment') return null;
-    if (record.status === 'new' || !can('waybills.read')) return null;
-    const dateFrom = values.dateFrom!.format('YYYY-MM-DD');
-    const dateTo = values.dateTo ? values.dateTo.format('YYYY-MM-DD') : null;
-    if (dateFrom === record.dateFrom && dateTo === record.dateTo) return null;
-    return { dateFrom, dateTo };
-  };
+  const term = useEditorTermDoor({ state, saveRest: (input) => save.mutate(input) });
 
   /**
    * Conversion is confirmed, an ordinary save is not. Changing the type does not just change
@@ -293,17 +274,12 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
     const { record } = state;
     if (!record || record.requestType === values.requestType) {
       /*
-       * A term change has its own door (`docs/assignment-periods-plan.md`, wave 4a; Ж4, З5, Д2).
+       * A term change has its own door (K3a; Ж4, З5, Д2 of `docs/assignment-periods-plan.md`).
        * Saving then splits into two commands: the term has its own consequences and handshakes,
-       * and "extend and also fix the comment" is never one body. The term goes first — it shows the
-       * cost and takes confirmations — then the rest with the version it returned.
+       * and "extend and also fix the comment" is never one body. The term goes first, then the
+       * rest with the version it returned — the order and its failures are `useEditorTermDoor`'s.
        */
-      const command = periodDoorCommand(values);
-      if (command && record?.requestType === 'special_equipment') {
-        setPeriodSave({ request: record, command, values });
-        return;
-      }
-      save.mutate({ values });
+      if (!term.start(values)) save.mutate({ values, period: term.applied });
       return;
     }
     // An approver's own edit does not drop the approval (ADR 0025): the approver confirms the
@@ -360,26 +336,9 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
     submit(values);
   };
 
-  /*
-   * The term door's dialog (wave 4a of `docs/assignment-periods-plan.md`) shows what burns and what
-   * gets issued, which vehicle decisions a shortening cancels, and takes confirmations the broad
-   * route lacks. The backdate reason typed in the form moves there, together with the same
-   * operation key: the person explains one edit, not every handler it passes through.
-   */
-  const periodModalProps: VehicleRequestEditorPeriodModalProps = {
-    request: periodSave?.request ?? null,
-    command: periodSave?.command ?? null,
-    reason: periodSave?.values.backdateReason,
-    operationId: state.operationId,
-    onCancel: () => setPeriodSave(null),
-    onApplied: (result) => {
-      const pending = periodSave;
-      setPeriodSave(null);
-      // The rest of the body goes as a second command with its own door and version. Its dates
-      // equal what the door already wrote, so the broad route will not touch them.
-      if (pending) save.mutate({ values: pending.values, period: result });
-    },
+  return {
+    confirmLoading: save.isPending || term.pending,
+    onFinish,
+    periodModalProps: term.periodModalProps,
   };
-
-  return { confirmLoading: save.isPending, onFinish, periodModalProps };
 }

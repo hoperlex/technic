@@ -22,6 +22,10 @@ import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
  *   прежний результат, а не заведёт вторую правку;
  * - тому, у кого права на коррекцию нет, прошлое в календаре заперто — он и выбрать его не может.
  *
+ * Since K3a (S-21 of 12.10.2026) an on-site order's term moves only through its own door: the
+ * reason typed in the form travels there as the operation of the correction journal, and the wide
+ * PATCH carries neither the term nor a second declaration of it.
+ *
  * Даты считаются от сегодняшнего дня по МСК, а не прибиты числами: правило живёт относительно
  * «сегодня», и фикстура с датой в коде протухла бы вместе с ним.
  */
@@ -71,6 +75,24 @@ const IN_WORK_REQUEST = vehicleRequest({
   dateTo: TODAY,
 } as never);
 
+/** Preview of a backdated move of a "new" order: no paper, no history, one journal operation. */
+const BACKDATED_PREVIEW = {
+  plan: { cancel: [], issue: [] },
+  requiredAnchors: [],
+  requiredVehicleResolution: null,
+  blockedShiftDays: [],
+  clearedShiftDays: [],
+  clearedShiftsFingerprint: null,
+  requiredUnlocks: [],
+  unlockFingerprint: 'fp-unlock-empty',
+  issues: [],
+  operationRequirement: { kind: 'crew', reasonRequired: true, operationIdRequired: true },
+  asOf: TODAY,
+  fingerprint: 'fp-backdated',
+  cancelGroups: [],
+  cancelGroupsFingerprint: null,
+};
+
 function renderTab(role: 'dispatcher' | 'manager' = 'dispatcher') {
   const http = mockHttp({
     'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: 2, confirmed: 1 })),
@@ -87,6 +109,20 @@ function renderTab(role: 'dispatcher' | 'manager' = 'dispatcher') {
     // отношения не имеют, но без ответа блок формы остался бы без данных.
     'GET /vehicle-requests/:id/relocations': () => json([]),
     'PATCH /vehicle-requests/:id': ({ body }) => json({ ...TODAY_REQUEST, ...(body as object) }),
+    // The term door of a "new" order: nothing to show, but a backdated move goes to the correction
+    // journal (R32), so the preview asks for an operation and the empty unlock set (D4).
+    'POST /vehicle-requests/:id/period/preview': () => json(BACKDATED_PREVIEW),
+    'PATCH /vehicle-requests/:id/period': ({ body }) =>
+      json({
+        version: 2,
+        repeated: false,
+        dateFrom: (body as { dateFrom: string }).dateFrom,
+        dateTo: (body as { dateTo: string | null }).dateTo,
+        esm2: { cancelled: [], issued: [] },
+        earlyEndDropped: false,
+        operationId: 'op-1',
+        history: { state: 'empty', validatedOn: null, dirty: false, changes: [], people: [] },
+      }),
   });
   // Диспетчер — у него есть `waybills.correct`: прошлое ему открыто на тридцать дней (Р37).
   renderWithUser(<VehicleRequestsTab />, { user: authUser({ role }) });
@@ -143,11 +179,26 @@ describe('дата заявки задним числом в форме', () => 
     submit();
     await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(1));
 
+    // The term goes through its door: the reason from the form becomes the journal operation, with
+    // the client's uuid as the key (R31) — without it the server would not take the past day.
+    const term = http.lastCall('PATCH /vehicle-requests/:id/period')!.body as {
+      dateFrom: string;
+      previewFingerprint: string;
+      unlockFingerprint: string;
+      operation: { operationId: string; reason: string };
+    };
+    expect(term.dateFrom).toBe(YESTERDAY);
+    expect(term.previewFingerprint).toBe('fp-backdated');
+    expect(term.unlockFingerprint).toBe('fp-unlock-empty');
+    expect(term.operation.reason).toBe('техника вышла вчера');
+    expect(term.operation.operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
+
+    // The rest carries neither the term nor a second declaration: the door has the reason already.
     const body = http.lastCall('PATCH /vehicle-requests/:id')!.body as Record<string, unknown>;
-    expect(body.dateFrom).toBe(YESTERDAY);
-    expect(body.backdateReason).toBe('техника вышла вчера');
-    // Ключ операции — uuid клиента (Р31): без него сервер задний день не примет вовсе.
-    expect(String(body.operationId)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
+    expect('dateFrom' in body).toBe(false);
+    expect(body.backdateReason).toBeUndefined();
+    expect(body.operationId).toBeUndefined();
+    expect(body.version).toBe(2);
   });
 
   it('правка вчерашней заявки, не трогающая календарь, причины не требует (Р29)', async () => {
@@ -193,8 +244,10 @@ describe('дата заявки задним числом в форме', () => 
     expect(reasonField()).toBeNull();
     submit();
     await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(1));
+    // The term stayed as it was: the door is not asked, and the wide PATCH carries no term (K3a).
+    expect(http.countOf('POST /vehicle-requests/:id/period/preview')).toBe(0);
     const body = http.lastCall('PATCH /vehicle-requests/:id')!.body as Record<string, unknown>;
-    expect(body.dateFrom).toBe(TODAY);
+    expect('dateFrom' in body).toBe(false);
     expect(body.backdateReason).toBeUndefined();
   });
 });

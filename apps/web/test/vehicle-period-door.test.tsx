@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
-import { json, mockHttp } from './http';
+import { apiError, json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
@@ -9,34 +9,39 @@ import { vehicleFeed, vehicleRequest, vehicleSummary } from './factories/vehicle
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 
 /**
- * Правка срока идёт своей дверью (волна 4a плана `docs/assignment-periods-plan.md`; Ж4, З5, Д2).
+ * The work term moves through its own door (wave 4a of `docs/assignment-periods-plan.md`; Ж4, З5,
+ * Д2), and since K3a (S-21 of 12.10.2026) only through it: the wide `PATCH /vehicle-requests/:id`
+ * carries no `dateFrom`/`dateTo` from the editor, because release R2 removes them from the wide
+ * schema under client floor 7.
  *
- * До неё срок уезжал широким `PATCH /vehicle-requests/:id` вместе с комментарием и контактами, и
- * человек нажимал «Сохранить», не зная цены. Цена бывает двух родов, и оба проверяются здесь:
+ * Before the door the term rode the wide PATCH together with the comment and contacts, and the
+ * person pressed "Save" without knowing the cost. The cost is of two kinds, and both are checked:
  *
- * - **бумага**: продление выписывает бланки строгой отчётности, сокращение их жжёт — окно обязано
- *   назвать номера до нажатия, а не показать их в журнале после;
- * - **история назначения** (Д2): за новым концом срока остаются решения о технике, и оставить их
- *   нельзя — при следующем продлении они ожили бы сами. Сервер их гасит и требует подтверждения
- *   перечня; без подтверждения он отвечает 422, поэтому окно спрашивает согласие галочкой.
+ * - **paper**: an extension issues strict-accounting forms, a shortening burns them — the window
+ *   must name the numbers before the click, not in the journal afterwards;
+ * - **assignment history** (Д2): vehicle decisions remain past the new end, and keeping them is
+ *   impossible — they would come back by themselves with the next extension. The server cancels
+ *   them and demands the list be confirmed, so the window asks for a tick.
  *
- * Проверяется и граница перевода (И5): у «Новой» заявки ни техники, ни бумаги, ни истории — её
- * срок до cutover ведёт широкий маршрут, и лишнего предпросмотра портал не заказывает.
+ * And the split save itself: the term first, the rest second with the door's version; an unchanged
+ * term never touches the door; a refused term writes nothing; a rest that fails after the term is
+ * named and re-sent alone; and a "new" order, which has nothing to show, goes through the door
+ * without the window.
  *
- * Даты считаются от сегодняшнего дня по МСК: календарь формы живёт относительно «сегодня», и
- * прибитая числом фикстура протухла бы вместе с ним.
+ * Dates are counted from today in Moscow time: the form calendar lives relative to "today", and a
+ * fixture pinned by a number would go stale with it.
  */
 
 const TODAY = moscowDateKeyOf(new Date());
 const day = (n: number) => shiftDateKey(TODAY, n);
 
-/** Календарный ключ так, как его набирают в поле: `12.08.2026`. */
+/** A calendar key the way it is typed into the field: `12.08.2026`. */
 function typed(key: string): string {
   const [y, m, d] = key.split('-');
   return `${d}.${m}.${y}`;
 }
 
-/** Заказ в работе на собственной машине: его продление и выписывает недельные листы. */
+/** A running order on an own vehicle: its extension is what issues weekly sheets. */
 const WORKING = vehicleRequest({
   id: 'r-1',
   num: 601,
@@ -47,7 +52,7 @@ const WORKING = vehicleRequest({
   dateTo: day(7),
 } as never);
 
-/** Закрытый заказ: его срок правкой сокращают — работающий сокращают досрочным завершением. */
+/** A closed order: its term is shortened by an edit — a running one only by an early end. */
 const CLOSED = vehicleRequest({
   id: 'r-2',
   num: 602,
@@ -58,7 +63,7 @@ const CLOSED = vehicleRequest({
   dateTo: day(10),
 } as never);
 
-/** «Новая»: техники нет, бумаги нет, истории нет — до cutover её срок ведёт широкий маршрут. */
+/** A "new" order: no vehicle, no paper, no history — its term preview is silent. */
 const FRESH = vehicleRequest({
   id: 'r-3',
   num: 603,
@@ -67,7 +72,7 @@ const FRESH = vehicleRequest({
   dateTo: day(3),
 });
 
-/** Пустые последствия — то, что предпросмотр отвечает чаще всего; сценарий дополняет их своим. */
+/** Empty consequences — the most frequent preview answer; a scenario adds its own on top. */
 const EMPTY_PREVIEW = {
   plan: { cancel: [], issue: [] },
   requiredAnchors: [],
@@ -85,7 +90,7 @@ const EMPTY_PREVIEW = {
   cancelGroupsFingerprint: null,
 };
 
-/** Продление: недельный лист выписывается, гасить нечего, объяснять нечего. */
+/** An extension: a weekly sheet is issued, nothing to cancel, nothing to explain. */
 const EXTEND_PREVIEW = {
   ...EMPTY_PREVIEW,
   plan: {
@@ -106,8 +111,8 @@ const EXTEND_PREVIEW = {
 };
 
 /**
- * Сокращение: лист за отрезанными днями сгорает, отработанный лист переоформляется, а за новым
- * концом срока остаётся решение о технике — его и гасит команда (Д2).
+ * A shortening: the sheet of the cut days burns, a worked sheet is re-issued, and a vehicle
+ * decision remains past the new end — the command cancels it (Д2).
  */
 const SHORTEN_PREVIEW = {
   ...EMPTY_PREVIEW,
@@ -143,7 +148,7 @@ const SHORTEN_PREVIEW = {
   fingerprint: 'fp-shorten',
 };
 
-/** Ответ боевой ручки: состояние заявки после команды, а не отчёт о ней (Р9). */
+/** The apply answer: the order's state after the command, not a report about it (Р9). */
 const applied = (dateFrom: string, dateTo: string | null) => ({
   version: 7,
   repeated: false,
@@ -155,7 +160,13 @@ const applied = (dateFrom: string, dateTo: string | null) => ({
   history: { state: 'materialized', validatedOn: TODAY, dirty: false, changes: [] },
 });
 
-function renderTab() {
+interface RenderOptions {
+  /** Routes that replace or extend the default ones: refusals and alternative answers. */
+  routes?: RouteMap;
+  user?: ReturnType<typeof authUser>;
+}
+
+function renderTab({ routes = {}, user = authUser() }: RenderOptions = {}) {
   const http = mockHttp({
     'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: 1, confirmed: 1, done: 1 })),
     'GET /vehicle-requests/feed': () => json(vehicleFeed([WORKING, CLOSED, FRESH])),
@@ -164,19 +175,40 @@ function renderTab() {
     'GET /vehicle-classifications': () => json(emptyList()),
     'GET /vehicles': () => json(emptyList()),
     'GET /vehicle-requests/:id/shifts': () => json({ items: [], onDate: TODAY }),
-    // Перегоны 4-П правятся в той же форме у заявки в работе (миграция 0082).
+    // 4-P relocations are edited in the same form of a running order (migration 0082).
     'GET /vehicle-requests/:id/relocations': () => json([]),
     'POST /vehicle-requests/:id/period/preview': ({ params }) =>
-      json(params.id === CLOSED.id ? SHORTEN_PREVIEW : EXTEND_PREVIEW),
+      json(
+        params.id === CLOSED.id
+          ? SHORTEN_PREVIEW
+          : params.id === FRESH.id
+            ? EMPTY_PREVIEW
+            : EXTEND_PREVIEW,
+      ),
     'PATCH /vehicle-requests/:id/period': ({ body }) => {
       const sent = body as { dateFrom?: string; dateTo?: string | null };
       return json(applied(sent.dateFrom ?? TODAY, sent.dateTo ?? null));
     },
     'PATCH /vehicle-requests/:id': ({ body }) => json({ ...WORKING, ...(body as object) }),
+    ...routes,
   });
-  // Диспетчер: заказы ведёт и бумагу читает — предпросмотр двери живёт на `waybills.read`.
-  renderWithUser(<VehicleRequestsTab />, { user: authUser() });
+  // The dispatcher by default: runs orders and reads paper — the door's preview lives on
+  // `waybills.read`.
+  renderWithUser(<VehicleRequestsTab />, { user });
   return http;
+}
+
+/** The body of the last wide PATCH — the one that must no longer carry the term. */
+function wideBody(http: ReturnType<typeof mockHttp>): Record<string, unknown> {
+  return http.lastCall('PATCH /vehicle-requests/:id')!.body as Record<string, unknown>;
+}
+
+/** The wide PATCH carries neither the term nor a backdate declaration (K3a). */
+function expectNoTerm(body: Record<string, unknown>): void {
+  expect('dateFrom' in body).toBe(false);
+  expect('dateTo' in body).toBe(false);
+  expect(body.backdateReason).toBeUndefined();
+  expect(body.operationId).toBeUndefined();
 }
 
 async function openEdit(displayNumber: string): Promise<void> {
@@ -187,8 +219,8 @@ async function openEdit(displayNumber: string): Promise<void> {
 }
 
 /**
- * Набрать дату в поле формы: 0 — начало срока, 1 — окончание. Календарь в jsdom мышью не
- * открывается, а набранное antd принимает по Enter.
+ * Type a date into the form field: 0 is the term start, 1 its end. The calendar does not open by
+ * mouse in jsdom, and antd accepts typed input on Enter.
  */
 function typeDate(index: number, value: string): void {
   const inputs = [
@@ -203,7 +235,7 @@ function typeDate(index: number, value: string): void {
   fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', charCode: 13 });
 }
 
-/** Кнопка по её подписи: окон на экране два — форма заявки и окно срока поверх неё. */
+/** A button by its label: two windows are on screen — the request form and the term window. */
 function button(label: string): HTMLButtonElement {
   const found = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
     (b) => b.textContent?.trim() === label,
@@ -212,7 +244,7 @@ function button(label: string): HTMLButtonElement {
   return found;
 }
 
-/** Окно срока целиком: подтверждения ищутся в нём, а не среди полей формы заявки. */
+/** The term window as a whole: confirmations are looked up in it, not among the form fields. */
 function periodModal(): HTMLElement {
   const header = screen.getByText(/^Срок работ: заявка/);
   return header.closest('.ant-modal') as HTMLElement;
@@ -226,17 +258,17 @@ describe('срок работ правится своей дверью', () => {
     typeDate(1, typed(day(14)));
     fireEvent.click(button('Сохранить'));
 
-    // Окно последствий встаёт до записи: пока человек не подтвердил, заявку не трогали.
+    // The consequences window comes before any write: until the person confirms, nothing changed.
     await waitFor(() => expect(http.countOf('POST /vehicle-requests/:id/period/preview')).toBe(1));
     await screen.findByText(/^Срок работ: заявка ТС-601$/);
     expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(0);
     expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(0);
 
-    // Видно, что выпишется: лист, машина и человек, на которого он выйдет.
+    // What gets issued is visible: the sheet, the vehicle and the person it is issued to.
     expect(periodModal().textContent).toContain('Выпишется лист');
     expect(periodModal().textContent).toContain('КамАЗ Е646СК799');
     expect(periodModal().textContent).toContain('Иванов И. И.');
-    // Гасить нечего — про погасшие записи о технике окно молчит.
+    // Nothing to cancel — the window says nothing about cancelled vehicle decisions.
     expect(periodModal().textContent).not.toContain('погаснут записи о технике');
 
     fireEvent.click(button('Изменить срок'));
@@ -248,18 +280,20 @@ describe('срок работ правится своей дверью', () => {
     >;
     expect(sent.dateTo).toBe(day(14));
     expect(sent.version).toBe(WORKING.version);
-    // Отпечаток — то, что человек видел: без него сервер отвечает «посмотрите последствия заново».
+    // The fingerprint is what the person saw: without it the server says "look again".
     expect(sent.previewFingerprint).toBe('fp-extend');
-    // Гасить и разблокировать нечего — лишнее подтверждение сервер отвергает так же строго,
-    // как недостающее.
+    // Nothing to cancel or unlock — the server refuses an extra confirmation as strictly as a
+    // missing one.
     expect(sent.cancelGroupsFingerprint).toBeUndefined();
     expect(sent.unlockFingerprint).toBeUndefined();
     expect(sent.operation).toBeUndefined();
 
-    // Остальное тело — второй командой, с версией, которую вернула дверь срока.
+    // The rest goes as a second command, with the version the term door returned — and without
+    // the term: the door has already moved it (K3a).
     await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(1));
-    const rest = http.lastCall('PATCH /vehicle-requests/:id')!.body as Record<string, unknown>;
+    const rest = wideBody(http);
     expect(rest.version).toBe(7);
+    expectNoTerm(rest);
   });
 
   it('сокращение называет гасимые записи о технике и без подтверждения не уходит', async () => {
@@ -273,15 +307,15 @@ describe('срок работ правится своей дверью', () => {
     const text = () => periodModal().textContent ?? '';
     await waitFor(() => expect(text()).toContain('погаснут записи о технике'));
 
-    // Сказано человеческим языком: что именно гаснет и почему это нельзя оставить как есть.
+    // Said in plain words: what exactly is cancelled and why it cannot stay as it is.
     expect(text()).toContain('Автокран КС-45717');
     expect(text()).toContain('ожили бы сами');
-    // Бумага названа номерами: сгорающий лист и отработанный, который придётся переоформить.
+    // Paper is named by numbers: the burning sheet and the worked one that will be re-issued.
     expect(text()).toContain('ЭСМ-2 № 9');
     expect(text()).toContain('ЭСМ-2 № 8');
 
-    // Без галочки и причины команда до сети не доходит: сервер ответил бы 422, и кнопка,
-    // которая всегда отказывает, — худший способ об этом сообщить.
+    // Without the tick and the reason the command never reaches the network: the server would
+    // answer 422, and a button that always refuses is the worst way to say so.
     fireEvent.click(button('Изменить срок'));
     await screen.findByText('Подтвердите, что перечисленные записи о технике погаснут');
     expect(screen.getByText('Укажите причину')).toBeDefined();
@@ -303,15 +337,15 @@ describe('срок работ правится своей дверью', () => {
     };
     expect(sent.dateTo).toBe(day(3));
     expect(sent.previewFingerprint).toBe('fp-shorten');
-    // Три подтверждения: последствия, перечень гасимых решений и отработанные листы под правку.
+    // Three confirmations: the consequences, the cancelled decisions and the worked sheets.
     expect(sent.cancelGroupsFingerprint).toBe('fp-groups');
     expect(sent.unlockFingerprint).toBe('fp-unlock');
     expect(sent.operation.reason).toBe('объект закрыл фронт работ раньше');
-    // Ключ идемпотентности — uuid клиента: повтор после обрыва связи не жжёт второй номер.
+    // The idempotency key is the client's uuid: a retry after a lost answer burns no second number.
     expect(sent.operation.operationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
   });
 
-  it('у «Новой» заявки срок по-прежнему уходит широким маршрутом (И5)', async () => {
+  it('у «Новой» заявки срок уходит дверью без окна последствий', async () => {
     const http = renderTab();
     await openEdit('ТС-603');
 
@@ -319,10 +353,165 @@ describe('срок работ правится своей дверью', () => {
     fireEvent.click(button('Сохранить'));
 
     await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(1));
-    const sent = http.lastCall('PATCH /vehicle-requests/:id')!.body as Record<string, unknown>;
-    expect(sent.dateTo).toBe(day(5));
-    // Ни техники, ни бумаги, ни истории — показывать в предпросмотре нечего, и портал его не
-    // заказывает: старый путь остаётся рабочим до cutover.
+    // The preview answered "nothing happens": no window, the door applies it at once with the
+    // fingerprint of what it computed, and nothing it did not ask for.
+    expect(http.countOf('POST /vehicle-requests/:id/period/preview')).toBe(1);
+    expect(screen.queryByText(/^Срок работ: заявка/)).toBeNull();
+    const sent = http.lastCall('PATCH /vehicle-requests/:id/period')!.body as Record<
+      string,
+      unknown
+    >;
+    expect(sent).toEqual({
+      version: FRESH.version,
+      dateFrom: TODAY,
+      dateTo: day(5),
+      previewFingerprint: 'fp-preview',
+    });
+    // The door went first: the rest follows with its version and without the term.
+    const order = http.calls
+      .map((call) => `${call.method} ${call.path}`)
+      .filter((call) => call.startsWith('PATCH'));
+    expect(order).toEqual([
+      `PATCH /vehicle-requests/${FRESH.id}/period`,
+      `PATCH /vehicle-requests/${FRESH.id}`,
+    ]);
+    const rest = wideBody(http);
+    expect(rest.version).toBe(7);
+    expectNoTerm(rest);
+  });
+
+  it('правка без изменения срока дверь срока не трогает', async () => {
+    const http = renderTab();
+    await openEdit('ТС-601');
+
+    const comment = document.querySelector<HTMLTextAreaElement>('.ant-modal textarea#comment')!;
+    fireEvent.change(comment, { target: { value: 'работы с 8 утра' } });
+    fireEvent.click(button('Сохранить'));
+
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(1));
+    // The door refuses an empty command, and an edit of the comment is not a term command.
     expect(http.countOf('POST /vehicle-requests/:id/period/preview')).toBe(0);
+    expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(0);
+    const rest = wideBody(http);
+    expect(rest.comment).toBe('работы с 8 утра');
+    expect(rest.version).toBe(WORKING.version);
+    expectNoTerm(rest);
+  });
+
+  it('отказ двери срока не пишет ничего: остальное не уходит', async () => {
+    const http = renderTab({
+      routes: {
+        'POST /vehicle-requests/:id/period/preview': () =>
+          apiError(422, { code: 'UNPROCESSABLE', message: 'Слишком рано для заказа на завтра' }),
+      },
+    });
+    await openEdit('ТС-603');
+
+    typeDate(1, typed(day(5)));
+    fireEvent.click(button('Сохранить'));
+
+    await screen.findByText('Слишком рано для заказа на завтра');
+    // The term step is first precisely so that its refusal leaves nothing half-written.
+    expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(0);
+    expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(0);
+    // The editor stays open with what the person typed.
+    expect(screen.getByText('Заявка ТС-603')).toBeDefined();
+  });
+
+  it('закрытое окно последствий не пишет ничего', async () => {
+    const http = renderTab();
+    await openEdit('ТС-601');
+
+    typeDate(1, typed(day(14)));
+    fireEvent.click(button('Сохранить'));
+    await screen.findByText(/^Срок работ: заявка ТС-601$/);
+
+    fireEvent.click(periodModal().querySelector<HTMLButtonElement>('.ant-modal-close')!);
+    // Saving again opens the window anew — the cancelled one left no pending half behind.
+    fireEvent.click(button('Сохранить'));
+    await waitFor(() => expect(http.countOf('POST /vehicle-requests/:id/period/preview')).toBe(2));
+    expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(0);
+    expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(0);
+  });
+
+  it('остальное, упавшее после срока, названо и уходит повтором одно', async () => {
+    let wideCalls = 0;
+    const http = renderTab({
+      routes: {
+        'PATCH /vehicle-requests/:id': ({ body }) => {
+          wideCalls += 1;
+          return wideCalls === 1
+            ? apiError(422, { code: 'UNPROCESSABLE', message: 'Укажите контактный телефон' })
+            : json({ ...FRESH, ...(body as object) });
+        },
+      },
+    });
+    await openEdit('ТС-603');
+
+    typeDate(1, typed(day(5)));
+    fireEvent.click(button('Сохранить'));
+
+    // The one half-applied state of a split save is named, not hidden.
+    await screen.findByText(
+      'Срок работ изменён, но остальные правки не сохранены: Укажите контактный телефон',
+    );
+    expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(1);
+    expect(screen.getByText('Заявка ТС-603')).toBeDefined();
+
+    // The second "Save" finds the term already applied: no second door call (it would be an empty
+    // command), only the rest with the door's version.
+    // The toast comes from the failure callback; the button stops loading a render later, and a
+    // loading button swallows the click.
+    await waitFor(() => expect(button('Сохранить').className).not.toContain('ant-btn-loading'));
+    fireEvent.click(button('Сохранить'));
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(2));
+    expect(http.countOf('POST /vehicle-requests/:id/period/preview')).toBe(1);
+    expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(1);
+    const rest = wideBody(http);
+    expect(rest.version).toBe(7);
+    expectNoTerm(rest);
+  });
+
+  it('громкий предпросмотр «Новой» заявки открывает окно последствий', async () => {
+    const http = renderTab({
+      routes: {
+        // A "new" order that still holds a sheet from before a rollback: the preview has
+        // something to say, so the window says it.
+        'POST /vehicle-requests/:id/period/preview': () => json(EXTEND_PREVIEW),
+      },
+    });
+    await openEdit('ТС-603');
+
+    typeDate(1, typed(day(5)));
+    fireEvent.click(button('Сохранить'));
+
+    await screen.findByText(/^Срок работ: заявка ТС-603$/);
+    await waitFor(() => expect(periodModal().textContent).toContain('Выпишется лист'));
+    expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(0);
+    expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(0);
+  });
+
+  it('пока дверь отказывает учётке без журнала листов, срок уходит прежним путём', async () => {
+    // The site staff: edits its own "new" order and holds no `waybills.read`. Until the server
+    // asks that right by the plan instead of the route guard, the door answers 403 — and the
+    // transitional fallback keeps the edit working the way it worked before K3a.
+    const http = renderTab({
+      user: authUser({ role: 'shtab', constructionObjectIds: ['obj-1'] }),
+      routes: {
+        'POST /vehicle-requests/:id/period/preview': () =>
+          apiError(403, { code: 'FORBIDDEN', message: 'Недостаточно прав' }),
+      },
+    });
+    await openEdit('ТС-603');
+
+    typeDate(1, typed(day(5)));
+    fireEvent.click(button('Сохранить'));
+
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-requests/:id')).toBe(1));
+    expect(http.countOf('PATCH /vehicle-requests/:id/period')).toBe(0);
+    const rest = wideBody(http);
+    expect(rest.dateTo).toBe(day(5));
+    expect(rest.version).toBe(FRESH.version);
+    expect(screen.queryByText('Недостаточно прав')).toBeNull();
   });
 });
