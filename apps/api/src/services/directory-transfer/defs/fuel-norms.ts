@@ -3,6 +3,7 @@ import {
   FUEL_NORM_UNITS,
   fuelNormUnitLabels,
   type FuelNormUnit,
+  moscowDateKeyOf,
   vehicleLabel,
   type VehicleOwnership,
 } from '@technic/contracts';
@@ -213,8 +214,11 @@ const fuelNormsDirectory = directory<NormRow, NormModel, Env>({
 
   async load() {
     /*
-     * Срез: машина плюс её действующая версия, если она есть. Боковой поиск максимума даты — тот
-     * же, каким расчёт ищет норму смены, только на сегодняшний день.
+     * The slice: a vehicle plus its version in force, if any. The search for the latest date is
+     * the one the calculation uses to find a shift's norm, only for today. "Today" is the Moscow
+     * date passed as a parameter, never CURRENT_DATE: app sessions run in UTC, and from 00:00 to
+     * 03:00 MSK the database is still on yesterday, so a file exported then would carry the
+     * previous version and disagree with the directory screen (`fuelNormSelection`).
      */
     const norm = db
       .select({
@@ -233,7 +237,7 @@ const fuelNormsDirectory = directory<NormRow, NormModel, Env>({
       .where(
         and(
           isNull(vehicleFuelNorms.deletedAt),
-          sql`${vehicleFuelNorms.effectiveFrom} <= CURRENT_DATE`,
+          sql`${vehicleFuelNorms.effectiveFrom} <= ${moscowDateKeyOf(new Date())}::date`,
         ),
       )
       .as('norm');

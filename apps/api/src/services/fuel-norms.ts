@@ -2,6 +2,7 @@ import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import {
   FUEL_NORM_DEFAULTS,
   type FuelNormSettingsDto,
+  moscowDateKeyOf,
   type VehicleFuelNormDto,
   vehicleLabel,
 } from '@technic/contracts';
@@ -139,14 +140,23 @@ export function toFuelNormDto(row: NormRow): VehicleFuelNormDto {
 }
 
 /**
- * Список версий справочника. `isCurrent` считает сервер: «действующая» — живая запись машины с
- * наибольшей наступившей датой, и решать это окну нельзя, иначе экран и расчёт разойдутся на первом
- * же приказе задним числом.
+ * The list of directory versions. The server computes `isCurrent`: the version in force is the
+ * vehicle's live row with the latest date that has already come, and the portal dialog must not
+ * decide it, or the screen and the calculation would part on the first backdated order.
  *
- * Оконная функция, а не боковой запрос на строку: версий у машины единицы, а строк на экране
- * сотни, и латераль на каждую означала бы сотню одинаковых поисков максимума.
+ * A window function, not a lateral query per row: a vehicle has a few versions while the screen
+ * has hundreds of rows, and a lateral per row would mean a hundred identical searches for the max.
+ *
+ * Build it per request: the day is captured at the call, and a selection hoisted to module scope
+ * would freeze "today" at the process start.
  */
 export function fuelNormSelection() {
+  /*
+   * "Today" is the Moscow calendar date passed as a parameter, never CURRENT_DATE: app sessions run
+   * in UTC, so from 00:00 to 03:00 MSK the database is still on yesterday, and a version effective
+   * from today would not be marked current until 03:00.
+   */
+  const today = sql`${moscowDateKeyOf(new Date())}::date`;
   return {
     id: vehicleFuelNorms.id,
     vehicleId: vehicleFuelNorms.vehicleId,
@@ -168,13 +178,10 @@ export function fuelNormSelection() {
     categoryName: vehicleCategories.name,
     typeName: vehicleTypes.name,
     modelName: vehicleModels.name,
-    /**
-     * Действующая сегодня версия машины. `CURRENT_DATE` — дата базы: сезон и действие приказа
-     * считаются календарными сутками, и час сервера здесь ничего не решает.
-     */
-    isCurrent: sql<boolean>`${vehicleFuelNorms.effectiveFrom} <= CURRENT_DATE
+    /** The vehicle's version in force today (Moscow day, see above). */
+    isCurrent: sql<boolean>`${vehicleFuelNorms.effectiveFrom} <= ${today}
       AND ${vehicleFuelNorms.effectiveFrom} = max(${vehicleFuelNorms.effectiveFrom})
-        FILTER (WHERE ${vehicleFuelNorms.effectiveFrom} <= CURRENT_DATE)
+        FILTER (WHERE ${vehicleFuelNorms.effectiveFrom} <= ${today})
         OVER (PARTITION BY ${vehicleFuelNorms.vehicleId})`,
   };
 }
