@@ -1154,23 +1154,14 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
    * filed through the new door is left as it is: its approval re-reads the term and refuses with
    * "the term changed", so the two doors cannot move the term twice from one snapshot.
    *
-   * Продление срока аренды (Р9, Р11). Не правка формы и не смена статуса: заявка остаётся ровно
-   * там, где была, а меняется обещание платить — поэтому и право своё, и событие своё.
-   *
-   * Три предметных правила, и каждое отвечает на свой вопрос:
-   *
-   * - **продлевают ДЕЙСТВУЮЩУЮ аренду** — весь предикат `isMechRentalRunning` целиком (Р2), а не
-   *   один заполненный `actual_from`. У заявки, которую ещё не подали, срок правится обычной
-   *   формой, пока она «Новая»; у коррекции завершения (откат «Выполнена → В работе» с целым
-   *   фактом) техника уже вернулась, и продлевать нечего — там ждут повторного завершения;
-   * - **новая дата строго больше прежней** (Р11): та же дата — не продление, а меньшая — сокращение
-   *   срока, и оно выражается завершением с фактической датой возврата, а не задним числом
-   *   передвинутым планом. Сравнить их может только сервер: прежней даты у схемы тела нет;
-   * - **причина обязательна** (схема тела). В комментарий заявки её не положить — он перезаписался
-   *   бы, — а без неё в истории осталась бы одна передвинутая дата без ответа «почему платим ещё».
-   *
-   * Аудит строгий и внутри транзакции (Р21): прежний срок строка не хранит — она помнит одно
-   * «сейчас», — и потерянное событие означало бы продление, которого будто не было.
+   * Its rules are the ones the new request keeps (`mechExtensionRequestBlocker`): only a RUNNING
+   * rental (the whole `isMechRentalRunning`, not a filled `actual_from` — a request not yet issued
+   * has its term edited by the form while «Новая», and after a completion rollback the equipment is
+   * back); the new date strictly later than the locked row's (an earlier one is a completion with
+   * the actual date, and only the server has the current date); a required reason (the schema),
+   * which cannot go into the comment without overwriting it. The audit is strict and inside the
+   * transaction (R21): the row does not keep the previous term, so a lost event would be an
+   * extension that never happened.
    */
   r.patch(
     '/:id/extend',

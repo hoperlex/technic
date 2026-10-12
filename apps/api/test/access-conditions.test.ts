@@ -934,6 +934,13 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'PATCH /api/v1/mech-requests/:id/extend': {
     payload: { plannedTo: FUTURE_DATE, reason: 'работы не закончены', version: 1 },
   },
+  // The extension visa (ADR 0171, stage 3): asking and withdrawing under `.extend`, deciding under
+  // `.approve`. The bodies pass the schemas, so a refusal comes from the guard, not the validation.
+  'POST /api/v1/mech-requests/:id/extension': {
+    payload: { plannedTo: FUTURE_DATE, reason: 'работы не закончены', version: 1 },
+  },
+  'PATCH /api/v1/mech-requests/:id/extension': { payload: { approved: true, version: 1 } },
+  'DELETE /api/v1/mech-requests/:id/extension': { query: 'version=1' },
   // Фактическая дата не бывает в будущем (Р2), и проверяет это схема: `FUTURE_DATE` дал бы 400
   // раньше стража.
   'POST /api/v1/mech-requests/:id/issue': { payload: { actualFrom: PAST_DATE, version: 1 } },

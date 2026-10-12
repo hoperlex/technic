@@ -793,8 +793,9 @@ export const MECH_EXTEND_NOT_LATER_MESSAGE =
  * with contract 6 or older until release R2 removes it under client floor 7 (ADR 0226, decision
  * S-21); removing it together with this schema is R2's work.
  *
- * Причину нельзя положить в комментарий заявки — она перезаписала бы его. Продлевается только
- * действующая аренда; что новая дата позже прежней, проверяет сервер — прежней у схемы нет.
+ * The reason cannot go into the request's comment — it would overwrite it. Only a running rental is
+ * extended; that the new date is later than the current one is checked by the server, which has the
+ * current one.
  */
 export const extendMechRequestSchema = z.object({
   plannedTo: dateOnlySchema,
