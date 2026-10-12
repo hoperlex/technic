@@ -283,7 +283,7 @@
 - Развилки В1–В4 плана открыты: кому в итоге положено право; нужно ли подтверждение места **без**
   переезда (сегодня «заявитель ошибся, аппарат стоит где записано» гасится только закрытием заявки);
   заявлять ли кабинет, а не только объект; что делать со связью перемещения и заявки, снесённой
-  насовсем.
+  насовсем. _Closed 2026-10-12 with the plan defaults (survey S-18) — see the last section._
 
 ## Отвергнутые варианты
 
@@ -316,3 +316,21 @@
   «кабинет 214 или 216» путает он же — очередь ИТ наполнилась бы разбором опечаток.
 - **Запретить смену отдела в правке карточки ради одной двери в журнал.** Отобрало бы массовую
   разметку парка; правило вместо этого закреплено тестом.
+
+## Owner decision 2026-10-12 (survey S-18): plan forks В1–В4 closed with the defaults
+
+The four questions of [plan §12](../office-equipment-move-from-request-plan.md) are answered with
+the plan's defaults. Each is today's behaviour, checked on 2026-10-12; nothing in the code changes.
+
+1. **В1 — the circle is not narrowed.** `officeEquipment.move` stays where the rollout put it
+   (decision 1, migration `0275`): with every holder of `officeEquipment.write`, plus the IT-service
+   set that decision 1 opened it to. Narrowing would remain a matter of taking the permission from
+   a role or set, not of code.
+2. **В2 — no «place confirmed, no move» button.** A request whose claimed place was wrong is still
+   cleared from the IT queue only by closing it, and a movement row without a change stays
+   forbidden by `office_equipment_movements_change_check`.
+3. **В3 — the claim names the site only**, not the cabinet (plan Р9; the rejected alternative
+   «Расширить заявление до кабинета и отдела» stands).
+4. **В4 — `SET NULL` is enough.** When a request is deleted for good,
+   `office_equipment_movements.service_request_id` goes to `NULL` (`ON DELETE SET NULL` in
+   `apps/api/src/db/schema.ts`), and the request number is not copied into the journal row as text.
