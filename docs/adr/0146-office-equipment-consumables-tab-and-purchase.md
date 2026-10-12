@@ -1,8 +1,10 @@
 # ADR 0146. Расходники получают вкладку и плановую закупку, заявка — необязательный аппарат
 
-- Статус: Принято (реализуется). Схему меняют три миграции разных выпусков: запись выпуска подписей
-  и журнала; потребность и две таблицы закупки; снятие `NOT NULL` с предмета заявки. Ни одна не
-  требует окна `--cutover` — все идут обычным деплоем
+- Статус: Реализовано (31.08–01.09.2026). The schema changes in migrations of three releases: the
+  release record of the labels and the stock journal (`0226`, release 64); demand and the two
+  purchase tables (`0227`, grant `0228`, release 65 with record `0229`); `NOT NULL` dropped from the
+  request subject (`0230`, grant `0231`, release 66 with record `0232`). None needs a `--cutover`
+  window — all go by a normal deploy
 - Область: модуль «Орг.техника» — справочник расходников, новая вкладка раздела, новый документ
   «плановая закупка», заявка на обслуживание обоих видов. Вывоза мусора и заказа ТС правка не
   касается

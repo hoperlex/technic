@@ -1,17 +1,17 @@
 # ADR 0159. Почта заявки оргтехники покрывает весь цикл, а каждое событие включается рубильником
 
-- Статус: Реализовано 03–04.09.2026 (Э0–Э7 плана), **четыре новых события выключены
-  рубильником**: `0258` заводит их со `is_enabled = false`, и ни одна миграция их пока не включает —
-  Э8 (включение по одному с окном наблюдения и приёмка) не сделан. Реализация — коммиты `91d2055`
-  (Э0–Э4: рубильник события, транзакционный сборщик сторон, исключение актора, редактированная
-  копия), `5fc9b19` (Э5–Э7: письма по документам и репликам, потолок частоты, наблюдаемость),
-  `fae2d7f` (десять находок ревью) и `ed45c03` с `5629212` (общий ящик подрядчика — по своим
-  заявкам). План —
+- Статус: Реализовано (03–04.09.2026, stages Э0–Э7 of the plan; Э8 on 18.09.2026). The four new
+  events arrived switched off (`0258` created them with `is_enabled = false`); migration `0320`
+  switched all four on, leaving the observation window to the administrator's switch rather than to
+  a deploy, and `0321` is the release record (release 99). Implementation — commits `91d2055`
+  (Э0–Э4: the event switch, the transactional audience builder, actor exclusion, the redacted
+  copy), `5fc9b19` (Э5–Э7: letters on documents and replies, the rate cap, observability),
+  `fae2d7f` (ten review findings) and `ed45c03` with `5629212` (the contractor's shared mailbox —
+  for its own requests only). Plan —
   [office-equipment-mail-expansion-plan.md](../office-equipment-mail-expansion-plan.md);
-  постановка — [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
-  пункт 6 («Полный контур уведомлений Копи-Лайт»). Схему меняют миграции `0257` (значения
-  `mail_kind`, включая технический вид сводки) и `0258` (таблица рубильника
-  `module_mail_event_settings`); запись выпуска и версия берутся на этапе включения (Э8 плана)
+  source — [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
+  item 6 («Полный контур уведомлений Копи-Лайт»). Schema — migrations `0257` (`mail_kind` values,
+  including the technical digest kind) and `0258` (the switch table `module_mail_event_settings`)
 - Область: [service-request-mail.ts](../../apps/api/src/services/service-request-mail.ts) и новый
   сборщик сторон `service-request-mail-audience.ts` рядом с ним,
   [service-requests.ts](../../apps/api/src/routes/service-requests.ts) (переходы, объём работ,
@@ -361,3 +361,8 @@ read-only со словами «не применяется». Скрыто хр
   аудитория из [плана карточки заявителя](../office-equipment-requester-card-plan.md); включение
   ждёт финансовой проекции оттуда же. Иначе письмо обошло бы более строгую аудиторию карточки —
   наружу и без возможности отозвать.
+
+_State on 2026-10-12:_ the last two bullets describe the time before implementation. The section
+lock was removed on 09.09.2026, and the barriers were passed before migration `0320` switched the
+events on: the executor set split by `0262`, the financial audience and file visibility by the
+requester-card plan ([ADR 0160](0160-service-request-audiences.md), migrations `0259`/`0260`).

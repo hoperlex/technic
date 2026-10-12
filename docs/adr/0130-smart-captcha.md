@@ -1,6 +1,8 @@
 # ADR 0130. Капча — Yandex SmartCaptcha вместо собственной
 
-- Статус: Принято (выкат обусловлен согласием заказчика, см. п. 15)
+- Статус: Реализовано (commits `dfe534d8` and `e7c162cc` of 20.08.2026, in `main` since
+  24.08.2026); on prod with production keys since 25.08.2026. The rollout was conditional on the
+  customer's consent (decision 15)
 - Связано: [ADR 0034](0034-registration-name-parts-and-captcha.md) п. 6–9 и часть п. 11
   (заменяются целиком), [ADR 0072](0072-email-verification-and-password-reset.md) (капча в
   почтовых сценариях), план [docs/smart-captcha-plan.md](../smart-captcha-plan.md),

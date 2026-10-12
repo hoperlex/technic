@@ -1,8 +1,9 @@
 # ADR 0137. Наблюдение как единица измерения качества распознавания талонов
 
-- Статус: Принято (реализуется). Схему меняет миграция `0210` (наблюдение, связи предложения и
-  слепой перепроверки, версия сбора); каталог полномочий — `0211` (право `wasteRequests.ticketAudit`
-  и одноцелевой набор); запись выпуска — отдельной миграцией (ADR 0077 §4)
+- Статус: Реализовано (26.08.2026, commit `caf6b4bd`). Schema — migration `0210` (the observation,
+  the links of a proposal and of a blind re-check, the collection version); permission catalogue —
+  `0211` (permission `wasteRequests.ticketAudit` and its single-purpose set); release 55
+  `0.1.46.0137`, record `0212` (ADR 0077 §4)
 - Домены: файлы-и-распознавание
 - Область: `apps/api/src/services/waste-ticket-events.ts`, `apps/api/src/routes/waste-tickets.ts`, `apps/worker/src/ticket-ocr/job.ts`, `packages/contracts/src/permissions.ts`
 - Уточняет: [ADR 0114](0114-waste-ticket-recognition.md) — журнал событий поля (Р30) получает

@@ -1,8 +1,9 @@
 # ADR 0155. Сошедшийся талон подтверждается кнопкой из списка, а состояние разбора хранится в базе
 
-- Статус: Принято (реализуется 02.09.2026). План — [waste-ticket-auto-confirm-plan.md](../waste-ticket-auto-confirm-plan.md),
-  редакция 6, четыре круга ревью. Схема — миграция `0245` (таблица `waste_ticket_review_state`,
-  индекс `waste_tickets_number_key_idx`); запись выпуска и версия берутся при выкате
+- Статус: Реализовано (02.09.2026, commit `e2a3d2c5`). Plan —
+  [waste-ticket-auto-confirm-plan.md](../waste-ticket-auto-confirm-plan.md), revision 6, four review
+  rounds. Schema — migration `0245` (table `waste_ticket_review_state`, index
+  `waste_tickets_number_key_idx`); release 74 `0.1.64.0155`, record `0246`
 - Область: [waste-ticket-checks.ts](../../apps/api/src/services/waste-ticket-checks.ts),
   [waste-ticket-inputs.ts](../../apps/api/src/services/waste-ticket-inputs.ts),
   [waste-ticket-review-state.ts](../../apps/api/src/services/waste-ticket-review-state.ts) (новый),

@@ -1,10 +1,11 @@
 # ADR 0165. Об отсутствующей технике сообщают кандидатом, а карточку по нему заводит проверяющий
 
-- Статус: Принято (реализовано, но **не включено**). Схему меняют миграции `0264` (таблица
-  кандидатов, колонка заявки и третья ветвь `service_requests_subject_check`), `0272` (два вида
-  писем) и `0273` (две выключенные строки рубильника). Запись выпуска (ADR 0077) **не берётся**:
-  права никому не выданы, события почты выключены, и человек в портале не увидит ни одного
-  изменения — рассказывать в журнале обновлений пока нечего
+- Статус: Реализовано (04.09.2026, commit `150da6f6`) and switched on under
+  [ADR 0177](0177-office-equipment-request-subject.md): grants — migration `0294`, the two mail
+  events — `0295`, the intake switch `office_equipment_candidate_intake` — `0297` (10.09.2026); the
+  release is 88 of ADR 0177, record `0296`. Schema — migrations `0264` (the candidate table, the
+  request column and the third branch of `service_requests_subject_check`), `0272` (two mail kinds)
+  and `0273` (two switch rows, created off)
 - Область: `apps/api/src/routes/office-equipment-candidates.ts`,
   `apps/api/src/services/{office-equipment-candidates,office-equipment-candidate-mail,office-equipment-candidate-diff,service-request-candidate-intake,office-equipment-write}.ts`,
   `apps/api/src/routes/{service-requests,office-equipment}.ts`, `apps/api/src/lib/{access,access-manifest,audit}.ts`,

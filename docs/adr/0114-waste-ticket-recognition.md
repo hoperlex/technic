@@ -1,8 +1,10 @@
 # ADR 0114. Распознавание талонов вывоза и сверка с заявкой
 
-- Статус: Принято; развилки закрыты заказчиком 18.08.2026 (см. «Решения заказчика»). Обращения к моделям идут через LLM-прокси заказчика
-  (`AI_PROVIDER_MODE=proxy`, решение 13); модель и разрешение выбираются замером (этап 1); отправка
-  сканов ждёт ответа заказчика — см. «Что остаётся за заказчиком»
+- Статус: Реализовано (24.08.2026, commit `18a5eedc`; release 46, record `0189`). The customer
+  closed the forks on 18.08.2026, sending scans out included (see «Решения заказчика»). Models are
+  called through the customer's LLM proxy (`AI_PROVIDER_MODE=proxy`, decision 13); the model and
+  the resolution are chosen by measurement (stage 1), and the module is switched on by
+  `TICKET_OCR_ENABLED` after the launch checklist of the [runbook](../runbook.md)
 - Дополняет: [ADR 0020](0020-waste-ticket-required.md) — талон остаётся обязательным условием
   закрытия и первоисточником; портал начинает его **читать**, но не начинает ему верить
 - Дополняет: [ADR 0035](0035-waste-fact-by-volume.md) — предъявленный факт получает вторую
