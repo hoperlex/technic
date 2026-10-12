@@ -805,6 +805,7 @@ describe.skipIf(!DB_URL)('карточка заявки на обслужива�
   const emptyChat = {
     canWrite: expect.any(Boolean),
     mailEnabled: false,
+    requesterMailEnabled: false,
     participantSides: expect.any(Array),
     total: 0,
     unreadMine: 0,

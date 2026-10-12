@@ -71,6 +71,7 @@ function removedFrom(inCustomerScope: boolean): ServiceRequestDto {
       canWrite: true,
       participantSides: ['it'],
       mailEnabled: false,
+      requesterMailEnabled: false,
       total: 3,
       unreadMine: 1,
       unreadOthers: false,

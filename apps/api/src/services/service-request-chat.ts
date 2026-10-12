@@ -26,6 +26,7 @@ import {
   SERVICE_MAIL_ACCOUNT,
 } from './service-request-mail';
 import { readServiceMailEventEnabled } from './service-request-mail-audience';
+import { queueRequesterMail, requesterCommentMailEnabled } from './service-request-requester-mail';
 import {
   officeEquipment,
   serviceRequestExecutors,
@@ -250,7 +251,7 @@ async function chatMessageMailEnabled(): Promise<boolean> {
 function emptySummary(
   p: Principal,
   input: ChatSummaryInput,
-  mailEnabled: boolean,
+  mail: { mailEnabled: boolean; requesterMailEnabled: boolean },
 ): ServiceRequestChatSummaryDto {
   const facts = chatFactsFor(p, input.row, input.executorIds);
   return {
@@ -261,7 +262,7 @@ function emptySummary(
     unreadOthers: false,
     lastSeq: 0,
     readThroughSeq: 0,
-    mailEnabled,
+    ...mail,
   };
 }
 
@@ -294,8 +295,15 @@ export async function chatSummaryByRequest(
    * спрашивать его по разу на заявку значило бы полсотни лишних чтений на открытие списка.
    * Подпись в окне отправки без этого обещала бы письмо, которого выкат ещё не даёт (§ 4).
    */
-  const mailEnabled = await chatMessageMailEnabled();
-  for (const input of inputs) map.set(input.row.id, emptySummary(p, input, mailEnabled));
+  /*
+   * The author's letter is a second, independent delivery (ADR 0227, E9): its own switch, read
+   * once per page like the service one, so the composer can name «заявитель» truthfully.
+   */
+  const mail = {
+    mailEnabled: await chatMessageMailEnabled(),
+    requesterMailEnabled: await requesterCommentMailEnabled(db),
+  };
+  for (const input of inputs) map.set(input.row.id, emptySummary(p, input, mail));
   if (inputs.length === 0) return map;
 
   const ids = sql.join(
@@ -328,7 +336,7 @@ export async function chatSummaryByRequest(
     map.set(row.request_id, {
       canWrite: canWriteChat(p, facts, input.row.status),
       participantSides,
-      mailEnabled,
+      ...mail,
       total: Number(row.total),
       unreadMine: Number(row.unread_mine),
       unreadOthers: participantSides.length > 0 && Number(row.unread_others) > 0,
@@ -686,23 +694,40 @@ export async function postChatMessage(
      * даёт мягкий исход, отказ базы откатывает всё вместе с репликой.
      */
     const mailTargets = chatMailTargets(addressees, 'chat');
-    await queueServiceMailForIntent(tx, {
+    const extra = {
+      message: {
+        authorName: p.fullName,
+        addressees: [
+          ...addressees.sides.map((side) => serviceChatSideLabels[side]),
+          ...names.map((n) => n.fullName),
+        ].join(', '),
+        body: input.body,
+      },
+    };
+    const serviceMail = await queueServiceMailForIntent(tx, {
       prepared: mailPlan,
       side: await readServiceSide(tx, row.id),
       requestId: row.id,
       anchor: message!.id,
       comment: { targets: mailTargets.targets, userIds: mailTargets.userIds },
-      extra: {
-        message: {
-          authorName: p.fullName,
-          addressees: [
-            ...addressees.sides.map((side) => serviceChatSideLabels[side]),
-            ...names.map((n) => n.fullName),
-          ].join(', '),
-          body: input.body,
-        },
-      },
+      extra,
     });
+    /**
+     * The author's letter (ADR 0227, D2 and E2): a message «Заявителю» or «Всем участникам», in the
+     * same transaction and after the service letter, whose recipients it reads (E3). Imported
+     * executor notes (`origin = 'import'`) never pass through here — a migration moved them in —
+     * and `chatMailTargets` gives that origin no target anyway.
+     */
+    if (mailTargets.targets.includes('requester')) {
+      await queueRequesterMail(tx, {
+        event: 'service_request_requester_comment',
+        requestId: row.id,
+        anchor: message!.id,
+        actorId: p.id,
+        serviceRecipients: serviceMail.recipients,
+        extra,
+      });
+    }
 
     return {
       message: {

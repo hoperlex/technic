@@ -49,6 +49,7 @@ function chatSummary(over: Partial<ServiceRequestDto['chat']> = {}): ServiceRequ
     participantSides: ['operator'],
     // Событие писем по репликам включено: сценарии проверяют и подпись «получат письмом».
     mailEnabled: true,
+    requesterMailEnabled: true,
     total: 1,
     unreadMine: 0,
     unreadOthers: false,
@@ -757,5 +758,47 @@ describe('бейджи раздела: «ждут меня» и «мне нап�
     const http = renderMenu(authUser({ role: 'dispatcher' }));
     await waitFor(() => expect(http.countOf('GET /releases')).toBe(1));
     expect(http.countOf(UNREAD)).toBe(0);
+  });
+});
+
+/**
+ * The line under «Кому» names whom a letter reaches (ADR 0227, E9). The portal writes it from the
+ * server's three answers through the contract function and composes nothing itself; what matters
+ * here is that the requester appears when his letter is on and disappears for the author himself,
+ * whose own message never mails him.
+ */
+describe('подпись о письмах под «Кому»', () => {
+  it('называет заявителя, когда письма ему включены', async () => {
+    renderTab([serviceRequest({ status: 'in_work', chat: chatSummary() })], {
+      [MESSAGES]: () => json(chatPage([chatMessage()])),
+      [READ]: () => json({ readThroughSeq: 1, lastSeq: 1 }),
+    });
+    await screen.findByText('СО-14');
+    await openChatFromRow();
+    await screen.findByText('ждём запчасть от поставщика');
+    expect(
+      chatWindow().getByText('Получат письмом: сервисный центр, служба оргтехники, заявитель.'),
+    ).toBeDefined();
+  });
+
+  it('автору заявки заявителя не называет', async () => {
+    renderTab(
+      [
+        serviceRequest({
+          status: 'in_work',
+          chat: chatSummary({ participantSides: ['customer'] }),
+        }),
+      ],
+      {
+        [MESSAGES]: () => json(chatPage([chatMessage()])),
+        [READ]: () => json({ readThroughSeq: 1, lastSeq: 1 }),
+      },
+    );
+    await screen.findByText('СО-14');
+    await openChatFromRow();
+    await screen.findByText('ждём запчасть от поставщика');
+    expect(
+      chatWindow().getByText('Получат письмом: сервисный центр, служба оргтехники.'),
+    ).toBeDefined();
   });
 });

@@ -5621,27 +5621,31 @@ export type ServiceChatAddressee =
   | { readonly side?: null; readonly userId: string };
 
 /**
- * Кому уходит ПИСЬМО по реплике (план `office-equipment-mail-expansion-plan.md`, § 4).
+ * Who receives a LETTER for a chat message (ADR 0159 decision 9, changed by ADR 0227).
  *
- * **Только адресованные, а не вся видимая лента.** Адресат реплики заведён ровно ради этого
- * (ADR 0141, §3.12: пометка управляет подсветкой и будущим письмом), и пересылка всего подряд
- * сделала бы почту подрядчика зеркалом внутреннего разговора — не потому, что там секреты, а
- * потому, что там не его дело. Цена ошибки при этом названа честно: подрядчик без учётки читает
- * только письма, и реплика, адресованная одним «своим», до него не дойдёт; смягчает это умолчание
- * окна («Всем участникам») и подпись, которую портал показывает до отправки.
+ * **Only the addressees, not the whole visible feed.** The addressee exists for exactly this (ADR
+ * 0141, §3.12: the mark drives highlighting and the letter); forwarding everything would turn the
+ * contractor's mailbox into a mirror of the internal conversation. The cost is named: a contractor
+ * without an account reads only letters, and a message addressed to "own people" never reaches
+ * him; the composer's default («Всем участникам») and the line under «Кому» soften it.
  *
- * Таблица закрыта `Record`: новая сторона обязана ответить, кому по ней писать, — иначе реплика
- * молча перестанет доходить до половины участников.
+ * The table is a closed `Record`: a new side must answer whom it mails, or a message silently
+ * stops reaching half of its readers.
  *
- * `customer` цели не даёт вовсе: заявитель сидит в портале, движение по заявке видит карточкой и
- * бейджем непрочитанного, а письма ему — отдельная работа с другой аудиторией и другой частотой.
+ * `requester` is the request author (ADR 0227, D1/D2): «Заявителю» and «Всем участникам» reach
+ * him — including service ↔ contractor messages written to «Всем участникам», an accepted
+ * consequence (D2). Only the author: colleagues of the customer side see «Заявителю» brightly in
+ * the portal but get no letter. The service planner ignores this target; the requester planner
+ * (`service-request-requester-mail.ts`) is the one that reads it.
  *
- * Стороны `operator` и `it` дают одну цель — ящик службы: почтовый канал у модуля один, и
- * различить их доставкой нельзя. Обещать иное значило бы врать про адрес.
+ * `operator` and `it` give one target — the service mailbox: the module has one mail channel, and
+ * the two cannot be told apart by delivery. Promising otherwise would lie about the address.
  */
-const CHAT_MAIL_TARGETS: Record<ServiceChatSide, Array<'office' | 'service'>> = {
-  all: ['office', 'service'],
-  customer: [],
+export type ChatMailTarget = 'office' | 'service' | 'requester';
+
+const CHAT_MAIL_TARGETS: Record<ServiceChatSide, ChatMailTarget[]> = {
+  all: ['office', 'service', 'requester'],
+  customer: ['requester'],
   operator: ['office'],
   it: ['office'],
   service: ['service'],
@@ -5649,7 +5653,7 @@ const CHAT_MAIL_TARGETS: Record<ServiceChatSide, Array<'office' | 'service'>> = 
 
 /** Что уходит письмом по реплике: стороны и поимённые адресаты, названные в самой реплике. */
 export interface ChatMailPlan {
-  targets: Array<'office' | 'service'>;
+  targets: ChatMailTarget[];
   /** Поимённые адресаты: письмо получает только назначенная учётка (проверяет сервер). */
   userIds: string[];
 }
@@ -5663,7 +5667,7 @@ export function chatMailTargets(
   origin: ServiceChatOrigin = 'chat',
 ): ChatMailPlan {
   if (origin === 'import') return { targets: [], userIds: [] };
-  const targets = new Set<'office' | 'service'>();
+  const targets = new Set<ChatMailTarget>();
   for (const side of addressees.sides) {
     for (const target of CHAT_MAIL_TARGETS[side]) targets.add(target);
   }
@@ -5817,19 +5821,44 @@ export interface ServiceChatPageDto {
 }
 
 /**
- * Кого затронет письмо по реплике с такими адресатами — подпись под полем «Кому» (§ 4).
+ * Whom a letter for a message with these addressees will reach — the line under «Кому» (ADR 0159
+ * decision 9, ADR 0227 E9).
  *
- * Считает её сервер и отдаёт готовой строкой: второе правило рядом с первым разошлось бы молча —
- * ровно та беда, ради которой правила сторон живут в контрактах, а портал их не воспроизводит.
+ * The portal calls this contract function with the server's answers and composes nothing itself:
+ * a second rule next to the first would diverge silently — the very trouble the side rules live
+ * in contracts to avoid.
+ *
+ * Two independent deliveries (D5): the service/contractor letters (`mailEnabled`) and the
+ * requester letter (`requesterMailEnabled`). The author is never named to himself: his own message
+ * never mails him (E3), and `participantSides` contains `customer` for the author only
+ * (`participantSidesOf` passes `wideCustomer = false`), so the viewer-is-author fact is already in
+ * the summary and needs no second rule here.
+ *
+ * Three answers, each true in its own case: who gets a letter; that the addressees exist but their
+ * letters are switched off right now; that the message is addressed only to portal readers.
  */
-export function chatMailNotice(plan: ChatMailPlan): string {
-  const parts: string[] = [];
-  if (plan.targets.includes('service')) parts.push('сервисный центр');
-  if (plan.targets.includes('office')) parts.push('служба оргтехники');
-  if (plan.userIds.length > 0) parts.push('названные исполнители');
-  return parts.length === 0
-    ? 'Письма не будет: сообщение адресовано только тем, кто читает его в портале.'
-    : `Получат письмом: ${parts.join(', ')}.`;
+export function chatMailNotice(
+  plan: ChatMailPlan,
+  chat: Pick<
+    ServiceRequestChatSummaryDto,
+    'mailEnabled' | 'requesterMailEnabled' | 'participantSides'
+  >,
+): string {
+  const viewerIsAuthor = chat.participantSides.includes('customer');
+  const service: string[] = [];
+  if (plan.targets.includes('service')) service.push('сервисный центр');
+  if (plan.targets.includes('office')) service.push('служба оргтехники');
+  if (plan.userIds.length > 0) service.push('названные исполнители');
+  const requester = plan.targets.includes('requester') && !viewerIsAuthor ? ['заявитель'] : [];
+  const parts = [
+    ...(chat.mailEnabled ? service : []),
+    ...(chat.requesterMailEnabled ? requester : []),
+  ];
+  if (parts.length > 0) return `Получат письмом: ${parts.join(', ')}.`;
+  if (service.length + requester.length > 0) {
+    return 'Письма по этому сообщению сейчас не отправляются — его увидят только в портале.';
+  }
+  return 'Письма не будет: сообщение адресовано только тем, кто читает его в портале.';
 }
 
 /**
@@ -5859,4 +5888,12 @@ export interface ServiceRequestChatSummaryDto {
    * ВЫКЛЮЧЕННЫМ, и до включения писем нет ни одного.
    */
   mailEnabled: boolean;
+  /**
+   * Whether the request author gets letters for messages addressed «Заявителю» / «Всем
+   * участникам» (ADR 0227, E9): the requester comment switch is on, mail is enabled and the
+   * `repair` channel and the portal's reply address are configured. Additive and independent of
+   * `mailEnabled` (D5): either can be off while the other goes. An old bundle ignores the field and
+   * shows its old line for the deploy window.
+   */
+  requesterMailEnabled: boolean;
 }

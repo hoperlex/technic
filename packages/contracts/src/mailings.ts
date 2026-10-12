@@ -71,6 +71,14 @@ export const MAIL_TEST_KINDS = [
    */
   'office_equipment_candidate_pending',
   'office_equipment_candidate_decided',
+  /**
+   * Letters to the request author (ADR 0227). Built from the same sample request and by the same
+   * builder as the real ones, with the same Reply-To (the portal's general address, D4): the
+   * administrator checks From, Reply-To and the link before the pilot, and a sample sent with the
+   * channel's own Reply-To would show the opposite of what the author gets.
+   */
+  'service_request_requester_comment',
+  'service_request_requester_status',
   'verify_email',
   'password_reset',
   'password_changed',
@@ -115,6 +123,8 @@ export const mailTestKindNeedsRequest: Record<MailTestKind, boolean> = {
   // Сообщение о технике живёт при заявке (связь 1:1), и находит его отладка по её же номеру.
   office_equipment_candidate_pending: true,
   office_equipment_candidate_decided: true,
+  service_request_requester_comment: true,
+  service_request_requester_status: true,
   driver_routes: false,
   role_digest: false,
   verify_email: false,
@@ -137,6 +147,8 @@ export const mailTestKindNeedsDate: Record<MailTestKind, boolean> = {
   service_request_comment: false,
   office_equipment_candidate_pending: false,
   office_equipment_candidate_decided: false,
+  service_request_requester_comment: false,
+  service_request_requester_status: false,
   driver_routes: true,
   role_digest: true,
   verify_email: false,
@@ -168,6 +180,8 @@ export const mailTestKindNeedsDriver: Record<MailTestKind, boolean> = {
   service_request_comment: false,
   office_equipment_candidate_pending: false,
   office_equipment_candidate_decided: false,
+  service_request_requester_comment: false,
+  service_request_requester_status: false,
   driver_routes: true,
   role_digest: false,
   verify_email: false,
@@ -198,6 +212,8 @@ export const mailTestKindNeedsSampleUser: Record<MailTestKind, boolean> = {
   service_request_comment: false,
   office_equipment_candidate_pending: false,
   office_equipment_candidate_decided: false,
+  service_request_requester_comment: false,
+  service_request_requester_status: false,
   driver_routes: false,
   role_digest: true,
   verify_email: false,

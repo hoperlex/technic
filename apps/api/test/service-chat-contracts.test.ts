@@ -5,6 +5,8 @@ import {
   accessProfileLabel,
   audienceMatches,
   canWriteChat,
+  chatMailNotice,
+  chatMailTargets,
   isServiceRequestClosed,
   markServiceChatReadSchema,
   MODULE_GRANTS,
@@ -364,5 +366,73 @@ describe('Схемы ручек обсуждения', () => {
     // Ноль — не «с начала ленты», а ошибка клиента: `CHECK seq > 0`, и принятый молча ноль вернул
     // бы пустую страницу вместо истории.
     expect(serviceChatPageQuerySchema.safeParse({ afterSeq: 0 }).success).toBe(false);
+  });
+});
+
+/**
+ * Who a message letter reaches (ADR 0159 decision 9, changed by ADR 0227). The table is checked
+ * side by side and the notice by the three facts it reads, because the composer shows the notice
+ * before «Отправить» and a wrong line here means a person who believes the author was told.
+ */
+describe('Письмо по реплике: цели и подпись под «Кому»', () => {
+  it('«Заявителю» и «Всем участникам» дают письмо заявителю, остальные стороны — нет', () => {
+    expect(chatMailTargets({ sides: ['customer'], users: [] }).targets).toEqual(['requester']);
+    expect(chatMailTargets({ sides: ['all'], users: [] }).targets.sort()).toEqual(
+      ['office', 'requester', 'service'].sort(),
+    );
+    for (const side of ['operator', 'it', 'service'] as const) {
+      expect(chatMailTargets({ sides: [side], users: [] }).targets).not.toContain('requester');
+    }
+    // A named executor is a user addressee: it never reaches the author.
+    const named = chatMailTargets({ sides: [], users: [ME] });
+    expect(named).toEqual({ targets: [], userIds: [ME] });
+    // Imported executor notes never mail anyone, the author included.
+    expect(chatMailTargets({ sides: ['all'], users: [] }, 'import')).toEqual({
+      targets: [],
+      userIds: [],
+    });
+  });
+
+  const reader = (over: Partial<Parameters<typeof chatMailNotice>[1]> = {}) => ({
+    mailEnabled: true,
+    requesterMailEnabled: true,
+    participantSides: ['operator'] as ServiceChatSide[],
+    ...over,
+  });
+
+  it('подпись называет заявителя, когда его письмо включено', () => {
+    expect(chatMailNotice(chatMailTargets({ sides: ['all'], users: [] }), reader())).toBe(
+      'Получат письмом: сервисный центр, служба оргтехники, заявитель.',
+    );
+    expect(chatMailNotice(chatMailTargets({ sides: ['customer'], users: [] }), reader())).toBe(
+      'Получат письмом: заявитель.',
+    );
+  });
+
+  it('автору заявки подпись заявителя не называет: своё сообщение ему не приходит', () => {
+    const author = reader({ participantSides: ['customer'] });
+    expect(chatMailNotice(chatMailTargets({ sides: ['all'], users: [] }), author)).toBe(
+      'Получат письмом: сервисный центр, служба оргтехники.',
+    );
+    expect(chatMailNotice(chatMailTargets({ sides: ['customer'], users: [] }), author)).toBe(
+      'Письма не будет: сообщение адресовано только тем, кто читает его в портале.',
+    );
+  });
+
+  it('рубильники независимы: выключенное письмо службы не гасит письмо заявителю и наоборот', () => {
+    const all = chatMailTargets({ sides: ['all'], users: [] });
+    expect(chatMailNotice(all, reader({ mailEnabled: false }))).toBe('Получат письмом: заявитель.');
+    expect(chatMailNotice(all, reader({ requesterMailEnabled: false }))).toBe(
+      'Получат письмом: сервисный центр, служба оргтехники.',
+    );
+    // Addressees exist, but their letters are switched off: the line says so instead of
+    // pretending the message was addressed to portal readers only.
+    const customer = chatMailTargets({ sides: ['customer'], users: [] });
+    expect(chatMailNotice(customer, reader({ requesterMailEnabled: false }))).toBe(
+      'Письма по этому сообщению сейчас не отправляются — его увидят только в портале.',
+    );
+    expect(chatMailNotice(all, reader({ mailEnabled: false, requesterMailEnabled: false }))).toBe(
+      'Письма по этому сообщению сейчас не отправляются — его увидят только в портале.',
+    );
   });
 });

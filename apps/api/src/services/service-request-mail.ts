@@ -8,6 +8,7 @@ import {
   SERVICE_REQUEST_NO_EQUIPMENT,
   serviceFileKindLabels,
   serviceRequestStatusLabels,
+  type ChatMailTarget,
   type ModuleMailEvent,
   type ModuleMailOutcome,
   type ServiceMailTargets,
@@ -205,7 +206,12 @@ export interface ServiceMailIntent {
    * контрактов — по адресатам самой реплики, а не по правам автора (§ 4).
    */
   comment?: {
-    targets: Array<'office' | 'service'>;
+    /**
+     * The contract plan as is, `requester` included (ADR 0227, E9): the table lives in one place,
+     * and this planner is the one that drops the target — the author's letter is the requester
+     * planner's business (`service-request-requester-mail.ts`), with its own switch.
+     */
+    targets: ChatMailTarget[];
     /** Поимённые адресаты: письмо получит только назначенная учётка с правом исполнителя. */
     userIds: string[];
   };
@@ -363,7 +369,7 @@ export function bulkMailRecipientHash(audience: ServiceMailAudience, email: stri
  * финализации из полной заявки нельзя — деньги, контакты и место видит не всякий читатель, а
  * финализатор о заявке не знает ничего.
  */
-async function putBulkMailItem(
+export async function putBulkMailItem(
   tx: Tx,
   params: {
     sink: ServiceMailBulkSink;
@@ -402,7 +408,7 @@ const ACTIVITY_SUMMARY_KIND = 'service_request_activity_summary' as const;
  *
  * Сводки в счёт не входят: иначе одно окно душило бы следующее.
  */
-async function windowCount(
+export async function windowCount(
   tx: Tx,
   requestId: string,
   email: string,
@@ -428,7 +434,7 @@ async function windowCount(
  * уехал бы в соседнее окно. Следствие видно не сразу и хуже потока: сводка, записанная ключом
  * следующего часа, подавит сводку САМОГО следующего часа, и адресат останется без единого письма.
  */
-async function currentHour(tx: Tx): Promise<string> {
+export async function currentHour(tx: Tx): Promise<string> {
   const rows = await tx.execute<{ hour: string }>(
     sql`SELECT to_char(date_trunc('hour', now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24') AS hour`,
   );
@@ -436,13 +442,16 @@ async function currentHour(tx: Tx): Promise<string> {
 }
 
 /**
- * Сводка вместо очередного письма: «по заявке идёт работа, писем по каждому шагу до конца часа не
- * будет». Ставится ОДНА на окно — ключ без события, поэтому одновременные события разных видов не
- * создадут двух сводок; `onConflictDoNothing` делает все последующие подавленными.
+ * The summary instead of the next letter: "the request is busy, no letter per step until the end
+ * of the hour". ONE per window — the key carries no event, so simultaneous events of different
+ * kinds do not create two summaries; `onConflictDoNothing` suppresses every later one.
  *
- * Ссылка — только тем, у кого портал: внешнему адресату вместо неё сказано позвонить в службу.
+ * The link follows the audience fields map (`portalLink`), not a check for `internal` (ADR 0227,
+ * E6): the request author has a portal and keeps the link, an outside reader is told to call the
+ * service instead. Reply-To is the recipient's own — for the author that is the portal's general
+ * address (D4), so the summary must not fall back to the channel's service mailbox.
  */
-async function queueActivitySummary(
+export async function queueActivitySummary(
   tx: Tx,
   params: {
     requestId: string;
@@ -464,7 +473,8 @@ async function queueActivitySummary(
   if (status === 'failed') return 'mail_failed';
   if (status) return 'queued';
   const number = formatServiceRequestNumber(params.data.num);
-  const internal = params.recipient.audience === 'internal';
+  const withLink = SERVICE_MAIL_AUDIENCE_FIELDS[params.recipient.audience].portalLink;
+  const requester = params.recipient.audience === 'requester';
   const content: MailContent = {
     title: `${number} — по заявке идёт работа`,
     blocks: [
@@ -474,7 +484,7 @@ async function queueActivitySummary(
           `По заявке ${number} сегодня много событий, и письма по каждому шагу до конца часа ` +
           'отправляться не будут.',
       },
-      ...(internal
+      ...(withLink
         ? [
             {
               kind: 'link' as const,
@@ -488,6 +498,7 @@ async function queueActivitySummary(
               text: 'Чтобы узнать подробности, свяжитесь со службой оргтехники.',
             },
           ]),
+      ...(requester ? [{ kind: 'note' as const, text: REQUESTER_LETTER_FOOTER }] : []),
     ],
   };
   const rendered = renderMail(content);
@@ -742,6 +753,15 @@ export async function queueServiceMailForIntent(
 }
 
 /**
+ * The chat targets this planner serves. `requester` is dropped here and only here (ADR 0227, E9):
+ * mapped like the others it would fall into `service` and demand a contractor letter for a message
+ * written to the author.
+ */
+function serviceChatTargets(targets: readonly ChatMailTarget[]): Array<'office' | 'service'> {
+  return targets.filter((t): t is 'office' | 'service' => t !== 'requester');
+}
+
+/**
  * Что это письмо обязано доставить. Пустой список означает «письма не требовалось» — исход
  * `not_needed`, по которому портал молчит: правка состава, никого не назначившая, не повод звать
  * заводить ящик (ADR 0153, §4а).
@@ -750,7 +770,7 @@ function requiredTargetsOf(intent: ServiceMailIntent, side: ServiceRequestSide):
   if (intent.event === 'service_request_comment') {
     const plan = intent.comment;
     if (!plan) return [];
-    const targets: RequiredTarget[] = plan.targets
+    const targets: RequiredTarget[] = serviceChatTargets(plan.targets)
       .filter((t) => t !== 'service' || hasServiceSide(side))
       .map((t) => (t === 'office' ? 'office' : 'service'));
     // Поимённый адресат — тоже обязательство: реплика написана конкретному человеку, и «письма
@@ -822,7 +842,7 @@ async function candidatesOf(
       }
     }
   } else if (intent.event === 'service_request_comment') {
-    for (const target of intent.comment?.targets ?? []) {
+    for (const target of serviceChatTargets(intent.comment?.targets ?? [])) {
       if (target === 'office') list.push(...(await sideRecipients(tx, side, 'office', ctx)));
       if (target === 'service' && hasServiceSide(side)) {
         /**
@@ -1065,7 +1085,7 @@ function numbersOf(data: ServiceLetterData): string {
 }
 
 /** Кому отдали заявку — одной строкой: свои сотрудники и подрядчик перечисляются подряд (§4.2). */
-function assigneesOf(data: ServiceLetterData): string {
+export function assigneesOf(data: ServiceLetterData): string {
   return [data.executorNames, data.serviceName ?? ''].filter(Boolean).join(', ');
 }
 
@@ -1086,6 +1106,14 @@ export interface ServiceLetterExtra {
    * текста заставило бы его звонить, чтобы узнать что.
    */
   message?: { authorName: string; addressees: string; body: string };
+  /**
+   * The status the request entered. Production letters are built after the transition, so it
+   * equals `data.status`; it travels explicitly because the requester letter's wording depends on
+   * it, and the debug send renders a sample state the sample request is not in (ADR 0227).
+   */
+  toStatus?: ServiceRequestStatus;
+  /** The portal made the transition itself (auto-close): the author reads «закрыта автоматически». */
+  automatic?: boolean;
 }
 
 /** Что произошло с объёмом работ — словами, которыми это называют в портале. */
@@ -1126,7 +1154,7 @@ function formatEstimateAmount(amount: string): string {
  * Ссылка в портал у копии снята по той же причине: произвольный адрес не доказывает доступа, и
  * приглашение «откройте заявку» ведёт такого читателя на форму входа.
  */
-interface ServiceLetterFields {
+export interface ServiceLetterFields {
   /** Кого назначили — состав исполнителей. */
   assignees: boolean;
   /** Где стоит аппарат: площадка и место установки. */
@@ -1197,7 +1225,78 @@ export const SERVICE_MAIL_AUDIENCE_FIELDS = {
     description: false,
     portalLink: false,
   },
+  /**
+   * The request author (ADR 0227, E4) — the requester card projection
+   * (`SERVICE_REQUEST_FIELD_AUDIENCE`, ADR 0160), not the service's body. No money: the card hides
+   * the estimate sum from the requester. Assignees and the service company: yes, the card shows them. Place, department
+   * and contact: yes, they are his own data. Author: no, he is the reader. Attachments count: no —
+   * the card hides acts and invoices from him, and a count would leak that they exist.
+   * Description: yes — it is the author's own text, and it also gates the hold/cancel reason and
+   * the message text. Portal link: yes, he has an account (with `&chat=1` for message letters).
+   */
+  requester: {
+    finance: false,
+    assignees: true,
+    place: true,
+    department: true,
+    contact: true,
+    author: false,
+    attachments: false,
+    description: true,
+    portalLink: true,
+  },
 } satisfies Record<ServiceMailAudience, ServiceLetterFields>;
+
+/**
+ * The footer of every letter to the request author (ADR 0227, D4 and E4). Reply-To is the portal's
+ * general address, which nobody reads for request business: the footer says so in the letter
+ * itself, because an author who replied by mail would otherwise believe the service read it.
+ */
+export const REQUESTER_LETTER_FOOTER =
+  'Отвечать на это письмо не нужно — его никто не прочитает. Ответить можно в обсуждении заявки ' +
+  'в портале.';
+
+/**
+ * The request's own lines shared by every body: the unit, where it stands, the department, the
+ * contact, who filed it and how many attachments it has — each behind its audience field. One
+ * helper for the service bodies and the requester body (ADR 0227): a second copy of these lines
+ * would answer the access question for a new field in one body and forget it in the other.
+ */
+export function requestDetailLines(
+  data: ServiceLetterData,
+  fields: ServiceLetterFields,
+  audience: ServiceMailAudience,
+): string[] {
+  return [
+    /**
+     * Предмет заявки. У заявки без аппарата (Р8) строка не исчезает, а говорит это словами: письмо
+     * читают в сервисной компании, у которой портала может не быть вовсе, и пропавшая строка была
+     * бы прочитана как потерянные данные, а не как законное состояние.
+     */
+    `Техника: ${data.officeEquipmentId === null ? SERVICE_REQUEST_NO_EQUIPMENT : `${data.equipmentName}${numbersOf(data) ? ` · ${numbersOf(data)}` : ''}`}`,
+    /**
+     * А вот «Где стоит» без площадки уходит целиком, и это не то же самое: у заявки без аппарата
+     * места нет ни в каком виде, и строка «Где стоит: —» отвечала бы на вопрос, которого никто не
+     * задавал. Откуда заявка, читается строкой «Отдел» ниже.
+     */
+    ...(fields.place && (data.objectCode !== null || data.objectName !== null)
+      ? placeLinesOf(data)
+      : []),
+    ...(fields.department && data.departmentName ? [`Отдел: ${data.departmentName}`] : []),
+    ...(fields.contact && (data.responsibleName || data.responsiblePhone)
+      ? [`Контакт: ${[data.responsibleName, data.responsiblePhone].filter(Boolean).join(', ')}`]
+      : []),
+    ...(fields.author && data.authorName ? [`Заявку завёл: ${data.authorName}`] : []),
+    ...(fields.attachments && data.attachments > 0
+      ? [
+          // «См. в портале» — только тем, у кого портал есть. Копия читает его наравне со службой.
+          audience === 'internal'
+            ? `Вложений в заявке: ${data.attachments} (см. в портале)`
+            : `Вложений в заявке: ${data.attachments} (запросите их ответом на письмо)`,
+        ]
+      : []),
+  ];
+}
 
 /**
  * Тело письма — самодостаточное: у службы учётки в портале может не быть вовсе, и ссылка ей ничего
@@ -1214,6 +1313,16 @@ function buildServiceLetter(
   audience: ServiceMailAudience,
   extra?: ServiceLetterExtra,
 ): { subject: string; content: MailContent } {
+  /*
+   * The author's body is a different letter — its own subject, status line, link and footer — and
+   * it is built by the requester planner's module from the same detail lines (ADR 0227). Reaching
+   * here with that audience means a requester recipient leaked into the service planner, and a
+   * service body sent to the author would carry the service's Reply-To and wording: refuse loudly
+   * (the caller turns it into `mail_failed`) instead.
+   */
+  if (audience === 'requester') {
+    throw new Error('Тело письма заявителю собирает service-request-requester-mail.ts');
+  }
   const number = formatServiceRequestNumber(data.num);
   const urgent = data.isUrgent ? 'СРОЧНО · ' : '';
   const withdrawn = audience === 'contractor_withdrawn';
@@ -1276,33 +1385,7 @@ function buildServiceLetter(
         ]
       : []),
     ...(assignment && !withdrawn && fields.assignees ? [`Назначены: ${assigneesOf(data)}`] : []),
-    /**
-     * Предмет заявки. У заявки без аппарата (Р8) строка не исчезает, а говорит это словами: письмо
-     * читают в сервисной компании, у которой портала может не быть вовсе, и пропавшая строка была
-     * бы прочитана как потерянные данные, а не как законное состояние.
-     */
-    `Техника: ${data.officeEquipmentId === null ? SERVICE_REQUEST_NO_EQUIPMENT : `${data.equipmentName}${numbersOf(data) ? ` · ${numbersOf(data)}` : ''}`}`,
-    /**
-     * А вот «Где стоит» без площадки уходит целиком, и это не то же самое: у заявки без аппарата
-     * места нет ни в каком виде, и строка «Где стоит: —» отвечала бы на вопрос, которого никто не
-     * задавал. Откуда заявка, читается строкой «Отдел» ниже.
-     */
-    ...(fields.place && (data.objectCode !== null || data.objectName !== null)
-      ? placeLinesOf(data)
-      : []),
-    ...(fields.department && data.departmentName ? [`Отдел: ${data.departmentName}`] : []),
-    ...(fields.contact && (data.responsibleName || data.responsiblePhone)
-      ? [`Контакт: ${[data.responsibleName, data.responsiblePhone].filter(Boolean).join(', ')}`]
-      : []),
-    ...(fields.author && data.authorName ? [`Заявку завёл: ${data.authorName}`] : []),
-    ...(fields.attachments && data.attachments > 0
-      ? [
-          // «См. в портале» — только тем, у кого портал есть. Копия читает его наравне со службой.
-          audience === 'internal'
-            ? `Вложений в заявке: ${data.attachments} (см. в портале)`
-            : `Вложений в заявке: ${data.attachments} (запросите их ответом на письмо)`,
-        ]
-      : []),
+    ...requestDetailLines(data, fields, audience),
   ];
 
   const content: MailContent = {
@@ -1441,27 +1524,6 @@ export function renderServiceLettersFor(
     letters[audience] = renderServiceLetter(event, data, audience, extra);
   }
   return letters;
-}
-
-/**
- * Все тела письма разом (ADR 0153). Функция чистая и дешёвая, поэтому варианты подрядчика
- * собираются всегда, а не «если есть такой адресат»: условие завело бы ещё одно место, где надо
- * помнить про аудиторию.
- *
- * Зовут её ОБА места, где письмо ставится (переход и повтор кнопкой), и оба ловят её отказ: сборка
- * тела письма о назначении падает, если исполнителей у заявки нет, и падение это — мягкий исход
- * `mail_failed`, а не откат заявки.
- */
-export function renderServiceLetters(
-  event: ModuleMailEvent,
-  data: ServiceLetterData,
-): ServiceLetters {
-  return {
-    internal: renderServiceLetter(event, data, 'internal'),
-    contractor: renderServiceLetter(event, data, 'contractor'),
-    contractor_withdrawn: renderServiceLetter(event, data, 'contractor_withdrawn'),
-    copy: renderServiceLetter(event, data, 'copy'),
-  };
 }
 
 /**

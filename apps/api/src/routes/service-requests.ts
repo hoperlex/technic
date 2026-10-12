@@ -193,6 +193,10 @@ import {
   type ServiceRequestSide,
 } from '../services/service-request-mail';
 import {
+  queueRequesterMail,
+  requesterHearsAbout,
+} from '../services/service-request-requester-mail';
+import {
   prepareCandidateMail,
   queueCandidateMail,
 } from '../services/office-equipment-candidate-mail';
@@ -2757,22 +2761,45 @@ async function recordServiceStatusTransition(
     })
     .returning({ id: serviceRequestStatusHistory.id });
 
-  if (!params.mail) return { statusHistoryId: entry!.id, mail: null };
-
   /**
    * Письмо ставится тем же `tx`, что и строка истории: рубильник, адресаты, их права и копии
    * читаются после блокировки заявки, а не заранее (§5.2). Якорь ключа дедупликации — строка
    * истории: по заявке он был бы неверен дважды — повторный цикл «отменили → вернули» не дал бы
    * второго письма, а второй адресат не получил бы ничего.
    */
-  const mail = await queueServiceMailForIntent(tx, {
-    prepared: params.mail,
-    side: params.side,
-    requestId: params.requestId,
-    anchor: entry!.id,
-    extra: { fromStatus: params.fromStatus, comment: params.comment },
-    bulk: params.bulkMail ?? null,
-  });
+  const mail = params.mail
+    ? await queueServiceMailForIntent(tx, {
+        prepared: params.mail,
+        side: params.side,
+        requestId: params.requestId,
+        anchor: entry!.id,
+        extra: { fromStatus: params.fromStatus, comment: params.comment },
+        bulk: params.bulkMail ?? null,
+      })
+    : null;
+
+  /**
+   * The author's letter (ADR 0227, E2) — asked here even when the transition has no service
+   * letter (`params.mail === null`): this is the one point every arc passes, single handles, bulk
+   * rows, the estimate refusal and creation alike, and the requester's switch must not hang on the
+   * service's. After the service letter, because it reads that letter's recipients: staff who
+   * filed the request and already get the service letter about this fact get no second one (E3).
+   */
+  if (requesterHearsAbout(params.fromStatus, params.toStatus)) {
+    await queueRequesterMail(tx, {
+      event: 'service_request_requester_status',
+      requestId: params.requestId,
+      anchor: entry!.id,
+      actorId: params.actorId,
+      serviceRecipients: mail?.recipients ?? [],
+      extra: {
+        fromStatus: params.fromStatus,
+        toStatus: params.toStatus,
+        comment: params.comment,
+      },
+      bulk: params.bulkMail ?? null,
+    });
+  }
   return { statusHistoryId: entry!.id, mail };
 }
 

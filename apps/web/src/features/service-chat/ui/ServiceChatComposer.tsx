@@ -97,19 +97,17 @@ export function ServiceChatComposer({
           placeholder="Всем участникам"
         />
         {/*
-          Кого затронет почта — до нажатия «Отправить» (план расширения почты, § 4). Реплика уходит
-          письмом ТОЛЬКО адресатам, и у подрядчика без учётки письмо — единственный носитель: не
-          скажи мы этого здесь, «написал же в заявке» осталось бы непрочитанным.
+          Who gets a letter — before «Отправить» (ADR 0159 decision 9, ADR 0227 E9). A message goes
+          by mail ONLY to its addressees, and for a contractor without an account and for a
+          requester who does not read the discussion the letter is the only carrier.
 
-          Правило считает контрактная функция, а не своя формула рядом: вторая копия разошлась бы с
-          серверной молча — ровно та беда, ради которой правила сторон живут в контрактах. А вот
-          «идут ли письма вообще» портал не выводит сам: рубильник события, включённость почты и
-          настроенность канала — это сервер, и он отвечает на них полем `chat.mailEnabled`.
+          The contract function writes the line from the server's answers: whether service letters
+          go (`chat.mailEnabled`), whether the author's letter goes (`chat.requesterMailEnabled`),
+          and whether the viewer is the author (`chat.participantSides`). A rule of the portal's own
+          next to it would diverge from the server silently.
         */}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {request.chat.mailEnabled
-            ? chatMailNotice(chatMailTargets(splitAddressees(addressees)))
-            : 'Письма по обсуждению сейчас не отправляются — сообщение увидят только в портале.'}
+          {chatMailNotice(chatMailTargets(splitAddressees(addressees)), request.chat)}
         </Typography.Text>
       </div>
       <div>

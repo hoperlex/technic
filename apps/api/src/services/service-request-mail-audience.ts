@@ -57,7 +57,19 @@ type Reader = Tx | typeof db;
  * правом, и раскрывать ему суммы, описание и контакт не на основании чего. Состав полей задаёт
  * закрытая карта `SERVICE_MAIL_AUDIENCE_FIELDS` в `service-request-mail.ts`.
  */
-export type ServiceMailAudience = 'internal' | 'contractor' | 'contractor_withdrawn' | 'copy';
+export type ServiceMailAudience =
+  | 'internal'
+  | 'contractor'
+  | 'contractor_withdrawn'
+  | 'copy'
+  /**
+   * The request author reading about his own request (ADR 0227, E4). A fifth audience and not
+   * `internal`: the author is not the service, and his body follows the requester card projection
+   * (ADR 0160) — no money, no attachments count, no "who filed it" — with the portal's general
+   * Reply-To instead of the service mailbox (D4). Only the requester planner
+   * (`service-request-requester-mail.ts`) produces recipients of this audience.
+   */
+  | 'requester';
 
 /**
  * Чем письмо вызвано — **источник** адресата, а не его адрес (ADR 0159, решение 6). Именно
@@ -65,7 +77,7 @@ export type ServiceMailAudience = 'internal' | 'contractor' | 'contractor_withdr
  * победит при совпадении адресов.
  */
 export type ServiceMailSource =
-  'channel' | 'internal_user' | 'contractor' | 'contractor_withdrawn' | 'copy';
+  'channel' | 'internal_user' | 'contractor' | 'contractor_withdrawn' | 'requester' | 'copy';
 
 /**
  * Порядок источников — фиксированный и **не зависящий от порядка строк SQL** (§5.2): свои (ящик
@@ -82,7 +94,10 @@ const SOURCE_ORDER: Record<ServiceMailSource, number> = {
   internal_user: 1,
   contractor: 2,
   contractor_withdrawn: 3,
-  copy: 4,
+  // The request author (ADR 0227): before the copies for the same reason as every trusted source —
+  // an author who is also a copy row keeps his own body, not the redacted one.
+  requester: 4,
+  copy: 5,
 };
 
 /** Получатель письма: ящик канала, назначенный исполнитель, подрядчик или заведённая копия. */

@@ -147,6 +147,7 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
       participantSides: [],
       // Письма по репликам: у фикстуры их нет — событие выключено, как и на свежем выкате.
       mailEnabled: false,
+      requesterMailEnabled: false,
       total: 0,
       unreadMine: 0,
       unreadOthers: false,

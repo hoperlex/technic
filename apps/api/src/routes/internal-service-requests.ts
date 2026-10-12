@@ -6,6 +6,7 @@ import { db } from '../db/client';
 import { writeAudit } from '../lib/audit';
 import { err } from '../lib/errors';
 import { logger } from '../logger';
+import { queueRequesterMail } from '../services/service-request-requester-mail';
 import {
   serviceClosingFileMatchSql,
   serviceHasClosingDocumentSql,
@@ -336,10 +337,27 @@ async function runAutoClose(limit: number): Promise<{ stats: AutoCloseStats; clo
            * Служебная учётка вместо пустоты была бы хуже пустоты — она появлялась бы в журнале
            * наравне с людьми, и «кто закрыл мою заявку» отвечалось бы именем, которого нет.
            */
-          await one.execute(sql`
+          const history = await one.execute<{ id: string }>(sql`
             INSERT INTO service_request_status_history
                    (request_id, from_status, to_status, estimate_revision, changed_by, actor_source)
-            VALUES (${row.id}, 'done', 'accepted', ${current.estimate_revision}, NULL, 'system')`);
+            VALUES (${row.id}, 'done', 'accepted', ${current.estimate_revision}, NULL, 'system')
+            RETURNING id`);
+
+          /**
+           * The author hears that his request was closed (ADR 0227, D3 and E2), in this row's
+           * savepoint: a SQL failure of the letter rolls back this one closure and leaves the
+           * rest of the batch alone, exactly like a database refusal of the closure itself. The
+           * actor is the portal (`null`), so the author is never "the actor" here, and the
+           * service side stays silent on auto-close, as it was (§7 of the decision).
+           */
+          await queueRequesterMail(one, {
+            event: 'service_request_requester_status',
+            requestId: row.id,
+            anchor: history.rows[0]!.id,
+            actorId: null,
+            serviceRecipients: [],
+            extra: { fromStatus: 'done', toStatus: 'accepted', comment: '', automatic: true },
+          });
           return true;
         });
         if (done) closed.push(row.id);

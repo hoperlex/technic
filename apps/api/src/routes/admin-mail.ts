@@ -31,6 +31,10 @@ import {
   candidateLetterContent,
   loadCandidateLetterData,
 } from '../services/office-equipment-candidate-mail';
+import {
+  requesterLetterContent,
+  requesterMailConfig,
+} from '../services/service-request-requester-mail';
 import type { MailContent } from '../services/mail-templates';
 import { buildDriverRoutesMail, driversWithRoutes } from '../services/mailings/driver-routes';
 import { buildRoleDigestMail } from '../services/mailings/role-digest';
@@ -126,7 +130,7 @@ async function contentFor(
     windowFromDays: number;
     windowDays: number;
   },
-): Promise<{ subject: string; content: MailContent } | null> {
+): Promise<{ subject: string; content: MailContent; replyTo?: string } | null> {
   switch (kind) {
     /**
      * Письма модуля «Орг.техника» собираются по РЕАЛЬНОЙ заявке и тем же кодом, что уходит людям
@@ -193,6 +197,46 @@ async function contentFor(
       const decision = data.status === 'pending' ? undefined : data.status;
       if (kind === 'office_equipment_candidate_decided' && !decision) return null;
       return candidateLetterContent(kind, data, 'internal', decision);
+    }
+    /**
+     * Letters to the request author (ADR 0227): the requester body of a REAL request, with the
+     * Reply-To the author gets — the portal's general address (D4, E5). The point of this sample
+     * is checking From, Reply-To and the link before the pilot (§8 of the decision), and a sample
+     * left with the channel's own Reply-To would show the service mailbox, the opposite of the
+     * letter people get.
+     *
+     * The status letter is rendered as «Отложена» with a sample reason whatever the sample's own
+     * state: that wording carries the most (the reason line), and a sample in «Новая» would have
+     * no requester letter at all. The message letter shows a sample message, as the service one.
+     */
+    case 'service_request_requester_comment':
+    case 'service_request_requester_status': {
+      if (!opts.sampleRequestId) return null;
+      const cfg = requesterMailConfig();
+      if (!cfg.replyTo) {
+        throw err.badRequest(
+          'Не задан общий адрес портала (MAIL_REPLY_TO или MAIL_FROM): письма заявителю не ' +
+            'уходят вовсе — обратный адрес им взять неоткуда',
+        );
+      }
+      const data = await db
+        .transaction((tx) => loadServiceLetterData(tx, opts.sampleRequestId!))
+        .catch(() => null);
+      if (!data) return null;
+      const letter = requesterLetterContent(
+        kind,
+        data,
+        kind === 'service_request_requester_comment'
+          ? {
+              message: {
+                authorName: 'Оператор оргтехники',
+                addressees: 'Всем участникам',
+                body: 'Образец сообщения: письмо показывает текст сообщения целиком.',
+              },
+            }
+          : { toStatus: 'on_hold', comment: 'Ждём запчасть от поставщика' },
+      );
+      return { ...letter, replyTo: cfg.replyTo };
     }
     case 'verify_email':
       return { subject: VERIFY_SUBJECT, content: verifyEmailContent(FAKE_TOKEN) };
@@ -410,6 +454,7 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
       // письму с тем же смыслом он мешать не должен.
       dedupeKey: `test:${kind}:${randomUUID()}`,
       to: recipient.email,
+      ...(built.replyTo ? { replyTo: built.replyTo } : {}),
       subject: marked.subject,
       content: marked.body,
       userId: recipient.id,

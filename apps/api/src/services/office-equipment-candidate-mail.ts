@@ -617,6 +617,19 @@ const CANDIDATE_LETTER_FIELDS = {
     freeText: false,
     portalLink: false,
   },
+  /*
+   * The request author's audience (ADR 0227) belongs to the requester letters, which have their
+   * own planner; candidate letters never address it — their author reads the `internal` body. The
+   * row exists because the map is closed, and if the audience ever lands here it gets the copy's
+   * body, not the full one, by the rule above.
+   */
+  requester: {
+    place: false,
+    department: false,
+    author: false,
+    freeText: false,
+    portalLink: false,
+  },
 } satisfies Record<ServiceMailAudience, CandidateLetterFields>;
 
 /** Номера единицы одной строкой: их печатает производитель и клеит бухгалтерия. */

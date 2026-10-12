@@ -27,7 +27,12 @@ import { serviceRequestVisibilityWhere } from '../lib/access';
 import { logger } from '../logger';
 import { pgErrorOf } from '../lib/pg-error';
 import { queueMail } from './mail';
-import { SERVICE_MAIL_ACCOUNT, type ServiceMailBulkSink } from './service-request-mail';
+import {
+  REQUESTER_LETTER_FOOTER,
+  SERVICE_MAIL_ACCOUNT,
+  type ServiceMailBulkSink,
+} from './service-request-mail';
+import { requesterMailConfig } from './service-request-requester-mail';
 
 /**
  * ПРОТОКОЛ МАССОВЫХ ДЕЙСТВИЙ НАД ЗАЯВКАМИ (план `docs/office-equipment-bulk-actions-plan.md`,
@@ -880,12 +885,16 @@ async function queueBulkDigest(
     .orderBy(serviceRequestBulkMailItems.rowIndex);
   if (items.length === 0) return;
 
-  const groups = new Map<string, { email: string; hash: string; lines: string[] }>();
+  const groups = new Map<
+    string,
+    { email: string; hash: string; audience: string; lines: string[] }
+  >();
   for (const item of items) {
     const key = `${item.recipientHash}:${item.audience}`;
     const group = groups.get(key) ?? {
       email: item.recipientEmail,
       hash: item.recipientHash,
+      audience: item.audience,
       lines: [],
     };
     group.lines.push(payloadLine(item.payload, item.rowIndex));
@@ -893,7 +902,15 @@ async function queueBulkDigest(
   }
 
   const label = serviceRequestBulkOperationLabels[operation];
+  /**
+   * Reply-To per audience (ADR 0227, E7). The request author's digest answers to the portal's
+   * general address (D4), set explicitly: left empty, the worker would put the `repair` channel's
+   * own Reply-To — the service mailbox — on a letter whose footer says nobody reads replies. The
+   * other audiences keep today's behaviour: empty, so the channel's Reply-To applies.
+   */
+  const requesterReplyTo = requesterMailConfig().replyTo;
   for (const group of groups.values()) {
+    const requester = group.audience === 'requester';
     /*
      * `dedupe_key = bulk:<operationId>:<recipientHash>` и уникальность очереди по паре
      * `(kind, dedupe_key)` делают финализацию повторяемой: упавший на середине финализатор
@@ -909,6 +926,7 @@ async function queueBulkDigest(
       dedupeKey: `bulk:${operationId}:${group.hash}`,
       to: group.email,
       account: SERVICE_MAIL_ACCOUNT,
+      ...(requester ? { replyTo: requesterReplyTo } : {}),
       subject: `Заявки на обслуживание: ${label.toLowerCase()} — ${group.lines.length}`,
       entityType: 'serviceRequestBulkOperation',
       entityId: operationId,
@@ -917,6 +935,7 @@ async function queueBulkDigest(
         blocks: [
           { kind: 'lines', lines: [`Действие: ${label}`, `Выполнил: ${actorName}`] },
           { kind: 'list', items: group.lines },
+          ...(requester ? [{ kind: 'note' as const, text: REQUESTER_LETTER_FOOTER }] : []),
         ],
       },
     });
