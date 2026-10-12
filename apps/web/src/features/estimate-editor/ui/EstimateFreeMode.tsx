@@ -1,9 +1,10 @@
-import { Input, InputNumber, Segmented, Tooltip, Typography } from 'antd';
+import { Form, Input, InputNumber, Segmented, Tooltip, Typography } from 'antd';
 import { fitsFreeMode, type EstimateMode, type EstimateRow } from '../model/rows';
+import { FREE_NAME_RULES, FREE_PRICE_RULES } from '../model/estimateRules';
 
 /**
- * Почему «Одной строкой» недоступно — теми же словами, какими это правило записано в плане (Р8).
- * Тултип, а не молчание: погашенный переключатель без объяснения читается как поломка окна.
+ * Why "Одной строкой" is unavailable — in the words the plan states the rule in (R8). A tooltip,
+ * not silence: a disabled switch without an explanation reads as a broken window.
  */
 const GLUE_LOCKED_HINT =
   'Свернуть в одну запись нечего: в объёме работ больше одной строки либо у единственной стоит ' +
@@ -12,18 +13,17 @@ const GLUE_LOCKED_HINT =
   '«работы бесплатны» вместо «стоимость не проставили».';
 
 /**
- * Переключатель режима ввода объёма работ (план
- * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р1 и Р8).
+ * The switch of the input mode (plan
+ * `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, R1 and R8).
  *
- * ОДНА ИЗ ДВУХ ДОРОГ ЗАКРЫВАЕТСЯ, И ЗАКРЫВАЕТСЯ ВСЕГДА ОДНА И ТА ЖЕ. «По графам» открыто из
- * свободного режима без условий — разворачивание ничего не теряет. Обратно пускает только
- * предикат `fitsFreeMode`: у свободной записи полей два, и всё, что в них не помещается — вид
- * «Запчасть», срок гарантии, количество, вторая строка, — при сворачивании исчезло бы без
- * единого вопроса.
+ * ONE OF THE TWO ROADS CLOSES, AND IT IS ALWAYS THE SAME ONE. "По графам" is open from the free
+ * mode unconditionally — unfolding loses nothing. Back is let only by `fitsFreeMode`: the free
+ * record has two fields, and whatever does not fit in them — the kind "Запчасть", a warranty term,
+ * a quantity, a second row — would vanish on folding without a single question.
  *
- * Погашенный пункт остаётся ВИДИМЫМ: спрятанный, он читался бы как «такого режима нет вовсе», и
- * человек, набравший смету по графам, не понял бы, куда делось письмо подрядчика, которое он
- * вводил свободно час назад.
+ * The disabled item stays VISIBLE: hidden, it would read as "there is no such mode", and a person
+ * who typed the estimate by columns would not understand where the contractor's letter, typed
+ * freely an hour ago, has gone.
  */
 export function EstimateModeSwitch({
   mode,
@@ -32,9 +32,9 @@ export function EstimateModeSwitch({
   onChange,
 }: {
   mode: EstimateMode;
-  /** Набранное прямо сейчас: по нему и решается, открыта ли дорога назад. */
+  /** What is typed right now: it decides whether the road back is open. */
   rows: readonly EstimateRow[];
-  /** Правка закрыта висящим предъявлением (Р9) — режим тогда тоже не меняют. */
+  /** Editing is closed by a pending submission (R9) — the mode is not changed then either. */
   disabled?: boolean;
   onChange: (next: EstimateMode) => void;
 }) {
@@ -51,8 +51,8 @@ export function EstimateModeSwitch({
           label: mayGlue ? (
             'Одной строкой'
           ) : (
-            // Тултип вешается на подпись, а не на сам пункт: выключенный пункт `Segmented`
-            // событий мыши не отдаёт, и подсказка на нём не появилась бы вовсе.
+            // The tooltip hangs on the caption, not on the item: a disabled `Segmented` item gives
+            // no mouse events, and a tooltip on it would never appear.
             <Tooltip title={GLUE_LOCKED_HINT}>
               <span>Одной строкой</span>
             </Tooltip>
@@ -65,73 +65,65 @@ export function EstimateModeSwitch({
 }
 
 /**
- * Свободный ввод объёма работ: описание перечня и общая стоимость (Р1, ответы В1 и В10 заказчика
- * от 09.09.2026).
+ * The free input of the scope of work: the description of the list and the price of the whole
+ * order (R1, customer answers V1 and V10 of 09.09.2026).
  *
- * ДВА ПОЛЯ, А НЕ ТАБЛИЦА ИЗ ОДНОЙ СТРОКИ. Подрядчик присылает объём работ письмом: перечень
- * позиций с количествами и одна сумма на всё. Разложить его по графам, не придумывая цен, нельзя —
- * их в письме нет, — а таблица с колонками «Кол-во» и «Цена» на такую запись прямо провоцирует
- * выдумывать. Поэтому у режима свой вид: то, что человек переносит, и то, о чём договорились.
+ * TWO FIELDS, NOT A TABLE OF ONE ROW. The contractor sends the scope in a letter: a list of items
+ * with quantities and one sum for all of it. It cannot be broken down by columns without inventing
+ * prices — the letter has none — and a table with "Кол-во" and "Цена" columns invites exactly that.
+ * So the mode has its own look: what the person carries over, and what was agreed.
  *
- * ПОЛЕ ОПИСАНИЯ МНОГОСТРОЧНОЕ И ДЛИННОЕ (2000 символов): перечень из письма — пять-шесть строк,
- * и переводы строк в нём часть значения, а не мусор. Счётчик стоит затем, чтобы предел не
- * обнаружился обрезанным хвостом уже после сохранения.
+ * THE DESCRIPTION IS MULTI-LINE AND LONG (2000 characters): a letter's list is five or six lines,
+ * and its line breaks are part of the meaning. The counter is there so the limit is not discovered
+ * as a cut tail after the save.
  *
- * СТОИМОСТЬ ОБЯЗАТЕЛЬНА и помечена звёздочкой вручную: полей здесь два, формы antd у окна нет
- * (строки живут состоянием, ADR 0094 и исключение ворот), и обязательность обязана быть видна до
- * нажатия — иначе о ней сообщал бы отказ под кнопкой.
+ * THE PRICE IS REQUIRED and marked with an asterisk by hand: the headings are the window's own
+ * text, not form labels, and the requirement must be visible before the press. Both fields are the
+ * first row of the form's `rows` (`['rows', 0, …]`): in the database the free record is that row.
  */
-export function EstimateFreeFields({
-  row,
-  disabled = false,
-  onChange,
-}: {
-  /** Единственная строка свободного режима: её и правят два поля. */
-  row: EstimateRow;
-  disabled?: boolean;
-  onChange: (patch: Partial<EstimateRow>) => void;
-}) {
+export function EstimateFreeFields({ disabled = false }: { disabled?: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div>
         <Typography.Text strong>Описание</Typography.Text>
-        <Input.TextArea
-          // Письмо подрядчика — это несколько строк перечня: поле в две строки заставляло бы
-          // читать его в щёлочку ровно там, где по нему и договариваются.
-          autoSize={{ minRows: 5, maxRows: 16 }}
-          maxLength={2000}
-          showCount
-          disabled={disabled}
-          value={row.name}
-          placeholder={
-            'Что входит в заказ — перечнем, как в письме подрядчика:\n' +
-            'Ремонт МФУ (RICOH MP C 2011, № 86228), 1 шт;\n' +
-            'Узел фотобарабана в сборе, 2 шт'
-          }
-          aria-label="Описание объёма работ"
-          onChange={(e) => onChange({ name: e.target.value })}
-        />
+        <Form.Item name={['rows', 0, 'name']} rules={FREE_NAME_RULES} style={{ marginBottom: 0 }}>
+          <Input.TextArea
+            // A contractor's letter is several lines of a list: a two-line field would make it
+            // read through a slit exactly where it is agreed upon.
+            autoSize={{ minRows: 5, maxRows: 16 }}
+            maxLength={2000}
+            showCount
+            disabled={disabled}
+            placeholder={
+              'Что входит в заказ — перечнем, как в письме подрядчика:\n' +
+              'Ремонт МФУ (RICOH MP C 2011, № 86228), 1 шт;\n' +
+              'Узел фотобарабана в сборе, 2 шт'
+            }
+            aria-label="Описание объёма работ"
+          />
+        </Form.Item>
       </div>
       <div>
         <Typography.Text strong>
           Стоимость <Typography.Text type="danger">*</Typography.Text>
         </Typography.Text>
-        <div>
+        <Form.Item
+          name={['rows', 0, 'unitPrice']}
+          rules={FREE_PRICE_RULES}
+          style={{ marginBottom: 0 }}
+        >
           <InputNumber
             style={{ width: 220 }}
             min={0}
             max={99_999_999}
             disabled={disabled}
-            value={row.unitPrice}
             placeholder="Общая стоимость заказа"
             aria-label="Стоимость заказа"
-            onChange={(v) => onChange({ unitPrice: v })}
           />
-        </div>
-        {/* Сказано словами, а не показано отказом: пустая стоимость — это «не оценено», и
-            подставлять вместо неё ноль означало бы записать «бесплатно» под тем, чего никто не
-            считал (ответ В10). Ноль законен только у гарантийного ремонта, и предъявляют его
-            отдельной кнопкой. */}
+        </Form.Item>
+        {/* Said in words, not shown by a refusal: an empty price means "not priced", and a zero in
+            its place would write "free" under something nobody counted (answer V10). Zero is lawful
+            only for the warranty repair, and that is submitted by a button of its own. */}
         <Typography.Text type="secondary">
           Сумма на весь заказ: по позициям её не раскладывают — так её и присылают. Ноль здесь не
           принимается: он означал бы «не оценено», а работы без оплаты предъявляют гарантийным

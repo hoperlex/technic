@@ -1,23 +1,18 @@
-import { useRef, useState } from 'react';
+import { useReducer, useRef } from 'react';
+import { Form } from 'antd';
 import {
   serviceEstimatePending,
   type ServiceActionRequest,
   type ServiceExecutorAssignment,
-  type ServiceItemKind,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { useRecordSession } from '@shared/lib';
+import { useFormBlockers } from '@shared/ui';
 import { useEstimatePresentation } from './useEstimatePresentation';
 import { useEstimateCommands } from './useEstimateCommands';
-import {
-  newEstimateRow,
-  rowsForSave,
-  rowsTotal,
-  type EstimateMode,
-  type EstimateRow,
-} from './rows';
-import { estimateDraftIssue, estimateIssue } from './estimateRules';
-import { estimateFill, switchedRows } from './estimateForm';
+import { rowsForSave, rowsTotal, type EstimateMode, type EstimateRow } from './rows';
+import { draftFieldsToCheck, estimateIssue, type EstimateFieldPath } from './estimateRules';
+import { estimateFill, switchedRows, type EstimateFormValues } from './estimateForm';
 
 /**
  * The entry intent selects both the presentation and the command semantics.
@@ -28,18 +23,21 @@ import { estimateFill, switchedRows } from './estimateForm';
  */
 export type EstimateEditorIntent = 'estimate' | 'breakdown' | 'document' | 'work_done';
 
+const NO_ROWS: EstimateRow[] = [];
+
 /**
- * Всё, чем живёт окно объёма работ: строки, режим ввода, версия заявки и четыре пути отправки —
- * черновик, построчное предъявление, гарантийный ремонт и подача счётом.
+ * Everything the scope-of-work window lives by: the composition, its input mode, the request
+ * version and the four ways out — a draft, a submission by rows, the warranty repair and the
+ * submission by invoice.
  *
- * ОТДЕЛЬНО ОТ РАЗМЕТКИ, потому что предметы разные: здесь — что происходит с составом и куда он
- * уходит, там — как это выглядит. Разрез появился, когда у окна прибавились режим ввода (Р1) и
- * вторая дверь (Р2): вместе они перерастали бюджет длины файла, а главное — размётка перестала
- * читаться целиком, ради чего бюджет и заведён.
+ * SEPARATE FROM THE MARKUP because the subjects differ: here — what happens to the composition and
+ * where it goes; there — how it looks.
  *
- * СОСТАВ ЖИВЁТ СОСТОЯНИЕМ, А НЕ ФОРМОЙ с `Form.List`: итог считается на каждое нажатие клавиши и
- * показывается тут же — это главное, что окно делает, — а объём работ есть разговор о деньгах, и
- * сумма не должна появляться только после отправки (ADR 0094, исключение ворот названо поимённо).
+ * THE COMPOSITION IS AN ANTD FORM (Q10, ADR 0094): the rows are a `Form.List`, every check is the
+ * rule of the field at fault, and a refused press marks the fields, scrolls to the first and
+ * flashes instead of a toast in the corner. The total is still counted on every keystroke from the
+ * watched rows: the scope of work is a conversation about money, and the sum must be visible
+ * before the press, not after it.
  *
  * THE REQUEST VERSION IS A SNAPSHOT OF THE WINDOW SESSION (stage 5 plan §4.5): taken when the
  * window fills, moved by this window's own answers — saving the composition raises it, and a
@@ -55,23 +53,18 @@ export function useEstimateEditor({
   onClose,
   onDocumentSubmitted,
 }: {
-  /** `null` — окно закрыто; состояние всё равно живёт, чтобы не пересоздавать хук на открытии. */
+  /** `null` — the window is closed; the state lives on so the hook is not recreated on opening. */
   request: ServiceRequestDto | null;
   intent: EstimateEditorIntent;
   /**
-   * Карточка глазами предикатов контрактов и признаки назначения на неё — ПЕРЕВОД ДЕЛАЕТ
-   * ВЫЗЫВАЮЩИЙ, а не окно (Р3 плана
-   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`).
+   * The card as the contracts' predicates see it and the assignment flags — THE CALLER TRANSLATES,
+   * not the window (R3 of `docs/office-equipment-on-site-and-invoice-estimate-plan.md`). There is
+   * exactly one such translation in the portal (`serviceActionRow`/`serviceExecutorAssignment` on
+   * the pages layer); a second one built by the window would silently diverge from it, and the
+   * features layer cannot reach that one.
    *
-   * Так, а не «сложим четыре поля из DTO здесь», по двум причинам сразу. Перевод в этом портале
-   * ровно один — `serviceActionRow`/`serviceExecutorAssignment` на слое разделов, — и второй,
-   * собранный окном по-своему, разошёлся бы с ним молча на первом же поле (там это записано
-   * прямо: «дешевле держать один перевод, чем ловить расхождение на экране»). А достать тот
-   * перевод сюда нельзя: слой сценариев разделов не видит.
-   *
-   * НЕОБЯЗАТЕЛЬНЫ И FAIL-CLOSED: не передали — чекбокса освобождения нет вовсе. Это честнее
-   * умолчания «показать»: за нарисованным шире чекбоксом стоит 403, а денежное решение,
-   * предложенное не тому, читается как разрешение.
+   * OPTIONAL AND FAIL-CLOSED: not passed — no exemption checkbox at all. A wider checkbox stands
+   * on a 403, and a money decision offered to the wrong person reads as a permission.
    */
   actionRow?: ServiceActionRequest;
   assignment?: ServiceExecutorAssignment;
@@ -83,37 +76,45 @@ export function useEstimateEditor({
   const directDocument = intent === 'document' || intent === 'work_done';
   const workDone = intent === 'work_done';
 
-  const [rows, setRows] = useState<EstimateRow[]>([]);
+  const [form] = Form.useForm<EstimateFormValues>();
   /*
-   * Режим ВВОДА, а не вид документа (Р1): в базу оба уходят одинаковыми строками, и признака
-   * формата там нет вовсе. Живёт состоянием окна по той же причине, по какой строки: угадывается
-   * он по составу при открытии (`initialEstimateMode`), а дальше им распоряжается человек.
+   * THE WINDOW RE-RENDERS ON EVERY CHANGE OF THE STORE, IN THE SAME EVENT. `Form.useWatch` would
+   * do it a macrotask later (the form batches its watchers through a `MessageChannel`), and the
+   * total, the per-row amounts, the mode switch and the locks of the buttons would trail the
+   * keystroke that changed them. The person's edits come through `onValuesChange`; the window's
+   * own writes (`setFieldsValue` of a fill or a mode switch) call `rerender` themselves.
    */
-  const [mode, setMode] = useState<EstimateMode>('rows');
-  const [comment, setComment] = useState('');
-  /** Rows and mode as the last fill left them: the person's edits replace the rows array. */
-  const [filled, setFilled] = useState<{ rows: EstimateRow[]; mode: EstimateMode } | null>(null);
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const blockers = useFormBlockers(form, { onValuesChange: () => rerender() });
+  /** The composition in the store right now: what a command sends at the moment of the press. */
+  const composition = (): EstimateFormValues => ({
+    mode: form.getFieldValue('mode') ?? 'rows',
+    rows: form.getFieldValue('rows') ?? NO_ROWS,
+    comment: form.getFieldValue('comment') ?? '',
+  });
+  // The store holds every key of a row (`key`, `kind`), while only the visible ones are fields.
+  const { rows, mode } = composition();
+  /*
+   * Rows and mode as the last fill left them. "Changed" is the IDENTITY of the stored rows array:
+   * the store copies the array on every edit of a row, an addition, a removal and a mode switch,
+   * so an untouched window is the one whose array is still the filled one — the same rule the
+   * state-held window had, without a per-type comparison of values.
+   */
+  const filled = useRef<{ rows: EstimateRow[]; mode: EstimateMode } | null>(null);
   /** The rows array a draft save sent: unchanged since, it may be refilled from the answer. */
   const sentRows = useRef<EstimateRow[] | null>(null);
 
   /*
-   * Строки, которые уйдут на сервер: в свободном режиме нетронутая запись отсеивается (Р8) —
-   * пустые два поля означают «объём работ ещё не набирали», а не строку сметы. Считается один раз
-   * на оба пути отправки, чтобы «черновик» и «раскладка» не разошлись в том, что именно шлют.
-   */
-  const saved = rowsForSave(rows, mode);
-  /*
-   * Оба замка Р9 сразу: и правка состава, и повторное предъявление закрыты одним признаком —
-   * непогашенным предъявлением. Признак спрашивается у контрактов, а не выводится из даты
-   * предъявления: у отозванного `estimateSubmittedAt` непуста, и окно заперлось бы навсегда.
+   * Both locks of R9 at once: editing the composition and submitting again are closed by one sign —
+   * a pending submission. It is asked from the contracts, not inferred from the submission date: a
+   * revoked one has `estimateSubmittedAt` set, and the window would lock forever.
    */
   const locked = !!request && serviceEstimatePending(request);
 
   /*
-   * ЧЕМ ПРЕДЪЯВЛЯЮТ И НА КАКИХ УСЛОВИЯХ — СВОИМ ХУКОМ (Р2, Р3, Р10): способ подачи, страницы счёта
-   * и заявление об освобождении. Здесь остаётся СОСТАВ и то, куда он уходит; там — чем ревизия
-   * будет вообще и собирают ли под ней подпись. Разрез тот же, что между строками и разметкой:
-   * вместе эти две темы читались бы как одна, каковой они не являются.
+   * HOW THE REVISION IS SUBMITTED AND ON WHICH TERMS IS A HOOK OF ITS OWN (R2, R3, R10): the
+   * submission method, the invoice pages and the exemption declaration. Here stays the COMPOSITION
+   * and where it goes; there — what the revision is at all and whether a signature is collected.
    */
   const presentation = useEstimatePresentation({
     request,
@@ -124,92 +125,90 @@ export function useEstimateEditor({
     forceDocument: directDocument,
     forceExemption: workDone,
   });
-  const { exemptionBody } = presentation;
 
   const session = useRecordSession({
     open: !!request,
     id: request?.id ?? null,
     data: request ?? undefined,
     version: (r: ServiceRequestDto) => r.version,
-    isDirty: () =>
-      rows !== filled?.rows || mode !== filled?.mode || comment !== '' || presentation.changed,
+    isDirty: () => {
+      const now = composition();
+      return (
+        now.rows !== filled.current?.rows ||
+        now.mode !== filled.current?.mode ||
+        now.comment !== '' ||
+        presentation.changed
+      );
+    },
     fill: (r, reason) => {
-      const { mode: startMode, rows: startRows } = estimateFill(r.items, breakdown);
+      const start = estimateFill(r.items, breakdown);
       // Our own draft came back: the rows are refilled only if not edited since they were sent; the
       // comment and the submission method are not part of a draft and stay as they are.
-      if (reason === 'own' && rows !== sentRows.current) return;
-      setMode(startMode);
-      setRows(startRows);
-      setFilled({ rows: startRows, mode: startMode });
-      if (reason === 'own') return;
-      setComment('');
-      presentation.reset();
+      if (reason === 'own') {
+        if (form.getFieldValue('rows') !== sentRows.current) return;
+        form.setFieldsValue(start);
+      } else {
+        // Reset first: validation marks belong to the previous fill.
+        form.resetFields();
+        form.setFieldsValue({ ...start, comment: '' });
+        presentation.reset();
+      }
+      filled.current = { rows: form.getFieldValue('rows'), mode: start.mode };
+      rerender();
     },
   });
   // Only behind an open window: every command below is sent after the session has filled.
-  const version = session.version ?? 0;
   const commands = useEstimateCommands({
     request,
-    version,
+    version: session.version ?? 0,
     accept: session.accept,
-    composition: () => ({ rows, mode, comment }),
+    composition,
     markSent: () => {
-      sentRows.current = rows;
+      sentRows.current = form.getFieldValue('rows');
     },
     files: presentation.files,
     exemption: presentation.exemption,
-    exemptionBody,
+    exemptionBody: presentation.exemptionBody,
     directDocument,
     workDone,
     onClose,
     onDocumentSubmitted,
   });
 
-  /*
-   * Чего не хватает набранному — считается ЗДЕСЬ, а объявляется человеку в окне (ADR 0094 и его
-   * исключение в воротах `check-form-blockers`). Разделено намеренно: полей формы у окна нет,
-   * помечать нечем, и тост про пропуск разрешён поимённо ОДНОМУ файлу — тому, где живёт разметка.
-   * Скажи о пропуске хук, правило пришлось бы ослаблять ещё на один файл, а оно и заведено затем,
-   * чтобы такие послабления были видны.
+  /**
+   * The rules of the named fields (every mounted field when omitted). A refusal goes the way of
+   * `useFormBlockers`: the fields are marked, the screen moves to the first one and they flash.
    */
-  const issue = estimateIssue(rows, mode);
-  /*
-   * Отдельный ответ для черновика (дефект Д1 тестовой волны). Черновик по-прежнему сохраняют
-   * незаконченным — это его назначение, — но в свободном режиме начатая запись без стоимости легла
-   * бы в базу нулём и при следующем открытии стала бы готовым значением, предъявляемым уже без
-   * единого вопроса. Дыра закрывается на первом шаге, а не на втором.
-   */
-  const draftIssue = estimateDraftIssue(rows, mode);
-  /*
-   * Чего не хватает документной подаче — ровно одного: самого документа. Ни суммы, ни описания,
-   * ни реквизитов счёта у неё не спрашивают вовсе (ответы В5 и В13), и спросить их здесь значило
-   * бы придумать требование, которого нет ни в схеме, ни на сервере.
-   */
+  const validated = (names?: EstimateFieldPath[]): Promise<boolean> =>
+    form.validateFields(names as Parameters<typeof form.validateFields>[0]).then(
+      () => true,
+      (info: Parameters<NonNullable<typeof blockers.formProps.onFinishFailed>>[0]) => {
+        if (info?.errorFields?.length) blockers.formProps.onFinishFailed?.(info);
+        return false;
+      },
+    );
 
   return {
+    form,
+    blockers: blockers.formProps,
     /** Someone else's newer request over a changed window: the notice and its "Reload". */
     staleRecord: { stale: session.stale, reload: session.reload },
     rows,
     mode,
-    comment,
-    setComment,
     /*
-     * Способ подачи и заявление об освобождении отдаются наружу как есть: разметке нужны ровно те
-     * же признаки, которыми они считаются, а переименованная по дороге копия разошлась бы с ними
-     * на первой же правке.
+     * The submission method and the declaration go out as they are: the markup needs exactly the
+     * signs they are computed from, and a copy renamed on the way would diverge at the first edit.
      */
     ...presentation,
-    /** Что не так с набранным: в свободном режиме спрашивается описание и стоимость, не графы. */
-    issue,
-    /** То же для черновика: пустая запись законна, начатая без стоимости — нет (Д1). */
-    draftIssue,
+    /** The first gap of the composition, for the line under the buttons. */
+    issue: estimateIssue(rows, mode),
     /**
-     * Набрано ли хоть что-то — по строкам, КОТОРЫЕ УЙДУТ, а не по тем, что лежат в состоянии.
-     * Разница появилась вместе со свободным режимом: он держит свою строку всегда, и нетронутая
-     * она означает пустой объём работ. Спроси гарантийная кнопка `rows.length`, она гасла бы в
-     * только что открытом окне — ровно там, где гарантийный ремонт и предъявляют.
+     * Whether anything is typed — by the rows THAT WILL LEAVE, not by the rows in the store. The
+     * free mode always keeps its row, and untouched it means an empty scope of work; asked by
+     * `rows.length`, the warranty button would go dark in a freshly opened window — exactly where
+     * the warranty repair is submitted.
      */
-    filled: saved.length > 0,
+    filled: rowsForSave(rows, mode).length > 0,
     total: rowsTotal(rows),
     locked,
     pending: commands.pending,
@@ -217,35 +216,27 @@ export function useEstimateEditor({
     warrantyPending: commands.warrantyPending,
     breakdownPending: commands.breakdownPending,
     documentPending: commands.documentPending,
-    /*
-     * Смена режима (Р8). В свободный режим состав ПРИВОДИТСЯ, а не просто показывается двумя
-     * полями: количество и вид у единственной строки становятся теми, какими их подставит портал,
-     * — иначе итог окна считался бы по очищенному количеству и показывал ноль под заполненной
-     * стоимостью.
-     *
-     * Обратно приводить нечего — описание уже лежит наименованием, стоимость ценой, — но НЕТРОНУТАЯ
-     * запись при уходе выбрасывается: свободный режим держит свою строку всегда, и, не выброси мы
-     * её, человек, заглянувший в «Одной строкой» и вернувшийся, обнаружил бы в «Услугах» пустую
-     * строку, которой не добавлял.
-     */
+    /** A switch of the input mode rewrites the rows in the same step (`switchedRows`, R8). */
     switchMode: (next: EstimateMode) => {
-      setMode(next);
-      setRows((prev) => switchedRows(prev, next));
+      form.setFieldsValue({ mode: next, rows: switchedRows(composition().rows, next) });
+      rerender();
     },
-    addRow: (kind: ServiceItemKind) => setRows((prev) => [...prev, newEstimateRow(kind)]),
-    changeRow: (key: string, patch: Partial<EstimateRow>) =>
-      setRows((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row))),
-    removeRow: (key: string) => setRows((prev) => prev.filter((row) => row.key !== key)),
     /**
-     * Отправка состава: черновиком либо с предъявлением. Полноту набранного спрашивает окно
-     * (`issue`) — черновик уходит и неполным, это законный незаконченный набор, а предъявление
-     * окно не пускает вовсе.
+     * The composition leaves as a draft or with the submission. A submission asks every rule; a
+     * draft leaves unfinished — that is a lawful unfinished set — except a started free record
+     * without a price (`draftFieldsToCheck`, defect D1).
      */
-    submit: (asDraft: boolean) => commands.save(!asDraft),
-    /** Предъявление счётом: полноту (есть ли страницы) спрашивает окно — сюда приходит готовое. */
+    submit: async (asDraft: boolean) => {
+      const { rows: now, mode: nowMode } = composition();
+      if (await validated(asDraft ? draftFieldsToCheck(now, nowMode) : undefined)) {
+        commands.save(!asDraft);
+      }
+    },
+    /** The invoice: its only requirement (a page) locks the button, so nothing is validated here. */
     submitDocument: commands.submitDocument,
     runWarranty: commands.runWarranty,
-    /** Раскладка по графам: полноту так же спрашивает окно — сюда приходит уже проверенное. */
-    runBreakdown: commands.runBreakdown,
+    runBreakdown: async () => {
+      if (await validated()) commands.runBreakdown();
+    },
   };
 }

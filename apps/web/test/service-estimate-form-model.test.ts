@@ -11,7 +11,7 @@ import {
   warrantySubmitBody,
 } from '../src/features/estimate-editor/model/estimateForm';
 import {
-  estimateDraftIssue,
+  draftFieldsToCheck,
   estimateIssue,
   FREE_PRICE_RULES,
   ROWS_LIST_RULES,
@@ -185,12 +185,16 @@ describe('estimate rules', () => {
     expect(estimateIssue([row({ unitPrice: 0 })], 'rows')).toBeNull();
   });
 
-  it('a draft refuses only a started free record', () => {
-    expect(estimateDraftIssue([row({ name: '', unitPrice: null })], 'free')).toBeNull();
-    expect(estimateDraftIssue([row({ unitPrice: null })], 'free')).toBe('Укажите стоимость заказа');
+  it('a draft checks only a started free record, and then both of its fields', () => {
+    expect(draftFieldsToCheck([row({ name: '', unitPrice: null })], 'free')).toEqual([]);
+    expect(draftFieldsToCheck([row({ name: '', unitPrice: 0 })], 'free')).toEqual([
+      ['rows', 0, 'name'],
+      ['rows', 0, 'unitPrice'],
+    ]);
+    expect(draftFieldsToCheck([row({ unitPrice: null })], 'free')).toHaveLength(2);
     expect(
-      estimateDraftIssue([row({ name: '', unitPrice: null, quantity: null })], 'rows'),
-    ).toBeNull();
+      draftFieldsToCheck([row({ name: '', unitPrice: null, quantity: null })], 'rows'),
+    ).toEqual([]);
   });
 
   it('the form rules reject with the same words', async () => {

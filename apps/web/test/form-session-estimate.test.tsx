@@ -133,3 +133,46 @@ describe('own save of the window', () => {
     expect((http.lastCall(SUBMIT)!.body as { version: number }).version).toBe(V + 1);
   });
 });
+
+describe('a window by columns', () => {
+  // Two rows do not fit the free record: the window opens as a `Form.List` (Q10). Its "changed" is
+  // the identity of the stored rows array, and the list itself must not move it.
+  const byColumns = (version: number, last: string): ServiceRequestDto => ({
+    ...REQUEST,
+    version,
+    items: [item('Диагностика'), { ...item(last), id: 'sri-2' }],
+  });
+  const names = () =>
+    (screen.getAllByLabelText('Услуга: наименование') as HTMLTextAreaElement[]).map(
+      (el) => el.value,
+    );
+
+  it('untouched, it follows the reread silently', async () => {
+    mockHttp({});
+    const { update } = renderWithProps(
+      EstimateEditorModal,
+      { request: byColumns(V, 'Чистка') as ServiceRequestDto | null, onClose: () => {} },
+      { user: EXECUTOR },
+    );
+    await waitFor(() => expect(names()).toEqual(['Диагностика', 'Чистка']));
+
+    update({ request: byColumns(V + 1, 'Смазка') });
+    await waitFor(() => expect(names()).toEqual(['Диагностика', 'Смазка']));
+    expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  it('a removed row is a change: the reread shows the notice and keeps the composition', async () => {
+    mockHttp({});
+    const { update } = renderWithProps(
+      EstimateEditorModal,
+      { request: byColumns(V, 'Чистка') as ServiceRequestDto | null, onClose: () => {} },
+      { user: EXECUTOR },
+    );
+    await waitFor(() => expect(names()).toEqual(['Диагностика', 'Чистка']));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Удалить строку' })[1]!);
+
+    update({ request: byColumns(V + 1, 'Смазка') });
+    expect(await screen.findByText(NOTICE)).toBeDefined();
+    expect(names()).toEqual(['Диагностика']);
+  });
+});

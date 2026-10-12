@@ -1,21 +1,21 @@
 import { Space, Typography } from 'antd';
 import type { EstimateMode, EstimateRow } from '../model/rows';
 import { EstimateFreeFields, EstimateModeSwitch } from './EstimateFreeMode';
-import { EstimateRowsGroup } from './EstimateRows';
-import type { ServiceItemKind } from '@technic/contracts';
+import { EstimateRowsList } from './EstimateRows';
 
 /**
- * СОСТАВ ОБЪЁМА РАБОТ НА ЭКРАНЕ: переключатель способа набора, сами поля и итог.
+ * THE COMPOSITION ON SCREEN: the switch of the input mode, the fields themselves and the total.
  *
- * Отдельным куском от окна потому, что целиком уходит с экрана у подачи счётом (Р10 плана
- * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`): у документной ревизии строк нет
- * вовсе, и всё перечисленное — переключатель, графы, описание, стоимость, итог — в ней не
- * заполняют. Собранный в одном месте, он и убирается одним условием; разложенный по окну, он
- * оставил бы за собой то поле стоимости, о котором забыли.
+ * A piece of its own because it leaves the screen whole for the submission by invoice (R10 of
+ * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`): a document revision has no rows at
+ * all, and everything listed — the switch, the columns, the description, the price, the total — is
+ * not filled there. Gathered in one place, it is removed by one condition; spread over the window,
+ * it would leave behind the price field somebody forgot.
  *
- * ПОЛЯ УБИРАЮТСЯ, А НЕ ГАСЯТСЯ, и это не вкусовщина: у окна уже есть настоящий погашенный режим —
- * замок висящего предъявления, — и означает он другое («сначала отзовите предъявление»). Два
- * состояния, выглядящих одинаково, отправили бы человека искать несуществующую кнопку.
+ * THE FIELDS ARE REMOVED, NOT DISABLED, and that is not taste: the window already has a real
+ * disabled state — the lock of a pending submission — and it means something else ("take the
+ * submission back first"). Two states looking alike would send the person looking for a button
+ * that does not exist.
  */
 export function EstimateComposition({
   mode,
@@ -23,62 +23,35 @@ export function EstimateComposition({
   total,
   disabled = false,
   onSwitchMode,
-  onAddRow,
-  onChangeRow,
-  onRemoveRow,
 }: {
   mode: EstimateMode;
+  /** The watched rows: the switch decides by them whether the road back is open. */
   rows: readonly EstimateRow[];
-  /** Итог считается по тем же строкам, что уедут на сервер, — разойтись им нечем. */
+  /** The total is counted from the same rows that will leave — they cannot diverge. */
   total: number;
-  /** Правка закрыта висящим предъявлением (Р9). */
+  /** Editing is closed by a pending submission (R9). */
   disabled?: boolean;
   onSwitchMode: (next: EstimateMode) => void;
-  onAddRow: (kind: ServiceItemKind) => void;
-  onChangeRow: (key: string, patch: Partial<EstimateRow>) => void;
-  onRemoveRow: (key: string) => void;
 }) {
-  const freeRow = rows[0];
   return (
     <>
-      {/* Переключатель стоит НАД составом: он меняет то, что под ним, и решение о способе ввода
-          принимают до набора, а не дочитав до итога. */}
+      {/* The switch stands ABOVE the composition: it changes what is under it, and the input mode
+          is decided before typing, not after reading down to the total. */}
       <Space size={8}>
         <Typography.Text type="secondary">Как набрать:</Typography.Text>
         <EstimateModeSwitch mode={mode} rows={rows} disabled={disabled} onChange={onSwitchMode} />
       </Space>
 
-      {mode === 'free' && freeRow ? (
-        <EstimateFreeFields
-          row={freeRow}
-          disabled={disabled}
-          onChange={(patch) => onChangeRow(freeRow.key, patch)}
-        />
+      {mode === 'free' && rows[0] ? (
+        <EstimateFreeFields disabled={disabled} />
       ) : (
-        <>
-          <EstimateRowsGroup
-            kind="part"
-            disabled={disabled}
-            rows={rows.filter((row) => row.kind === 'part')}
-            onAdd={onAddRow}
-            onChange={onChangeRow}
-            onRemove={onRemoveRow}
-          />
-          <EstimateRowsGroup
-            kind="service"
-            disabled={disabled}
-            rows={rows.filter((row) => row.kind === 'service')}
-            onAdd={onAddRow}
-            onChange={onChangeRow}
-            onRemove={onRemoveRow}
-          />
-        </>
+        <EstimateRowsList disabled={disabled} />
       )}
 
-      {/* Итог — строка, а не поле: его считает сумма строк, и разойтись с ней он не может. У подачи
-          счётом его нет вовсе, и это не пропуск разметки: строк там ноль, а посчитанный по ним
-          «0,00 ₽» читался бы как цена работ — ровно та ошибка, которую §8 плана велит вывести
-          отовсюду, где сумма ещё неизвестна. */}
+      {/* The total is a line, not a field: the sum of the rows counts it, and it cannot diverge
+          from them. The submission by invoice has none at all, and that is no gap in the markup:
+          it has zero rows, and a "0,00 ₽" counted from them would read as the price of the works —
+          exactly the error §8 of the plan removes wherever the sum is not known yet. */}
       <Space size={8} style={{ justifyContent: 'flex-end', width: '100%' }}>
         <Typography.Text type="secondary">Итого по объёму работ:</Typography.Text>
         <Typography.Text strong style={{ fontSize: 16 }}>

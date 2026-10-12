@@ -57,8 +57,8 @@ export function EstimateEditorFooter({
   return (
     <>
       {/*
-       * THE SUBMISSION BY INVOICE HAS A SHORTER FOOTER, AND BOTH MISSING BUTTONS ARE MISSING FOR A
-       * REASON (R10). It has no draft: there is nothing to save — the invoice is already in storage,
+       * THE SUBMISSION BY INVOICE HAS A SHORTER FOOTER, AND BOTH MISSING BUTTONS ARE MISSING
+       * FOR A REASON (R10). It has no draft: there is nothing to save — the invoice is already in storage,
        * and the mode types no rows that would become a draft, so the press would carry away the
        * hidden composition the person does not see. The warranty repair is the third revision
        * format, not combinable with a document by the type of the body: offered next to the

@@ -131,18 +131,37 @@ const estimateBody = (http: HttpMock): Record<string, unknown> =>
   http.lastCall('PUT /service-requests/:id/estimate')?.body as Record<string, unknown>;
 
 /**
- * Что окно сказало ПО НАЖАТИЮ — тостом, а не строкой под кнопкой.
+ * What the window said ON THE PRESS — the success toast, not the line under the button.
  *
- * Различать их обязательно: подсказка о пропуске висит в окне всё время, пока пропуск есть, и
- * найденная поиском по тексту она была бы зелёной даже там, где кнопку никто не нажимал. Тост же
- * появляется ровно от нажатия — он и есть доказательство, что окно отказало (либо, наоборот,
- * отправило).
+ * They must be told apart: the hint about a gap hangs in the window as long as the gap exists, and
+ * found by text search it would be green even where nobody pressed the button. A toast appears
+ * exactly from the press — it is the proof that the window sent.
  */
 async function toastText(): Promise<string> {
   return await waitFor(() => {
     const notice = document.querySelector('.ant-message-notice-title')?.textContent;
     if (!notice) throw new Error('окно промолчало: тоста после нажатия нет');
     return notice;
+  });
+}
+
+/**
+ * What a REFUSED press marked: the reasons under the fields at fault (ADR 0094).
+ *
+ * The proof of the press is the flash class `useFormBlockers` puts on the window body when a press
+ * is refused: a field's mark may also come from its rule while typing, and on its own it would be
+ * green where nobody pressed anything. The reasons are read only after the flash.
+ */
+async function refusal(): Promise<string[]> {
+  return await waitFor(() => {
+    if (!document.querySelector('.form-blockers--a, .form-blockers--b')) {
+      throw new Error('окно не отказало: вспышки полей после нажатия нет');
+    }
+    const reasons = [...document.querySelectorAll('.ant-form-item-explain-error')].map(
+      (el) => el.textContent ?? '',
+    );
+    if (reasons.length === 0) throw new Error('окно отказало, но не пометило ни одного поля');
+    return reasons;
   });
 }
 
@@ -223,9 +242,8 @@ describe('без стоимости свободный режим не отпр�
     fireEvent.change(description(), { target: { value: LETTER } });
     fireEvent.click(submitButton());
 
-    // Пропуск назван словами — исключение ворот `check-form-blockers` выдано этому окну поимённо:
-    // полей формы у него нет, помечать нечем, и список пропусков читается одной строкой.
-    expect(await toastText()).toBe('Укажите стоимость заказа');
+    // The gap is named under the field at fault (ADR 0094), not by a toast in the corner.
+    expect(await refusal()).toEqual(['Укажите стоимость заказа']);
     expect(http.countOf('PUT /service-requests/:id/estimate')).toBe(0);
     expect(http.countOf('PATCH /service-requests/:id/estimate/submit')).toBe(0);
   });
@@ -243,7 +261,7 @@ describe('без стоимости свободный режим не отпр�
      * экране нет вовсе, и требовать их значило бы отказывать по невидимому (находка Н6). Отказ
      * называет то, что видно: описание перечня.
      */
-    expect(await toastText()).toBe('Опишите объём работ: что входит в заказ');
+    expect(await refusal()).toEqual(['Опишите объём работ: что входит в заказ']);
     expect(http.countOf('PUT /service-requests/:id/estimate')).toBe(0);
   });
 
@@ -292,7 +310,7 @@ describe('черновик свободного режима: пустой за�
      * он читался бы как два разных правила. Тишина в сети здесь важнее текста — до починки именно
      * этот запрос и уносил ноль в базу.
      */
-    expect(await toastText()).toBe('Укажите стоимость заказа');
+    expect(await refusal()).toEqual(['Укажите стоимость заказа']);
     expect(http.countOf('PUT /service-requests/:id/estimate')).toBe(0);
     expect(http.countOf('PATCH /service-requests/:id/estimate/submit')).toBe(0);
   });
@@ -349,9 +367,9 @@ describe('ноль в свободном режиме не проходит ни
     fireEvent.change(price(), { target: { value: '0' } });
     fireEvent.click(submitButton());
 
-    expect(await toastText()).toBe(
+    expect(await refusal()).toEqual([
       'Стоимость заказа больше нуля: работы без оплаты предъявляют кнопкой «Гарантийный ремонт без оплаты»',
-    );
+    ]);
     expect(http.countOf('PATCH /service-requests/:id/estimate/submit')).toBe(0);
     expect(http.countOf('PUT /service-requests/:id/estimate')).toBe(0);
   });
@@ -370,7 +388,7 @@ describe('ноль в свободном режиме не проходит ни
     fireEvent.change(price(), { target: { value: '0' } });
     fireEvent.click(draftButton());
 
-    expect(await toastText()).toContain('Стоимость заказа больше нуля');
+    expect((await refusal()).join(' ')).toContain('Стоимость заказа больше нуля');
     expect(http.countOf('PUT /service-requests/:id/estimate')).toBe(0);
   });
 });

@@ -95,16 +95,18 @@ export function useEstimateCommands({
       accept(result.version);
       refresh();
       if (result.submitted) {
-        // Not "sent": the request went nowhere — it stays "В работе" and waits for a signature (R8).
+        // Not "sent": the request went nowhere — it stays "В работе" and waits for a signature
+        // (R8).
         message.success(submittedMessage());
         onClose();
       } else {
         message.success('Объём работ сохранён');
       }
     },
-    // 409 is an ordinary answer here: the request moved while the composition was typed. Its second
-    // cause is a submission left hanging from another screen: the lock disables the buttons, but
-    // someone else's action fits between opening the window and pressing, and the server explains it.
+    // 409 is an ordinary answer here: the request moved while the composition was typed. Its
+    // second cause is a submission left hanging from another screen: the lock disables the
+    // buttons, but someone else's action fits between opening the window and pressing, and the
+    // server explains it.
     onError: failed,
   });
 

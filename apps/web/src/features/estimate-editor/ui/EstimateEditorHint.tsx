@@ -15,8 +15,9 @@ const LOCKED_HINT =
 
 /**
  * How the breakdown differs from an edit — in words and before the press (R2, customer answer V9
- * of 09.09.2026). The revision is raised by the route, not by the person, and the person must learn
- * it here: the agreed estimate carries a signature, and "Разложить" sends the request for a new one.
+ * of 09.09.2026). The revision is raised by the route, not by the person, and the person must
+ * learn it here: the agreed estimate carries a signature, and "Разложить" sends the request for a
+ * new one.
  */
 const BREAKDOWN_HINT =
   'Раскладка переиздаёт объём работ: у согласованной ревизии поднимется номер, подпись снимется, ' +
@@ -57,10 +58,10 @@ export function EstimateEditorHint({
   warrantyMode: boolean;
 }) {
   /*
-   * A DOCUMENT revision is broken down (R8): no rows on screen and none will come — they are carried
-   * over from the invoice. The format is read from the card's field, not inferred from "zero rows":
-   * an empty draft looks the same, and the hint would send the coordinator to look for a document
-   * that does not exist.
+   * A DOCUMENT revision is broken down (R8): no rows on screen and none will come — they are
+   * carried over from the invoice. The format is read from the card's field, not inferred from
+   * "zero rows": an empty draft looks the same, and the hint would send the coordinator to look
+   * for a document that does not exist.
    */
   const documentBreakdown = breakdown && request.estimateFormat === 'document';
 

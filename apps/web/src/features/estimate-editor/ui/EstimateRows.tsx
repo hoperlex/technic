@@ -1,133 +1,200 @@
-import { Button, Col, Input, InputNumber, Row, Typography } from 'antd';
+import {
+  Button,
+  Col,
+  Form,
+  Input,
+  InputNumber,
+  Row,
+  Typography,
+  type FormListFieldData,
+} from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { serviceItemKindLabels, type ServiceItemKind } from '@technic/contracts';
 import { formatMoney } from '@shared/lib';
-import { rowAmount, type EstimateRow } from '../model/rows';
+import { newEstimateRow, rowAmount, type EstimateRow } from '../model/rows';
+import {
+  ROWS_LIST_RULES,
+  ROW_NAME_RULES,
+  ROW_PRICE_RULES,
+  ROW_QUANTITY_RULES,
+} from '../model/estimateRules';
+
+/** A cell's field sits in the grid row: the form's own bottom gap would push the rows apart. */
+const CELL = { marginBottom: 0 };
+
+const nullable = (value: number | null | undefined) => value ?? null;
 
 /**
- * Группа объёма работ: «Запчасти» или «Услуги» (§9.3). Группы разведены не для красоты — по ним
- * читают объём: заказчик спрашивает «что за детали» отдельно от «сколько стоит работа», и в общем
- * списке эти два вопроса перемешиваются.
+ * The composition by columns: one `Form.List` shown as two groups.
  *
- * Поля строки на телефоне переносятся сами (`Row` с разными долями на xs и sm): редактор
- * открывают и с телефона — сервис вводит объём работ, стоя у аппарата.
+ * ONE LIST, TWO GROUPS. The body keeps the order in which the rows were added (a part added after a
+ * service goes after it), while the screen reads parts and services apart (§9.3). Two lists would
+ * reorder the body by group; one list filtered by kind keeps both orders as they were.
+ *
+ * The kind and the amount are read from the store in render: the window re-renders on every change
+ * of the rows (the editor watches them for the total), so the amount follows each keystroke.
  */
-export function EstimateRowsGroup({
+export function EstimateRowsList({ disabled = false }: { disabled?: boolean }) {
+  const form = Form.useFormInstance();
+  const rowAt = (name: number) => form.getFieldValue(['rows', name]) as EstimateRow | undefined;
+  return (
+    <Form.List name="rows" rules={ROWS_LIST_RULES}>
+      {(fields, { add, remove }, { errors }) => {
+        const group = (kind: ServiceItemKind) => (
+          <EstimateRowsGroup
+            kind={kind}
+            fields={fields.filter((field) => rowAt(field.name)?.kind === kind)}
+            rowAt={rowAt}
+            disabled={disabled}
+            onAdd={() => add(newEstimateRow(kind))}
+            onRemove={remove}
+          />
+        );
+        return (
+          <>
+            {group('part')}
+            {group('service')}
+            {/* "Add at least one row" belongs to the list, not to a cell: it goes under both
+                groups. */}
+            {errors.length > 0 && (
+              <Form.Item style={CELL}>
+                <Form.ErrorList errors={errors} />
+              </Form.Item>
+            )}
+          </>
+        );
+      }}
+    </Form.List>
+  );
+}
+
+/**
+ * A group of the scope of work: "Запчасти" or "Услуги" (§9.3). The groups are not for looks — the
+ * scope is read by them: the customer asks "which parts" apart from "what does the work cost", and
+ * one list mixes the two questions.
+ *
+ * The row's fields wrap by themselves on a phone (`Row` with other shares on xs and sm): the editor
+ * is opened from a phone too — the service types the scope standing at the machine.
+ */
+function EstimateRowsGroup({
   kind,
-  rows,
-  disabled = false,
+  fields,
+  rowAt,
+  disabled,
   onAdd,
-  onChange,
   onRemove,
 }: {
   kind: ServiceItemKind;
-  rows: EstimateRow[];
+  fields: FormListFieldData[];
+  rowAt: (name: number) => EstimateRow | undefined;
   /**
-   * Правка закрыта висящим предъявлением (Р9). Поля гасятся, а не прячутся: состав остаётся
-   * виден — по нему и решают, отзывать ли предъявление, — но набранное в нём сохранить нечем, и
-   * живое поле обещало бы правку, которую сервер не примет.
+   * Editing is closed by a pending submission (R9). The fields are disabled, not hidden: the
+   * composition stays visible — it is what one decides by whether to take the submission back —
+   * but nothing typed in it could be saved, and a live field would promise an edit the server
+   * refuses.
    */
-  disabled?: boolean;
-  onAdd: (kind: ServiceItemKind) => void;
-  onChange: (key: string, patch: Partial<EstimateRow>) => void;
-  onRemove: (key: string) => void;
+  disabled: boolean;
+  onAdd: () => void;
+  onRemove: (name: number) => void;
 }) {
   return (
     <div style={{ marginBottom: 16 }}>
       <Typography.Text strong>{kind === 'part' ? 'Запчасти' : 'Услуги'}</Typography.Text>
-      {rows.length === 0 && (
+      {fields.length === 0 && (
         <div>
           <Typography.Text type="secondary">
             {kind === 'part' ? 'Деталей не требуется' : 'Работы не заведены'}
           </Typography.Text>
         </div>
       )}
-      {rows.map((row) => (
-        <Row key={row.key} gutter={8} align="middle" style={{ marginTop: 8 }}>
-          <Col xs={24} sm={9}>
-            {/* Наименование МНОГОСТРОЧНОЕ и длинное (план
-                `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, Р1): предел вырос
-                до 2000 символов, и переводы строк внутри разрешены — это одно и то же поле, в
-                котором свободный режим держит перечень из письма подрядчика. Однострочный `Input`
-                показывал бы такую запись в щёлочку и терял бы переводы строк при правке: увидеть
-                их было бы негде, а стереть — легко.
+      {fields.map((field) => {
+        const row = rowAt(field.name);
+        return (
+          <Row key={field.key} gutter={8} align="middle" style={{ marginTop: 8 }}>
+            <Col xs={24} sm={9}>
+              {/* The name is MULTI-LINE and long (plan
+                  `docs/office-equipment-free-estimate-and-executor-scope-plan.md`, R1): the limit
+                  grew to 2000 characters with line breaks inside — the same field the free mode
+                  keeps the contractor's list in. A one-line `Input` would show such an entry
+                  through a slit and lose its line breaks on edit.
 
-                `autoSize` вместо фиксированной высоты: у обычной строки («ролик подачи») поле
-                остаётся ровно в одну строку и колонку не раздувает, а длинная растёт до шести —
-                дальше уже прокрутка внутри поля. Соседние колонки при этом выровнены по центру
-                (`align="middle"` у ряда), то есть растущее поле их не сдвигает, а раздвигает ряд. */}
-            <Input.TextArea
-              disabled={disabled}
-              value={row.name}
-              maxLength={2000}
-              autoSize={{ minRows: 1, maxRows: 6 }}
-              placeholder={
-                kind === 'part' ? 'Например, ролик подачи' : 'Например, замена узла подачи'
-              }
-              aria-label={`${serviceItemKindLabels[kind]}: наименование`}
-              onChange={(e) => onChange(row.key, { name: e.target.value })}
-            />
-          </Col>
-          <Col xs={8} sm={3}>
-            <InputNumber
-              style={{ width: '100%' }}
-              disabled={disabled}
-              min={0.01}
-              max={9999}
-              value={row.quantity}
-              placeholder="Кол-во"
-              aria-label="Количество"
-              onChange={(v) => onChange(row.key, { quantity: v })}
-            />
-          </Col>
-          <Col xs={8} sm={4}>
-            <InputNumber
-              style={{ width: '100%' }}
-              disabled={disabled}
-              min={0}
-              max={99_999_999}
-              value={row.unitPrice}
-              placeholder="Цена"
-              aria-label="Цена за единицу"
-              onChange={(v) => onChange(row.key, { unitPrice: v })}
-            />
-          </Col>
-          <Col xs={8} sm={4}>
-            {/* Гарантия обещается сроком, а не датой: дату сервер посчитает от дня выполнения
-                работ — до закрытия заявки её попросту нет. */}
-            <InputNumber
-              style={{ width: '100%' }}
-              disabled={disabled}
-              min={1}
-              max={120}
-              value={row.warrantyMonths}
-              placeholder="Гар., мес."
-              aria-label="Срок гарантии в месяцах"
-              onChange={(v) => onChange(row.key, { warrantyMonths: v ?? null })}
-            />
-          </Col>
-          <Col xs={16} sm={3} style={{ textAlign: 'right' }}>
-            <Typography.Text>{formatMoney(rowAmount(row))}</Typography.Text>
-          </Col>
-          <Col xs={8} sm={1} style={{ textAlign: 'right' }}>
-            <Button
-              type="text"
-              danger
-              disabled={disabled}
-              icon={<DeleteOutlined />}
-              aria-label="Удалить строку"
-              onClick={() => onRemove(row.key)}
-            />
-          </Col>
-        </Row>
-      ))}
+                  `autoSize` instead of a fixed height: an ordinary row stays one line high, a long
+                  one grows up to six — further it scrolls inside the field. The neighbouring
+                  columns are centred (`align="middle"`), so a growing field widens the row instead
+                  of shifting them. */}
+              <Form.Item name={[field.name, 'name']} rules={ROW_NAME_RULES} style={CELL}>
+                <Input.TextArea
+                  disabled={disabled}
+                  maxLength={2000}
+                  autoSize={{ minRows: 1, maxRows: 6 }}
+                  placeholder={
+                    kind === 'part' ? 'Например, ролик подачи' : 'Например, замена узла подачи'
+                  }
+                  aria-label={`${serviceItemKindLabels[kind]}: наименование`}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={8} sm={3}>
+              <Form.Item name={[field.name, 'quantity']} rules={ROW_QUANTITY_RULES} style={CELL}>
+                <InputNumber
+                  style={{ width: '100%' }}
+                  disabled={disabled}
+                  min={0.01}
+                  max={9999}
+                  placeholder="Кол-во"
+                  aria-label="Количество"
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={8} sm={4}>
+              <Form.Item name={[field.name, 'unitPrice']} rules={ROW_PRICE_RULES} style={CELL}>
+                <InputNumber
+                  style={{ width: '100%' }}
+                  disabled={disabled}
+                  min={0}
+                  max={99_999_999}
+                  placeholder="Цена"
+                  aria-label="Цена за единицу"
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={8} sm={4}>
+              {/* A warranty is promised as a term, not a date: the server counts the date from the
+                  day the works are done — before the request is closed there is none. */}
+              <Form.Item name={[field.name, 'warrantyMonths']} normalize={nullable} style={CELL}>
+                <InputNumber
+                  style={{ width: '100%' }}
+                  disabled={disabled}
+                  min={1}
+                  max={120}
+                  placeholder="Гар., мес."
+                  aria-label="Срок гарантии в месяцах"
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={16} sm={3} style={{ textAlign: 'right' }}>
+              <Typography.Text>{formatMoney(row ? rowAmount(row) : 0)}</Typography.Text>
+            </Col>
+            <Col xs={8} sm={1} style={{ textAlign: 'right' }}>
+              <Button
+                type="text"
+                danger
+                disabled={disabled}
+                icon={<DeleteOutlined />}
+                aria-label="Удалить строку"
+                onClick={() => onRemove(field.name)}
+              />
+            </Col>
+          </Row>
+        );
+      })}
       <Button
         type="link"
         size="small"
         disabled={disabled}
         icon={<PlusOutlined />}
         style={{ paddingInlineStart: 0, marginTop: 4 }}
-        onClick={() => onAdd(kind)}
+        onClick={onAdd}
       >
         {kind === 'part' ? 'Добавить запчасть' : 'Добавить услугу'}
       </Button>

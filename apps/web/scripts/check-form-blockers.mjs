@@ -83,11 +83,6 @@ const ALLOWED = {
   // вместо него `ServiceRequestForm` значило бы снять правило со всех полей живой формы заявки.
   'pages/service/serviceMailNotice.ts':
     'судьба письма службе после удавшегося действия: заявка заведена, а служба не оповещена',
-  // The estimate editor keeps its table rows in state on purpose (the total is computed on the
-  // fly), and moving it onto a form is a separate decision: see ADR 0094, "Последствия". The
-  // close-works window named there with it has moved onto `Form.List` and left this list (Q7).
-  'features/estimate-editor/ui/EstimateEditorModal.tsx':
-    'редактор сметы: таблица строк ещё не переведена на форму',
   // Отказ относится к пустому заданию, а не к полю: чинить историю можно тремя независимыми
   // разделами — якорь машиниста, заполнение неизвестных дней, решение о хвосте, — и «не выбрано
   // ничего» не принадлежит ни одному из них. Пометить первый попавшийся значило бы указать

@@ -82,8 +82,12 @@ export function estimateIssue(rows: readonly EstimateRow[], mode: EstimateMode):
   return null;
 }
 
+/** A field of the form as antd names it: `['rows', 0, 'unitPrice']`. */
+export type EstimateFieldPath = (string | number)[];
+
 /**
- * What the portal refuses to save EVEN AS A DRAFT (test wave defect D1).
+ * The fields a DRAFT validates (test wave defect D1): none by columns, and in free mode the two
+ * fields of the record once typing has started.
  *
  * A draft is an unfinished composition, and saving one is its purpose — but in free mode
  * "unfinished" and "distorted" differ. The row leaves with the quantity and price the portal
@@ -99,13 +103,15 @@ export function estimateIssue(rows: readonly EstimateRow[], mode: EstimateMode):
  * a saved zero is equally visible, and the person reads it as a value instead of getting it in
  * place of a gap. The free mode has nowhere to show the gap: both of its fields look filled.
  */
-export function estimateDraftIssue(
+export function draftFieldsToCheck(
   rows: readonly EstimateRow[],
   mode: EstimateMode,
-): string | null {
-  if (mode !== 'free') return null;
-  if (rowsForSave(rows, mode).length === 0) return null;
-  return estimateIssue(rows, mode);
+): EstimateFieldPath[] {
+  if (mode !== 'free' || rowsForSave(rows, mode).length === 0) return [];
+  return [
+    ['rows', 0, 'name'],
+    ['rows', 0, 'unitPrice'],
+  ];
 }
 
 /** An antd rule from a field check: the check's words become the mark under the field. */

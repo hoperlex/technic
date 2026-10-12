@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App, Input, Typography } from 'antd';
+import { Form, Input, Typography } from 'antd';
 import {
   canCoordinateServiceRequests,
   type ServiceActionRequest,
@@ -25,6 +25,15 @@ import { EstimateExemption } from './EstimateExemption';
  * direct document submission, and completed work with automatic approval. The model hook owns
  * commands and revision locks; this component only selects the visible workflow. A pending
  * revision locks every door because an approver must sign exactly what was presented.
+ *
+ * The form is rendered WITHOUT a `<form>` element (`component={false}`). The window never sent
+ * anything on Enter, and a `<form>` would start doing it where a single one-line input is left —
+ * the price of the free record: the browser's implicit submission fires there. The buttons stay
+ * the only way out; the flash class of `useFormBlockers` goes on the body's wrapper instead.
+ *
+ * The form wraps the whole modal, not its body: the editor reads the store on every render, and
+ * the instance must be connected to a mounted `Form` while the window is closed as well (antd warns
+ * about a detached instance otherwise). The context reaches the body through the modal's portal.
  */
 export function EstimateEditorModal({
   request,
@@ -34,8 +43,8 @@ export function EstimateEditorModal({
   onClose,
 }: {
   /**
-   * `null` — окно закрыто. Открывается в «В работе»: до неё объёму работ взяться неоткуда, а
-   * после закрытия работ он уже не правится.
+   * `null` — the window is closed. It opens in "В работе": before it a scope of work has nowhere to
+   * come from, and after the works are closed it is not edited any more.
    */
   request: ServiceRequestDto | null;
   /**
@@ -44,17 +53,16 @@ export function EstimateEditorModal({
    */
   intent?: EstimateEditorIntent;
   /**
-   * Перевод карточки в то, чем её видят предикаты контрактов, и признаки назначения на неё —
-   * ГОТОВЫМИ ОТ ВЫЗЫВАЮЩЕГО (Р3): единственный такой перевод живёт на слое разделов
-   * (`serviceActionRow`, `serviceExecutorAssignment`), а второй, собранный окном, разошёлся бы с
-   * ним молча. Не передали — чекбокса освобождения нет: показанный не тому, он обещал бы денежное
-   * решение, за которым стоит 403.
+   * The card as the contracts' predicates see it and the assignment flags — READY FROM THE CALLER
+   * (R3): the only such translation lives on the pages layer (`serviceActionRow`,
+   * `serviceExecutorAssignment`), and a second one built by the window would silently diverge from
+   * it. Not passed — no exemption checkbox: shown to the wrong person, it would promise a money
+   * decision that stands on a 403.
    */
   actionRow?: ServiceActionRequest;
   assignment?: ServiceExecutorAssignment;
   onClose: () => void;
 }) {
-  const { message } = App.useApp();
   const { user } = useAuth();
   const breakdown = intent === 'breakdown';
   const directDocument = intent === 'document' || intent === 'work_done';
@@ -70,65 +78,35 @@ export function EstimateEditorModal({
     onDocumentSubmitted: workDone ? setSubmittedRequest : undefined,
   });
   /*
-   * Кому положены пояснения (Р11): признак считает вызывающий, а не `ServiceHint`, — слой
-   * сущностей `AuthContext` не видит, и правило живёт единственной функцией контрактов.
+   * Who gets the explanations (R11): the caller computes it, not `ServiceHint` — the entity layer
+   * does not see `AuthContext`, and the rule lives as the one contracts function.
    */
   const coordinator = canCoordinateServiceRequests(user);
   const warrantyMode = !!request?.warrantyClaim && !breakdown;
   const { locked, mode, rows, issue, pending } = editor;
+  const { className: blockersClass, ...blockersHandlers } = editor.blockers;
   /*
-   * ПОДАЧА СЧЁТОМ УБИРАЕТ ПОЛЯ С ЭКРАНА, А НЕ ГАСИТ ИХ (Р10). У окна уже есть настоящий погашенный
-   * режим — замок висящего предъявления, — и означает он совсем другое: «сначала отзовите
-   * предъявление». Два состояния, выглядящих одинаково, отправили бы человека искать несуществующую
-   * кнопку; здесь же полей не гасят, а не заполняют вовсе — их у документной ревизии нет.
+   * THE SUBMISSION BY INVOICE REMOVES THE FIELDS FROM THE SCREEN, IT DOES NOT DISABLE THEM (R10).
+   * The window already has a real disabled state — the lock of a pending submission — and it means
+   * something else: "take the submission back first". Two states looking alike would send the
+   * person looking for a button that does not exist.
    */
   const documentOn = editor.documentOn;
   /*
-   * Что мешает отправке ПРЯМО СЕЙЧАС: у документной подачи спрашивается один документ, у
-   * построчной — полнота состава. Строка под кнопкой одна, потому что вопрос один.
+   * What stands in the way of sending RIGHT NOW: the invoice asks for one document, the rows for a
+   * complete composition. One line under the buttons, because the question is one. A press marks
+   * the fields themselves (ADR 0094); the line stays as the summary visible before any press.
    */
   const problem = documentOn ? editor.documentIssue : issue;
 
-  /**
-   * Отказ по незаполненному — тостом, и это исключение записано в воротах поимённо (ADR 0094,
-   * `check-form-blockers`): полей формы у окна нет — состав живёт состоянием ради итога на лету, —
-   * помечать нечего, а список пропусков читается одной строкой под кнопкой. Стоит он ЗДЕСЬ, у
-   * разметки, а не в хуке: послабление ворот выдано этому файлу, и разъехавшись, оно потребовало
-   * бы второго.
-   */
-  const refuse = (problem: string | null): boolean => {
-    if (!problem) return false;
-    message.warning(problem);
-    return true;
-  };
   /*
-   * У ЧЕРНОВИКА СВОЙ ВОПРОС, А НЕ «БЕЗ ВОПРОСОВ» (дефект Д1 тестовой волны). Прежде здесь стояло
-   * `if (!asDraft && …)`: черновик уходил как есть — незаконченный набор законно сохранять. В
-   * свободном режиме это оказалось дырой: описание без стоимости уходило строкой с подставленным
-   * нулём, а при следующем открытии ноль приезжал готовым значением и предъявлялся уже молча. То
-   * есть «пусто = 0», отменённое ответом В10, возвращалось в два шага. Черновик остался
-   * черновиком: пустую свободную запись сохранять по-прежнему можно, начатую без стоимости —
-   * нельзя.
-   */
-  const submit = (asDraft: boolean) => {
-    if (refuse(asDraft ? editor.draftIssue : issue)) return;
-    editor.submit(asDraft);
-  };
-  /*
-   * Одна кнопка на два формата, потому что действие одно — «предъявить»: расходится не оно, а то,
-   * что уезжает в теле (строки либо страницы счёта, Р2). Второй кнопкой рядом окно спрашивало бы
-   * формат дважды — галочкой и нажатием.
+   * One button for two formats, because the action is one — "submit": what differs is what rides
+   * in the body (rows or invoice pages, R2). A second button next to it would ask for the format
+   * twice — by the checkbox and by the press.
    */
   const present = () => {
-    if (!documentOn) {
-      submit(false);
-      return;
-    }
-    editor.submitDocument();
-  };
-  const runBreakdown = () => {
-    if (refuse(issue)) return;
-    editor.runBreakdown();
+    if (documentOn) editor.submitDocument();
+    else void editor.submit(false);
   };
 
   if (submittedRequest) {
@@ -136,121 +114,120 @@ export function EstimateEditorModal({
   }
 
   return (
-    <ViewModal
-      title={estimateEditorModalTitle(request, intent)}
-      open={!!request}
-      onClose={onClose}
-      width={860}
-      destroyOnHidden
-      /*
-       * У раскладки подвал СВОЙ, а не общий с погашенными кнопками: ни черновика, ни предъявления
-       * у «Ведения» нет — прав на них у него не бывает вовсе, — и выключенные кнопки обещали бы
-       * действия, которых за этой дверью не существует.
-       */
-      footer={
-        <EstimateEditorFooter
-          breakdown={breakdown}
-          warrantyMode={warrantyMode}
-          documentOn={documentOn}
-          workDone={workDone}
-          directDocument={directDocument}
-          locked={locked}
-          filled={editor.filled}
-          pending={pending}
-          saving={editor.saving}
-          warrantyPending={editor.warrantyPending}
-          breakdownPending={editor.breakdownPending}
-          documentPending={editor.documentPending}
-          documentIssue={editor.documentIssue}
-          onBreakdown={runBreakdown}
-          onWarranty={editor.runWarranty}
-          onDraft={() => submit(true)}
-          onPresent={present}
-        />
-      }
-    >
-      {request && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <StaleRecordNotice session={editor.staleRecord} />
-          <EstimateEditorHint
-            request={request}
-            coordinator={coordinator}
-            locked={locked}
+    <Form form={editor.form} component={false} {...blockersHandlers}>
+      <ViewModal
+        title={estimateEditorModalTitle(request, intent)}
+        open={!!request}
+        onClose={onClose}
+        width={860}
+        destroyOnHidden
+        footer={
+          <EstimateEditorFooter
             breakdown={breakdown}
-            directDocument={directDocument}
-            workDone={workDone}
             warrantyMode={warrantyMode}
+            documentOn={documentOn}
+            workDone={workDone}
+            directDocument={directDocument}
+            locked={locked}
+            filled={editor.filled}
+            pending={pending}
+            saving={editor.saving}
+            warrantyPending={editor.warrantyPending}
+            breakdownPending={editor.breakdownPending}
+            documentPending={editor.documentPending}
+            documentIssue={editor.documentIssue}
+            onBreakdown={() => void editor.runBreakdown()}
+            onWarranty={editor.runWarranty}
+            onDraft={() => void editor.submit(true)}
+            onPresent={present}
           />
+        }
+      >
+        {request && (
+          <div
+            className={blockersClass}
+            style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+          >
+            <StaleRecordNotice session={editor.staleRecord} />
+            <EstimateEditorHint
+              request={request}
+              coordinator={coordinator}
+              locked={locked}
+              breakdown={breakdown}
+              directDocument={directDocument}
+              workDone={workDone}
+              warrantyMode={warrantyMode}
+            />
 
-          {/* Способ подачи решают ДО набора, поэтому галочка стоит выше переключателя: поставленная
-              после, она убрала бы с экрана только что набранное. Рубильник выключен — способа не
-              видно вовсе (§7): кнопка, ведущая в 422, хуже отсутствующей. */}
-          {!directDocument && editor.documentOffered && (
-            <EstimateDocumentSwitch
-              checked={documentOn}
-              allowed={editor.documentFits}
-              disabled={locked}
-              onChange={editor.switchDocumentMode}
-            />
-          )}
+            {/* The submission method is decided BEFORE typing, so the checkbox stands above the
+                switch: placed after, it would remove from the screen what has just been typed.
+                With the feature switch off the method is not shown at all (§7): a button leading
+                to 422 is worse than none. */}
+            {!directDocument && editor.documentOffered && (
+              <EstimateDocumentSwitch
+                checked={documentOn}
+                allowed={editor.documentFits}
+                disabled={locked}
+                onChange={editor.switchDocumentMode}
+              />
+            )}
 
-          {documentOn ? (
-            <EstimateDocumentFiles
-              files={editor.files}
-              uploading={editor.uploading}
-              disabled={locked}
-              onUpload={editor.addFile}
-              onRemove={editor.removeFile}
-            />
-          ) : (
-            <EstimateComposition
-              mode={mode}
-              rows={rows}
-              total={editor.total}
-              disabled={locked}
-              onSwitchMode={editor.switchMode}
-              onAddRow={editor.addRow}
-              onChangeRow={editor.changeRow}
-              onRemoveRow={editor.removeRow}
-            />
-          )}
+            {documentOn ? (
+              <EstimateDocumentFiles
+                files={editor.files}
+                uploading={editor.uploading}
+                disabled={locked}
+                onUpload={editor.addFile}
+                onRemove={editor.removeFile}
+              />
+            ) : (
+              <EstimateComposition
+                mode={mode}
+                rows={rows}
+                total={editor.total}
+                disabled={locked}
+                onSwitchMode={editor.switchMode}
+              />
+            )}
 
-          {/* Комментарий уходит с ПРЕДЪЯВЛЕНИЕМ, поэтому у раскладки его нет: «Ведение» ничего не
-              предъявляет своими словами — предъявление ставит сама ручка, и поле, чей текст никуда
-              не уедет, было бы обещанием несказанного. */}
-          {!breakdown && (
-            <Input.TextArea
-              rows={2}
-              maxLength={1000}
-              disabled={locked}
-              value={editor.comment}
-              placeholder={
-                directDocument
-                  ? 'Комментарий к выполненным работам'
-                  : 'Комментарий к объёму работ: что нашли при диагностике'
-              }
-              onChange={(e) => editor.setComment(e.target.value)}
-            />
-          )}
-          {/* Чекбокс освобождения виден в ОБОИХ форматах: «строки плюс освобождение» — законное
-              сочетание и главный сценарий разбора (Р2), а не приложение к счёту. Рубильника в
-              условии показа нет намеренно (§7): он гасит ИСХОД, а не команду, — при выключенном
-              заявление проходит и записывается как «наблюдение». Спрятанный чекбокс убил бы режим
-              наблюдения целиком, поэтому ключ уходит текстом рядом, а не условием показа. */}
-          {workDone && <WorkDoneNotice />}
-          {!workDone && editor.exemptionOffered && (
-            <EstimateExemption
-              checked={editor.exemption}
-              note={editor.exemptionNote}
-              applies={editor.exemptionApplies}
-              disabled={locked}
-              onChange={editor.setExemption}
-              onNote={editor.setExemptionNote}
-            />
-          )}
-          {problem && <Typography.Text type="warning">{problem}</Typography.Text>}
-        </div>
-      )}
-    </ViewModal>
+            {/* The comment leaves WITH THE SUBMISSION, so the breakdown has none: the coordinator
+                submits nothing in their own words — the route itself sets the submission, and a
+                field whose text goes nowhere would promise something never said. */}
+            {!breakdown && (
+              <Form.Item name="comment" noStyle>
+                <Input.TextArea
+                  rows={2}
+                  maxLength={1000}
+                  disabled={locked}
+                  placeholder={
+                    directDocument
+                      ? 'Комментарий к выполненным работам'
+                      : 'Комментарий к объёму работ: что нашли при диагностике'
+                  }
+                />
+              </Form.Item>
+            )}
+            {/* The exemption checkbox is visible in BOTH formats: "rows plus exemption" is a
+                lawful combination and the main case of the review (R2), not an appendix to the
+                invoice. The feature switch is not in the condition on purpose (§7): it turns off
+                the OUTCOME, not the command — with it off the declaration passes and is recorded
+                as "observed". A hidden checkbox would kill the observation mode, so the switch
+                goes into the text next to it, not into the condition. */}
+            {workDone && <WorkDoneNotice />}
+            {!workDone && editor.exemptionOffered && (
+              <EstimateExemption
+                checked={editor.exemption}
+                note={editor.exemptionNote}
+                applies={editor.exemptionApplies}
+                disabled={locked}
+                onChange={editor.setExemption}
+                onNote={editor.setExemptionNote}
+              />
+            )}
+            {problem && <Typography.Text type="warning">{problem}</Typography.Text>}
+          </div>
+        )}
+      </ViewModal>
+    </Form>
   );
 }
