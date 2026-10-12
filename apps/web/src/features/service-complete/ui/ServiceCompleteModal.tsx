@@ -14,7 +14,11 @@ import {
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
-import { officeEquipmentConsumableKeys, officeEquipmentKeys } from '@entities/office-equipment';
+import {
+  officeEquipmentConsumableKeys,
+  officeEquipmentKeys,
+  officeEquipmentPurchaseKeys,
+} from '@entities/office-equipment';
 import { useAuth } from '@entities/session';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage, formatMoney } from '@shared/lib';
@@ -125,9 +129,11 @@ export function ServiceCompleteModal({
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       // Closing consumables moves the warehouse in the same transaction (R5): the stock in the
-      // directory and the journal feed are stale right now.
+      // directory and the journal feed are stale right now, and so is a purchase card, which
+      // shows the position's stock of today next to its snapshot (`currentStock`).
       if (mode === 'consumable') {
         void qc.invalidateQueries({ queryKey: officeEquipmentConsumableKeys.root });
+        void qc.invalidateQueries({ queryKey: officeEquipmentPurchaseKeys.root });
       }
       onClose();
     },
