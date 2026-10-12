@@ -10,6 +10,7 @@ import {
   saveVehicleRequestShiftSchema,
   SHIFT_IDLE_COMMENT_MESSAGE,
   shiftDayBlocker,
+  shiftDaysDroppedByTerm,
   shiftDaysOf,
   shiftsBlocker,
   shiftsCompletionWarning,
@@ -83,6 +84,87 @@ describe('дни заказа', () => {
     expect(pastShiftDaysCount({ dateFrom: '2026-07-30', dateTo: '2026-08-01' }, ON_DATE)).toBe(3);
     // Работы ещё не начались: считать нечего.
     expect(pastShiftDaysCount({ dateFrom: '2026-08-10', dateTo: '2026-08-12' }, ON_DATE)).toBe(0);
+  });
+});
+
+/**
+ * The rule both term doors refuse by (ADR 0184, 2026-10-12): which filled days a new term drops.
+ * The server helper only reads the rows and words the refusal, so the cases of the rule live here.
+ */
+describe('filled days a term edit drops', () => {
+  const term = { dateFrom: '2026-08-03', dateTo: '2026-08-07' };
+
+  it('a start moved forward drops the filled days before it, in date order', () => {
+    expect(
+      shiftDaysDroppedByTerm(term, { dateFrom: '2026-08-05', dateTo: '2026-08-07' }, [
+        '2026-08-06',
+        '2026-08-04',
+        '2026-08-03',
+      ]),
+    ).toEqual(['2026-08-03', '2026-08-04']);
+  });
+
+  it('an end moved back drops the filled days after it', () => {
+    expect(
+      shiftDaysDroppedByTerm(term, { dateFrom: '2026-08-03', dateTo: '2026-08-04' }, [
+        '2026-08-04',
+        '2026-08-05',
+      ]),
+    ).toEqual(['2026-08-05']);
+  });
+
+  it('a term moved whole drops the days it leaves behind and keeps those it still covers', () => {
+    expect(
+      shiftDaysDroppedByTerm(term, { dateFrom: '2026-08-05', dateTo: '2026-08-12' }, [
+        '2026-08-03',
+        '2026-08-05',
+      ]),
+    ).toEqual(['2026-08-03']);
+  });
+
+  it('an empty end is a one-day term on both sides', () => {
+    // Removing the end of 03–07 makes the term the 3rd alone: the 4th falls out.
+    expect(
+      shiftDaysDroppedByTerm(term, { dateFrom: '2026-08-03', dateTo: null }, [
+        '2026-08-03',
+        '2026-08-04',
+      ]),
+    ).toEqual(['2026-08-04']);
+    // A one-day term extended keeps its day.
+    expect(
+      shiftDaysDroppedByTerm(
+        { dateFrom: '2026-08-03', dateTo: null },
+        { dateFrom: '2026-08-03', dateTo: '2026-08-05' },
+        ['2026-08-03'],
+      ),
+    ).toEqual([]);
+  });
+
+  it('a growing term and an untouched one drop nothing', () => {
+    expect(
+      shiftDaysDroppedByTerm(term, { dateFrom: '2026-08-01', dateTo: '2026-08-10' }, [
+        '2026-08-03',
+        '2026-08-07',
+      ]),
+    ).toEqual([]);
+    expect(shiftDaysDroppedByTerm(term, term, ['2026-08-03'])).toEqual([]);
+  });
+
+  it("a row already outside the current term is not this edit's drop", () => {
+    // Left by an edit made before the rule: refusing for it would lock every later term edit,
+    // and the shift window cannot reach a day outside the term to delete it.
+    expect(
+      shiftDaysDroppedByTerm(term, { dateFrom: '2026-08-04', dateTo: '2026-08-07' }, [
+        '2026-08-01',
+        '2026-08-09',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('days without a filled shift do not count, whatever the new term', () => {
+    expect(
+      shiftDaysDroppedByTerm(term, { dateFrom: '2026-08-06', dateTo: '2026-08-06' }, []),
+    ).toEqual([]);
   });
 });
 

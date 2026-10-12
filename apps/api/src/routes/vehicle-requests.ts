@@ -279,6 +279,8 @@ import {
   shiftSummaries,
   unapprovedPastShiftDates,
 } from '../services/vehicle-request-shifts';
+// The refusal of a term that drops a filled shift day: one helper for this edit and the term door.
+import { assertTermKeepsFilledShifts } from '../services/assignment-shifts';
 // Гейт режима модуля периодов назначения (план §10, решение И1) и метка загрязнения истории (К4).
 // Гейт стоит шагом 0 канонического порядка — первым запросом пишущей транзакции: так freeze
 // дожидается активных писателей, а писатель не проскакивает мимо freeze (Ж3). Класс двери здесь не
@@ -5062,6 +5064,19 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           if (dateTo && dateTo < dateFrom) {
             throw err.badRequest('Дата окончания раньше даты начала');
           }
+          /*
+           * A term that drops a filled shift day is refused with the dates (ADR 0184, 2026-10-12)
+           * — the same helper and text as the term door. Here the start moved forward is the case
+           * left for an order in work (ADR 0044 refuses its shortened end above); any shortening
+           * counts for the other statuses. Read under the row lock taken above, against the stored
+           * term: the shift handlers take the same lock, so no day is filled in between.
+           */
+          await assertTermKeepsFilledShifts(tx, {
+            requestId: id,
+            status: before.status,
+            termBefore: { dateFrom: ex!.dateFrom, dateTo: ex!.dateTo },
+            termAfter: { dateFrom, dateTo },
+          });
           const responsibleName = nextRequestContact(
             body.responsibleName,
             ex!.responsibleName,

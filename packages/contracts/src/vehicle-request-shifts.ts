@@ -123,6 +123,34 @@ export function isShiftDayInTerm(
 }
 
 /**
+ * Filled shift days that a term edit would drop out of the term: days of the CURRENT term that the
+ * new term no longer covers and that have a shift row (ADR 0184, section of 2026-10-12).
+ *
+ * The rule both term doors refuse by — the wide edit `PATCH /vehicle-requests/:id` and the term
+ * command `PATCH /vehicle-requests/:id/period` — through one server helper
+ * (`assertTermKeepsFilledShifts`). A row left outside the term is not deleted, but every reader of
+ * the module reads days inside the term only (`shiftDaysOf`, the summary, the "On site" filter, the
+ * card's shift tab), so its hours and the object's sign-off would silently drop out of the request:
+ * the very evidence the table is kept for. Hence a refusal naming the days, never a silent move.
+ *
+ * Only days of the current term count. A row already outside it (left by an edit made before this
+ * rule) is not dropped by this edit, and refusing for it would lock every later term edit with no
+ * way out: the shift window cannot reach a day outside the term to delete it.
+ *
+ * In contracts rather than on the server for the same reason as `shiftRangeAfterActualEnd`: a
+ * portal that names these days before the press must count them by the rule the server refuses by.
+ */
+export function shiftDaysDroppedByTerm(
+  before: Pick<ShiftSubject, 'dateFrom' | 'dateTo'>,
+  after: Pick<ShiftSubject, 'dateFrom' | 'dateTo'>,
+  filledDays: readonly string[],
+): string[] {
+  return filledDays
+    .filter((day) => isShiftDayInTerm(before, day) && !isShiftDayInTerm(after, day))
+    .sort();
+}
+
+/**
  * Отрезок дней смен; обе границы включительно — в этой форме его одинаково читают и SQL
  * (`BETWEEN`), и перебор уже прочитанных строк.
  *

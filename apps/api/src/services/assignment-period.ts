@@ -63,6 +63,8 @@ import {
   shortenTermPlan,
   type TermCancelGroup,
 } from './assignment-shorten-term';
+// The refusal of a term that drops a filled shift day — one helper for this door and the wide edit.
+import { assertTermKeepsFilledShifts } from './assignment-shifts';
 import type { DateRangeSet, Esm2ExistingSheet, Esm2SheetPlan } from './esm2-plan';
 import type { Esm2IssuePreparations, Esm2SyncResult } from './waybill-esm2';
 // Шаг 12 у всех дверей истории один: режим решает, кто исполняет бумагу, а исход — с каким
@@ -268,6 +270,18 @@ export async function planPeriodCommand(
   const tooSoon =
     backdated || movedStart === null ? null : vehicleRequestLeadTimeBlocker(actor, movedStart);
   if (tooSoon) throw err.unprocessable(tooSoon, { dateFrom: 'Слишком рано' });
+
+  /*
+   * A term that drops a filled shift day is refused here, in the plan, so the preview answers the
+   * same 422 with the same dates as the apply (ADR 0184, 2026-10-12) — the closing door's way with
+   * its signed days (ADR 0178). The rule and the text are shared with the wide edit.
+   */
+  await assertTermKeepsFilledShifts(tx, {
+    requestId: request.id,
+    status,
+    termBefore,
+    termAfter,
+  });
 
   /*
    * Исход самой правки срока (Е3) — и он остаётся здесь, а не в общем расчёте. Строки истории у
@@ -854,8 +868,10 @@ function periodAuditOf(
  * словами («назначьте машиниста в окне смены машиниста»), — и второй, приблизительный вердикт
  * рядом с ним разошёлся бы с настоящим ровно на гашениях, которых бэкстоп ещё не видит.
  *
- * Часы смен пусты по той же причине, что у команды машиниста: правка срока подписей не снимает и
- * часов не удаляет — она меняет **набор дней**, а не состав внутри них.
+ * The shift fields are empty because this door neither removes sign-offs nor deletes hours. A term
+ * that would drop a filled day out of the term never reaches this point: the plan refuses it with
+ * 422 naming the dates (`assertTermKeepsFilledShifts`), so the window reads them in the refusal
+ * text, as at the closing door, and not in a successful answer.
  */
 export function periodPreviewDto(
   effects: AssignmentEffects,

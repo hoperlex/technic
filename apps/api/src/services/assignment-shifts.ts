@@ -1,8 +1,16 @@
 import { and, eq, gte, isNull, lte } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { AssignmentShiftDay, ShiftDayRange } from '@technic/contracts';
+import {
+  requestStatusLabels,
+  shiftDaysDroppedByTerm,
+  type AssignmentShiftDay,
+  type RequestStatus,
+  type ShiftDayRange,
+} from '@technic/contracts';
 import type * as schema from '../db/schema';
 import { vehicleRequestShifts } from '../db/schema';
+import { err } from '../lib/errors';
+import { dateKeyRu } from './request-diff';
 
 /**
  * Смены заявки глазами дверей истории назначения: чтение дней, разделение их на два множества
@@ -23,6 +31,11 @@ import { vehicleRequestShifts } from '../db/schema';
  * можно вести» — они одни на портал и сервер и лежат в контрактах (`shiftDayBlocker`), — и нет
  * самого расчёта диапазона: он контрактный (`shiftRangeAfterActualEnd`), потому что окно обязано
  * назвать те же дни, что снимет сервер.
+ *
+ * ONE POLICY DOES LIVE HERE: the refusal of a term edit that drops a filled day
+ * (`assertTermKeepsFilledShifts`, ADR 0184 of 2026-10-12). It is not one door's choice but the same
+ * answer of both term doors — the wide edit and the term command — and written at each door it would
+ * be two texts and two reads that drift apart.
  *
  * ЧЕМ ЭТО НЕ ЯВЛЯЕТСЯ — ВТОРЫМ СЕРВИСОМ СМЕН. Предметный сервис смен
  * ([vehicle-request-shifts.ts](./vehicle-request-shifts.ts)) обслуживает таблицу смен в карточке:
@@ -135,6 +148,77 @@ export function splitShiftDaysByRange(
     blockedShiftDays: inRange.filter((day) => day.approved).map(toAssignmentShiftDay),
     clearedShiftDays: inRange.filter((day) => !day.approved).map(toAssignmentShiftDay),
   };
+}
+
+/** A request term as the shift rules read it: an empty `dateTo` is a one-day term. */
+export interface ShiftTermBounds {
+  dateFrom: string;
+  dateTo: string | null;
+}
+
+/**
+ * Refuse a term edit that drops a filled shift day (ADR 0184, section of 2026-10-12) — the single
+ * refusal of both term doors: the wide edit `PATCH /vehicle-requests/:id` and the term command
+ * (`assignment-period.ts`). Which days count is the contract's rule (`shiftDaysDroppedByTerm`);
+ * this helper reads the rows, words the refusal and is the only place that does, so the two doors
+ * cannot drift apart in what they refuse or in how they say it.
+ *
+ * WHY A REFUSAL AND NOT A DELETE. The neighbouring doors that shorten a term decided their own
+ * policy, and each names the days it touches: closing by the actual date erases unsigned hours by a
+ * confirmed list and refuses signed ones (ADR 0178), the weekly annulment refuses signed days
+ * (ADR 0218). A plain term edit has no such list, and the old behaviour — the row stays but falls
+ * out of every reader — lost the hours and the object's sign-off silently. Deleting a day's hours
+ * is the shift window's own action, so the person does it there, consciously, or keeps the day in
+ * the term.
+ *
+ * Both signed and unsigned rows count: a row exists only once a day has been filled (`filled_by`
+ * is NOT NULL), and its hours are the record whether signed or not.
+ *
+ * The caller holds the request row `FOR UPDATE` when it is about to write (step 3 of the canon, or
+ * `lockRequestRow` of the wide edit): the shift handlers take the same lock, so no day can be filled
+ * between this read and the term write. The term door's preview reads without the lock, as every
+ * preview does, and its apply re-asks under it.
+ */
+export async function assertTermKeepsFilledShifts(
+  tx: ShiftsTx,
+  params: {
+    requestId: string;
+    status: RequestStatus;
+    termBefore: ShiftTermBounds;
+    termAfter: ShiftTermBounds;
+  },
+): Promise<void> {
+  const { requestId, status, termBefore, termAfter } = params;
+  // A term that only grows drops nothing, and most edits are that: no read for them.
+  const lastBefore = termBefore.dateTo || termBefore.dateFrom;
+  const lastAfter = termAfter.dateTo || termAfter.dateFrom;
+  if (termAfter.dateFrom <= termBefore.dateFrom && lastAfter >= lastBefore) return;
+
+  const days = await readShiftDays(tx, requestId);
+  const dropped = shiftDaysDroppedByTerm(
+    termBefore,
+    termAfter,
+    days.map((day) => day.date),
+  );
+  if (dropped.length === 0) return;
+  const droppedSet = new Set(dropped);
+  // The field the person must change: the start when a day falls before it, otherwise the end.
+  const field = dropped.some((day) => day < termAfter.dateFrom) ? 'dateFrom' : 'dateTo';
+  // In work the shift window can delete the rows; in any other status it is closed (`shiftsBlocker`),
+  // and naming it there would send the person to a button that is not offered.
+  const way =
+    status === 'confirmed'
+      ? 'Оставьте эти дни в сроке или сначала удалите их смены в окне смен на вкладке «На объекте» (подписанную — сняв согласование)'
+      : `Оставьте эти дни в сроке: смены удаляют только у заявки в статусе «${requestStatusLabels.confirmed}»`;
+  throw err.unprocessable(
+    `Новый срок выбрасывает дни с заполненными сменами (${dropped
+      .map(dateKeyRu)
+      .join(', ')}): их часы и подпись объекта выпали бы из учёта заявки. ${way}`,
+    { [field]: 'Выбрасывает день с заполненной сменой' },
+    {
+      blockedShiftDays: days.filter((day) => droppedSet.has(day.date)).map(toAssignmentShiftDay),
+    },
+  );
 }
 
 /**
