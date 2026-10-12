@@ -41,7 +41,7 @@ export function ServiceRequestContext({ request }: { request: ServiceRequestDto 
       size="small"
       column={1}
       style={{ marginBottom: 16 }}
-      labelStyle={{ width: 110 }}
+      styles={{ label: { width: 110 } }}
       items={[
         {
           key: 'equipment',

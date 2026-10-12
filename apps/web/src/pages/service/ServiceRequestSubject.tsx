@@ -59,7 +59,7 @@ export function ServiceRequestSubject({
         size="small"
         column={1}
         style={{ marginBottom: 16 }}
-        labelStyle={{ width: 140 }}
+        styles={{ label: { width: 140 } }}
         items={[
           // «Без аппарата» словами (Р8): у правимой заявки предмета может не быть вовсе, и пустое
           // поле в форме прочиталось бы как «реквизиты не подтянулись».
@@ -111,7 +111,7 @@ export function ServiceRequestSubject({
         size="small"
         column={1}
         style={{ marginBottom: 8 }}
-        labelStyle={{ width: 140 }}
+        styles={{ label: { width: 140 } }}
         items={[
           {
             key: 'name',

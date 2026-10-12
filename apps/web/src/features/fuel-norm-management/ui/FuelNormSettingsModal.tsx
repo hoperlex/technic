@@ -114,7 +114,7 @@ export function FuelNormSettingsModal({ open, onCancel, settings }: Props) {
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="Настройки одни на весь портал"
+        title="Настройки одни на весь портал"
         description="Они не версионируются: правка меняет и прошлые отчёты. Сами нормы, наоборот, живут версиями — приказ прошлого месяца остаётся в силе для своего периода."
       />
       <Form<Values> form={form} layout="vertical">

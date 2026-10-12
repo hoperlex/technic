@@ -88,7 +88,7 @@ function currentFields(user: UserAccountDto): ViewField[] {
 function pathItem(entry: AuditEntryDto) {
   return {
     key: entry.id,
-    children: (
+    content: (
       <Space orientation="vertical" size={0}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {formatDateTime(entry.createdAt)}
