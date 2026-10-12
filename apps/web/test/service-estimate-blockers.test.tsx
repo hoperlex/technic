@@ -142,6 +142,16 @@ describe('by columns: every gap of every row at once', () => {
       }),
     ).toBeDefined();
     expect(sent(http)).toBe(0);
+
+    // The list's own rule runs again on its change: an added row takes the mark away.
+    fireEvent.click(screen.getByRole('button', { name: /Добавить услугу/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Добавьте хотя бы одну строку', {
+          selector: '.ant-form-item-explain-error',
+        }),
+      ).toBeNull(),
+    );
   });
 
   it('a draft by columns is not held by the gaps: an unfinished set is lawful', async () => {

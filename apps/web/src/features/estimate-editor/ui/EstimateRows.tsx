@@ -31,8 +31,9 @@ const nullable = (value: number | null | undefined) => value ?? null;
  * service goes after it), while the screen reads parts and services apart (§9.3). Two lists would
  * reorder the body by group; one list filtered by kind keeps both orders as they were.
  *
- * The kind and the amount are read from the store in render: the window re-renders on every change
- * of the rows (the editor watches them for the total), so the amount follows each keystroke.
+ * The kind and the amount are read from the store in render: the window re-renders in the same
+ * event on every change of the rows (the editor needs it for the total), so the amount follows
+ * each keystroke.
  */
 export function EstimateRowsList({ disabled = false }: { disabled?: boolean }) {
   const form = Form.useFormInstance();
