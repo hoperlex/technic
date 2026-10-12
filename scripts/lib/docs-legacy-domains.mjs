@@ -154,7 +154,6 @@ export const LEGACY_DOMAINS = new Map([
   ['0155-waste-ticket-auto-confirm.md', ['вывоз-мусора']],
   ['0156-mechanization-models-directory.md', ['механизация']],
   ['0158-office-equipment-model-specs.md', ['оргтехника']],
-  ['0159-service-request-mail-events.md', ['оргтехника']],
   ['0160-service-request-audiences.md', ['оргтехника']],
   ['0161-service-request-quick-status-change.md', ['оргтехника']],
   ['0162-service-request-actions-single-entry.md', ['оргтехника']],

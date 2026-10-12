@@ -13,6 +13,7 @@
   [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
   item 6 («Полный контур уведомлений Копи-Лайт»). Schema — migrations `0257` (`mail_kind` values,
   including the technical digest kind) and `0258` (the switch table `module_mail_event_settings`)
+- Домены: оргтехника, почта
 - Область: [service-request-mail.ts](../../apps/api/src/services/service-request-mail.ts) и новый
   сборщик сторон `service-request-mail-audience.ts` рядом с ним,
   [service-requests.ts](../../apps/api/src/routes/service-requests.ts) (переходы, объём работ,
@@ -265,6 +266,11 @@ read-only со словами «не применяется». Скрыто хр
 ленту.
 
 ### 9. Сервису уходят только адресованные ему комментарии (Р6)
+
+_Changed on 2026-10-12 by [ADR 0227](0227-service-request-requester-mail.md): a message addressed
+«Заявителю» or «Всем участникам» also reaches the request author by mail, as does every change of
+his request's state (two events of their own, the requester card audience, Reply-To — the
+portal's general address). What follows still holds for the service and contractor letters._
 
 Письмо ставит реплика с адресатом «Сервисному центру», «Всем участникам» или поимённо назначенному
 исполнителю. Вся остальная видимая подрядчику лента почтой не пересылается.

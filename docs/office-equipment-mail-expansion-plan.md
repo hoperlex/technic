@@ -811,6 +811,10 @@ db-тесты получателей сохраняются и дополняю�
    (подтверждено: восьмое событие ради одной пометки не заводим);
 3. заявителю письма цикла не отправляются (подтверждено: движение по заявке он видит в портале);
    будущая работа обязана применить аудитории плана карточки заявителя;
+   _changed on 2026-10-12 by [ADR 0227](adr/0227-service-request-requester-mail.md): the request
+   author now gets letters about messages addressed «Заявителю» / «Всем участникам» and about the
+   state changes of his request, two events of their own with the requester card audience; the
+   service and contractor letters described here are unchanged;_
 4. потолок — 12 обычных писем на `(заявка, нормализованный email, UTC-час)`, `0` отключает его;
    значение меняется конфигурацией без релиза;
 5. одно событие «документ» создаётся для любой разрешённой пачки из пяти видов (`attachment`,

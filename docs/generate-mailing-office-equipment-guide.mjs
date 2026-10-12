@@ -810,25 +810,41 @@ function page5() {
       C.purpleSoft,
     ],
     ['09', 'Решение по сообщению о технике', 'автор сообщения', C.green, C.greenSoft],
+    // Letters to the request author (ADR 0227): his only, and a reply goes to the portal address.
+    [
+      '10',
+      'Заявителю: новое сообщение',
+      'автор заявки — сообщения «Заявителю» и «Всем участникам»',
+      C.cyan,
+      C.cyanSoft,
+    ],
+    [
+      '11',
+      'Заявителю: смена состояния',
+      'автор заявки — в работе, отложена, выполнена, закрыта, отменена',
+      C.cyan,
+      C.cyanSoft,
+    ],
   ];
 
   b += rect(55, 350, 1013, 45, { fill: '#f2f4f7', stroke: C.line, r: 6 });
   b += text(77, 378, 'Событие', 13, { fill: C.muted, weight: 700 });
   b += text(525, 378, 'Основные получатели', 13, { fill: C.muted, weight: 700 });
   b += text(1015, 378, 'Письма · пример', 13, { fill: C.muted, weight: 700, anchor: 'end' });
+  // Eleven rows fit above the rules box at 80 px each (the box starts at 1305).
   rows.forEach(([num, titleValue, recipients, color, fill], index) => {
-    const y = 395 + index * 98;
-    b += rect(55, y, 1013, 98, { fill: index % 2 ? '#fcfcfd' : '#fff', stroke: C.line });
-    b += circle(88, y + 49, 21, { fill });
-    b += text(88, y + 55, num, 14, { fill: color, weight: 700, anchor: 'middle' });
-    b += paragraph(125, y + 36, titleValue, 365, 15, {
+    const y = 395 + index * 80;
+    b += rect(55, y, 1013, 80, { fill: index % 2 ? '#fcfcfd' : '#fff', stroke: C.line });
+    b += circle(88, y + 40, 21, { fill });
+    b += text(88, y + 46, num, 14, { fill: color, weight: 700, anchor: 'middle' });
+    b += paragraph(125, y + 32, titleValue, 365, 15, {
       fill: C.ink,
       weight: 700,
       lineHeight: 20,
       maxLines: 2,
     });
-    b += paragraph(525, y + 34, recipients, 390, 13, { fill: C.text, lineHeight: 19, maxLines: 3 });
-    b += toggle(972, y + 36, true);
+    b += paragraph(525, y + 28, recipients, 390, 13, { fill: C.text, lineHeight: 19, maxLines: 3 });
+    b += toggle(972, y + 28, true);
   });
 
   b += rect(55, 1305, 1013, 130, { fill: C.bluePale, stroke: '#bae0ff', r: 14 });
