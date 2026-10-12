@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -136,9 +137,27 @@ function bootstrapAuth(): Promise<AuthUser | null> {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const [user, setUserState] = useState<AuthUser | null>(null);
   const [status, setStatus] = useState<Status>('loading');
   const queryClient = useQueryClient();
+
+  /*
+   * The account as of the last `setUser` call, readable synchronously by the refresh subscription.
+   *
+   * The subscription used to close over `user` and re-subscribe on every change of it. A closure
+   * sees the account of the render that created it, and the effect that replaces it runs only
+   * after the next render commits; React may yield between the commit and its passive effects, and
+   * on a loaded machine it does. A 401 refresh completing inside that gap met the subscription made
+   * while the tab was still signed out, saw no session and dropped the account it carried — the
+   * menu kept the old access until a reload, and nothing retried. The ref is written in the same
+   * step that hands the account to React, so no such gap exists: every path that changes the
+   * account goes through `setUser` below.
+   */
+  const userRef = useRef<AuthUser | null>(null);
+  const setUser = useCallback((next: AuthUser | null) => {
+    userRef.current = next;
+    setUserState(next);
+  }, []);
 
   /**
    * Кэш запросов принадлежит той учётке, при которой он набран: ключи её не содержат, а
@@ -187,7 +206,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [adoptSession]);
+  }, [adoptSession, setUser]);
 
   /*
    * Сессия кончилась посреди работы (refresh истёк, отозван или учётку выключили) — уводим на
@@ -205,46 +224,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setStatus('unauthenticated');
     });
-  }, [adoptSession]);
+  }, [adoptSession, setUser]);
 
   /*
-   * Обновление токена принесло учётку — применяем её целиком. Права считает сервер, и обновление
-   * (после `authVersion + 1`) — тот самый момент, когда набор меняется посреди работы: без этого
-   * сервер разрешает уже по-новому, а меню и кнопки остаются прежними до перезагрузки страницы.
-   * Человек при этом либо видит раздел, в который его больше не пускают, либо не видит того, что
-   * ему только что открыли, — и то и другое читается как поломка портала, а не как смена доступа.
+   * A token refresh brought the account — apply it whole. The server computes permissions, and a
+   * refresh (after `authVersion + 1`) is exactly when the set changes mid-work: without this the
+   * server already authorizes the new way while the menu and buttons stay as they were until a
+   * reload. The person then either sees a section they are no longer let into or does not see the
+   * one just opened to them, and both read as a broken portal rather than changed access.
    */
   useEffect(() => {
     return onRefreshedUser((raw) => {
       /*
-       * Только сессии, которая уже на экране. Обновление её продлевает, а не начинает: начинают вход
-       * и bootstrap, и оба ставят пользователя вместе со статусом. Подставленный во время bootstrap
-       * пользователь разошёлся бы с ним ответами — упавший следом `/auth/me` объявил бы вкладку
-       * невошедшей, оставив на руках учётку. Свою права он и так принесёт: сервер считает их для
-       * `/auth/me` тем же способом.
+       * Only a session already handed to the screen. A refresh extends a session, it does not start
+       * one: login and bootstrap start it, and both set the account together with the status. An
+       * account substituted during bootstrap would disagree with it — a `/auth/me` failing right
+       * after would declare the tab signed out with an account still in hand. Bootstrap brings its
+       * permissions anyway: the server computes them for `/auth/me` the same way.
+       *
+       * Read from the ref, not from `user`: see `userRef` for the gap a closure leaves.
        */
-      if (!user) return;
-      // Тело транспорт передаёт нетронутым: `shared` не знает правил портала, поэтому форму
-      // называет тот, кто её знает. Ручка `POST /auth/refresh` отдаёт ровно `AuthUser`.
+      if (!userRef.current) return;
+      // The transport passes the body untouched: `shared` does not know the portal's rules, so the
+      // shape is named by whoever knows it. `POST /auth/refresh` returns exactly an `AuthUser`.
       const next = raw as AuthUser;
-      // Bootstrap вкладки помнит свой ответ; без этой строки повторное монтирование провайдера
-      // вернуло бы права, действовавшие до обновления.
+      // The tab's bootstrap remembers its answer; without this line a remount of the provider
+      // would bring back the permissions that were in force before the refresh.
       bootstrapPromise = Promise.resolve(next);
       /*
-       * «Вошёл другой» обновлением не бывает — ответ, вернувшийся уже к другому пользователю, до
-       * подписки не доходит вовсе (сверку поколения делает сама сессия). А вот СМЕНА ДОСТУПА той же
-       * учётки бывает именно здесь: обновление токена — тот самый момент, когда выданный набор
-       * доезжает до вкладки посреди работы (`authVersion + 1`). Поэтому кэш выбрасывается по тому
-       * же правилу, что и при смене учётки, — иначе новый доступ показывал бы старые, собранные для
-       * прежней аудитории ответы (ADR 0160, Р15).
+       * "Someone else signed in" never arrives through a refresh — an answer that came back to a
+       * different user does not reach subscribers at all (the session checks the generation). A
+       * CHANGE OF ACCESS for the same account does arrive exactly here: a token refresh is the
+       * moment a newly granted set reaches the tab mid-work (`authVersion + 1`). So the cache is
+       * dropped by the same rule as on an account switch — otherwise the new access would show old
+       * answers built for the previous audience (ADR 0160, R15).
        */
       adoptSession(next);
       setUser(next);
     });
-    // Зависимость от `user` — ради проверки выше: подписка обязана видеть текущее состояние
-    // сессии, а не то, каким оно было на первом рендере. `adoptSession` мемоизирован и ссылку не
-    // меняет, поэтому подписка от него не пересоздаётся.
-  }, [user, adoptSession]);
+    // Subscribed once per provider: both dependencies are stable references, and the check reads
+    // the ref, so the subscription has no reason to be recreated — recreating it on every account
+    // change is what opened the gap.
+  }, [adoptSession, setUser]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -268,7 +289,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(null);
         setStatus('unauthenticated');
       },
-      setUser: (u) => setUser(u),
+      setUser,
       async refreshUser() {
         const me = await authApi.me();
         // Сервер может ответить другой учёткой: вкладку открыли заново после входа под другим
@@ -278,7 +299,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
       ...permissionChecks(user),
     }),
-    [user, status, adoptSession],
+    [user, status, adoptSession, setUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

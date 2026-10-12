@@ -160,8 +160,9 @@ describe('приём кандидатов открывает только отв
     await waitFor(() => expect(shown('propose')).toBe('открыт'));
     screen.getByText('обновить список').click();
 
-    // First the refresh itself, then the screen: two waits instead of one give the requests their
-    // own window.
+    // First the refresh itself, then the screen: a failure then names its half — the network round
+    // or the account reaching the screen. The gap between them that used to swallow the account is
+    // pinned in `flow-session-refresh-permissions`.
     await waitFor(() => expect(http.countOf('POST /auth/refresh')).toBe(2));
     await waitFor(() => expect(shown('propose')).toBe('закрыт'));
     // No reload and no second "who am I": the switch arrived in the same answer as the token.

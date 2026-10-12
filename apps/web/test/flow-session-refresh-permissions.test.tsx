@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { act, screen, waitFor } from '@testing-library/react';
+import type { QueryClient } from '@tanstack/react-query';
 import type { AuthUser, Permission } from '@technic/contracts';
 import { useAuth } from '@entities/session';
 import {
@@ -12,7 +13,7 @@ import {
 } from '../src/shared/api';
 
 import { apiError, json, mockHttp } from './http';
-import { renderWithSession } from './render';
+import { createTestQueryClient, renderWithSession } from './render';
 import { authUser, loginResponse } from './factories/auth';
 
 /**
@@ -60,7 +61,7 @@ function AccessProbe() {
  * Вкладка открыта вошедшей учёткой `before`, а следующее обновление токена вернёт `after`.
  * Первый refresh — это bootstrap вкладки, поэтому учётку меняет второй.
  */
-function mountWith(before: AuthUser, after: AuthUser) {
+function mountWith(before: AuthUser, after: AuthUser, queryClient?: QueryClient) {
   let refreshes = 0;
   let objectCalls = 0;
   const http = mockHttp({
@@ -78,7 +79,7 @@ function mountWith(before: AuthUser, after: AuthUser) {
         : json({ items: [], total: 0, page: 1, pageSize: 100 });
     },
   });
-  renderWithSession(<AccessProbe />);
+  renderWithSession(<AccessProbe />, { queryClient });
   return http;
 }
 
@@ -96,8 +97,8 @@ describe('учётка из обновления токена доезжает �
 
     screen.getByText('обновить список').click();
 
-    // Сначала дожидаемся самого обновления, и только потом смотрим на экран: два ожидания вместо
-    // одного дают запросам своё окно — на занятой машине рендер и сеть в одно не всегда влезают.
+    // First the refresh itself, then the screen: a failure then names its half — the network round
+    // or the account reaching the screen.
     await waitFor(() => expect(http.countOf('POST /auth/refresh')).toBe(2));
     await waitFor(() => expect(screen.getByTestId('directories').textContent).toBe('есть'));
     // Ни перезагрузки, ни повторного «кто я»: доступ обновился тем же ответом, что и токен.
@@ -120,6 +121,32 @@ describe('учётка из обновления токена доезжает �
 
     await waitFor(() => expect(http.countOf('POST /auth/refresh')).toBe(2));
     await waitFor(() => expect(screen.getByTestId('directories').textContent).toBe('нет'));
+  });
+
+  it('обновление, пришедшее до отрисовки вошедшей сессии, не теряется', async () => {
+    /*
+     * The race behind the flaky full runs, pinned without timing. The bootstrap hands the account
+     * to React, and React renders it and re-runs effects later — on a loaded machine it yields
+     * between the commit and the effects. A 401 refresh completing in that gap used to meet the
+     * subscription made while the tab was signed out and drop the account it carried, for good.
+     * `act` holds React's work for the whole round here, so the refresh always lands in the gap.
+     */
+    const before = authUser();
+    const after = withRevoked(before, 'directories.write');
+    const queryClient = createTestQueryClient();
+    // The provider drops the cache in the same synchronous step that hands the bootstrapped account
+    // to React, so the marker vanishing is the moment the session is adopted but not yet rendered.
+    queryClient.setQueryData(['adoption-marker'], true);
+    const http = mountWith(before, after, queryClient);
+
+    await act(async () => {
+      await vi.waitFor(() => expect(queryClient.getQueryData(['adoption-marker'])).toBeUndefined());
+      await apiFetch('/objects');
+    });
+
+    expect(http.countOf('POST /auth/refresh')).toBe(2);
+    expect(screen.getByTestId('who').textContent).toBe('dispatcher@example.test');
+    expect(screen.getByTestId('directories').textContent).toBe('нет');
   });
 
   it('учётка из чужого обновления до подписчиков не доходит', async () => {
