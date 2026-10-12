@@ -7,6 +7,9 @@
 Постановка и история этапов — [maintenance-framework-plan.md](maintenance-framework-plan.md); здесь
 порядок работы. Если руководство разошлось с кодом, прав код.
 
+The decision behind the system, its limits and what was deliberately left out —
+[ADR 0224](adr/0224-codebase-maintenance-framework.md).
+
 Правила лежат в [architecture/](../architecture/README.md) и версионируются вместе с проектом. Всё,
 что система насчитала в прогоне, лежит в `.maintenance/` и в историю не идёт.
 

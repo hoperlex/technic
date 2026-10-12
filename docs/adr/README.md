@@ -6,7 +6,7 @@
 
 Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями (в скобках — граница, если решение правится не целиком) · миграции · пути, названные областью. **⛔ стоит только у решения, которое само объявило себя отменённым или заменённым.** Входящая связь показывает, кто его правил, но насколько — знает лишь текст самого решения: ADR 0141 отменяет приём ADR 0053 в модуле оргтехники, а в вывозе мусора тот приём работает.
 
-Решений: 223. Доменов: 16.
+Решений: 224. Доменов: 16.
 
 ## ⚠ Номера, занятые дважды
 
@@ -332,10 +332,11 @@
 - [0205](0205-device-network-poll.md) — Показание снимается опросом аппарата по сети, и записывается оно только при сверенном серийнике · код: `packages/contracts/src/device-poll.ts`, `apps/api/src/services/device-snmp`, `apps/api/src/routes/device-poll.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/features/device-poll`, `apps/web/src/pages/service/EquipmentTab.tsx`
 - [0208](0208-service-work-completed-document-flow.md) — Исполнитель завершает денежный шаг кнопкой «Работы выполнены» и сразу подшивает акт · код: `apps/api/drizzle/0341_service_estimate_document_workflow_enable.sql`, `apps/api/drizzle/0342_releases_service_estimate_document_workflow.sql`, `apps/web/src/pages/service/serviceRequestEstimateMenu.tsx`, `apps/web/src/pages/service/serviceRequestModals.tsx`
 
-## качество (5)
+## качество (6)
 
 - [0147](0147-quality-gates.md) — Ворота качества: две команды, отметка о прогоне и ни одного хука
 - [0176](0176-docs-navigation-layer.md) — Навигацию по документации держит генерируемый указатель и проверяемая карта, а не рукописный каталог · код: `scripts/check-docs.mjs`, `scripts/gen-adr-index.mjs`, `scripts/lib/docs-navigation.mjs`, `scripts/lib/docs-legacy-domains.mjs`, `scripts/docs-navigation.test.mjs`, `AGENTS.md`
 - [0191](0191-version-numbering.md) — Версия портала: линия, выпуск и решение — правило, а не договорённость на словах · код: `architecture/policies/versioning.yaml`, `VERSION`, `scripts/check-version.mjs`
 - [0196](0196-assignment-cutover-command.md) — Окно переключения чтения истории назначения — одной командой · код: `apps/api/scripts/assignment-cutover.ts`, `apps/api/scripts/assignment-cutover-plan.ts`, `apps/api/scripts/assignment-history-run.ts`, `apps/api/scripts/assignment-backfill.ts`, `deploy/docker-compose.yml`, `apps/api/test/assignment-cutover-plan.test.ts`
 - [0222](0222-frontend-query-freshness-and-render.md) — Portal query freshness, deferred options, and list rendering · код: `apps/web/src/shared/config/query.ts`, `apps/web/src/app/providers/query.tsx`, `apps/web/src/shared/api/listQueryOptions.ts`, `apps/web/src/shared/lib/useDeferredOptions.ts`, `apps/web/scripts/check-cache-invalidation.mjs`
+- [0224](0224-codebase-maintenance-framework.md) — Codebase maintenance: code, not the model, decides what may change automatically · реализовано · код: `maintenance.config.ts`, `architecture/README.md`, `architecture/modules.yaml`, `architecture/policies/architecture.yaml`, `architecture/policies/protected-surfaces.yaml`, `architecture/policies/exceptions.yaml`, `architecture/policies/maintenance.yaml`, `tools/maintenance/cli/main.ts`, `tools/maintenance/policies/surfaces.ts`, `tools/maintenance/core/selector.ts`, `tools/maintenance/verification/behavior-lock.ts`, `tools/maintenance/git/handoff.ts`, `eslint/release.config.mjs`

@@ -22,5 +22,7 @@ the original silently.
   the only file here the maintenance system does NOT read: `scripts/check-version.mjs` enforces it.
   It lives here because it is a machine rule of the project as well.
 
-Statement and stages — [docs/maintenance-framework-plan.md](../docs/maintenance-framework-plan.md),
-working procedure — [docs/maintenance-guide.md](../docs/maintenance-guide.md).
+The decision, its limits and what was left out —
+[ADR 0224](../docs/adr/0224-codebase-maintenance-framework.md); statement and stages —
+[docs/maintenance-framework-plan.md](../docs/maintenance-framework-plan.md), working procedure —
+[docs/maintenance-guide.md](../docs/maintenance-guide.md).

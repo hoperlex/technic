@@ -14,10 +14,10 @@
   `tools/maintenance/` (ядро), новый `maintenance.config.ts`, новый `eslint/release.config.mjs`,
   `.gitignore`, `package.json` (скрипты и одна зависимость). **Код приложения, схему БД, контракты,
   поведение портала и ворота `pnpm check` не трогает ни на одном этапе**
-- Номера: миграций нет, схема не меняется. ADR — **0188 предварительно**: заявленный первой
-  редакцией 0187 в тот же день занял параллельный поток
-  ([0187](adr/0187-service-assignment-keeps-status.md)), ровно как и предупреждает правило; номер берётся снимком `ls docs/adr` непосредственно
-  перед `git add`, потому что параллельный поток занимает по два-три решения в день
+- Numbers: no migrations, the schema does not change. The decision is
+  [ADR 0224](adr/0224-codebase-maintenance-framework.md), recorded on 12.10.2026 after the stages
+  were done; 0187, claimed by the first edition, went to a parallel stream the same day, and the
+  provisional 0188 was never used
 - Записи выпуска нет: наружу ничего не меняется, версия и `seq` не занимаются
 - Замер базовой линии 14.09.2026 (рабочее дерево «как есть»): `pnpm typecheck` — зелено;
   `eslint .` — **0 ошибок, 26 предупреждений** (17 `max-lines`, 9 `@typescript-eslint/no-unused-vars`).
