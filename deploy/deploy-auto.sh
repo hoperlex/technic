@@ -156,6 +156,11 @@ deploy-auto — деплой/обновление портала technic (auto.s
 Обновление самого deploy-auto: если pull привёз новую версию скрипта, деплой перезапускается
 ею же и идёт дальше — правки вступают в силу тем же деплоем, а не следующим.
 
+Пол клиента: сразу после сборки (до капчи, vhost, --cutover и миграций) деплой сверяет пол,
+которого требует релиз (REQUIRED_CLIENT_FLOOR образа-кандидата), с MIN_CLIENT_CONTRACT в prod.env.
+Пол ниже требуемого — отказ до всякой мутации с командой для исправления (ADR 0226): иначе
+technic-api релиза не стартовал бы уже после наката миграций.
+
 Vhost: /opt/infra/nginx/conf.d/technic.conf синхронизируется с deploy/nginx/technic.conf
 при каждом деплое (бэкап → nginx -t → graceful reload infra-nginx). Соседние vhost не
 трогаются; при неудаче деплой не падает, но пишет warn и vhost_sync в отчёт.
@@ -2751,14 +2756,56 @@ log "build: ${SERVICES[*]} (technic-*:$COMMIT_SHA)"
 "${COMPOSE[@]}" build "${SERVICES[@]}" || { REASON="сборка провалилась"; fail "$REASON"; }
 BUILT_TAG="$COMMIT_SHA"
 
-# Preflight капчи — первый гейт релиза: он дешевле всех остальных и не трогает ни базу, ни
-# контейнеры. Проверка идёт из ОБРАЗА КАНДИДАТА (TAG уже равен $COMMIT_SHA), потому что `:latest`
-# до конца выката указывает на прошлый релиз.
+# ---------------------------------------------------------------------------
+# Client floor preflight (ADR 0226). The API of a release refuses to start in production when
+# MIN_CLIENT_CONTRACT in prod.env is below that release's REQUIRED_CLIENT_FLOOR
+# (apps/api/src/config.ts). Left to the API, the refusal surfaces only at the health check — after
+# the dump, after the migrations, with the old containers already replaced: the portal is down,
+# and --previous returns code, not schema. Asked here, before anything has changed, it becomes a
+# refusal that names the command to run.
 #
-# Гейт работает, только когда капча настроена в prod.env. Пропуск при незаданном ключе — не
-# послабление: в production API без ключей вовсе не стартует (config.ts, план §8), и такой релиз
-# всё равно не переживёт health-check ниже, зато площадка, которая ещё не завела капчу, может
-# выкатывать код. Молчаливым пропуск не бывает — о нём говорит warn.
+# Asked of the CANDIDATE image through the `migrate` service (same env_file as technic-api), not of
+# the working tree and not of prod.env by sed: the requirement comes from the code that is about to
+# run, and the floor through the zod schema the new API parses it with — an empty or non-numeric
+# value fails there, while `client_floor_current` (tr -dc 0-9) would read it as a number. The
+# served contract only shapes the advice: --client-floor=N refuses a floor above it.
+#
+# Placed before everything that changes the site — captcha preflight, vhost, --cutover, migration
+# status — so it covers the plain deploy, --skip-migrate (the API would not start either) and
+# --cutover alike. An answer is a marker line WITH its exit code: `pnpm --filter` exits 0 in
+# silence when the image has no such script, so a bare code 0 would pass blindly. Anything that is
+# not an answer refuses as well: nothing has changed yet, and passing without knowing is exactly
+# the outage this step exists to prevent.
+# ---------------------------------------------------------------------------
+FLOOR_SERVED="$(client_contract_deployed || true)"
+log "предпроверка пола клиента (образ кандидата $COMMIT_SHA, раздаётся контракт ${FLOOR_SERVED:-<неизвестен>})"
+set +e
+FLOOR_RAW="$("${COMPOSE[@]}" run --rm -T migrate \
+  pnpm --silent --filter @technic/api check:client-floor -- "--served=$FLOOR_SERVED")"
+floor_rc=$?
+set -e
+FLOOR_TEXT="$(printf '%s\n' "$FLOOR_RAW" | { grep -vxE 'client-floor (pass|refused)' || true; } | sed '/^[[:space:]]*$/d')"
+if [ "$floor_rc" -eq 0 ] && printf '%s\n' "$FLOOR_RAW" | grep -qx 'client-floor pass'; then
+  printf '%s\n' "$FLOOR_TEXT" | sed 's/^/  /'
+elif [ "$floor_rc" -eq 3 ] && printf '%s\n' "$FLOOR_RAW" | grep -qx 'client-floor refused'; then
+  printf '%s\n' "$FLOOR_TEXT" | sed 's/^/  /' >&2
+  REASON="предпроверка пола клиента отказала: с полом из $PROD_ENV technic-api этого релиза не стартовал бы — ничего не изменено, команда для исправления напечатана выше"
+  fail "$REASON"
+else
+  [ -z "$FLOOR_TEXT" ] || printf '%s\n' "$FLOOR_TEXT" | tail -n 20 | sed 's/^/  /' >&2
+  REASON="предпроверку пола клиента выполнить не удалось (код $floor_rc, ответа нет) — ничего не изменено. Без неё выкат пропустил бы ровно то, от чего она стоит: technic-api, не стартующий после миграций. Повторить вручную: TAG=$COMMIT_SHA ${COMPOSE[*]} run --rm -T migrate pnpm --filter @technic/api check:client-floor -- --served=$FLOOR_SERVED"
+  fail "$REASON"
+fi
+
+# Captcha preflight — the release gate right after the client floor one: both are cheaper than
+# everything below and touch neither the database nor the containers. It runs from the CANDIDATE
+# image (TAG already equals $COMMIT_SHA), because `:latest` points at the previous release until
+# the rollout ends.
+#
+# The gate works only when the captcha is configured in prod.env. Skipping it without the key is
+# not a loophole: in production the API does not start without the keys at all (config.ts, plan
+# §8), so such a release would not survive the health check below, while a site that has not set
+# up the captcha yet can still ship code. The skip is never silent — a warn says so.
 if grep -qE '^SMARTCAPTCHA_SERVER_KEY=.+' "$PROD_ENV" 2>/dev/null; then
   log "preflight капчи (образ кандидата $COMMIT_SHA)"
   "${COMPOSE[@]}" --profile tools run --rm -T captcha-check || {
