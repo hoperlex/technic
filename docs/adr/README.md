@@ -6,7 +6,7 @@
 
 Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями (в скобках — граница, если решение правится не целиком) · миграции · пути, названные областью. **⛔ стоит только у решения, которое само объявило себя отменённым или заменённым.** Входящая связь показывает, кто его правил, но насколько — знает лишь текст самого решения: ADR 0141 отменяет приём ADR 0053 в модуле оргтехники, а в вывозе мусора тот приём работает.
 
-Решений: 222. Доменов: 16.
+Решений: 223. Доменов: 16.
 
 ## ⚠ Номера, занятые дважды
 
@@ -242,9 +242,9 @@
 - [0216](0216-auto-part-receipt-warehouse.md) — Склад автозапчастей — партии из чеков, применение — отдельным документом · код: `packages/contracts/src/auto-part-receipts.ts`, `apps/api/src/db/schema.ts`, `apps/api/src/services/auto-part-receipts.ts`, `apps/api/src/services/auto-part-receipts-read.ts`, `apps/api/src/routes/auto-part-receipts.ts`, `apps/web/src/entities/auto-part-receipt/api/autoPartReceiptApi.ts`
 - [0217](0217-manager-auto-part-receipts.md) — Менеджер ведёт чеки автозапчастей · код: `packages/contracts/src/permissions.ts`, `apps/web/src/pages/garage/AutoPartReceiptsTab.tsx`, `apps/api/test/permissions.test.ts`, `apps/api/test/auto-part-receipts.db.test.ts`, `apps/web/test/garage-receipt-windows.test.tsx`
 
-## доступ (28)
+## доступ (29)
 
-- [0021](0021-permissions-model.md) — Единая модель прав: матрица разрешений вместо списков ролей · изменён 0085, 0102, 0160 · код: `packages/contracts/src/permissions.ts`, `apps/api/src/auth/plugin.ts`, `apps/api/src/lib/access.ts`, `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/app/routing/ProtectedRoute.tsx`, `apps/web/src/components/AppLayout.tsx`, `apps/api/test/route-authorization.test.ts`
+- [0021](0021-permissions-model.md) — Единая модель прав: матрица разрешений вместо списков ролей · изменён 0085, 0102, 0160, 0223 (decision 2) · код: `packages/contracts/src/permissions.ts`, `apps/api/src/auth/plugin.ts`, `apps/api/src/lib/access.ts`, `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/app/routing/ProtectedRoute.tsx`, `apps/web/src/components/AppLayout.tsx`, `apps/api/test/route-authorization.test.ts`
 - [0033](0033-observer-role.md) — Роль «Наблюдатель» — сквозной просмотр заявок без права что-либо менять · код: `packages/contracts/src/permissions.ts`, `apps/api/drizzle/0054_observer_role.sql`, `apps/api/test/permissions.test.ts`, `apps/api/test/access-matrix.test.ts`
 - [0034](0034-registration-name-parts-and-captcha.md) — Регистрация: ФИО по частям и собственная капча · изменён 0063 · код: `apps/api/drizzle/0055_users_name_parts.sql`, `apps/api/drizzle/0057_registration_role_request.sql`, `packages/contracts/src/registration-request.ts`, `packages/contracts/src/person-name.ts`, `packages/contracts/src/password.ts`, `apps/api/src/auth/captcha.ts`
 - [0038](0038-executor-permissions-by-counterparty-type.md) — Права внешнего исполнителя следуют из типа его контрагента · изменён 0089 · код: `packages/contracts/src/permissions.ts`, `packages/contracts/src/enums.ts`, `apps/api/src/lib/access.ts`, `apps/api/src/auth/principal.ts`, `apps/api/src/routes/vehicle-requests.ts`, `apps/api/src/routes/users.ts`, `apps/api/src/routes/counterparties.ts`, `apps/api/src/routes/files.ts`, `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/features/user-account-editor/model/useUserAccountEditor.tsx`, `apps/api/test/permissions.test.ts`, `apps/api/test/access-scope.test.ts`, `apps/api/test/access-matrix.test.ts`, `apps/web/test/permissions-ui.test.tsx`
@@ -272,6 +272,7 @@
 - [0199](0199-mail-log-tab.md) — Журнал отправки писем: подвкладка «Аудит» в разделе «Рассылки» · реализовано · код: `packages/contracts/src/mail-log.ts`, `packages/contracts/src/mailings.ts`, `apps/api/src/routes/mail-log.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/pages/admin/MailLogBlock.tsx`, `apps/web/src/pages/admin/MailLogModal.tsx`, `apps/web/src/entities/mail-log`, `apps/web/src/pages/admin/MailingsTab.tsx`, `apps/api/test/mail-log.db.test.ts`, `apps/web/test/mail-log.test.tsx`
 - [0201](0201-department-special-equipment.md) — Отдел с площадкой заказывает спецтехнику на неё · реализовано · код: `packages/contracts/src/permissions.ts`, `packages/contracts/src/permission-catalog.ts`, `apps/api/src/lib/access.ts`, `apps/web/src/entities/session/model/usePlaceObjectScope.ts`, `apps/web/src/features/request-customer/model/useRequestCustomerOptions.ts`, `apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState.ts`, `apps/web/src/pages/vehicle/VehicleRequestsOnSiteTab.tsx`, `apps/api/test/access-scope.test.ts`, `apps/api/test/vehicle-request-customer.db.test.ts`, `apps/web/test/permissions-ui.test.tsx`
 - [0217](0217-manager-auto-part-receipts.md) — Менеджер ведёт чеки автозапчастей · код: `packages/contracts/src/permissions.ts`, `apps/web/src/pages/garage/AutoPartReceiptsTab.tsx`, `apps/api/test/permissions.test.ts`, `apps/api/test/auto-part-receipts.db.test.ts`, `apps/web/test/garage-receipt-windows.test.tsx`
+- [0223](0223-portal-permission-oracle.md) — The portal asks the server's permission list, never the contracts matrix · код: `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/entities/office-equipment-candidate/model/intake.ts`, `apps/web/src/entities/vehicle-request/model/dateRules.ts`, `apps/web/src/pages/mech/mechRequestMenu.tsx`, `apps/web/src/pages/service/serviceRequestGrid.tsx`, `packages/contracts/src/permissions.ts`, `apps/api/src/routes/auth.ts`
 
 ## учётки-и-аудит (11)
 
@@ -305,7 +306,7 @@
 - [0195](0195-waste-ticket-review-cross.md) — Колонка «Талоны»: крестик вместо разбивки значков · реализовано · код: `apps/web/src/features/waste-ticket-review/ui/ticketBadgeLegend.ts`, `apps/web/src/features/waste-ticket-review/ui/TicketBadge.tsx`, `apps/web/src/features/waste-ticket-review/ui/TicketCell.tsx`, `apps/web/src/widgets/waste-request-feed/ui/feedColumns.tsx`, `apps/web/src/widgets/waste-request-view/model/useWasteRequestView.tsx`, `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`, `apps/web/src/shared/lib/useScrollIntoViewWhen.ts`, `apps/web/test/waste-ticket-cell-review.test.tsx`, `apps/web/test/waste-ticket-confirm-button.test.tsx`
 - [0203](0203-auto-part-receipt-recognition.md) — Распознавание чеков на автозапчасти · реализовано · код: `packages/contracts/src/recognition.ts`, `packages/contracts/src/auto-part-receipt-recognition.ts`, `apps/worker/src/ocr-engine`, `apps/worker/src/receipt-ocr`, `apps/api/src/services/auto-part-receipt-recognition.ts`, `apps/api/src/routes/auto-part-receipts.ts`, `apps/web/src/pages/garage/ReceiptRecognitionPanel.tsx`, `apps/web/src/pages/garage/AutoPartReceiptFormModal.tsx`
 
-## каркас-портала (9)
+## каркас-портала (10)
 
 - [0030](0030-responsive-layout.md) — Адаптивная вёрстка: мобильный режим поверх десктопа, а не вместо него · изменён 0102 · код: `apps/web/src/hooks/useIsMobile.ts`, `apps/web/src/theme.ts`, `apps/web/src/main.tsx`, `apps/web/src/components/AppLayout.tsx`, `apps/web/src/components/DataTable.tsx`, `apps/web/src/components/FormModal.tsx`, `apps/web/src/components/PageTableLayout.tsx`, `apps/web/test/setup.ts`
 - [0042](0042-directories-on-phone.md) — Справочники и администрирование на телефоне — карточками · код: `apps/web/src/shared/ui/ListToolbar.tsx`, `apps/web/src/shared/ui/listControls.ts`, `apps/web/src/widgets/user-account-registry/ui/UserAccountRegistry.tsx`
@@ -316,6 +317,7 @@
 - [0136](0136-select-popup-width.md) — Ширина раскрытого списка — правило портала, а не свойство поля · код: `apps/web/src/main.tsx`, `apps/web/src/widgets/waste-request-feed/ui/feedFilters.tsx`, `apps/web/src/pages/waste/WasteHistoryTab.tsx`
 - [0139](0139-list-filters-persist.md) — Набор отборов списка живёт дольше сеанса
 - [0222](0222-frontend-query-freshness-and-render.md) — Portal query freshness, deferred options, and list rendering · код: `apps/web/src/shared/config/query.ts`, `apps/web/src/app/providers/query.tsx`, `apps/web/src/shared/api/listQueryOptions.ts`, `apps/web/src/shared/lib/useDeferredOptions.ts`, `apps/web/scripts/check-cache-invalidation.mjs`
+- [0223](0223-portal-permission-oracle.md) — The portal asks the server's permission list, never the contracts matrix · код: `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/entities/office-equipment-candidate/model/intake.ts`, `apps/web/src/entities/vehicle-request/model/dateRules.ts`, `apps/web/src/pages/mech/mechRequestMenu.tsx`, `apps/web/src/pages/service/serviceRequestGrid.tsx`, `packages/contracts/src/permissions.ts`, `apps/api/src/routes/auth.ts`
 
 ## схема-и-выкат (10)
 
