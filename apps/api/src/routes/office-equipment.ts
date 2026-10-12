@@ -139,9 +139,6 @@ const modelRef = {
  * Ссылки на строку карточки для подзапроса характеристик — выражениями, а не колонками (тот же
  * приём, что `modelIdRef` в маршруте моделей): вписанная колонка внешней таблицы в подзапросе
  * рискует превратиться в ссылку на саму себя, и предикат станет вечно ложным без единой ошибки.
- *
- * `model_id` здесь законно бывает `NULL` — карточка выпуска A без модели. Тогда характеристики
- * типа приезжают со значением `null`, то есть «н/д» (Р9).
  */
 const equipmentModelIdRef = sql`${officeEquipment}."model_id"`;
 const equipmentTypeIdRef = sql`${officeEquipment}."equipment_type_id"`;
@@ -171,14 +168,10 @@ const departmentRef = {
  */
 
 /**
- * Тип и объект у единицы есть всегда (`NOT NULL`), поэтому они `innerJoin`; отдел — необязателен,
- * и `leftJoin` здесь означает ровно «не размечена», а не потерянную ссылку.
- *
- * Модель — тоже `leftJoin`, и в выпуске A обязана им быть (Р2): колонка `model_id` весь выпуск
- * nullable, потому что в окне выката карточку заводит старый код, ничего о ней не знающий.
- * `innerJoin` вычеркнул бы такую карточку из списка и из карточки — то есть спрятал бы ровно ту
- * единицу, ради которой совместимость и делалась. В выпуске B, вместе с `NOT NULL`, join станет
- * внутренним.
+ * Type, model and site are always present (`NOT NULL`; the model since release B of ADR 0132), so
+ * they are `innerJoin`; the department is optional, and `leftJoin` there means exactly "not
+ * assigned", not a lost reference. Release A had to `leftJoin` the model: an inner join would have
+ * hidden a card created without one in its rollout window.
  */
 function baseQuery() {
   return db
@@ -194,7 +187,7 @@ function baseQuery() {
     })
     .from(officeEquipment)
     .innerJoin(officeEquipmentTypes, eq(officeEquipment.equipmentTypeId, officeEquipmentTypes.id))
-    .leftJoin(officeEquipmentModels, eq(officeEquipment.modelId, officeEquipmentModels.id))
+    .innerJoin(officeEquipmentModels, eq(officeEquipment.modelId, officeEquipmentModels.id))
     .innerJoin(constructionObjects, eq(officeEquipment.objectId, constructionObjects.id))
     .leftJoin(departments, eq(officeEquipment.ownerDepartmentId, departments.id));
 }
@@ -205,10 +198,9 @@ function toDto(r: EquipmentRow): OfficeEquipmentDto {
   return {
     id: r.e.id,
     type: r.type,
-    // Модель отдаётся всегда, а не «когда получилось»: необязательной в контракте она стоит только
-    // на время выпуска A (Р2) — ради фикстур портала и ещё не переведённых читателей. Отсюда
-    // `null` означает «ссылки у карточки нет» (её завёл старый код в окне выката), а не «маршрут
-    // не умеет»; в выпуске B оба переходных состояния уходят вместе с nullable-колонкой.
+    // Always present since release B (the column is `NOT NULL`). The DTO type still allows the two
+    // release A states (absent, `null`) for the portal's fixtures and readers; narrowing it is a
+    // portal step of its own, not part of the schema contract.
     model: r.model,
     specs: r.specs,
     // Имя — копия имени модели, которую ведёт база (Р3), а не то, что ввёл человек.
@@ -1006,26 +998,15 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
           const inventoryNumber = b.inventoryNumber ?? ex.inventoryNumber;
 
           if (equipmentTypeId !== ex.equipmentTypeId) await assertTypeUsable(tx, equipmentTypeId);
-          // Сменить тип, не назвав, чем карточку именовать, нельзя (Р1). Тип у модели неизменяем, и
-          // такой запрос уходит в legacy-ветку триггера: та резолвит карточку по её нынешнему имени и
-          // ЗАВОДИТ в справочнике новую модель нового типа. Справочник, который пополняется правкой
-          // чужой карточки, — ровно то, ради чего модель и уводили из свободного текста: ИТ-служба
-          // должна видеть перечень, который ведёт сама.
-          //
-          // Отбивает это маршрут, а не триггер, и это не вкусовщина: триггер обязан оставаться
-          // терпимым — через него в окне выпуска A идёт старый код, не знающий о моделях вовсе, — а
-          // маршрут видит, кто к нему пришёл, и вправе требовать явного выбора.
-          //
-          // Присланное имя запрет снимает: `{ equipmentTypeId, name }` — это и есть старый клиент
-          // (и заливка файлом до перевода на модели), у него резолв по имени законен и является
-          // единственным доступным способом сказать «эта карточка теперь вот такая». Ловим ровно
-          // случай «тип меняют, а чем именовать — не сказали». Запрет уходит вместе с legacy-веткой в
-          // выпуске C: резолвить будет нечего, и смена типа без модели станет отказом самой базы.
-          if (
-            equipmentTypeId !== ex.equipmentTypeId &&
-            b.modelId === undefined &&
-            b.name === undefined
-          ) {
+          // A type change must name the model of the new type (ADR 0132, Р1): a model's type is
+          // immutable, and a request that changes only the type would reach the mirror trigger's
+          // legacy branch, which resolves the card by its current name and CREATES a model of the
+          // new type in the directory — a directory filled by editing somebody's card. The trigger
+          // has to stay tolerant until release C (the previous release serves migration windows
+          // through it); the route sees who came and may demand an explicit choice. Release A let a
+          // `name` lift the ban — that was the old client's only way to say "this card is now that
+          // model"; since release B `name` is not an input at all, so the ban has no exception.
+          if (equipmentTypeId !== ex.equipmentTypeId && b.modelId === undefined) {
             throw err.unprocessable(
               'Смена типа требует выбрать модель нужного типа: у моделей тип неизменяем',
               { modelId: 'Выберите модель нового типа' },
@@ -1079,13 +1060,9 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
             updatedAt: new Date(),
           };
           if (b.equipmentTypeId !== undefined) set.equipmentTypeId = b.equipmentTypeId;
+          // `name` is never written here: it is the model's name, kept by the mirror trigger, and
+          // the contract refuses it as input since release B (ADR 0132).
           if (b.modelId !== undefined) set.modelId = b.modelId;
-          // Имя пишется, только когда ссылки в запросе нет. С выпуска A `name` — копия модели (Р3), и
-          // у запроса, назвавшего модель ссылкой, оно ничего не решает; записав оба поля разом, мы
-          // отдали бы выбор state-машине триггера, а та при неизменившейся ссылке считает главным
-          // имя — и увела бы карточку на модель, найденную по тексту, вместо выбранной. Старый
-          // клиент, шлющий одно имя, идёт этой веткой по-прежнему: он и есть её адресат.
-          if (b.name !== undefined && b.modelId === undefined) set.name = b.name;
           if (b.serialNumber !== undefined) set.serialNumber = b.serialNumber;
           if (b.inventoryNumber !== undefined) set.inventoryNumber = b.inventoryNumber;
           if (b.departmentId !== undefined) set.ownerDepartmentId = b.departmentId ?? null;

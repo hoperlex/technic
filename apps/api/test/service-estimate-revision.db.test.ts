@@ -22,6 +22,7 @@ import type {
   serviceClosingFileMatchSql,
   serviceHasClosingDocumentSql,
 } from '../src/services/service-estimate-revision';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ФОРМАТ РЕВИЗИИ ОБЪЁМА РАБОТ СТАЛ НАСТОЯЩИМ — и снаружи от этого не изменилось ничего (Э3 плана
@@ -209,7 +210,7 @@ async function makeEquipment(warrantyUntil: string | null = null): Promise<strin
   unitNo += 1;
   const res = await inject('POST', '/api/v1/office-equipment', ctx.operator.auth, {
     equipmentTypeId: ctx.typeId,
-    name: `Kyocera ECOSYS M3145 ${RUN}`,
+    modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `Kyocera ECOSYS M3145 ${RUN}`),
     inventoryNumber: `ЭФ-${RUN}-${unitNo}`,
     objectId: ctx.objectId,
     location: 'кабинет 214',

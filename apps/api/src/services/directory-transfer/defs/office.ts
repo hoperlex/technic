@@ -546,7 +546,7 @@ const officeEquipmentModelsDirectory = directory<
 
     const cardsByModelId = new Map<string, number>();
     for (const row of cards) {
-      if (row.modelId !== null) cardsByModelId.set(row.modelId, row.cards);
+      cardsByModelId.set(row.modelId, row.cards);
     }
 
     // Ключ опознавания — и полное имя, и сокращение, регистр не различается: в ячейке напишут и
@@ -1269,14 +1269,13 @@ const officeEquipmentDirectory = directory<OfficeEquipmentRow, EquipmentModel, E
   id: (row) => row.id,
   model: (row, env) => ({
     typeCode: env.typeCodeById.get(row.equipmentTypeId) ?? '',
-    // Имя берётся у модели по ссылке, а не из `name` карточки, хотя сегодня это одна и та же
-    // строка — зеркало держит триггер (Р3). Через ссылку потому, что словарь моделей окружению всё
-    // равно нужен для заливки: лишнего запроса нет, а читателем зеркала эта колонка быть перестаёт
-    // — снятие `name` вынесено планом в отдельную работу «перевести читателей на связь» (§10), и
-    // одним читателем в том списке меньше.
-    // `?? row.name` — окно выпуска A: `model_id` пока nullable (Р2), и карточке без ссылки печатать
-    // пусто нельзя. Ветка нужна и типу колонки, и карточке, заведённой до наката 0171.
-    name: (row.modelId === null ? undefined : env.modelNameById.get(row.modelId)) ?? row.name,
+    // The name is taken from the model by reference, not from the card's `name`, although today
+    // they are the same string (the mirror trigger keeps it). By reference because the import needs
+    // the model dictionary anyway — no extra query — and this export stops being a reader of the
+    // mirror column, one fewer for the plan's separate "move readers to the link" work (§10).
+    // `?? row.name` only covers a model created after the dictionary was read; the link itself is
+    // `NOT NULL` since release B of ADR 0132.
+    name: env.modelNameById.get(row.modelId) ?? row.name,
     serialNumber: row.serialNumber,
     inventoryNumber: row.inventoryNumber,
     objectCode: env.objectCodeById.get(row.objectId) ?? '',

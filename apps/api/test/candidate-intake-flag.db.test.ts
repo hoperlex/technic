@@ -8,6 +8,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * РУБИЛЬНИК ПРИЁМА СООБЩЕНИЙ О ТЕХНИКЕ: СЕРВЕРНАЯ ПОЛОВИНА (план
@@ -172,7 +173,7 @@ describe.skipIf(!DB_URL)('рубильник приёма сообщений о 
     unitNo += 1;
     const res = await inject('POST', EQUIPMENT, ctx.admin.auth, {
       equipmentTypeId: ctx.typeId,
-      name: `МФУ рубильника ${unitNo} ${RUN}`,
+      modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `МФУ рубильника ${unitNo} ${RUN}`),
       objectId: ctx.objectId,
       location: 'кабинет 214',
       inventoryNumber: `CFU-${RUN}-${unitNo}`,
@@ -443,7 +444,7 @@ describe.skipIf(!DB_URL)('рубильник приёма сообщений о 
           expectedVersion: 1,
           equipment: {
             equipmentTypeId: ctx.typeId,
-            name: 'Kyocera ECOSYS M3145',
+            modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, 'Kyocera ECOSYS M3145'),
             inventoryNumber: `CF-${RUN}-open`,
             objectId: ctx.objectId,
             location: 'каб. 214',

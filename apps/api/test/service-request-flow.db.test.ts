@@ -17,6 +17,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * Заявка на обслуживание оргтехники от заведения до гарантийного обращения (ADR 0085, план §5) —
@@ -343,7 +344,7 @@ async function makeEquipment(input: {
 }): Promise<string> {
   const res = await inject('POST', '/api/v1/office-equipment', ctx.operator.auth, {
     equipmentTypeId: input.typeId,
-    name: modelName(input.name),
+    modelId: await officeEquipmentModelId(ctx.db, input.typeId, modelName(input.name)),
     inventoryNumber: input.inventoryNumber,
     objectId: input.objectId,
     departmentId: input.departmentId ?? null,

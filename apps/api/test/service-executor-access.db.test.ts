@@ -18,6 +18,7 @@ import {
 import type { InjectOptions, LightMyRequestResponse } from 'fastify';
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * Отрицательные тесты доступа к заявкам на обслуживание оргтехники — этап Э2 плана
@@ -285,7 +286,7 @@ async function makeEquipment(
   unitNo += 1;
   const res = await inject('POST', '/api/v1/office-equipment', ctx.admin.auth, {
     equipmentTypeId: ctx.typeId,
-    name: modelName('Kyocera ECOSYS M3145'),
+    modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, modelName('Kyocera ECOSYS M3145')),
     inventoryNumber: `SEA-${RUN}-${unitNo}`,
     objectId,
     departmentId,

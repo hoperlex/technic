@@ -7,6 +7,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ПРОЕКЦИЯ СПРАВОЧНИКА ДЛЯ ВЫБОРА ПРЕДМЕТА ЗАЯВКИ (план
@@ -296,7 +297,7 @@ describe.skipIf(!DB_URL)('выдача справочника для выбор�
         remoteAddress: nextAddress(),
         payload: {
           equipmentTypeId: typeId,
-          name: `Kyocera ECOSYS ${tag} ${RUN}`,
+          modelId: await officeEquipmentModelId(db, typeId, `Kyocera ECOSYS ${tag} ${RUN}`),
           inventoryNumber: `SEL-${RUN}-${tag}`,
           objectId: opts.objectId,
           location: 'кабинет 214',

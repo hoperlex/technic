@@ -9,6 +9,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { InjectOptions, LightMyRequestResponse } from 'fastify';
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * **ЗАКРЫТИЕ РАБОТ ПО ДОКУМЕНТНОЙ ЗАЯВКЕ И ПЛАНКА ПРИЁМКИ** — вторая половина этапа Э4 плана
@@ -180,7 +181,7 @@ async function makeEquipment(): Promise<string> {
   unitNo += 1;
   const res = await inject('POST', '/api/v1/office-equipment', ctx.admin.auth, {
     equipmentTypeId: ctx.typeId,
-    name: `RICOH MP C2011 ${RUN}`,
+    modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `RICOH MP C2011 ${RUN}`),
     inventoryNumber: `CMP-${RUN}-${unitNo}`,
     objectId: ctx.objectId,
     location: 'кабинет 312',

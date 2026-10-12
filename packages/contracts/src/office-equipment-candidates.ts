@@ -189,29 +189,31 @@ export type UpdateOfficeEquipmentCandidateInput = z.infer<
 >;
 
 /**
- * «Подтвердить технику» (Р13, В7): версия и ПОЛНАЯ ФОРМА КАРТОЧКИ ПАРКА, предзаполненная
- * заявленным.
+ * "Confirm the equipment" (Р13, В7): the version and the FULL FLEET CARD FORM, prefilled with what
+ * was declared.
  *
- * НЕ КНОПКА «ЗАВЕСТИ КАК ЕСТЬ», и это решение опроса. Проверяющий здесь не соглашается с
- * сообщением, а заводит карточку ПО сообщению: заявитель не знает половины реквизитов учёта (Р7), и
- * карточка, созданная из его слов один в один, была бы неполной с первого дня — без модели-ссылки,
- * без отдела-владельца и без гарантии, то есть невидимой для счётчиков парка и для вкладки
- * «Гарантии».
+ * NOT A "CREATE AS IS" BUTTON, and that is a survey decision. The reviewer does not agree with the
+ * report but creates a card FROM it: the requester does not know half of the accounting details
+ * (Р7), and a card made from their words one to one would be incomplete from day one — without a
+ * model reference, an owner department or a warranty, that is invisible to the fleet counters and
+ * to the "Warranties" tab. Since release B of ADR 0132 the model reference is required here as on
+ * the first door: the declared model text stays evidence and never becomes the card's input.
  *
- * Форма — та же `createOfficeEquipmentSchema` вложенным объектом, а не переписанный список полей:
- * вторая дверь в парк обязана принимать ровно то же, что первая (Р14), и разойдясь на одном
- * необязательном поле, они дали бы карточки двух сортов. Вложенным, потому что схема карточки
- * несёт `.refine` («хотя бы один номер», «модель ссылкой или именем») и расширению не поддаётся, а
- * копия этих правил рядом разошлась бы с оригиналом на первой же правке.
+ * The form is the same `createOfficeEquipmentSchema` nested, not a rewritten field list: the second
+ * door into the fleet must accept exactly what the first one does (Р14), and diverging on one
+ * optional field they would produce cards of two kinds. Nested, because the card schema carries a
+ * `.refine` ("at least one number") and cannot be extended, and a copy of its rules next to it
+ * would drift from the original on the first edit.
  *
- * `lazy`, а не прямая ссылка, — из-за кольца импортов, и это не осторожность впрок (Э2). С тех пор
- * как `equipmentCandidateInputSchema` встроилась в `createServiceRequestSchema` (Р2), три файла
- * замкнулись: заявка берёт схему кандидата, кандидат — форму карточки отсюда, а справочник берёт у
- * заявки `projectByAudiencePolicy`. Кольцо само по себе законно, ломает его только обращение к
- * чужому ЗНАЧЕНИЮ во время вычисления модуля: вход через `index.ts` начинается со справочника, и
- * прямая ссылка падала бы здесь с «Cannot access 'createOfficeEquipmentSchema' before
- * initialization» — то есть при загрузке всего пакета, а не в редком случае. `lazy` откладывает
- * обращение до первого разбора, когда вычислены все три модуля; проверено запуском.
+ * `lazy` instead of a direct reference because of an import cycle, and not as a precaution (Э2).
+ * Since `equipmentCandidateInputSchema` was embedded into `createServiceRequestSchema` (Р2), three
+ * files close a ring: the request takes the candidate schema, the candidate takes the card form from
+ * the directory, and the directory takes `projectByAudiencePolicy` from the request. The ring is
+ * legal by itself; only reading another module's VALUE while modules evaluate breaks it: entry via
+ * `index.ts` starts with the directory, and a direct reference would fail here with "Cannot access
+ * 'createOfficeEquipmentSchema' before initialization" — on loading the whole package, not in a
+ * rare case. `lazy` defers the access to the first parse, when all three modules are evaluated;
+ * verified by running it.
  */
 export const confirmOfficeEquipmentCandidateSchema = z.object({
   expectedVersion: expectedVersionSchema,

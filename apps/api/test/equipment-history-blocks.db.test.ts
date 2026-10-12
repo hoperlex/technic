@@ -27,6 +27,7 @@ import type { Principal } from '../src/auth/principal';
 // Модуль блоков грузится через `await import` уже после того, как выставлено окружение; тип берётся
 // отдельно — встроенная аннотация `typeof import(...)` в этом наборе правил запрещена.
 import type * as OfficeEquipmentBlocks from '../src/services/office-equipment-blocks';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ИСТОРИЯ ЕДИНИЦЫ ОРГТЕХНИКИ ТРЕМЯ БИЗНЕС-БЛОКАМИ — серверные случаи §10.1 плана
@@ -531,7 +532,7 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
       unitNo += 1;
       const res = await inject('POST', EQUIPMENT, ctx.operator.auth, {
         equipmentTypeId: ctx.typeId,
-        name: `Kyocera ECOSYS ${tag} ${RUN}`,
+        modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `Kyocera ECOSYS ${tag} ${RUN}`),
         inventoryNumber: `HB-${RUN}-${unitNo}`,
         objectId: ctx.objectA,
         location: 'кабинет 200',
@@ -1323,7 +1324,7 @@ describe.skipIf(!DB_URL)('история единицы оргтехники т�
 
       const created = await inject('POST', EQUIPMENT, ctx.operator.auth, {
         equipmentTypeId: ctx.typeId,
-        name: `Kyocera ECOSYS bulk ${RUN}`,
+        modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `Kyocera ECOSYS bulk ${RUN}`),
         inventoryNumber: `HB-${RUN}-bulk`,
         objectId: ctx.objectA,
         location: 'кабинет 300',

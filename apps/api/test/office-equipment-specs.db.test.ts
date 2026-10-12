@@ -266,12 +266,16 @@ describeDb('характеристики моделей оргтехники (db
   afterAll(async () => {
     if (!ctx?.db) return;
     // Порядок задан внешними ключами: карточки, потом значения характеристик, потом модели.
-    await ctx.db.execute(sql`DELETE FROM office_equipment WHERE inventory_number LIKE ${`OES-${RUN}-%`}`);
+    await ctx.db.execute(
+      sql`DELETE FROM office_equipment WHERE inventory_number LIKE ${`OES-${RUN}-%`}`,
+    );
     await ctx.db.execute(sql`
       DELETE FROM office_equipment_model_specs ms
        USING office_equipment_models m
        WHERE m.id = ms.model_id AND m.name LIKE ${`%SPEC ${RUN}%`}`);
-    await ctx.db.execute(sql`DELETE FROM office_equipment_models WHERE name LIKE ${`%SPEC ${RUN}%`}`);
+    await ctx.db.execute(
+      sql`DELETE FROM office_equipment_models WHERE name LIKE ${`%SPEC ${RUN}%`}`,
+    );
     await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code = ${`OES-${RUN}`}`);
     await ctx.db.execute(sql`DELETE FROM users WHERE email = ${ctx.admin.email}`);
     await ctx.app.close();
@@ -321,11 +325,19 @@ describeDb('характеристики моделей оргтехники (db
   });
 
   it('правка ставит и снимает значение: пусто снова означает «н/д»', async () => {
-    const model = await modelInList((await modelInList((await createModel({
-      typeId: ctx.mfpTypeId,
-      name: `Pantum M6500 SPEC ${RUN}`,
-      specs: [{ specId: ctx.colorSpecId, valueId: ctx.colorValueId }],
-    })).id)).id);
+    const model = await modelInList(
+      (
+        await modelInList(
+          (
+            await createModel({
+              typeId: ctx.mfpTypeId,
+              name: `Pantum M6500 SPEC ${RUN}`,
+              specs: [{ specId: ctx.colorSpecId, valueId: ctx.colorValueId }],
+            })
+          ).id,
+        )
+      ).id,
+    );
     expect(model.specs[0]!.value?.code).toBe('color');
 
     const changed = await inject('PATCH', `/api/v1/office-equipment-models/${model.id}`, {
@@ -393,6 +405,11 @@ describeDb('характеристики моделей оргтехники (db
         await tx.execute(
           sql`ALTER TABLE office_equipment DISABLE TRIGGER office_equipment_model_mirror`,
         );
+        // Since release B of ADR 0132 the link is `NOT NULL`, so a card without a model exists in
+        // no database; the case keeps the expression's answer for an empty reference (a query that
+        // left-joins the model passes exactly that) and rebuilds the state inside the same
+        // rolled-back transaction.
+        await tx.execute(sql`ALTER TABLE office_equipment ALTER COLUMN model_id DROP NOT NULL`);
         await tx.execute(sql`UPDATE office_equipment SET model_id = NULL WHERE id = ${card.id}`);
         const rows = await tx
           .select({

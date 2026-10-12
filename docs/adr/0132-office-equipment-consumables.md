@@ -1,7 +1,8 @@
 # ADR 0132. Расходники оргтехники: модель аппарата, совместимость и остаток
 
 - Статус: Принято (реализовано выпуском A — миграции `0171` и `0172`, запись выпуска `0174`, версия
-  `0.1.37.0132`. Выпуски B и C впереди, их условия названы в «Последствиях»)
+  `0.1.37.0132`; выпуск B — 12.10.2026, миграция `0369`, едет выкатом R1. Выпуск C впереди, его
+  условие названо в «Последствиях»)
 - Развивает: [ADR 0085](0085-office-equipment-module.md) — снимает пункт «Отложено»: «Расходники
   (картриджи, тонер) и их остатки: другой предмет учёта». Там же меняет природу
   `office_equipment.name`: наименование перестаёт быть тем, что вводит человек, и становится копией
@@ -19,7 +20,7 @@
   [ADR 0125](0125-service-request-cycle-changes.md) (цикл заявки на обслуживание — второй писатель
   журнала остатка, когда приедет списание по заявке)
 - Миграции: `0171` (модели, expand), `0172` (расходники, совместимость, журнал и три триггера),
-  `0174` (запись выпуска). Прецедент перехода — доведённая до конца пара
+  `0174` (запись выпуска), `0369` (выпуск B: добивка ссылок, караул, `NOT NULL`). Прецедент перехода — доведённая до конца пара
   [`0072`](../../apps/api/drizzle/0072_vehicle_routes.sql) /
   [`0074`](../../apps/api/drizzle/0074_vehicle_routes_contract.sql)
 - Связано: `packages/contracts/src/office-equipment-models.ts`,
@@ -402,6 +403,48 @@ B. Выпуск C маленький (одна миграция и запись 
 - (−) Модель без карточек законна и автоматически не убирается. Отсюда требование к накату:
   осиротевшие тестовые карточки в общей базе после перехода становятся строками справочника
   навсегда — отчёт этапа 0 нашёл шесть таких на копии парка.
+
+## Release B (2026-10-12)
+
+**What shipped.** Migration `0369_office_equipment_model_not_null.sql`: `LOCK TABLE` first, the
+parse of 0171 repeated for cards without a model (a blank spelling key is left to the guard), the
+backfill by the same "type + key" pair, a guard naming up to twenty unlinked cards, then
+`ALTER COLUMN model_id SET NOT NULL`. In the contracts `modelId` is required on create and `name`
+is refused by the field (`z.never()` with a message), on create, on edit and in the nested form of
+the candidate confirmation. The route always checks the model, a type change without `modelId` is
+422 with no exception for `name`, and the list joins the model with an inner join. The portal form
+had no name field since release A, so nothing changed there.
+
+**The condition "a week of code A and zero cards without a model" is replaced, not skipped** (owner
+decision S-10: no prod measurements, guards inside migrations instead). Code A has been on prod since
+`0.1.37.0132`, far longer than a week. A zero count is shown by the schema rather than measured:
+0171 ended with its own guard; the mirror is the only trigger on `office_equipment`, `ENABLE ALWAYS`,
+and no migration, script, worker or route disables or replaces it (checked on the prod commit
+`dc647215`); every branch of the mirror ends with a model id or a raise; the foreign key is
+`ON DELETE RESTRICT`. A card can stay unlinked after the backfill only with an empty spelling key,
+which `office_equipment_name_not_blank_check` plus the mirror's raise excluded since 0171. So the
+guard cannot plausibly fire and ships in R1, not in a separate guard deploy; it exists to fail with
+card ids if the reasoning is ever broken.
+
+**The migration window.** The previous release still inserts with `model_id = NULL` when a client
+names the model in words (`modelId: b.modelId ?? null`) and PATCHes by name. Both keep working:
+PostgreSQL checks `NOT NULL` after `BEFORE` row triggers, and the mirror links the card first — the
+db test `office-equipment-model-not-null.db.test.ts` runs exactly that statement on the new schema.
+This is why release C (the trigger without the legacy branch) must still wait one more release.
+
+**Old bundles and `name`: refused, not ignored.** Every portal bundle the prod floor admits (contract
+≥ 4, first commit `ffd4be8a`) builds the equipment body with `officeEquipmentPayload`, which has no
+`name`: its text is byte-identical in all 665 commits from `ffd4be8a` to `5e6e1760`, and every
+equipment write of the portal goes through it in each of them (the directory tab's create and
+update, the quick create from a request, and the candidate confirmation once it appeared). So the choice between ignoring and refusing affects no real client, and
+refusing is the honest one for the same reason as the consumable's `quantity`: a `PATCH { name }`
+answered with 200 while the card keeps its model is the silent edit decision 4 rules out.
+
+**Not done here.** Release C — `CREATE OR REPLACE` of the mirror without its legacy branches — is
+R2 and must ship no later than a month after this release reaches prod. The DTO field
+`OfficeEquipmentDto.model` still admits "absent" and `null`; narrowing it is a portal step of its
+own. `office_equipment.name` stays a mirror (decision 3), so the create still writes an empty
+placeholder that the mirror overwrites.
 
 ## Отвергнутые варианты
 

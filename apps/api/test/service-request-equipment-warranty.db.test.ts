@@ -8,6 +8,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * СРОК ГАРАНТИИ ЕДИНИЦЫ ПРИЕЗЖАЕТ В СТРОКЕ ЗАЯВКИ (фикс Ф3 плана
@@ -190,7 +191,7 @@ describe.skipIf(!DB_URL)('гарантия единицы в строке зая
   async function makeEquipment(tag: string, warrantyUntil?: string): Promise<string> {
     const res = await inject('POST', EQUIPMENT, ctx.admin.auth, {
       equipmentTypeId: ctx.typeId,
-      name: `МФУ ${tag} ${RUN}`,
+      modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `МФУ ${tag} ${RUN}`),
       inventoryNumber: `EW-${tag}-${RUN}`,
       objectId: ctx.objectId,
       location: 'кабинет 214',
@@ -496,8 +497,9 @@ describe.skipIf(!DB_URL)('гарантия единицы в строке зая
       const dto = await create({ officeEquipmentId: equipmentId });
       const nameAtCreation = dto.equipment?.name;
 
+      // Renaming a card is moving it to another model since release B of ADR 0132.
       const renamed = await inject('PATCH', `${EQUIPMENT}/${equipmentId}`, ctx.admin.auth, {
-        name: `МФУ переименованный ${RUN}`,
+        modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `МФУ переименованный ${RUN}`),
         warrantyUntil: '2034-06-30',
       });
       expect(renamed.statusCode, renamed.body).toBe(200);

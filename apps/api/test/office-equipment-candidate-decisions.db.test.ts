@@ -8,6 +8,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ТРИ РЕШЕНИЯ ПРОВЕРЯЮЩЕГО ПО СООБЩЕНИЮ О ТЕХНИКЕ (план
@@ -223,15 +224,19 @@ async function makePlainRequest(tag: string): Promise<{ id: string }> {
 }
 
 /** Форма подтверждения — полная форма карточки парка (Р13), а не «завести как есть». */
-function confirmBody(pair: Pair, extra: Record<string, unknown> = {}) {
+async function confirmBody(pair: Pair, extra: Record<string, unknown> = {}) {
   const { expectedVersion, ...equipment } = extra as { expectedVersion?: number };
   return {
     expectedVersion: expectedVersion ?? 1,
     equipment: {
       equipmentTypeId: ctx.typeId,
-      // Именем, а не ссылкой на модель: так работает совместимость выпуска A, и модель по имени
-      // заводит триггер зеркала — заодно проверяется, что снимок заявки берёт имя ИЗ БАЗЫ.
-      name: `Kyocera ECOSYS ${pair.serialNumber}`,
+      // A model of its own per pair, by reference (ADR 0132, release B): the request snapshot is
+      // then checked to take the name FROM THE DATABASE — the model's name the mirror copied.
+      modelId: await officeEquipmentModelId(
+        ctx.db,
+        ctx.typeId,
+        `Kyocera ECOSYS ${pair.serialNumber}`,
+      ),
       serialNumber: pair.serialNumber,
       inventoryNumber: pair.inventoryNumber,
       objectId: ctx.objectA,
@@ -506,7 +511,7 @@ describe.skipIf(!DB_URL)(
       const serialNumber = `CARD-${tag}-${RUN}`;
       const res = await inject('POST', EQUIPMENT, ctx.users.admin.auth, {
         equipmentTypeId: ctx.typeId,
-        name: `МФУ ${tag} ${RUN}`,
+        modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `МФУ ${tag} ${RUN}`),
         objectId: ctx.objectA,
         location: 'кабинет 101',
         serialNumber,
@@ -521,7 +526,7 @@ describe.skipIf(!DB_URL)(
     describe('подтверждение', () => {
       it('заводит карточку, переписывает снимки заявки и пишет две строки журнала', async () => {
         const pair = await makePair({ tag: 'C1' });
-        const res = await decide('confirm', 'reviewer', pair.candidateId, confirmBody(pair));
+        const res = await decide('confirm', 'reviewer', pair.candidateId, await confirmBody(pair));
         expect(res.statusCode, res.body).toBe(200);
         const dto = res.json() as OfficeEquipmentCandidateDto;
         expect(dto.status).toBe('confirmed');
@@ -566,10 +571,20 @@ describe.skipIf(!DB_URL)(
 
       it('повторное подтверждение той же формой — 409 со свежим состоянием', async () => {
         const pair = await makePair({ tag: 'C2' });
-        const first = await decide('confirm', 'reviewer', pair.candidateId, confirmBody(pair));
+        const first = await decide(
+          'confirm',
+          'reviewer',
+          pair.candidateId,
+          await confirmBody(pair),
+        );
         expect(first.statusCode, first.body).toBe(200);
 
-        const second = await decide('confirm', 'reviewer', pair.candidateId, confirmBody(pair));
+        const second = await decide(
+          'confirm',
+          'reviewer',
+          pair.candidateId,
+          await confirmBody(pair),
+        );
         expect(second.statusCode, second.body).toBe(409);
         const details = (second.json() as { details: { candidate: OfficeEquipmentCandidateDto } })
           .details;
@@ -588,7 +603,7 @@ describe.skipIf(!DB_URL)(
           'confirm',
           'reviewer',
           pair.candidateId,
-          confirmBody(pair, { objectId: ctx.objectB }),
+          await confirmBody(pair, { objectId: ctx.objectB }),
         );
         expect(res.statusCode, res.body).toBe(403);
         expect((await candidateRow(pair.candidateId)).status).toBe('pending');
@@ -601,7 +616,7 @@ describe.skipIf(!DB_URL)(
           'confirm',
           'reviewer',
           pair.candidateId,
-          confirmBody(pair, { serialNumber: card.serialNumber }),
+          await confirmBody(pair, { serialNumber: card.serialNumber }),
         );
         expect(res.statusCode, res.body).toBe(409);
         const body = res.json() as {
@@ -621,7 +636,7 @@ describe.skipIf(!DB_URL)(
           'confirm',
           'reviewer',
           pair.candidateId,
-          confirmBody(pair, { serialNumber: card.serialNumber }),
+          await confirmBody(pair, { serialNumber: card.serialNumber }),
         );
         expect(res.statusCode, res.body).toBe(409);
         const body = res.json() as { message: string; details?: { officeEquipmentId?: string } };
@@ -638,7 +653,7 @@ describe.skipIf(!DB_URL)(
           'confirm',
           'reviewer',
           pair.candidateId,
-          confirmBody(pair, { serialNumber: card.serialNumber }),
+          await confirmBody(pair, { serialNumber: card.serialNumber }),
         );
         expect(res.statusCode, res.body).toBe(409);
         const body = res.json() as { message: string; details?: { officeEquipmentId?: string } };
@@ -853,7 +868,7 @@ describe.skipIf(!DB_URL)(
       it('одновременные «подтвердить» и «отклонить»: один проходит, второй получает свежее состояние', async () => {
         const pair = await makePair({ tag: 'G1' });
         const [confirmed, rejected] = await Promise.all([
-          decide('confirm', 'reviewer', pair.candidateId, confirmBody(pair)),
+          decide('confirm', 'reviewer', pair.candidateId, await confirmBody(pair)),
           decide('reject', 'reviewer', pair.candidateId, {
             expectedVersion: 1,
             reason: 'аппарата в названном месте нет',
@@ -918,7 +933,12 @@ describe.skipIf(!DB_URL)(
         expect((await requestRow(pair.requestId)).status).toBe('done');
 
         // Подтверждение снимает замок, и переход СВОЕГО хода не делает: заявка так и стоит в «Решена».
-        const confirmed = await decide('confirm', 'reviewer', pair.candidateId, confirmBody(pair));
+        const confirmed = await decide(
+          'confirm',
+          'reviewer',
+          pair.candidateId,
+          await confirmBody(pair),
+        );
         expect(confirmed.statusCode, confirmed.body).toBe(200);
         expect((await requestRow(pair.requestId)).status).toBe('done');
 
@@ -996,7 +1016,12 @@ describe.skipIf(!DB_URL)(
           FOR EACH ROW WHEN (NEW.entity_id = '${pair.candidateId}') EXECUTE FUNCTION ${fn}()`),
         );
         try {
-          const res = await decide('confirm', 'reviewer', pair.candidateId, confirmBody(pair));
+          const res = await decide(
+            'confirm',
+            'reviewer',
+            pair.candidateId,
+            await confirmBody(pair),
+          );
           // Отказ виден сразу — проверяющий повторит решение; молча пройти он не может.
           expect(res.statusCode, res.body).toBe(500);
         } finally {
@@ -1014,7 +1039,12 @@ describe.skipIf(!DB_URL)(
         expect((await requestRow(pair.requestId)).office_equipment_id).toBeNull();
 
         // И после снятия сбоя то же решение проходит: замок был на журнале, а не на данных.
-        const again = await decide('confirm', 'reviewer', pair.candidateId, confirmBody(pair));
+        const again = await decide(
+          'confirm',
+          'reviewer',
+          pair.candidateId,
+          await confirmBody(pair),
+        );
         expect(again.statusCode, again.body).toBe(200);
       });
     });
@@ -1048,7 +1078,7 @@ describe.skipIf(!DB_URL)(
 
       it('подтверждение называет заведённую карточку', async () => {
         const pair = await makePair({ tag: 'H1' });
-        const res = await decide('confirm', 'reviewer', pair.candidateId, confirmBody(pair));
+        const res = await decide('confirm', 'reviewer', pair.candidateId, await confirmBody(pair));
         expect(res.statusCode, res.body).toBe(200);
 
         const entry = decisionEntry(await history(pair.requestId, 'author'));
@@ -1203,7 +1233,7 @@ describe.skipIf(!DB_URL)(
 
       it('после подтверждения рядом с блоком появляется карточка парка', async () => {
         const pair = await makePair({ tag: 'D4' });
-        const res = await decide('confirm', 'reviewer', pair.candidateId, confirmBody(pair));
+        const res = await decide('confirm', 'reviewer', pair.candidateId, await confirmBody(pair));
         expect(res.statusCode, res.body).toBe(200);
 
         const dto = await requestDto(pair.requestId, 'author');

@@ -14,6 +14,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { InjectOptions, LightMyRequestResponse } from 'fastify';
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * Прямая ссылка на документ заявки на обслуживание оргтехники — §7.3 плана
@@ -236,7 +237,7 @@ async function makeEquipment(): Promise<string> {
   unitNo += 1;
   const res = await inject('POST', '/api/v1/office-equipment', ctx.admin.auth, {
     equipmentTypeId: ctx.typeId,
-    name: `Kyocera ECOSYS M3145 SRFA-${RUN}`,
+    modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `Kyocera ECOSYS M3145 SRFA-${RUN}`),
     inventoryNumber: `SRFA-${RUN}-${unitNo}`,
     objectId: ctx.objectId,
     location: 'кабинет 214',

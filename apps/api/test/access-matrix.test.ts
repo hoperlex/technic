@@ -855,7 +855,7 @@ const CASES: Case[] = [
     url: '/api/v1/office-equipment',
     payload: {
       equipmentTypeId: RECORD_ID,
-      name: 'Kyocera ECOSYS M3145',
+      modelId: RECORD_ID,
       inventoryNumber: '0012345',
       objectId: OBJECT_ID,
     },

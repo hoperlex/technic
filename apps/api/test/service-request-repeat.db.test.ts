@@ -12,6 +12,7 @@ import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 import type { Principal } from '../src/auth/principal';
 import type * as RepeatService from '../src/services/service-request-repeat';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ПРИЗНАК ПОВТОРНОГО ОБРАЩЕНИЯ ПО АППАРАТУ — набор §10.1 плана
@@ -210,7 +211,7 @@ async function makeEquipment(tag: string, objectId?: string): Promise<string> {
   unitNo += 1;
   const res = await inject('POST', EQUIPMENT, ctx.admin.auth, {
     equipmentTypeId: ctx.typeId,
-    name: `Kyocera ECOSYS ${tag} ${RUN}`,
+    modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `Kyocera ECOSYS ${tag} ${RUN}`),
     inventoryNumber: `RP-${RUN}-${unitNo}`,
     objectId: objectId ?? ctx.objectB,
     location: 'кабинет 214',

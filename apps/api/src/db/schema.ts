@@ -1899,12 +1899,12 @@ export const officeEquipment = pgTable(
     // Наименование модели: «Kyocera ECOSYS M3145». Опознают единицу номерами, но выбирают глазами
     // по модели — поэтому поле обязательное.
     name: text('name').notNull(),
-    // Модель записью справочника (Р1). Колонка nullable — это выпуск A (Р2): миграции
-    // накатываются до перезапуска, и в окне выката живой старый код заводит карточку, ничего не
-    // зная о колонке. `NOT NULL` ставит следующий выпуск, когда ссылку пишет уже весь код.
-    // Заполняет её не маршрут, а триггер зеркала (Р3): заливка файлом и скрипты пишут мимо
-    // маршрута, а `name` с этого момента — копия имени модели, а не то, что ввели руками.
-    modelId: uuid('model_id'),
+    // The model as a directory record (ADR 0132). `NOT NULL` since release B; release A kept it
+    // nullable for the rollout window of code that knew nothing about the column. A write that
+    // omits it is still resolved by the name mirror trigger (0171) before the constraint is
+    // checked — the previous release serves the next migration window through that branch, which
+    // release C removes. The trigger also keeps `name` a copy of the model's name.
+    modelId: uuid('model_id').notNull(),
     serialNumber: text('serial_number').notNull().default(''),
     inventoryNumber: text('inventory_number').notNull().default(''),
     // Где стоит. Офис заводится таким же объектом строительства: площадка у техники есть всегда.

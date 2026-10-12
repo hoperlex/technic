@@ -16,6 +16,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ПЕРЕМЕЩЕНИЕ ОРГТЕХНИКИ ИЗ КАРТОЧКИ ЗАЯВКИ — серверные случаи §9.1 плана
@@ -189,7 +190,7 @@ async function makeEquipment(
   unitNo += 1;
   const res = await inject('POST', EQUIPMENT, opts.auth ?? ctx.operator.auth, {
     equipmentTypeId: ctx.typeId,
-    name: `Kyocera ECOSYS ${tag} ${RUN}`,
+    modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `Kyocera ECOSYS ${tag} ${RUN}`),
     inventoryNumber: `MV-${RUN}-${unitNo}`,
     objectId: opts.objectId ?? ctx.objectA,
     location: opts.location ?? 'кабинет 101',

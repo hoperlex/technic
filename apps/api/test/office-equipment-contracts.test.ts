@@ -16,35 +16,22 @@ import {
   updateOfficeEquipmentTypeSchema,
 } from '@technic/contracts';
 
-// Контракт справочника оргтехники (ADR 0085): единицу опознают номером, а не строкой в списке —
-// поэтому хотя бы один номер обязателен, и это единственное правило, которого нет у соседних
-// справочников. Остальное как везде: обязательное — обязательно, необязательное приходит пустой
-// строкой и означает «не заполнено», а не «стёрто».
+// The office equipment directory contract (ADR 0085): a unit is identified by a number, not by a
+// line in a list, so at least one number is required — the one rule the neighbouring directories
+// do not have. The rest is as everywhere: required is required, an optional field arrives as an
+// empty string and means "not filled", not "erased".
 //
-// Второе такое правило приехало с выпуском A моделей (план `docs/office-equipment-consumables-plan.md`,
-// Р2): модель называют ЛИБО ссылкой `modelId` (новая форма), ЛИБО именем `name` (старый клиент и
-// заливка файлом в окне выката), и хотя бы одно из двух обязано быть. Оба поля по отдельности
-// необязательны — обязательна их пара, и проверяет это `.refine`, а не `z.object`.
+// The second such rule came with the models (ADR 0132): the model is named by the `modelId`
+// reference and only by it since release B. `name` is not an input — the database mirror writes it
+// from the model — and the schema refuses it instead of dropping it silently.
 
 const TYPE_ID = '11111111-1111-4111-8111-111111111111';
 const OBJECT_ID = '22222222-2222-4222-8222-222222222222';
 const DEPARTMENT_ID = '33333333-3333-4333-8333-333333333333';
 const MODEL_ID = '44444444-4444-4444-8444-444444444444';
 
-/**
- * Минимально допустимая единица: тип, объект, один номер и модель — здесь именем, путём старого
- * клиента. Фикстура намеренно осталась на нём: пока идёт выпуск A, именно эта форма запроса и
- * обязана проходить, а ссылку проверяет отдельный случай ниже.
- */
+/** The smallest valid unit: type, model by reference, site and one number. */
 const minimal = {
-  equipmentTypeId: TYPE_ID,
-  name: 'Kyocera ECOSYS M3145',
-  objectId: OBJECT_ID,
-  inventoryNumber: '0012345',
-};
-
-/** Та же единица глазами новой формы: модель ссылкой, имени нет вовсе — его напишет зеркало (Р3). */
-const byModel = {
   equipmentTypeId: TYPE_ID,
   modelId: MODEL_ID,
   objectId: OBJECT_ID,
@@ -52,61 +39,48 @@ const byModel = {
 };
 
 describe('контракт единицы оргтехники', () => {
-  it('требует тип, объект и модель; место, комментарий и владелец — необязательные уточнения', () => {
+  it('требует тип, модель, объект; место, комментарий и владелец — необязательные уточнения', () => {
     const parsed = createOfficeEquipmentSchema.parse({
       ...minimal,
-      name: '  Kyocera ECOSYS M3145  ',
       inventoryNumber: '  0012345  ',
     });
-    expect(parsed.name).toBe('Kyocera ECOSYS M3145');
+    expect(parsed.modelId).toBe(MODEL_ID);
     expect(parsed.inventoryNumber).toBe('0012345');
     expect(parsed.serialNumber).toBe('');
     expect(parsed.location).toBe('');
     expect(parsed.comment).toBe('');
     expect(parsed.isActive).toBe(true);
-    // Отдел-владелец и даты не подставляются: «не закреплена» и «срок неизвестен» — состояния,
-    // а не пропущенные поля.
+    // The owner department and the dates are not defaulted: "not assigned" and "term unknown" are
+    // states, not missing fields.
     expect(parsed.departmentId).toBeUndefined();
     expect(parsed.purchasedOn).toBeUndefined();
     expect(parsed.warrantyUntil).toBeUndefined();
-    // Ссылки на модель у старого клиента нет и не подставляется: `null` в колонке означал бы
-    // «модели нет», а её проставит триггер зеркала, разобрав имя (Р3).
-    expect(parsed.modelId).toBeUndefined();
   });
 
   /**
-   * Модель называют ссылкой или именем — и хотя бы одним из двух (Р2). Правило живёт `.refine`-ом,
-   * потому что по отдельности необязательны оба поля: `modelId` ещё не шлёт старый клиент, `name`
-   * уже не шлёт новая форма, а карточка без модели не бывает ни в ту, ни в другую сторону.
-   *
-   * Проверяется в обе стороны намеренно: схема, принимающая всё, и схема, отвергающая всё, ошибаются
-   * одинаково молча — первая пропустит карточку без модели, вторая отобьёт половину работающих
-   * клиентов в окне выката.
+   * Release B of ADR 0132: the model is a required reference, and `name` is refused rather than
+   * stripped. Both directions are checked on purpose: a schema that silently drops `name` would let
+   * a `PATCH { name }` answer 200 while the card keeps its old model — the silent edit the decision
+   * rules out — and a schema that still accepts it would keep the door release B closes.
    */
-  it('модель называют ссылкой или именем, но хотя бы одним из двух (выпуск A)', () => {
-    // Новая форма: одна ссылка, имени нет — его перепишет из модели `BEFORE INSERT` раньше, чем
-    // сработает CHECK на непустоту.
-    const byRef = createOfficeEquipmentSchema.parse(byModel);
-    expect(byRef.modelId).toBe(MODEL_ID);
-    expect(byRef.name).toBeUndefined();
-
-    // Старый клиент: одно имя, ссылки нет.
-    expect(createOfficeEquipmentSchema.parse(minimal).name).toBe('Kyocera ECOSYS M3145');
-
-    // Оба разом — тоже законный запрос: форма вправе слать карточку целиком, а спор между полями
-    // решает не схема, а маршрут (при ссылке имя в `SET` не попадает вовсе).
-    const both = createOfficeEquipmentSchema.parse({ ...minimal, modelId: MODEL_ID });
-    expect(both.modelId).toBe(MODEL_ID);
-    expect(both.name).toBe('Kyocera ECOSYS M3145');
-
-    // Ни того, ни другого — отказ, и адресован он полю `modelId`: форма выпуска A спрашивает
-    // именно модель, и подсветить нужно то поле, которое человек видит. Номер при этом на месте —
-    // иначе первым сработал бы отказ по номерам, и путь ошибки был бы не тот.
-    const { name: _noName, ...withoutModel } = minimal;
+  it('модель называют только ссылкой: без неё отказ, имя — отказ полем name (выпуск B)', () => {
+    const { modelId: _noModel, ...withoutModel } = minimal;
     const refused = createOfficeEquipmentSchema.safeParse(withoutModel);
     expect(refused.success).toBe(false);
     expect(refused.error?.issues[0]?.path).toEqual(['modelId']);
-    expect(refused.error?.issues[0]?.message).toBe('Выберите модель аппарата');
+
+    // A model named in words is no longer a way to create a card — with or without the reference.
+    for (const body of [
+      { ...withoutModel, name: 'Kyocera ECOSYS M3145' },
+      { ...minimal, name: 'Kyocera ECOSYS M3145' },
+    ]) {
+      const named = createOfficeEquipmentSchema.safeParse(body);
+      expect(named.success).toBe(false);
+      const nameIssue = named.error?.issues.find((issue) => issue.path[0] === 'name');
+      expect(nameIssue?.message).toBe(
+        'Наименование карточки задаёт модель: выберите модель из справочника',
+      );
+    }
   });
 
   /**
@@ -134,15 +108,14 @@ describe('контракт единицы оргтехники', () => {
     expect(parsed.error?.issues[0]?.path).toEqual(['inventoryNumber']);
   });
 
-  it('не принимает кривые ссылки и пустую модель', () => {
+  it('не принимает кривые ссылки', () => {
     expect(() =>
       createOfficeEquipmentSchema.parse({ ...minimal, equipmentTypeId: 'мфу' }),
     ).toThrow();
     expect(() => createOfficeEquipmentSchema.parse({ ...minimal, objectId: 'объект-1' })).toThrow();
     const { objectId: _noObject, ...withoutObject } = minimal;
     expect(() => createOfficeEquipmentSchema.parse(withoutObject)).toThrow();
-    expect(() => createOfficeEquipmentSchema.parse({ ...minimal, name: '' })).toThrow();
-    expect(() => createOfficeEquipmentSchema.parse({ ...minimal, name: '   ' })).toThrow();
+    expect(() => createOfficeEquipmentSchema.parse({ ...minimal, modelId: 'ricoh' })).toThrow();
     // Дата гарантии — календарные сутки: «31 февраля» отсеивается вместе с вольным форматом.
     expect(() =>
       createOfficeEquipmentSchema.parse({ ...minimal, warrantyUntil: '2026-02-31' }),
@@ -152,14 +125,16 @@ describe('контракт единицы оргтехники', () => {
     ).toThrow();
   });
 
-  it('правка называет модель одной ссылкой — имени при ней не нужно', () => {
-    // У правки своего `.refine` про модель нет и быть не должно: PATCH присылает изменившееся, и
-    // «ни ссылки, ни имени» здесь означает «модель не трогали», а не «карточка без модели».
+  it('правка называет модель одной ссылкой, а правка одним именем — отказ (выпуск B)', () => {
+    // The edit has no `.refine` about the model and must not: a PATCH sends what changed, and "no
+    // reference" here means "the model was not touched", not "a card without a model".
     expect(updateOfficeEquipmentSchema.parse({ modelId: MODEL_ID }).modelId).toBe(MODEL_ID);
-    expect(updateOfficeEquipmentSchema.parse({ modelId: MODEL_ID }).name).toBeUndefined();
-    // Старая правка — одним именем, и она же остаётся законной до выпуска B.
-    expect(updateOfficeEquipmentSchema.parse({ name: 'Ricoh IM 350' }).name).toBe('Ricoh IM 350');
     expect(updateOfficeEquipmentSchema.safeParse({ location: 'каб. 312' }).success).toBe(true);
+    // Release A's edit by name moved the card to another model through the mirror trigger; since
+    // release B it is refused by the field instead of being dropped and answered with 200.
+    const byName = updateOfficeEquipmentSchema.safeParse({ name: 'Ricoh IM 350' });
+    expect(byName.success).toBe(false);
+    expect(byName.error?.issues[0]?.path).toEqual(['name']);
   });
 
   it('правка без поля не подставляет умолчание', () => {

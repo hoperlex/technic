@@ -8,6 +8,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ЗАЯВКА НА АППАРАТ ВНЕ СВОЕЙ ОБЛАСТИ: ПОРЯДОК ПРОВЕРОК ПЕРЕВЁРНУТ (план
@@ -167,7 +168,11 @@ describe.skipIf(!DB_URL)('предмет заявки: область счита
     unitNo += 1;
     const res = await inject('POST', EQUIPMENT, ctx.admin.auth, {
       equipmentTypeId: ctx.typeId,
-      name: `МФУ чужой площадки ${unitNo} ${RUN}`,
+      modelId: await officeEquipmentModelId(
+        ctx.db,
+        ctx.typeId,
+        `МФУ чужой площадки ${unitNo} ${RUN}`,
+      ),
       objectId: ctx.foreignObjectId,
       departmentId: ctx.ownerDepartmentId,
       location: 'кабинет 214',

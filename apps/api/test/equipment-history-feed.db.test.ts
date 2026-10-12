@@ -10,6 +10,7 @@ import {
 import { applyMigrations } from '../src/db/migration-journal';
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * Лента истории единицы оргтехники (план `docs/office-equipment-mail-and-history-plan.md`,
@@ -208,11 +209,21 @@ describe.skipIf(!DB_URL)('лента истории единицы (живая �
   });
 
   it('правка карточки попадает в ленту с диффом, а гарантия — отдельным событием', async () => {
+    // The card moves to another model (its name follows by the mirror): since release B of ADR
+    // 0132 that is the only way to change what the card is called.
+    const type = await ctx.db.execute<{ id: string }>(
+      sql`SELECT equipment_type_id AS id FROM office_equipment WHERE id = ${ctx.equipmentId}`,
+    );
+    const modelId = await officeEquipmentModelId(
+      ctx.db,
+      type.rows[0]!.id,
+      `Kyocera M3145dn ${RUN}`,
+    );
     const patched = await inject(
       'PATCH',
       `/api/v1/office-equipment/${ctx.equipmentId}`,
       ctx.admin,
-      { name: `Kyocera M3145dn ${RUN}`, warrantyUntil: '2027-03-01' },
+      { modelId, warrantyUntil: '2027-03-01' },
     );
     expect(patched.statusCode, patched.body).toBe(200);
 

@@ -8,6 +8,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ПИСЬМА О СООБЩЕНИИ, ЧТО АППАРАТА НЕТ В СПРАВОЧНИКЕ (план
@@ -709,7 +710,7 @@ describe.skipIf(!DB_URL)('письма о сообщении, что техни�
           expectedVersion: 1,
           equipment: {
             equipmentTypeId: ctx.typeId,
-            name: `Kyocera ECOSYS D2 ${RUN}`,
+            modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `Kyocera ECOSYS D2 ${RUN}`),
             serialNumber: confirmed.serialNumber,
             inventoryNumber: confirmed.inventoryNumber,
             objectId: ctx.objectA,
@@ -727,7 +728,7 @@ describe.skipIf(!DB_URL)('письма о сообщении, что техни�
       // она может числиться за чужим подразделением, а письмо — не то место, где это раскрывают.
       const card = await inject('POST', EQUIPMENT, ctx.users.admin.auth, {
         equipmentTypeId: ctx.typeId,
-        name: `МФУ соседа ${RUN}`,
+        modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `МФУ соседа ${RUN}`),
         objectId: ctx.objectA,
         location: 'каб. 101',
         serialNumber: `SN-CARD-${RUN}`,

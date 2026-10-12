@@ -140,7 +140,6 @@ export const OFFICE_EQUIPMENT_SORT_FIELDS = [
   'createdAt',
 ] as const;
 
-const nameSchema = z.string().trim().min(2, 'Укажите модель').max(255);
 /** Номера свободного вида: их печатает производитель и клеит бухгалтерия, формата у них нет. */
 const numberSchema = z.string().trim().max(100);
 const locationSchema = z.string().trim().max(255);
@@ -190,28 +189,27 @@ const stateNoteSchema = z.string().trim().max(255);
 const equipmentFields = {
   equipmentTypeId: uuidSchema,
   /**
-   * Модель записью справочника (Р1). Необязательная — это выпуск A (Р2): в окне выката работает
-   * старый код, который о поле не знает, и требовать модель значило бы отбивать заведение техники
-   * всё время раскатки. Обязательной она станет в выпуске B, вместе с `NOT NULL` на колонке, —
-   * тогда же `name` уйдёт из входных контрактов совсем.
+   * The model as a directory record (ADR 0132) — required since release B, together with
+   * `NOT NULL` on `office_equipment.model_id`. Release A accepted a card without it for the
+   * rollout window of code that knew nothing about models.
    *
-   * Модель обязана быть того же типа, что и карточка: пару держит составной ключ в режиме «замок»,
-   * и чужой тип маршрут обязан отбить 422, а не отдать ошибку целостности.
+   * The model must be of the card's type: the composite "lock" key holds the pair, and the route
+   * refuses a foreign type with 422 instead of letting the key answer with a constraint name.
    */
-  modelId: uuidSchema.optional(),
+  modelId: uuidSchema,
   /**
-   * Имя модели текстом. Совместимость выпуска A (Р2) и ничего больше: миграции накатываются до
-   * перезапуска, и в этом окне живой старый код — маршрут и заливка файлом — умеет только `name`.
-   * Разбирает такую запись триггер (Р3): по имени и типу он находит или заводит модель и
-   * переставляет `model_id` сам, поэтому старая правка срабатывает по-настоящему.
+   * The card's name is not an input: it is the model's name, kept by the database mirror (0171).
+   * Release A still took it as a way to name the model in words; release B removed that door.
    *
-   * Необязательное с выпуска A: новая форма выбирает модель и шлёт только `modelId`, а имя ей
-   * посылать нечего — `name` с этого момента копия имени модели, которую ведёт база, а не ввод
-   * человека. Пустое имя карточку не портит: `BEFORE INSERT`-триггер перепишет его из модели
-   * раньше, чем сработает CHECK на непустоту. Уходит поле в выпуске B, когда `modelId` шлёт весь
-   * работающий код.
+   * Refused rather than silently dropped, for the reason the consumable's `quantity` is
+   * (`updateOfficeEquipmentConsumableSchema`): a `PATCH { name }` that answered 200 and kept the
+   * card on its old model would tell the person "saved" about a change that never happened — the
+   * very silent edit decision 4 of ADR 0132 exists to rule out. No portal bundle the prod floor
+   * admits sends the field (all of them build the body with `officeEquipmentPayload`).
    */
-  name: nameSchema.optional(),
+  name: z
+    .never({ error: 'Наименование карточки задаёт модель: выберите модель из справочника' })
+    .optional(),
   serialNumber: numberSchema.optional().default(''),
   inventoryNumber: numberSchema.optional().default(''),
   objectId: uuidSchema,
@@ -224,8 +222,9 @@ const equipmentFields = {
 };
 
 /**
- * Хотя бы один номер обязателен (тот же CHECK держит и БД): единицу опознают при приёмке из
- * ремонта, и «МФУ без номеров» в акте ничем не отличается от соседнего такого же.
+ * At least one number is required (the database holds the same CHECK): the unit is identified when
+ * it comes back from repair, and "an MFP without numbers" in an act is indistinguishable from the
+ * one next to it.
  */
 const IDENTITY_MESSAGE = 'Укажите серийный или инвентарный номер';
 
@@ -234,14 +233,6 @@ export const createOfficeEquipmentSchema = z
   .refine((v) => !!v.serialNumber || !!v.inventoryNumber, {
     message: IDENTITY_MESSAGE,
     path: ['inventoryNumber'],
-  })
-  // Модель у аппарата есть всегда, и назвать её можно двумя способами ровно до выпуска B (Р2):
-  // ссылкой (новая форма) или именем (старый код в окне выката и заливка файлом). Карточку без
-  // обоих завести нельзя. Путь ошибки — `modelId`: форма выпуска A спрашивает именно модель, и
-  // подсветить в ней нужно то поле, которое человек видит.
-  .refine((v) => !!v.modelId || !!v.name, {
-    message: 'Выберите модель аппарата',
-    path: ['modelId'],
   });
 export type CreateOfficeEquipmentInput = z.infer<typeof createOfficeEquipmentSchema>;
 
@@ -607,10 +598,11 @@ export interface OfficeEquipmentDto {
   id: string;
   type: OfficeEquipmentTypeRefDto;
   /**
-   * Модель из справочника (Р1). Три состояния, и они значат разное — это цена перехода (Р2):
-   * поля нет вовсе — отвечает ещё не переведённый на модели маршрут выпуска A; `null` — ссылки у
-   * карточки нет (колонка весь выпуск A nullable). В выпуске B, когда колонка получит `NOT NULL`,
-   * поле становится обязательным и непустым, а оба переходных состояния уходят вместе с ним.
+   * The model from the directory (ADR 0132). Since release B the column is `NOT NULL` and the
+   * server always sends it. The type still admits the two release A states — absent (a route not yet
+   * moved to models) and `null` (a card without a link) — because portal fixtures and readers were
+   * written against them; narrowing the type is its own portal step, and until then a reader treats
+   * both as "no model" exactly as before.
    */
   model?: OfficeEquipmentModelRefDto | null;
   /** Имя модели: с выпуска A — копия `model.name`, которую ведёт база (Р3), а не ввод человека. */
@@ -619,10 +611,9 @@ export interface OfficeEquipmentDto {
    * Характеристики модели — «цветной или чёрно-белый» второй строкой в колонке «Тип»
    * (план `docs/office-equipment-specs-plan.md`).
    *
-   * Считаются по **типу** карточки, а значения берутся у её модели. Поэтому у карточки без модели
-   * (колонка `model_id` весь выпуск A nullable) массив приходит не пустым, а с `value: null` у
-   * каждой характеристики: вопрос «цветной ли аппарат» законен и тут, а ответа нет — «н/д» (Р9).
-   * Пустой массив означает другое: у этого типа характеристик не спрашивают вовсе.
+   * Counted by the card's **type**, with the values taken from its model. A model that has no value
+   * for a spec gives `value: null` — the question "is it a colour device" is legitimate, the answer
+   * is unknown, "n/a" (Р9). An empty array means something else: this type asks no specs at all.
    */
   specs: OfficeEquipmentModelSpecDto[];
   serialNumber: string;

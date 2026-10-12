@@ -8,6 +8,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ПРИЁМ СООБЩЕНИЯ О ТЕХНИКЕ, КОТОРОЙ НЕТ В СПРАВОЧНИКЕ (план
@@ -245,7 +246,7 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
   ): Promise<string> {
     const res = await inject('POST', EQUIPMENT, ctx.admin.auth, {
       equipmentTypeId: ctx.typeId,
-      name: `МФУ ${tag} ${RUN}`,
+      modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `МФУ ${tag} ${RUN}`),
       objectId: objectId ?? ctx.objectId,
       location: 'кабинет 214',
       ...numbers,

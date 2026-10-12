@@ -633,18 +633,18 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     },
   },
   /*
-   * Три решения по сообщению о технике (план кандидатов, Р13, Р15). Тела ПОЛНЫЕ и валидные по той же
-   * причине, что у правки выше: схема Fastify отрабатывает раньше стража, и негативный случай с
-   * пустым телом получил бы 400 от неё — то есть доказывал бы работу схемы там, где проверяется
-   * право. Подтверждение несёт вложенную форму карточки парка целиком: она у него та же самая, что
-   * у `POST /office-equipment` ниже, и обязана пройти оба её `refine` — номер и модель.
+   * The three decisions on an equipment report (candidate plan, Р13, Р15). The bodies are FULL and
+   * valid for the reason the edit above has: the Fastify schema runs before the guard, and a
+   * negative case with an empty body would get 400 from it — proving the schema where the right is
+   * checked. The confirmation carries the whole nested fleet card form, the same one as
+   * `POST /office-equipment` below: a number and the model by reference (ADR 0132, release B).
    */
   'POST /api/v1/office-equipment-candidates/:id/confirm': {
     payload: {
       expectedVersion: 1,
       equipment: {
         equipmentTypeId: RECORD_ID,
-        name: 'Kyocera ECOSYS M3145',
+        modelId: RECORD_ID,
         inventoryNumber: '0012345',
         objectId: OBJECT_ID,
       },
@@ -659,7 +659,7 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/office-equipment': {
     payload: {
       equipmentTypeId: RECORD_ID,
-      name: 'Kyocera ECOSYS M3145',
+      modelId: RECORD_ID,
       inventoryNumber: '0012345',
       objectId: OBJECT_ID,
     },

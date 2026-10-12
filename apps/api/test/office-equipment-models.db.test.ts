@@ -33,10 +33,11 @@ import type { db as AppDb } from '../src/db/client';
  *   и список техники (Р12), — и тест берёт предикат из `lib/access.ts`, а не пишет свою версию
  *   правила: разойдясь, они молча разрешили бы роли одной площадки узнать масштаб чужого парка.
  *
- * ЧТО ЗДЕСЬ ПРОВЕРЯЕТСЯ СТАРЫМ ПУТЁМ, А ЧТО НОВЫМ. Legacy-ветка резолва (правка одного `name` у
- * карточки с уже проставленной ссылкой) проверяется прямым `UPDATE` и старым видом `PATCH`
- * — `{ name }` без `modelId`. Заливкой файлом её не проверить вовсе: после волны В2 обмен
- * файлом всегда пишет `model_id` сам, и тест на нём «проверял» бы код, которого больше нет.
+ * WHAT IS CHECKED BY THE OLD PATH AND WHAT BY THE NEW ONE. The trigger's legacy resolve branch (an
+ * edit of `name` alone on a card that already has a link, an insert without a link) is driven by
+ * direct SQL — the statements the previous release issues while it serves a migration window. The
+ * route no longer takes `name` since release B (ADR 0132) and refuses it by the field; the file
+ * import cannot reach the branch either, since wave В2 it always writes `model_id` itself.
  *
  * ИЗОЛЯЦИЯ. База db-тестов общая и живёт между прогонами: в ней лежит копия боевого парка, на
  * которой этот файл заодно и сверяется (первый случай). Поэтому всё своё помечено суффиксом
@@ -240,9 +241,14 @@ async function modelRow(
 
 interface CardInput {
   typeId?: string;
-  /** Старый путь: карточка называет модель именем, ссылку проставляет триггер (Р3). */
+  /**
+   * The previous release's write: the card names its model in words and the mirror trigger links
+   * it (0171). Since release B (ADR 0132) the route no longer accepts `name`, so such a card is
+   * inserted by SQL — exactly the statement the previous release issues while it serves a
+   * migration window, and the trigger branch release C removes.
+   */
   name?: string;
-  /** Новый путь: карточка называет модель ссылкой, имя приезжает зеркалом. */
+  /** The route's write: the card names its model by reference, the name arrives by the mirror. */
   modelId?: string;
   objectId?: string;
   departmentId?: string | null;
@@ -250,10 +256,25 @@ interface CardInput {
 }
 
 async function createCard(input: CardInput): Promise<OfficeEquipmentDto> {
+  if (input.name !== undefined) {
+    const inserted = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO office_equipment (equipment_type_id, model_id, name, inventory_number, object_id,
+                                    owner_department_id, is_active, location, created_by)
+      VALUES (${input.typeId ?? ctx.mfpTypeId}, ${input.modelId ?? null}, ${input.name},
+              ${nextInventory()}, ${input.objectId ?? ctx.objectId}, ${input.departmentId ?? null},
+              ${input.isActive ?? true}, 'кабинет 214', ${ctx.admin.id})
+      RETURNING id`);
+    const res = await inject(
+      'GET',
+      `/api/v1/office-equipment/${inserted.rows[0]!.id}`,
+      ctx.admin.auth,
+    );
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json() as OfficeEquipmentDto;
+  }
   const res = await inject('POST', '/api/v1/office-equipment', ctx.admin.auth, {
     equipmentTypeId: input.typeId ?? ctx.mfpTypeId,
-    ...(input.name === undefined ? {} : { name: input.name }),
-    ...(input.modelId === undefined ? {} : { modelId: input.modelId }),
+    modelId: input.modelId,
     inventoryNumber: nextInventory(),
     objectId: input.objectId ?? ctx.objectId,
     departmentId: input.departmentId ?? null,
@@ -677,6 +698,9 @@ describe.skipIf(!DB_URL)('модели аппаратов оргтехники: 
     try {
       await c.query('BEGIN');
       await c.query('ALTER TABLE office_equipment DISABLE TRIGGER office_equipment_model_mirror');
+      // Cards without a link are what the parse reads, and release B forbids them by `NOT NULL`;
+      // the constraint is dropped inside the same rolled-back transaction as the trigger.
+      await c.query('ALTER TABLE office_equipment ALTER COLUMN model_id DROP NOT NULL');
 
       const seed = async (name: string, times: number): Promise<void> => {
         for (let i = 0; i < times; i += 1) {
@@ -875,15 +899,13 @@ describe.skipIf(!DB_URL)('модели аппаратов оргтехники: 
     expect(dto.name).toBe(KYOCERA);
   });
 
-  it('старый PATCH одним `name` переставляет карточку на другую модель', async () => {
+  it('PATCH одним `name` — отказ полем, карточка остаётся на своей модели (выпуск B)', async () => {
     /*
-     * Legacy-ветка выпуска A и главный довод Р3: у существующей карточки ссылка уже стоит, и
-     * наивное зеркало вернуло бы имя ТЕКУЩЕЙ модели — то есть старая правка молча не сработала бы.
-     * Человек правит модель так, как умеет сегодня, — текстом, — и карточка обязана переехать
-     * по-настоящему.
-     *
-     * Проверяется это старым видом запроса (`{ name }` без `modelId`), а не заливкой файлом: после
-     * волны В2 файл всегда пишет ссылку сам и в эту ветку не заходит вовсе.
+     * Release A's edit by name moved the card to another model through the trigger's legacy branch
+     * (decision 4 of ADR 0132). Since release B the contract refuses `name`: answering 200 while
+     * the card keeps its model would be the silent edit the decision rules out. The legacy branch
+     * itself still lives until release C — the previous release serves the next migration window
+     * through it — and the case below drives it by a direct UPDATE, the way that release writes.
      */
     const card = await createCard({ name: IM350 });
     const from = card.model!.id;
@@ -891,27 +913,18 @@ describe.skipIf(!DB_URL)('модели аппаратов оргтехники: 
     const res = await inject('PATCH', `/api/v1/office-equipment/${card.id}`, ctx.admin.auth, {
       name: IM550,
     });
-    expect(res.statusCode, res.body).toBe(200);
-    const dto = res.json() as OfficeEquipmentDto;
-    expect(dto.model?.id).not.toBe(from);
-    expect(dto.model?.name).toBe(IM550);
-    expect(dto.name).toBe(IM550);
-
-    // Вторая правка — написанием, отличающимся регистром: карточка обязана вернуться на ПЕРВУЮ
-    // модель (ключ тот же), а не завести третью, и приехать с её каноном.
-    const back = await inject('PATCH', `/api/v1/office-equipment/${card.id}`, ctx.admin.auth, {
-      name: IM350_UPPER,
-    });
-    expect(back.statusCode, back.body).toBe(200);
-    const dtoBack = back.json() as OfficeEquipmentDto;
-    expect(dtoBack.model?.id).toBe(from);
-    expect(dtoBack.name).toBe(IM350);
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.body).toContain('Наименование карточки задаёт модель');
+    const row = await cardRow(card.id);
+    expect(row.modelId).toBe(from);
+    expect(row.name).toBe(IM350);
   });
 
   it('прямой UPDATE имени в обход маршрута переставляет карточку так же', async () => {
     // Путей записи четыре — маршрут, заливка файлом, миграции, скрипты, — и договориться с каждым
     // порознь не выйдет: разбирает правку триггер, поэтому она работает и мимо HTTP.
     const card = await createCard({ name: IM350 });
+    const from = card.model!.id;
     await ctx.db.execute(sql`UPDATE office_equipment SET name = ${IM550} WHERE id = ${card.id}`);
 
     const row = await cardRow(card.id);
@@ -919,6 +932,15 @@ describe.skipIf(!DB_URL)('модели аппаратов оргтехники: 
     expect(target).toHaveLength(1);
     expect(row.modelId).toBe(target[0]!.id);
     expect(row.name).toBe(IM550);
+
+    // A second edit by a spelling that differs only in case must bring the card back to the FIRST
+    // model (same key) instead of creating a third one, and with that model's canon.
+    await ctx.db.execute(
+      sql`UPDATE office_equipment SET name = ${IM350_UPPER} WHERE id = ${card.id}`,
+    );
+    const back = await cardRow(card.id);
+    expect(back.modelId).toBe(from);
+    expect(back.name).toBe(IM350);
   });
 
   it('обнуление ссылки не оставляет карточку без модели: резолв по её же имени', async () => {
@@ -1253,9 +1275,13 @@ describe.skipIf(!DB_URL)('модели аппаратов оргтехники: 
 
     const holder = await openClient();
     const probe = await openProbe();
+    // The previous release's insert by name (it serves migration windows until release C) — by SQL,
+    // because the route stopped accepting `name` in release B. Quoted the way drizzle quotes it, so
+    // the queue probe below recognizes both inserts by one pattern.
+    const legacy = await openClient();
     let rename: ReturnType<typeof inject> | undefined;
     let byRef: ReturnType<typeof inject> | undefined;
-    let byName: ReturnType<typeof inject> | undefined;
+    let byName: Promise<pg.QueryResult<{ name: string; model_id: string }>> | undefined;
     try {
       await holder.query('BEGIN');
       // Строка модели — и только она: парк этот держатель не трогает, поэтому запереть запись в
@@ -1283,10 +1309,14 @@ describe.skipIf(!DB_URL)('модели аппаратов оргтехники: 
           location: 'кабинет 214',
           ...payload,
         });
-      // Новая форма — ссылкой; старый клиент — прежним именем, тем самым, которое прямо сейчас
-      // переименовывают.
+      // The route by reference; the previous release by the old name — the one being renamed.
       byRef = card({ modelId: model.id, inventoryNumber: refInventory });
-      byName = card({ name: IM430, inventoryNumber: nameInventory });
+      byName = legacy.query<{ name: string; model_id: string }>(
+        `insert into "office_equipment" ("equipment_type_id", "model_id", "name",
+                                         "inventory_number", "object_id", "location")
+         values ($1, NULL, $2, $3, $4, 'кабинет 214') returning "name", "model_id"`,
+        [ctx.mfpTypeId, IM430, nameInventory, ctx.objectId],
+      );
 
       const queued = await queuedBehind(
         probe,
@@ -1320,8 +1350,7 @@ describe.skipIf(!DB_URL)('модели аппаратов оргтехники: 
 
       const nameDone = await byName;
       byName = undefined;
-      expect(nameDone.statusCode, nameDone.body).toBe(201);
-      const nameCard = nameDone.json() as OfficeEquipmentDto;
+      const nameCard = { name: nameDone.rows[0]!.name, model: { id: nameDone.rows[0]!.model_id } };
       /*
        * А вот вставка ПО ИМЕНИ приезжает со старым именем — и это не промах блокировки, а смысл
        * legacy-ветки. Старый клиент назвал модель текстом; текст этот после переименования не
@@ -1339,6 +1368,7 @@ describe.skipIf(!DB_URL)('модели аппаратов оргтехники: 
       await byName?.catch(() => undefined);
       await holder.end();
       await probe.end();
+      await legacy.end();
     }
   }, 60_000);
 

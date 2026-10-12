@@ -8,6 +8,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * ЗАЯВКУ НА ВЫВЕДЕННУЮ ИЗ ЭКСПЛУАТАЦИИ КАРТОЧКУ ЗАВЕСТИ НЕЛЬЗЯ (Н1 и фикс Ф2 плана
@@ -194,7 +195,7 @@ describe.skipIf(!DB_URL)('заявка на неактивную карточк�
   async function makeEquipment(tag: string, warrantyUntil?: string): Promise<string> {
     const res = await inject('POST', EQUIPMENT, ctx.admin.auth, {
       equipmentTypeId: ctx.typeId,
-      name: `МФУ ${tag} ${RUN}`,
+      modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `МФУ ${tag} ${RUN}`),
       inventoryNumber: `IA-${tag}-${RUN}`,
       objectId: ctx.objectId,
       location: 'кабинет 214',

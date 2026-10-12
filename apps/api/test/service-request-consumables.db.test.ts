@@ -13,6 +13,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import { officeEquipmentModelId } from './office-equipment-model';
 
 /**
  * Заявка на расходники: строки, списание со склада и сторно (план
@@ -160,7 +161,7 @@ async function makeEquipment(): Promise<string> {
   equipmentNo += 1;
   const res = await inject('POST', '/api/v1/office-equipment', {
     equipmentTypeId: ctx.typeId,
-    name: `МФУ расходников ${RUN}`,
+    modelId: await officeEquipmentModelId(ctx.db, ctx.typeId, `МФУ расходников ${RUN}`),
     inventoryNumber: `${EQUIPMENT_PREFIX}${equipmentNo}`,
     objectId: ctx.objectId,
     location: 'кабинет 214',
@@ -326,9 +327,7 @@ async function queuedBehind(probe: pg.Client, pid: number, count: number): Promi
  * видно, что все шаги внутри прошли, — а это и есть «отложенный»: немедленная проверка отбила бы
  * первый же из них.
  */
-async function refusedOnCommit(
-  statements: { text: string; values: unknown[] }[],
-): Promise<string> {
+async function refusedOnCommit(statements: { text: string; values: unknown[] }[]): Promise<string> {
   const client = new pg.Client({ connectionString: DB_URL });
   await client.connect();
   try {
@@ -420,7 +419,8 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
     const typeRow = await db.execute<{ id: string }>(
       sql`SELECT id FROM office_equipment_types WHERE code = 'mfp'`,
     );
-    if (!typeRow.rows[0]) throw new Error('в базе нет типов оргтехники: миграция 0104 не применена');
+    if (!typeRow.rows[0])
+      throw new Error('в базе нет типов оргтехники: миграция 0104 не применена');
 
     /**
      * Заказчик — штаб своей площадки, и заведён он ради одного вопроса: **состав заполняет
@@ -700,7 +700,12 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
     expect(byExecutor.statusCode, byExecutor.body).toBe(200);
 
     // А ВИДИТ состав заказчик по-прежнему: это ответ на его «что мне привезут».
-    const seen = await inject('GET', `/api/v1/service-requests/${dto.id}`, undefined, ctx.customer.auth);
+    const seen = await inject(
+      'GET',
+      `/api/v1/service-requests/${dto.id}`,
+      undefined,
+      ctx.customer.auth,
+    );
     expect(seen.statusCode, seen.body).toBe(200);
     expect((seen.json() as ServiceRequestDto).consumables).toHaveLength(1);
     expect(lineOf(seen.json() as ServiceRequestDto, spare).requestedQuantity).toBe(2);
@@ -844,7 +849,10 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
   it('прямой `UPDATE issued_quantity` мимо события отбивается отложенным триггером', async () => {
     const line = lineOf(state.main, state.toner);
     const refusal = await refusedOnCommit([
-      { text: 'UPDATE service_request_consumables SET issued_quantity = 5 WHERE id = $1', values: [line.id] },
+      {
+        text: 'UPDATE service_request_consumables SET issued_quantity = 5 WHERE id = $1',
+        values: [line.id],
+      },
     ]);
     expect(refusal).toMatch(/журнал остатка отдаёт по ней/u);
     // Строка осталась какой была: отказ пришёл на коммите, и вся транзакция откатилась.
@@ -996,13 +1004,15 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
       const {
         rows: [me],
       } = await b.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
-      const aWaits = a.query('SELECT 1 FROM office_equipment_consumables WHERE id = $1 FOR UPDATE', [
-        state.high,
-      ]);
+      const aWaits = a.query(
+        'SELECT 1 FROM office_equipment_consumables WHERE id = $1 FOR UPDATE',
+        [state.high],
+      );
       await queuedBehind(probe, me!.pid, 1);
-      const bWaits = b.query('SELECT 1 FROM office_equipment_consumables WHERE id = $1 FOR UPDATE', [
-        state.low,
-      ]);
+      const bWaits = b.query(
+        'SELECT 1 FROM office_equipment_consumables WHERE id = $1 FOR UPDATE',
+        [state.low],
+      );
 
       const outcome = await Promise.allSettled([aWaits, bWaits]);
       const codes = outcome
@@ -1130,7 +1140,11 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
       ['PUT', `${base}/estimate`, { items: [], version: request.version }],
       ['PATCH', `${base}/estimate/submit`, { warrantyRepair: false, version: request.version }],
       ['PATCH', `${base}/estimate/approval`, { approved: true, version: request.version }],
-      ['PATCH', `${base}/estimate/reopen`, { reason: 'вернуть в правку', version: request.version }],
+      [
+        'PATCH',
+        `${base}/estimate/reopen`,
+        { reason: 'вернуть в правку', version: request.version },
+      ],
     ];
     for (const [method, url, body] of doors) {
       const res = await inject(method, url, body);
@@ -1213,14 +1227,10 @@ describe.skipIf(!DB_URL)('заявка на расходники: строки, 
     expect(held.statusCode, held.body).toBe(200);
     expect((held.json() as ServiceRequestDto).status).toBe('on_hold');
 
-    const res = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${request.id}/consumables/issued`,
-      {
-        items: [{ id: line.id, issuedQuantity: 3 }],
-        version: (held.json() as ServiceRequestDto).version,
-      },
-    );
+    const res = await inject('PATCH', `/api/v1/service-requests/${request.id}/consumables/issued`, {
+      items: [{ id: line.id, issuedQuantity: 3 }],
+      version: (held.json() as ServiceRequestDto).version,
+    });
     expect(res.statusCode, res.body).toBe(422);
     expect(message(res)).toContain('Выдачу отмечают в статусах');
     expect(await stockOf(consumable)).toBe(10);

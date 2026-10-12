@@ -243,16 +243,15 @@ export async function assertDepartmentExists(tx: Tx, departmentId: string): Prom
 }
 
 /**
- * Заведённая карточка и метаданные её аудита.
+ * The created card and its audit metadata.
  *
- * Имя и ссылка — те, что ЛЕГЛИ В БАЗУ, а не те, что пришли в запросе: при заведении по модели
- * `name` в теле может отсутствовать вовсе (его пишет триггер зеркала, Р3), и `undefined` в журнале
- * означал бы карточку без названия там, где название есть.
+ * The name is the one that LANDED IN THE DATABASE: the request carries no name at all (the mirror
+ * trigger writes it from the model), and the audit must name the card the way the fleet shows it.
  */
 export interface InsertedEquipmentCard {
   id: string;
   name: string;
-  modelId: string | null;
+  modelId: string;
   /** Готовый `metadata` для журнала — пишет его вызывающий, своим способом (см. шапку файла). */
   auditMetadata: Record<string, unknown>;
 }
@@ -276,10 +275,9 @@ export async function insertEquipmentCard(
   b: CreateOfficeEquipmentInput,
 ): Promise<InsertedEquipmentCard> {
   await assertTypeUsable(tx, b.equipmentTypeId);
-  // Модель сверяется, только если её прислали ссылкой. Старый клиент в окне выката шлёт одно имя, и
-  // по нему модель найдёт или заведёт триггер (Р3) — это и есть совместимость выпуска A, а не
-  // забытая проверка.
-  if (b.modelId) await assertModelUsable(tx, b.modelId, b.equipmentTypeId);
+  // The model is a required reference since release B of ADR 0132, so it is always checked: the
+  // door that let a client name it in words and left the lookup to the mirror trigger is closed.
+  await assertModelUsable(tx, b.modelId, b.equipmentTypeId);
   await assertObjectExists(tx, b.objectId);
   if (b.departmentId) await assertDepartmentExists(tx, b.departmentId);
   assertOfficeEquipmentScope(p, {
@@ -291,13 +289,12 @@ export async function insertEquipmentCard(
     .insert(officeEquipment)
     .values({
       equipmentTypeId: b.equipmentTypeId,
-      // Ссылка на модель — то, что шлёт новая форма. Пустой она остаётся только у старого клиента:
-      // `BEFORE INSERT` проставит её сам, разобрав имя (Р3).
-      modelId: b.modelId ?? null,
-      // Пустое имя законно, когда пришла ссылка на модель: `BEFORE INSERT` перепишет его из модели
-      // раньше, чем сработает `office_equipment_name_not_blank_check` (Р3). Старый клиент
-      // по-прежнему шлёт имя и ссылки не знает — обе двери открыты до выпуска B.
-      name: b.name ?? '',
+      modelId: b.modelId,
+      // The column is `NOT NULL` without a default, yet its value is not ours to choose: the
+      // `BEFORE INSERT` mirror (0171) overwrites it with the model's name before
+      // `office_equipment_name_not_blank_check` is evaluated, so an empty string is the honest
+      // placeholder.
+      name: '',
       serialNumber: b.serialNumber,
       inventoryNumber: b.inventoryNumber,
       objectId: b.objectId,
