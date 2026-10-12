@@ -1,6 +1,9 @@
 import { App, Alert, Switch, Table, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  moduleMailAudienceEnabledNotes,
+  moduleMailAudienceEnableWarnings,
+  moduleMailEventAudience,
   moduleMailEventHints,
   moduleMailEventLabels,
   type ModuleMailEventSettingDto,
@@ -32,11 +35,11 @@ interface ToggleVars {
 }
 
 /**
- * Подпись рядом с переключателем. Названа сторона, которой письмо уходит: у сервисной компании
- * портала может не быть вовсе, и «включено» здесь означает письмо человеку за пределами конторы, а
- * не строку в журнале.
+ * The line next to an enabled switch names who receives the letters — read from the closed
+ * per-event audience map in contracts (ADR 0227, E10). One sentence for every event used to say
+ * «наружу — сервисной компании», which was false for the candidate events and would be false for
+ * the letters to the request author.
  */
-const ENABLED_NOTE = 'Письма уходят, в том числе наружу — сервисной компании и её людям';
 const DISABLED_NOTE = 'Писем нет: по этому событию портал молчит';
 
 /**
@@ -50,7 +53,9 @@ const MISSING_NOTE = 'Строка настройки не заведена — 
 /** Что написано рядом с переключателем: включено, выключено или строки настройки нет вовсе. */
 function noteOf(row: ModuleMailEventSettingDto): string {
   if (row.updatedAt === null) return MISSING_NOTE;
-  return row.isEnabled ? ENABLED_NOTE : DISABLED_NOTE;
+  return row.isEnabled
+    ? moduleMailAudienceEnabledNotes[moduleMailEventAudience[row.event]]
+    : DISABLED_NOTE;
 }
 
 /** Ненастроенная строка — не будни выключенного события: её видно предупреждением, а не серым. */
@@ -91,9 +96,11 @@ export function ServiceMailEventsBlock() {
   });
 
   /**
-   * Выключение подтверждения не спрашивает, включение спрашивает — и это не разная строгость, а
-   * разная цена ошибки. Выключенное событие молчит, и вернуть его назад стоит одного щелчка;
-   * включённое немедленно начинает слать письма наружу, и отправленное письмо не отзывается.
+   * Switching off asks nothing, switching on asks for confirmation — not a different strictness
+   * but a different cost of a mistake: an event switched off is silent and comes back with one
+   * click, an event switched on starts sending at once, and a sent letter is not called back. The
+   * confirmation names the real addressee of THIS event (E10), so the administrator checks the
+   * right directory before clicking.
    */
   const toggle = (row: ModuleMailEventSettingDto, next: boolean): void => {
     if (!next) {
@@ -102,10 +109,7 @@ export function ServiceMailEventsBlock() {
     }
     modal.confirm({
       title: `Включить письма по событию «${moduleMailEventLabels[row.event]}»?`,
-      content:
-        'Письма пойдут наружу — сервисной компании, её операторам и назначенным исполнителям. ' +
-        'Выключить событие можно тем же переключателем, но уже ушедшее письмо не вернуть: ' +
-        'убедитесь, что адрес компании в справочнике контрагентов заведён верно.',
+      content: moduleMailAudienceEnableWarnings[moduleMailEventAudience[row.event]],
       okText: 'Включить',
       cancelText: 'Отмена',
       onOk: () => toggleMut.mutateAsync({ row, isEnabled: true }),
@@ -122,11 +126,12 @@ export function ServiceMailEventsBlock() {
         type="warning"
         showIcon
         style={{ marginBottom: 16 }}
-        title="Включённое событие шлёт письма наружу"
+        title="Включённое событие сразу начинает слать письма"
         description={
           'Здесь решается не то, кому уйдёт копия, а то, уходит ли письмо по событию вообще. ' +
-          'Включённое событие начинает слать письма наружу — сервисной компании, её операторам и ' +
-          'назначенным исполнителям, у которых учётной записи в портале может не быть. ' +
+          'Кому именно, написано в строке события: большинство событий заявки шлёт письма наружу ' +
+          '— сервисной компании, её операторам и назначенным исполнителям, у которых учётной ' +
+          'записи в портале может не быть; письма заявителю уходят автору заявки. ' +
           'Выключенное молчит: заявка ведётся как обычно, портал про отсутствующее письмо ничего ' +
           'не говорит, а в журнале заявки остаётся, что письма не было и почему. ' +
           'Событие, о котором сервер не знает, писем не шлёт — строку заводит миграция вместе с ' +
