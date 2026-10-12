@@ -184,6 +184,15 @@ export const mailKindEnum = pgEnum('mail_kind', [
    * событийным письмом, молча подавила бы его по той же строке истории.
    */
   'service_request_bulk_summary',
+  /**
+   * Letters to the request author about chat messages and state changes (ADR 0227, E1). A kind
+   * per event, as everywhere in this enum: the anchors are the message id and the status history
+   * row id — the same anchors the service letters use — and a shared kind would let
+   * `(kind, dedupe_key)` swallow one of the two letters. Appended last because `ALTER TYPE … ADD
+   * VALUE` appends, and the order here mirrors the database.
+   */
+  'service_request_requester_comment',
+  'service_request_requester_status',
 ]);
 export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
 /** Расписания рассылок (ADR 0075, миграция 0099). */
@@ -9150,16 +9159,18 @@ export const moduleMailEventSettings = pgTable(
     // не выстрелит, а лишняя строка рубильника выглядит настройкой («событие включено»), пока
     // настоящее событие сидит без строки и молчит fail-closed. Бесплатным реестр здесь и так не
     // бывает: новое событие приходит со своей строкой, то есть с миграцией. Перечень обязан
-    // совпадать с `MODULE_MAIL_EVENTS` и с CHECK миграций 0258 и M3 волны кандидатов (там он
-    // заменяется целиком: значения в `CHECK` не дописываются, ограничение снимается и ставится
-    // заново одной транзакцией).
+    // совпадать с `MODULE_MAIL_EVENTS` и с CHECK последней миграции, которая его заменяла (0258,
+    // M3 волны кандидатов, M2 писем заявителю — ADR 0227): значения в `CHECK` не дописываются,
+    // ограничение снимается и ставится заново одной транзакцией.
     eventCheck: check(
       'module_mail_event_settings_event_check',
       sql`${t.event} IN ('service_request_waiting_it', 'service_request_cancelled',
                          'service_request_assigned', 'service_request_status_changed',
                          'service_request_estimate', 'service_request_document',
                          'service_request_comment', 'office_equipment_candidate_pending',
-                         'office_equipment_candidate_decided')`,
+                         'office_equipment_candidate_decided',
+                         'service_request_requester_comment',
+                         'service_request_requester_status')`,
     ),
   }),
 );

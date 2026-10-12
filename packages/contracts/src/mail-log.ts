@@ -52,6 +52,10 @@ export const MAIL_KINDS = [
   'office_equipment_candidate_pending',
   'office_equipment_candidate_decided',
   'service_request_bulk_summary',
+  // Letters to the request author (ADR 0227, E1): appended last, as the enum values are, so the
+  // order still reads against the database.
+  'service_request_requester_comment',
+  'service_request_requester_status',
 ] as const;
 export type MailKind = (typeof MAIL_KINDS)[number];
 
@@ -83,6 +87,8 @@ export const mailKindLabels: Record<MailKind, string> = {
   office_equipment_candidate_pending: 'Оргтехника: сообщение о технике ждёт проверки',
   office_equipment_candidate_decided: 'Оргтехника: решение по сообщению о технике',
   service_request_bulk_summary: 'Сводка: массовое действие над заявками',
+  service_request_requester_comment: 'Оргтехника: заявителю — сообщение в обсуждении',
+  service_request_requester_status: 'Оргтехника: заявителю — смена состояния заявки',
 };
 
 /** Исход доставки: письмо составлено и ждёт, отправлено или отвергнуто. */

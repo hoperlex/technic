@@ -76,6 +76,23 @@ export const MODULE_MAIL_EVENTS = [
    */
   'office_equipment_candidate_pending',
   'office_equipment_candidate_decided',
+  /**
+   * Letters to the request author (ADR 0227, E1; reverses ADR 0159 decision 9). The author is the
+   * only addressee (D1): colleagues of the customer side and the free-text «Ответственный» get
+   * nothing.
+   *
+   * Two events, not one, because the owner wants two independent switches (D5): a noisy comment
+   * flow must be stoppable without silencing «your request was cancelled». Each has its own
+   * `mail_kind` for the same reason as every other event here: the queue is unique on
+   * `(kind, dedupe_key)`, and a requester letter sharing the service letter's kind would be
+   * swallowed by it — the anchors (message id, status history row id) are the same.
+   *
+   * The planner lives in its own module (`service-request-requester-mail.ts`), not inside the
+   * service planner: the service planner returns early when its own event is off, and the
+   * requester switch must not depend on it.
+   */
+  'service_request_requester_comment',
+  'service_request_requester_status',
 ] as const;
 export type ModuleMailEvent = (typeof MODULE_MAIL_EVENTS)[number];
 
@@ -89,6 +106,8 @@ export const moduleMailEventLabels: Record<ModuleMailEvent, string> = {
   service_request_comment: 'Новая реплика в обсуждении заявки',
   office_equipment_candidate_pending: 'Сообщение о технике ждёт проверки',
   office_equipment_candidate_decided: 'Решение по сообщению о технике',
+  service_request_requester_comment: 'Заявителю: новое сообщение в обсуждении его заявки',
+  service_request_requester_status: 'Заявителю: заявка сменила состояние',
 };
 
 /** Когда именно наступает событие — подпись под строкой настройки, а не комментарий в коде. */
@@ -118,8 +137,9 @@ export const moduleMailEventHints: Record<ModuleMailEvent, string> = {
     'в портале или запрашивают ответом.',
   service_request_comment:
     'В обсуждении заявки появилась реплика, адресованная службе или сервисной компании — ' +
-    '«Всем участникам», стороне или поимённо назначенному исполнителю. Реплики только заказчику ' +
-    'и перенесённые примечания исполнителя писем не ставят.',
+    '«Всем участникам», стороне или поимённо назначенному исполнителю. Реплика только ' +
+    '«Заявителю» сюда не входит: автору заявки она уходит своим событием «Заявителю: новое ' +
+    'сообщение в обсуждении его заявки». Перенесённые примечания исполнителя писем не ставят.',
   office_equipment_candidate_pending:
     'Заявитель сообщил об аппарате, которого нет в справочнике: вместе с заявкой заведено ' +
     'сообщение о технике, и его надо проверить. Письмо уходит тем, у кого есть право проверять ' +
@@ -134,6 +154,81 @@ export const moduleMailEventHints: Record<ModuleMailEvent, string> = {
     'приходит ему дословно, теми же словами, что стоят в карточке заявки. Реквизитов чужих ' +
     'карточек письмо не называет. Копия отсюда получает номер заявки и исход — без причины ' +
     'отказа и без подробностей.',
+  service_request_requester_comment:
+    'В обсуждении заявки появилось сообщение «Заявителю» или «Всем участникам» — в том числе ' +
+    'переписка службы с сервисным центром, адресованная всем. Письмо уходит только автору ' +
+    'заявки: коллегам по отделу и указанному в заявке ответственному оно не уходит. Своё ' +
+    'сообщение автор письмом не получает; сотрудник, который и так получает письмо службы об ' +
+    'этом сообщении, второго письма не получает. Ответ на письмо в обсуждение не попадёт — он ' +
+    'уходит на общий адрес портала, а письмо просит отвечать в портале.',
+  service_request_requester_status:
+    'Заявку приняли в работу (в том числе вернули на доработку или возобновили), отложили — с ' +
+    'причиной, работы выполнены, заявка закрыта (в том числе автоматически) или отменена — с ' +
+    'причиной. Письмо уходит только автору заявки; о собственном действии он письма не получает. ' +
+    'Заведение, возврат в «Новую», назначение, объём работ и документы писем заявителю не ставят. ' +
+    'Ответ на письмо уходит на общий адрес портала.',
+};
+
+/**
+ * Who an event writes to — for the reader of the admin switch (ADR 0227, E10).
+ *
+ * The events block used to say for every row that letters go «наружу — сервисной компании». That
+ * was already false for the two candidate events (reviewers and the candidate's author) and would
+ * be false for the requester events, whose only addressee is the request author. A closed map
+ * makes every new event answer the question an administrator asks before flipping the switch:
+ * "who will start receiving mail?". The portal reads the note and the enable confirmation from
+ * here and composes neither itself.
+ */
+export const MODULE_MAIL_EVENT_AUDIENCES = [
+  'service_side',
+  'reviewers',
+  'candidate_author',
+  'request_author',
+] as const;
+export type ModuleMailEventAudience = (typeof MODULE_MAIL_EVENT_AUDIENCES)[number];
+
+export const moduleMailEventAudience: Record<ModuleMailEvent, ModuleMailEventAudience> = {
+  service_request_waiting_it: 'service_side',
+  service_request_cancelled: 'service_side',
+  service_request_assigned: 'service_side',
+  service_request_status_changed: 'service_side',
+  service_request_estimate: 'service_side',
+  service_request_document: 'service_side',
+  service_request_comment: 'service_side',
+  office_equipment_candidate_pending: 'reviewers',
+  office_equipment_candidate_decided: 'candidate_author',
+  service_request_requester_comment: 'request_author',
+  service_request_requester_status: 'request_author',
+};
+
+/** The line next to an enabled switch: who receives the letters of this event. */
+export const moduleMailAudienceEnabledNotes: Record<ModuleMailEventAudience, string> = {
+  service_side: 'Письма уходят, в том числе наружу — сервисной компании и её людям',
+  reviewers: 'Письма уходят проверяющим сообщения о технике — в их области',
+  candidate_author: 'Письма уходят автору сообщения о технике',
+  request_author: 'Письма уходят автору заявки — на адрес его учётной записи',
+};
+
+/**
+ * The enable confirmation. Enabling asks for confirmation because a sent letter cannot be called
+ * back; the text says to whom it goes, so the administrator checks the right directory first.
+ */
+export const moduleMailAudienceEnableWarnings: Record<ModuleMailEventAudience, string> = {
+  service_side:
+    'Письма пойдут наружу — сервисной компании, её операторам и назначенным исполнителям. ' +
+    'Выключить событие можно тем же переключателем, но уже ушедшее письмо не вернуть: ' +
+    'убедитесь, что адрес компании в справочнике контрагентов заведён верно.',
+  reviewers:
+    'Письма пойдут сотрудникам, у которых есть право проверять сообщения о технике, — в их ' +
+    'области. Выключить событие можно тем же переключателем, но уже ушедшее письмо не вернуть: ' +
+    'убедитесь, что проверяющие назначены.',
+  candidate_author:
+    'Письма пойдут автору сообщения о технике — с решением и дословной причиной отказа. ' +
+    'Выключить событие можно тем же переключателем, но уже ушедшее письмо не вернуть.',
+  request_author:
+    'Письма пойдут автору заявки — на адрес его учётной записи; коллегам и ответственному из ' +
+    'заявки они не уходят. Ответ на них уходит на общий адрес портала (MAIL_REPLY_TO). ' +
+    'Выключить событие можно тем же переключателем, но уже ушедшее письмо не вернуть.',
 };
 
 /**
@@ -436,4 +531,11 @@ export interface ServiceMailTargets {
    * своему аппарату человек не узнает.
    */
   author?: ModuleMailOutcome;
+  /**
+   * The request author — the only required addressee of the two requester events (ADR 0227,
+   * E3). Written to the audit row only and never returned by a handler (E8): the acting person
+   * cannot fix the author's account, so a warning in the portal would be noise. A cell of its own and not `author`, which is the candidate's author:
+   * the two facts are different people answering different questions.
+   */
+  requester?: ModuleMailOutcome;
 }
