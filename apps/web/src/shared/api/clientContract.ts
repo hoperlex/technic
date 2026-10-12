@@ -16,70 +16,70 @@
  */
 
 /**
- * Версия контракта этой сборки портала — монотонное целое, а не идентификатор сборки.
+ * Contract version of this portal build — a monotonic integer, not a build id.
  *
- * `__BUILD_ID__` для гейта не годится: это короткий commit SHA, и отношения «ниже/выше» у него
- * нет вовсе — `a731bc2` и `f0184de` несравнимы. Поэтому число отдельное, и растёт оно ВРУЧНУЮ И
- * РЕДКО: ровно тогда, когда ответ сервера перестаёт быть читаемым кодом предыдущих сборок.
- * Поднявший число обязан поднять и пол на сервере (`MIN_CLIENT_CONTRACT`) — отдельным действием
- * и уже после того, как новая статика раздаётся.
+ * `__BUILD_ID__` cannot serve the gate: it is a short commit SHA, and SHAs have no "lower/higher"
+ * at all — `a731bc2` and `f0184de` are incomparable. Hence a separate number, raised BY HAND AND
+ * RARELY: exactly when what the server answers or accepts stops working with the code of earlier
+ * builds. Whoever raises it must also raise the server floor (`MIN_CLIENT_CONTRACT`) — as a
+ * separate action, after the new static is served.
  *
- * Числа с сервером намеренно НЕ общие: портал вшивает своё в бандл, сервер читает своё из
- * окружения. Общий модуль связал бы две стороны в один выкат — а весь смысл двух фаз в том, что
- * они разъезжаются.
+ * The number is deliberately NOT shared with the server: the portal bakes its own into the bundle,
+ * the server reads its own from the environment. A shared module would bind both sides into one
+ * rollout, and the whole point of the two phases is that they come apart. `deploy-auto` reads this
+ * line from the served revision with a fixed pattern (`client_contract_deployed`), so its format is
+ * pinned by `apps/api/test/client-floor-preflight.test.ts`.
  *
- * **1 → 2 (выпуск заявки без аппарата).** Первый подъём, и повод у него ровно тот, ради которого
- * механизм заводили: `equipment` и `object` в ответе о заявке стали необязательными, а сборки
- * контракта 1 читают их без проверки — первая же заявка без аппарата роняет у них список и
- * карточку.
+ * **1 → 2 (request without equipment).** The first raise, for exactly the reason the mechanism was
+ * built: `equipment` and `object` in the request answer became optional, and contract-1 builds read
+ * them unchecked — the first request without equipment broke their list and card.
  *
- * **2 → 3 (чеки на автозапчасти, фаза 1).** Подъём идёт ВПЕРЁД поломки, а не следом за ней, и в
- * этом всё его устройство (план `docs/auto-part-receipts-plan.md`, Р22). Эта сборка склада уже не
- * показывает, но сервер его ещё держит целиком: `parts` в DTO акта, схемы ввода, `/auto-parts`.
- * Снимет их следующий выпуск — и вот тогда сборки контракта 2 сломались бы насмерть:
- * `record.parts.length` в журнале ТО дал бы белый экран, а вкладка склада — 404 на каждый список.
- * Поэтому число растёт здесь, а пол на сервере (`MIN_CLIENT_CONTRACT`) поднимают ОТДЕЛЬНЫМ
- * действием — `deploy-auto --client-floor=3`, уже после того, как новая статика проверенно
- * раздаётся (порядок фаз — в `docs/runbook.md`). Между этими двумя действиями старые вкладки
- * работают как работали: сервер поведения не менял.
+ * **2 → 3 (auto part receipts, phase 1).** The raise goes AHEAD of the breakage, not after it, and
+ * that is its whole design (`docs/auto-part-receipts-plan.md`, R22). This build no longer shows the
+ * warehouse while the server still keeps it whole: `parts` in the act DTO, the input schemas,
+ * `/auto-parts`. The next release removes them, and that is when contract-2 builds would break
+ * hard: `record.parts.length` in the maintenance log gives a white screen, the warehouse tab a 404
+ * on every list. So the number rises here and the floor rises SEPARATELY —
+ * `deploy-auto --client-floor=3`, after the new static is verifiably served (phase order in
+ * `docs/runbook.md`). Between the two actions old tabs work as before: the server did not change.
  *
- * **3 → 4 (режим технических работ).** Повод отличается от трёх предыдущих, и различие стоит
- * назвать: ответ сервера не перестал разбираться — он перестал ПРАВИЛЬНО ЧИТАТЬСЯ. В окне работ
- * гейт отвечает `503 maintenance_mode`, а сборки контракта 3 не знают ни этого кода, ни файла
- * `/maintenance.json`: они покажут обычный тост «сервис недоступен» и оставят человека гадать,
- * сломался портал или закрыт намеренно. Ровно от этого режим и заводился
- * (`docs/maintenance-mode-plan.md`, §3).
+ * **3 → 4 (maintenance mode).** A different kind of reason: the answer did not stop parsing, it
+ * stopped being READ CORRECTLY. During a window the gate answers `503 maintenance_mode`, and
+ * contract-3 builds know neither the code nor `/maintenance.json`: they show a plain "service
+ * unavailable" toast and leave the person guessing whether the portal broke or was closed on
+ * purpose — exactly what the mode was built against (`docs/maintenance-mode-plan.md`, §3). So the
+ * floor is raised BEFORE the first window: a tab below it gets 426 and the demand to reload, and
+ * comes back with a build that shows the announcement. The barrier is in code:
+ * `deploy-auto --maintenance=on` refuses while the floor is below the served bundle's contract.
  *
- * Поэтому пол поднимается ДО первого окна, а не когда-нибудь: вкладка старее пола получает 426 и
- * требование обновиться, а обновившись — приходит со сборкой, которая объявление умеет. Для неё
- * это и есть заглушка. Барьер машинный: `deploy-auto --maintenance=on` отказывает, пока пол ниже
- * контракта раздаваемой сборки.
+ * **4 → 5 (removing a person's card asks for confirmation).** Like 1 → 2: the server stopped
+ * accepting what the old tab sends. `DELETE /drivers/:id` now answers
+ * `409 driver_removal_ack_required` with the affected orders, terms and number of future forms, and
+ * only a repeat with a body — the confirmation and the fingerprint of **that very** list — removes
+ * (ADR 0190, decision 5). Contract-4 builds send `DELETE` without a body: HR would see a refusal on
+ * every attempt and no dialog to get past it. The floor rises separately — `--client-floor=5`.
  *
- * **4 → 5 (снятие карточки человека спрашивает подтверждение).** Повод — как у подъёма 1 → 2:
- * сервер перестал принимать то, что старая вкладка шлёт. `DELETE /drivers/:id` теперь отвечает
- * `409 driver_removal_ack_required` с перечнем затронутых заказов, сроков и числа будущих бланков,
- * а удаление выполняет только повтор с телом — подтверждением и отпечатком **того самого**
- * перечня (ADR 0190, решение 5). Сборки контракта 4 шлют `DELETE` без тела вовсе: кадровик увидел
- * бы у них отказ на каждой попытке снять карточку и никакого диалога, которым его снять.
+ * **5 → 6 (article in an auto part receipt line).** The opposite of all the previous: the old build
+ * reads the answer fine — it **writes** incompletely. Editing a receipt sends the lines WHOLE and
+ * the server recreates them (`replaceLines`); a line carries no id in the body, so a tab that does
+ * not know `article` would wipe the articles of every line on its first edit, and "field missing
+ * means keep" cannot be expressed — there is nothing to match the sent line with. A silent loss of
+ * input is what the receipts release declared unacceptable, so the floor rises separately —
+ * `--client-floor=6` — and the old tab reloads instead of damaging documents
+ * (`docs/auto-part-receipt-ocr-plan.md`, R2a).
  *
- * Пол поднимается ОТДЕЛЬНЫМ действием — `deploy-auto --client-floor=5`, уже после того, как новая
- * статика проверенно раздаётся. До этого старые вкладки работают как работали везде, кроме
- * удаления водителя: остальных ручек волна не трогала.
- *
- * **5 → 6 (артикул в строке чека на автозапчасти).** Повод новый и обратный всем предыдущим: ответ
- * сервера старая сборка читает прекрасно — она **пишет** неполно. Правка чека отдаёт строки
- * ЦЕЛИКОМ и пересоздаёт их на сервере (`replaceLines`), идентификатора у строки в теле нет вовсе,
- * — значит вкладка, не знающая поля `article`, при первой же правке чека обнулит артикулы всех его
- * строк. Трактовать «поля нет» как «не трогать» здесь невыразимо: сопоставить присланную строку с
- * прежней нечем.
- *
- * Тихая потеря ввода — ровно то, что выпуск чеков объявил недопустимым (там по этой причине
- * отвергли «принимать `parts` и молча отбрасывать»): человек видит успех, данных нет. Поэтому пол
- * поднимается ОТДЕЛЬНЫМ действием — `deploy-auto --client-floor=6` — после того, как новая статика
- * проверенно раздаётся: старая вкладка получает 426 и обновляется, а не портит документы.
- * План: `docs/auto-part-receipt-ocr-plan.md`, Р2а.
+ * **6 → 7 (one raise for every floor-gated debt, ADR 0226).** The raise itself changes nothing in
+ * what the bundle reads or writes — that is the reason, not an omission. Several releases kept
+ * deprecated answer fields and old doors only for tabs built before their own portal half: the
+ * waste statistics fields of ADR 0209 (R5) and ADR 0213 (`volumeM3`, `totalCost`, `confirmed*`, …)
+ * and the other debts of release R2. Tabs from before and after those halves all carry 6, so no
+ * floor can tell them apart; 7 is the first number that means "built after all of them". The
+ * operator raises the floor with `deploy-auto --client-floor=7` once this build is verifiably
+ * served, and only then may a release set `REQUIRED_CLIENT_FLOOR = 7` and remove the debts
+ * (`docs/runbook.md`). The promise binds whoever removes a debt: the removal is safe at floor 7
+ * only if a contract-7 bundle no longer depends on what is removed.
  */
-export const CLIENT_CONTRACT = 6;
+export const CLIENT_CONTRACT = 7;
 
 /** Диагностика: какая сборка прислала запрос. Гейт этот заголовок не толкует. */
 export const CLIENT_BUILD_HEADER = 'X-Client-Build';
