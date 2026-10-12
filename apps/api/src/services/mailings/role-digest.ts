@@ -149,9 +149,9 @@ function counterpartyTypesWithAnyPermission(
  * Role add-ons are not a separate term on purpose: they are stored as system grants in `user_grants`
  * (ADR 0106; the former add-on table is dropped by step 1e), so the grant term already covers them.
  *
- * Экспортируется, потому что тем же условием форма показывает администратору, кого зацепит
- * расписание (`GET /admin/mail/recipient-candidates`), и им же считает обе стороны сверка
- * аудитории. Три похожих запроса на один вопрос разошлись бы молча.
+ * Exported because the form shows the administrator whom a schedule will reach with the same
+ * condition (`GET /admin/mail/recipient-candidates`). Two similar queries for one question would
+ * drift silently: the form would show one number while letters went to other people.
  */
 export function permissionAudienceWhere(permissions: readonly Permission[]): SQL {
   // Пустой адрес — «никому»: разослать всем при недосмотре хуже, чем не разослать никому.
@@ -229,21 +229,6 @@ export async function digestRecipients(
 ): Promise<DigestRecipient[]> {
   const permissions = await schedulePermissions(scheduleId);
   if (permissions.length === 0) return [];
-  return digestRecipientsBy(scheduleId, audience, permissionAudienceWhere(permissions));
-}
-
-/**
- * Тот же отбор, но с произвольным условием адреса.
- *
- * Заведено ради сверки аудитории (`backfill:mailing-audience`): «до» и «после» обязаны считаться
- * одним и тем же кодом, отличаясь ровно одним — адресом. Собери сверка вторую копию отбора, и
- * совпадение списков доказывало бы совпадение двух её половин, а не переезда.
- */
-export async function digestRecipientsBy(
-  scheduleId: string,
-  audience: DigestAudience,
-  address: SQL,
-): Promise<DigestRecipient[]> {
   const selected =
     audience.recipientMode === 'selected'
       ? (
@@ -262,7 +247,7 @@ export async function digestRecipientsBy(
     .from(users)
     .where(
       and(
-        address,
+        permissionAudienceWhere(permissions),
         eq(users.isActive, true),
         isNull(users.deletedAt),
         isNotNull(users.emailVerifiedAt),

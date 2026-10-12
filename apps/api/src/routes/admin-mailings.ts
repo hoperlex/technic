@@ -319,14 +319,12 @@ function nextRunFor(v: {
 }
 
 /**
- * Наборы настроек заменяются целиком: они приходят списками, и складывать разницу по строкам
- * незачем. Замена идёт той же транзакцией, что и само расписание, — иначе между удалением старых
- * строк и вставкой новых расписание успело бы сработать с половиной настроек: без части прав, с
- * половиной разделов или уже без исключённой площадки.
+ * Setting sets are replaced whole: they arrive as lists, and summing a diff row by row is pointless.
+ * The replacement runs in the same transaction as the schedule itself, or between deleting the old
+ * rows and inserting the new ones the schedule could fire with half of its settings: without some of
+ * the permissions, with half of the sections or already without an excluded site.
  *
- * `mailing_schedule_roles` здесь больше нет ни в удалении, ни во вставке (ADR 0111): прежняя
- * адресация не читается и не пишется, а строки её оставлены до миграции удаления — по ним сверка
- * аудитории отвечает, кому расписание слало письма до переезда.
+ * The addressing is permissions only (ADR 0111): the former role addressing table is dropped.
  */
 async function replaceSettings(
   tx: Tx,

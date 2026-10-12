@@ -862,12 +862,12 @@ UPDATE user_role_migration SET migrated_at = NULL WHERE stage = 8;
    поимённо список: это учётки, которым роль меняли руками, и после cleanup возвращать их будет
    некуда.
 
-Что делает SQL: снимает строки `grant_roles` с упразднёнными ролями — и системные (две:
-`office_equipment_operator` и `office_equipment_it_approver` × `shtab`), и пользовательские, куда
-prepare дописал целевую роль рядом. Значения enum в базе **не удаляются** (`ALTER TYPE ... DROP
-VALUE` не существует, а пересоздание типа задевает `users.role` и `mailing_schedule_roles.role` и
-требует необратимого выката): они остаются мёртвыми, и на них держится
-`user_role_migration.role_before` — единственный ответ на «кем человек был».
+What the SQL does: it removes the `grant_roles` rows with the retired roles, both the system ones
+(two: `office_equipment_operator` and `office_equipment_it_approver` × `shtab`) and the user ones
+where prepare added the target role alongside. The enum values in the database are **not removed**
+(`ALTER TYPE ... DROP VALUE` does not exist, and rebuilding the type touches every `role` column,
+`users.role` first, and needs an irreversible rollout): they stay dead, and
+`user_role_migration.role_before` relies on them — the only answer to "who the person was".
 
 **Почему вычитание `grant_roles` не в migrate, хотя соблазн велик.** Какие пользовательские наборы
 были собраны под старую роль, нигде не записано: prepare добавлял целевую роль, а не запоминал,
@@ -1295,42 +1295,14 @@ psql "$DATABASE_URL" -c "select to_email, status, subject from mail_messages
   where kind = 'role_digest' and mailing_run_id = '<uuid>' order by created_at;"
 ```
 
-#### Разовый шаг: сверка аудитории после переезда адресации на права (ADR 0111)
+#### Addressing by permission (ADR 0111): the role addressing is gone
 
-Миграция `0151` не только заводит `mailing_schedule_permissions`, но и **наполняет её по факту**:
-для каждого расписания ищет право, дающее на живых данных ровно ту же аудиторию, что нынешний набор
-ролей. Отдельным скриптом это сделать нельзя — он приезжает тем же образом, что и новый код, то есть
-запустить его можно только после перезапуска, а до тех пор все расписания адресовались бы пустой
-таблицей и молчали. Поэтому перенос идёт в миграции (она накатывается **до** перезапуска), а ручной
-шаг после выката один — сверка:
-
-```bash
-docker compose -f deploy/docker-compose.yml -p technic exec technic-api \
-  pnpm --filter @technic/api check:mailing-audience
-```
-
-Скрипт считает «до» по прежним ролям, «после» по правам и сравнивает **поимённо**. Считает он рабочим
-кодом рассылки, тогда как перенос считал то же равенство своим SQL: два независимых счёта одного
-множества — в этом и смысл шага. Код возврата 0 означает «аудитория каждого расписания совпала».
-
-Три вида отказа, и решение у каждого своё:
-
-- **адресация не подобрана** — эквивалентного права нет, и расписание не пишет никому. Это не
-  поломка переноса: аудитория роли выражается правом далеко не всегда («Штаб» как таковой не
-  отделяется ни одним правом ни от «Отдела», ни от «Диспетчера»). Скрипт печатает, кому уходило до
-  переезда, и ближайшие права с ценой каждого («потеряется N, добавится M»); **выбор — за
-  заказчиком**, задаётся он в форме расписания. Приближение здесь означало бы менять список
-  получателей молча;
-- **аудитория разошлась** — право подобрано не то, письма пойдут не тем: имена обеих сторон в
-  отчёте, править форму расписания надо до ближайшей вечерней рассылки;
-- **право-сирота** — в таблице лежит строка вне словаря кода: адресация по ней молча не сработает.
-
-Строку `отбор без гейта модуля изменился: −N / +M` отказом считать не надо: это люди, которым письмо
-не составлялось и не составится (у них нет `vehicleRequests.read`), — счётчик кандидатов в форме
-расписания из-за них станет другим, и знать об этом надо заранее.
-
-`mailing_schedule_roles` миграция **не трогает**: пока строки на месте, откат этапа — обычный откат
-кода, а сверка умеет сопоставить обе адресации. Удаляет таблицу отдельная миграция релизом позже.
+Migration `0151` moved the addressing to `mailing_schedule_permissions` and filled it from live
+data; the one-off audience check after it (`check:mailing-audience`) compared the old role addressing
+with the new one by name. Both halves of that comparison are history now: a later release drops
+`mailing_schedule_roles`, and the check leaves with it — there is nothing left to compare against. A schedule without any addressee permission writes to nobody; it is set in the schedule
+form («Права-адресаты»), and `digest-role-audience.db.test.ts` keeps orphan permissions (rows outside
+the code dictionary) from going unnoticed.
 
 ## Подтверждение адреса при регистрации
 

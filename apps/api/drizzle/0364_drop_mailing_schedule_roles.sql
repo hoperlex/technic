@@ -1,0 +1,25 @@
+-- Drop the former role addressing of role digests (ADR 0111, decision 9; restructuring plan §13:
+-- between "stopped writing the old table" and "dropped it" a release must pass).
+--
+-- WHY IT IS SAFE NOW. Stage 7 (ADR 0111, migration 0151 and the code of 18.08.2026, `56cc833c`)
+-- moved the addressing to `mailing_schedule_permissions`: since then the server neither reads nor
+-- writes `mailing_schedule_roles`, and the rows were kept only so that a code rollback of stage 7
+-- stayed a plain rollback and the one-off audience check (`check:mailing-audience`) could compare
+-- both addressings. Every release since then carries that code, including the one serving during
+-- this migration's window (migrations run before the restart): its only reader of the table is that
+-- CLI check, which the server never calls. The check leaves together with this file — it has
+-- nothing to compare against any more.
+--
+-- WHAT THE DROP ALSO FREES. The table is the second user of the `role` enum next to `users.role`
+-- (the role is part of its primary key), so a future rebuild of that enum no longer has to carry
+-- it. The `ON DELETE CASCADE` from `mailing_schedules` goes with it; nothing relied on it but the
+-- cascade itself.
+--
+-- REVERSIBILITY. One-way, as planned: a version that reads the role addressing (before stage 7)
+-- cannot run on this schema, and only PITR brings the rows back. A rollback to any release since
+-- stage 7 is safe, because none of them touches the table.
+--
+-- No `IF EXISTS`: a missing table here does not mean "already done", it means a wrong database or a
+-- journal that drifted from disk, and that must not pass silently. Idempotence is the job of the
+-- `_migrations` journal.
+DROP TABLE mailing_schedule_roles;

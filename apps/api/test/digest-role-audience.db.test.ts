@@ -21,13 +21,14 @@ import type { digestRecipients as DigestRecipients } from '../src/services/maili
  * слияние ролей, отмеченных по отдельности, расширяло аудиторию на тех, кого из неё исключали.
  * Правилами такого не поймать: расходятся не правила, а строки таблицы с перечнем ролей в коде.
  *
- * Отсюда три проверки, и все — про перевод, а не про сегодняшний день:
- *   1. каждое право в расписаниях известно коду — выкат, снявший право из словаря, оставил бы здесь
- *      строку-сироту, и адресация по ней молча не сработала бы;
- *   2. строка прежней адресации по роли ни одного получателя не стоит — таблица оставлена до
- *      миграции удаления, и вернуть её в отбор не должна ни одна правка сервиса;
- *   3. смена роли получателя аудиторию не меняет, пока право при нём остаётся, — то самое, ради
- *      чего этап 7 идёт до этапа 8: перевод учётки в другую роль с тем же правом письма не отбирает.
+ * Hence three checks, all about the role migration rather than about today:
+ *   1. every permission in the schedules is known to the code: a release that removed a permission
+ *      from the dictionary would leave an orphan row here, and addressing by it would silently fail;
+ *   2. a role without the permission is not an addressee, whatever the role is called: the former
+ *      role addressing (dropped with its table after stage 7) would have selected it;
+ *   3. changing the recipient's role does not change the audience while the permission stays with
+ *      them, which is why stage 7 goes before stage 8: moving an account to another role with the
+ *      same permission does not take the letter away.
  *
  * Запуск — как у остальных db-тестов; без `TEST_DATABASE_URL` файл пропускается:
  *
@@ -156,19 +157,11 @@ describe.skipIf(!DB_URL)('адресация сводки переживает �
     expect(orphans).toEqual([]);
   });
 
-  it('строка прежней адресации на аудиторию не влияет', async () => {
-    // `mailing_schedule_roles` оставлена до миграции удаления (§13 плана: между «перестали писать»
-    // и «удалили» обязан пройти релиз), и вот чего она стоить не должна — ни одного получателя.
-    // Проверка стоит здесь, а не в форме: вернуть старую таблицу в отбор может любая правка
-    // сервиса, и заметить это иначе можно только письмом, ушедшим не тому.
-    await ctx.db
-      .insert(ctx.schema.mailingScheduleRoles)
-      .values({ scheduleId, role: 'commandant' })
-      .onConflictDoNothing();
-
+  it('a role without the permission is not an addressee', async () => {
     const ids = (await ctx.digestRecipients(scheduleId, ALL_AUDIENCE)).map((r) => r.userId);
     expect(ids).toContain(movedUserId);
-    // У коменданта права заказов техники нет: прежняя адресация его бы выбрала, нынешняя — нет.
+    // The commandant role has no vehicle order permission: role addressing that listed it would have
+    // selected this account, permission addressing does not.
     expect(ids).not.toContain(commandantUserId);
   });
 

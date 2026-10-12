@@ -8919,34 +8919,8 @@ export const mailingSchedulePermissions = pgTable(
 );
 
 /**
- * Роли-получатели сводки — **прежняя адресация, оставленная до следующего релиза** (ADR 0111).
- *
- * С выката этапа 7 таблица не читается и не пишется: адресацию задают права
- * (`mailing_schedule_permissions`). Строки при этом сохранены намеренно и удаляются отдельной
- * миграцией релизом позже (§13 плана: между «перестали писать» и «удалили» обязан пройти релиз) —
- * пока они на месте, откат этапа сводится к откату кода, а `backfill:mailing-audience --check`
- * умеет сверить обе адресации между собой и сказать, совпадает ли аудитория поимённо.
- *
- * Заодно снимается прежняя головная боль перевода ролей: роль входила в первичный ключ, и наивный
- * `UPDATE … SET role = 'site'` упирался в дубль у расписания, где отмечены обе сливаемые роли, а
- * забытый перевод оставлял расписание с ролью, которой ни у кого нет, — рассылка не падала и не
- * жаловалась, она просто переставала приходить. Права такого свойства не имеют: слияние ролей их
- * не касается вовсе.
- */
-export const mailingScheduleRoles = pgTable(
-  'mailing_schedule_roles',
-  {
-    scheduleId: uuid('schedule_id')
-      .notNull()
-      .references(() => mailingSchedules.id, { onDelete: 'cascade' }),
-    role: roleEnum('role').notNull(),
-  },
-  (t) => ({ pk: primaryKey({ columns: [t.scheduleId, t.role] }) }),
-);
-
-/**
- * Отмеченные получатели-учётки: не путать с водителями, которым уходит задание на рейс. Пусто при
- * `recipient_mode = 'all'` — тогда отбор идёт только ролями и областями.
+ * Selected recipient accounts, not to be confused with the drivers who get the trip task. Empty with
+ * `recipient_mode = 'all'`: then the selection goes by permissions and scopes only.
  */
 export const mailingScheduleRecipients = pgTable(
   'mailing_schedule_recipients',
