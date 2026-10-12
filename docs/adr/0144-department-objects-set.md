@@ -100,3 +100,36 @@
 - очередь заявок вывоза на площадке **общая**: отдел правит и безвозвратно удаляет чужие «Новые»
   наравне со штабом — авторской области в модуле нет и не заводится;
 - в «Заказе ТС» и оргтехнике область не меняется; подсказка адреса предлагает все площадки отдела.
+
+## Stage 9 release A (2026-10-12)
+
+Release A of stage 9 is implemented on branch `r1-access` for release R1; release B (the column
+drop, `apps/api/drizzle/pending/department-object-column-drop.sql`) stays prepared and unnumbered.
+
+- `replaceDepartmentObjects` no longer projects the set into `departments.construction_object_id`.
+  The one-release compatibility of decision 5 is over: `normalizeLegacyObjectId` and
+  `withLegacyObjectId` left the contract, `object` left `DepartmentDto`, and the route lost its
+  legacy marker and the 409 branch. A body with the old key `constructionObjectId` is parsed with the
+  key stripped, so it neither sets nor clears anything. That is safe because no portal bundle with
+  client contract 4 or later (the prod floor) sends that key or reads `object`: the web code was
+  checked from the first contract 4 build (`ffd4be8a`) through prod `dc647215`; the portal moved to
+  the set on 28.08.2026 (`4219c191`).
+- The column also left the drizzle schema, earlier than the release B plan in the pending file says.
+  Drizzle names every schema column in `select()` and `insert()` (checked: on `origin/main` the
+  department select and insert both list `construction_object_id`), and release B's drop runs before
+  the restart, so release A code with the column in its schema would fail on every department read
+  and insert during that window.
+- The column, its `RESTRICT` key, the partial index, the trigger and its function stay in the
+  database. The old code `dc647215` never reads the column (the scope comes from the link table since
+  `0221`); it writes the projection first and the set second, which stays correct while the trigger
+  lives, so rolling back to it is safe.
+- Found by the implementation, to be handled before release B:
+  - the column goes stale on the first set change after release A, and nothing writes it again;
+  - a stale value can still hold an object through the `RESTRICT` key: the purge of an object the
+    department no longer has passes the route's link-table count and then fails with «площадки
+    отделов» until release B;
+  - the guard prepared in release B (the column must equal the set's projection) fires for every
+    department whose set changed after release A — reproduced on a PostgreSQL 17 scratch database.
+    Release B has to replace it, for example by dropping the trigger and the column without the
+    projection check: every column write since `0221` reached the set through the trigger, so the
+    column holds nothing the set lacks. Its step "remove the column from `schema.ts`" is already done.

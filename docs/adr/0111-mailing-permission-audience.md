@@ -190,3 +190,20 @@ check:mailing-audience`, runbook). Она считает «до» по роля�
 
 **Показывать в форме только выдаваемые права.** Отвергнуто: см. решение 10 — второй смысл у
 `NON_GRANTABLE_PERMISSIONS` и молчаливая потеря адресации при открытии формы.
+
+## Decision 9 carried out (2026-10-12)
+
+The role addressing is dropped on branch `r1-access` for release R1.
+
+- A new migration (`drop_mailing_schedule_roles`) drops `mailing_schedule_roles`. Together with it
+  the one-off audience check `check:mailing-audience` (`apps/api/src/check-mailing-audience.ts` and
+  its script) is removed: one of its two sides was the dropped table, so there is nothing left to
+  compare. `digestRecipientsBy`, parameterized by the address only for that check, is folded back
+  into `digestRecipients`.
+- `digest-role-audience.db.test.ts` restates its second claim without the old table: an account of a
+  role without the addressed permission (the commandant) is not an addressee.
+- Window safety: stage 7 (`56cc833c`, 18.08.2026) stopped every server read and write of the table,
+  and in the code serving during the window (prod `dc647215`) the only reader left is that CLI check,
+  which the server never calls. Rolling back to any release since stage 7 stays safe.
+- The readiness criterion "`check:mailing-audience` on prod" is history now: the check was a one-off
+  step of the stage 7 rollout and cannot run any more.

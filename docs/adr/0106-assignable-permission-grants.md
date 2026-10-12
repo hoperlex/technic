@@ -420,3 +420,26 @@ A разрешал бы сохранение состава B, пока база
 **Сразу добавить точечные права и сроки.** Отклонено для первой поставки: они увеличивают число
 состояний и добавляют истечение без события до того, как проверены каталог, аудит и серверные
 эффективные права на модели наборов.
+
+## Step 1e carried out (2026-10-12)
+
+Step 1e of decision 9 is implemented on branch `r1-access` for release R1.
+
+- The prepared `apps/api/drizzle/pending/step1e-drop-user-role-addons.sql` became a numbered
+  migration (`drop_user_role_addons`) without a change in content, by the procedure of the pending
+  directory's README. It drops `user_role_addons` and then the `role_addon` type.
+- Removed in the same change: the drizzle `userRoleAddons`, `roleAddonEnum` and `UserRoleAddonRow`;
+  the dead readers `roleAddonsExpr` and `addonsByUserIds`; `backfill-grants.ts` with the
+  `backfill:grants` script and its db test (the transfer read the dropped table); the legacy-row case
+  of `user-grants-single-write.db.test.ts`; the one-off runbook transfer checklist.
+- Kept on purpose: `role-addons.ts` and `RoleAddon` in the contracts, the derived `addons` field
+  (`systemAddonsOf`) of the principal and the account DTOs, and the add-on term in `can`. Portal
+  bundles in the field read `addons`; removing it is its own step behind the client floor (§10.1 of
+  the restructuring plan), not part of 1e.
+- Window safety was proved on the code that serves during the migration window, prod `dc647215`.
+  It contains step 1d (`8e0d5874`, 18.08.2026), and its only references to the table are the schema
+  definitions, the uncalled `roleAddonsExpr` / `addonsByUserIds` and the CLI `backfill:grants`; no
+  server path, raw SQL, database function or drizzle relation reads or writes it. `DROP TABLE`
+  briefly takes `ACCESS EXCLUSIVE` on `users` (it removes the foreign-key triggers there), so the
+  migration waits for transactions in flight on `users`, as any DDL on that table does.
+- Rollback: `1e → 1d` stays safe; any version below 1d reads the dropped table and needs PITR.
