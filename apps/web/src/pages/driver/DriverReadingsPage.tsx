@@ -14,6 +14,7 @@ import { useAssignment, useAutoOpen, useDayState, usePreviousOf, useReadGate } f
 import { useKeyboardInset } from './keyboardInset';
 import { driverCabinetApi, driverCabinetKeys } from '@entities/driver-cabinet';
 import { newIdempotencyKey, type DraftItem } from './api';
+import { refreshAfterSubmit } from './submitRefresh';
 import {
   bodyFingerprint,
   draftPrefix,
@@ -303,10 +304,8 @@ export function DriverReadingsPage() {
        */
       const sentIds = new Set(items.map((entry) => entry.itemId));
       commit({ items: sentTombstones(report, sentIds, view), close: { key, state: 'succeeded' } });
-      // Точечно, а не корневой инвалидацией (Р8): корень унёс бы с собой и `report(date)` — тот
-      // самый ключ, куда только что лёг ответ отправки. Заданию перечитаться есть зачем — в нём
-      // живут предыдущие снимки счётчиков, а отправка их и меняет.
-      await queryClient.invalidateQueries({ queryKey: driverCabinetKeys.assignment(date) });
+      // Later days of the same vehicles are recomputed by the server (`refreshAfterSubmit`).
+      await refreshAfterSubmit(queryClient, date);
       if (stillShown()) message.success('Показания переданы');
     } catch (e) {
       // Исход, названный самим API, закрывает попытку; обрыв и отказ шлюза оставляют её `pending`:

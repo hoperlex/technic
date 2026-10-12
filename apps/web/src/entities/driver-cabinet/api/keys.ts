@@ -7,8 +7,12 @@ import { createQueryKeys } from '@shared/api';
  * meant, and the roots are not interchangeable — invalidating one leaves the other stale.
  */
 export const driverCabinetKeys = createQueryKeys('driver-cabinet', {
+  /** Every date's assignment — a prefix to drop; the date stays the third segment of the key. */
+  assignments: () => ['assignment'],
   /** Задание на дату: ключ по дате — переключение стрелками не перезапрашивает уже показанный день. */
   assignment: (date: string) => ['assignment', date],
+  /** Every date's report — a prefix to drop, with the same date position as `assignments`. */
+  reports: () => ['report'],
   /**
    * Отчёт дня — **единственное место, где живёт `DriverReportDto`** (план driver-readings-first,
    * Р8). Второго кэша под ответ `open` нет намеренно: два кэша одного отчёта разъезжаются, и
