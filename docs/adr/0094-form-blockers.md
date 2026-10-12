@@ -85,3 +85,9 @@
 - Осталось за границей первой очереди: закрытие работ и редактор сметы (`ServiceCompleteModal`,
   `EstimateEditorModal`) — там строки таблицы считаются на лету и живут состоянием осознанно;
   перевод их на форму — отдельное решение.
+  _Done on 2026-10-12 (roadmap items Q7 and Q10):_ both windows are on antd `Form` with
+  `Form.List` for their rows; a refusal marks its field instead of a toast, totals still update on
+  every keystroke, and the form renders without a `<form>` element (`component={false}`) so Enter
+  in a single-line field never submits. Both left the allowlist of `check-form-blockers.mjs`, and
+  their request bodies are pinned byte for byte by tests written before the move
+  (`service-complete-body.test.tsx`, `service-estimate-body.test.tsx`).
