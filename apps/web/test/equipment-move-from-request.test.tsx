@@ -14,6 +14,7 @@ import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
 import { serviceOperator, serviceRequest } from './factories/service';
 import { EquipmentMoveFromRequest } from '../src/features/equipment-move';
+import { permissionChecks } from '@entities/session';
 import { serviceRequestMenuItems } from '../src/pages/service/serviceRequestMenu';
 import type { ServiceRequestModals } from '../src/pages/service/serviceRequestModals';
 
@@ -84,9 +85,12 @@ const MODALS: ServiceRequestModals = {
 const RUN = { start: () => {}, approve: () => {}, rollbackStart: () => {} };
 
 const hasMoveItem = (request: ServiceRequestDto, user: AuthUser): boolean =>
-  serviceRequestMenuItems(request, { user, modals: MODALS, run: RUN }).some(
-    (item) => item.key === 'move-equipment',
-  );
+  serviceRequestMenuItems(request, {
+    user,
+    can: permissionChecks(user).can,
+    modals: MODALS,
+    run: RUN,
+  }).some((item) => item.key === 'move-equipment');
 
 describe('кому положена дверь к перемещению', () => {
   it('без права `officeEquipment.move` пункта нет, даже у держателя ведения справочника', () => {

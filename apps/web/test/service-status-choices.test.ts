@@ -23,6 +23,7 @@ import {
   serviceRequest,
   serviceRequestFile,
 } from './factories/service';
+import { permissionChecks } from '@entities/session';
 import { serviceRequestMenuItems } from '../src/pages/service/serviceRequestMenu';
 import {
   serviceStatusChoices,
@@ -64,7 +65,12 @@ const MODALS: ServiceRequestModals = {
 const RUN = { start: () => {}, approve: () => {}, rollbackStart: () => {}, notify: () => {} };
 
 function itemsFor(request: ServiceRequestDto, user: AuthUser | null): ServiceMenuItem[] {
-  return serviceRequestMenuItems(request, { user, modals: MODALS, run: RUN });
+  return serviceRequestMenuItems(request, {
+    user,
+    can: permissionChecks(user).can,
+    modals: MODALS,
+    run: RUN,
+  });
 }
 
 /** Подписи переходов — то, что человек читает в меню и в шите. */

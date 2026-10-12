@@ -10,7 +10,6 @@ import {
 } from '@ant-design/icons';
 import {
   allowedServiceStatusTransitions,
-  can as hasPermission,
   canAssignServiceExecutors,
   canStartServiceWork,
   canDeclineServiceRequest,
@@ -236,37 +235,31 @@ export function serviceRequestMenuItems(
   }
 
   /*
-   * Откат «принял в работу» (Р13) — единственный ход по живой дуге `in_work → new`, и пункта у неё
-   * не было: прежний «Вернуть в «Новую»» висел на `assigned`, снятом вместе со статусом.
+   * Rolling back «taken into work» (R13) is the only move along the live arc `in_work → new`, and
+   * the arc had no item: the former «Вернуть в «Новую»» hung on `assigned`, removed with the status.
    *
-   * Это НЕ «отмотать назначение». Матрица сброса на этой дуге не снимает ничего
-   * (`serviceResetOnTransition`), исполнители остаются на заявке, и она возвращается к ним же —
-   * дальше «Принять в работу» нажимают заново. Отсюда и подпись, и подтверждение: скажи они
-   * «вернуть заявку оператору», человек ждал бы освобождённой заявки, а получил бы прежний состав.
+   * This is NOT «unwinding the assignment». The reset matrix removes nothing on this arc
+   * (`serviceResetOnTransition`), the executors stay on the request, and it returns to them —
+   * «Принять в работу» is pressed again afterwards. Hence the label and the confirmation: had they
+   * said «return the request to the operator», a person would expect a freed request and get the
+   * same executors. The move needs no reason, and none may be invented: a reason was required by
+   * the `assigned → new` arc, which removed the executor, and this rollback does not.
    *
-   * Причины переход не требует, и выдумывать её нельзя: она требовалась дуге `assigned → new`,
-   * которая снимала исполнителя, — а этот откат не снимает.
+   * THE PERMISSION IS ASKED SEPARATELY FROM THE ARC, the only item of this file for which the
+   * corridor alone is not enough. The arc `in_work → new` comes into the corridor from
+   * `SERVICE_ASSIGNER_TRANSITIONS`, that is by `serviceRequests.assign`, while the item goes to
+   * `PATCH /:id/status`, guarded by `serviceRequests.status`. The «Системный администратор»
+   * profile (`assign` and `hold`, no `status`) therefore drew the item and got a 403 «Недостаточно
+   * прав для смены статуса» — checked by asking the server directly. Exactly what the handler will
+   * ask is asked, of `ctx.can` (ADR 0223), by the same rule as the neighbours in
+   * `serviceRequestExtras`.
    *
-   * ПРАВО СПРАШИВАЕТСЯ ОТДЕЛЬНО ОТ ДУГИ, и это единственный пункт файла, которому одного коридора
-   * мало. Дуга `in_work → new` приходит в коридор от `SERVICE_ASSIGNER_TRANSITIONS`, то есть по
-   * праву `serviceRequests.assign`, а сам пункт уходит в `PATCH /:id/status`, за которым стоит
-   * страж `serviceRequests.status`. У профиля «Системный администратор» (`assign` и `hold` есть,
-   * `status` нет) пункт поэтому рисовался и отвечал 403 «Недостаточно прав для смены статуса» —
-   * проверено прямым опросом сервера. Спрашиваем ровно то, что спросит ручка: правило то же, что у
-   * соседей в `serviceRequestExtras` («несбывающееся действие в меню — это обещание, за которым
-   * пусто»).
-   *
-   * Прежде та же дуга обслуживала и ПЕРЕназначение — `PUT /:id/executors` сам возвращал работающую
-   * заявку в «Новую». Больше не возвращает (ADR 0187), и у дуги остался один ход: этот. Само
-   * переназначение при этом никуда не делось — «Изменить исполнителей» живёт своим пунктом со своим
-   * предикатом и коридора не спрашивает вовсе.
+   * The same arc used to serve REassignment too — `PUT /:id/executors` itself returned a running
+   * request to «Новая». It no longer does (ADR 0187), and the arc has one move left: this one.
+   * Reassignment did not go anywhere — «Изменить исполнителей» lives as its own item with its own
+   * predicate and does not ask the corridor at all.
    */
-  if (
-    mayAct &&
-    request.status === 'in_work' &&
-    has('new') &&
-    hasPermission(ctx.user, 'serviceRequests.status')
-  ) {
+  if (mayAct && request.status === 'in_work' && has('new') && ctx.can('serviceRequests.status')) {
     items.push({
       key: 'rollback-start',
       label: 'Вернуть в «Новую»',

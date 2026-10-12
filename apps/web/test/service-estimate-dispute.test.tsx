@@ -12,6 +12,7 @@ import {
   serviceOperator,
 } from './factories/service';
 import { objectDto } from './factories/waste';
+import { permissionChecks } from '@entities/session';
 import { serviceRequestMenuItems } from '../src/pages/service/serviceRequestMenu';
 import type { ServiceRequestModals } from '../src/pages/service/serviceRequestModals';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
@@ -69,7 +70,12 @@ const MODALS: ServiceRequestModals = {
 const RUN = { start: () => {}, approve: () => {}, rollbackStart: () => {} };
 
 const keysFor = (request: ServiceRequestDto, user: AuthUser): string[] =>
-  serviceRequestMenuItems(request, { user, modals: MODALS, run: RUN }).map((item) => item.key);
+  serviceRequestMenuItems(request, {
+    user,
+    can: permissionChecks(user).can,
+    modals: MODALS,
+    run: RUN,
+  }).map((item) => item.key);
 
 describe('«Оспорить освобождение» открыто тому и тогда, когда его пустит сервер (Р9)', () => {
   it('«Ведению» — на заявке, принятой без подписи', () => {

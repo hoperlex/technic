@@ -18,7 +18,7 @@ import {
   dateOnlySchema,
   uuidSchema,
 } from './common';
-import { can, type ScopedSubject } from './permissions';
+import { can, type Permission, type ScopedSubject } from './permissions';
 import {
   costTargetKey,
   parseCostTargetKey,
@@ -711,28 +711,36 @@ export interface MechApprovalTarget {
 }
 
 /**
- * Может ли субъект завизировать эту аренду (план визы, Р5): право визы плюс своя сторона заявки.
+ * May the subject sign the site visa of this rental (visa plan, R5): the visa permission plus the
+ * subject's own side of the request.
  *
- * **Одна функция на портал и сервер** — иначе кнопка появлялась бы там, где ручка отвечает 403.
+ * **One function for the portal and the server** — otherwise the item would appear where the
+ * handler answers 403.
  *
- * Устройство модуля отличается от заказа техники, и предикат `canApproveRequest` сюда не годится:
- * там заказчик — объект **либо** отдел (`num_nonnulls(object_id, department_id) = 1`), и ось роли
- * однозначно выбирает, что сравнивать. У аренды площадка есть ВСЕГДА, а отдел — необязательный
- * заявитель поверх неё, и обе колонки бывают заполнены разом: это и есть ответ заказчика «площадка
- * или руководитель отдела — кто первый».
+ * The module is built differently from the vehicle order, so `canApproveRequest` does not fit here.
+ * There the customer is an object **or** a department (`num_nonnulls(object_id, department_id) =
+ * 1`), and the role's axis picks unambiguously what to compare. A rental ALWAYS has a site, while
+ * the department is an optional requester on top of it, and both columns are often filled at once:
+ * that is the customer's answer «the site or the department head, whoever is first».
  *
- * Ветвление идёт **по оси роли**, а не дизъюнкцией «совпал объект ИЛИ отдел»: у роли отдела есть
- * производный список площадок (`departmentObjectIds`, ADR 0062/0144), и спроси мы по нему —
- * руководитель отдела визировал бы заявки САМОЙ площадки, которых его отдел не заводил. Поэтому
- * отдельская ветка требует обе половины: заявку завёл его отдел И площадка закреплена за отделом
- * сейчас. Заявка с пустым `departmentId` остаётся ему невизируемой всегда — второй ветке нечего
- * сравнивать.
+ * The branch goes **by the role's axis**, not by the disjunction «object matched OR department
+ * matched». A department role has a derived list of sites (`departmentObjectIds`, ADR 0062/0144),
+ * and asked by it the department head would sign requests filed by the SITE ITSELF, which his
+ * department never filed. So the department branch needs both halves: his department filed the
+ * request AND the site is attached to the department now. A request with an empty `departmentId`
+ * stays unsignable for him — the second branch has nothing to compare.
+ *
+ * `has` answers the permission, as in `canApproveMechExtension`. The server leaves the default (the
+ * matrix over its own principal is exactly what it builds the session list with); the portal passes
+ * its `can`, which reads the list the server computed (ADR 0223) — the scope rule stays here, the
+ * permission comes from one oracle.
  */
 export function canApproveMechRequest(
   subject: MechApprovalSubject | null | undefined,
   row: MechApprovalTarget,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
-  if (!can(subject, 'mechRequests.approve')) return false;
+  if (!has('mechRequests.approve')) return false;
   const role = subject?.role;
   if (isObjectScopedRole(role))
     return (subject?.constructionObjectIds ?? []).includes(row.objectId);
@@ -743,7 +751,7 @@ export function canApproveMechRequest(
       (subject?.departmentObjectIds ?? []).includes(row.objectId)
     );
   }
-  // Роль без своей оси (администратор) не ограничена ничем — как и в заказе техники.
+  // A role without its own axis (administrator) is not limited by anything, as in the vehicle order.
   return true;
 }
 

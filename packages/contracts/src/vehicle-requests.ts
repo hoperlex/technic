@@ -27,7 +27,7 @@ import {
   type VehicleRequestType,
 } from './enums';
 import type { RequestStatus } from './enums';
-import { allowedStatusTransitions, can, type AccessSubject } from './permissions';
+import { allowedStatusTransitions, can, type AccessSubject, type Permission } from './permissions';
 import {
   archiveFilterSchema,
   baseListQuery,
@@ -154,33 +154,41 @@ export function parseVehicleRequestNumberSearch(input: string): number | undefin
 export const VEHICLE_REQUEST_CUTOFF_MINUTES = 15 * 60;
 
 /**
- * Заявитель — тот, кто технику заказывает, но заказ по статусам не ведёт: штаб, руководитель
- * строительства, обе роли отдела.
+ * The requester is the one who orders vehicles but does not lead the order through its statuses:
+ * site staff, the construction manager, both department roles.
  *
- * Спрашивается право, а не имя роли: `vehicleRequests.status` — это ровно «ведёт заказ», и
- * следующая роль по любую сторону границы попадёт под правило сама, без правки списка. У
- * арендодателя право есть (он закрывает выполненное), но проверка его не касается: завести заявку
- * он не может вовсе.
+ * A permission is asked, not a role name: `vehicleRequests.status` is exactly «leads the order», and
+ * the next role on either side of the line falls under the rule by itself, without editing a list.
+ * The vehicle lessor holds the permission (he closes what was done), but the check does not concern
+ * him: he cannot create a request at all.
+ *
+ * `has` answers the permission. The server leaves the default, the matrix over its own principal;
+ * the portal passes its `can` over the list the server computed (ADR 0223).
  */
-export function isVehicleRequestRequester(subject: AccessSubject | null | undefined): boolean {
-  return !can(subject, 'vehicleRequests.status');
+export function isVehicleRequestRequester(
+  subject: AccessSubject | null | undefined,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
+): boolean {
+  return !has('vehicleRequests.status');
 }
 
 /**
- * Ближайший день, на который субъект вправе назначить заявку (`YYYY-MM-DD`, МСК):
+ * The earliest day the subject may put a request on (`YYYY-MM-DD`, Moscow time):
  *
- * - заявитель до 15:00 — завтра, с 15:00 — послезавтра;
- * - тот, кто ведёт заказы, — сегодня, как и прежде.
+ * - a requester before 15:00 — tomorrow, from 15:00 — the day after tomorrow;
+ * - the one who leads the orders — today, as before.
  *
- * Одна функция на форму и сервер: по ней портал запирает дни в календаре, ею же ручка отвечает
- * отказом — иначе дейтпикер предлагал бы дату, которую сервер не примет.
+ * One function for the form and the server: the portal locks calendar days by it, and the handler
+ * refuses by it — otherwise the date picker would offer a date the server does not accept. `has` is
+ * the membership oracle of `isVehicleRequestRequester`, passed through.
  */
 export function minVehicleRequestDateKey(
   subject: AccessSubject | null | undefined,
   now: Date = new Date(),
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): string {
   const today = moscowDateKeyOf(now);
-  if (!isVehicleRequestRequester(subject)) return today;
+  if (!isVehicleRequestRequester(subject, has)) return today;
   return shiftDateKey(today, moscowMinutesOf(now) < VEHICLE_REQUEST_CUTOFF_MINUTES ? 1 : 2);
 }
 

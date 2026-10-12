@@ -36,7 +36,7 @@ export function useServiceRequestActions(): {
    */
   pendingId: string | null;
 } {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
 
@@ -183,6 +183,7 @@ export function useServiceRequestActions(): {
   const actionsFor = (request: ServiceRequestDto): ServiceMenuItem[] =>
     serviceRequestMenuItems(request, {
       user,
+      can,
       modals,
       run: {
         start: (target) => startMutation.mutate(target),

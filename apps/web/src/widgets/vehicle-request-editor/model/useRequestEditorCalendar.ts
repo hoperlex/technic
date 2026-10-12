@@ -19,6 +19,8 @@ interface Input {
   record: VehicleRequestDto | null;
   requestType: VehicleRequestType | undefined;
   user: Parameters<typeof vehicleRequestDateRules>[0];
+  /** The portal's `can` over the server's permission list (ADR 0223); the date rules ask it. */
+  can: Parameters<typeof vehicleRequestDateRules>[1];
 }
 
 /**
@@ -26,7 +28,14 @@ interface Input {
  * shortening lock. Split from `useVehicleRequestEditorState` only to keep that file within the
  * length budget; the editor state remains its only caller.
  */
-export function useRequestEditorCalendar({ form, isSpecial, record, requestType, user }: Input) {
+export function useRequestEditorCalendar({
+  form,
+  isSpecial,
+  record,
+  requestType,
+  user,
+  can,
+}: Input) {
   // Term length hint: an empty end date is a one-day term (the server reads it the same way). The
   // request card shows the same hint.
   const dateFrom = Form.useWatch('dateFrom', form);
@@ -36,7 +45,7 @@ export function useRequestEditorCalendar({ form, isSpecial, record, requestType,
     : null;
   // Request date limits (ADR 0104): the earliest available day depends on who creates the request
   // and is the same in the form as on the server — details live with the rule itself.
-  const { minDate, disabledDate: minDateRule, leadTimeHint } = vehicleRequestDateRules(user);
+  const { minDate, disabledDate: minDateRule, leadTimeHint } = vehicleRequestDateRules(user, can);
 
   /*
    * Backdating (ADR 0101, R6 and R15): whether the chosen date goes into the past and by which

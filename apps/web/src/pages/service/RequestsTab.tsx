@@ -54,7 +54,7 @@ export function RequestsTab() {
   const { user, can } = useAuth();
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
-  const view = useMemo(() => serviceGridView(user), [user]);
+  const view = useMemo(() => serviceGridView(user, can), [user, can]);
 
   const { params, setParams, setSort, onTableChange, filtersActive, resetFilters } =
     useListParams<ServiceListFilters>(

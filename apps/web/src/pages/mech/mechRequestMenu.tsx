@@ -1,6 +1,5 @@
 import {
   allowedStatusTransitions,
-  can,
   canApproveMechRequest,
   isMechApprovalChangeable,
   isMechAwaitingIssue,
@@ -88,9 +87,9 @@ export interface MechMenuRunners {
 export interface MechMenuOptions {
   user: AuthUser | null;
   /**
-   * The portal's `can` — membership in the list the server computed (ADR 0223). The extension
-   * items ask it; the older items of this menu still ask the contracts matrix with `user`, a debt
-   * the ADR names (roadmap item Q6) and not repeated by new code.
+   * The portal's `can` — membership in the list the server computed (ADR 0223). Every permission
+   * this menu asks goes through it, including the ones the contract predicates need (the visa, the
+   * extension): `user` supplies only the scope and the role's axis, never a permission.
    */
   can: (permission: Permission) => boolean;
   open: MechMenuTargets;
@@ -119,14 +118,14 @@ export const MECH_RENTAL_ACTION_KEYS: readonly string[] = [
 
 export function mechMenuItems(
   request: MechRequestDto,
-  { user, can: canList, open, run }: MechMenuOptions,
+  { user, can, open, run }: MechMenuOptions,
 ): ActionSheetItem[] {
   // Архивная строка не ведётся вовсе (Б3): у неё есть только восстановление и удаление насовсем, и
   // живут они действиями вкладки «Архив», а не этим меню.
   if (request.deletedAt) return [];
 
   const items: ActionSheetItem[] = [];
-  const mayStatus = can(user, 'mechRequests.status');
+  const mayStatus = can('mechRequests.status');
   const placeScoped = isPlaceScopedRole(user?.role);
 
   /*
@@ -158,17 +157,18 @@ export function mechMenuItems(
   }
 
   /*
-   * Виза площадки (план `docs/mechanization-approval-and-grants-plan.md`, Р3, Р5) — своё право и
-   * своя область: подписывает ответственный ЭТОЙ площадки либо руководитель отдела-заявителя, а не
-   * всякий, кто заявку видит. Поэтому `canApproveMechRequest`, а не одно `can`: пункт, показанный
-   * соседу, кончился бы отказом 403.
+   * The site visa (plan `docs/mechanization-approval-and-grants-plan.md`, R3, R5) has its own
+   * permission and its own scope: it is signed by the person responsible for THIS site or by the
+   * head of the requesting department, not by everyone who sees the request. Hence
+   * `canApproveMechRequest` and not a bare `can`: an item shown to a neighbour would end in a 403.
+   * The predicate keeps the scope rule and gets the permission from the portal's `can`.
    *
-   * Ставится и снимается, пока заявка «Новая» (Р3). Снятие — не «отмена согласования задним
-   * числом», а исправление своей же подписи до того, как за ней последовали договорённости, и
-   * потому оно не `danger`: опасное действие здесь — взять в работу без визы, а его барьер держит
-   * сервер и меню.
+   * It is set and revoked while the request is «Новая» (R3). Revoking is not «cancelling the
+   * approval after the fact» but correcting one's own signature before any agreements followed it,
+   * so it is not `danger`: the dangerous action here is taking the request into work without a
+   * visa, and that barrier is held by the server and the menu.
    */
-  if (canApproveMechRequest(user, request) && isMechApprovalChangeable(request.status)) {
+  if (canApproveMechRequest(user, request, can) && isMechApprovalChangeable(request.status)) {
     items.push(
       request.approvedAt
         ? {
@@ -220,7 +220,7 @@ export function mechMenuItems(
    * rental (`.status`): an extension costs money as the rental does, and the one who talks to the
    * lessor asks for it. It stands next to the issue, not among the transitions: it moves no status.
    */
-  const extension = mechExtensionAccess(user, request, canList);
+  const extension = mechExtensionAccess(user, request, can);
   if (extension.request) {
     items.push({
       key: 'extend',
@@ -255,11 +255,11 @@ export function mechMenuItems(
   }
 
   /*
-   * «Дублировать» (Р3): «нужны две виброплиты» — две заявки, потому что ставка задаётся за
-   * единицу, а две единицы возвращают в разные дни и отрабатывают разное число часов. Право —
-   * заведения: это и есть заведение новой заявки, а не копия строки.
+   * «Дублировать» (R3): «two vibrating plates are needed» means two requests, because the rate is
+   * set per unit, and two units return on different days and work a different number of hours. The
+   * permission is the create one: this is creating a new request, not copying a row.
    */
-  if (can(user, 'mechRequests.create')) {
+  if (can('mechRequests.create')) {
     items.push({ key: 'duplicate', label: 'Дублировать', onClick: () => run.duplicate(request) });
   }
 
@@ -274,7 +274,7 @@ export function mechMenuItems(
   const openEdit = open.edit;
   if (
     openEdit &&
-    can(user, 'mechRequests.update') &&
+    can('mechRequests.update') &&
     editScope !== 'none' &&
     (!placeScoped || editScope === 'all')
   ) {
@@ -282,8 +282,7 @@ export function mechMenuItems(
   }
 
   const deleteScope = mechDeleteScope(request);
-  const mayDeleteByRole =
-    can(user, 'mechRequests.delete') && (!placeScoped || request.status === 'new');
+  const mayDeleteByRole = can('mechRequests.delete') && (!placeScoped || request.status === 'new');
   if (mayDeleteByRole) {
     items.push({
       key: 'delete',

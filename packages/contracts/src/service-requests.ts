@@ -414,24 +414,29 @@ const NOT_ASSIGNED: ServiceExecutorAssignment = {
 };
 
 /**
- * Исполнитель ли субъект на этой заявке — дизъюнкция двух признаков (план §7.1), записанная один
- * раз на все действия исполнителя: статусные ходы, смету, закрытие работ и правку факта выдачи.
+ * Is the subject the executor on this request — a disjunction of two facts (plan §7.1), written
+ * once for every executor action: status moves, the estimate, closing the work and editing what was
+ * issued.
  *
- * У сервисной компании назначена компания целиком, поэтому права ей не требуется: поимённых строк
- * у неё нет, и требовать `serviceRequests.execute` от учётки подрядчика значило бы либо отобрать у
- * него сегодняшние ходы, либо дописать право ради проверки, которая для него не выполняется ни при
- * каком назначении. У своего сотрудника назначение работает **в паре** с правом — снятие набора у
- * переведённого сисадмина закрывает ходы, не трогая историю назначений.
+ * A service company is assigned as a whole, so it needs no permission: it has no named rows, and
+ * demanding `serviceRequests.execute` from a contractor's account would either take today's moves
+ * away from him or add a permission for a check that never holds for him under any assignment. For
+ * an own employee the assignment works **in pair** with the permission — revoking the grant of a
+ * transferred system administrator closes his moves without touching the assignment history.
+ *
+ * `has` answers the permission. The server leaves the default, the matrix over its own principal;
+ * the portal passes its `can` over the list the server computed (ADR 0223).
  */
 export function isServiceExecutor(
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!subject) return false;
   if (assignment.actsForAssignedCounterparty && actsForCounterparty(subject, 'service')) {
     return true;
   }
-  return assignment.isNamedExecutor && can(subject, 'serviceRequests.execute');
+  return assignment.isNamedExecutor && has('serviceRequests.execute');
 }
 
 /**
@@ -823,34 +828,31 @@ export interface ServiceActionRequest extends ServiceExecutorsRow {
 }
 
 /**
- * Сторона исполнителя — ровно та, что открывает коридор `SERVICE_EXECUTOR_TRANSITIONS`, и читается
- * она здесь тем же порядком: подрядчик отвечает ВМЕСТО остальных (правами оператор сервисной
- * компании похож на «Ведение», и по сумме условий он согласовывал бы собственный счёт), свой
- * сотрудник — назначением в паре с правом, администратор — правом сметы.
+ * The executor side as a whole — the same rule the corridor reads it by, in the same order: the
+ * operator of the assigned contractor answers INSTEAD of the others (by permissions a service
+ * company's operator resembles «Ведение», and by the sum of conditions he would approve his own
+ * invoice); an own employee — by the named assignment in pair with `execute`; the administrator —
+ * by the estimate permission. That last branch is no widening: outside the service counterparty
+ * only he holds `serviceRequests.estimate`, and without it a stuck request could not be finished.
  *
- * Ветка администратора не расширение: вне контрагента-сервиса `serviceRequests.estimate` есть
- * только у него, и без неё зависшую заявку было бы нечем довести — ровно так же, как в коридоре.
- * Не экспортируется намеренно: третье представление стороны исполнителя рядом с `isServiceExecutor`
- * и коридором разъехалось бы с ними молча.
- */
-/**
- * Сторона исполнителя целиком — то же правило, каким её читает коридор: оператор назначенного
- * подрядчика, свой поимённый исполнитель с правом `execute`, и администратор с правом на объём
- * работ (вне контрагента-сервиса оно есть только у него, и без этой ветки зависшую заявку было бы
- * нечем довести).
+ * EXPORTED, although the R11 predicates call it themselves. The portal asks the same question where
+ * no predicate expresses the side's action — editing the consumables list: its permission is the
+ * pair `estimate` + `execute`, and «assigned to THIS request» is checked by the handler's body.
+ * Without the export the portal would keep a copy of the rule, and it would drift silently — as a
+ * button leading to a 403.
  *
- * ЭКСПОРТИРУЕТСЯ, хотя предикаты Р11 зовут её сами. Портал спрашивает то же самое там, где действие
- * стороны не выражено ни одним из них, — правку состава расходников: право у неё парой
- * `estimate` + `execute`, а «назначен ли на ЭТУ заявку» проверяет тело ручки. Без экспорта портал
- * завёл бы у себя копию правила, и разошлась бы она молча — кнопкой, ведущей в 403.
+ * `has` answers both permissions and is passed on to `isServiceExecutor`. The server leaves the
+ * default, the matrix over its own principal; the portal passes its `can` over the list the server
+ * computed (ADR 0223).
  */
 export function actsAsServiceExecutor(
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!subject) return false;
   if (actsForCounterparty(subject, 'service')) return assignment.actsForAssignedCounterparty;
-  return isServiceExecutor(subject, assignment) || can(subject, 'serviceRequests.estimate');
+  return isServiceExecutor(subject, assignment, has) || has('serviceRequests.estimate');
 }
 
 /**

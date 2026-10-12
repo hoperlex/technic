@@ -33,6 +33,7 @@ import {
   rowMenuItems,
   STATUS_TAG_ONLY,
 } from '../src/pages/service/serviceMenuPlacement';
+import { permissionChecks } from '@entities/session';
 import { serviceRequestMenuItems } from '../src/pages/service/serviceRequestMenu';
 import {
   serviceStatusChoices,
@@ -296,7 +297,12 @@ const MODALS: ServiceRequestModals = {
 const RUN = { start: () => {}, approve: () => {}, rollbackStart: () => {} };
 
 function itemsFor(request: ServiceRequestDto, user: AuthUser): ServiceMenuItem[] {
-  return serviceRequestMenuItems(request, { user, modals: MODALS, run: RUN });
+  return serviceRequestMenuItems(request, {
+    user,
+    can: permissionChecks(user).can,
+    modals: MODALS,
+    run: RUN,
+  });
 }
 
 /**

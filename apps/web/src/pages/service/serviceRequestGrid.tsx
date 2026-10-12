@@ -2,9 +2,9 @@ import { Button, Space, Tooltip, Typography, type TableColumnsType } from 'antd'
 import { EyeOutlined, MoreOutlined } from '@ant-design/icons';
 import {
   actsAsServiceExecutor,
-  can,
   participantSidesOf,
   type AuthUser,
+  type Permission,
   type ServiceChatFacts,
   type ServiceExecutorAssignment,
   type ServiceRequestDto,
@@ -92,42 +92,41 @@ const ASSIGNED_TO_MY_COUNTERPARTY: ServiceExecutorAssignment = {
 };
 
 /**
- * Чьими глазами смотрят на список. Наблюдателю и администратору показывается всё: первый заведён
- * ради сквозной картины по компании, у второго есть оба коридора сразу — он разбирает чужие
- * ошибки, и половина ответа ему не годится.
+ * Whose eyes look at the list. The observer and the administrator see everything: the first exists
+ * for the company-wide picture, the second holds both corridors at once — he untangles other
+ * people's mistakes, and half of the answer is no use to him.
  *
- * СТОРОНЫ СПРАШИВАЮТСЯ У КОНТРАКТОВ, А НЕ РАЗБИРАЮТСЯ ЗДЕСЬ (Р8). Прежде набор считался своей
- * формулой из трёх прав — `actsForCounterparty` плюс `assign` плюс `create`, — и это было третье
- * представление сторон рядом с `participantSidesOf` и `actsAsServiceExecutor`: расходиться с ними
- * оно могло только молча, набором колонок, который никто не проверяет глазами. Так уже и вышло бы:
- * сторону «Ведения» перевели на код набора (план профилей, Р9), а здешняя копия осталась бы на
- * правах и показывала бы колонки решающего тому, кому профиля не выдавали.
+ * THE SIDES ARE ASKED OF THE CONTRACTS, NOT WORKED OUT HERE (R8). The set used to be a formula of
+ * three permissions of its own — a third representation of the sides next to `participantSidesOf`
+ * and `actsAsServiceExecutor`, which could drift from them only silently, as a column set nobody
+ * checks by eye. The mutual exclusion of the sides went with it: the `operator` side excludes the
+ * contractor's operator by itself, and he has no right to create requests at all.
  *
- * Взаимоисключение сторон тоже ушло из формулы: `!executor &&` перед каждой строкой повторял то,
- * что контракты знают сами — сторона `operator` прямо исключает оператора подрядчика, а прав
- * заводить заявки у него нет вовсе.
- *
- * Ответ по всем существующим субъектам прежний: у держателей профиля код и права ходят вместе
- * (пометка роли — производная от кода), у подрядчика профиля нет, у наблюдателя нет ни того ни
- * другого. Разойтись новое правило со старым может лишь на собранном руками наборе, где права
- * «Ведения» выданы без его кода, — и там правильный ответ даёт код, а не сумма прав.
+ * THE PERMISSIONS ARE ASKED OF `can`, the portal's membership in the list the server computed (ADR
+ * 0223), including the one `actsAsServiceExecutor` needs. `user` supplies what is not a permission:
+ * the counterparty type and the grant codes that identify the module's profile (profiles plan, R9).
+ * The answer can differ from a sum of permissions only on a set assembled by hand, where «Ведение»
+ * permissions were granted without its code, and there the code gives the right answer.
  */
-export function serviceGridView(user: AuthUser | null): ServiceGridView {
-  const executor = actsAsServiceExecutor(user, ASSIGNED_TO_MY_COUNTERPARTY);
-  // Обе стороны ведения модуля дают один набор колонок: «Ведение» (`operator`) распределяет и
-  // принимает, ИТ-служба (`it`) решает «чинить или менять», и список оба читают одним вопросом —
-  // «что требует решения». Стороны спрашиваются целиком, а не одна из них: они опознаются кодами
-  // разных наборов (план профилей, Р9), и ИТ-служба под `operator` не подходит — прежняя формула
-  // включала её случайно, правом `assign`, общим у двух должностей.
+export function serviceGridView(
+  user: AuthUser | null,
+  can: (permission: Permission) => boolean,
+): ServiceGridView {
+  const executor = actsAsServiceExecutor(user, ASSIGNED_TO_MY_COUNTERPARTY, can);
+  // Both sides that lead the module get one column set: «Ведение» (`operator`) distributes and
+  // accepts, the IT service (`it`) decides «repair or replace», and both read the list with one
+  // question — «what needs a decision». The sides are asked whole: they are identified by codes of
+  // different grants (profiles plan, R9), and the IT service does not fit under `operator`.
   const sides = participantSidesOf(user, subjectOnlyChatFacts(user));
   const operator = sides.includes('operator') || sides.includes('it');
-  // Заказчик — это право заводить заявки, а не сторона переписки: колонки «Описание» и «Сумма»
-  // отвечают на «что с моим принтером», и спрашивать за них участие в конкретной заявке нечем.
-  const customer = can(user, 'serviceRequests.create');
-  // «Всё» — две разные причины с одинаковым ответом: сторон не нашлось вовсе (наблюдатель со
-  // сквозным чтением) либо сторон сразу две (администратор: ведёт модуль и пишет объём работ).
+  // The customer is the right to create requests, not a side of a conversation: the «Описание» and
+  // «Сумма» columns answer «what is up with my printer», and participation in one request cannot.
+  const customer = can('serviceRequests.create');
+  // «Everything» has two different reasons with one answer: no side at all (an observer with
+  // company-wide reading) or two sides at once (an administrator leads the module and writes the
+  // estimate).
   const everything =
-    (!executor && !operator && !customer) || (operator && can(user, 'serviceRequests.estimate'));
+    (!executor && !operator && !customer) || (operator && can('serviceRequests.estimate'));
   return {
     customer: customer || everything,
     operator: operator || everything,

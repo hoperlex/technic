@@ -1,7 +1,12 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { Alert, App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { AuthUser, ModuleMailOutcome, ServiceRequestDto } from '@technic/contracts';
+import type {
+  AuthUser,
+  ModuleMailOutcome,
+  Permission,
+  ServiceRequestDto,
+} from '@technic/contracts';
 import { serviceRequestKeys } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { useAuth } from '@entities/session';
@@ -76,10 +81,16 @@ export interface ServiceRequestModals {
   node: ReactNode;
 }
 
-/** Чем перечень пользуется помимо самой заявки: смотрящий, окна и действия без окна. */
+/** What the list uses besides the request: the viewer, his permissions, windows and actions. */
 export interface ServiceMenuContext {
-  /** Смотрящий: от него зависят и права, и сторона исполнителя на этой заявке. */
+  /** The viewer: the scope and the executor side on this request are read from him. */
   user: AuthUser | null;
+  /**
+   * The portal's `can` over the list the server computed (ADR 0223). The menu asks every permission
+   * through it and passes it to the contract predicates that take one; `user` never answers a
+   * permission here.
+   */
+  can: (permission: Permission) => boolean;
   /** Окна заявки: какое открыть — решает пункт, чем оно устроено — набор окон. */
   modals: ServiceRequestModals;
   /**

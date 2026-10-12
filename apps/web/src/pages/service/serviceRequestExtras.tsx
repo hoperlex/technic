@@ -8,7 +8,6 @@ import {
 import {
   actsAsServiceExecutor,
   actsForCounterparty,
-  can as hasPermission,
   isServiceExecutor,
   isServiceRequestEditable,
   type ServiceActionRequest,
@@ -70,33 +69,34 @@ export function serviceRequestExtraItems(
   const closed = request.status === 'accepted' || request.status === 'cancelled';
 
   /*
-   * Состав номенклатуры (Р15) заполняет исполнитель — из формы заведения блок ушёл целиком:
-   * заявитель номенклатуры не знает, его дело сказать словами, чего не хватает. Пункт — та же пара
-   * «кнопка и окно», какой у ремонта правят объём работ: у обоих видов заявки исполнитель отвечает
-   * на один вопрос — «что по ней пойдёт», — и два разных окна для одного вопроса разошлись бы на
-   * первой же правке.
+   * The consumables list (R15) is filled in by the executor — the block left the create form
+   * entirely: the requester does not know the item codes, his job is to say in words what is
+   * missing. The item is the same «button and window» pair by which a repair's estimate is edited:
+   * in both kinds of request the executor answers one question — «what goes into it», — and two
+   * different windows for one question would drift apart at the first edit.
    *
-   * Граница у права одна и та же с сервером: пока по заявке не отмечена выдача. Дальше состав
-   * замер — он стал основанием записи на складе, и сервер отвечает 409.
+   * The permission has one boundary with the server: until an issue is marked on the request. After
+   * that the list is frozen — it became the basis of a stock record, and the server answers 409.
    *
-   * Сторона исполнителя спрашивается КОНТРАКТНЫМ `actsAsServiceExecutor` — тем же, каким её читают
-   * предикаты Р11 и коридор. Своего предиката у этого действия нет: право названо парой
-   * `estimate` + `execute`, а назначение на ЭТУ заявку проверяет тело ручки (`assertExecutorSide`).
-   * Копия правила здесь разошлась бы с сервером молча — кнопкой, ведущей в 403.
+   * The executor side is asked of the CONTRACT `actsAsServiceExecutor`, the one the R11 predicates
+   * and the corridor read it by, and its permissions come from `ctx.can` (ADR 0223). This action has
+   * no predicate of its own: its permission is the pair `estimate` + `execute`, and the assignment
+   * to THIS request is checked by the handler's body (`assertExecutorSide`). A copy of the rule here
+   * would drift from the server silently — as a button leading to a 403.
    *
-   * ПОДПИСЬ — «расходники», а не «номенклатура» (план
-   * `docs/office-equipment-card-and-list-cleanup-plan.md`, Р13): пункт называет предмет заявки
-   * теми же словами, что вкладка карточки и заголовок окна, куда он ведёт, — разойдись они, и
-   * человек искал бы в карточке вкладку с именем пункта. Меняется только название СОСТАВА ЭТОЙ
-   * ЗАЯВКИ: предметный термин «номенклатура» (код учётной системы, справочник позиций, набор
-   * полномочий) остаётся — заменив слово везде, мы переименовали бы и то, что печатается в
-   * складских бумагах.
+   * THE LABEL says «расходники», not «номенклатура» (plan
+   * `docs/office-equipment-card-and-list-cleanup-plan.md`, R13): the item names the request's
+   * subject with the same words as the card tab and the title of the window it opens — had they
+   * differed, a person would look in the card for a tab named after the item. Only the name of THIS
+   * REQUEST'S LIST changes: the domain term «номенклатура» (the accounting system's code, the item
+   * directory, the grant) stays — replaced everywhere, it would rename what is printed on stock
+   * papers too.
    */
   if (
     mayAct &&
     request.kind === 'consumable' &&
     !request.consumables.some((line) => line.issuedQuantity !== null) &&
-    actsAsServiceExecutor(ctx.user, assignment)
+    actsAsServiceExecutor(ctx.user, assignment, ctx.can)
   ) {
     items.push({
       key: 'consumables',
@@ -109,23 +109,23 @@ export function serviceRequestExtraItems(
   }
 
   /*
-   * Отметка о выдаче расходников (Р6): склад двигает она, а не смена статуса, — поэтому пункт стоит
-   * рядом с ходами, а не внутри них, и живёт в двух статусах сразу. В «В работе» им отмечают выдачу
-   * до закрытия, в «Решена» — правят то, что уже списано.
+   * The consumables issue mark (R6) moves the stock, not a status change — so the item stands next
+   * to the moves, not among them, and lives in two statuses at once. In «В работе» it marks the
+   * issue before closing, in «Решена» it corrects what was already written off.
    *
-   * После «Закрыта» пункта нет: строки заявки замирают, и всё дальнейшее — ручная правка остатка с
-   * причиной и своим правом (Р8). Сервер отвечает на такую правку 422, и кнопка, ведущая в него,
-   * была бы обещанием, которого он не даёт.
+   * After «Закрыта» there is no item: the request's rows freeze, and anything further is a manual
+   * correction of the balance with a reason and its own permission (R8). The server answers such an
+   * edit with 422, and a button leading to it would be a promise it does not keep.
    *
-   * Кто вправе — тот же предикат, что и на сервере (`assertConsumableIssuer`): назначенный
-   * исполнитель (поимённо с `execute` либо своей компанией) **либо** тот, кто ведёт заявки и
-   * разбирает ошибки за любую сторону.
+   * Who may is the same predicate as on the server (`assertConsumableIssuer`): the assigned
+   * executor (named with `execute`, or by his company) **or** the one who leads requests and fixes
+   * mistakes for any side. Both permissions are asked of `ctx.can`.
    */
   if (
     mayAct &&
     request.kind === 'consumable' &&
     (request.status === 'in_work' || request.status === 'done') &&
-    (isServiceExecutor(ctx.user, assignment) || hasPermission(ctx.user, 'serviceRequests.status'))
+    (isServiceExecutor(ctx.user, assignment, ctx.can) || ctx.can('serviceRequests.status'))
   ) {
     const marked = request.consumables.some((line) => line.issuedQuantity !== null);
     items.push({
@@ -137,30 +137,30 @@ export function serviceRequestExtraItems(
   }
 
   /*
-   * Срочность (Р56) — не переход, поэтому её нет в коридоре: её ставят и снимают до самого
-   * закрытия. Кто вправе, решает право, а не роль: оператор оргтехники — тот же «Штаб» или «Отдел»,
-   * и правило «правит только Новую» отобрало бы у него признак вместе с заказчиком.
+   * Urgency (R56) is not a transition, so the corridor does not have it: it is set and removed up
+   * to closing. Who may is decided by the permission, not the role: the office equipment operator
+   * is the same «Штаб» or «Отдел», and a «edits only Новая» rule would take the flag from him along
+   * with the customer.
    *
-   * СПРАШИВАЕТСЯ ИМЕННО `serviceRequests.urgency`, и это исправление, а не оформление. Раньше здесь
-   * стоял `serviceRequests.update` — право ПРАВКИ заявки, которое есть у всякого заявителя на своей
-   * «Новой», — а ручка `PATCH /:id/urgency` закрыта отдельным правом срочности, которого у ролей
-   * `site` и `department` нет. Пункт показывался заказчику и вёл в 403: портал предлагал то, на что
-   * сервер отвечает отказом. Проверять надо то право, которым закрыта ручка, — иначе комментарий
-   * выше («кто вправе, решает право») остаётся верным по смыслу и неверным по букве.
+   * EXACTLY `serviceRequests.urgency` IS ASKED, and that is a fix, not a style. It used to be
+   * `serviceRequests.update` — the right to EDIT the request, which every requester has on his own
+   * «Новая», — while `PATCH /:id/urgency` is closed by a separate urgency permission that the `site`
+   * and `department` roles lack. The item was shown to the customer and led to a 403. The check must
+   * be the permission the handler is closed by.
    *
-   * Правку заявки спрашивает предикат по СТРОКЕ, а не по статусу (Р14): «Новая» после назначения
-   * правке уже не подлежит, и признак срочности заказчику там тоже закрыт.
+   * Editing the request is asked by a predicate over the ROW, not the status (R14): a «Новая» after
+   * assignment is no longer editable, and the urgency flag is closed to the customer there too.
    *
-   * Отложенной срочность не меняют (Р119): сервер отвечает 422 — заявка стоит, и очередь срочных её
-   * не показывает. Признак при этом не гасится, он ждёт возобновления.
+   * A held request's urgency is not changed (R119): the server answers 422 — the request stands
+   * still, and the urgent queue does not show it. The flag is not cleared, it waits for resumption.
    */
   const mayUrgency =
     mayAct &&
     !executor &&
     !closed &&
     !held &&
-    hasPermission(ctx.user, 'serviceRequests.urgency') &&
-    (hasPermission(ctx.user, 'serviceRequests.assign') || isServiceRequestEditable(row));
+    ctx.can('serviceRequests.urgency') &&
+    (ctx.can('serviceRequests.assign') || isServiceRequestEditable(row));
   if (mayUrgency) {
     items.push({
       key: 'urgency',
@@ -188,50 +188,44 @@ export function serviceRequestExtraItems(
   });
 
   /*
-   * Переезд техники, вызванный ремонтом (Р61): «увезли в сервис» и «вернулась». Ход заявки
-   * состояние единицы сам не меняет — чинят и на месте, — но узнают о переезде именно здесь, и
-   * записать его надо там же, где узнали. Стороне подрядчика действие закрыто целиком (Р7).
+   * Moving the equipment because of a repair (R61): «taken to the service» and «came back». The
+   * request's move does not change the unit's state by itself — repairs happen on site too, — but
+   * the move is learned of here, and it must be recorded where it was learned of. The contractor's
+   * side has no such action at all (R7).
    *
-   * ПРАВО — СВОЁ, А НЕ ВЕДЕНИЕ СПРАВОЧНИКА (план `docs/office-equipment-move-from-request-plan.md`,
-   * Р1). `officeEquipment.write` открывает разом заведение карточек, типы, модели и архив, и
-   * подтверждение места ехало вместе с ними: сисадмин, который приехал по заявке и видит аппарат
-   * своими глазами, переместить его не мог вовсе. Теперь спрашивается ровно то право, которым
-   * закрыта ручка `POST /office-equipment/:id/move`, — иначе пункт либо вёл бы в 403, либо пропал
-   * бы у того, кому переезд разрешён.
+   * THE PERMISSION IS ITS OWN, NOT THE DIRECTORY ONE (plan
+   * `docs/office-equipment-move-from-request-plan.md`, R1). `officeEquipment.write` opens creating
+   * cards, types, models and the archive at once, and confirming a location went along with them: a
+   * system administrator who came by the request and sees the device with his own eyes could not
+   * move it at all. Now exactly the permission that closes `POST /office-equipment/:id/move` is
+   * asked, of `ctx.can` — otherwise the item would either lead to a 403 or disappear for someone
+   * allowed to move.
    *
-   * СТАТУС ИЗ УСЛОВИЯ УБРАН (Р6, находка Н3). Прежде пункт прятался у закрытой заявки, а «техника
-   * вернулась из сервиса» записывают как раз по принятой: увезли — в начале, вернули — в момент
-   * приёмки или после неё. Отменённая заявка сохраняет пункт по той же мерке: «ремонт
-   * нецелесообразен» — обычная причина увезти аппарат на склад. Обход был один — идти в
-   * справочник, то есть ровно туда, откуда действие и уводили (ADR 0162).
+   * THE STATUS WAS REMOVED FROM THE CONDITION (R6, finding N3). «The device came back from the
+   * service» is recorded exactly on an accepted request, and a cancelled one keeps the item by the
+   * same measure: «repair is not worthwhile» is a usual reason to take a device to storage. The
+   * only workaround was going to the directory, exactly where the action was moved away from
+   * (ADR 0162).
    *
-   * Архивной заявки это не касается: набор действий у неё пуст целиком (`serviceRequestMenuItems`
-   * возвращает пустой список по `deletedAt`), и второе такое условие здесь спорило бы с ним.
+   * An archived request is not concerned: its action set is empty as a whole
+   * (`serviceRequestMenuItems` returns an empty list by `deletedAt`), and a second such condition
+   * here would argue with it. A request without a device has no item at all (R8): there is nothing
+   * to move. Nor does a request whose subject is still under review (R11): `equipment` is empty
+   * until the candidate is confirmed, and after confirmation the item appears with the device.
+   * Hidden here, at the item itself, and not by a check inside the window: an action in the menu
+   * that cannot happen is a promise with nothing behind it.
    *
-   * У заявки без аппарата пункта нет вовсе (Р8): переезжать нечему — карточки единицы, которой
-   * записывают перемещение, не существует. Так же и у заявки, где предмет ещё на проверке (Р11):
-   * `equipment` пуст, пока кандидата не подтвердили, — а после подтверждения пункт появляется
-   * вместе с аппаратом, и первым же делом им подтверждают заявленное место. Спрятано здесь, у
-   * самого пункта, а не проверкой внутри окна: несбывающееся действие в меню — это обещание, за
-   * которым пусто.
-   *
-   * ОБЛАСТЬ ДЕЙСТВИЙ ЗАЯВКИ (`mayAct`, Р11) К ЭТОМУ ПУНКТУ НЕ ПРИМЕНЯЕТСЯ — единственному из
-   * всех, и это исключение, а не пропуск. Правило Р11 звучит «первый сомножитель всех клиентских
-   * мутаций», но мутация здесь не заявки: пишется КАРТОЧКА СПРАВОЧНИКА, и дверь у неё своя —
-   * `POST /office-equipment/:id/move`. Сервер стережёт её правом `officeEquipment.move` и
-   * областью ПАРКА (`assertOfficeEquipmentScope` по исходной стороне единицы), а про заявку
-   * спрашивает ровно одно: видна ли она смотрящему и та ли это единица
-   * (`serviceRequestVisibilityWhere`) — то есть область ЧТЕНИЯ, которая у снятого исполнителя
-   * остаётся (ответ В6). Умножь мы пункт на область действий, портал спрятал бы кнопку там, где
-   * сервер отвечает 200: сисадмин, приехавший по заявке, с которой его уже сняли, аппарат видит
-   * своими глазами, а записать переезд не смог бы — и пошёл бы в справочник, то есть ровно туда,
-   * откуда действие сюда и переносили. Парк по ответу В5 остаётся видимым целиком, и сужать его
-   * этим пунктом волна не бралась.
-   *
-   * Проверено чтением ручки, а не выведено из общего правила: если серверную дверь однажды
-   * закроют областью действий заявки, сомножитель обязан появиться и здесь.
+   * THE REQUEST'S ACTION SCOPE (`mayAct`, R11) DOES NOT APPLY TO THIS ITEM — the only one, and that
+   * is an exception, not an omission. The mutation here is not of the request: the DIRECTORY CARD is
+   * written, through its own door `POST /office-equipment/:id/move`, guarded by
+   * `officeEquipment.move` and the FLEET scope (`assertOfficeEquipmentScope`); of the request it
+   * asks only whether the viewer sees it and whether it is the same unit
+   * (`serviceRequestVisibilityWhere`) — the READING scope, which a removed executor keeps (answer
+   * V6). Multiplied by the action scope, the portal would hide the button where the server answers
+   * 200. Checked by reading the handler: if the server door is ever closed by the request's action
+   * scope, the factor must appear here as well.
    */
-  if (request.equipment && !executor && hasPermission(ctx.user, 'officeEquipment.move')) {
+  if (request.equipment && !executor && ctx.can('officeEquipment.move')) {
     items.push({
       key: 'move-equipment',
       label: 'Записать перемещение техники',

@@ -223,7 +223,7 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     minDate,
     minDateRule,
     periodHint,
-  } = useRequestEditorCalendar({ form, isSpecial, record, requestType, user });
+  } = useRequestEditorCalendar({ form, isSpecial, record, requestType, user, can });
   /**
    * Whether this request's 4-P relocations are editable (migration 0082): delivery to the site and
    * pickup from it. Same conditions as the server — an on-site order taken into work with company
