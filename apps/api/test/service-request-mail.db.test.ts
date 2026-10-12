@@ -1234,9 +1234,12 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
        * «письмо не дошло»: строк очереди у выключенного события не возникает вовсе, и объяснить
        * тишину больше нечем.
        */
+      // The event is named: the same transition also writes the requester planner's own trace
+      // (ADR 0227) with the same `created_at`, and «the latest row» would pick either of the two.
       const audit = await ctx.db.execute<{ metadata: { outcome?: string } }>(sql`
         SELECT metadata FROM audit_log
          WHERE action = 'serviceRequest.mailPlanned' AND entity_id = ${request.id}
+           AND metadata->>'event' = 'service_request_status_changed'
          ORDER BY created_at DESC LIMIT 1`);
       expect(audit.rows[0]?.metadata.outcome).toBe('event_off');
     });
