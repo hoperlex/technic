@@ -731,4 +731,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
       'the directory import refuses "ЭСМ-2" and \'esm2\' as a vehicle type form (ADR 0128); the ' +
       'code is a cell value of the types sheet, no waybill and no period exist in the file',
   },
+  {
+    file: 'vehicle-type-waybill-form-pending.db.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note:
+      "the pending CHECK on vehicle_types.waybill_form_code (ADR 0128): 'esm2' is a type form " +
+      'the guard names and the CHECK refuses; the file touches no waybill and no period',
+  },
 ];
