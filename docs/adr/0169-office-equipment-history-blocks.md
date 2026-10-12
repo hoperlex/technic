@@ -273,7 +273,8 @@ read model, дороже, чем назвать их тремя.
 - Записи выпуска (ADR 0077) у волны нет.
 - Развилки плана открыты: нужен ли пятый блок «Расходники»; считать ли «датой последнего изменения»
   правку или активность (сегодня — правку, обсуждение её не двигает); показывать ли в блоке архивные
-  заявки держателю права архива (сегодня — нет, ровно как в ленте).
+  заявки держателю права архива (сегодня — нет, ровно как в ленте). _Closed 2026-10-12 with the plan
+  defaults (survey S-19) — see the last section._
 
 ## Отвергнутые варианты
 
@@ -307,3 +308,18 @@ read model, дороже, чем назвать их тремя.
 - **Оставить секцию карточки на прежнем срезе `serviceHistory`.** Тогда про заявки по аппарату
   по-прежнему рассказывали бы два места с разными правилами обрезки — ровно то, ради чего блоки и
   заводились.
+
+## Owner decision 2026-10-12 (survey S-19): plan forks В1–В3 closed with the defaults
+
+The three questions of [plan §13](../office-equipment-history-blocks-plan.md) are answered with the
+plan's defaults. Each is today's behaviour, checked on 2026-10-12; nothing in the code changes.
+
+1. **В1 — no fifth «Расходники» block.** The history keeps three blocks (`GET /:id/requests`,
+   `/changes`, `/movements` in `apps/api/src/routes/office-equipment.ts`); consumables issued for a
+   unit stay visible inside its requests.
+2. **В2 — «last change» means the last edit** of the request (`service_requests.updated_at`, the
+   column the requests block reads). Discussion does not move it: writing a chat message does not
+   touch the request row (`apps/api/src/services/service-request-chat.ts`).
+3. **В3 — archived requests are not shown** in the requests block, to holders of `archive.read`
+   either — the same as the timeline (`isNull(serviceRequests.deletedAt)` in
+   `apps/api/src/services/office-equipment-blocks.ts`).
