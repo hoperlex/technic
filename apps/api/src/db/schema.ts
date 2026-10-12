@@ -109,6 +109,16 @@ export const containerKindEnum = pgEnum('container_kind', ['cont', 'truck']);
  * — часы и смены между собой не складываются.
  */
 export const mechRateUnitEnum = pgEnum('mech_rate_unit', ['hour', 'shift']);
+/**
+ * State of a rental extension request (ADR 0171, stage 3): the office asks, the site's visa holder
+ * decides. Its own type rather than `vehicle_early_end_status`: the values coincide today, but the
+ * two cycles belong to different modules and would have to change together forever otherwise.
+ */
+export const mechExtensionStatusEnum = pgEnum('mech_extension_status', [
+  'pending',
+  'approved',
+  'rejected',
+]);
 export const fileStatusEnum = pgEnum('file_status', ['pending', 'active', 'deleted']);
 export const jobStatusEnum = pgEnum('job_status', ['pending', 'running', 'done', 'failed', 'dead']);
 /**
@@ -7281,6 +7291,55 @@ export const mechRequests = pgTable(
     deletedAtIdx: index('mech_requests_deleted_at_idx')
       .on(t.deletedAt)
       .where(sql`${t.deletedAt} IS NOT NULL`),
+  }),
+);
+
+// ── Rental extension with the site's visa (ADR 0171, stage 3; migration "mech_request_extensions") ──
+// The term moves only when the visa holder approves, in the same transaction as the decision, so
+// "approved but the term is still old" cannot exist. One row per request: a repeated request
+// overwrites it, and the chain of requests and decisions lives in the card history. A pending row
+// is deleted when withdrawn or when the rental ends; a decided row stays until the next request.
+export const mechRequestExtensions = pgTable(
+  'mech_request_extensions',
+  {
+    requestId: uuid('request_id')
+      .primaryKey()
+      .references(() => mechRequests.id, { onDelete: 'cascade' }),
+    status: mechExtensionStatusEnum('status').notNull(),
+    newPlannedTo: date('new_planned_to', { mode: 'string' }).notNull(),
+    // The planned return when the request was filed. Approval is refused unless the request still
+    // has exactly this date: the old `/extend` door, a revoked issue mark or a completion could have
+    // changed the rental overnight, and the visa holder signed a move from this date, not from any.
+    previousPlannedTo: date('previous_planned_to', { mode: 'string' }).notNull(),
+    reason: text('reason').notNull(),
+    requestedBy: uuid('requested_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+    decidedBy: uuid('decided_by').references(() => users.id, { onDelete: 'restrict' }),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decisionComment: text('decision_comment').notNull().default(''),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    decision: check(
+      'mech_request_extensions_decision_check',
+      sql`(${t.decidedBy} IS NULL) = (${t.decidedAt} IS NULL)`,
+    ),
+    pendingState: check(
+      'mech_request_extensions_pending_check',
+      sql`(${t.status} = 'pending') = (${t.decidedAt} IS NULL)`,
+    ),
+    // Forward only: an earlier return is a completion with the actual date.
+    later: check(
+      'mech_request_extensions_later_check',
+      sql`${t.newPlannedTo} > ${t.previousPlannedTo}`,
+    ),
+    reasonFilled: check('mech_request_extensions_reason_check', sql`btrim(${t.reason}) <> ''`),
+    rejectionReason: check(
+      'mech_request_extensions_rejection_reason_check',
+      sql`${t.status} <> 'rejected' OR btrim(${t.decisionComment}) <> ''`,
+    ),
   }),
 );
 
