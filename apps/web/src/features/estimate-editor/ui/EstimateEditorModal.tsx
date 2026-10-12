@@ -1,58 +1,24 @@
 import { useEffect, useState } from 'react';
-import { App, Button, Input, Tooltip, Typography } from 'antd';
+import { App, Input, Typography } from 'antd';
 import {
   canCoordinateServiceRequests,
   type ServiceActionRequest,
   type ServiceExecutorAssignment,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import { ServiceHint } from '@entities/service-request';
 import { useAuth } from '@entities/session';
 import { StaleRecordNotice, ViewModal } from '@shared/ui';
 import { useEstimateEditor, type EstimateEditorIntent } from '../model/useEstimateEditor';
 import { EstimateComposition } from './EstimateComposition';
 import { EstimateDocumentFiles, EstimateDocumentSwitch } from './EstimateDocumentMode';
 import {
-  DirectDocumentIntro,
   estimateEditorModalTitle,
   WorkCompletedActStep,
   WorkDoneNotice,
 } from './EstimateDocumentWorkflow';
+import { EstimateEditorFooter } from './EstimateEditorFooter';
+import { EstimateEditorHint } from './EstimateEditorHint';
 import { EstimateExemption } from './EstimateExemption';
-
-/**
- * Что окно не даст сделать, пока висит предъявление (Р9). Одна строка на оба замка, потому что
- * замок один по смыслу: согласующий подписывает то, что видит.
- *
- * Ключ от него тоже один — «Вернуть объём работ в правку»: ручка возврата снимает и подпись, и
- * само предъявление, и потому названа здесь дословно. Скажи мы просто «нельзя» — исполнитель
- * искал бы выход в кнопках этого окна, где его нет вовсе.
- */
-const LOCKED_HINT =
-  'Отзовите его действием «Вернуть объём работ в правку» — оно снимает и предъявление, и подпись, — и правка откроется снова.';
-
-/**
- * Чем раскладка отличается от правки — словами и до нажатия (Р2, ответ В9 заказчика от
- * 09.09.2026). Ревизию поднимает не человек, а сама ручка, и узнать об этом он обязан здесь: под
- * согласованной сметой стоит подпись, и «Разложить» отправляет заявку за новой.
- */
-const BREAKDOWN_HINT =
-  'Раскладка переиздаёт объём работ: у согласованной ревизии поднимется номер, подпись снимется, ' +
-  'а заявка уйдёт на согласование заново — под новым составом подписываются отдельно.';
-
-/**
- * Откуда брать позиции, когда раскладывают ДОКУМЕНТНУЮ ревизию (Р8) — единственный путь такой
- * заявки к сумме, гарантиям и построчному факту, и обещан он человеку в трёх местах портала.
- *
- * Сказано именно здесь, потому что окно раскладки открывается пустым: строк у документной ревизии
- * нет вовсе, и без этой строки «Ведение» смотрело бы на пустую таблицу, не понимая, что переносить
- * и откуда. Счёт лежит на вкладке «Документы» — самим окном он не показывается: вложенная читалка
- * файла внутри окна раскладки была бы третьим слоем поверх карточки.
- */
-const BREAKDOWN_DOCUMENT_HINT =
-  'Объём работ подан счётом: строк у ревизии нет, и переносить позиции нужно из самого документа — ' +
-  'он на вкладке «Документы» карточки. После раскладки заявка вернётся в обычный порядок: появятся ' +
-  'сумма, построчный факт и гарантии.';
 
 /**
  * Presents four doors over one revision model: legacy item editing, coordinator breakdown,
@@ -103,12 +69,6 @@ export function EstimateEditorModal({
     onClose,
     onDocumentSubmitted: workDone ? setSubmittedRequest : undefined,
   });
-  /*
-   * Раскладывают ДОКУМЕНТНУЮ ревизию (Р8): строк на экране нет и не будет — их переносят из счёта.
-   * Формат берётся полем карточки, а не выводом «строк ноль»: пустой черновик выглядел бы так же, и
-   * подсказка звала бы «Ведение» искать документ, которого нет.
-   */
-  const documentBreakdown = breakdown && request?.estimateFormat === 'document';
   /*
    * Кому положены пояснения (Р11): признак считает вызывающий, а не `ServiceHint`, — слой
    * сущностей `AuthContext` не видит, и правило живёт единственной функцией контрактов.
@@ -188,141 +148,39 @@ export function EstimateEditorModal({
        * действия, которых за этой дверью не существует.
        */
       footer={
-        breakdown
-          ? [
-              <Button
-                key="breakdown"
-                type="primary"
-                loading={editor.breakdownPending}
-                disabled={locked}
-                onClick={runBreakdown}
-              >
-                Разложить по графам
-              </Button>,
-            ]
-          : [
-              /*
-               * У ПОДАЧИ СЧЁТОМ ПОДВАЛ КОРОЧЕ, И ОБЕ ПРОПАВШИЕ КНОПКИ ПРОПАЛИ ПО ДЕЛУ (Р10).
-               * Черновика у неё нет: сохранять нечего — счёт уже в хранилище, а строк, которые
-               * ложились бы черновиком, режим не набирает вовсе, и нажатие унесло бы спрятанный
-               * состав, которого человек на экране не видит. Гарантийный ремонт — третий формат
-               * ревизии, несобираемый вместе с документом по типу тела: предложенный рядом с
-               * галочкой, он обещал бы выбор, которого нет.
-               */
-              ...(warrantyMode && !documentOn
-                ? [
-                    <Tooltip
-                      key="warranty"
-                      title={
-                        locked
-                          ? 'Объём работ уже предъявлен: пока идёт согласование, предъявить заново нельзя'
-                          : editor.filled
-                            ? 'Уберите строки: гарантийный ремонт предъявляется без оплаты'
-                            : 'Работы по гарантии: заявка уйдёт на согласование с нулевой суммой'
-                      }
-                    >
-                      <span>
-                        <Button
-                          disabled={locked || editor.filled || pending}
-                          loading={editor.warrantyPending}
-                          onClick={editor.runWarranty}
-                        >
-                          Гарантийный ремонт без оплаты
-                        </Button>
-                      </span>
-                    </Tooltip>,
-                  ]
-                : []),
-              ...(documentOn
-                ? []
-                : [
-                    <Button key="draft" disabled={locked || pending} onClick={() => submit(true)}>
-                      Сохранить черновик
-                    </Button>,
-                  ]),
-              /*
-               * Без единой страницы кнопка ЗАПЕРТА, а не отвечает тостом по нажатию, — в отличие
-               * от пропусков состава. Разница в том, что здесь нечего дозаполнять глазами: пустой
-               * список приложенного виден рядом, и причина названа строкой под кнопкой. Отправить
-               * такое тело нельзя и по схеме (`fileIds` минимум один) — кнопка вела бы в 400.
-               */
-              <Tooltip key="submit" title={documentOn ? editor.documentIssue : null}>
-                <span>
-                  <Button
-                    type="primary"
-                    loading={editor.saving || editor.documentPending}
-                    disabled={
-                      locked || editor.warrantyPending || (documentOn && !!editor.documentIssue)
-                    }
-                    onClick={present}
-                  >
-                    {workDone
-                      ? 'Работы выполнены'
-                      : directDocument
-                        ? 'Передать документ на согласование'
-                        : 'Предъявить на согласование'}
-                  </Button>
-                </span>
-              </Tooltip>,
-            ]
+        <EstimateEditorFooter
+          breakdown={breakdown}
+          warrantyMode={warrantyMode}
+          documentOn={documentOn}
+          workDone={workDone}
+          directDocument={directDocument}
+          locked={locked}
+          filled={editor.filled}
+          pending={pending}
+          saving={editor.saving}
+          warrantyPending={editor.warrantyPending}
+          breakdownPending={editor.breakdownPending}
+          documentPending={editor.documentPending}
+          documentIssue={editor.documentIssue}
+          onBreakdown={runBreakdown}
+          onWarranty={editor.runWarranty}
+          onDraft={() => submit(true)}
+          onPresent={present}
+        />
       }
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <StaleRecordNotice session={editor.staleRecord} />
-          {locked ? (
-            /*
-             * Замок объясняется до нажатия, а не 409-й в ответ. Поля и кнопки погашены, и без этой
-             * врезки окно выглядело бы сломанным: состав виден, а тронуть его нечем — причину
-             * этого портал обязан назвать сам, ответ сервера сюда уже не придёт.
-             *
-             * Это причина блокировки, поэтому у некоординатора она сворачивается, но НЕ исчезает
-             * (Р11): исчезни она — исполнитель остался бы с погашенными полями без единого слова.
-             * Ключ от замка при этом уходит вместе с описанием, и это осознанная цена свёртки:
-             * снять предъявление всё равно вправе не он, а «Ведение», у которого текст остался
-             * целым.
-             */
-            <ServiceHint
-              coordinator={coordinator}
-              level="warning"
-              title={`Ревизия ${request.estimatePendingRevision} предъявлена и ждёт ответа — правка закрыта`}
-              description={`Пока предъявление висит, сервер не примет ни изменённый состав, ни повторное предъявление: согласующий подписывает то, что видит. ${LOCKED_HINT}`}
-            />
-          ) : directDocument ? (
-            <DirectDocumentIntro workDone={workDone} />
-          ) : (
-            // Как считается итог и что случится со старой подписью — пояснение о правилах цикла:
-            // вне «Ведения» его не рисуют вовсе, сумма же видна в самом окне и без плашки.
-            <ServiceHint
-              coordinator={coordinator}
-              level="info"
-              title={
-                breakdown
-                  ? documentBreakdown
-                    ? 'Перенесите позиции счёта в графы: строка на позицию, цена на строку'
-                    : 'Перенесите присланный перечень в графы: строка на позицию, цена на строку'
-                  : request.estimateRevision > 0
-                    ? `Ревизия ${request.estimateRevision} уже предъявлялась — следующее предъявление уйдёт ревизией ${request.estimateRevision + 1}`
-                    : 'Черновик можно сохранять сколько угодно: на согласование уйдёт то, что предъявите'
-              }
-              description={
-                [
-                  breakdown ? BREAKDOWN_HINT : null,
-                  documentBreakdown ? BREAKDOWN_DOCUMENT_HINT : null,
-                  warrantyMode
-                    ? 'Заявка заведена как гарантийная — работы можно предъявить без оплаты.'
-                    : null,
-                  // Подпись обесценивается новым предъявлением (ревизии сверяются при закрытии
-                  // работ), и узнать об этом надо до нажатия, а не по отказу на закрытии.
-                  request.approval && !breakdown
-                    ? `Согласована ревизия ${request.approval.revision}: новое предъявление снимет эту подпись — объём работ придётся согласовать заново.`
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(' ') || undefined
-              }
-            />
-          )}
+          <EstimateEditorHint
+            request={request}
+            coordinator={coordinator}
+            locked={locked}
+            breakdown={breakdown}
+            directDocument={directDocument}
+            workDone={workDone}
+            warrantyMode={warrantyMode}
+          />
 
           {/* Способ подачи решают ДО набора, поэтому галочка стоит выше переключателя: поставленная
               после, она убрала бы с экрана только что набранное. Рубильник выключен — способа не

@@ -1,6 +1,4 @@
 import { useRef, useState } from 'react';
-import { App } from 'antd';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   serviceEstimatePending,
   type ServiceActionRequest,
@@ -8,11 +6,9 @@ import {
   type ServiceItemKind,
   type ServiceRequestDto,
 } from '@technic/contracts';
-import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
-import { officeEquipmentKeys } from '@entities/office-equipment';
 import { useRecordSession } from '@shared/lib';
 import { useEstimatePresentation } from './useEstimatePresentation';
-import { useEstimateFailure } from './conflict';
+import { useEstimateCommands } from './useEstimateCommands';
 import {
   newEstimateRow,
   rowsForSave,
@@ -21,16 +17,7 @@ import {
   type EstimateRow,
 } from './rows';
 import { estimateDraftIssue, estimateIssue } from './estimateRules';
-import {
-  breakdownBody,
-  documentSubmitBody,
-  estimateFill,
-  estimateNeedsSave,
-  estimateSaveBody,
-  itemsSubmitBody,
-  switchedRows,
-  warrantySubmitBody,
-} from './estimateForm';
+import { estimateFill, switchedRows } from './estimateForm';
 
 /**
  * The entry intent selects both the presentation and the command semantics.
@@ -92,9 +79,6 @@ export function useEstimateEditor({
   /** Keeps the modal open for a following workflow step, such as attaching the closing act. */
   onDocumentSubmitted?: (request: ServiceRequestDto) => void;
 }) {
-  const { message } = App.useApp();
-  const qc = useQueryClient();
-  const failed = useEstimateFailure(request?.id ?? null);
   const breakdown = intent === 'breakdown';
   const directDocument = intent === 'document' || intent === 'work_done';
   const workDone = intent === 'work_done';
@@ -164,131 +148,21 @@ export function useEstimateEditor({
   });
   // Only behind an open window: every command below is sent after the session has filled.
   const version = session.version ?? 0;
-  // The server decides whether the declaration is applied; this message only confirms its input.
-  const submittedMessage = () =>
-    presentation.exemption
-      ? 'Объём работ предъявлен вместе с заявлением об освобождении от подписи'
-      : 'Объём работ предъявлен на согласование';
-
-  const refresh = () => {
-    void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
-    void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
-  };
-
-  /**
-   * Сохранение и предъявление — одна цепочка, а не две кнопки с одинаковым телом: предъявить
-   * можно только то, что лежит на сервере, и «сохранить, потом отправить» руками означало бы
-   * ревизию, разошедшуюся с экраном исполнителя.
-   */
-  const saveMutation = useMutation({
-    mutationFn: async (submit: boolean) => {
-      let current = version;
+  const commands = useEstimateCommands({
+    request,
+    version,
+    accept: session.accept,
+    composition: () => ({ rows, mode, comment }),
+    markSent: () => {
       sentRows.current = rows;
-      if (estimateNeedsSave(rows, mode, request!.items)) {
-        const stored = await serviceRequestsApi.saveEstimate(
-          request!.id,
-          estimateSaveBody(rows, mode, current),
-        );
-        current = stored.version;
-      }
-      if (!submit) return { version: current, submitted: false };
-      const sent = await serviceRequestsApi.submitEstimate(
-        request!.id,
-        itemsSubmitBody({ exemption: exemptionBody(), comment, version: current }),
-      );
-      return { version: sent.version, submitted: true };
     },
-    onSuccess: (result) => {
-      session.accept(result.version);
-      refresh();
-      if (result.submitted) {
-        // Не «отправлена»: заявка никуда не уехала — она осталась «В работе» и ждёт подписи (Р8).
-        message.success(submittedMessage());
-        onClose();
-      } else {
-        message.success('Объём работ сохранён');
-      }
-    },
-    // 409 здесь — обычный ответ: заявку подвинули, пока объём работ набирали. Второй его повод —
-    // предъявление, повисшее с чужого экрана: замок гасит кнопки, но между открытием окна и
-    // нажатием помещается чужое действие, и объяснение этому даёт уже сервер.
-    onError: failed,
-  });
-
-  /** Гарантийный ремонт (Р27): объём работ из служебной нулевой строки, его собирает сервер. */
-  const warrantyMutation = useMutation({
-    mutationFn: () =>
-      serviceRequestsApi.submitEstimate(request!.id, warrantySubmitBody({ comment, version })),
-    onSuccess: () => {
-      message.success('Гарантийный ремонт предъявлен без оплаты');
-      refresh();
-      onClose();
-    },
-    onError: failed,
-  });
-
-  /**
-   * ПОДАЧА СЧЁТОМ (Р2): своя команда, а не та же с флагом. У неё другой формат ревизии, и уходит в
-   * ней другое — страницы документа вместо строк; суммы тело не несёт вовсе (ответ В5: «придёт от
-   * разбора документа»), и подставлять вместо неё ноль нельзя — ноль читался бы как «работы
-   * бесплатны».
-   *
-   * СОСТАВ ПЕРЕД ЭТИМ НЕ СОХРАНЯЕТСЯ, в отличие от построчной цепочки: набранное спрятано галочкой
-   * и в документную ревизию не переносится, а сохранённое сейчас легло бы черновиком, которого
-   * человек на экране не видит.
-   */
-  const documentMutation = useMutation({
-    mutationFn: () =>
-      serviceRequestsApi.submitEstimate(
-        request!.id,
-        documentSubmitBody({
-          fileIds: presentation.files.map((file) => file.id),
-          exemption: exemptionBody(),
-          comment,
-          version,
-        }),
-      ),
-    onSuccess: (result) => {
-      session.accept(result.version);
-      refresh();
-      const automaticallyApproved =
-        result.approval?.revision === result.estimateRevision && result.approval.source === 'auto';
-      message.success(
-        workDone && automaticallyApproved
-          ? 'Работы отмечены выполненными, документ согласован автоматически'
-          : directDocument
-            ? 'Документ выполненных работ передан на согласование'
-            : submittedMessage(),
-      );
-      if (onDocumentSubmitted) onDocumentSubmitted(result);
-      else onClose();
-    },
-    onError: failed,
-  });
-
-  /**
-   * Раскладка по графам (Р2): своя ручка, а не та же с флагом. У «Ведения» нет ни `estimate`, ни
-   * `submit`, ни `reopen` — цепочки «сохранить, потом предъявить» ему собрать нечем, — и всё, что
-   * нужно сделать с согласованной ревизией, ручка делает сама. Поэтому здесь одно действие и одна
-   * кнопка.
-   *
-   * Состав уходит ЦЕЛИКОМ и безусловно, без сверки с сохранённым: нажатие «Разложить» — решение
-   * переиздать документ, и «ничего не изменилось» решает сервер. Сверка `rowsChanged` была бы
-   * здесь вредна вдвойне — она молча превратила бы нажатие в бездействие там, где человек ждёт
-   * нового предъявления.
-   */
-  const breakdownMutation = useMutation({
-    mutationFn: () =>
-      serviceRequestsApi.saveEstimateBreakdown(request!.id, breakdownBody(rows, mode, version)),
-    onSuccess: (result) => {
-      session.accept(result.version);
-      refresh();
-      message.success('Объём работ разложен по графам');
-      onClose();
-    },
-    // 409 — предъявление висит, 422 — заявка не в «В работе»: оба ответа объясняет сервер словами,
-    // и портал их не предугадывает (замок гасит кнопку только по тому, что видно в карточке).
-    onError: failed,
+    files: presentation.files,
+    exemption: presentation.exemption,
+    exemptionBody,
+    directDocument,
+    workDone,
+    onClose,
+    onDocumentSubmitted,
   });
 
   /*
@@ -338,15 +212,11 @@ export function useEstimateEditor({
     filled: saved.length > 0,
     total: rowsTotal(rows),
     locked,
-    pending:
-      saveMutation.isPending ||
-      warrantyMutation.isPending ||
-      breakdownMutation.isPending ||
-      documentMutation.isPending,
-    saving: saveMutation.isPending,
-    warrantyPending: warrantyMutation.isPending,
-    breakdownPending: breakdownMutation.isPending,
-    documentPending: documentMutation.isPending,
+    pending: commands.pending,
+    saving: commands.saving,
+    warrantyPending: commands.warrantyPending,
+    breakdownPending: commands.breakdownPending,
+    documentPending: commands.documentPending,
     /*
      * Смена режима (Р8). В свободный режим состав ПРИВОДИТСЯ, а не просто показывается двумя
      * полями: количество и вид у единственной строки становятся теми, какими их подставит портал,
@@ -371,11 +241,11 @@ export function useEstimateEditor({
      * (`issue`) — черновик уходит и неполным, это законный незаконченный набор, а предъявление
      * окно не пускает вовсе.
      */
-    submit: (asDraft: boolean) => saveMutation.mutate(!asDraft),
+    submit: (asDraft: boolean) => commands.save(!asDraft),
     /** Предъявление счётом: полноту (есть ли страницы) спрашивает окно — сюда приходит готовое. */
-    submitDocument: () => documentMutation.mutate(),
-    runWarranty: () => warrantyMutation.mutate(),
+    submitDocument: commands.submitDocument,
+    runWarranty: commands.runWarranty,
     /** Раскладка по графам: полноту так же спрашивает окно — сюда приходит уже проверенное. */
-    runBreakdown: () => breakdownMutation.mutate(),
+    runBreakdown: commands.runBreakdown,
   };
 }
