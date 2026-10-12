@@ -141,8 +141,8 @@ const REQUESTER_STATUS_WORDING: Record<
 // ── Configuration ──
 
 /**
- * What the process environment allows, read without the database (ADR 0159 §5.9): mail on, the
- * `repair` channel configured (the sender, D7), and a Reply-To to set.
+ * What the process environment allows, read without the database (ADR 0159 decision 5): mail
+ * on, the `repair` channel configured (the sender, D7), and a Reply-To to set.
  *
  * REPLY-TO IS SET EXPLICITLY AND IS NEVER EMPTY (D4, E5): the default channel's `MAIL_REPLY_TO`,
  * falling back to its `MAIL_FROM` address. Empty would not mean "the portal's address": the worker
@@ -239,9 +239,9 @@ type RequesterSkip = 'actor_is_author' | 'service_letter_covers_author' | 'autho
 /**
  * Queues the author's letter inside the open transaction of the fact (E2).
  *
- * THE ORDER OF STEPS IS THE SERVICE PLANNER'S (ADR 0159 §5.10): the switch first — if writing is
- * not wanted, the state of addresses does not matter; then "was a letter needed at all"; then the
- * configuration; then the recipients.
+ * THE ORDER OF STEPS IS THE SERVICE PLANNER'S (ADR 0159 decision 3): the switch first — if
+ * writing is not wanted, the state of addresses does not matter; then "was a letter needed at
+ * all"; then the configuration; then the recipients.
  *
  * NOT NEEDED (E3) — no letter, and rightly so:
  *   · the actor is the author (his own message, his own cancellation);
