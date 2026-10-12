@@ -38,10 +38,10 @@
 - Источник истины: [waybills.ts](../packages/contracts/src/waybills.ts), [waybill-task-rows.ts](../packages/contracts/src/waybill-task-rows.ts)
 - Разделы портала: `waybills`
 - API-маршруты: [waybills.ts](../apps/api/src/routes/waybills.ts)
-- Остальной API: [esm2-plan.ts](../apps/api/src/services/esm2-plan.ts), [waybill-esm2.ts](../apps/api/src/services/waybill-esm2.ts)
+- Остальной API: [esm2-plan.ts](../apps/api/src/services/esm2-plan.ts), [waybill-esm2.ts](../apps/api/src/services/waybill-esm2.ts), [waybill-issue-record.ts](../apps/api/src/services/waybill-issue-record.ts) (the `issue_warnings` envelope with its journal reader; an unreadable envelope reads «not checked», never «clean» — ADR 0108)
 - Web: [waybills](../apps/web/src/pages/waybills)
 - Тесты: `waybill-*.db.test.ts`, `esm2-*.db.test.ts`, `waybill-contracts.test.ts`
-- Решения: [ADR 0037](adr/0037-freight-transport-waybill.md), [ADR 0060](adr/0060-esm2-weekly-waybill.md), [ADR 0148](adr/0148-print-timeout-ladder.md)
+- Решения: [ADR 0037](adr/0037-freight-transport-waybill.md), [ADR 0060](adr/0060-esm2-weekly-waybill.md), [ADR 0108](adr/0108-request-trips-and-route-points.md), [ADR 0148](adr/0148-print-timeout-ladder.md)
 
 ## Механизация
 
