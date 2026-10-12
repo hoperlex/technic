@@ -1112,7 +1112,7 @@ export interface ServiceLetterExtra {
    * it, and the debug send renders a sample state the sample request is not in (ADR 0227).
    */
   toStatus?: ServiceRequestStatus;
-  /** The portal made the transition itself (auto-close): the author reads «закрыта автоматически». */
+  /** The portal made the transition itself (auto-close): the author reads «…автоматически». */
   automatic?: boolean;
 }
 
@@ -1228,11 +1228,11 @@ export const SERVICE_MAIL_AUDIENCE_FIELDS = {
   /**
    * The request author (ADR 0227, E4) — the requester card projection
    * (`SERVICE_REQUEST_FIELD_AUDIENCE`, ADR 0160), not the service's body. No money: the card hides
-   * the estimate sum from the requester. Assignees and the service company: yes, the card shows them. Place, department
-   * and contact: yes, they are his own data. Author: no, he is the reader. Attachments count: no —
-   * the card hides acts and invoices from him, and a count would leak that they exist.
-   * Description: yes — it is the author's own text, and it also gates the hold/cancel reason and
-   * the message text. Portal link: yes, he has an account (with `&chat=1` for message letters).
+   * the estimate sum from the requester. Assignees and the service company: yes, the card shows
+   * them. Place, department and contact: yes, they are his own data. Author: no, he is the reader.
+   * Attachments count: no — the card hides acts and invoices from him, and a count would leak that
+   * they exist. Description: yes — it is the author's own text, and it also gates the hold/cancel
+   * reason and the message text. Portal link: yes, he has an account (`&chat=1` for messages).
    */
   requester: {
     finance: false,

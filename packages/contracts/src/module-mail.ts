@@ -534,8 +534,9 @@ export interface ServiceMailTargets {
   /**
    * The request author — the only required addressee of the two requester events (ADR 0227,
    * E3). Written to the audit row only and never returned by a handler (E8): the acting person
-   * cannot fix the author's account, so a warning in the portal would be noise. A cell of its own and not `author`, which is the candidate's author:
-   * the two facts are different people answering different questions.
+   * cannot fix the author's account, so a warning in the portal would be noise. A cell of its own
+   * and not `author`, which is the candidate's author: the two facts are different people answering
+   * different questions.
    */
   requester?: ModuleMailOutcome;
 }

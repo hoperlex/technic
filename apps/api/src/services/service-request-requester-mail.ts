@@ -54,11 +54,12 @@ import {
  * the switch reader, the copies, the recipient accumulator, the frequency cap with its summary, the
  * bulk sink, the letter data and the detail lines of the body.
  *
- * THREE HOOKS, ONE PLANNER. Every status history row is written by `recordServiceStatusTransition`
- * (routes) or by the auto-close (`runAutoClose`, raw SQL), and every chat message by
- * `postChatMessage`. Each calls `queueRequesterMail` in the same transaction as the fact: the letter
- * is an atomic outbox row, and a SQL failure here rolls the fact back like the service letter does
- * (ADR 0159 decision 5); a body that fails to render is a soft `mail_failed`.
+ * THREE HOOKS, ONE PLANNER. Every status history row is written by
+ * `recordServiceStatusTransition` (routes) or by the auto-close (`runAutoClose`, raw SQL), and
+ * every chat message by `postChatMessage`. Each calls `queueRequesterMail` in the same transaction
+ * as the fact: the letter is an atomic outbox row, and a SQL failure here rolls the fact back like
+ * the service letter does (ADR 0159 decision 5); a body that fails to render is a soft
+ * `mail_failed`.
  */
 
 /** Drizzle transaction: the letter is queued together with the fact it is about. */
@@ -393,9 +394,9 @@ export async function queueRequesterMail(
   }
 
   /**
-   * The same cap as every module letter (E6): all module letters per request + address + UTC hour,
-   * the author's included — he and a staff member on the service side share the count of their
-   * own address, not a separate allowance.
+   * The same cap as every module letter (E6): all module letters per request + address + UTC hour.
+   * The author's letters count together with any other module letter to his address on this
+   * request — a shared allowance, not a second one — and past it he gets the one summary.
    */
   const limit = config.serviceRequests.mailMaxPerRequestHour;
   const hour = await currentHour(tx);
