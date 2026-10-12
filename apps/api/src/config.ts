@@ -9,6 +9,11 @@ import {
   SERVICE_REQUEST_REPEAT_WINDOW_DISABLED,
   type MailAccount,
 } from '@technic/contracts';
+import {
+  clientFloorSatisfied,
+  clientFloorStartupError,
+  minClientContractSchema,
+} from './lib/client-floor';
 
 /** Потолок длины причины: она едет в `prod.env` и в тело отказа, а не в отчёт. */
 const MAINTENANCE_REASON_MAX_LENGTH = 200;
@@ -275,18 +280,17 @@ const rawSchema = z.object({
   RECEIPT_OCR_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
 
   /**
-   * Пол версии клиента (ADR 0146, решение 7; `src/lib/client-contract.ts`). Запрос к `/api/v1/**`
-   * с контрактом НИЖЕ пола отбивается 426; запрос без заголовка читается как контракт `1`.
+   * Client floor (ADR 0146 decision 7; `src/lib/client-contract.ts`). A request to `/api/v1/**`
+   * with a contract BELOW the floor gets 426; a request without the header is read as contract 1.
    *
-   * Умолчание `1` — это фаза A: не блокируется никто, и в ней выкатывается сборка, которая
-   * заголовок начинает слать. Фаза B (пол = число новой сборки) включается ОТДЕЛЬНЫМ действием —
-   * правкой `prod.env` и перезапуском `api`, — после того как новая статика проверенно раздаётся.
-   * Пересборки переход не требует.
+   * The default 1 is phase A: nobody is blocked. Phase B (floor = the new bundle's number) is a
+   * SEPARATE action — `deploy-auto --client-floor=N` edits `prod.env` and recreates `api` — taken
+   * after the new static is verifiably served; no rebuild is needed.
    *
-   * Меньше единицы не бывает: запрос без заголовка читается как `1`, и пол `0` не отличался бы от
-   * `1` ничем, кроме вида в конфигурации.
+   * The schema is shared with the deploy preflight (`src/lib/client-floor.ts`, ADR 0226): it must
+   * read the value exactly as this line does, or it would predict a startup that does not happen.
    */
-  MIN_CLIENT_CONTRACT: z.coerce.number().int().min(1).default(1),
+  MIN_CLIENT_CONTRACT: minClientContractSchema,
 
   /**
    * ПРОТОКОЛ ПОВТОРОВ КОМАНД ИСТОРИИ НАЗНАЧЕНИЯ (план `docs/assignment-periods-plan.md`, В4;
@@ -372,18 +376,6 @@ const rawSchema = z.object({
 });
 
 /**
- * Пол версии клиента, ниже которого выпуск 2 «Заморозка» несовместим со статикой
- * (`docs/auto-part-receipts-plan.md`, Р22, Р23).
- *
- * Выпуск 2 снимает `parts` из DTO акта ТО и маршруты `/auto-parts`. Сборка контракта 2 этих полей
- * ждёт: журнал ТО у неё становится белым экраном, а вкладка склада — чередой 404. Единственная
- * защита от этого — пол: клиент старее пола получает 426 и обновляется, а не ломается. Поэтому
- * порядок «сначала `deploy-auto --client-floor=3`, потом этот выкат» перестал быть строкой плана и
- * стал предусловием старта: текст плана не исполняется, а отказ подняться — исполняется.
- */
-const REQUIRED_CLIENT_FLOOR = 3;
-
-/**
  * Запас на расхождение часов при проверке эпохи токенов (план §4.1).
  *
  * Эпоху ставит команда временем сервера, и в норме она уже прошлое к моменту старта `api`. Запас
@@ -467,19 +459,14 @@ function loadConfig() {
           'без них публичные формы остались бы без защиты.',
       );
     }
-    // Предусловие выпуска «Заморозка» (Р23). Отказ на старте, а не предупреждение: api не
-    // поднимается — `deploy-auto` видит непрошедший health и не объявляет выкат состоявшимся, то
-    // есть предусловие охраняет сам выкат, а не совесть выкатывающего. Только в production: в деве
-    // и в тестах пол не задан вовсе и берёт умолчание 1 (`MIN_CLIENT_CONTRACT` выше), старых
-    // вкладок там нет, и валить локальный запуск незачем. Текст называет команду, а не условие:
-    // человек в эту минуту хочет знать не «что не так», а «что нажать».
-    if (env.MIN_CLIENT_CONTRACT < REQUIRED_CLIENT_FLOOR) {
-      throw new Error(
-        `Выпуск «Заморозка» требует MIN_CLIENT_CONTRACT >= ${REQUIRED_CLIENT_FLOOR}, ` +
-          `сейчас ${env.MIN_CLIENT_CONTRACT}: сначала deploy-auto --client-floor=${REQUIRED_CLIENT_FLOOR}, ` +
-          'потом этот выкат. Иначе старые вкладки получат ответ без `parts` и 404 на `/auto-parts` — ' +
-          'то есть белый экран журнала ТО.',
-      );
+    // The release's client floor requirement (`REQUIRED_CLIENT_FLOOR`, ADR 0226). A startup
+    // refusal, not a warning: an api that does not come up fails the health check, so `deploy-auto`
+    // never declares such a rollout done. This is the last line of defence — `deploy-auto` asks the
+    // same question before the migrations (`scripts/client-floor-check.ts`), so normally the
+    // refusal never gets here. Production only: in dev and tests the floor is unset and defaults to
+    // 1, there are no old tabs, and failing a local start would help nobody.
+    if (!clientFloorSatisfied(env.MIN_CLIENT_CONTRACT)) {
+      throw new Error(clientFloorStartupError(env.MIN_CLIENT_CONTRACT));
     }
   }
 
