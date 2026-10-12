@@ -7,6 +7,7 @@ import {
   counterpartyKeys,
 } from '@entities/counterparty';
 import { vehicleKeys } from '@entities/vehicle';
+import { vehicleClassificationKeys } from '@entities/vehicle-type';
 import { objectKeys } from '@entities/object';
 import { warehouseKeys } from '@entities/warehouse';
 import { wasteTariffKeys } from '@entities/waste-tariff';
@@ -30,7 +31,10 @@ export function useCounterpartyLifecycle() {
     onSuccess: () => {
       message.success('Контрагент удалён');
       void queryClient.invalidateQueries({ queryKey: counterpartyKeys.root });
+      // Archiving a lessor switches its rental vehicles off on the server, which moves the
+      // classifier's average prices (taken over active vehicles). Restore brings nothing back.
       void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+      void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
       invalidateCarriers();
     },
     onError: (error) => message.error(errorMessage(error)),

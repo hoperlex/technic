@@ -9,6 +9,7 @@ import {
 } from '@entities/counterparty';
 import { objectKeys, objectRecordsQuery } from '@entities/object';
 import { vehicleKeys } from '@entities/vehicle';
+import { vehicleClassificationKeys } from '@entities/vehicle-type';
 import { warehouseKeys } from '@entities/warehouse';
 import { wasteTariffKeys } from '@entities/waste-tariff';
 import { userAccountKeys } from '@entities/user-account';
@@ -81,8 +82,12 @@ export function useCounterpartyEditor(): CounterpartyEditorController {
       void queryClient.invalidateQueries({ queryKey: counterpartyKeys.root });
       // Operator bindings are embedded in the object directory.
       void queryClient.invalidateQueries({ queryKey: objectKeys.root });
-      // Deactivating a lessor deactivates its rental offers as a server-side effect.
+      // Deactivating a lessor deactivates its rental offers as a server-side effect, and
+      // reactivating it brings back those switched off with it. The classifier's average prices
+      // are taken over active vehicles of every ownership, so they move too — and they are a
+      // 30-minute dictionary that nothing else would refresh.
       void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+      void queryClient.invalidateQueries({ queryKey: vehicleClassificationKeys.root });
       // Supplier, operator and account names are embedded in other directory responses.
       void queryClient.invalidateQueries({ queryKey: warehouseKeys.root });
       void queryClient.invalidateQueries({ queryKey: wasteTariffKeys.root });

@@ -5,6 +5,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { warehouseKeys } from '@entities/warehouse';
 import { wasteTariffKeys } from '@entities/waste-tariff';
 import { userAccountKeys } from '@entities/user-account';
+import { vehicleClassificationKeys } from '@entities/vehicle-type';
 import { CounterpartiesTab } from '@pages/directories';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
@@ -94,7 +95,13 @@ describe('counterparty directory', () => {
   it('edits a counterparty and refreshes both the registry and object bindings', async () => {
     const http = renderTab();
     await waitForRegistry(http);
-    const carriers = [warehouseKeys.options(), wasteTariffKeys.grid({}), userAccountKeys.list({})];
+    const carriers = [
+      warehouseKeys.options(),
+      wasteTariffKeys.grid({}),
+      userAccountKeys.list({}),
+      // A lessor's activity switches its rental vehicles, and the classifier averages their prices.
+      vehicleClassificationKeys.forSelect(),
+    ];
     primeCarriers(http.queryClient, carriers);
 
     fireEvent.click(within(row()).getAllByRole('button')[0]!);
@@ -123,7 +130,13 @@ describe('counterparty directory', () => {
   it('confirms archival removal and refreshes the registry', async () => {
     const http = renderTab();
     await waitForRegistry(http);
-    const carriers = [warehouseKeys.options(), wasteTariffKeys.grid({}), userAccountKeys.list({})];
+    const carriers = [
+      warehouseKeys.options(),
+      wasteTariffKeys.grid({}),
+      userAccountKeys.list({}),
+      // A lessor's activity switches its rental vehicles, and the classifier averages their prices.
+      vehicleClassificationKeys.forSelect(),
+    ];
     primeCarriers(http.queryClient, carriers);
 
     fireEvent.click(within(row()).getAllByRole('button')[1]!);
