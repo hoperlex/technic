@@ -4,15 +4,18 @@ import type { AuthUser, ServiceRequestDto, ServiceRequestItemDto } from '@techni
 import { json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
+import { authUser } from './factories/auth';
 import {
   assignedServiceRequest,
   estimatePendingServiceRequest,
+  heldServiceRequest,
   serviceCustomer,
   serviceExecutor,
   serviceGlobalRequester,
   serviceInHouseExecutor,
   serviceOperator,
   serviceRequest,
+  serviceRequestFile,
 } from './factories/service';
 import { objectDto } from './factories/waste';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
@@ -222,6 +225,44 @@ async function labelsAt(
   renderTab(user, [request], place.viewport);
   await screen.findByText('СО-14');
   return await place.labels();
+}
+
+/**
+ * The menu of a place, or nothing when the card has no «Действия» button at all: the card footer
+ * draws it only for a non-empty set, and a request whose card menu is empty has no item to strike.
+ * List places always have a trigger (the phone list card adds «Открыть карточку» itself).
+ */
+async function menuLabelsOrNone(place: MenuPlace): Promise<string[]> {
+  if (place.kind === 'list') return await place.labels();
+  await openCard();
+  const trigger = cardActionsTrigger();
+  if (!trigger) return [];
+  fireEvent.click(trigger);
+  return place.viewport ? await openSheetLabels() : dropdownLabels(await lastOpenMenu());
+}
+
+/**
+ * The transitions the status tag offers IN THE SAME PLACE (ADR 0161): the row column, the phone
+ * list card badge, or the «Статус» field of the open card. The card renders after the list, so on
+ * card places its tag is the last trigger on the screen; on list places it is the first.
+ */
+async function tagChoicesAt(place: MenuPlace, status: string): Promise<string[]> {
+  const triggers = await screen.findAllByLabelText(`Изменить статус: ${status}`);
+  fireEvent.click(triggers[place.kind === 'card' ? triggers.length - 1 : 0]!);
+  return place.viewport ? await openSheetLabels() : dropdownLabels(await lastOpenMenu());
+}
+
+/** Menu and tag of one place for one request: the two halves every stage Э6 case compares. */
+async function menuAndTagAt(
+  place: MenuPlace,
+  user: AuthUser,
+  request: ServiceRequestDto,
+  status: string,
+): Promise<{ menu: string[]; tag: string[] }> {
+  renderTab(user, [request], place.viewport);
+  await screen.findByText('СО-14');
+  const menu = await menuLabelsOrNone(place);
+  return { menu, tag: await tagChoicesAt(place, status) };
 }
 
 /**
@@ -658,38 +699,144 @@ describe('«Редактировать» и «Удалить» у сисадми
 });
 
 /**
- * Откат «принял в работу» спрашивает право «Ведения», а не одну дугу коридора.
+ * Rolling back the start asks the status permission of «Ведение», not just the corridor arc.
  *
- * ДУГА `in_work → new` У СИСАДМИНА ЕСТЬ, и это верно: её даёт коридор распределения
- * (`SERVICE_ASSIGNER_TRANSITIONS`) по праву `serviceRequests.assign`. А пункт «Вернуть в „Новую“»
- * уходит в `PATCH /:id/status`, за которым стоит страж `serviceRequests.status`, и у профиля
- * «Системный администратор» его нет: прямой опрос сервера отвечал ему 403 «Недостаточно прав для
- * смены статуса», пока портал этот пункт рисовал.
+ * THE SYSADMIN HAS THE ARC `in_work → new`, and rightly so: the assigning corridor
+ * (`SERVICE_ASSIGNER_TRANSITIONS`) grants it with `serviceRequests.assign`. The item «Вернуть в
+ * „Новую“» goes to `PATCH /:id/status`, guarded by `serviceRequests.status`, which the «Системный
+ * администратор» profile lacks: the server answered 403 while the portal drew the item.
  *
- * Прежде ту же дугу использовало ПЕРЕназначение — `PUT /:id/executors` сам возвращал заявку в
- * «Новую». Больше не возвращает (ADR 0187), и у дуги остался один ход: этот пункт.
- *
- * Единственное место набора, где одной дуги мало: у остальных откатов (`rollback-accept`,
- * `reopen-request`) дуга приходит только из админского коридора, который сам требует пары прав.
+ * Since stage Э6 the item lives on the status tag only, so the tag is where the narrowing is
+ * checked — in every place, because each place renders its own tag. Reassignment no longer returns
+ * the request to «Новая» (ADR 0187), so this item is the arc's only move.
  */
 describe('«Вернуть в „Новую“» показывается только держателю права статуса', () => {
-  /** Он же назначенный исполнитель этой заявки (`user-9`) — тот самый случай, где откат и нужен. */
+  /** He is also the named executor of this request (`user-9`) — exactly where a rollback matters. */
   const IN_WORK: ServiceRequestDto = assignedServiceRequest({ status: 'in_work' });
+  const ROLLBACK_CHOICE = '«Новая» · откатить приём в работу';
 
   for (const place of PLACES) {
-    it(`у сисадмина пункта нет: ${place.name}`, async () => {
-      const labels = await labelsAt(place, SYSADMIN, IN_WORK);
+    it(`у сисадмина пункта нет ни в меню, ни на теге: ${place.name}`, async () => {
+      const { menu, tag } = await menuAndTagAt(place, SYSADMIN, IN_WORK, 'В работе');
 
-      expect(labels).not.toContain('Вернуть в «Новую»');
-      // Якорь: заморозка приходит его собственным правом `serviceRequests.hold` — меню открылось, и
-      // ходы сисадмина из него не пропали.
-      expect(labels).toContain('Отложить');
+      expect(menu).not.toContain('Вернуть в «Новую»');
+      expect(tag).not.toContain(ROLLBACK_CHOICE);
+      // Anchor: hold comes from his own `serviceRequests.hold` — the tag opened, and his moves did
+      // not vanish from it.
+      expect(tag).toContain('«Отложена» · отложить');
     });
   }
 
-  it('у «Ведения» пункт на месте: право статуса и есть его половина цикла', async () => {
-    const labels = await labelsAt(PLACES[0]!, OPERATOR, IN_WORK);
+  it('у «Ведения» пункт на теге: право статуса и есть его половина цикла', async () => {
+    const { tag } = await menuAndTagAt(PLACES[0]!, OPERATOR, IN_WORK, 'В работе');
 
-    expect(labels).toContain('Вернуть в «Новую»');
+    expect(tag).toContain(ROLLBACK_CHOICE);
   });
+});
+
+/**
+ * Stage Э6 (ADR 0162, owner decision S-15 of 2026-10-12): six status arcs left the menus of all
+ * four places, and the status tag is their only entry.
+ *
+ * Each case reads BOTH halves in the same place: the item is absent from the menu and the tag of
+ * that very place offers it. The tag half is also the anchor against an empty green — a menu that
+ * never opened returns nothing, and "not in the menu" alone would pass on a broken portal.
+ */
+describe('шесть дуг статуса живут только на теге (Э6)', () => {
+  const ADMIN: AuthUser = authUser({ role: 'admin' });
+  const ACT = [serviceRequestFile('act')];
+  const ARCS: {
+    item: string;
+    choice: string;
+    status: string;
+    user: AuthUser;
+    request: ServiceRequestDto;
+  }[] = [
+    {
+      item: 'Закрыть работы',
+      choice: '«Решена» · закрыть работы',
+      status: 'В работе',
+      user: EXECUTOR,
+      request: assignedServiceRequest({ status: 'in_work', files: ACT }),
+    },
+    {
+      item: 'Вернуть в «Новую»',
+      choice: '«Новая» · откатить приём в работу',
+      status: 'В работе',
+      user: OPERATOR,
+      request: assignedServiceRequest({ status: 'in_work' }),
+    },
+    {
+      item: 'Принять работу',
+      choice: '«Закрыта» · принять работу',
+      status: 'Решена',
+      user: OPERATOR,
+      request: assignedServiceRequest({ status: 'done', files: ACT }),
+    },
+    {
+      item: 'Вернуть на доработку',
+      choice: '«В работе» · вернуть на доработку',
+      status: 'Решена',
+      user: OPERATOR,
+      request: assignedServiceRequest({ status: 'done', files: ACT }),
+    },
+    {
+      item: 'Отменить приёмку',
+      choice: '«Решена» · отменить приёмку',
+      status: 'Закрыта',
+      user: ADMIN,
+      request: serviceRequest({ status: 'accepted' }),
+    },
+    {
+      item: 'Вернуть в работу',
+      choice: '«Новая» · вернуть отменённую заявку в работу',
+      status: 'Отменена',
+      user: ADMIN,
+      request: serviceRequest({ status: 'cancelled' }),
+    },
+  ];
+
+  for (const arc of ARCS) {
+    for (const place of PLACES) {
+      it(`«${arc.item}» — нет в меню, есть на теге: ${place.name}`, async () => {
+        const { menu, tag } = await menuAndTagAt(place, arc.user, arc.request, arc.status);
+
+        expect(menu).not.toContain(arc.item);
+        expect(tag).toContain(arc.choice);
+      });
+    }
+  }
+
+  /*
+   * The other half of the decision: the owner kept «Отложить», «Возобновить» and «Отменить заявку»
+   * in the menu as the primary entry, and the tag shows them as the declared second (plan §4.2).
+   * Struck together with the six, they would leave the menu without the moves the customer named.
+   */
+  for (const place of PLACES) {
+    it(`«Отложить» и «Отменить заявку» остаются в меню и видны на теге: ${place.name}`, async () => {
+      const { menu, tag } = await menuAndTagAt(
+        place,
+        OPERATOR,
+        assignedServiceRequest({ status: 'in_work' }),
+        'В работе',
+      );
+
+      expect(menu).toEqual(expect.arrayContaining(['Отложить', 'Отменить заявку']));
+      expect(tag).toEqual(
+        expect.arrayContaining(['«Отложена» · отложить', '«Отменена» · отменить заявку']),
+      );
+    });
+
+    it(`«Возобновить» остаётся в меню и виден на теге: ${place.name}`, async () => {
+      const { menu, tag } = await menuAndTagAt(
+        place,
+        OPERATOR,
+        heldServiceRequest('in_work'),
+        'Отложена',
+      );
+
+      expect(menu).toContain('Возобновить');
+      expect(tag).toContain('«В работе» · возобновить');
+    });
+  }
 });

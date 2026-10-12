@@ -342,68 +342,87 @@ describe('до меню действий добираются с клавиат�
 });
 
 /**
- * Выключенный пункт (Н2 плана) — главный случай файла.
+ * The disabled item (Н2 of the plan) — the main case of the file.
  *
- * Спрятанный пункт читался бы как «мне это не положено», поэтому «Закрыть работы» у ремонта без
- * закрывающего документа остаётся видимым и выключенным. Но выключенность без причины — это
- * поломка портала в глазах человека, а причина, отданная одной подсказкой по наведению, не
- * достаётся ни клавиатуре, ни озвучиванию: выключенный пункт событий указателя не отдаёт, и
- * `Tooltip` на нём не открылся бы вовсе.
+ * A hidden item would read as "this is not for me", so «Закрыть работы» of a repair without a
+ * closing document stays visible and disabled. But being disabled without a reason looks like a
+ * broken portal, and a reason given by a hover tooltip alone reaches neither the keyboard nor a
+ * screen reader: a disabled item gets no pointer events, and a `Tooltip` on it would never open.
+ *
+ * Since stage Э6 (ADR 0162, owner decision S-15) this item lives on the status tag only, so the
+ * case is checked where it now lives: the tag of the list row and the tag of the request card. The
+ * tag's menu is built by the same translation (`actionMenuItems`) as every action menu, which is
+ * exactly what keeps the two disabled-item roads — `title` and the hidden text — together.
  */
 describe('выключенный пункт объявлен выключенным и объясняет себя', () => {
-  /** Один и тот же разбор для обоих меню: расходиться им нечем, кроме недосмотра. */
-  function expectDisabledCompleteItem(menu: HTMLElement): void {
-    const item = within(menu).getByRole('menuitem', { name: /^Закрыть работы/ });
+  /** The transition label of the item on the tag: the target status first, then the action. */
+  const COMPLETE_CHOICE = '«Решена» · закрыть работы';
 
-    // Выключенность объявлена, а не нарисована серым: `aria-disabled` — единственное, по чему её
-    // узнаёт всё, кроме глаза.
+  /** One and the same check for both tags: they have nothing to differ by but an oversight. */
+  function expectDisabledCompleteItem(menu: HTMLElement): void {
+    const item = within(menu).getByRole('menuitem', { name: /^«Решена» · закрыть работы/ });
+
+    // Disabled is declared, not painted grey: `aria-disabled` is how everything but the eye sees it.
     expect(item.getAttribute('aria-disabled')).toBe('true');
 
     /*
-     * Причина входит в доступное имя пункта — то есть её услышат, а не только увидят при
-     * наведении. Проверяется именно имя целиком: спрятанный текст живёт внутри подписи, и
-     * вычеркни его кто-нибудь, имя снова стало бы «Закрыть работы» без единого слова о том,
-     * почему дверь закрыта.
+     * The reason is part of the item's accessible name — it is heard, not only seen on hover. The
+     * whole name is checked: the hidden text lives inside the label, and if someone dropped it the
+     * name would again be the bare label without a word about why the door is closed.
      */
     expect(within(menu).getByRole('menuitem', { name: CLOSING_DOCUMENT_REASON })).toBe(item);
 
-    // Видимая подпись при этом остаётся отдельным узлом: поиск по ней — глазами, тестом или
-    // автоматизацией — не должен ломаться о приклеенную причину.
-    expect(within(item).getByText('Закрыть работы')).toBeDefined();
+    // The visible label stays a node of its own: searching by it must not trip over the reason.
+    expect(within(item).getByText(COMPLETE_CHOICE)).toBeDefined();
     expect(item.querySelector('.visually-hidden')?.textContent).toMatch(CLOSING_DOCUMENT_REASON);
 
-    // Вторая дорога причины — нативная подсказка: она и достаётся мыши, которой доступное имя
-    // пункта не читает никто.
+    // The second road of the reason is the native tooltip: it is what the mouse gets.
     expect(item.getAttribute('title')).toMatch(CLOSING_DOCUMENT_REASON);
   }
 
-  it('в меню строки списка', async () => {
+  /** The tag trigger inside the open card: the card renders after the list, so it is the last. */
+  function cardStatusTrigger(wrap: HTMLElement): HTMLElement {
+    const triggers = within(wrap).getAllByRole('button', { name: 'Изменить статус: В работе' });
+    return triggers[triggers.length - 1]!;
+  }
+
+  it('на теге строки списка', async () => {
     renderTab(EXECUTOR, [inWorkWithoutDocument()]);
     await screen.findByText('СО-14');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Действия' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить статус: В работе' }));
     expectDisabledCompleteItem(await openedMenu());
   });
 
-  it('в меню карточки — том самом, которое теряло выключенность', async () => {
+  it('на теге карточки — в поле «Статус»', async () => {
     renderTab(EXECUTOR, [inWorkWithoutDocument()]);
     const wrap = await openCard();
 
-    expectDisabledCompleteItem(await openCardMenu(wrap));
+    fireEvent.click(cardStatusTrigger(wrap));
+    expectDisabledCompleteItem(await openedMenu());
   });
 
   it('подшитый акт снимает и запрет, и причину: серым пункт не остаётся навсегда', async () => {
     renderTab(EXECUTOR, [inWorkWithDocument()]);
     const wrap = await openCard();
 
-    const item = within(await openCardMenu(wrap)).getByRole('menuitem', {
-      name: 'Закрыть работы',
-    });
-    // Ни объявленной выключенности, ни приклеенной причины: доступное имя снова равно подписи —
-    // иначе озвучивание читало бы объяснение запрета у открытой двери.
+    fireEvent.click(cardStatusTrigger(wrap));
+    const item = within(await openedMenu()).getByRole('menuitem', { name: COMPLETE_CHOICE });
+    // Neither declared disabled state nor an attached reason: the accessible name equals the label
+    // again — otherwise a screen reader would read the refusal at an open door.
     expect(item.getAttribute('aria-disabled')).not.toBe('true');
     expect(item.getAttribute('title')).toBeNull();
     expect(item.querySelector('.visually-hidden')).toBeNull();
+  });
+
+  it('из меню действий пункт ушёл: на строке и в карточке его нет вовсе (Э6)', async () => {
+    renderTab(EXECUTOR, [inWorkWithoutDocument()]);
+    const wrap = await openCard();
+
+    // The card menu opens and keeps its own items — the anchor against an empty green.
+    const menu = await openCardMenu(wrap);
+    expect(within(menu).getByRole('menuitem', { name: 'Работы выполнены' })).toBeDefined();
+    expect(within(menu).queryByRole('menuitem', { name: /Закрыть работы/ })).toBeNull();
   });
 });
 
@@ -535,15 +554,46 @@ describe('на телефоне действия открываются шито
       (el) => el.textContent,
     );
     expect(labels).toContain('Работы выполнены');
-    // «Закрыть работы» здесь выключено: у заявки нет закрывающего документа. Подпись поэтому не
-    // равна названию — в доступное имя кнопки входит ещё и причина запрета, спрятанная от глаз
-    // (иначе на телефоне она доставалась бы только подсказке, которая по касанию не открывается).
-    const complete = labels.find((label) => label?.startsWith('Закрыть работы'));
-    expect(complete).toBeDefined();
-    expect(complete).toContain('Сначала подшейте акт');
+    // Since stage Э6 «Закрыть работы» is not in this sheet: the status tag is its only entry, and
+    // the next case checks it there.
+    expect(labels.some((label) => label?.startsWith('Закрыть работы'))).toBe(false);
     // Каждая кнопка названа словом, а не одной иконкой: пустая подпись здесь и есть та самая
     // загадка, ради которой шит отличается от десктопного меню.
     expect(labels.every((label) => (label ?? '').trim().length > 0)).toBe(true);
+  });
+
+  it('шит тега в карточке называет выключенный переход вместе с причиной', async () => {
+    renderTab(EXECUTOR, [inWorkWithoutDocument()], { mobile: true });
+
+    fireEvent.click(await screen.findByText('СО-14'));
+    const card = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>('.ant-drawer')].find(
+        (el) => el.querySelector('.ant-drawer-title')?.textContent === 'Заявка СО-14',
+      );
+      if (!found) throw new Error('карточка на телефоне не открылась');
+      return found;
+    });
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Изменить статус: В работе' }));
+    const sheet = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>('.ant-drawer-open')].find(
+        (el) => el.querySelector('.ant-drawer-title')?.textContent === 'Изменить статус',
+      );
+      if (!found) throw new Error('шит переходов не открылся');
+      return found;
+    });
+
+    /*
+     * «Закрыть работы» is disabled here: the request has no closing document. The label therefore
+     * is not the bare name — the accessible name of the button also carries the reason, hidden from
+     * the eye (on the phone it would otherwise reach only a tooltip, which a tap never opens).
+     */
+    const labels = [...sheet.querySelectorAll<HTMLElement>('.action-sheet button')].map(
+      (el) => el.textContent,
+    );
+    const complete = labels.find((label) => label?.startsWith('«Решена» · закрыть работы'));
+    expect(complete).toBeDefined();
+    expect(complete).toContain('Сначала подшейте акт');
   });
 
   it('нажатие пункта в шите строки не открывает заодно карточку заявки', async () => {

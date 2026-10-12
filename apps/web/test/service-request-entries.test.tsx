@@ -31,6 +31,7 @@ import {
   HIDDEN_IN_CARD_MENU,
   HIDDEN_IN_ROW_MENU,
   rowMenuItems,
+  STATUS_TAG_ONLY,
 } from '../src/pages/service/serviceMenuPlacement';
 import { serviceRequestMenuItems } from '../src/pages/service/serviceRequestMenu';
 import {
@@ -105,9 +106,26 @@ interface EntryRow {
    * своего перебора коридора не держит.
    */
   statusTag?: true;
+  /**
+   * The status tag is the item's ONLY entry: it is struck from all four menus (ADR 0162 stage Э6,
+   * owner decision S-15). Such a row carries all three `hidden*` marks and `statusTag`, and its
+   * entry is proven by the tag wiring below, not by a key literal in the card.
+   */
+  tagOnly?: true;
   /** Почему строка выглядит необычно. Обязательна там, где вход в карточке есть, а пункт остался. */
   note?: string;
 }
+
+/** The marks every tag-only arc carries: struck from every menu, entered from the tag alone. */
+const TAG_ONLY = {
+  tagOnly: true,
+  statusTag: true,
+  hiddenInRow: true,
+  hiddenInCardList: true,
+  hiddenInCard: true,
+  cardEntry: 'the status tag of the «Статус» field (ADR 0161)',
+  listEntry: 'the status tag of the row and of the phone list card (ADR 0161)',
+} as const satisfies Partial<EntryRow>;
 
 /**
  * Реестр входов (§4.2 плана). Порядок строк — порядок пунктов в наборе действий: сперва ход заявки
@@ -180,12 +198,17 @@ const ENTRIES: Record<string, EntryRow> = {
    */
   'estimate-dispute': { label: 'Оспорить освобождение' },
   'estimate-dispute-resolve': { label: 'Разрешить спор' },
-  complete: { label: 'Закрыть работы', statusTag: true },
-  accept: { label: 'Принять работу', statusTag: true },
-  rework: { label: 'Вернуть на доработку', statusTag: true },
-  'rollback-start': { label: 'Вернуть в «Новую»', statusTag: true },
-  'rollback-accept': { label: 'Отменить приёмку', statusTag: true },
-  'reopen-request': { label: 'Вернуть в работу', statusTag: true },
+  /*
+   * The six status arcs of stage Э6: the tag is their only entry in every place (plan §4.3). The
+   * list row, the phone list card and the request card each show the tag, and the tag lists the
+   * transitions from the full action set — so every menu may strike them.
+   */
+  complete: { label: 'Закрыть работы', ...TAG_ONLY },
+  accept: { label: 'Принять работу', ...TAG_ONLY },
+  rework: { label: 'Вернуть на доработку', ...TAG_ONLY },
+  'rollback-start': { label: 'Вернуть в «Новую»', ...TAG_ONLY },
+  'rollback-accept': { label: 'Отменить приёмку', ...TAG_ONLY },
+  'reopen-request': { label: 'Вернуть в работу', ...TAG_ONLY },
   // Меню — основной вход (заказчик назвал «Отложить» и «Отменить» к сохранению), тег — второй:
   // список переходов без остановки и без отмены врал бы о коридоре (Р6).
   hold: { label: 'Отложить', statusTag: true },
@@ -457,13 +480,52 @@ describe('вычеркнутый пункт обязан иметь другой
      */
     const wiring =
       readSource('ServiceRequestViewModal.tsx') + readSource('ServiceRequestEstimate.tsx');
-    for (const key of HIDDEN_IN_CARD_MENU) {
+    // Tag-only arcs take no key literal: the tag gets the whole set, checked by the next case.
+    for (const key of [...HIDDEN_IN_CARD_MENU].filter((k) => !ENTRIES[k]?.tagOnly)) {
       expect(
         wiring.includes(`'${key}'`),
         `вход «${ENTRIES[key]?.cardEntry}» объявлен реестром, но ключа «${key}» нет ни в карточке, ` +
           'ни на вкладке объёма работ: кнопке взять пункт неоткуда',
       ).toBe(true);
     }
+  });
+
+  it('tag-only arcs are exactly the placement set, and each is on the tag', () => {
+    /*
+     * Stage Э6 strikes six arcs from every menu; their one entry is the tag. Both halves are
+     * checked: the placement module and the registry name the same keys, and each key really is
+     * offered by the tag projection somewhere in the matrix — a key the tag never shows would be
+     * an action taken from the portal altogether.
+     */
+    expect(sorted(STATUS_TAG_ONLY)).toEqual(sorted(keysWhere((row) => !!row.tagOnly)));
+    const onTag = collectStatusTagKeys();
+    for (const key of STATUS_TAG_ONLY) {
+      const row = ENTRIES[key]!;
+      expect(row.statusTag && row.hiddenInRow && row.hiddenInCardList && row.hiddenInCard).toBe(
+        true,
+      );
+      expect(
+        onTag.has(key),
+        `«${row.label}» is struck from the menus but never shown on the tag`,
+      ).toBe(true);
+    }
+  });
+
+  it('every place hands the tag the whole action set, not a placement-filtered one', () => {
+    /*
+     * The tag is the only entry of the tag-only arcs, so a placement filter applied to its items
+     * would remove them from the portal silently. The wiring is read from the three places that
+     * render the tag: the list row column, the phone list card badge and the card's «Статус» field.
+     */
+    expect(readSource('serviceRequestGrid.tsx')).toMatch(
+      /<ServiceStatusLineCell\s+request=\{r\}\s+items=\{opts\.actions\(r\)\}/,
+    );
+    expect(readSource('serviceRequestCard.tsx')).toMatch(
+      /<ServiceStatusCell request=\{r\} items=\{opts\.actions\(r\)\}/,
+    );
+    expect(readSource('ServiceRequestViewModal.tsx')).toMatch(/statusItems: allActions,/);
+    // The cell itself never imports the placement module (its header names the filters in prose).
+    expect(readSource('ServiceStatusCell.tsx')).not.toMatch(/from '\.\/serviceMenuPlacement'/);
   });
 
   it('вычеркнутый из карточки списка сохраняет вход в карточке заявки', () => {
