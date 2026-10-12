@@ -29,12 +29,6 @@ import {
   specializations,
   type SpecializationRow,
 } from '../../../db/schema';
-import { parseCategoryCodes } from '../../driver-import';
-import {
-  DirectoriesNotSeededError,
-  LICENSE_COMMENT,
-  licenseWithRequisitesComment,
-} from '../../driver-import-apply';
 import { DRIVER_SPECIALIZATION_CODE } from '../../drivers';
 import {
   boolCell,
@@ -56,21 +50,21 @@ import {
 } from '../types';
 
 /**
- * Кадровые справочники обмена (ADR 0073): специализации, виды документов, категории квалификаций
- * и водители.
+ * Staff directories of the exchange (ADR 0073): specializations, document kinds, qualification
+ * categories and drivers.
  *
- * Самая чувствительная часть обмена: в строке водителя лежат ФИО, СНИЛС и реквизиты двух
- * документов живого человека. Отсюда два правила, которых нет у остальных справочников.
+ * The most sensitive part of the exchange: a driver row carries the full name, SNILS and the
+ * requisites of two documents of a living person. Hence two rules the other directories do not have.
  *
- * Первое: правила разбора кадровой строки не переписываются. Контрольная сумма СНИЛС, разбор ФИО,
- * коды категорий и правило «должность называет документ» (ADR 0049, ADR 0095) остаются там, где их
- * уже проверяет тест, — в `driver-import.ts` и общем пакете; здесь они только вызываются. Второй
- * набор тех же правил означал бы, что через файл в справочник попадает то, чего не принимает
- * форма, — и наоборот.
+ * First: the rules for reading an HR row are not rewritten here. The SNILS checksum, full-name
+ * parsing and "the job title names the document" (ADR 0049, ADR 0095) live in the shared package
+ * and are only called from this file; category-code normalisation (`parseCategoryCodes`) lives in
+ * this file because the exchange is its only caller (ADR 0073, decision 14). A second set of the
+ * same rules would let the file put into the directory what the driver form rejects, and back.
  *
- * Второе: файл добавляет и уточняет, но не отнимает. Категории документа строкой таблицы не
- * снимаются (см. `distributeCategories`), заведённые реквизиты пустой ячейкой не стираются, а
- * удалённых людей в выгрузке нет вовсе.
+ * Second: the file adds and refines but never takes away. A table row does not remove a
+ * document's categories (see `distributeCategories`), an empty cell does not erase entered
+ * requisites, and deleted people are not in the export at all.
  */
 
 /** Окружение справочника, которому не на что ссылаться. */
@@ -218,8 +212,8 @@ function dateColumn<M>(
     hint,
     get: (m) => dateCell(get(m)),
     set: (m, text, ctx) => {
-      // Общий разбор из `cells.ts`, а не `parseImportDate` кадровой выгрузки: форматы он принимает
-      // те же оба, но вдобавок сверяет календарь — «31.02.2026» формату соответствует, а дате нет.
+      // The shared parser from `cells.ts`: it accepts both «ДД.ММ.ГГГГ» and «ГГГГ-ММ-ДД» and also
+      // checks the calendar — «31.02.2026» matches the format but is not a date.
       const v = parseDate(text, ctx, header);
       if (v !== undefined) put(m, v);
     },
@@ -654,6 +648,61 @@ const credentialTypeGenitive: Record<CredentialTypeCode, string> = {
   tractor_license: 'удостоверения тракториста-машиниста',
 };
 
+// The four helpers below came from the deleted JSON import of the HR export (ADR 0073, decision
+// 14) with their bodies and texts unchanged. They live here because this directory is their only
+// caller; a second copy elsewhere would let the file and the driver card drift apart again.
+
+/**
+ * Category codes from a cell. Case is dropped («C1E» → «c1e») and empty items are discarded: HR
+ * exports contain «C,C1,,BE», and the empty item is separator noise, not a category. Repeats
+ * collapse, so one code never becomes two grants.
+ */
+function parseCategoryCodes(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return [
+    ...new Set(
+      raw
+        .split(',')
+        .map((c) => c.trim().toLowerCase())
+        .filter((c) => c !== ''),
+    ),
+  ];
+}
+
+/**
+ * Note stored on a document created from a row without series and number (`insertDocument`). The
+ * card has no other trace of where such a document came from or what it still lacks, and the
+ * waybill is issued by the number, issue date and term (ADR 0055), so the note says what to enter
+ * from the original. `unverified` beside it says nobody has checked the paper, and does not revoke
+ * the grant.
+ */
+const LICENSE_COMMENT =
+  'Заведено кадровой выгрузкой: известны только категории. Серию, номер, дату выдачи и срок ' +
+  'действия внести по оригиналу удостоверения — заменой документа.';
+
+/**
+ * The same note when the file did carry requisites. The document kind is named by its short label
+ * («ВУ», «УТМ»): the exchange also creates tractor-operator licences (ADR 0095), and «with ВУ
+ * requisites» on a machinist's card would misstate which document the person holds.
+ */
+function licenseWithRequisitesComment(shortLabel: string): string {
+  return `Заведено кадровой выгрузкой с реквизитами ${shortLabel}. Документ требует сверки с оригиналом.`;
+}
+
+/**
+ * The directories a driver cannot be created without (seeded by migration 0058). `check()` already
+ * fails every row when they are missing, so this is the backstop inside the write transaction: it
+ * rolls the whole file back instead of leaving a person without a specialization or a document.
+ */
+class DirectoriesNotSeededError extends Error {
+  constructor() {
+    super(
+      'Справочники не наполнены: примените миграцию 0058 (специализация «driver» и вид документа «driver_license»).',
+    );
+    this.name = 'DirectoriesNotSeededError';
+  }
+}
+
 /** Водитель — человек с действующей специализацией «driver»: своей таблицы у него нет. */
 function driverSpecializationExists() {
   return sql`EXISTS (
@@ -902,9 +951,9 @@ function documentColumns(type: CredentialTypeCode): DirectoryColumn<DriverModel>
       hint: hints.categories,
       get: (m) => listCell(document(m).categories.map((c) => c.toUpperCase())),
       set: (m, text) => {
-        // Разделитель ячейки общий (`parseList`: «;» и «,»), приведение кодов — то же, что у
-        // кадровой выгрузки: нижний регистр, без пустых элементов и без повторов. Дальше коды
-        // ждут всей строки: чей это документ, решает `distributeCategories`.
+        // The cell separator is the shared one (`parseList`: «;» and «,»); codes are lower-cased
+        // and de-duplicated by `parseCategoryCodes`. They then wait for the whole row: whose
+        // document they belong to is decided by `distributeCategories`.
         const codes = parseCategoryCodes(parseList(text).join(','));
         if (codes.length > 0) m.pendingCategories[type] = codes;
       },

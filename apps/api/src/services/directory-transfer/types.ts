@@ -23,9 +23,8 @@ export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type RowCells = Readonly<Record<string, string>>;
 
 /**
- * Копилка замечаний по одной строке файла. Ошибки не бросаются, а собираются: человек с файлом в
- * руках правит его один раз, а не выясняет следующую опечатку каждым новым заходом (приём
- * `services/driver-import.ts`).
+ * Collector of remarks for one file row. Errors are collected, not thrown: the person holding the
+ * file fixes it in one pass instead of discovering the next typo on every new attempt.
  */
 export interface RowContext {
   /** Номер строки на листе «Данные» — тот, который человек видит слева в редакторе таблиц. */
