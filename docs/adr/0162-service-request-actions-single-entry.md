@@ -127,3 +127,21 @@
   шите карточки списка на телефоне (решение 4).
 - Портал перестаёт звать `POST /:id/notify` — до снятия ручки она остаётся доступной по прямому
   запросу держателю `serviceRequests.status`.
+
+## Owner decision 2026-10-12 (survey S-15): stage Э6 goes ahead
+
+With [ADR 0161](0161-service-request-quick-status-change.md) accepted, the removal this decision
+postponed (the third consequence above) is decided: stage Э6 of the
+[actions-menu plan](../office-equipment-request-actions-menu-plan.md).
+
+- Six status arcs — `complete`, `rollback-start`, `accept`, `rework`, `rollback-accept`,
+  `reopen-request` — leave the menus of all four places М1–М4 (list row, list card on the phone,
+  request card, its sheet). The status tag becomes their only entry (plan Р6, fork В4).
+- The items stay in the action set (`allActions`): the tag's list of transitions is a projection of
+  that set (ADR 0161, decision 1), so only the placement module filters them out, as decision 2
+  requires. «Отложить», «Возобновить» and «Отменить заявку» stay in the menu as the primary entry,
+  with the tag as their declared second.
+- The plan's order holds: the admission checklist of Р5 is run by the §7.3 tests against the
+  shipped code first, and an item whose row fails stays in the menu.
+
+**State:** decided, implementation pending (roadmap item C6, release R1).

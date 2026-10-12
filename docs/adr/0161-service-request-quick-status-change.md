@@ -1,10 +1,11 @@
 # ADR 0161. Статус заявки оргтехники — вход в её ход: список переходов строится из набора действий
 
-- Статус: Принято (к реализации). План —
+- Статус: Реализовано (04.09.2026, release 82: record `0274`, version tail corrected by `0281`);
+  accepted by the owner on 2026-10-12 (survey S-15). Plan —
   [office-equipment-quick-status-change-plan.md](../office-equipment-quick-status-change-plan.md);
-  постановка — [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
-  пункт 10 («Быстрая смена статуса на десктопе и мобильном»). Схему база не меняет: миграция у
-  выпуска одна — запись в `app_releases`
+  source — [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
+  item 10 («Быстрая смена статуса на десктопе и мобильном»). The database schema does not change:
+  the release's only migration is its `app_releases` record
 - Область: портал —
   [serviceRequestMenu.tsx](../../apps/web/src/pages/service/serviceRequestMenu.tsx) (тип пункта и
   целевой статус), новые
@@ -141,3 +142,17 @@ ADR 0125 это неверно трижды:
 Общее правило, ради которого дополнение и записано: **пункт обязан спрашивать право своей ручки, а
 не только дугу коридора** — коридор отвечает «куда отсюда можно», а не «чем именно и кому это
 позволено». Там, где одна дуга обслуживается двумя ручками, эти два вопроса расходятся.
+
+## Owner decision 2026-10-12 (survey S-15): accepted
+
+The owner accepted the quick status change as it works today: the status tag in the list row, the
+mobile list card and the «Статус» field of the request card opens the list of transitions built
+from the action set (`serviceStatusChoices.ts`, `ServiceStatusCell.tsx`).
+
+This is the acceptance [ADR 0162](0162-service-request-actions-single-entry.md) waited for before
+removing the menu items that duplicate the tag. That removal — stage Э6 of the actions-menu plan,
+six status arcs — is decided together with this acceptance and recorded in ADR 0162. When it ships,
+the consequence above that «Закрыть работы» and «Вернуть в «Новую»» are temporarily reachable from
+two places ends: for those six arcs the tag becomes the only entry. Nothing in this decision
+changes — the list stays a projection of the action set, and the items leave the menus, not the
+set.
