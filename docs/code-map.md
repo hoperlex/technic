@@ -46,10 +46,10 @@
 ## Механизация
 
 - Домен: `механизация`
-- Источник истины: [mech-requests.ts](../packages/contracts/src/mech-requests.ts), [mech-models.ts](../packages/contracts/src/mech-models.ts)
+- Источник истины: [mech-requests.ts](../packages/contracts/src/mech-requests.ts), [mech-request-extensions.ts](../packages/contracts/src/mech-request-extensions.ts) (the extension visa: who decides, what the rental allows, the portal's buttons), [mech-models.ts](../packages/contracts/src/mech-models.ts)
 - Разделы портала: `mechanization`
-- API-маршруты: [mech-requests.ts](../apps/api/src/routes/mech-requests.ts), [mech-models.ts](../apps/api/src/routes/mech-models.ts)
-- Остальной API: [mech-request-guards.ts](../apps/api/src/services/mech-request-guards.ts), [mech-request-list.ts](../apps/api/src/services/mech-request-list.ts)
+- API-маршруты: [mech-requests.ts](../apps/api/src/routes/mech-requests.ts), [mech-request-extension.ts](../apps/api/src/routes/mech-request-extension.ts) (the three `/:id/extension` doors; the old `PATCH /:id/extend` stays in `mech-requests.ts` until release R2), [mech-models.ts](../apps/api/src/routes/mech-models.ts)
+- Остальной API: [mech-request-guards.ts](../apps/api/src/services/mech-request-guards.ts), [mech-request-list.ts](../apps/api/src/services/mech-request-list.ts), [mech-request-extension.ts](../apps/api/src/services/mech-request-extension.ts) (the pending request is dropped under the request's lock — by withdrawal, completion and the revoked issue mark)
 - Web: [mech](../apps/web/src/pages/mech), [mech-request](../apps/web/src/entities/mech-request)
 - Тесты: `mech-*.db.test.ts`, `mech-ordering-grant.db.test.ts`
 - Решения: [ADR 0152](adr/0152-mechanization-module.md), [ADR 0171](adr/0171-mechanization-site-approval.md), [ADR 0175](adr/0175-mechanization-assignable-grant.md)
