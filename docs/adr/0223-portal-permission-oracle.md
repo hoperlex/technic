@@ -1,8 +1,9 @@
 # ADR 0223. The portal asks the server's permission list, never the contracts matrix
 
-- Статус: Принято (12.10.2026). The rule already holds for the shell and almost every action; three
-  checks still recompute the matrix, and moving them to the list with a guard test is pending
-  (roadmap item Q6)
+- Статус: Реализовано (12.10.2026, roadmap item Q6). The three checks ask the server's list, a
+  lint rule keeps the matrix readers out of `apps/web/src`, and a per-profile test pins the touched
+  screens to the server's answer; contract predicates that ask the matrix inside the contracts
+  remain and are named in [Implementation](#implementation-12102026)
 - Домены: доступ, каркас-портала
 - Изменяет: [ADR 0021](0021-permissions-model.md) (decision 2) — the portal no longer hides what
   is unavailable «по той же таблице»: it hides it by the list the server computed from that table
@@ -17,7 +18,14 @@
   [dateRules.ts](../../apps/web/src/entities/vehicle-request/model/dateRules.ts),
   [mechRequestMenu.tsx](../../apps/web/src/pages/mech/mechRequestMenu.tsx),
   [serviceRequestGrid.tsx](../../apps/web/src/pages/service/serviceRequestGrid.tsx),
-  [permissions.ts](../../packages/contracts/src/permissions.ts)
+  [serviceRequestExtras.tsx](../../apps/web/src/pages/service/serviceRequestExtras.tsx),
+  [serviceRequestModals.tsx](../../apps/web/src/pages/service/serviceRequestModals.tsx),
+  [permissions.ts](../../packages/contracts/src/permissions.ts),
+  [mech-requests.ts](../../packages/contracts/src/mech-requests.ts),
+  [vehicle-requests.ts](../../packages/contracts/src/vehicle-requests.ts),
+  [service-requests.ts](../../packages/contracts/src/service-requests.ts),
+  [eslint.config.mjs](../../eslint.config.mjs),
+  [permission-oracle.test.ts](../../apps/web/test/permission-oracle.test.ts)
 
 ## Context
 
@@ -74,11 +82,76 @@ matrix. Three places still ask the matrix with the session user:
 - Test fixtures describe an account the way production delivers it: with its `permissions` list.
   The render harness already builds the context with the same `permissionChecks`
   (`apps/web/test/render.tsx`), so a fixture with a role and no list reads as «no permission».
-- Until item Q6 lands, the three places above keep the matrix and its agreement with the list
-  stays a convention. This record names them so that the debt is not mistaken for the rule.
+- Contract predicates that ask the matrix inside the contracts over the subject they are handed
+  stay matrix readers in the portal until they take `has` (see
+  [Implementation](#implementation-12102026)). Their answer is the server's only because the
+  session ships the whole subject beside the list; that is guard G1's half, and new code passes
+  `can` instead of relying on it.
 
 ## Rejected alternatives
 
 - **Keep both oracles because they agree by construction.** They agree only while the bundle and
   the API come from one build, and nothing on the portal side checks it; the deploy window is
   exactly when they do not.
+
+## Implementation (12.10.2026)
+
+Roadmap item Q6, implemented on top of `40a04c7f`.
+
+**The three checks.** Each contract predicate keeps its rule and receives the membership as a
+parameter `has: (permission) => boolean`, defaulting to the matrix over the subject — the server
+calls it unchanged, the portal passes its `can`:
+
+- the vehicle request calendar (`vehicleRequestDateRules(subject, can)`) asks `waybills.correct`
+  and `waybills.correctBeyondLimit` of `can`, and passes `can` into `minVehicleRequestDateKey` →
+  `isVehicleRequestRequester`: the lead time's `vehicleRequests.status` was a fourth matrix read in
+  the same calendar, not named above;
+- the mechanization row menu asks `mechRequests.status`, `.create`, `.update` and `.delete` of the
+  `can` it already received for the extension visa, and passes it to `canApproveMechRequest`;
+- `serviceGridView(user, can)` asks `serviceRequests.create` and `serviceRequests.estimate` of
+  `can` and passes it to `actsAsServiceExecutor` → `isServiceExecutor`, whose
+  `serviceRequests.estimate` and `serviceRequests.execute` were the hidden half of the same column
+  choice.
+
+Two more direct imports of `can` turned up in the office equipment request menu (rolling back
+«taken into work», consumables, the issue mark, urgency, moving the equipment). The guard below
+would have failed on them, so they moved too: `ServiceMenuContext` carries the portal's `can`.
+
+**The guard** is lint, not a scan: `@typescript-eslint/no-restricted-imports` in `eslint.config.mjs`
+forbids importing `can`, `canUse` and `permissionsFor` from `@technic/contracts` anywhere under
+`apps/web/src`. The typescript-eslint copy of the rule is used because the core rule already
+carries the slice entry-point patterns there, and a flat config replaces a rule's options instead
+of merging them. Exceptions are by file and by name (`MATRIX_READER_EXCEPTIONS`): `canUse` in
+`authContext.tsx`, the scope half of the portal's own `canUse`; `can` and `permissionsFor` in the
+four administration modules that describe other accounts and the access profiles. Lint was chosen
+because the import is the cheapest moment to catch the rule being broken and the editor shows it
+on the line; a call to the matrix `can` reads exactly like a call to the portal's.
+
+**The test.** Decision 3's equality of the matrix and the list per profile was already guard G1
+(`apps/api/test/auth-session-permissions.test.ts`): the session builder returns `permissionsFor`
+of the full subject and ships that same subject beside the list, so for every profile the matrix
+over the shipped subject is the list. What the portal does with it is pinned by
+`apps/web/test/permission-oracle.test.ts`:
+
+- the rule is live on the root config (each reader, an alias and a namespace import are errors;
+  an exception opens only its own name), and every exception still imports the name it is
+  allowed, read from the config itself;
+- for every access profile plus every catalogue grant on a compatible role, the calendar, the
+  mechanization menu, the column set and the office equipment items around a request show with
+  the portal's `can` over the shipped list exactly what the server's oracle answers;
+- the same screens on an account the matrix cannot read — grant permissions stripped from the
+  subject, kept in the list, one permission added at a time over each profile — still equal the
+  server's answer on the full principal, and a sensitivity check proves that recomputing the matrix
+  over the shipped subject would differ on every one of the four screens. Reverting any of the
+  four places to the matrix fails this sweep (checked by hand on each).
+
+**What is left.** About seventeen contract predicates the portal calls with the session user still
+ask the matrix inside the contracts: the status corridors (`allowedStatusTransitions`,
+`allowedVehicleRequestTransitions`, `allowedServiceStatusTransitions`), the office equipment action
+predicates (`canStartServiceWork`, `canAssignServiceExecutors`, `canDeclineServiceRequest`,
+`canResumeService`, the estimate and dispute predicates, `canCoordinateServiceRequests`, the bulk
+operations, `attachableServiceFileKinds`) and the waiting-on badge (`isWaitingOn`). They are not
+imports of a matrix reader, so the guard does not see them, and the blind sweep leaves the
+mechanization corridor (`status:*` items) out. They agree with the server because the session
+builder ships the whole subject beside the list (guard G1), and each moves to `has` the same way
+when its screen is next touched.
