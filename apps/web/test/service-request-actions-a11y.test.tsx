@@ -260,7 +260,9 @@ describe('у каждого входа в действия есть доступ
   });
 
   it('в карточке кнопка действий подписана словом, а не иконкой', async () => {
-    renderTab(EXECUTOR, [inWorkWithoutDocument()]);
+    // «Ведение»: the contractor's card keeps no menu item in this state (the estimate step lives
+    // on its tab, workflow-fixes plan Р10), and a card without items draws no «Действия» at all.
+    renderTab(OPERATOR, [inWorkWithoutDocument()]);
     const wrap = await openCard();
 
     // Подпись здесь видимая, и доступное имя берётся из неё же: отдельного `aria-label` кнопке
@@ -324,7 +326,7 @@ describe('до меню действий добираются с клавиат�
   });
 
   it('меню карточки открывается с клавиатуры и закрывается Escape', async () => {
-    renderTab(EXECUTOR, [inWorkWithoutDocument()]);
+    renderTab(OPERATOR, [inWorkWithoutDocument()]);
     const wrap = await openCard();
 
     const trigger = within(wrap).getByRole('button', { name: 'Действия' });
@@ -332,7 +334,7 @@ describe('до меню действий добираются с клавиат�
     pressKey(trigger, 'Enter');
 
     const menu = await openedMenu();
-    expect(within(menu).getByRole('menuitem', { name: 'Работы выполнены' })).toBeDefined();
+    expect(within(menu).getByRole('menuitem', { name: 'Отложить' })).toBeDefined();
 
     fireEvent.keyDown(window, { key: 'Escape', code: 'Escape', keyCode: 27 });
     await expectMenuClosed();
@@ -419,10 +421,14 @@ describe('выключенный пункт объявлен выключенн�
     renderTab(EXECUTOR, [inWorkWithoutDocument()]);
     const wrap = await openCard();
 
-    // The card menu opens and keeps its own items — the anchor against an empty green.
-    const menu = await openCardMenu(wrap);
-    expect(within(menu).getByRole('menuitem', { name: 'Работы выполнены' })).toBeDefined();
-    expect(within(menu).queryByRole('menuitem', { name: /Закрыть работы/ })).toBeNull();
+    /*
+     * The contractor's card menu is empty in this state and draws no trigger: the estimate step
+     * moved to its tab (workflow-fixes plan Р10), closing the work to the status tag (Э6). The
+     * anchor against an empty green is the tag itself — it still offers the arc.
+     */
+    expect(within(wrap).queryByRole('button', { name: 'Действия' })).toBeNull();
+    expect(within(wrap).queryByRole('menuitem', { name: /Закрыть работы/ })).toBeNull();
+    expect(within(wrap).getByLabelText(/Изменить статус: В работе/)).toBeDefined();
   });
 });
 
@@ -522,7 +528,7 @@ describe('в открытой карточке действие встречае
  */
 describe('на телефоне действия открываются шитом', () => {
   it('шит карточки назван заголовком, а пункты — словами', async () => {
-    renderTab(EXECUTOR, [inWorkWithoutDocument()], { mobile: true });
+    renderTab(OPERATOR, [inWorkWithoutDocument()], { mobile: true });
 
     // На телефоне карточка сама рисуется шитом, поэтому окна ищутся по заголовкам ящиков.
     fireEvent.click(await screen.findByText('СО-14'));
@@ -553,7 +559,7 @@ describe('на телефоне действия открываются шито
     const labels = [...sheet.querySelectorAll<HTMLElement>('.action-sheet button')].map(
       (el) => el.textContent,
     );
-    expect(labels).toContain('Работы выполнены');
+    expect(labels).toContain('Отложить');
     // Since stage Э6 «Закрыть работы» is not in this sheet: the status tag is its only entry, and
     // the next case checks it there.
     expect(labels.some((label) => label?.startsWith('Закрыть работы'))).toBe(false);

@@ -521,14 +521,34 @@ describe('оставленные пункты живы', () => {
     expect(labels).toContain('Работы выполнены');
   });
 
-  it('и то же самое — из карточки: набор один, различается только место', async () => {
-    const labels = await labelsAt(
-      CARD_PLACES[0]!,
-      EXECUTOR,
-      assignedServiceRequest({ status: 'in_work' }),
-    );
+  /*
+   * In the card the same step is a button on the «Объём работ» tab (workflow-fixes plan Р10): the
+   * item is struck from the card menu in both forms and taken READY by the tab, so the label and
+   * the window are the menu's. The contractor's card has no other menu item in this state, so the
+   * «Действия» button may be absent altogether — `menuLabelsOrNone` reads that as an empty menu.
+   */
+  for (const place of CARD_PLACES) {
+    it(`из карточки — кнопкой на вкладке «Объём работ», а не пунктом: ${place.name}`, async () => {
+      renderTab(EXECUTOR, [assignedServiceRequest({ status: 'in_work' })], place.viewport);
+      await screen.findByText('СО-14');
+      expect(await menuLabelsOrNone(place)).not.toContain('Работы выполнены');
+    });
+  }
 
-    expect(labels).toContain('Работы выполнены');
+  it('кнопка на вкладке «Объём работ» открывает то же окно, что и пункт меню', async () => {
+    renderTab(EXECUTOR, [assignedServiceRequest({ status: 'in_work' })]);
+    await openCard();
+    fireEvent.click(screen.getByRole('tab', { name: 'Объём работ' }));
+    const button = await waitFor(() => {
+      const found = [...document.querySelectorAll<HTMLElement>('button')].find(
+        (el) => el.textContent === 'Работы выполнены',
+      );
+      if (!found) throw new Error('на вкладке нет кнопки денежного шага');
+      return found;
+    });
+    fireEvent.click(button);
+    // The window of the «work done» door, titled by the editor itself (`estimateEditorModalTitle`).
+    expect(await screen.findByText('Работы выполнены СО-14')).toBeDefined();
   });
 
   it('оператору по «В работе» — заморозка, срочность, обсуждение и отмена', async () => {

@@ -161,7 +161,12 @@ const ENTRIES: Record<string, EntryRow> = {
   // Отказ статуса не меняет (Р7): заявка остаётся «Новой», меняется состав исполнителей, — и в
   // списке переходов ему делать нечего.
   decline: { label: 'Отказаться от заявки' },
-  estimate: { label: 'Работы выполнены' },
+  estimate: {
+    label: 'Работы выполнены',
+    hiddenInCard: true,
+    // Workflow-fixes plan Р10: the step is taken where the estimate is read, as the decisions are.
+    cardEntry: 'кнопка на вкладке «Объём работ» рядом с решениями',
+  },
   approve: {
     label: 'Согласовать объём работ',
     hiddenInCard: true,

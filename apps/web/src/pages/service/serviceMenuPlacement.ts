@@ -74,7 +74,8 @@ export const HIDDEN_IN_CARD_LIST_MENU = new Set<string>(HIDDEN_EVERYWHERE_IN_LIS
  * (ADR 0140): executors are edited at the «Исполнители» field, consumables on their tab, the
  * discussion opens with a counter button (it also shows unread replies, which the menu cannot),
  * estimate decisions are taken with the buttons under the estimate table — all three, including
- * the return for editing, — editing opens with the main footer button, the move is recorded at the
+ * the return for editing, — and so is the executor's estimate step itself («Работы выполнены»,
+ * workflow-fixes plan Р10), editing opens with the main footer button, the move is recorded at the
  * equipment details, and the six status arcs are chosen on the tag of the «Статус» field. A second
  * handle to the same action in the same window would only make people choose between two
  * identical roads.
@@ -91,6 +92,7 @@ export const HIDDEN_IN_CARD_MENU = new Set<string>([
   'assign',
   'chat',
   'consumables',
+  'estimate',
   'approve',
   'reject',
   'reopen',

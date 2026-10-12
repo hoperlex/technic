@@ -23,6 +23,15 @@ import {
 const DECISION_KEYS = ['approve', 'reject', 'reopen'] as const;
 
 /**
+ * The executor's estimate step — «Работы выполнены» or «Передать документ на согласование» — has
+ * its entry on this tab (workflow-fixes plan Р10): the estimate is read here, and going from the
+ * tab to «Действия» and back into the same subject was the extra step the owner named. The item
+ * is the READY one from the action set, so its predicate (`canSubmitServiceEstimate`), label and
+ * window stay those of the menu; the card menu strikes it (`HIDDEN_IN_CARD_MENU`).
+ */
+const SUBMIT_KEY = 'estimate';
+
+/**
  * Что говорит вкладка внутренней заявки, у которой объём работ остался от прошлого (Р7).
  *
  * Ровно то, что человеку нужно знать: строки настоящие, читать их можно, а шага по ним больше нет.
@@ -97,6 +106,7 @@ export function ServiceRequestEstimate({
   const decisions = DECISION_KEYS.map((key) => actions.find((item) => item.key === key)).filter(
     (item): item is ActionSheetItem => !!item,
   );
+  const submit = actions.find((item) => item.key === SUBMIT_KEY);
 
   /*
    * РАСКЛАДКА ПО ГРАФАМ (план `docs/office-equipment-free-estimate-and-executor-scope-plan.md`,
@@ -178,8 +188,17 @@ export function ServiceRequestEstimate({
    * этому месту: кнопки обязаны быть везде, где решение доступно, — иначе вычеркнутый пункт
    * оставляет карточку без входа вовсе.
    */
-  const decisionButtons = decisions.length > 0 && (
+  const decisionButtons = (decisions.length > 0 || submit) && (
     <Space wrap>
+      {submit && (
+        <Button
+          type={submit.primary ? 'primary' : 'default'}
+          icon={submit.icon}
+          onClick={submit.onClick}
+        >
+          {submit.label}
+        </Button>
+      )}
       {decisions.map((item) => (
         <Button
           key={item.key}
