@@ -839,18 +839,41 @@ export interface RouteIssueSource {
 }
 
 /**
- * Что мешает выписать лист по этому маршруту; пусто — не мешает ничего.
+ * The form's capacity (ADR 0068, R11) — the one count of it, by task rows: trips of the live
+ * requests plus linear days, laid out on points or not.
  *
- * Имя не `canIssueWaybill` намеренно: та уже есть в `vehicle-routes.ts` и проверяет другое —
- * заморозку выданным листом, коррекцию (ADR 0101), статусы состава, право на пустой бланк
- * (ADR 0071) и заявку-основание перегона. Пересекаются они в двух местах: водитель (там это первый
- * же отказ) и ёмкость бланка — но старая считает **заявки**, а здесь считаются **строки задания**,
- * то есть ездки плюс линейные дни (Р11), и это единственный правильный счёт для смешанного дня.
- * Складывать их — этапу 5: старая начнёт звать эту, отдаст ей водителя и ёмкость и оставит себе
- * то, чего точки не знают.
+ * One function because the question is asked in three places — the issue blockers below, the
+ * correction preflight before the first cancellation (ADR 0101 item 11) and the placement check
+ * after work enters a route (`assertRouteCapacity`) — and a second count of the same number is how
+ * `canIssueWaybill` came to count requests while the paper counts rows (ADR 0108, 12.10.2026). A
+ * request takes at least one row, so a count of requests is only a lower bound and never the
+ * answer.
  *
- * Все блокеры собираются разом, а не до первого: человек, собирающий рейс, должен увидеть весь
- * список сразу — чинить их он всё равно будет в одной карточке.
+ * The composition is what was ordered, not what is placed: a forgotten trip is not on any point,
+ * and it is exactly the row that would not fit.
+ */
+export function capacityBlocker(
+  formCode: WaybillFormCode | null,
+  composition: readonly TaskRef[],
+): Extract<IssueBlocker, { code: 'capacity_exceeded' }> | null {
+  const capacity = routeRequestCapacity(formCode);
+  if (composition.length <= capacity) return null;
+  return { code: 'capacity_exceeded', rows: composition.length, capacity };
+}
+
+/**
+ * What prevents issuing a sheet for this route; empty — nothing does.
+ *
+ * Not named `canIssueWaybill` on purpose: that one lives in `vehicle-routes.ts` and checks what
+ * points do not know — the freeze by an issued sheet, correction (ADR 0101), statuses of the
+ * composition, the right to a blank form (ADR 0071) and the source request of a relocation. The two
+ * overlap only in the driver (its first refusal there, `no_driver` here for the card). The form's
+ * capacity is counted here alone (`capacityBlocker`): the old request count was dropped from
+ * `canIssueWaybill` on 12.10.2026 (ADR 0108), because two counters of one number answer
+ * differently on a mixed day.
+ *
+ * All blockers are collected at once, not up to the first: the person assembling the route must see
+ * the whole list, since they fix it in one card anyway.
  */
 export function routeIssueBlockers(route: RouteIssueSource): IssueBlocker[] {
   const blockers: IssueBlocker[] = [];
@@ -864,12 +887,11 @@ export function routeIssueBlockers(route: RouteIssueSource): IssueBlocker[] {
   const unplaced = route.composition.filter((ref) => !placedKeys.has(taskRefKey(ref)));
   if (unplaced.length > 0) blockers.push({ code: 'rows_unplaced', refs: unplaced });
 
-  const capacity = routeRequestCapacity(route.formCode);
-  // Считается состав, а не разложенное: строка, стоящая в маршруте, всегда есть и в составе —
-  // роль точки ссылается на строку заявки составными FK (§5.2 плана), и обратного не бывает.
-  if (route.composition.length > capacity) {
-    blockers.push({ code: 'capacity_exceeded', rows: route.composition.length, capacity });
-  }
+  // The composition is counted, not the placed rows: a row on a point is always in the
+  // composition too — the point's role references the request row by composite keys (plan §5.2),
+  // and the reverse does not hold.
+  const capacity = capacityBlocker(route.formCode, route.composition);
+  if (capacity) blockers.push(capacity);
 
   for (const item of placed) {
     const kind = taskRowLayoutKind(route.formCode, item.row.slot);

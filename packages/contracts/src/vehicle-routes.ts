@@ -813,6 +813,15 @@ export const BLANK_WAYBILL_CONFIRM =
  * заморожен (она осталась талоном выданного бланка), лист аннулировали, маршрут разморозился — и
  * без этой проверки следующая выписка молча внесла бы отменённую заявку в новый документ. То же и
  * с закрытой: «Выполнена» в маршруте — история состоявшегося рейса, а не задание на новый.
+ *
+ * THE FORM'S CAPACITY IS NOT ASKED HERE (ADR 0108, 12.10.2026). It used to be, by counting
+ * requests, while the paper is measured in task rows — trips plus linear days (R11). A request
+ * takes at least one row, so the request count never refused anything the row count
+ * (`capacityBlocker` inside `routeIssueBlockers`) would let through; it only answered the same
+ * question with a second number and a second wording. Every caller still meets the row count
+ * before a number is spent: the issue point refuses with the `capacity_exceeded` blocker under its
+ * locks, and the correction preflight asks `capacityBlocker` of the prospective rows before the
+ * first cancellation.
  */
 export function canIssueWaybill(route: {
   purpose: RoutePurpose;
@@ -828,9 +837,10 @@ export function canIssueWaybill(route: {
    * (`shouldDetachOnStatus`), так что `new` в составе вчерашнего рейса — штатное последствие
    * ADR 0058, а не редкость.
    *
-   * Зовётся до первого аннулирования, по **будущему** состоянию рейса (машина, водитель, бланк,
-   * состав): у машины другого типа бывает другой бланк, а с ним другая ёмкость задания (ADR 0068),
-   * и узнать об этом после сожжённого номера — худший из возможных порядков.
+   * Called before the first cancellation, over the **prospective** route (vehicle, driver,
+   * composition): learning of a refusal after the number is burnt is the worst possible order. The
+   * prospective form's capacity — another vehicle type may carry another form (ADR 0068) — is asked
+   * next to this call by the row count (`capacityBlocker`), not here.
    */
   correction?: { allowed: true };
   /**
@@ -839,12 +849,6 @@ export function canIssueWaybill(route: {
    * лист не выписывается никому.
    */
   blankAllowed?: boolean;
-  /**
-   * Бланк рейса: у 4-П он задаёт, сколько строк задания напечатается. Состав собирался под него
-   * (`canJoinRoute`), но бланк типа машины правится справочником (ADR 0065) — и рейс легкового,
-   * собранный на десять заявок, мог остаться с семью строками 4-П.
-   */
-  formCode: WaybillFormCode | null;
   requests: readonly { displayNumber: string; status: RequestStatus }[];
   /** Заявка-основание перегона: у грузового рейса её нет, у перегона она вместо состава. */
   sourceRequest: { displayNumber: string; status: RequestStatus } | null;
@@ -903,19 +907,6 @@ export function canIssueWaybill(route: {
       ok: false,
       reason: 'В маршруте есть заявки не в работе — уберите их из рейса или заведите новый маршрут',
       blocking: blocking.map((r) => r.displayNumber),
-    };
-  }
-  /*
-   * Состав не влезает в бланк. Собрать такой рейс портал не даёт, но бланк типа машины меняют
-   * справочником уже после сборки (ADR 0065) — и лишние заявки напечатались бы пустым местом:
-   * бумага у водителя, а часть работы дня в ней не названа. Лучше отказать до расхода номера.
-   */
-  const capacity = routeRequestCapacity(route.formCode);
-  if (route.requests.length > capacity) {
-    return {
-      ok: false,
-      reason: `${capacityLimit(route.formCode, capacity)}, а в маршруте заявок ${route.requests.length} — уберите лишние или заведите второй маршрут`,
-      blocking: route.requests.slice(capacity).map((r) => r.displayNumber),
     };
   }
   return { ok: true };

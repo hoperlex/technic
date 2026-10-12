@@ -192,7 +192,6 @@ export function useVehicleRouteWindow({ routeId, onChanged }: Args) {
         // An empty form is an administrator right (ADR 0071), asked by the same rule as on the
         // server: otherwise the button would promise what the endpoint will not do.
         blankAllowed: can('waybills.issueBlank'),
-        formCode: route.formCode,
         requests: route.requests,
         sourceRequest: route.sourceRequest,
         waybillStatus: route.waybill?.status ?? null,
@@ -216,7 +215,9 @@ export function useVehicleRouteWindow({ routeId, onChanged }: Args) {
   /*
    * The first assembly refusal issuing cannot survive: broken order, an unplaced row, an overfilled
    * form, a row that does not fit (R11a). They disable the issue button: the server answers them
-   * with 422, and a button promising a waybill would promise a refusal.
+   * with 422, and a button promising a waybill would promise a refusal. The overfilled form is
+   * answered here only — readiness above no longer counts requests (ADR 0108, 12.10.2026), so the
+   * card names one count, by task rows, in one wording.
    *
    * no_driver is excluded: canIssueWaybill answers about the driver with its first refusal and the
    * same words the button tooltip shows. One gap must not get two wordings.

@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import {
   canIssueWaybill,
+  capacityBlocker,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
   type RequestStatus,
@@ -23,7 +24,8 @@ import {
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { selectDrivers } from './drivers';
-import { issueWaybillForRoute, routeWaybillFormFor } from './waybill-issue';
+import { compositionTaskRefs } from './route-points';
+import { issueBlockersRefusal, issueWaybillForRoute, routeWaybillFormFor } from './waybill-issue';
 import { type RouteRow, routeWaybill, vehicleClassOf } from './vehicle-routes';
 import { cancelWaybillForCorrection } from './waybill-correction';
 import { requestIdsOfRouteWaybills } from './waybill-locks';
@@ -254,6 +256,15 @@ export interface ProspectiveRoute {
  * листом, и второй набор правил для него разошёлся бы с первым. Снимается ровно одна — «по
  * маршруту уже есть действующий лист» (`correction: { allowed: true }`): его и аннулируют.
  *
+ * The form's capacity is asked by the issue's own count (`capacityBlocker`) over the prospective
+ * task rows — the composition's trips plus linear days, read by `compositionTaskRefs` because a
+ * transfer has not moved the ticket yet. It refuses with the very 422 the issue point would give
+ * after the cancellation (`issueBlockersRefusal`), only earlier. Until 12.10.2026 this place
+ * counted requests through `canIssueWaybill` (ADR 0108): that missed a three-trip request moved
+ * into a route with room for one more request but not for three more rows, which then reached the
+ * issue point after both cancellations and was refused there — rolled back, but late and in other
+ * words.
+ *
  * Возвращает бланк будущего листа: им же считается вместимость задания, и считать её потом заново
  * значило бы задать тот же вопрос дважды.
  */
@@ -277,7 +288,6 @@ export async function preflightCorrection(
     driverPersonId: route.driverPersonId,
     correction: { allowed: true },
     blankAllowed: route.blankAllowed,
-    formCode: requirement.formCode,
     requests: composition,
     sourceRequest: route.sourceRequest,
     waybillStatus: route.waybillStatus,
@@ -287,6 +297,11 @@ export async function preflightCorrection(
       check.blocking.length > 0 ? `${check.reason}: ${check.blocking.join(', ')}` : check.reason,
     );
   }
+  const overflow = capacityBlocker(
+    requirement.formCode,
+    await compositionTaskRefs(tx, composition),
+  );
+  if (overflow) throw issueBlockersRefusal([overflow]);
 
   /*
    * Водитель — тем же отбором, каким его выпишет лист (`selectDrivers` внутри

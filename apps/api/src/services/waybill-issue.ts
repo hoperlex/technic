@@ -57,7 +57,7 @@ import {
   waybills,
   waybillTrips,
 } from '../db/schema';
-import { err } from '../lib/errors';
+import { type AppError, err } from '../lib/errors';
 import { selectDrivers } from './drivers';
 import { loadRoutePoints, routeTaskRefs } from './route-points';
 import { hitchedTrailersOf } from './vehicle-routes';
@@ -653,8 +653,9 @@ async function loadTaskRowFacts(
  * существует, — бланк рейса и водителя.
  *
  * Обе проверки живут здесь, а не в вызывающем, ровно потому, что обе требуют чтения: бланк
- * приходит с типа машины, водитель — из справочника на дату рейса. Проверки состава и статусов
- * остаются снаружи (`canIssueWaybill`) — они делаются под блокировками до всякого чтения.
+ * приходит с типа машины, водитель — из справочника на дату рейса. The status checks stay with the
+ * caller (`canIssueWaybill`), made under its locks before any read; the form's capacity is not one
+ * of them — it is a blocker counted from this context (`issueBlockersOf`).
  */
 export async function loadWaybillIssueContext(
   tx: Tx,
@@ -854,20 +855,21 @@ async function loadTrailerSource(
  * из того же контекста, из которого печатается бумага (Р22): показать одно, а напечатать другое
  * здесь хуже, чем не показать вовсе.
  *
- * Пересечение с `canIssueWaybill` (контракты) — ровно два места, и оба разрешены в пользу
- * существующей проверки:
+ * The overlap with `canIssueWaybill` (contracts) is one place, the driver: that predicate asks for
+ * it first and without any read, and here it arrives non-empty
+ * (`RouteWaybillContext.driverPersonId` is a `string`), so `no_driver` cannot fire. It stays in the
+ * shared rule because the portal uses it, where a route may have no driver yet.
  *
- *   - **водитель**: та спрашивает его первой и без всякого чтения, а сюда он приходит уже
- *     непустым (`RouteWaybillContext.driverPersonId` — `string`), поэтому `no_driver` тут
- *     недостижим. Убирать его из общего правила незачем — им пользуется портал, где водителя может
- *     не быть;
- *   - **ёмкость бланка**: та считает **заявки**, здесь считаются **строки задания** — ездки плюс
- *     линейные дни (Р11). Второй счёт строго сильнее первого (заявка занимает не меньше одной
- *     строки), и это единственный правильный счёт для смешанного дня: заявка с тремя ездками
- *     занимает в бланке три строки, а в составе одну.
+ * The form's capacity is answered here alone — by task rows, trips plus linear days (R11). The
+ * request count `canIssueWaybill` used to make was dropped on 12.10.2026 (ADR 0108): a request
+ * takes at least one row, so that count never refused what this one would let through, and two
+ * counters of one number answered differently on a mixed day. This blocker is thus the refusal
+ * every route issue path meets before a number is spent — the ordinary and backdated issue, the
+ * day batch, the correction and the transfer (whose preflight also asks `capacityBlocker` before
+ * the first cancellation).
  *
- * Всё остальное — статусы состава, коррекция, право на пустой бланк, действующий лист рейса — так и
- * остаётся за `canIssueWaybill`: точки об этом не знают.
+ * Everything else — composition statuses, correction, the right to a blank form, the route's live
+ * sheet — stays with `canIssueWaybill`: points know nothing of it.
  */
 export function issueBlockersOf(context: WaybillIssueContext): IssueBlocker[] {
   return routeIssueBlockers({
@@ -893,6 +895,20 @@ function blockerMessage(blocker: IssueBlocker): string {
     case 'required_fields_overflow':
       return `строка задания ${blocker.slot} не помещается в бланк: ${blocker.fields.join(', ')} — сократите адрес точки`;
   }
+}
+
+/**
+ * The 422 of a blocked issue: words for the person, the machine list for the portal (R21), which
+ * routes the person to where the blocker is fixed. One builder, because the correction preflight
+ * refuses the prospective form's capacity before the first cancellation with the same answer the
+ * issue point would give after it.
+ */
+export function issueBlockersRefusal(blockers: readonly IssueBlocker[]): AppError {
+  return err.unprocessable(
+    `Лист по этому рейсу не выписать: ${blockers.map(blockerMessage).join('; ')}`,
+    undefined,
+    { blockers },
+  );
 }
 
 /**
@@ -1002,13 +1018,7 @@ export function acknowledgeOrThrow<D extends object>(params: {
  */
 function checkIssueOrThrow(context: WaybillIssueContext): IssueWarningsRecord {
   const blockers = issueBlockersOf(context);
-  if (blockers.length > 0) {
-    throw err.unprocessable(
-      `Лист по этому рейсу не выписать: ${blockers.map(blockerMessage).join('; ')}`,
-      undefined,
-      { blockers },
-    );
-  }
+  if (blockers.length > 0) throw issueBlockersRefusal(blockers);
 
   return acknowledgeOrThrow({
     warnings: issueWarningsOf(context),
@@ -1239,7 +1249,8 @@ function collectSnapshot(
  * сгорает на каждой перестановке, и талоны заполняются в том порядке, в котором машина поедет.
  *
  * Проверки «водитель назначен, состав непуст, все заявки в работе» и «действующего листа ещё нет»
- * делает вызывающий (`canIssueWaybill` в контрактах) — под блокировкой рейса и строк заявок.
+ * делает вызывающий (`canIssueWaybill` в контрактах) — под блокировкой рейса и строк заявок. The
+ * form's capacity is not the caller's: it is the `capacity_exceeded` blocker checked below.
  * Здесь остаётся то, что требует чтения справочников, — и читается оно один раз, в неизменяемый
  * контекст (Р22): бланк по машине, допуск водителя на дату рейса, точки маршрута и заявки листа.
  */

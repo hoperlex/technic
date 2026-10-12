@@ -26,7 +26,6 @@ import {
   type VehicleRequestDayBatchResultDto,
   type VehicleRequestDayBatchRowDto,
   type VehicleRequestDaysDto,
-  type WaybillFormCode,
 } from '@technic/contracts';
 import type { Principal } from '../auth/principal';
 import { db } from '../db/client';
@@ -555,7 +554,7 @@ async function runDay(tx: Tx, ctx: DayContext): Promise<DayDone> {
       backdated: ctx.backdated,
     };
   }
-  return issueDayWaybill(tx, ctx, route, routeNumber, formCode);
+  return issueDayWaybill(tx, ctx, route, routeNumber);
 }
 
 /**
@@ -711,6 +710,11 @@ async function pickDayRoute(tx: Tx, ctx: DayContext): Promise<RouteRow> {
 /**
  * The day's waybill: `lockRoute` → `canIssueWaybill` → `issueWaybillForRoute`.
  *
+ * The form's capacity is not asked here: the placement above has just checked it by task rows
+ * (`assertRoutePlacement`), and the issue point checks it again under its locks by the same count
+ * (`capacity_exceeded`). The request count `canIssueWaybill` used to make could not refuse after
+ * the row count passed (ADR 0108, 12.10.2026).
+ *
  * THE BATCH COMPUTES THE HANDSHAKE ITSELF (ADR 0207 §10). For a single issue the fingerprint of the
  * warning set is brought by a human — he has read them in the window; the batch has nowhere to
  * bring it from: there are up to fifty sets, and each one becomes known only under locks that are
@@ -734,7 +738,6 @@ async function issueDayWaybill(
   ctx: DayContext,
   locked: RouteRow,
   routeNumber: string,
-  formCode: WaybillFormCode | null,
 ): Promise<DayDone> {
   // The route is re-read under the same lock: its version grew when the day was laid out, and the
   // route's details travel into the waybill context — taking them from a row read before the change
@@ -769,7 +772,6 @@ async function issueDayWaybill(
     // A blank without requests cannot happen in a batch by construction: the day has just entered
     // the composition of this very route.
     blankAllowed: false,
-    formCode,
     requests: rows.map((row) => ({
       displayNumber: formatVehicleRequestNumber(row.num),
       status: row.status,

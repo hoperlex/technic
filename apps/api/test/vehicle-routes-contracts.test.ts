@@ -7,6 +7,7 @@ import {
   attachRouteRequestSchema,
   canCorrectRoute,
   canIssueWaybill,
+  capacityBlocker,
   canJoinRoute,
   correctRouteSchema,
   createVehicleRouteSchema,
@@ -15,6 +16,7 @@ import {
   issueRouteWaybillSchema,
   isRouteEditable,
   movedRouteDateKey,
+  MAX_ROUTE_REQUESTS,
   ROUTE_REQUEST_CAPACITY,
   parseVehicleRouteNumberSearch,
   updateVehicleRouteSchema,
@@ -28,6 +30,7 @@ import {
   routeOrderSchema,
   routeTripFieldsSchema,
   type RouteTripFields,
+  type TaskRef,
   TRAILER_DETAILS_MISSING_CAPTION,
   trailerCaption,
   trailerLabelOf,
@@ -305,7 +308,6 @@ describe('готовность рейса к выписке листа', () => {
   const ready = {
     purpose: 'freight' as const,
     driverPersonId: UUID_A,
-    formCode: '4p' as const,
     requests: [{ displayNumber: 'ТС-501', status: 'confirmed' as const }],
     sourceRequest: null,
     waybillStatus: null,
@@ -374,18 +376,68 @@ describe('готовность рейса к выписке листа', () => {
    * Собрать рейс шире бланка портал не даёт (`canJoinRoute`), но бланк типа машины правится
    * справочником уже после сборки (ADR 0065): десять заявок легкового могли остаться с семью
    * строками 4-П. Печатать такой лист нельзя — часть работы дня в бумаге не назовётся.
+   *
+   * The refusal moved, it did not disappear (ADR 0108, 12.10.2026): this predicate no longer counts
+   * requests, and the paper's own count — task rows, `capacityBlocker` inside `routeIssueBlockers` —
+   * refuses the same ten requests, because each of them is at least one row.
    */
-  it('состав шире бланка выписку останавливает и называет лишние заявки', () => {
+  it('состав шире бланка этим правилом не считается — его отказывает счёт строк задания', () => {
     const requests = Array.from({ length: ROUTE_REQUEST_CAPACITY.leg3 }, (_, i) => ({
       displayNumber: `ТС-${500 + i}`,
       status: 'confirmed' as const,
     }));
-    expect(canIssueWaybill({ ...ready, formCode: 'leg3', requests })).toEqual({ ok: true });
+    expect(canIssueWaybill({ ...ready, requests })).toEqual({ ok: true });
 
-    const check = canIssueWaybill({ ...ready, formCode: '4p', requests });
-    expect(check.ok).toBe(false);
-    expect(check.ok === false && check.reason).toContain('7 строк задания');
-    expect(check.ok === false && check.blocking).toEqual(['ТС-507', 'ТС-508', 'ТС-509']);
+    const rows = requests.map((_, i): TaskRef => ({
+      kind: 'freight',
+      requestId: `r-${i}`,
+      tripId: `t-${i}`,
+    }));
+    expect(capacityBlocker('leg3', rows)).toBeNull();
+    expect(capacityBlocker('4p', rows)).toEqual({
+      code: 'capacity_exceeded',
+      rows: 10,
+      capacity: ROUTE_REQUEST_CAPACITY['4p'],
+    });
+  });
+
+  /*
+   * Why dropping the request count changed no refusal: every composition the old count refused,
+   * the row count refuses too. A freight request carries at least one live trip (the trip list is
+   * `min(1)`, deletion is soft and the last trip cannot go) and a linear day is exactly one row, so
+   * rows >= requests for every composition. The sweep covers both route forms, every composition
+   * size up to the schema ceiling, and mixed days with extra trips and linear days.
+   */
+  it('счёт строками строже счёта заявками: всё, что отказывал прежний счёт, отказывает и он', () => {
+    let rowsOnlyRefusals = 0;
+    for (const form of ['4p', 'leg3'] as const) {
+      const capacity = ROUTE_REQUEST_CAPACITY[form];
+      for (let requests = 1; requests <= MAX_ROUTE_REQUESTS; requests += 1) {
+        for (const extraTrips of [0, 1, 3]) {
+          for (const linearDays of [0, 1, 2]) {
+            if (linearDays > requests) continue;
+            const rows: TaskRef[] = [];
+            for (let i = 0; i < requests; i += 1) {
+              if (i < linearDays) {
+                rows.push({ kind: 'linear', requestId: `r-${i}`, workDate: '2026-08-03' });
+                continue;
+              }
+              const trips = 1 + (i === linearDays ? extraTrips : 0);
+              for (let t = 0; t < trips; t += 1) {
+                rows.push({ kind: 'freight', requestId: `r-${i}`, tripId: `t-${i}-${t}` });
+              }
+            }
+            const oldRefused = requests > capacity;
+            const newRefused = capacityBlocker(form, rows) !== null;
+            if (oldRefused) expect(newRefused, `${form}: ${requests} заявок`).toBe(true);
+            if (newRefused && !oldRefused) rowsOnlyRefusals += 1;
+          }
+        }
+      }
+    }
+    // And the row count is the stricter one, not an equal twin: a mixed day overflows the paper
+    // while its requests still fit — the case the old count let through to the issue point.
+    expect(rowsOnlyRefusals).toBeGreaterThan(0);
   });
 
   it('закрытая заявка — тоже история рейса, а не задание на новый', () => {

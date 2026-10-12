@@ -4,6 +4,7 @@ import {
   type AddressMeta,
   addressKeyOf,
   brokenTripOrder,
+  capacityBlocker,
   formatVehicleRequestNumber,
   MAX_ROUTE_POINTS,
   type PointIdentitySource,
@@ -13,7 +14,6 @@ import {
   type RoutePointAction,
   type RoutePointInput,
   routeCargoLabel,
-  routeRequestCapacity,
   sameRouteAddress,
   samePointIdentity,
   type TaskRef,
@@ -427,22 +427,64 @@ export async function routeTaskRefs(reader: Reader, routeId: string): Promise<Ta
 }
 
 /**
+ * Task rows of a composition that is not in the database yet — the prospective route of a
+ * correction or a transfer (ADR 0101 item 11, R36), in the order given and by trip number inside a
+ * request, exactly as `routeTaskRefs` reads a stored route.
+ *
+ * Needed because the correction preflight asks the form's capacity before the first cancellation,
+ * while the transfer has not moved the ticket yet: counting `routeTaskRefs` of the target there
+ * would miss the very trips that make it overflow.
+ */
+export async function compositionTaskRefs(
+  reader: Reader,
+  composition: readonly { requestId: string; workDate: string | null }[],
+): Promise<TaskRef[]> {
+  const freightIds = composition.filter((row) => !row.workDate).map((row) => row.requestId);
+  const trips =
+    freightIds.length === 0
+      ? []
+      : await reader
+          .select({ id: vehicleRequestTrips.id, requestId: vehicleRequestTrips.requestId })
+          .from(vehicleRequestTrips)
+          .where(
+            and(
+              inArray(vehicleRequestTrips.requestId, freightIds),
+              isNull(vehicleRequestTrips.deletedAt),
+            ),
+          )
+          .orderBy(asc(vehicleRequestTrips.num));
+  const byRequest = new Map<string, string[]>();
+  for (const trip of trips) {
+    byRequest.set(trip.requestId, [...(byRequest.get(trip.requestId) ?? []), trip.id]);
+  }
+  return composition.flatMap((row): TaskRef[] =>
+    row.workDate
+      ? [{ kind: 'linear', requestId: row.requestId, workDate: row.workDate }]
+      : (byRequest.get(row.requestId) ?? []).map((tripId) => ({
+          kind: 'freight',
+          requestId: row.requestId,
+          tripId,
+        })),
+  );
+}
+
+/**
  * Ёмкость бланка (Р11, ADR 0068): строк задания в маршруте не больше, чем строк в бумаге.
  *
  * Спрашивается при всякой правке, добавляющей работу, — укладке заявки, постановке дня, правке
  * состава ездок, — потому что переполнение рождается не в точках, а в составе: точки лишь
- * показывают то, что уже заказано.
+ * показывают то, что уже заказано. The count itself is the contracts' one (`capacityBlocker`),
+ * shared with the issue blockers: the placement refuses exactly what the issue would.
  */
 export async function assertRouteCapacity(
   tx: Tx,
   routeId: string,
   formCode: WaybillFormCode | null,
 ): Promise<void> {
-  const rows = (await routeTaskRefs(tx, routeId)).length;
-  const capacity = routeRequestCapacity(formCode);
-  if (rows <= capacity) return;
+  const blocker = capacityBlocker(formCode, await routeTaskRefs(tx, routeId));
+  if (!blocker) return;
   throw err.unprocessable(
-    `В бланке ${capacity} строк задания, а в маршруте их ${rows} — выньте заявку, снимите день или заведите второй маршрут`,
+    `В бланке ${blocker.capacity} строк задания, а в маршруте их ${blocker.rows} — выньте заявку, снимите день или заведите второй маршрут`,
     { requestId: 'Не хватает строк задания' },
   );
 }

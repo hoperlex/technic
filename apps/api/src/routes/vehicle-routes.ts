@@ -1303,15 +1303,15 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           ? await lockRequestForIssue(tx, route.sourceRequestId)
           : null;
 
+        /*
+         * The form's capacity is not asked here: the issue point refuses it by task rows
+         * (`capacity_exceeded`, ADR 0108) under the same locks and before the number is taken, and
+         * a second count by requests only gave the same refusal in other words (12.10.2026).
+         */
         const check = canIssueWaybill({
           purpose: route.purpose,
           driverPersonId: route.driverPersonId,
           blankAllowed,
-          // Бланк рейса: им проверяется, что состав в него влезает — его строки задания и
-          // печатают заявки (ADR 0068).
-          formCode: (
-            await routeWaybillFormFor(tx, { purpose: route.purpose, vehicleId: route.vehicleId })
-          ).formCode,
           requests: rows.map((row) => ({
             displayNumber: formatVehicleRequestNumber(row.num),
             status: row.status,
