@@ -253,6 +253,31 @@ export function trailerLabelOf(fields: {
     .join(' · ');
 }
 
+/** What the caption says when the trip is ticked "with trailer" but the trailer boxes are empty. */
+export const TRAILER_DETAILS_MISSING_CAPTION = 'с прицепом — реквизиты не указаны';
+
+/**
+ * The "with trailer" caption under a vehicle: in the waybill journal, the route window and the list
+ * of a vehicle's routes. `null` when the trip goes without a trailer — nothing is shown then.
+ *
+ * One function for the three places because the bare caption lied in all three the same way. It
+ * was drawn by the checkbox alone, so a trip ticked "with trailer" whose boxes are empty printed
+ * "с прицепом " with nothing after it, which reads as "the sheet names a trailer". The checkbox and
+ * the boxes are independent (the issue warning `trailer_graphs_blank` exists for exactly this
+ * case), and the caption must say which of them is missing instead of hiding it.
+ *
+ * Takes the label, not the four boxes: the callers get it from the DTO, built by `trailerLabelOf`
+ * on the server, and a second assembly here would be a second answer to "what is the trailer".
+ */
+export function trailerCaption(source: {
+  withTrailer: boolean;
+  trailerLabel: string | null;
+}): string | null {
+  if (!source.withTrailer) return null;
+  const label = (source.trailerLabel ?? '').trim();
+  return label ? `с прицепом ${label}` : TRAILER_DETAILS_MISSING_CAPTION;
+}
+
 // ── DTO ──
 
 /** Заявка в составе рейса: талон будущего листа плюс то, что показывает карточка маршрута. */

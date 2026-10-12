@@ -3,6 +3,7 @@ import { Alert, Button, Descriptions, Space, Tag, Typography } from 'antd';
 import {
   ROUTE_FROZEN_MESSAGE,
   routePurposeLabels,
+  trailerCaption,
   type VehicleRouteDto,
   WAYBILL_LOCKED_MESSAGE,
   waybillStatusColors,
@@ -72,6 +73,7 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
     transferring,
     waybillEditable,
   } = state;
+  const trailer = route ? trailerCaption(route) : null;
 
   return (
     <ViewModal
@@ -187,7 +189,7 @@ export function VehicleRouteWindowView({ routeId, onClose, onEdit, state }: Prop
           <Descriptions column={1} size="small">
             <Descriptions.Item label="Техника">
               {route.vehicleLabel}
-              {route.withTrailer && ` · с прицепом ${route.trailerLabel}`}
+              {trailer && ` · ${trailer}`}
             </Descriptions.Item>
             <Descriptions.Item label="Водитель">
               {route.driverName || <Tag color="orange">не назначен</Tag>}

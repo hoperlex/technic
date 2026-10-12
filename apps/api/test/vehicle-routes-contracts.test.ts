@@ -28,6 +28,8 @@ import {
   routeOrderSchema,
   routeTripFieldsSchema,
   type RouteTripFields,
+  TRAILER_DETAILS_MISSING_CAPTION,
+  trailerCaption,
   trailerLabelOf,
   shouldDetachOnStatus,
 } from '@technic/contracts';
@@ -1004,6 +1006,42 @@ describe('схемы маршрута', () => {
       expect(
         trailerLabelOf({ trailer1Model: '  ', trailer1RegNumber: null, trailer2Model: undefined }),
       ).toBe('');
+    });
+  });
+
+  /*
+   * The caption under the vehicle in the waybill journal, the route window and the route list
+   * (ADR 0138, roadmap F2b). One function, because all three drew it from the checkbox alone and
+   * printed a bare "с прицепом " when the boxes were empty.
+   */
+  describe('надпись «с прицепом»', () => {
+    it('рейс без прицепа — надписи нет вовсе', () => {
+      expect(trailerCaption({ withTrailer: false, trailerLabel: '' })).toBeNull();
+      // The ticked box decides, not leftover text: the boxes outlive an unticked checkbox.
+      expect(trailerCaption({ withTrailer: false, trailerLabel: 'ШМИТЦ SPR-24 ВХ933277' })).toBe(
+        null,
+      );
+    });
+
+    it('с реквизитами — называет состав той же подписью, что trailerLabelOf', () => {
+      const trailerLabel = trailerLabelOf({
+        trailer1Model: 'ШМИТЦ SPR-24',
+        trailer1RegNumber: 'ВХ933277',
+        trailer2Model: 'КРОНА SDP27',
+        trailer2RegNumber: 'ЕН806277',
+      });
+      expect(trailerCaption({ withTrailer: true, trailerLabel })).toBe(
+        'с прицепом ШМИТЦ SPR-24 ВХ933277 · КРОНА SDP27 ЕН806277',
+      );
+    });
+
+    it('без реквизитов — честная надпись, а не голое «с прицепом»', () => {
+      for (const trailerLabel of ['', '   ', null]) {
+        expect(trailerCaption({ withTrailer: true, trailerLabel })).toBe(
+          'с прицепом — реквизиты не указаны',
+        );
+      }
+      expect(TRAILER_DETAILS_MISSING_CAPTION).toBe('с прицепом — реквизиты не указаны');
     });
   });
 

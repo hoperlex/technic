@@ -7,6 +7,7 @@ import {
   ROUTE_FROZEN_MESSAGE,
   routePurposeShortLabels,
   routeRequestCapacity,
+  trailerCaption,
   type VehicleRouteDto,
   waybillStatusColors,
   waybillStatusLabels,
@@ -66,16 +67,19 @@ export function routeListView({ can, openRequest, openRoute, editRoute }: Args) 
       dataIndex: 'vehicleLabel',
       sortable: false,
       searchable: false,
-      render: (_value, route) => (
-        <Space orientation="vertical" size={0}>
-          <span>{route.vehicleLabel}</span>
-          {route.withTrailer && (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              с прицепом {route.trailerLabel}
-            </Typography.Text>
-          )}
-        </Space>
-      ),
+      render: (_value, route) => {
+        const trailer = trailerCaption(route);
+        return (
+          <Space orientation="vertical" size={0}>
+            <span>{route.vehicleLabel}</span>
+            {trailer && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {trailer}
+              </Typography.Text>
+            )}
+          </Space>
+        );
+      },
     }),
     textColumn<VehicleRouteDto>({
       key: 'driverName',

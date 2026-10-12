@@ -5,6 +5,7 @@ import dayjs from 'dayjs';
 import {
   canCancelWaybill,
   canCorrectWaybill,
+  trailerCaption,
   WAYBILL_CORRECTION_LOCKED_MESSAGE,
   WAYBILL_LOCKED_MESSAGE,
   type WaybillDto,
@@ -119,14 +120,15 @@ export function useWaybillJournalColumns({
       dataIndex: 'vehicleLabel',
       sortable: false,
       searchable: false,
-      render: (_v, r) => (
-        <Space orientation="vertical" size={0}>
-          <span>{r.vehicleLabel}</span>
-          {r.withTrailer && (
-            <Typography.Text type="secondary">с прицепом {r.trailerLabel}</Typography.Text>
-          )}
-        </Space>
-      ),
+      render: (_v, r) => {
+        const trailer = trailerCaption(r);
+        return (
+          <Space orientation="vertical" size={0}>
+            <span>{r.vehicleLabel}</span>
+            {trailer && <Typography.Text type="secondary">{trailer}</Typography.Text>}
+          </Space>
+        );
+      },
     }),
     textColumn<WaybillDto>({
       key: 'driverName',
