@@ -105,15 +105,6 @@ export default defineMaintenanceConfig({
   },
 
   /*
-   * Кто относит задание агенту.
-   *
-   * Пока `manual`: система пишет задание, человек отдаёт его агенту в редакторе и приносит ответ.
-   * Командный адаптер готов и включается одной строкой (`mode: 'command'`) либо флагом
-   * `--agent command` — но это решение о том, кто держит руку на дереве, и умолчанием оно не
-   * становится. Первый запуск разумно сделать с `dryRun: true`: адаптер напечатает команду и
-   * ничего не запустит.
-   */
-  /*
    * Цех: система работает не в общем дереве, а в отдельном, собранном от HEAD.
    *
    * Дерево здесь не останавливается — рядом непрерывно правят несколько сессий. Партия живёт
@@ -127,6 +118,16 @@ export default defineMaintenanceConfig({
     commit: true,
   },
 
+  /*
+   * Who carries the task to the agent.
+   *
+   * `command`: the system starts the configured CLI itself (the reviewer without edit tools, the
+   * fixer with them) and reads its answer. This repository switched to it on 16.09.2026. Without
+   * this block the framework falls back to `manual`, where it writes `.maintenance/task.md` and a
+   * person brings the answer back. The choice decides who has a hand on the tree, so it is stated
+   * here explicitly; `--agent manual` overrides it for one run, and `dryRun: true` prints the
+   * resolved command without starting anything.
+   */
   agent: {
     mode: 'command',
     // Switch this single value to 'codex' to route both reviewer and fixer packets to Codex CLI.

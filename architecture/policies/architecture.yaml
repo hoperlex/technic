@@ -158,6 +158,7 @@ policies:
     severity: hard
     scope: ['tools/maintenance/**']
     enforcedBy: ai-review
+    adr: [docs/adr/0224-codebase-maintenance-framework.md]
     autofix: false
     rule: >
       Каталоги `core`, `analyzers`, `policies`, `work-packets`, `git`, `state`, `verification`,
