@@ -1,8 +1,9 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
+  DIRECTORY_DATA_SHEET,
   moscowDateKeyOf,
   shiftDateKey,
   STAFF_SUBMIT_PAST_DAYS,
@@ -698,5 +699,84 @@ describe.skipIf(!DB_URL)('сверка расхода топлива с норм
       await app.close();
     }
     // Building the app and hashing the login password take longer than the default five seconds.
+  }, 60_000);
+
+  it('a rate edit imported at 01:30 MSK on the 1st opens the new Moscow month', async () => {
+    /*
+     * A rate edit from the directory file opens a version from the 1st of the current month (Р7)
+     * and rewrites that version on a repeat within the month. The month is the Moscow one: at
+     * 01:30 MSK on 1 November a process in UTC is still on 31 October, and an edit made then
+     * would rewrite October's version, recounting every October shift at the new rate.
+     *
+     * The process zone is pinned to UTC for the scene, as on prod: the zone of the machine running
+     * the test may be anything, and one east of Moscow would hide the bug. Only `Date` is faked;
+     * nothing here needs a login, so the moment is a fixed calendar day.
+     */
+    const moment = new Date('2026-10-31T22:30:00.000Z');
+    expect(moscowDateKeyOf(moment), 'the scene must be the 1st of a Moscow month').toBe(
+      '2026-11-01',
+    );
+
+    const [vehicle] = await ctx.db
+      .insert(ctx.schema.vehicles)
+      .values({
+        ownership: 'own',
+        vehicleTypeId: ctx.typeId,
+        status: 'active',
+        registrationNumber: `FN-${randomUUID().slice(0, 8)}`,
+        note: MARK,
+      })
+      .returning({ id: ctx.schema.vehicles.id });
+    const vehicleId = vehicle!.id;
+    await setNorm(vehicleId, { effectiveFrom: '2026-10-01', winterRate: 40 });
+
+    const { directories } = await import('../src/services/directory-transfer/registry');
+    const engine = await import('../src/services/directory-transfer/engine');
+    const xlsx = await import('../src/lib/xlsx');
+    const def = directories.find((d) => d.key === 'fuel-norms')!;
+
+    const previousZone = process.env.TZ;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(moment);
+    process.env.TZ = 'UTC';
+    try {
+      // The file is the one the portal hands out, cut down to this vehicle's row with a new rate.
+      const { bytes } = await engine.exportDirectory(def);
+      const sheet = xlsx.readWorkbook(bytes).find((s) => s.name === DIRECTORY_DATA_SHEET)!;
+      const header = sheet.rows[0]!;
+      const winterAt = header.indexOf('Зимняя ставка');
+      expect(winterAt, 'the export has no winter rate column').toBeGreaterThan(0);
+      const row = sheet.rows.find((cells) => cells[0] === vehicleId)!;
+      const edited = row.map((cell, at) => (at === winterAt ? '55' : cell));
+      const report = await engine.importDirectory(
+        def,
+        xlsx.writeWorkbook([{ name: DIRECTORY_DATA_SHEET, rows: [header, edited] }]),
+        { dryRun: false, actorUserId: ctx.adminId },
+      );
+      expect(report.problems).toEqual([]);
+    } finally {
+      if (previousZone === undefined) delete process.env.TZ;
+      else process.env.TZ = previousZone;
+      vi.useRealTimers();
+    }
+
+    // October keeps its rate; the edit lives in a new November version.
+    const versions = await ctx.db
+      .select({
+        effectiveFrom: ctx.schema.vehicleFuelNorms.effectiveFrom,
+        winterRate: ctx.schema.vehicleFuelNorms.winterRate,
+      })
+      .from(ctx.schema.vehicleFuelNorms)
+      .where(
+        and(
+          eq(ctx.schema.vehicleFuelNorms.vehicleId, vehicleId),
+          isNull(ctx.schema.vehicleFuelNorms.deletedAt),
+        ),
+      )
+      .orderBy(ctx.schema.vehicleFuelNorms.effectiveFrom);
+    expect(versions.map((v) => [v.effectiveFrom, Number(v.winterRate)])).toEqual([
+      ['2026-10-01', 40],
+      ['2026-11-01', 55],
+    ]);
   }, 60_000);
 });
