@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { eq, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   moscowDateKeyOf,
   shiftDateKey,
@@ -9,6 +9,7 @@ import {
   type ReadingInput,
   type ReadingMonthRow,
   type ReportItemSubmit,
+  type VehicleFuelNormDto,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -617,4 +618,85 @@ describe.skipIf(!DB_URL)('сверка расхода топлива с норм
     expect(card!.hasNorm).toBe(true);
     expect(card!.tolerancePercent).toBeGreaterThanOrEqual(0);
   });
+
+  it('at 01:30 MSK the version effective from the Moscow day is current on the screen and in the export', async () => {
+    /*
+     * The night window: app sessions run in UTC, so from 00:00 to 03:00 MSK CURRENT_DATE is still
+     * yesterday while the business day has moved on. A version effective from that Moscow day must
+     * already be the current one — for the directory screen (`isCurrent`, `currentOnly`) and for
+     * the directory export slice alike.
+     *
+     * The moment is anchored to the database's own date (D at 22:30Z, that is 01:30 MSK on D+1),
+     * not to a fixed calendar day, so the split exists on every run whatever the real clock says.
+     * Only `Date` is faked (the driver's timers stay real), and the login happens under the fake
+     * clock: the access token lives fifteen minutes, and the moment may be hours away from now.
+     * The data is written before the clock moves.
+     */
+    const dbDay = (
+      await ctx.db.execute<{ d: string }>(sql`SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS d`)
+    ).rows[0]!.d;
+    const moment = new Date(`${dbDay}T22:30:00.000Z`);
+    const moscowDay = moscowDateKeyOf(moment);
+    expect(moscowDay, 'the scene must be a Moscow day the database has not reached').toBe(
+      shiftDateKey(dbDay, 1),
+    );
+
+    // The export slice carries only vehicles with a registration number: the row is keyed by it.
+    const [vehicle] = await ctx.db
+      .insert(ctx.schema.vehicles)
+      .values({
+        ownership: 'own',
+        vehicleTypeId: ctx.typeId,
+        status: 'active',
+        registrationNumber: `FN-${randomUUID().slice(0, 8)}`,
+        note: MARK,
+      })
+      .returning({ id: ctx.schema.vehicles.id });
+    const vehicleId = vehicle!.id;
+    await setNorm(vehicleId, { effectiveFrom: shiftDateKey(dbDay, -30), winterRate: 40 });
+    await setNorm(vehicleId, { effectiveFrom: moscowDay, winterRate: 50 });
+
+    const { buildApp } = await import('../src/app');
+    const { directories } = await import('../src/services/directory-transfer/registry');
+    const app = await buildApp();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(moment);
+    try {
+      const login = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        payload: { email: ADMIN_EMAIL, password: PASSWORD },
+      });
+      expect(login.statusCode, login.body).toBe(200);
+      const headers = { authorization: `Bearer ${login.json().accessToken}` };
+      const list = async (query: string) => {
+        const res = await app.inject({
+          method: 'GET',
+          url: `/api/v1/vehicle-fuel-norms?vehicleId=${vehicleId}${query}`,
+          headers,
+        });
+        expect(res.statusCode, res.body).toBe(200);
+        return (res.json() as { items: VehicleFuelNormDto[] }).items;
+      };
+
+      const all = await list('');
+      expect(all.filter((row) => row.isCurrent).map((row) => row.effectiveFrom)).toEqual([
+        moscowDay,
+      ]);
+      expect((await list('&currentOnly=true')).map((row) => row.effectiveFrom)).toEqual([
+        moscowDay,
+      ]);
+
+      const def = directories.find((d) => d.key === 'fuel-norms')!;
+      const env = await def.env();
+      const exported = (await def.load(env))
+        .map((row) => def.model(row, env) as { vehicleId: string; effectiveFrom: string })
+        .find((model) => model.vehicleId === vehicleId);
+      expect(exported?.effectiveFrom).toBe(moscowDay);
+    } finally {
+      vi.useRealTimers();
+      await app.close();
+    }
+    // Building the app and hashing the login password take longer than the default five seconds.
+  }, 60_000);
 });
