@@ -329,8 +329,9 @@ async function seed(client: pg.Client): Promise<Fixture> {
   // Назначение нужно `buildEsm2SyncPlan`: он читает машину именно оттуда.
   for (const requestId of [targetRequestId, concRequestId]) {
     await client.query(
-      `insert into vehicle_request_assignments (request_id, vehicle_id, vehicle_type_id, assigned_by)
-       values ($1, $2, $3, $4)`,
+      `insert into vehicle_request_assignments
+         (request_id, vehicle_id, vehicle_type_id, ordered_vehicle_type_id, assigned_by)
+       values ($1, $2, $3, $3, $4)`,
       [requestId, vehicleIds[0], type.id, user.id],
     );
   }

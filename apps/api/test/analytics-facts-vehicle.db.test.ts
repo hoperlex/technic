@@ -235,9 +235,10 @@ describe.skipIf(!DB_URL)('атомы заказа техники: перевоз
     ): Promise<void> => {
       await db.execute(sql`
         INSERT INTO vehicle_request_assignments (request_id, vehicle_id, vehicle_type_id,
+                                                 ordered_vehicle_type_id,
                                                  price_per_shift, price_per_hour, shift_hours,
                                                  assigned_by)
-        VALUES (${requestId}, ${vehicleId}, ${typeId}, ${price.perShift ?? null},
+        VALUES (${requestId}, ${vehicleId}, ${typeId}, ${typeId}, ${price.perShift ?? null},
                 ${price.perHour ?? null}, ${price.shiftHours ?? null}, ${id.user})`);
     };
 

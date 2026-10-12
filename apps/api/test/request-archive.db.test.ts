@@ -383,11 +383,13 @@ describe.skipIf(!DB_URL)('архив заявок (живая схема)', () =
     // Машина назначена намеренно: область возврата спрашивает и арендодателя, а он у заказа ТС
     // берётся с назначенной техники — без назначения та половина проверки не выполнялась бы вовсе.
     await ctx.db.execute(sql`
-      INSERT INTO vehicle_request_assignments (request_id, vehicle_id, vehicle_type_id, assigned_by)
+      INSERT INTO vehicle_request_assignments
+        (request_id, vehicle_id, vehicle_type_id, ordered_vehicle_type_id, assigned_by)
       VALUES (
         ${id},
         ${ctx.vehicleId},
         (SELECT vehicle_type_id FROM vehicles WHERE id = ${ctx.vehicleId}),
+        (SELECT vehicle_type_id FROM vehicle_requests WHERE id = ${id}),
         ${ctx.adminId})`);
     await archive('vehicle-requests', id);
 

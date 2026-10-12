@@ -6682,10 +6682,11 @@ export const vehicleRequestAssignments = pgTable(
     // в парке, а расхождение портал помечает (ADR 0059). Не читается ни одним запросом: тип
     // назначенной машины выбирается из самой `vehicles`, здесь он только цель ключа.
     vehicleTypeId: uuid('vehicle_type_id').notNull(),
-    // Копия ЗАКАЗАННОГО типа — цель второго составного FK: пока на заявке стоит машина, сменить
-    // заказанный тип нельзя (ADR 0028 §9). Nullable до contract-миграции: строки, созданные
-    // откатанным на предыдущий релиз кодом, её не заполняют.
-    orderedVehicleTypeId: uuid('ordered_vehicle_type_id'),
+    // Copy of the ORDERED type, the target of the second composite FK: while a vehicle stands on
+    // the request, the ordered type cannot change (ADR 0028 §9). NOT NULL since the ADR 0059 §14
+    // contract step: a NULL here would switch that FK off for the row (MATCH SIMPLE), leaving the
+    // lock to the server alone.
+    orderedVehicleTypeId: uuid('ordered_vehicle_type_id').notNull(),
     pricePerHour: numeric('price_per_hour', { precision: 12, scale: 2 }),
     pricePerShift: numeric('price_per_shift', { precision: 12, scale: 2 }),
     shiftHours: smallint('shift_hours'),
