@@ -68,6 +68,14 @@ the old door. At the time of writing this applies to the mechanization extension
 still calls `PATCH /mech-requests/:id/extend`) and to dropping dates from the wide
 `PATCH /vehicle-requests/:id` (the R1 editor still sends the full body, dates included).
 
+_Resolved on 2026-10-12 by two owner decisions._ Survey S-21: both portal halves land in R1,
+before its deploy — the mechanization portal moved to `POST/PATCH/DELETE /:id/extension` and no
+longer calls `/extend` (ADR 0171, stage 3), and the vehicle editor changes the term through the term
+command. Survey S-22: the term command keeps its `waybills.read` gate, so accounts without it
+(customer roles) keep editing the term of a «Новая» request through the wide PATCH; R2 drops the
+dates from the wide PATCH only for requests in work (ADR 0214). With both, the R2 removals ride on
+this single raise.
+
 ### 2. deploy-auto asks the candidate image before anything changes
 
 Right after the build — before the captcha preflight, the vhost sync, `--cutover` and the migration
