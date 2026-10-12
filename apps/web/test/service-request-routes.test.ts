@@ -9,13 +9,14 @@ import { mockHttp, takeUnmatchedHttp, type RecordedCall } from './http';
  * Караул мёртвого кода: серверная ручка модуля заявок на обслуживание ↔ вход с экрана
  * (план `docs/office-equipment-request-actions-menu-plan.md`, §7.4, критерий К8).
  *
- * ЗАЧЕМ. Уборка меню снимает пункты, и легко получить живую серверную дверь, которую больше никто
- * не открывает: она остаётся доступной по прямому запросу и делает настоящую работу — шлёт письмо
- * настоящей службе, двигает статус, — а с экрана недостижима. Такую находку уже сделал инвентарь
- * (Н9 плана): у `PATCH /:id/service-comment` клиентского метода нет вовсе. Соседний караул
- * (`service-request-entries.test.tsx`) сторожит состав МЕНЮ и про серверные двери не знает ничего,
- * а `report:service-access` знает про двери и ничего не знает про экран. Между ними и есть щель,
- * в которую проваливается мёртвая ручка; этот реестр её закрывает.
+ * WHY. Cleaning up menus removes items, and it is easy to end up with a live server door nobody
+ * opens any more: it stays reachable by a direct request and does real work (sends a letter to a
+ * real service, moves the status) while no screen reaches it. The inventory already found one
+ * (Н9 of the plan): `PATCH /:id/service-comment` never had a client method at all, and ADR 0141
+ * release B removed the route itself. The neighbouring guard (`service-request-entries.test.tsx`)
+ * watches the MENU and knows nothing about server doors, while `report:service-access` knows the
+ * doors and nothing about the screen. A dead route falls into the gap between them; this registry
+ * closes it.
  *
  * ПОЧЕМУ В `apps/web`, А НЕ РЯДОМ С МАНИФЕСТОМ. Реестр сшивает два конца, и дорогой здесь ровно
  * один — портальный: «портал зовёт эту ручку» доказывается не поиском строки, а ПРОГОНОМ клиента
@@ -165,7 +166,7 @@ function absenceLiteral(key: string): string {
  * это возможно: «служебная» — префиксом пути, «чтение» — методом, «архив» — файлом, из которого
  * зовут (см. проверки ниже).
  */
-type Exemption = 'read' | 'archive' | 'internal' | 'dead-adapter' | 'release-b';
+type Exemption = 'read' | 'archive' | 'internal' | 'release-b';
 
 const EXEMPTIONS: Record<Exemption, string> = {
   read: 'чтение и списки: их запрашивает сам экран при открытии, командой человека они не являются',
@@ -175,9 +176,6 @@ const EXEMPTIONS: Record<Exemption, string> = {
   internal:
     'служебный контур планировщика по общему секрету: за ручкой нет ни человека, ни экрана — её ' +
     'зовёт `apps/worker`',
-  'dead-adapter':
-    'адаптер совместимости: «Примечание исполнителя» заменено обсуждением (ADR 0141), портальный ' +
-    'слайс снят, а ручка живёт своим порядком снятия — не этим планом (Н9)',
   'release-b':
     'вход снят выпуском A, ручка ждёт выпуска B (В1 плана): сервер полон, пока пол клиента не ' +
     'поднят, иначе старый браузер получит 404 на кнопку, которой в новом бандле уже нет',
@@ -417,21 +415,6 @@ const DOORS: Record<string, Door> = {
     call: via('complete'),
     entry: 'пункт «Закрыть работы» → окно закрытия',
   },
-  /*
-   * ИЗВЕСТНАЯ МЁРТВАЯ ДВЕРЬ (Н9 плана). Клиентского метода к ней нет вовсе — не «был и снят», а не
-   * заводился с тех пор, как «Примечание исполнителя» заменено обсуждением. Строка стоит здесь
-   * именно затем, чтобы находка не открывалась заново каждым, кто читает инвентарь: снимается
-   * ручка своим порядком и своим ADR, а этот план её не трогает.
-   *
-   * Караул при этом не спит: появись у ручки вызов с экрана — реестр упадёт, потому что мёртвая
-   * дверь, которую вдруг начали открывать, это уже не мёртвая дверь, а необъявленная команда.
-   */
-  'PATCH /api/v1/service-requests/:id/service-comment': {
-    call: null,
-    exempt: 'dead-adapter',
-    why: 'портального слайса «Примечание исполнителя» нет с ADR 0141: ни метода клиента, ни экрана',
-  },
-
   // ── Ходы «Ведения» ──
   'PATCH /api/v1/service-requests/:id/accept': {
     call: via('accept'),
@@ -660,16 +643,15 @@ describe('двери без входа объявлены и остаются з
     }
   });
 
-  it('мёртвые двери — ровно те две, что известны плану', () => {
+  it('мёртвая дверь — ровно та, что известна плану', () => {
     /*
-     * Перечень записан вторым разом намеренно (первый — в самих строках). Без него пометка
-     * «мёртвая» становится способом усыпить караул: новая ручка без входа объявляется адаптером —
-     * и молчит. Здесь она молчать не сможет: либо у команды есть вход, либо снятие ручки идёт
-     * своим планом, и тогда правятся два места сразу, а ревьюер видит вопрос.
+     * The list is written a second time on purpose (the first is in the rows themselves). Without
+     * it the "dead" mark becomes a way to put the guard to sleep: a new route without an entry gets
+     * declared as waiting for release B and stays silent. Here it cannot: either the command has an
+     * entry or the route is removed by its own plan, and then two places change at once and the
+     * reviewer sees the question. The executor note adapter (Н9) left this list with ADR 0141
+     * release B, which removed the route itself.
      */
-    expect(
-      sorted(keysWhere((door) => door.call === null && door.exempt === 'dead-adapter')),
-    ).toEqual(['PATCH /api/v1/service-requests/:id/service-comment']);
     expect(sorted(keysWhere((door) => door.call === null && door.exempt === 'release-b'))).toEqual([
       'POST /api/v1/service-requests/:id/notify',
     ]);

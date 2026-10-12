@@ -906,23 +906,26 @@ export const ACCESS_MANIFEST = {
   'DELETE /api/v1/office-equipment/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
   'POST /api/v1/office-equipment/:id/restore': { kind: 'permissions', allOf: ['archive.restore'] },
 
-  // ── Заявки на обслуживание ──
-  // Права нарезаны по сторонам процесса, а не по глаголам HTTP: `serviceRequests.estimate` — это
-  // «служба работает по заявке» (смета, её подача и переоткрытие, состав расходников, закрытие
-  // работ, примечание сервиса), `serviceRequests.status` — ход заявки, `approveEstimate` — подпись
-  // под объёмом работ.
+  // ── Service requests ──
+  // Permissions are cut by the sides of the process, not by HTTP verbs: `serviceRequests.estimate`
+  // means "the service works on the request" (the estimate, submitting and reopening it, the
+  // consumables list, closing the work), `serviceRequests.status` moves the request, and
+  // `approveEstimate` signs the scope of work. The executor note route is gone (ADR 0141 release B):
+  // the request chat replaced it and needs no permission of its own.
   //
-  // Подпись теперь ОДНА: виза ИТ упразднена (план упрощения цикла, Р10) вместе с ручкой
-  // `PATCH /:id/it-approval`, и строки под неё в манифесте нет. Право `serviceRequests.approveIt`
-  // из выданных наборов убрано отдельным выпуском (план профилей оргтехники, Э9, миграция E) — в
-  // словаре и в матрице администратора оно осталось, но не открывает ни одного маршрута отсюда.
+  // There is ONE signature now: the IT approval was abolished (cycle simplification plan, Р10)
+  // together with `PATCH /:id/it-approval`, so the manifest has no row for it. The
+  // `serviceRequests.approveIt` permission was taken out of the issued sets by a separate release
+  // (office-equipment profiles plan, Э9, migration E); it stays in the dictionary and in the
+  // administrator matrix but opens no route from here.
   //
-  // Ручки исполнителя объявлены дизъюнкцией (`anyOf`): у стороны это её собственное право, а у
-  // поимённого исполнителя — `serviceRequests.execute`, которым он значится в заявке. Условие
-  // отвечает на вопрос «пускать ли к ручке вообще»; чей это ход на самой заявке, решает предикат
-  // контрактов (`isServiceExecutor` и таблица действий Р11), и держатель `execute` без назначения
-  // получает отказ от него, а не от стража. Числа ручек в этом абзаце нет намеренно: оно устаревало
-  // на каждой правке модуля, а проверяет соответствие всё равно `access-manifest.test.ts`.
+  // Executor routes are declared as a disjunction (`anyOf`): for a side it is its own permission,
+  // for a named executor it is `serviceRequests.execute`, by which they are listed on the request.
+  // The condition answers "may this subject reach the route at all"; whose move it is on the request
+  // itself is decided by the contract predicate (`isServiceExecutor` and the Р11 action table), so a
+  // holder of `execute` without an assignment is refused by it, not by the guard. The paragraph
+  // deliberately gives no route count: it went stale on every module change, and
+  // `access-manifest.test.ts` checks the correspondence anyway.
   'GET /api/v1/service-requests': { kind: 'permissions', allOf: ['serviceRequests.read'] },
   'POST /api/v1/service-requests': { kind: 'permissions', allOf: ['serviceRequests.create'] },
   // Кандидаты в поимённые исполнители: страж — право назначения, а не `users.manage`. Иначе поле
@@ -1191,11 +1194,6 @@ export const ACCESS_MANIFEST = {
   'PUT /api/v1/service-requests/:id/executors': {
     kind: 'permissions',
     allOf: ['serviceRequests.assign'],
-  },
-  'PATCH /api/v1/service-requests/:id/service-comment': {
-    kind: 'anyOf',
-    anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
-    why: 'работа исполнителя: у стороны — право на объём работ, у поимённого — назначение',
   },
   'PATCH /api/v1/service-requests/:id/start': {
     kind: 'anyOf',

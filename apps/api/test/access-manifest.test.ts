@@ -331,7 +331,6 @@ describe('манифест доступа маршрутов', () => {
       'PATCH /api/v1/service-requests/:id/estimate/approval',
       'PATCH /api/v1/service-requests/:id/estimate/reopen',
       'PATCH /api/v1/service-requests/:id/estimate/submit',
-      'PATCH /api/v1/service-requests/:id/service-comment',
       'PATCH /api/v1/service-requests/:id/start',
       'POST /api/v1/service-requests/bulk',
       'PUT /api/v1/service-requests/:id/consumables',

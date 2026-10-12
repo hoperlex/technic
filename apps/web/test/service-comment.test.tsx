@@ -10,17 +10,17 @@ import { objectDto } from './factories/waste';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
 
 /**
- * «Примечания исполнителя» в портале больше нет: его заменило обсуждение (ADR 0141, решение 1).
+ * The portal has no "executor note" any more: the request chat replaced it (ADR 0141, decision 1).
  *
- * Файл переписан целиком и оставлен на месте намеренно — он сторожит именно **снятие**. Заменить
- * одно другим мало: два места для одного текста означали бы вопрос «а где написать» у каждого, кто
- * открыл заявку, и два расходящихся ответа на «что сказал сервис». Поэтому проверяется, что окна
- * нет, пункта нет и строки в карточке нет, — а не то, что рядом появилось обсуждение (это дело
+ * The file was rewritten and kept on purpose: it guards the **removal**. Replacing one with the
+ * other is not enough: two places for one text would mean "where do I write" for everyone who opens
+ * the request and two diverging answers to "what did the service say". So it checks that the window,
+ * the menu item and the card line are gone, not that the chat appeared next to them (that is
  * `service-chat.test.tsx`).
  *
- * Поле `serviceComment` при этом **живо в DTO и на сервере**: ручка-адаптер работает до выпуска C
- * (§3.10 плана) — старый бандл в браузере продолжает её звать, и снимать её вместе с окном нельзя.
- * Отсюда главный сценарий файла: непустое значение приходит, а карточка его не показывает.
+ * Release B removed the adapter route and the `serviceComment` DTO field, so the main scenario is a
+ * DTO without the field. The previous server (release A code) still answers during the deploy window
+ * and after a rollback and may send a leftover `serviceComment`; the card must not show it either.
  */
 
 const EXECUTOR: AuthUser = serviceExecutor();
@@ -61,7 +61,7 @@ async function rowActionLabels(): Promise<string[]> {
 
 describe('окна «Примечание исполнителя» больше нет', () => {
   it('в меню строки его место занято обсуждением', async () => {
-    renderTab([serviceRequest({ status: 'in_work', serviceComment: 'ждём поставку' })]);
+    renderTab([serviceRequest({ status: 'in_work' })]);
     await screen.findByText('СО-14');
 
     const labels = await rowActionLabels();
@@ -79,8 +79,9 @@ describe('окна «Примечание исполнителя» больше 
   });
 
   it('у закрытой заявки обсуждение остаётся, хотя примечания там не было вовсе', async () => {
-    // Прежний пункт у принятой заявки исчезал: сервер отвечал на запись отказом. Лента же
-    // замерзает, а не прячется — читать спор с подрядчиком после приёмки и надо (решение 3 ADR).
+    // The old item disappeared on an accepted request: the server refused the write. The feed
+    // freezes instead of hiding: reading the dispute with the contractor after acceptance is the
+    // point (ADR decision 3).
     renderTab([serviceRequest({ status: 'accepted' })], {}, authUser({ role: 'admin' }));
     await screen.findByText('СО-14');
 
@@ -88,27 +89,43 @@ describe('окна «Примечание исполнителя» больше 
   });
 });
 
-describe('карточка не показывает примечание, даже когда оно пришло с сервера', () => {
-  it('непустое `serviceComment` строкой не выводится: поле живёт адаптером, а не интерфейсом', async () => {
-    const http = renderTab([
-      serviceRequest({ status: 'in_work', serviceComment: 'ждём поставку' }),
-    ]);
-    fireEvent.click(await screen.findByText('СО-14'));
+/** The open request card, found by its title among the visible modal wraps. */
+async function openedCard() {
+  fireEvent.click(await screen.findByText('СО-14'));
+  return waitFor(() => {
+    const wrap = [...document.querySelectorAll<HTMLElement>('.ant-modal-wrap')]
+      .filter((el) => el.style.display !== 'none')
+      .find((el) => el.querySelector('.ant-modal-title')?.textContent === 'Заявка СО-14');
+    if (!wrap) throw new Error('карточка не открылась');
+    return within(wrap);
+  });
+}
 
-    const card = await waitFor(() => {
-      const wrap = [...document.querySelectorAll<HTMLElement>('.ant-modal-wrap')]
-        .filter((el) => el.style.display !== 'none')
-        .find((el) => el.querySelector('.ant-modal-title')?.textContent === 'Заявка СО-14');
-      if (!wrap) throw new Error('карточка не открылась');
-      return within(wrap);
-    });
+describe('карточка без примечания исполнителя', () => {
+  it('поля `serviceComment` в DTO нет, и карточка открывается без его строки', async () => {
+    const request = serviceRequest({ status: 'in_work' });
+    expect('serviceComment' in request).toBe(false);
+    const http = renderTab([request]);
+    const card = await openedCard();
 
-    // Ни подписи поля, ни его значения: иначе «что сказал сервис» отвечалось бы из двух мест.
+    expect(card.queryByText('Примечание исполнителя')).toBeNull();
+    // The requester's field stays: it is part of the task statement, not a message (ADR decision 1).
+    expect(card.getByText('Что ещё важно знать')).toBeDefined();
+    // The portal calls the removed route nowhere.
+    expect(http.countOf('PATCH /service-requests/:id/service-comment')).toBe(0);
+  });
+
+  it('остаток поля от сервера выпуска A в окне выката строкой не выводится', async () => {
+    // The previous server still sends the field until it restarts (or after a rollback). The
+    // card must not answer "what did the service say" from a second place even then.
+    const fromOldServer = {
+      ...serviceRequest({ status: 'in_work' }),
+      serviceComment: 'ждём поставку',
+    } as ServiceRequestDto;
+    renderTab([fromOldServer]);
+    const card = await openedCard();
+
     expect(card.queryByText('Примечание исполнителя')).toBeNull();
     expect(card.queryByText('ждём поставку')).toBeNull();
-    // Поле заявителя осталось: оно не реплика, а часть постановки задачи (решение 1 ADR).
-    expect(card.getByText('Что ещё важно знать')).toBeDefined();
-    // И самой ручки портал не зовёт больше нигде: она дожидается выпуска C ради старого бандла.
-    expect(http.countOf('PATCH /service-requests/:id/service-comment')).toBe(0);
   });
 });

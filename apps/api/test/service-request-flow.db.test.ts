@@ -3885,7 +3885,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(after.description).toBe('Матрица действий отложенной заявки');
     });
 
-    it('отложенная принимает документы исходного статуса и примечание исполнителя (Р110)', async () => {
+    it('отложенная принимает документы исходного статуса и реплику исполнителя (Р110)', async () => {
       const dto = await assignedRequest('Отложенная живёт обычной жизнью');
       const frozen = await hold(dto.id, 'Ждём решения заказчика по деньгам');
       expect(frozen.statusCode, frozen.body).toBe(200);
@@ -3904,17 +3904,20 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       const warranty = await attach(dto.id, 'warranty_card', 'talon-ranshe-vremeni.pdf');
       expect(warranty.res.statusCode, warranty.res.body).toBe(422);
 
-      // «Запчасть будет 3-го» пишут именно тогда, когда заявка стоит: запрети мы примечание,
-      // единственный способ сообщить о сроке исчез бы вместе с ходом заявки.
-      const comment = await inject(
-        'PATCH',
-        `/api/v1/service-requests/${dto.id}/service-comment`,
+      // "The part arrives on the 3rd" is written exactly while the request stands still: if the
+      // chat froze on hold, the only way to report the date would stop together with the request.
+      // Since ADR 0141 release B the chat is that way (the executor note route is gone).
+      const said = await inject(
+        'POST',
+        `/api/v1/service-requests/${dto.id}/messages`,
         ctx.service.auth,
-        { serviceComment: 'Запчасть будет 3-го', version: await version(dto.id) },
+        {
+          body: 'Запчасть будет 3-го',
+          addressees: { sides: ['all'], users: [] },
+        },
       );
-      expect(comment.statusCode, comment.body).toBe(200);
-      expect((comment.json() as ServiceRequestDto).serviceComment).toBe('Запчасть будет 3-го');
-      expect((comment.json() as ServiceRequestDto).status).toBe('on_hold');
+      expect(said.statusCode, said.body).toBe(200);
+      expect((await card(dto.id)).status).toBe('on_hold');
     });
 
     it('пока заявка отложена, вторую на ту же единицу не завести (Р109)', async () => {
@@ -4944,12 +4947,13 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         'объём работ по ней не составляют',
       );
 
-      // Примечание исполнителя — его ручка, и она осталась на месте: «что сделали» пишут словами.
+      // "What was done" is written in words, in the request chat (the executor note it replaced
+      // is gone since ADR 0141 release B): the named executor is a side of the conversation.
       const commented = await inject(
-        'PATCH',
-        `/api/v1/service-requests/${assigned.id}/service-comment`,
+        'POST',
+        `/api/v1/service-requests/${assigned.id}/messages`,
         ctx.namedExecutor.auth,
-        { serviceComment: 'ролик заменил, проверяю подачу', version: await version(assigned.id) },
+        { body: 'ролик заменил, проверяю подачу', addressees: { sides: ['all'], users: [] } },
       );
       expect(commented.statusCode, commented.body).toBe(200);
 
@@ -5027,8 +5031,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
       expect(started.statusCode, started.body).toBe(200);
 
-      // Смета и примечание статуса не меняют, коридора у них нет — сторону спрашивает сам
-      // обработчик (`assertExecutorSide`), и спрашивает он то же назначение.
+      // The estimate does not change the status and has no corridor: the handler itself asks the
+      // side (`assertExecutorSide`), and it asks the same assignment. The chat asks it through
+      // `canWriteChat`: a set holder without the assignment is not a side of the conversation.
       refused(
         await inject(
           'PUT',
@@ -5040,12 +5045,15 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
       refused(
         await inject(
-          'PATCH',
-          `/api/v1/service-requests/${assigned.id}/service-comment`,
+          'POST',
+          `/api/v1/service-requests/${assigned.id}/messages`,
           ctx.strayExecutor.auth,
-          { serviceComment: 'я тут ни при чём', version: await version(assigned.id) },
+          {
+            body: 'я тут ни при чём',
+            addressees: { sides: ['all'], users: [] },
+          },
         ),
-        'не пишет примечание исполнителя',
+        'пишут её стороны и автор',
       );
 
       // Доводим заявку до состояния, из которого закрывают работы, руками назначенного.

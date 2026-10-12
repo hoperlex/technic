@@ -33,7 +33,6 @@ const SERVICE_REQUEST_ERROR_LABELS: Record<string, string> = {
   adjustmentAmount: 'Корректировка суммы',
   adjustmentReason: 'Причина корректировки',
   status: 'Статус',
-  serviceComment: 'Комментарий службы',
 };
 
 export const serviceRequestErrorMessage = (error: unknown): string =>

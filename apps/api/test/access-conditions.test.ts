@@ -873,9 +873,6 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'PUT /api/v1/service-requests/:id/executors': {
     payload: { userIds: [], serviceCounterpartyId: COUNTERPARTY_ID, version: 1 },
   },
-  'PATCH /api/v1/service-requests/:id/service-comment': {
-    payload: { serviceComment: 'будем во вторник', version: 1 },
-  },
   /*
    * Обсуждение заявки (ADR 0141). Тело нужно обеим ручкам не ради содержания, а ради порядка
    * проверок: схема разбирается ДО `preHandler`, и запрос без тела упёрся бы в 400 раньше стража —

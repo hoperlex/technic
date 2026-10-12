@@ -809,14 +809,16 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
       expect(completed.statusCode, completed.body).toBe(403);
       expect(messageOf(completed)).toContain('не может перевести заявку');
 
-      const comment = await inject(
-        'PATCH',
-        `/api/v1/service-requests/${request.id}/service-comment`,
+      // The chat is the executor's only status-free voice since the executor note was removed
+      // (ADR 0141 release B): the removed executor loses it with the same token too.
+      const posted = await inject(
+        'POST',
+        `/api/v1/service-requests/${request.id}/messages`,
         ctx.executor.auth,
-        { serviceComment: 'я тут больше ни при чём', version: await versionOf(request.id) },
+        { body: 'я тут больше ни при чём', addressees: { sides: ['all'], users: [] } },
       );
-      expect(comment.statusCode, comment.body).toBe(403);
-      expect(messageOf(comment)).toContain('не пишет примечание исполнителя');
+      expect(posted.statusCode, posted.body).toBe(403);
+      expect(messageOf(posted)).toContain('пишут её стороны и автор');
 
       /*
        * А ЧТЕНИЕ ОСТАЛОСЬ — и это не дыра, а вторая половина И3: базовая видимость заказчика,
@@ -1086,10 +1088,6 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
       'PATCH /api/v1/service-requests/:id/resume': { version: 0 },
       'POST /api/v1/service-requests/:id/notify': {
         idempotencyKey: '00000000-0000-4000-8000-000000000002',
-      },
-      'PATCH /api/v1/service-requests/:id/service-comment': {
-        serviceComment: 'проба доступа',
-        version: 0,
       },
       'POST /api/v1/service-requests/:id/files': {
         fileIds: ['00000000-0000-4000-8000-000000000003'],

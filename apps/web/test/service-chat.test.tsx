@@ -207,8 +207,9 @@ describe('лента обсуждения', () => {
         json(
           chatPage([
             chatMessage({
-              // Адаптер `PATCH /:id/service-comment` (§3.10): текст пришёл из поля примечания, но
-              // писал его живой человек — сервер пишет и `author_id` принципала, и `now()`.
+              // Written through the release A adapter `PATCH /:id/service-comment` (§3.10, removed
+              // in release B): the text came from the note field, but a living person wrote it, so
+              // the server stored the principal's `author_id` and `now()`.
               origin: 'import',
               authorId: 'u-9',
               authorName: 'Сисадминов И. П.',

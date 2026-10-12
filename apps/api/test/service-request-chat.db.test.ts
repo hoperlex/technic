@@ -401,6 +401,45 @@ async function rowsOf(requestId: string) {
 }
 
 /**
+ * What the release A adapter `PATCH /:id/service-comment` did, as SQL. The route is gone since
+ * release B (ADR 0141), but during the release B deploy window the previous server (release A code)
+ * still runs until the restart and writes this way for old bundles, and release C's transfer must
+ * absorb those writes. It mirrors release A statement for statement: the same row lock the chat send
+ * takes, the column update with a version bump, and the `import` message with the hash computed by
+ * the database, whose addressee is inserted only on `RETURNING` (a silent `DO NOTHING` means the
+ * message with this hash already exists). The transaction is top-level on purpose: the addressee
+ * trigger compares `xmin` with the top transaction id.
+ */
+async function oldAdapterWrite(requestId: string, actorId: string, text: string): Promise<void> {
+  await ctx.db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM service_requests WHERE id = ${requestId} FOR UPDATE`);
+    await tx.execute(sql`
+      UPDATE service_requests
+         SET service_comment = ${text}, updated_by = ${actorId}, updated_at = now(),
+             version = version + 1
+       WHERE id = ${requestId}`);
+    if (text === '') return;
+    const inserted = await tx.execute<{ id: string }>(sql`
+      INSERT INTO service_request_messages
+        (request_id, seq, author_id, origin, imported_hash, body, created_at)
+      SELECT ${requestId}::uuid,
+             COALESCE(
+               (SELECT max(m.seq) FROM service_request_messages m
+                 WHERE m.request_id = ${requestId}::uuid),
+               0
+             ) + 1,
+             ${actorId}::uuid, 'import', md5(${text}), ${text}, now()
+      ON CONFLICT (request_id, imported_hash) WHERE origin = 'import' DO NOTHING
+      RETURNING id`);
+    const id = inserted.rows[0]?.id;
+    if (!id) return;
+    await tx.execute(sql`
+      INSERT INTO service_request_message_addressees (message_id, side)
+      VALUES (${id}, 'all')`);
+  });
+}
+
+/**
  * Отказ прямого SQL: текст ошибки — часть проверки, поэтому возвращается он, а не флаг. Драйвер
  * заворачивает отказ базы в свой («Failed query: …»), а сообщение триггера лежит в `cause`, —
  * поэтому склеиваются оба.
@@ -1056,23 +1095,12 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       await clearComments();
     });
 
-    it('адаптер пишет реплику с автором и точным временем, а повторный перенос дубля не создаёт', async () => {
+    it('адаптер выпуска A пишет реплику с автором и точным временем, а повторный перенос дубля не создаёт', async () => {
       await clearComments();
       const id = await makeRequest({ tag: 'адаптер', withService: true });
-      const versionOf = async () =>
-        Number(
-          (
-            await ctx.db.execute<{ version: number }>(sql`
-              SELECT version FROM service_requests WHERE id = ${id}`)
-          ).rows[0]!.version,
-        );
 
       const before = new Date();
-      const patched = await inject('PATCH', `/api/v1/service-requests/${id}/service-comment`, ctx.service.auth, {
-        serviceComment: 'написано старым бандлом в окне выката',
-        version: await versionOf(),
-      });
-      expect(patched.statusCode, patched.body).toBe(200);
+      await oldAdapterWrite(id, ctx.service.id, 'написано старым бандлом в окне выката');
 
       let rows = await rowsOf(id);
       expect(rows).toHaveLength(1);
@@ -1088,12 +1116,8 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
       expect(rows).toHaveLength(1);
       expect(rows[0]!.author_id).toBe(ctx.service.id);
 
-      // Пустое значение — старый способ «стереть примечание»: колонку чистит, ленту не трогает.
-      const cleared = await inject('PATCH', `/api/v1/service-requests/${id}/service-comment`, ctx.service.auth, {
-        serviceComment: '',
-        version: await versionOf(),
-      });
-      expect(cleared.statusCode, cleared.body).toBe(200);
+      // An empty value was the old way to "erase the note": it clears the column, not the feed.
+      await oldAdapterWrite(id, ctx.service.id, '');
       expect(await rowsOf(id)).toHaveLength(1);
       await clearComments();
     });
@@ -1145,20 +1169,8 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
         await pause(25);
       }
 
-      // Пока перенос ждёт, адаптер пишет ровно тот же текст в целевую заявку.
-      const version = Number(
-        (
-          await ctx.db.execute<{ version: number }>(sql`
-            SELECT version FROM service_requests WHERE id = ${target}`)
-        ).rows[0]!.version,
-      );
-      const patched = await inject(
-        'PATCH',
-        `/api/v1/service-requests/${target}/service-comment`,
-        ctx.service.auth,
-        { serviceComment: TEXT, version },
-      );
-      expect(patched.statusCode, patched.body).toBe(200);
+      // While the transfer waits, the release A adapter writes exactly the same text to the target.
+      await oldAdapterWrite(target, ctx.service.id, TEXT);
       expect(await rowsOf(target)).toHaveLength(1);
     } finally {
       await holder.query('COMMIT').catch(() => undefined);
@@ -1215,19 +1227,7 @@ describe.skipIf(!DB_URL)('обсуждение заявки на обслужи�
     it('перенос забирает написанное адаптером в окне выката B, и колонка снимается', async () => {
       await ctx.db.execute(sql`UPDATE service_requests SET service_comment = '' WHERE btrim(service_comment) <> ''`);
       const byAdapter = await makeRequest({ tag: 'выкат B адаптер', withService: true });
-      const version = Number(
-        (
-          await ctx.db.execute<{ version: number }>(sql`
-            SELECT version FROM service_requests WHERE id = ${byAdapter}`)
-        ).rows[0]!.version,
-      );
-      const patched = await inject(
-        'PATCH',
-        `/api/v1/service-requests/${byAdapter}/service-comment`,
-        ctx.service.auth,
-        { serviceComment: 'написано в окне выката B', version },
-      );
-      expect(patched.statusCode, patched.body).toBe(200);
+      await oldAdapterWrite(byAdapter, ctx.service.id, 'написано в окне выката B');
       // И заявка, до которой адаптер не дошёл: её примечание заберёт сам перенос выпуска C.
       const onlyColumn = await makeRequest({
         tag: 'выкат B колонка',

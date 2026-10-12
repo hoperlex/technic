@@ -264,7 +264,6 @@ const FULL: ServiceRequestDto = {
   replacementRecommended: false,
   rejectionResolution: '',
   comment: 'звонить после 15:00',
-  serviceComment: 'ждём ролик с завода',
   chat: {
     canWrite: true,
     participantSides: ['customer'],
@@ -349,7 +348,6 @@ describe('проекция карточки', () => {
     expect(projected.executors).toEqual(FULL.executors);
     expect(projected.service).toEqual(FULL.service);
     expect(projected.itApproval).toEqual(FULL.itApproval);
-    expect(projected.serviceComment).toBe(FULL.serviceComment);
     expect(projected.description).toBe(FULL.description);
     expect(projected.status).toBe(FULL.status);
   });

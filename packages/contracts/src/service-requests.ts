@@ -3200,11 +3200,6 @@ export const serviceStatusChangeSchema = z.object({
 });
 export type ServiceStatusChangeInput = z.infer<typeof serviceStatusChangeSchema>;
 
-export const serviceCommentSchema = z.object({
-  serviceComment: z.string().trim().max(2000),
-  version: z.number().int().nonnegative(),
-});
-
 // ── Массовые действия над заявками (план `docs/office-equipment-bulk-actions-plan.md`) ──
 /**
  * ОДНА ИЗМЕНЯЮЩАЯ РУЧКА НА ВСЕ ОПЕРАЦИИ (Р1), и потому — размеченное объединение по `operation`.
@@ -4487,7 +4482,6 @@ export interface ServiceRequestDto {
    */
   rejectionResolution: string;
   comment: string;
-  serviceComment: string;
   /**
    * Обсуждение заявки (ADR 0141): всё, что порталу нужно знать о переписке, не открывая её.
    *
@@ -5075,8 +5069,8 @@ export type AudiencePolicy<T> = {
  *
  * `consumables` остаются целиком, и это решение, а не недосмотр: цен в строках расходников нет ни
  * одной, вкладка «Номенклатура» — предмет заявки на расходники, а не её финансовая сторона.
- * `chat`, `executors`, `service`, `itApproval` и `serviceComment` остаются по той же границе: план
- * удаляет структурные финансовые поля, а не является DLP-фильтром свободного текста (Г4).
+ * `chat`, `executors`, `service` and `itApproval` stay whole on the same boundary: the plan removes
+ * structural financial fields and is not a DLP filter for free text (Г4).
  */
 export const SERVICE_REQUEST_FIELD_AUDIENCE = {
   // «В каком объёме собран ответ» — само поле и есть ответ проекции о себе.
@@ -5211,7 +5205,6 @@ export const SERVICE_REQUEST_FIELD_AUDIENCE = {
   replacementRecommended: 'all',
   rejectionResolution: 'all',
   comment: 'all',
-  serviceComment: 'all',
   chat: 'all',
   files: 'visible_file_kinds',
   createdByName: 'all',
@@ -5461,19 +5454,20 @@ export function projectHistoryForAudience<T extends { changes: RequestChangeDto[
   }));
 }
 
-// ── Обсуждение заявки (office-equipment-chat-plan.md, ADR 0141) ──
+// ── Request chat (office-equipment-chat-plan.md, ADR 0141) ──
 //
-// Лента реплик с пометкой «кому адресовано». Пометка, а не ограничение видимости (решение опроса
-// 28.08.2026): текст видят все, кому видна заявка, — адресат управляет подсветкой и будущим
-// письмом. Чат заменяет «Примечание исполнителя» (`serviceCommentSchema` выше), которое было одним
-// полем на всю заявку и затиралось следующей записью.
+// A feed of messages marked "addressed to". A mark, not a visibility restriction (survey decision of
+// 28.08.2026): everyone who sees the request sees the text, and the addressee drives highlighting
+// and the message letter. The chat replaced the executor note, a single overwritable field per
+// request; its route and DTO field were removed in release B.
 //
-// Правила живут здесь, а факты приходят аргументом (§3.2 плана), и это не украшение.
-// `AccessSubject` не несёт ни id учётки, ни областей, ни назначения, а `ServiceRequestDto` не
-// отдаёт `createdBy`, — значит общая функция «субъект + DTO → стороны» на портале неисполнима.
-// Написав её всё-таки, мы получили бы второе правило, расходящееся с серверным МОЛЧА: подсветка
-// показывала бы одно, а ручка отвечала бы другое. Поэтому портал этих функций не зовёт вовсе — ему
-// приходит готовый `ServiceRequestChatSummaryDto`, посчитанный сервером ими же.
+// The rules live here and the facts come in as arguments (§3.2 of the plan), and that is not
+// decoration. `AccessSubject` carries neither the account id, nor scopes, nor assignments, and
+// `ServiceRequestDto` does not expose `createdBy`, so a shared "subject + DTO -> sides" function is
+// impossible on the portal. Written anyway, it would become a second rule diverging from the server
+// SILENTLY: highlighting would show one thing and the route would answer another. So the portal
+// never calls these functions: it receives a ready `ServiceRequestChatSummaryDto` computed by the
+// server with them.
 
 /**
  * Стороны разговора. `all` — не сторона человека, а адресат «всем участникам»: им можно адресовать,

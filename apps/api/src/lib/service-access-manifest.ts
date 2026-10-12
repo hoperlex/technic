@@ -470,12 +470,6 @@ export const SERVICE_ACCESS_MANIFEST = {
     side: 'executor',
     state: 'assertTransition',
   },
-  // Примечание сервиса — ход исполнителя, не меняющий статуса: коридора у него нет, сторона та же.
-  'PATCH /api/v1/service-requests/:id/service-comment': {
-    scope: 'visibility',
-    side: 'executor',
-    state: 'isServiceRequestClosed',
-  },
 
   // ── Ходы «Ведения» ──
   // Приёмка и возврат на доработку: дуги `done → accepted` и `done → in_work` есть только в

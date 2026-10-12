@@ -239,7 +239,7 @@ interface SummaryRow extends Record<string, unknown> {
  * Разойдись она с настоящей отправкой на секунду — человек увидит подпись, чуть устаревшую;
  * промолчи мы вовсе — он будет уверен, что подрядчик прочитал.
  */
-async function serviceCommentMailEnabled(): Promise<boolean> {
+async function chatMessageMailEnabled(): Promise<boolean> {
   if (!config.mail.enabled) return false;
   const channel = config.mail.accounts[SERVICE_MAIL_ACCOUNT];
   if (!channel.configured) return false;
@@ -294,7 +294,7 @@ export async function chatSummaryByRequest(
    * спрашивать его по разу на заявку значило бы полсотни лишних чтений на открытие списка.
    * Подпись в окне отправки без этого обещала бы письмо, которого выкат ещё не даёт (§ 4).
    */
-  const mailEnabled = await serviceCommentMailEnabled();
+  const mailEnabled = await chatMessageMailEnabled();
   for (const input of inputs) map.set(input.row.id, emptySummary(p, input, mailEnabled));
   if (inputs.length === 0) return map;
 
@@ -809,63 +809,4 @@ export async function markAllChatRead(p: Principal, scope: SQL | undefined): Pro
      WHERE ${serviceRequestMessageReads}.read_through_seq < excluded.read_through_seq
   `);
   return result.rowCount ?? 0;
-}
-
-// ── Адаптер совместимости: «Примечание исполнителя» (§3.10) ──
-
-/**
- * Реплика из старой ручки `PATCH /:id/service-comment`. Живёт ровно столько, сколько работает
- * сервер выпуска A: браузер держит СТАРЫЙ бандл и после выката продолжает звать снятую ручку, —
- * поэтому написанное им обязано сразу оказаться в ленте, а не только в колонке.
- *
- * `origin = 'import'` и хеш текста — те же, что у миграционного переноса, и это условие
- * идемпотентности: повторный прогон переноса в выпуске C на ту же строку дубля не создаст, потому
- * что хеш совпадёт. Автор и время, в отличие от переноса, ЗАПИСЫВАЮТСЯ ЯВНО: у адаптера принципал
- * под рукой, и пустота там означала бы выдуманную анонимность. Пустой автор — удел только миграции,
- * где восстановить его действительно нечем.
- *
- * `md5` считает база, а не Node: перенос выпуска C возьмёт хеш от значения колонки тем же
- * `md5(service_comment)`, и посчитай мы его здесь по-своему, две редакции одного текста разошлись бы
- * на кодировке — а идемпотентность держится ровно на совпадении.
- *
- * `ON CONFLICT` ОБЯЗАН ПОВТОРЯТЬ ПРЕДИКАТ частичного индекса: без `WHERE origin = 'import'`
- * PostgreSQL индекс не выводит и падает с «no unique or exclusion constraint matching the ON
- * CONFLICT specification».
- *
- * Адресат вставляется ТОЛЬКО ПО `RETURNING`. Молчаливый `DO NOTHING` означает, что реплика с этим
- * хешем уже есть, — и вставка адресата тогда либо сослалась бы на несуществующий идентификатор,
- * либо попыталась дополнить ЧУЖУЮ, ранее созданную реплику, и справедливо отбилась бы
- * `xmin`-триггером.
- *
- * Транзакция приходит аргументом и обязана быть верхнеуровневой (`db.transaction`) — по той же
- * причине, что у обычной отправки.
- */
-export async function importServiceCommentMessage(
-  tx: Tx,
-  actorId: string,
-  requestId: string,
-  text: string,
-): Promise<boolean> {
-  const inserted = await tx.execute<{ id: string }>(sql`
-    INSERT INTO ${serviceRequestMessages}
-      (request_id, seq, author_id, origin, imported_hash, body, created_at)
-    SELECT ${requestId}::uuid,
-           COALESCE(
-             (SELECT max(m.seq) FROM ${serviceRequestMessages} m
-               WHERE m.request_id = ${requestId}::uuid),
-             0
-           ) + 1,
-           ${actorId}::uuid, 'import', md5(${text}), ${text}, now()
-    ON CONFLICT (request_id, imported_hash) WHERE origin = 'import' DO NOTHING
-    RETURNING id
-  `);
-  const id = inserted.rows[0]?.id;
-  if (!id) return false;
-  // Адресат у перенесённого примечания один — «Всем участникам»: кому оно предназначалось, поле
-  // никогда не знало, и выдумывать сторону задним числом значило бы приписать автору адресность,
-  // которой он не выбирал.
-  await tx
-    .insert(serviceRequestMessageAddressees)
-    .values({ messageId: id, side: 'all', userId: null });
-  return true;
 }

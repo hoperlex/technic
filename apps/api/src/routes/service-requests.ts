@@ -81,7 +81,6 @@ import {
   SERVICE_ESTIMATE_DISPUTE_OPEN_STATUSES,
   SERVICE_REQUEST_STATUSES,
   SERVICE_WAITING_ON,
-  serviceCommentSchema,
   canRunServiceBulkOperation,
   canStartServiceWork,
   canUseServiceBulk,
@@ -287,7 +286,6 @@ import {
 import {
   chatSummaryByRequest,
   chatUnreadCount,
-  importServiceCommentMessage,
   markAllChatRead,
   markChatRead,
   postChatMessage,
@@ -1135,7 +1133,6 @@ function toDto(
      */
     rejectionResolution: r.rejectionResolution,
     comment: r.comment,
-    serviceComment: r.serviceComment,
     // Обсуждение (ADR 0141): счёт и мои стороны считает сервер — портал правил сторон не
     // воспроизводит вовсе (§3.2). Блок есть у каждой заявки, в том числе у той, где не сказано ещё
     // ни слова: «переписки нет» — это `total: 0`, а не отсутствующее поле.
@@ -1772,19 +1769,21 @@ function assertTransition(
 }
 
 /**
- * Ход исполнителя, который **не меняет статуса**: правка состава сметы, снятие согласования,
- * примечание сервиса. Коридора у таких ручек нет — двигать нечего, — а сторона у них та же, и
- * спросить её всё равно надо: маршрут открыт «одному из прав» (`estimate` **или** `execute`), и
- * без этой проверки держатель `execute` правил бы смету любой заявки, на которую его не назначали.
+ * An executor move that **does not change the status**: editing the estimate lines or withdrawing
+ * the approval. Such routes have no corridor (there is nothing to move), but the side is the same
+ * and still has to be checked: the route is open to "one of the permissions" (`estimate` **or**
+ * `execute`), and without this check a holder of `execute` would edit the estimate of any request
+ * they were never assigned to.
  *
- * Дизъюнкция здесь та же, что в коридоре контрактов (`allowedServiceStatusTransitions`), и в том
- * же порядке: **назначение** — `isServiceExecutor`, единственный ответ модуля на вопрос «чей это
- * ход», — **либо** право сметы, которым «Ведение» и администратор доводят заявку за исполнителя.
- * Второй ветки достаточно и для сервисной компании: до этой строки доходит только назначенная —
- * чужую отсекла область (`assertScope` внутри `requireEditable`).
+ * The disjunction is the same as in the contract corridor (`allowedServiceStatusTransitions`) and
+ * in the same order: the **assignment** (`isServiceExecutor`, the module's only answer to "whose
+ * move is it") **or** the estimate permission, with which the operator and the administrator finish
+ * a request for the executor. The second branch is enough for the service company too: only the
+ * assigned one reaches this line, a foreign one was cut off by the scope (`assertScope` inside
+ * `requireEditable`).
  *
- * Строку заявки функция получает готовой: спрашивается она после `requireEditable`, потому что
- * назначение считается по самой заявке, а не по правам субъекта.
+ * The function receives the request row ready-made: it is called after `requireEditable`, because
+ * the assignment is read from the request itself, not from the subject's permissions.
  */
 async function assertExecutorSide(
   p: Principal,
@@ -2445,15 +2444,16 @@ async function applyConsumableFacts(
 // ── Переход статуса ──
 
 /**
- * Перевод заявки с проверкой версии, сбросом по матрице возвратов и записью в историю статусов.
+ * A request transition with a version check, a reset by the rollback matrix and a status history
+ * row.
  *
- * Что стирается при возврате назад, решает контракт (`serviceResetOnTransition`), а не маршрут:
- * матрица §5.4 покрывает все дуги — и операторские, и административные, — и разъехаться с
- * порталом она не должна.
+ * What a step back erases is decided by the contract (`serviceResetOnTransition`), not by the route:
+ * the §5.4 matrix covers every arc, operator and administrative alike, and must not diverge from the
+ * portal.
  *
- * `status_changed_at` обновляется только при смене статуса и при переназначении, где статус тот же
- * (`touchStatusAt`): правка сметы, примечание исполнителя и подшивка документа возраст ожидания не
- * сбрасывают — иначе очередь «дольше всех ждут» обнулялась бы каждой мелкой правкой.
+ * `status_changed_at` moves only on a status change and on a reassignment that keeps the status
+ * (`touchStatusAt`): editing the estimate, a chat message and attaching a document do not reset the
+ * waiting age, otherwise the "waiting longest" queue would be zeroed by every small edit.
  */
 /**
  * Гарантия, снятая вместе с фактом закрытия. Уходит в metadata аудита того действия, которое факт и
@@ -9169,70 +9169,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       });
 
       return { mail: result.outcome, recipients: result.recipients.map((r) => r.email) };
-    },
-  );
-
-  // ── Примечание исполнителя (приём ADR 0053) — АДАПТЕР СОВМЕСТИМОСТИ ──
-  /**
-   * Ручка живёт ровно столько, сколько работает сервер выпуска A (ADR 0141, решение 7, §3.10):
-   * браузер держит СТАРЫЙ бандл и после выката чата продолжает звать её, а откат релиза возвращает
-   * сервер, который о ленте не знает. Снимается она выпуском B — вместе со слайсом портала, полем
-   * DTO и колонкой в `schema.ts`; сама колонка уходит из базы ещё выпуском позже.
-   *
-   * Пока она жива, делает две вещи ОДНОЙ транзакцией: обновляет колонку, как раньше, и вставляет
-   * ту же строку репликой `origin='import'` с хешем текста — так написанное старым клиентом сразу
-   * видно в обсуждении, а повторный перенос выпуска C на том же хеше дубля не создаст.
-   *
-   * Транзакция — верхнеуровневая (`db.transaction`), и это требование схемы, а не стиль: адресата
-   * можно вставить только в транзакции, создавшей реплику, а `xmin` строки из savepoint'а
-   * триггер не признаёт (§3.3).
-   *
-   * Ход заявки примечание не меняет и возраст ожидания не сбрасывает: это строка сервиса в карточке.
-   */
-  r.patch(
-    '/:id/service-comment',
-    { ...canEstimate, schema: { params: idParams, body: serviceCommentSchema } },
-    async (req) => {
-      const p = requirePrincipal(req);
-      const body = req.body;
-      const row = await requireEditable(p, req.params.id);
-      if (isServiceRequestClosed(row.status)) {
-        throw err.unprocessable(
-          `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» не правится`,
-        );
-      }
-      await db.transaction(async (tx) => {
-        // Блокировка строки — та же, под которой номер выдаёт обычная отправка: без неё два
-        // одновременных примечания получили бы один `seq` и столкнулись на уникальном индексе.
-        const locked = await lockRequest(tx, row.id);
-        // Сторона — под этой же блокировкой и на `tx` (Р4): реплика уходит в ленту от имени
-        // исполнителя, и снятый успевал бы написать её в окне между отзывом назначения и `COMMIT`.
-        await assertExecutorSide(p, locked, 'пишет примечание исполнителя', tx);
-        const [updated] = await tx
-          .update(serviceRequests)
-          .set({
-            serviceComment: body.serviceComment,
-            updatedBy: p.id,
-            updatedAt: new Date(),
-            version: row.version + 1,
-          })
-          .where(and(eq(serviceRequests.id, row.id), eq(serviceRequests.version, body.version)))
-          .returning({ id: serviceRequests.id });
-        if (!updated) throw err.conflict();
-        // Пустое значение — старый способ «стереть примечание». Колонку он чистит, а ленту стирать
-        // нечем: реплики не правятся и не удаляются (решение 6 ADR), и пустая строка в разговоре
-        // не значила бы ничего.
-        if (body.serviceComment !== '') {
-          await importServiceCommentMessage(tx, p.id, row.id, body.serviceComment);
-        }
-      });
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'serviceRequest.service_comment',
-        entityType: 'serviceRequest',
-        entityId: row.id,
-      });
-      return (await getDto(p, row.id))!;
     },
   );
 

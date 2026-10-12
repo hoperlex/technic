@@ -25,7 +25,6 @@ import {
   SERVICE_FILE_KINDS,
   SERVICE_REQUEST_SORT_FIELDS,
   SERVICE_REQUEST_STATUSES,
-  serviceCommentSchema,
   serviceEstimateItemSchema,
   type ServiceExecutorAssignment,
   type ServiceFileKind,
@@ -91,11 +90,6 @@ const MUTATIONS: [
   ['PATCH /:id/hold — заморозка', serviceHoldSchema, { reason: 'ждём запчасть с завода' }],
   ['PATCH /:id/resume — возобновление', serviceResumeSchema, {}],
   ['PATCH /:id/status — отмена и откаты', serviceStatusChangeSchema, { status: 'cancelled' }],
-  [
-    'PATCH /:id/service-comment — примечание',
-    serviceCommentSchema,
-    { serviceComment: 'во вторник' },
-  ],
 ];
 
 describe('версия обязательна во всех изменяющих ручках (Р30)', () => {

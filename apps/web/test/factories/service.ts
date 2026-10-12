@@ -140,7 +140,6 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     // и пустая строка здесь означает «отказа не было», а не незаполненную фикстуру.
     rejectionResolution: '',
     comment: '',
-    serviceComment: '',
     // Обсуждение (ADR 0141): у заявки, по которой не сказано ни слова, блок не отсутствует — он
     // пуст. Сценарию про подсветку никто не мешает передать свои числа.
     chat: {

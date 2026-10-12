@@ -101,6 +101,8 @@ const AUDIT_ACTIONS = [
   'serviceRequest.complete',
   'serviceRequest.accept',
   'serviceRequest.rework',
+  // Written by no route since ADR 0141 release B removed the executor note; kept forever to read
+  // the audit rows already in the database. Dropping it would erase the event from old requests.
   'serviceRequest.service_comment',
   'serviceRequest.urgency',
   'serviceRequest.files_attach',

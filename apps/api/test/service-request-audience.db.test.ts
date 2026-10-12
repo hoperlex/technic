@@ -955,7 +955,6 @@ describe.skipIf(!DB_URL)('карточка заявки на обслужива�
       replacementRecommended: false,
       rejectionResolution: '',
       comment: '',
-      serviceComment: '',
       chat: emptyChat,
       files: [
         fileDto(state.files.attachment, 'фото-поломки.jpg', 'attachment', 'image/jpeg'),

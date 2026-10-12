@@ -3277,7 +3277,12 @@ export const serviceRequests = pgTable(
     // так же, как упирался бы в `service_requests_replacement_check`.
     rejectionResolution: text('rejection_resolution').notNull().default(''),
     comment: text('comment').notNull().default(''),
-    serviceComment: text('service_comment').notNull().default(''),
+    // The table still has `service_comment text NOT NULL DEFAULT ''` (the former executor note,
+    // ADR 0141): release B removed it from this schema only, and release C drops it from the
+    // database (`drizzle/pending/service-chat-drop-service-comment.sql`). It is absent here on
+    // purpose and must not come back: drizzle lists every schema column in each `SELECT` of a
+    // request, so code that still knows the column would fail the whole module once release C
+    // drops it. Inserts omit it and get the database default, which is why the drop can wait.
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -4405,10 +4410,11 @@ export const serviceRequestStatusHistory = pgTable(
 /**
  * Обсуждение заявки — лента реплик (миграция 0216, план `docs/office-equipment-chat-plan.md`).
  *
- * Заменяет собой `serviceRequests.serviceComment`: одно поле на всю заявку затирается следующей
- * записью, не говорит, кому адресовано, и никого ни о чём не извещает. Колонка при этом остаётся до
- * выпуска C — выкат идёт expand → contract кода → contract схемы (§3.10), и снять её раньше, чем
- * перестанет выбирать код, значит уронить весь модуль: `requestQuery` берёт строку заявки целиком.
+ * It replaces the former `service_requests.service_comment` executor note: one field per request,
+ * overwritten by the next write, with no addressee and no notification. The rollout is expand →
+ * contract code → contract schema (§3.10): release B removed the column from this schema, and the
+ * database column stays until release C, because dropping it while code still selects it would fail
+ * the whole module (`requestQuery` reads the request row whole).
  *
  * `seq` — НОМЕР ВНУТРИ ЗАЯВКИ, А НЕ ГЛОБАЛЬНАЯ IDENTITY, и на этом держится весь протокол прочтения
  * (§3.4). Курсор «дочитал до N» осмыслен ровно тогда, когда всё последующее получает номер больше N.

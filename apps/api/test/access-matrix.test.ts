@@ -1149,15 +1149,6 @@ const CASES: Case[] = [
     allowed: SERVICE_REQUEST_EXECUTORS,
   },
   {
-    // Примечание исполнителя (приём ADR 0053): вторая сторона комментария. Заявку оно не правит —
-    // поэтому и не `serviceRequests.update`, которого у сервиса нет вовсе.
-    title: 'заявки на обслуживание — примечание исполнителя',
-    method: 'PATCH',
-    url: `/api/v1/service-requests/${RECORD_ID}/service-comment`,
-    payload: { serviceComment: 'будем во вторник после обеда', version: 1 },
-    allowed: SERVICE_REQUEST_EXECUTORS,
-  },
-  {
     // Файлы — своё право (Р29): фотография поломки от заказчика, смета и акт от исполнителя.
     // Правку заявки оно не требует, поэтому круг здесь шире, чем у `PATCH /:id`.
     title: 'заявки на обслуживание — подшивка документа',
