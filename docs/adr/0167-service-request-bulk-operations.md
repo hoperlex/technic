@@ -1,12 +1,11 @@
 # ADR 0167. Массовые действия над заявками оргтехники: пачка — проекция одиночных ручек и свой протокол исполнения
 
-- Статус: Принято (реализовано, **не выкачено**). Реализация — коммиты `09f4527` (протокол, ручки,
-  портал), `812d094` (след отказов в журнале, решение 12), `0234989` (захват аренды уборщиком и
-  отпечаток, нечувствительный к порядку строк) и `cd1c7fc` (незаконченная пачка принадлежит своей
-  учётке). Схему меняют
-  миграции `0278` (вид письма `service_request_bulk_summary`) и `0279` (журнал пачек и почтовые
-  намерения); на день решения обе не накатаны, записи выпуска (ADR 0077) нет — впереди пилот на трёх
-  безопасных операциях
+- Статус: Реализовано (07.09.2026). Commits `09f4527` (protocol, endpoints, portal), `812d094`
+  (denials logged by the batch, decision 12), `0234989` (the sweeper takes the lease; a fingerprint
+  insensitive to row order) and `cd1c7fc` (an unfinished batch belongs to its account). Schema —
+  migrations `0278` (mail kind `service_request_bulk_summary`) and `0279` (batch journal and mail
+  intents). Plan forks В1–В5 closed by the owner on 2026-10-12 with the plan defaults (survey S-17).
+  The release record (ADR 0077) is not written yet
 - Область: сервер — новый
   [service-request-bulk.ts](../../apps/api/src/services/service-request-bulk.ts) (протокол),
   [service-requests.ts](../../apps/api/src/routes/service-requests.ts) (восемь доменных шагов,
@@ -369,6 +368,9 @@
 Выкат ещё не начат: миграции не накатаны, записи выпуска нет. Пилот — три безопасных операции
 (отложить, срочность, архив) на живом потоке, затем остальные шесть.
 
+_State on 2026-10-12:_ both migrations are in `main` and within the deployed range (prod migrations
+≤ `0361` since 07.10.2026); the release record is still missing.
+
 ## Последствия
 
 **Что стало возможно.** Одно решение о двадцати заявках делается одним движением, с одним
@@ -463,3 +465,24 @@
 **Массовые «вернуть на доработку», «закрыть работы», «объём работ и согласование» и
 административные откаты.** У первых трёх причина, документы и суммы у каждой строки свои; у откатов
 каждый случай — разбор своей ошибки, и «откатить двадцать» означало бы замывание следов.
+
+## Owner decision 2026-10-12 (survey S-17): plan forks В1–В5 closed with the defaults
+
+The five questions of [plan §14](../office-equipment-bulk-actions-plan.md) are answered with the
+plan's defaults. Each is already the code's behaviour, checked on 2026-10-12; nothing in the code
+changes.
+
+1. **В1 — bulk acceptance stays.** `accept` is one of the nine operations
+   (`SERVICE_REQUEST_BULK_OPERATIONS` in `packages/contracts/src/service-requests.ts`) and the
+   selection bar offers it (`OPERATION_BY_KEY` in `apps/web/src/pages/service/serviceBulkCommands.ts`).
+2. **В2 — bulk archiving asks no reason**, the same as the single archive: the `archive` variant of
+   `serviceRequestBulkSchema` carries only the rows.
+3. **В3 — the cap is 50**: `SERVICE_REQUEST_BULK_LIMIT = 50`, the smallest page size.
+4. **В4 — the batch journal lives 90 days**: `SERVICE_REQUEST_BULK_RETENTION_DAYS` defaults to 90
+   (`apps/api/src/config.ts`). It is a setting, so a longer term is a configuration change, not a
+   release.
+5. **В5 — no bulk restore.** The «Архив» tab (`apps/web/src/pages/service/ArchiveTab.tsx`) gets
+   no selection bar, and the operation list has no restore.
+
+What is left of S-17 is the release record (ADR 0077) — a migration of its own, outside this
+decision record.
