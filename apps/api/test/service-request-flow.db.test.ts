@@ -5062,21 +5062,67 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         'пишут её стороны и автор',
       );
 
-      // Доводим заявку до состояния, из которого закрывают работы, руками назначенного.
+      /*
+       * THE ESTIMATE IS ITS AUTHOR'S, NOT EVERY ASSIGNED PERSON'S (workflow-fixes plan Р6). The
+       * named executor of this mixed assignment is a real side of the request — he took it into
+       * work above — and still gets 403 at all four estimate doors: writing the lines, submitting,
+       * withdrawing and attaching the «Объём работ» document. The contractor's offer is written by
+       * the contractor; before Р6 the own employee could rewrite it through the API.
+       */
+      refused(
+        await inject(
+          'PUT',
+          `/api/v1/service-requests/${assigned.id}/estimate`,
+          ctx.namedExecutor.auth,
+          { items: ESTIMATE_ITEMS, version: await version(assigned.id) },
+        ),
+        'его составляет назначенная сервисная компания',
+      );
+      refused(
+        await inject(
+          'PATCH',
+          `/api/v1/service-requests/${assigned.id}/estimate/submit`,
+          ctx.namedExecutor.auth,
+          { version: await version(assigned.id) },
+        ),
+        'не предъявляет объём работ',
+      );
+      const ownEstimateFile = await attach(
+        assigned.id,
+        'estimate',
+        `estimate-${randomUUID()}.pdf`,
+        ctx.namedExecutor.auth,
+        ctx.namedExecutor.id,
+      );
+      refused(ownEstimateFile.res, 'прикладывает назначенная сервисная компания');
+
+      // Доводим заявку до состояния, из которого закрывают работы, руками подрядчика — автора
+      // объёма работ.
       const put = await inject(
         'PUT',
         `/api/v1/service-requests/${assigned.id}/estimate`,
-        ctx.namedExecutor.auth,
+        ctx.service.auth,
         { items: ESTIMATE_ITEMS, version: await version(assigned.id) },
       );
       expect(put.statusCode, put.body).toBe(200);
+      const contractorFile = await attach(assigned.id, 'estimate', `estimate-${randomUUID()}.pdf`);
+      expect(contractorFile.res.statusCode, contractorFile.res.body).toBe(200);
       const submitted = await inject(
         'PATCH',
         `/api/v1/service-requests/${assigned.id}/estimate/submit`,
-        ctx.namedExecutor.auth,
-        { version: (put.json() as ServiceRequestDto).version },
+        ctx.service.auth,
+        { version: await version(assigned.id) },
       );
       expect(submitted.statusCode, submitted.body).toBe(200);
+      refused(
+        await inject(
+          'PATCH',
+          `/api/v1/service-requests/${assigned.id}/estimate/reopen`,
+          ctx.namedExecutor.auth,
+          { reason: 'хочу поправить цены подрядчика', version: await version(assigned.id) },
+        ),
+        'не возвращает объём работ в правку',
+      );
       const approved = await inject(
         'PATCH',
         `/api/v1/service-requests/${assigned.id}/estimate/approval`,

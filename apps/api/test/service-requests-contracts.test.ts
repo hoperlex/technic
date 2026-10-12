@@ -954,9 +954,26 @@ describe('документы заявки', () => {
     };
     const byService = { kind: 'repair', serviceCounterpartyId: UUID } as const;
     const internal = { kind: 'repair', serviceCounterpartyId: null } as const;
+    // The contractor's own document is attached by the contractor (workflow-fixes plan Р6), not by
+    // the own employee named beside him.
+    const CONTRACTOR: AccessSubject = { role: 'operator', counterpartyType: 'service' };
+    const BY_COUNTERPARTY: ServiceExecutorAssignment = {
+      actsForAssignedCounterparty: true,
+      isNamedExecutor: false,
+    };
     expect(canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, byService)).toBe(
-      true,
+      false,
     );
+    expect(
+      canAttachServiceFile(
+        'estimate',
+        'in_work',
+        'finance',
+        CONTRACTOR,
+        BY_COUNTERPARTY,
+        byService,
+      ),
+    ).toBe(true);
     expect(canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, internal)).toBe(
       false,
     );
@@ -968,9 +985,12 @@ describe('документы заявки', () => {
       }),
     ).toBe(false);
     // Форма подшивки — производный перечень, и вид уходит из неё вместе с правилом.
-    expect(attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, byService)).toContain(
-      'estimate',
-    );
+    expect(
+      attachableServiceFileKinds('in_work', 'finance', CONTRACTOR, BY_COUNTERPARTY, byService),
+    ).toContain('estimate');
+    expect(
+      attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, byService),
+    ).not.toContain('estimate');
     expect(
       attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, internal),
     ).not.toContain('estimate');

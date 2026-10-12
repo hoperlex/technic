@@ -791,11 +791,11 @@ describe.skipIf(!DB_URL)('объём работ документом и осво
   // ── Д6. Заявление от чужой стороны ──
 
   describe('Д6. освобождение заявляет только оператор сервисной компании', () => {
-    it('свой поимённый исполнитель предъявляет, но освобождения не заявляет — 403', async () => {
+    it('администратор предъявляет, но освобождения не заявляет — 403; свой исполнитель не предъявляет вовсе', async () => {
       await setFlag('service_estimate_exemption', true);
       const created = await inject('POST', REQUESTS, ctx.customer.auth, {
         officeEquipmentId: await makeEquipment(),
-        description: 'Подрядчик назначен, ведёт заявку свой сисадмин поимённо',
+        description: 'Подрядчик назначен, рядом поимённо свой сисадмин',
         responsibleName: 'Иванов Иван Иванович',
         responsiblePhone: '+79990000000',
       });
@@ -806,8 +806,7 @@ describe.skipIf(!DB_URL)('объём работ документом и осво
        * ПОДРЯДЧИК НА ЗАЯВКЕ ЕСТЬ, И ОН ЗДЕСЬ ОБЯЗАТЕЛЕН: без него объём работ не составляют вовсе
        * (`serviceRequestNeedsEstimate` — за работу своего сотрудника не платят), и отказ пришёл бы
        * раньше заявления, ничего про него не доказав. Поимённый исполнитель стоит рядом с
-       * подрядчиком — законное сочетание (§5.2 почтовой части): заявку ведёт свой сисадмин, а
-       * деньги идут через сервисную компанию.
+       * подрядчиком — законное сочетание (§5.2 почтовой части).
        */
       const assigned = await inject('PUT', `${REQUESTS}/${id}/executors`, ctx.operator.auth, {
         userIds: [ctx.executor.id],
@@ -820,8 +819,34 @@ describe.skipIf(!DB_URL)('объём работ документом и осво
       });
       expect(started.statusCode, started.body).toBe(200);
 
-      const put = await inject('PUT', `${REQUESTS}/${id}/estimate`, ctx.executor.auth, {
+      /*
+       * THE OWN EMPLOYEE IS NOT THE ESTIMATE'S AUTHOR (workflow-fixes plan Р6): named beside the
+       * contractor he works on the request, but the contractor's offer is not his to write or
+       * submit — with or without the declaration.
+       */
+      const ownPut = await inject('PUT', `${REQUESTS}/${id}/estimate`, ctx.executor.auth, {
         items: [{ kind: 'service', name: 'Работа своими силами', quantity: 1, unitPrice: 3_000 }],
+        version: await versionOf(id),
+      });
+      expect(ownPut.statusCode, ownPut.body).toBe(403);
+      const ownSubmit = await inject(
+        'PATCH',
+        `${REQUESTS}/${id}/estimate/submit`,
+        ctx.executor.auth,
+        {
+          mode: 'items',
+          version: await versionOf(id),
+        },
+      );
+      expect(ownSubmit.statusCode, ownSubmit.body).toBe(403);
+
+      /*
+       * The one subject left who may submit and may not declare (ADR 0208, decision 4) is the
+       * administrator: the estimate permission makes him its author on any request, and the
+       * declaration belongs to the service company's operator only.
+       */
+      const put = await inject('PUT', `${REQUESTS}/${id}/estimate`, ctx.admin.auth, {
+        items: [{ kind: 'service', name: 'Работа по договору', quantity: 1, unitPrice: 3_000 }],
         version: await versionOf(id),
       });
       expect(put.statusCode, put.body).toBe(200);
@@ -831,7 +856,7 @@ describe.skipIf(!DB_URL)('объём работ документом и осво
        * освобождения проходит (ниже). Иначе случай доказывал бы только то, что у него нет права
        * предъявлять, — а он как раз есть.
        */
-      const denied = await inject('PATCH', `${REQUESTS}/${id}/estimate/submit`, ctx.executor.auth, {
+      const denied = await inject('PATCH', `${REQUESTS}/${id}/estimate/submit`, ctx.admin.auth, {
         mode: 'items',
         exemption: { note: 'Тоже мелкий ремонт' },
         version: await versionOf(id),
@@ -841,15 +866,10 @@ describe.skipIf(!DB_URL)('объём работ документом и осво
       expect(await exemptionsOf(id)).toHaveLength(0);
       expect(await revisionsOf(id)).toHaveLength(0);
 
-      const allowed = await inject(
-        'PATCH',
-        `${REQUESTS}/${id}/estimate/submit`,
-        ctx.executor.auth,
-        {
-          mode: 'items',
-          version: await versionOf(id),
-        },
-      );
+      const allowed = await inject('PATCH', `${REQUESTS}/${id}/estimate/submit`, ctx.admin.auth, {
+        mode: 'items',
+        version: await versionOf(id),
+      });
       expect(allowed.statusCode, allowed.body).toBe(200);
       const state = await stateOf(id);
       expect(state.estimate_pending_revision).toBe(1);

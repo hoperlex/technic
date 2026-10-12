@@ -24,6 +24,7 @@ import {
 import { alias } from 'drizzle-orm/pg-core';
 import {
   acceptServiceRequestSchema,
+  actsAsEstimateAuthor,
   actsAsServiceOperator,
   actsForCounterparty,
   allowsEstimateApprovalInStatus,
@@ -1803,6 +1804,28 @@ async function assertExecutorSide(
   if (can(p, 'serviceRequests.estimate')) return;
   const who = p.role ? roleLabels[p.role] : 'Учётная запись';
   throw serviceDenied.side(`${who} не ${action} — это шаг назначенного исполнителя`, row.id);
+}
+
+/**
+ * The side of an estimate edit that changes no status — writing the lines (`PUT /:id/estimate`).
+ *
+ * Not `assertExecutorSide` (workflow-fixes plan Р6): that one answers «an assigned person or the
+ * estimate permission», and on a mixed assignment the own employee would rewrite the contractor's
+ * invoice through this route without a single button in the portal. The estimate belongs to its
+ * author, and the contract predicate `actsAsEstimateAuthor` is the one answer the submit and
+ * reopen predicates and the file side give as well.
+ */
+async function assertEstimateAuthor(
+  p: Principal,
+  row: RequestRow,
+  exec: typeof db | Tx = db,
+): Promise<void> {
+  if (actsAsEstimateAuthor(p, await executorAssignment(p, row, exec))) return;
+  const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+  throw serviceDenied.side(
+    `${who} не ведёт объём работ этой заявки — его составляет назначенная сервисная компания`,
+    row.id,
+  );
 }
 
 /**
@@ -6679,8 +6702,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
       const row = await requireEditable(p, req.params.id);
-      await assertExecutorSide(p, row, 'ведёт объём работ этой заявки');
+      // The subject first, the side second — the order of submit and reopen: on an internal
+      // request the estimate is refused as a subject (422) to everyone, and a 403 «not your step»
+      // there would send the assigned executor after a permission that changes nothing.
       assertEstimateApplies(row, 'править');
+      await assertEstimateAuthor(p, row);
       if (row.status !== 'in_work') {
         throw err.conflict(
           `Объём работ правится только в статусе «${serviceRequestStatusLabels.in_work}»`,

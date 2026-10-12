@@ -79,6 +79,9 @@ const CHECKS = [
   'assertSideAllowed',
   'assertTransition',
   'assertExecutorSide',
+  // The estimate lines' side since the workflow-fixes plan Р6: without the name the inventory
+  // would show `PUT /:id/estimate` with no side check at all.
+  'assertEstimateAuthor',
   'assertConsumableIssuer',
   'assertCanHold',
   'assertServiceRequestEditable',

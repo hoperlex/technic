@@ -581,7 +581,17 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
       ctx.executor.auth,
       { items: ESTIMATE_ITEMS, version: await version(request.id) },
     );
-    expect(estimate.statusCode, estimate.body).toBe(403);
+    /*
+     * 422 about the REQUEST, not 403 about the subject: since the workflow-fixes plan Р6 the lines
+     * door asks the subject first, as submit and reopen always did — an internal request has no
+     * estimate author at all, and the refusal names the request to everyone. The side refusal of
+     * this door (the own employee on a contractor's request) is pinned in
+     * `service-request-flow.db.test.ts`.
+     */
+    expect(estimate.statusCode, estimate.body).toBe(422);
+    expect((estimate.json() as { message: string }).message).toContain(
+      'объём работ по ней не составляют',
+    );
 
     const complete = await inject(
       'PATCH',

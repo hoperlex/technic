@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ACCESS_PROFILES,
   accessProfileLabel,
+  actsAsEstimateAuthor,
+  actsAsServiceExecutor,
   allowedServiceStatusTransitions,
   can,
   canApproveServiceEstimate,
@@ -1619,8 +1621,12 @@ describe('действия, у которых больше нет дуги (Р11
    */
   it('предъявляет объём работ исполнитель: по ремонту, из работы и не поверх висящего', () => {
     expect(canSubmitServiceEstimate(serviceRow(), service, BY_COUNTERPARTY)).toBe(true);
-    expect(canSubmitServiceEstimate(serviceRow(), namedExecutor, BY_NAME)).toBe(true);
+    // The own employee named on a contractor's request does not submit the contractor's offer
+    // (workflow-fixes plan Р6): the estimate is its author's, not every assigned person's.
+    expect(canSubmitServiceEstimate(serviceRow(), namedExecutor, BY_NAME)).toBe(false);
     expect(canSubmitServiceEstimate(serviceRow(), namedExecutor, NOT_ASSIGNED)).toBe(false);
+    // The administrator finishes a stuck request for anyone — by the estimate permission.
+    expect(canSubmitServiceEstimate(serviceRow(), admin, NOT_ASSIGNED)).toBe(true);
     expect(
       canSubmitServiceEstimate(
         serviceRow({ estimatePendingRevision: 1 }),
@@ -1638,6 +1644,25 @@ describe('действия, у которых больше нет дуги (Р11
         status,
       ).toBe(false);
     }
+  });
+
+  /**
+   * The estimate's author (workflow-fixes plan Р6) is narrower than the executor side by exactly
+   * the named own employee: on a mixed assignment he works on the request but does not write,
+   * submit or withdraw the contractor's offer. Every other branch answers as the executor side.
+   */
+  it('объём работ ведёт его автор: подрядчик или право сметы, не всякий назначенный', () => {
+    expect(actsAsEstimateAuthor(service, BY_COUNTERPARTY)).toBe(true);
+    expect(actsAsEstimateAuthor(service, NOT_ASSIGNED)).toBe(false);
+    expect(actsAsEstimateAuthor(namedExecutor, BY_NAME)).toBe(false);
+    expect(actsAsServiceExecutor(namedExecutor, BY_NAME)).toBe(true);
+    expect(actsAsEstimateAuthor(admin, NOT_ASSIGNED)).toBe(true);
+    for (const operator of [...OPERATORS, ...IT_APPROVERS]) {
+      expect(actsAsEstimateAuthor(operator, BY_NAME), accessProfileLabel(operator)).toBe(false);
+    }
+    // The portal passes its own membership answer (ADR 0223); the rule stays the contract's.
+    expect(actsAsEstimateAuthor(namedExecutor, NOT_ASSIGNED, () => true)).toBe(true);
+    expect(actsAsEstimateAuthor(admin, NOT_ASSIGNED, () => false)).toBe(false);
   });
 
   /**
@@ -1770,6 +1795,10 @@ describe('действия, у которых больше нет дуги (Р11
         namedExecutor,
         NOT_ASSIGNED,
       ),
+    ).toBe(false);
+    // Named on the contractor's request, he still is not the estimate's author (Р6).
+    expect(
+      canReopenServiceEstimate(serviceRow({ estimatePendingRevision: 2 }), namedExecutor, BY_NAME),
     ).toBe(false);
     for (const status of SERVICE_REQUEST_STATUSES.filter((s) => s !== 'in_work')) {
       expect(

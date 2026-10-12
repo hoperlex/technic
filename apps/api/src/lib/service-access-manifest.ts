@@ -376,8 +376,10 @@ export const SERVICE_ACCESS_MANIFEST = {
     side: 'executor',
     state: 'canStartServiceWork',
   },
-  // Правка состава объёма работ: сторону спрашивает `assertExecutorSide`, состояние — замок Р9
-  // («предъявление не висит»); статус `in_work` и вид «ремонт» проверяются там же.
+  // Editing the estimate lines: the side is asked by `assertEstimateAuthor` (the contractor's
+  // operator or the estimate permission, workflow-fixes plan Р6 — narrower than the executor side
+  // by the own employee of a mixed assignment), the state by the Р9 lock («предъявление не висит»);
+  // the `in_work` status and the repair kind are checked there too.
   'PUT /api/v1/service-requests/:id/estimate': {
     scope: 'visibility',
     side: 'executor',

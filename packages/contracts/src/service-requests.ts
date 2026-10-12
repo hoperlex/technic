@@ -856,6 +856,38 @@ export function actsAsServiceExecutor(
 }
 
 /**
+ * Whose estimate this is (plan `docs/office-equipment-workflow-fixes-plan.md`, Р6): the operator of
+ * the assigned contractor, or the holder of `serviceRequests.estimate` — outside the service
+ * counterparty that is only the administrator, who finishes a stuck request for anyone.
+ *
+ * NARROWER THAN `actsAsServiceExecutor` BY EXACTLY ONE BRANCH — the named in-house executor. The
+ * owner's answer of 08.09.2026: the estimate is dropped for internal requests only and stays with
+ * the contractor's people. On a mixed assignment (an own system administrator plus a service
+ * company) `serviceRequestNeedsEstimate` is true, and the wide side would let the own employee
+ * write, submit, withdraw and document the contractor's invoice — through the API, without a
+ * single button. The estimate is the contractor's commercial offer; the own employee is paid by
+ * nobody and has nothing to offer.
+ *
+ * Every estimate door asks this one function — `PUT /:id/estimate`, `canSubmitServiceEstimate`,
+ * `canReopenServiceEstimate`, the side of the `estimate` file kind and, through those predicates,
+ * the portal's menu and tab. A copy of the rule in any of them would reopen the door it closes.
+ * Approval is NOT here: the approving side is counted differently and on purpose
+ * (`canApproveServiceEstimate`).
+ *
+ * `has` answers the permission, as in `actsAsServiceExecutor`: the server leaves the matrix
+ * default, the portal may pass its `can` over the server's list (ADR 0223).
+ */
+export function actsAsEstimateAuthor(
+  subject: AccessSubject | null | undefined,
+  assignment: ServiceExecutorAssignment,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
+): boolean {
+  if (!subject) return false;
+  if (actsForCounterparty(subject, 'service')) return assignment.actsForAssignedCounterparty;
+  return has('serviceRequests.estimate');
+}
+
+/**
  * Сторона «Ведения» — тот, кто ведёт заявку по циклу: администратор либо держатель набора
  * `office_equipment_operator`, и ни при каких условиях не подрядчик.
  *
@@ -1346,6 +1378,9 @@ export function canStartServiceWork(
  * Один вид спрашивать перестало быть достаточно (Р5): за работу своего сотрудника не платят, и
  * предъявлять по внутреннему ремонту нечего — на оба условия отвечает `serviceRequestNeedsEstimate`
  * первой строкой.
+ *
+ * The side is the estimate's author (`actsAsEstimateAuthor`, workflow-fixes plan Р6), not every
+ * assigned person: on a mixed assignment the own employee does not submit the contractor's offer.
  */
 export function canSubmitServiceEstimate(
   row: Pick<
@@ -1358,7 +1393,7 @@ export function canSubmitServiceEstimate(
   if (!serviceRequestNeedsEstimate(row)) return false;
   if (row.status !== 'in_work') return false;
   if (serviceEstimatePending(row)) return false;
-  return actsAsServiceExecutor(subject, assignment);
+  return actsAsEstimateAuthor(subject, assignment);
 }
 
 /**
@@ -1611,6 +1646,10 @@ export function allowsEstimateApprovalInStatus(
  * встречаются исторически, — и признак Р4 стоит явной первой строкой: возвращать в правку объём
  * работ, которого по заявке не составляют, некому и незачем. Историческая ревизия остаётся видна
  * только на чтение (Р7).
+ *
+ * Withdrawn by the same side that submits it — the estimate's author (`actsAsEstimateAuthor`,
+ * workflow-fixes plan Р6): a door the in-house executor of a mixed assignment may not open on the
+ * way in must not open for him on the way back either.
  */
 export function canReopenServiceEstimate(
   row: Pick<
@@ -1627,7 +1666,7 @@ export function canReopenServiceEstimate(
   if (!serviceRequestNeedsEstimate(row)) return false;
   if (row.status !== 'in_work') return false;
   if (!serviceEstimatePending(row) && row.approvedEstimateRevision === null) return false;
-  return actsAsServiceExecutor(subject, assignment);
+  return actsAsEstimateAuthor(subject, assignment);
 }
 
 /**
@@ -4793,7 +4832,7 @@ interface ServiceFileKindPolicy {
  * тот, у кого есть право `serviceRequests.files` и кому заявка видна, — фотографию поломки грузит
  * заказчик, и требовать от него стороны цикла было бы отказом половине заявок.
  */
-export type ServiceFileAttachingSide = 'any' | 'executor' | 'operator';
+export type ServiceFileAttachingSide = 'any' | 'executor' | 'estimate_author' | 'operator';
 
 /**
  * Сторона словами — для текста отказа. Рядом с таблицей, а не в маршруте: перечень сторон вида
@@ -4803,6 +4842,7 @@ export type ServiceFileAttachingSide = 'any' | 'executor' | 'operator';
 export const serviceFileAttachingSideLabels: Record<ServiceFileAttachingSide, string> = {
   any: 'участник заявки',
   executor: 'назначенный исполнитель',
+  estimate_author: 'назначенная сервисная компания',
   operator: 'тот, кто ведёт заявку',
 };
 
@@ -4828,7 +4868,12 @@ const SERVICE_FILE_KIND_POLICY: Record<ServiceFileKind, ServiceFileKindPolicy> =
     // Объём работ предлагает тот, кто будет их делать. «Ведение» его СОГЛАСУЕТ, а не пишет:
     // подпись под собственным предложением не согласование (та же граница, что у прав в матрице —
     // `estimate` и `approveEstimate` одному субъекту не выдают).
-    attachedBySide: ['executor'],
+    //
+    // Its own side, not `executor` (workflow-fixes plan Р6): the document of the contractor's offer
+    // is attached by the estimate's author. With the wide executor side the own employee of a
+    // mixed assignment would attach a priced document to the contractor's request — the same door
+    // `PUT /:id/estimate` closes, reopened by the file route.
+    attachedBySide: ['estimate_author'],
     // Пятого столбца «нужен ли объём работ вообще» в таблице нет и быть не может: он зависит от
     // строки заявки, а не от вида документа, — и спрашивается отдельной строкой в
     // `canAttachServiceFile` (Р5, Н17). Ищущему здесь оставлена эта ссылка.
@@ -4906,7 +4951,8 @@ export function serviceFileAttachingSides(
  *
  * Сторона исполнителя спрашивается КОНТРАКТНЫМ `actsAsServiceExecutor` — тем же, каким её читают
  * коридор ходов, предикаты действий и портал: третьего представления стороны в модуле быть не
- * должно, а разошлись бы они молча — кнопкой, ведущей в 403.
+ * должно, а разошлись бы они молча — кнопкой, ведущей в 403. The estimate's author is asked of
+ * `actsAsEstimateAuthor`, the function the estimate doors themselves ask (workflow-fixes plan Р6).
  *
  * «Ведение» — правом `serviceRequests.status`, и это ровно та сторона, что доводит заявку по
  * циклу. Финансовая аудитория стороной не является ни в одном виде: `serviceRequests.finance`
@@ -4927,6 +4973,8 @@ export function canAttachServiceFileSide(
         return true;
       case 'executor':
         return actsAsServiceExecutor(subject, assignment);
+      case 'estimate_author':
+        return actsAsEstimateAuthor(subject, assignment);
       case 'operator':
         return can(subject, 'serviceRequests.status');
     }

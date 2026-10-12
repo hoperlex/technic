@@ -1170,17 +1170,22 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
         { version: await versionOf(dto.id) },
       );
       expect(started.statusCode, started.body).toBe(200);
+      /*
+       * The estimate is written and submitted by its author, the assigned contractor
+       * (workflow-fixes plan Р6): the named own employee works on the request but does not write
+       * the contractor's offer. Approval is untouched by Р6 — the second door below is still his.
+       */
       const put = await inject(
         'PUT',
         `/api/v1/service-requests/${dto.id}/estimate`,
-        ctx.executor.auth,
+        ctx.serviceA.auth,
         { items: ESTIMATE_ITEMS, version: await versionOf(dto.id) },
       );
       expect(put.statusCode, put.body).toBe(200);
       const submitted = await inject(
         'PATCH',
         `/api/v1/service-requests/${dto.id}/estimate/submit`,
-        ctx.executor.auth,
+        ctx.serviceA.auth,
         { version: await versionOf(dto.id) },
       );
       expect(submitted.statusCode, submitted.body).toBe(200);
@@ -1207,14 +1212,14 @@ describe.skipIf(!DB_URL)('заявки на обслуживание: облас
       const reopened = await inject(
         'PATCH',
         `/api/v1/service-requests/${dto.id}/estimate/reopen`,
-        ctx.executor.auth,
+        ctx.serviceA.auth,
         { reason: 'пересчитываем состав', version: await versionOf(dto.id) },
       );
       expect(reopened.statusCode, reopened.body).toBe(200);
       const resubmitted = await inject(
         'PATCH',
         `/api/v1/service-requests/${dto.id}/estimate/submit`,
-        ctx.executor.auth,
+        ctx.serviceA.auth,
         { version: await versionOf(dto.id) },
       );
       expect(resubmitted.statusCode, resubmitted.body).toBe(200);

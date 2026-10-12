@@ -50,6 +50,8 @@ const EXECUTOR: AccessSubject = {
 };
 /** Оператор сервисной компании: назначается контрагент целиком, поимённых строк у него не бывает. */
 const SERVICE_COMPANY: AccessSubject = { role: 'operator', counterpartyType: 'service' };
+/** The administrator: the estimate permission makes him the estimate's author on any request. */
+const ADMIN: AccessSubject = { role: 'admin' };
 
 const NOT_ASSIGNED: ServiceExecutorAssignment = {
   actsForAssignedCounterparty: false,
@@ -548,8 +550,12 @@ describe('видимость и подшивка документов', () => {
       warranty_card: ['in_work', 'done', 'accepted', 'cancelled'],
     };
     for (const kind of SERVICE_FILE_KINDS) {
+      // The estimate document is attached by its author, the assigned contractor (Р6); every
+      // other kind by the assigned executor, as before.
+      const [who, how] =
+        kind === 'estimate' ? [SERVICE_COMPANY, ASSIGNED_COUNTERPARTY] : [EXECUTOR, NAMED];
       const allowed = SERVICE_REQUEST_STATUSES.filter((status) =>
-        canAttachServiceFile(kind, status, 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR),
+        canAttachServiceFile(kind, status, 'finance', who, how, CONTRACTOR_REPAIR),
       );
       expect([...allowed], kind).toEqual(before[kind]);
     }
@@ -573,7 +579,7 @@ describe('видимость и подшивка документов', () => {
       grantPermissions: ['serviceRequests.execute', 'serviceRequests.finance'],
     };
     expect(serviceRequestAudienceOf(IT_SERVICE, NOT_ASSIGNED)).toBe('finance');
-    for (const kind of ['act', 'invoice', 'warranty_card', 'estimate'] as const) {
+    for (const kind of ['act', 'invoice', 'warranty_card'] as const) {
       expect(
         canAttachServiceFile(
           kind,
@@ -590,6 +596,20 @@ describe('видимость и подшивка документов', () => {
         canAttachServiceFile(kind, 'in_work', 'finance', IT_SERVICE, NAMED, CONTRACTOR_REPAIR),
         kind,
       ).toBe(true);
+    }
+    // The estimate document is not the executor's paper but its author's (workflow-fixes plan Р6):
+    // the own employee named on the contractor's request is refused it with or without the name.
+    for (const assignment of [NOT_ASSIGNED, NAMED]) {
+      expect(
+        canAttachServiceFile(
+          'estimate',
+          'in_work',
+          'finance',
+          IT_SERVICE,
+          assignment,
+          CONTRACTOR_REPAIR,
+        ),
+      ).toBe(false);
     }
     // Вложение стороны не спрашивает — иначе половина заявок осталась бы без фотографии поломки.
     expect(
@@ -669,31 +689,45 @@ describe('видимость и подшивка документов', () => {
    * оплачивать), и запрещать их этим правилом было бы вторым правилом под одним именем.
    */
   it('объём работ не подшивают к заявке, которую ведёт свой сотрудник', () => {
+    // The subject is the administrator: his side (the estimate permission) holds on both requests,
+    // so the only difference left between the two answers is the request itself.
     expect(
-      canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR),
+      canAttachServiceFile(
+        'estimate',
+        'in_work',
+        'finance',
+        ADMIN,
+        NOT_ASSIGNED,
+        CONTRACTOR_REPAIR,
+      ),
     ).toBe(true);
     expect(
-      canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, INTERNAL_REPAIR),
+      canAttachServiceFile('estimate', 'in_work', 'finance', ADMIN, NOT_ASSIGNED, INTERNAL_REPAIR),
     ).toBe(false);
     // Перечень формы — производный, и признак обязан доехать и до него: не приди он, форма
     // предлагала бы «Объём работ», а сервер отвечал бы на выбранный файл отказом.
     expect(
-      attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, INTERNAL_REPAIR),
+      attachableServiceFileKinds('in_work', 'finance', ADMIN, NOT_ASSIGNED, INTERNAL_REPAIR),
     ).not.toContain('estimate');
-    expect(attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR)) //
-      .toContain('estimate');
+    expect(
+      attachableServiceFileKinds('in_work', 'finance', ADMIN, NOT_ASSIGNED, CONTRACTOR_REPAIR),
+    ).toContain('estimate');
     // Остальные виды признак Р4 не спрашивают: перечни внутренней и подрядной заявки различаются
     // ровно на «Объём работ», и ни на что больше.
     expect(
-      attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, CONTRACTOR_REPAIR).filter(
-        (kind) => kind !== 'estimate',
-      ),
+      attachableServiceFileKinds(
+        'in_work',
+        'finance',
+        ADMIN,
+        NOT_ASSIGNED,
+        CONTRACTOR_REPAIR,
+      ).filter((kind) => kind !== 'estimate'),
     ).toEqual([
-      ...attachableServiceFileKinds('in_work', 'finance', EXECUTOR, NAMED, INTERNAL_REPAIR),
+      ...attachableServiceFileKinds('in_work', 'finance', ADMIN, NOT_ASSIGNED, INTERNAL_REPAIR),
     ]);
     // Заявка на расходники — тот же ответ и по прежней причине: объёма работ у неё нет вовсе.
     expect(
-      canAttachServiceFile('estimate', 'in_work', 'finance', EXECUTOR, NAMED, {
+      canAttachServiceFile('estimate', 'in_work', 'finance', ADMIN, NOT_ASSIGNED, {
         kind: 'consumable',
         serviceCounterpartyId: UUID,
       }),

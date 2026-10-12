@@ -3,6 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { AuthUser, ServiceRequestDto } from '@technic/contracts';
 import { apiError, json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
+import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
 import {
@@ -233,12 +234,9 @@ describe('второй шаг «Работы выполнены»', () => {
 
 describe('пункт денежного шага называет исход, который посчитает сервер', () => {
   it.each<[string, AuthUser, ServiceRequestDto]>([
-    // A named in-house executor may not declare the exemption at all (`canDeclareExemption`).
-    [
-      'поимённому своему исполнителю',
-      serviceInHouseExecutor({ features: [DOCUMENT_FLAG] }),
-      IN_WORK,
-    ],
+    // The administrator is the estimate's author by permission but may not declare the exemption
+    // for the service company (`canDeclareExemption`, ADR 0208 decision 4).
+    ['администратору', authUser({ role: 'admin', features: [DOCUMENT_FLAG] }), IN_WORK],
     // The declaration would be recorded as `observed`: the signature is still collected.
     ['при выключенном ключе освобождения', serviceExecutor({ features: [DOCUMENT_FLAG] }), IN_WORK],
     // A resolved dispute is stronger than the new door (`evaluateExemption`, second input).
@@ -274,6 +272,18 @@ describe('пункт денежного шага называет исход, к
       });
     },
   );
+
+  it('своему поимённому исполнителю денежного шага не положено: объём работ — подрядчика (Р6)', async () => {
+    // Named beside the contractor, the own employee is not the estimate's author
+    // (`actsAsEstimateAuthor`, workflow-fixes plan Р6): no money step in any wording.
+    renderTab(serviceInHouseExecutor({ features: [DOCUMENT_FLAG, EXEMPTION_FLAG] }), IN_WORK);
+    await screen.findByText('СО-14');
+    const labels = labelsOf(await rowMenu());
+    expect(labels).toContain('Обсуждение');
+    for (const money of ['Работы выполнены', 'Передать документ на согласование', 'Объём работ']) {
+      expect(labels).not.toContain(money);
+    }
+  });
 
   it('без ключа подачи документом у исполнителя денежного шага нет вовсе', async () => {
     // The server rejects a document body with 422 while the key is off, and the row editor is no
