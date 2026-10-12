@@ -1256,7 +1256,24 @@ export const ACCESS_MANIFEST = {
   'PATCH /api/v1/mech-requests/:id': { kind: 'permissions', allOf: ['mechRequests.update'] },
   'PATCH /api/v1/mech-requests/:id/deal': { kind: 'permissions', allOf: ['mechRequests.status'] },
   'PATCH /api/v1/mech-requests/:id/status': { kind: 'permissions', allOf: ['mechRequests.status'] },
+  // The old immediate extension, kept only for tabs of bundles with contract 6 or older; release R2
+  // removes the route and this line together (ADR 0171, stage 3; ADR 0226, S-21).
   'PATCH /api/v1/mech-requests/:id/extend': { kind: 'permissions', allOf: ['mechRequests.extend'] },
+  // The extension visa (ADR 0171, stage 3): the dispatcher asks and withdraws (`.extend`), the
+  // site's visa holder decides (`.approve`). "Is it this site's holder" is a question of the row
+  // (`canApproveMechExtension`), not of the route.
+  'POST /api/v1/mech-requests/:id/extension': {
+    kind: 'permissions',
+    allOf: ['mechRequests.extend'],
+  },
+  'PATCH /api/v1/mech-requests/:id/extension': {
+    kind: 'permissions',
+    allOf: ['mechRequests.approve'],
+  },
+  'DELETE /api/v1/mech-requests/:id/extension': {
+    kind: 'permissions',
+    allOf: ['mechRequests.extend'],
+  },
   // Виза площадки и её отзыв — одной ручкой и своим правом (план
   // `docs/mechanization-approval-and-grants-plan.md`, Р1, Р3). Область считает предикат
   // `canApproveMechRequest` уже внутри: манифест отвечает за право, а «своя ли это заявка» —

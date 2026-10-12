@@ -78,8 +78,9 @@ export async function writeAudit(entry: AuditEntry): Promise<void> {
  *    с отзывом сессий, то есть ровно тем же приёмом, что и события пункта 1.
  *
  * 5. **предметные события механизации** — `mech_request.deal`, `.issue`, `.issue_revoke`,
- *    `.extend`, `.complete`, `.approve`, `.approval_revoke` и `mech_request.purge`
- *    (`routes/mech-requests.ts` и сервисы модуля),
+ *    `.extend`, `.complete`, `.approve`, `.approval_revoke`, the extension visa's
+ *    `.extend_request`, `.extend_reject`, `.extend_drop` и `mech_request.purge`
+ *    (`routes/mech-requests.ts`, `routes/mech-request-extension.ts` и сервисы модуля),
  *    план `docs/mechanization-module-plan.md`, Р21. Перечень проверен тем же вопросом, что акт и
  *    сверка: **является ли событие единственным носителем факта**. У пяти предметных является —
  *    строка заявки помнит только «сейчас»: прежняя ставка исправленной договорённости, прежний
@@ -91,6 +92,10 @@ export async function writeAudit(entry: AuditEntry): Promise<void> {
  *    существу) колонки `approved_by`/`approved_at` пусты, и что подпись была, кто её поставил и
  *    когда — не помнит больше ничто. Событие обязано пережить ту же транзакцию, в которой подпись
  *    исчезла, иначе журнал ответит «визу сняли», не ответив, чью.
+ *    **The extension visa** (ADR 0171, stage 3) passes the same test: the request row is
+ *    overwritten by the next request and deleted when withdrawn or dropped with the rental's end,
+ *    so what was asked, why, who refused it and why it went away is remembered by these events
+ *    alone.
  *    У `purge` причина самая сильная из перечня: после него от заявки не остаётся ничего, кроме
  *    строки журнала со снимком, и потерянная запись означает бесследно исчезнувший документ
  *    вместе с деньгами, которые по нему считали. Остальные события модуля (`create`, `update`,

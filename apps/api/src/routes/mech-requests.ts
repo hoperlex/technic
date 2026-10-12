@@ -99,6 +99,8 @@ import {
   mechIssueRevokeChanges,
 } from '../services/mech-request-diff';
 import { loadMechRequestHistory } from '../services/mech-request-history';
+import { dropPendingMechExtension } from '../services/mech-request-extension';
+import { registerMechExtensionRoutes } from './mech-request-extension';
 
 /*
  * Аренда малой механизации (план `docs/mechanization-module-plan.md`): виброплиты, компрессоры,
@@ -126,6 +128,10 @@ import { loadMechRequestHistory } from '../services/mech-request-history';
  *
  * Продление живёт своим правом (`mechRequests.extend`, диспетчер), а не `.status` и не `.update`:
  * оно не двигает заявку по циклу и не правит форму — это согласие платить дальше (Р9).
+ *
+ * Since the extension visa (ADR 0171, stage 3) the dispatcher asks and the site signs: the three
+ * doors `/:id/extension` live in `mech-request-extension.ts`. The old immediate `PATCH /:id/extend`
+ * stays below only for tabs of bundles with contract 6 or older, until release R2 removes it.
  */
 
 const idParams = z.object({ id: z.string().uuid() });
@@ -221,6 +227,8 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
       app.requirePermission('mechRequests.extend', 'Недостаточно прав для продления аренды'),
     ],
   };
+
+  await registerMechExtensionRoutes(app);
 
   r.get('/', { ...auth, schema: { querystring: mechRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
@@ -943,6 +951,11 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
             metadata: { changes: mechCompletionChanges(before, plan.completion) },
           });
         }
+        // The rental ended under a pending extension request (ADR 0171, stage 3): it goes away in
+        // this same transaction, or the closed rental would show "waiting for your visa" forever.
+        // Completion is the only transition out of a running rental — cancellation and the return
+        // to «Новая» are closed by `mechTransitionBlocker` once the equipment is issued.
+        if (status === 'done') await dropPendingMechExtension(tx, p.id, id, 'completed');
         return {
           dto: (await loadMechRequestDto(tx, id))!,
           changed: true as const,
@@ -1060,6 +1073,9 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           entityId: id,
           metadata: { changes: mechIssueRevokeChanges(revokedFrom, reason) },
         });
+        // Without the issue mark the rental is no longer running, and a pending extension of it
+        // has nothing to extend (ADR 0171, stage 3).
+        await dropPendingMechExtension(tx, p.id, id, 'issue_revoked');
         return (await loadMechRequestDto(tx, id))!;
       });
     },
@@ -1129,6 +1145,15 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
   );
 
   /**
+   * THE OLD DOOR, kept until release R2 (ADR 0171, stage 3; ADR 0226, decision S-21). It moves the
+   * term at once, without the site's visa, exactly as it did before the visa: the portal of contract
+   * 7 no longer calls it (it asks `POST /:id/extension`), but tabs opened on bundles of contract 6
+   * or older still do until the floor operation raises the client floor to 7, and R2 removes the
+   * route then. Its behaviour is deliberately unchanged: turning it into an alias of the request
+   * would make an old tab say «Продлено» while the term did not move (plan, R10). A pending request
+   * filed through the new door is left as it is: its approval re-reads the term and refuses with
+   * "the term changed", so the two doors cannot move the term twice from one snapshot.
+   *
    * Продление срока аренды (Р9, Р11). Не правка формы и не смена статуса: заявка остаётся ровно
    * там, где была, а меняется обещание платить — поэтому и право своё, и событие своё.
    *
