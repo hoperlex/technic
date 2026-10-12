@@ -4,8 +4,9 @@
   решение 6 — починка находки той же волны по уже принятым правилам плана (§8, §13). Всё
   реализовано на сервере и в портале. Схема не меняется, тела запросов те же; запись выпуска —
   миграция [`0350`](../../apps/api/drizzle/0350_releases_assignment_repair_history.sql). Portal
-  half of K3a (the editor sends no term in the wide `PATCH /vehicle-requests/:id`) — 12.10.2026,
-  release R1; its server prerequisite is open, see the last section
+  half of K3a (the editor sends no term in the wide `PATCH /vehicle-requests/:id`, except for a
+  «Новая» order of an account without the waybill journal) — 12.10.2026, release R1, by owner
+  surveys S-21 and S-22; see the last section
 - Домены: заказ-тс, путевые-листы
 - Область: сервер —
   [vehicle-request-assignment-repair.ts](../../apps/api/src/routes/vehicle-request-assignment-repair.ts)
@@ -200,23 +201,38 @@ UNIQUE.
   букве §8 («union действующих листов») — требовал бы разблокировки всех отработанных бланков
   заявки и возвращал выписку старых дыр при восстановлении с коррекцией.
 
-## K3a, portal half (2026-10-12, survey S-21)
+## K3a, portal half (2026-10-12, surveys S-21 and S-22)
 
-**The split.** Roadmap item C9-K3a removes `dateFrom`/`dateTo` from the wide
-`PATCH /vehicle-requests/:id`, so that the term moves only through the term door of decision 5
+**The split (S-21).** Roadmap item C9-K3a removes `dateFrom`/`dateTo` from the wide
+`PATCH /vehicle-requests/:id`, so that the term moves through the term door of decision 5
 (`PATCH /vehicle-requests/:id/period`). The R1 bundle (client contract 7,
 [ADR 0226](0226-client-floor-seven-and-deploy-preflight.md)) still sent the full body, dates
 included — and a removal is safe at floor 7 only if the contract-7 bundle no longer depends on what
-is removed. The owner decided (S-21): the portal half lands in R1, before its deploy; the server
-removal of the dates is R2, under the same floor 7, with no second floor raise.
+is removed. The owner decided: the portal half lands in R1, before its deploy; the server removal is
+R2, under the same floor 7, with no second floor raise.
+
+**The door stays closed to the customer roles (S-22).** The door's route guards ask `waybills.read`
+on both handlers: its preview names sheet numbers and the people on them. The customer roles that
+edit their own «Новая» orders — `shtab`, `rukstroy`, `site` with «Заказ техники», `department`,
+`department_head` — hold `vehicleRequests.update` without `waybills.read` (the journal is the
+separate «Путевые листы: просмотр и печать» grant, ADR 0192). The owner decided that rights do not
+change: the door keeps its guard, the wide PATCH keeps the dates for orders in status «Новая», and
+R2 removes the dates from the wide PATCH **only for orders in work**. There is no access-model
+change in K3a. A «Новая» order has no vehicle, no paper and no history, so the door would have had
+nothing to show these roles anyway.
 
 **What the portal does now.**
 
-- The editor's wide PATCH of an on-site order carries no term and, with it, no `backdateReason` and
-  no `operationId`: without a term that body moves no calendar, so it has nothing to declare. The
-  server already read an absent date as "untouched", so no server change was needed for this.
-  Creation, conversion (`PATCH /:id/request-type`) and the freight edit keep their calendars — they
-  are not the wide edit of an on-site order.
+- **A «Новая» order edited by an account without `waybills.read`** sends its term in the wide
+  PATCH — one command, as before K3a (`termRidesWideEdit`). The right is read from the server's
+  permission list through the portal's `can` (ADR 0223), the same list the door's guard reads. This
+  route is permanent by S-22, not a fallback: the door is not asked at all.
+- **Everyone else** — every order in work, and a «Новая» order of a journal reader — sends no term
+  and, with it, no `backdateReason` and no `operationId` in the wide PATCH: without a term that body
+  moves no calendar and has nothing to declare. The server already read an absent date as
+  "untouched", so no server change was needed for this. Creation, conversion
+  (`PATCH /:id/request-type`) and the freight edit keep their calendars — they are not the wide edit
+  of an on-site order.
 - A changed term goes through the door **first**, the rest second with the version the door
   returned. The term step is the one with refusals of its own (lead time, the shortening ban,
   backdate rights, a stale preview) and the only one the person may decline in the consequences
@@ -228,34 +244,19 @@ removal of the dates is R2, under the same floor 7, with no second floor raise.
   only the rest with the door's version (a second door call would be the empty command the door
   refuses).
 - An unchanged term never touches the door.
-- A running order of a `waybills.read` holder opens the consequences window, as in wave 4a. What
-  used to ride the wide route quietly — a «Новая» order, an account without the journal — asks the
-  preview and applies a silent one at once (nothing burns or gets issued, nothing is cancelled or
-  re-issued, no sheet asks for a signature; a backdated move's reason comes from the form). A loud
-  preview opens the window. The same rule as the silent vehicle change.
+- A running order of a journal reader opens the consequences window, as in wave 4a. A «Новая»
+  order of a journal reader asks the preview and applies a silent one at once (nothing burns or
+  gets issued, nothing is cancelled or re-issued, no sheet asks for a signature; a backdated move's
+  reason comes from the form). A loud preview opens the window. The same rule as the silent vehicle
+  change.
+- **No fallback on 403.** A refusal by right from the door is shown as it is and not retried through
+  the wide PATCH. It can reach only an account that edits an order in work without the journal: no
+  shipped role does (place roles edit «Новая» only), a hand-made grant set could, and for an order
+  in work S-22 keeps the door as the only route — R2 refuses dates there anyway.
 
-**Server finding: the door is closed to the customer roles.** The door's route guards ask
-`waybills.read` on both handlers. The customer roles that edit their own «Новая» orders — `shtab`,
-`rukstroy`, `site` with «Заказ техники», `department`, `department_head` — hold
-`vehicleRequests.update` without `waybills.read` (the journal is the separate «Путевые листы:
-просмотр и печать» grant, ADR 0192). Today they move the term only through the wide PATCH; after
-R2 they could not move it at all. The portal therefore keeps one **transitional** path: when the
-door's preview answers 403, the term rides the wide PATCH as before K3a. It is the only path of the
-contract-7 bundle that still sends dates there.
-
-**The prerequisite this leaves open** (not implemented in this stage: it changes the access model
-and needs the owner's decision). The door asks `waybills.read` by the plan instead of the route —
-the `effectConditionalPermissions` form the completion door already uses: base
-`vehicleRequests.read` (preview) and `vehicleRequests.update` (apply); `waybills.read` only when the
-plan touches paper or history (sheets to cancel or issue, worked sheets to re-issue, per-sheet
-warnings, cancelled vehicle decisions), asked after the preview's plan, in `authorize` and,
-unconditionally, in `authorizeRepeat`; the apply answer to an account without the right carries no
-assignment history and no sheet numbers. Every account allowed today keeps the same door; an
-account without the right may move a term whose plan touches nothing — a «Новая» order without a
-vehicle — and nothing it could not see before is shown. Old bundles never call the door without the
-right, so the relaxation is additive. Once it is deployed the 403 no longer comes, and the
-transitional path is never taken.
-
-**What R2 must hold.** The dates leave the wide schema only after that relaxation is deployed — in
-R1 or in R2 itself, before the removal. Otherwise the customer roles lose the term edit, and
-lifting it again would need contract 8 and its own floor operation.
+**What R2 must hold.** The wide PATCH refuses `dateFrom`/`dateTo` for an order whose stored status
+is not «Новая» and keeps accepting them for a «Новая» one; the decision is the server's, under the
+row lock, by the stored status. The contract-7 bundle sends dates only on the «Новая» route above,
+so R2 needs no further portal change. The portal's rule and the server's share one condition — the
+status «Новая»; if R2 introduces a contract predicate for it, `termRidesWideEdit` should ask it
+rather than compare the status itself.
