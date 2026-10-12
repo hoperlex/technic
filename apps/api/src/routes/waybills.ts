@@ -36,6 +36,7 @@ import {
   type WaybillDto,
   waybillListQuerySchema,
   type WaybillRequestLinkDto,
+  type WaybillTripLinkDto,
 } from '@technic/contracts';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -51,12 +52,14 @@ import {
   users,
   vehicleModels,
   vehicleRequests,
+  vehicleRequestTrips,
   vehicleRoutes,
   vehicles,
   waybillFiles,
   waybillRequests,
   waybills,
   waybillSeries,
+  waybillTrips,
 } from '../db/schema';
 import { waybillServesRequestWhere, waybillVisibilityWhere } from '../lib/access';
 import { err } from '../lib/errors';
@@ -84,6 +87,8 @@ import {
   waybillEffectiveDate,
 } from '../services/waybill-correction';
 import { lockRequestsOfWaybill } from '../services/waybill-locks';
+import { tripDisplayNumber } from '../services/route-points';
+import { issueCheckOf } from '../services/waybill-issue-record';
 
 /**
  * Журнал учёта путевых листов (ADR 0037).
@@ -238,6 +243,8 @@ const waybillSelect = {
   trailer2RegNumber: waybills.trailer2RegNumber,
   issuedByName: issuers.fullName,
   issuedAt: waybills.issuedAt,
+  // The envelope as stored; `issueCheckOf` reads it, the journal never interprets jsonb itself.
+  issueWarnings: waybills.issueWarnings,
   cancelledAt: waybills.cancelledAt,
   cancelReason: waybills.cancelReason,
   cancelledBy: waybills.cancelledBy,
@@ -363,6 +370,48 @@ async function linksByWaybill(ids: string[]): Promise<Map<string, WaybillRequest
   return map;
 }
 
+/**
+ * Printed task rows by trip (`waybill_trips`, ADR 0108 item 20) — one query per journal page, like
+ * the coupons.
+ *
+ * Inner joins are safe: `waybill_trips.trip_id` is RESTRICT, so a trip that reached paper is never
+ * hard-deleted, and its request cannot go without it. A trip removed later is soft-deleted
+ * (item 13a) and still listed, marked: the journal answers what was printed, not what the request
+ * says today.
+ */
+async function tripsByWaybill(ids: string[]): Promise<Map<string, WaybillTripLinkDto[]>> {
+  const map = new Map<string, WaybillTripLinkDto[]>();
+  if (ids.length === 0) return map;
+  const rows = await db
+    .select({
+      waybillId: waybillTrips.waybillId,
+      tripId: waybillTrips.tripId,
+      slot: waybillTrips.slot,
+      requestId: vehicleRequestTrips.requestId,
+      tripNum: vehicleRequestTrips.num,
+      deletedAt: vehicleRequestTrips.deletedAt,
+      requestNum: vehicleRequests.num,
+    })
+    .from(waybillTrips)
+    .innerJoin(vehicleRequestTrips, eq(vehicleRequestTrips.id, waybillTrips.tripId))
+    .innerJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRequestTrips.requestId))
+    .where(inArray(waybillTrips.waybillId, ids))
+    .orderBy(asc(waybillTrips.slot));
+
+  for (const row of rows) {
+    const list = map.get(row.waybillId) ?? [];
+    list.push({
+      tripId: row.tripId,
+      requestId: row.requestId,
+      displayNumber: tripDisplayNumber(row.requestNum, row.tripNum),
+      slot: row.slot,
+      deleted: row.deletedAt !== null,
+    });
+    map.set(row.waybillId, list);
+  }
+  return map;
+}
+
 /** Кто аннулировал — добором: второй join на учётки ради колонки, которая почти всегда пуста. */
 async function cancelledByNames(rows: WaybillRow[]): Promise<Map<string, string>> {
   const ids = [...new Set(rows.map((r) => r.cancelledBy).filter((v): v is string => !!v))];
@@ -426,6 +475,7 @@ async function printMarksByWaybill(ids: string[]): Promise<Map<string, PrintMark
 function toDto(
   row: WaybillRow,
   links: WaybillRequestLinkDto[],
+  trips: WaybillTripLinkDto[],
   cancelledByName: string | null,
   files: FileDto[],
   marks: PrintMarks = NO_MARKS,
@@ -480,6 +530,8 @@ function toDto(
     // рейс, которого нет, — у ЭСМ-2 и у перенесённой истории места рейса пусто вовсе.
     routeNumber: row.routeNum === null ? null : formatVehicleRouteNumber(row.routeNum),
     requests: links,
+    trips,
+    issueWarnings: issueCheckOf(row.issueWarnings),
     files,
   };
 }
@@ -534,8 +586,9 @@ async function filesByWaybill(ids: string[]): Promise<Map<string, FileDto[]>> {
 async function waybillDtoOr404(p: Principal, id: string): Promise<WaybillDto> {
   const [row] = await loadRows(and(eq(waybills.id, id), waybillVisibilityWhere(p)));
   if (!row) throw err.notFound('Путевой лист не найден');
-  const [links, cancelled, attachments, marks] = await Promise.all([
+  const [links, trips, cancelled, attachments, marks] = await Promise.all([
     linksByWaybill([row.id]),
+    tripsByWaybill([row.id]),
     cancelledByNames([row]),
     filesByWaybill([row.id]),
     printMarksByWaybill([row.id]),
@@ -543,6 +596,7 @@ async function waybillDtoOr404(p: Principal, id: string): Promise<WaybillDto> {
   return toDto(
     row,
     links.get(row.id) ?? [],
+    trips.get(row.id) ?? [],
     cancelled.get(row.cancelledBy ?? '') ?? null,
     attachments.get(row.id) ?? [],
     marks.get(row.id),
@@ -760,8 +814,9 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
           .where(where),
       ]);
       const ids = rows.map((row) => row.id);
-      const [links, cancelled, attachments, marks] = await Promise.all([
+      const [links, trips, cancelled, attachments, marks] = await Promise.all([
         linksByWaybill(ids),
+        tripsByWaybill(ids),
         cancelledByNames(rows),
         filesByWaybill(ids),
         printMarksByWaybill(ids),
@@ -771,6 +826,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
           toDto(
             row,
             links.get(row.id) ?? [],
+            trips.get(row.id) ?? [],
             cancelled.get(row.cancelledBy ?? '') ?? null,
             attachments.get(row.id) ?? [],
             marks.get(row.id),

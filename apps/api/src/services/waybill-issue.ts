@@ -62,6 +62,7 @@ import { selectDrivers } from './drivers';
 import { loadRoutePoints, routeTaskRefs } from './route-points';
 import { hitchedTrailersOf } from './vehicle-routes';
 import { findSeriesByCode, takeNextNumber } from './waybill-numbers';
+import type { IssueWarningsRecord } from './waybill-issue-record';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 /** Читающие функции годятся и вне транзакции: форма спрашивает их до перевода в работу. */
@@ -939,16 +940,12 @@ export function warningsFingerprint(warnings: readonly WaybillWarning[]): string
   return createHash('sha256').update(canonicalWarningPayload(warnings)).digest('hex');
 }
 
-/** Под какими предупреждениями выдан лист — конверт колонки `waybills.issue_warnings` (Р21). */
-export type IssueWarningsRecord =
-  | { schemaVersion: 1; status: 'clean' }
-  | {
-      schemaVersion: 1;
-      status: 'acknowledged';
-      fingerprint: string;
-      /** Список целиком, с сообщениями: через полгода разбираться будут по нему, а не по кодам. */
-      warnings: WaybillWarning[];
-    };
+/*
+ * The envelope of `waybills.issue_warnings` and its reader live in `waybill-issue-record.ts`: a
+ * module without the database, so the journal and a plain unit test read the same code that the
+ * issue writes.
+ */
+export type { IssueWarningsRecord } from './waybill-issue-record';
 
 /**
  * Рукопожатие над готовым набором предупреждений (Р21): пусто — `clean`, подтверждено —

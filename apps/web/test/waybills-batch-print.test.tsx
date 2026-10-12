@@ -50,6 +50,8 @@ const ISSUED: WaybillDto = {
   periodToOriginal: null,
   trimmedAt: null,
   trimReason: '',
+  trips: [],
+  issueWarnings: { status: 'clean', warnings: [] },
   routeId: 'route-1',
   routeNumber: 'Р-12',
   requests: [],

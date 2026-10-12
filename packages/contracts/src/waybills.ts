@@ -893,6 +893,68 @@ export interface WaybillRequestLinkDto {
   status: RequestStatus;
 }
 
+/**
+ * A printed freight task row of the sheet: which trip went on paper as which row
+ * (`waybill_trips`, ADR 0108 item 20).
+ *
+ * Only freight rows within the form's capacity are here. A linear day has no trip, and its row is
+ * named by its coupon in `requests`; a relocation prints its task from the route itself. So an
+ * empty list is a legitimate answer, not a lost link.
+ */
+export interface WaybillTripLinkDto {
+  tripId: string;
+  requestId: string;
+  /** «ТС-40/2» — request number and trip number, the way the route card names the row. */
+  displayNumber: string;
+  /** Task row of the form, 1–10 (ADR 0068): the order of the paper, not of the request. */
+  slot: number;
+  /**
+   * The trip was removed from its request after the sheet was issued (ADR 0108 item 13a). The link
+   * stays: a strict-accounting journal must remember what was printed, and the number is never
+   * reused, so «ТС-40/2» here still means the trip that went on paper.
+   */
+  deleted: boolean;
+}
+
+/**
+ * Under what the sheet's number was spent (`waybills.issue_warnings`, ADR 0108 item 21).
+ *
+ * Three states, not two, and that is the whole point of the column: `not_checked` (issued before
+ * the column existed, or by a path without the handshake — the weekly ESM-2 written by
+ * reconciliation), `clean` (checked, nothing to warn about) and `acknowledged` (warnings were shown
+ * and a person confirmed them). Six months later «not checked» must not read as «all clean».
+ */
+export const WAYBILL_ISSUE_CHECK_STATUSES = ['not_checked', 'clean', 'acknowledged'] as const;
+export type WaybillIssueCheckStatus = (typeof WAYBILL_ISSUE_CHECK_STATUSES)[number];
+
+export const waybillIssueCheckLabels: Record<WaybillIssueCheckStatus, string> = {
+  not_checked: 'При выписке не проверялся',
+  clean: 'Проверен при выписке: предупреждений не было',
+  acknowledged: 'Выписан с подтверждёнными предупреждениями',
+};
+
+/**
+ * One confirmed warning as the person read it at issue time.
+ *
+ * The text is the one stored with the sheet, not re-rendered from today's dictionary: the record
+ * answers «what did the dispatcher agree to», and a reworded message must not rewrite that. The
+ * code is kept as stored, a plain string, for the same reason. The machine facts behind the
+ * fingerprint (person and point ids) are not exposed: nobody reads them, and the journal is open
+ * to scoped readers.
+ */
+export interface WaybillIssueWarningDto {
+  code: string;
+  message: string;
+  /** What the warning is about: «ТС-40/2», «Р-12», the driver's name. */
+  entities: string[];
+}
+
+export interface WaybillIssueCheckDto {
+  status: WaybillIssueCheckStatus;
+  /** The confirmed warnings; empty unless `acknowledged`. */
+  warnings: WaybillIssueWarningDto[];
+}
+
 export interface WaybillDto {
   id: string;
   /** «260604-646-00000004897» — как номер напечатан на бланке. */
@@ -1008,6 +1070,14 @@ export interface WaybillDto {
   routeNumber: string | null;
   /** Заявки, которые машина выполняет по этому листу — талоны заказчиков. */
   requests: WaybillRequestLinkDto[];
+  /**
+   * Printed freight task rows by trip, in form order (ADR 0108 item 20). A coupon answers «whose
+   * work is on this sheet», this list answers «which trip is which row»: a request with three
+   * trips has one coupon and three rows.
+   */
+  trips: WaybillTripLinkDto[];
+  /** Under which warnings the number was spent (ADR 0108 item 21). */
+  issueWarnings: WaybillIssueCheckDto;
   /**
    * Что подшито к бланку: скан заполненного заказчиком оборота, фотография отметок, акт. Портал
    * этих значений не разбирает — журнал учёта отвечает, чем кончился выданный номер.
