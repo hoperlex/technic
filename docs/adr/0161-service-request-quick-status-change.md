@@ -3,7 +3,8 @@
 - Статус: Реализовано (04.09.2026, release 82: record `0274`, version tail corrected by `0281`);
   accepted by the owner on 2026-10-12 (survey S-15). Plan —
   [office-equipment-quick-status-change-plan.md](../office-equipment-quick-status-change-plan.md);
-  source — [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
+  source —
+  [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
   item 10 («Быстрая смена статуса на десктопе и мобильном»). The database schema does not change:
   the release's only migration is its `app_releases` record
 - Область: портал —

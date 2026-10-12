@@ -9,7 +9,8 @@
   `fae2d7f` (ten review findings) and `ed45c03` with `5629212` (the contractor's shared mailbox —
   for its own requests only). Plan —
   [office-equipment-mail-expansion-plan.md](../office-equipment-mail-expansion-plan.md);
-  source — [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
+  source —
+  [office-equipment-chat-followup-backlog.md](../office-equipment-chat-followup-backlog.md),
   item 6 («Полный контур уведомлений Копи-Лайт»). Schema — migrations `0257` (`mail_kind` values,
   including the technical digest kind) and `0258` (the switch table `module_mail_event_settings`)
 - Область: [service-request-mail.ts](../../apps/api/src/services/service-request-mail.ts) и новый

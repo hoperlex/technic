@@ -474,7 +474,8 @@ changes.
 
 1. **В1 — bulk acceptance stays.** `accept` is one of the nine operations
    (`SERVICE_REQUEST_BULK_OPERATIONS` in `packages/contracts/src/service-requests.ts`) and the
-   selection bar offers it (`OPERATION_BY_KEY` in `apps/web/src/pages/service/serviceBulkCommands.ts`).
+   selection bar offers it (`OPERATION_BY_KEY` in
+   `apps/web/src/pages/service/serviceBulkCommands.ts`).
 2. **В2 — bulk archiving asks no reason**, the same as the single archive: the `archive` variant of
    `serviceRequestBulkSchema` carries only the rows.
 3. **В3 — the cap is 50**: `SERVICE_REQUEST_BULK_LIMIT = 50`, the smallest page size.

@@ -309,9 +309,10 @@ defaults the code already implements. Each one was checked against the code on 2
 none of them changes it.
 
 1. **`missing_source` is red at once**, not after three days (§14.1). The intake marks it red as
-   soon as the discrepancy exists, with no day count:
-   `level: d.kind === 'missing_source' ? 'red' : 'yellow'` in `apps/api/src/services/readings-intake.ts`
-   (`issuesOf`); `READING_OVERDUE_DAYS` applies to the overdue reason only (decision 7).
+   soon as the discrepancy exists, with no day count — `issuesOf` in
+   `apps/api/src/services/readings-intake.ts` sets
+   `level: d.kind === 'missing_source' ? 'red' : 'yellow'`; `READING_OVERDUE_DAYS` applies to the
+   overdue reason only (decision 7).
 2. **«Due soon» is 1 000 km before the norm** (§14.2): `MAINTENANCE_DUE_SOON_KM = 1_000` in
    `packages/contracts/src/vehicle-maintenance.ts` (decision 9). The number is now agreed, not
    picked.

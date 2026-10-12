@@ -17,26 +17,25 @@
   [dateRules.ts](../../apps/web/src/entities/vehicle-request/model/dateRules.ts),
   [mechRequestMenu.tsx](../../apps/web/src/pages/mech/mechRequestMenu.tsx),
   [serviceRequestGrid.tsx](../../apps/web/src/pages/service/serviceRequestGrid.tsx),
-  [permissions.ts](../../packages/contracts/src/permissions.ts),
-  [auth.ts](../../apps/api/src/routes/auth.ts)
+  [permissions.ts](../../packages/contracts/src/permissions.ts)
 
 ## Context
 
 The portal can answer «does this account hold permission P» in two ways.
 
-- **The server's list.** Every session response carries `AuthUser.permissions`, which the API
-  fills with `permissionsFor(subject)` (`makeAuthUser` in `apps/api/src/routes/auth.ts`). The
-  portal's `can` and `canUse` (`permissionChecks` in `authContext.tsx`) read that list; `canUse`
-  adds the scope rule of the contracts on top of the same membership.
+- **The server's list.** Every session response carries `AuthUser.permissions`, which the API's
+  session builder `makeAuthUser` fills with `permissionsFor(subject)`. The portal's `can` and
+  `canUse` (`permissionChecks` in `authContext.tsx`) read that list; `canUse` adds the scope rule
+  of the contracts on top of the same membership.
 - **The contracts matrix.** `can(subject, P)` from `packages/contracts/src/permissions.ts`
   recomputes the answer from the subject the server ships beside the list — role, addons and
   `grantPermissions`, the last one carrying the composition of sets assembled in production.
 
 Today both give the same answer, because the server builds the list with the same matrix over the
-same subject. That agreement is held by convention, not by a type or a test, and two carriers of
-one rule drift silently. The drift also has a direction: inside a deploy window the bundle is newer
-than the running API, and a matrix that already knows a permission the server does not yet grant
-opens a door with a 403 behind it.
+same subject. On the portal side that agreement is held by convention, not by a type or a test,
+and two carriers of one rule drift silently. The drift also has a direction: inside a deploy window
+the bundle is newer than the running API, and a matrix that already knows a permission the server
+does not yet grant opens a door with a 403 behind it.
 
 Commit `440f8d26` (29.09.2026) converged the first case: candidate intake
 (`candidateIntakeAccess`) now receives the portal's `can` as a parameter instead of calling the
@@ -63,7 +62,9 @@ matrix. Three places still ask the matrix with the session user:
 3. **The three remaining checks move to the server's list, guarded by a test.** A test checks, for
    every access profile (`ACCESS_PROFILES`), that the matrix over the profile's subject and the
    list the server builds for it give the same permissions. While a matrix reader is left in the
-   portal, a drift is caught by that test and not by a 403 in production.
+   portal, a drift is caught by that test and not by a 403 in production. The server's own half —
+   the session builder returns exactly `permissionsFor` of the full subject — is pinned separately
+   by guard G1 (roadmap item Q2).
 
 ## Consequences
 
@@ -79,5 +80,5 @@ matrix. Three places still ask the matrix with the session user:
 ## Rejected alternatives
 
 - **Keep both oracles because they agree by construction.** They agree only while the bundle and
-  the API come from one build, and nothing checks it; the deploy window is exactly when they do
-  not.
+  the API come from one build, and nothing on the portal side checks it; the deploy window is
+  exactly when they do not.
