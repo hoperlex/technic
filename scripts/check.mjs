@@ -18,15 +18,18 @@
  * потому что он объясняет половину падений тестов раньше, чем те начнутся; фронт — последним:
  * он один занимает минуты, а до него человек уже видит первые ответы на экране.
  *
- * ЛИНТ НЕ РОНЯЕТ ПРОГОН (решение Р2) — но с двумя оговорками, без которых решение выродилось бы
- * в молчание:
- *   · код возврата 2 фатален всегда: это поломка конфигурации или запуска ESLint, а не известный
- *     долг. Разница принципиальна — «долг не блокирует» не значит «сломанный линт не блокирует»;
- *   · итоговая строка `линт: N ошибок, M предупреждений` печатается всегда, и числа берутся из
- *     машинного вывода (`--format json`), а не из человеческого текста. Долг, который не
- *     блокирует и не показывается, растёт незаметно — именно так набралось 111 предупреждений.
- * После того как ошибок стало ноль (этап Э7 плана), линт становится блокирующим — но это
- * отдельное решение и отдельная правка: сегодня он всё ещё только считает.
+ * LINT FAILS THE RUN ON ERRORS, NEVER ON WARNINGS. It started as a counter (ADR 0147 §4, decision
+ * Р2) because the repository had a dozen errors and a blocking gate could not be passed at all.
+ * The errors are at zero now, and ADR 0147 promised the switch for exactly that moment
+ * (docs/lint-debt-plan.md, Э8): a counter let the first cleanup's errors come back with a new file
+ * unnoticed. An error-level rule means broken or forbidden code, so it blocks. A warning is known
+ * debt by construction — rule levels stay as they are (plan Р7) — so it never blocks. Two things
+ * hold either way:
+ *   · exit code 2 is always fatal: ESLint could not check the code (broken config or launch), and
+ *     a broken linter must not read as clean code;
+ *   · the line `линт: N ошибок, M предупреждений` is always printed, with numbers taken from the
+ *     machine report (`--format json`), not from human text. Warnings have no other guard (Р7), and
+ *     debt that neither blocks nor shows grows unnoticed — that is how 111 warnings piled up.
  *
  * ЧЕГО ЗДЕСЬ НЕТ. `*.db.test.ts` — они в `pnpm check:db`: тем тестам нужна своя свежая база, и
  * прогон их на общей даёт ложные падения. Перед выкатом с миграцией `check:db` пропускать не стоит:
@@ -50,8 +53,9 @@ const say = (text = '') => process.stdout.write(`${text}\n`);
 const results = [];
 
 /**
- * `blocking: false` — шаг может покраснеть, не роняя прогон (сегодня это только линт с долгом).
- * `note` — то, что человек прочитает в итоговой таблице вместо кода возврата.
+ * An outcome with `blocking: false` turns red without failing the run. No step returns it since
+ * lint became blocking; it stays for a gate that has to start with known debt, as lint did.
+ * `note` is what a person reads in the summary table instead of an exit code.
  */
 function step({ title, hint, run }) {
   say();
@@ -79,15 +83,15 @@ function exec(command, args, options = {}) {
 
 // --- линт ------------------------------------------------------------------
 
-/** Заполняется шагом линта и печатается в итоге отдельной строкой — её ищут глазами. */
+/** Filled by the lint step and printed in the summary on a line of its own: people look for it. */
 let lintLine = 'линт: не запускался';
 
 function lint() {
   const dir = mkdtempSync(join(tmpdir(), 'technic-check-'));
   const file = join(dir, 'eslint.json');
   try {
-    // Вывод формата json уходит в файл, а не в терминал: человеку он нечитаем, а нам нужны точные
-    // числа. Сам ESLint при этом продолжает писать в stderr свои настоящие ошибки — их видно.
+    // The json report goes to a file, not to the terminal: a person cannot read it, and we need
+    // exact numbers. ESLint still writes its own real failures to stderr, so those stay visible.
     const res = spawnSync(
       'pnpm',
       ['exec', 'eslint', '.', '--format', 'json', '--output-file', file],
@@ -109,9 +113,9 @@ function lint() {
       report = null;
     }
 
-    // Код 2 — это «ESLint не смог проверить», а не «в коде найдены ошибки». Такой ответ обязан
-    // ронять прогон: иначе поломка конфига читалась бы как чистый код. Нечитаемый отчёт — то же
-    // самое: без чисел решение «не блокировать» превращается в тишину.
+    // Code 2 means "ESLint could not check", not "the code has errors", and it must fail the run:
+    // otherwise a broken config would read as clean code. An unreadable report fails the same way:
+    // without it there are no errors to count, so the gate would pass on silence.
     if (code === 2 || !Array.isArray(report)) {
       lintLine = 'линт: посчитать не удалось';
       return {
@@ -135,8 +139,9 @@ function lint() {
       }
     }
 
-    // Ошибки печатаются поимённо (их положено чинить), предупреждения — сводкой по правилам:
-    // сотня строк подряд не читается никем, а «сколько и чего» отвечает на вопрос о долге.
+    // Errors are printed one by one (they fail the run and are to be fixed), warnings as a summary
+    // by rule: nobody reads a hundred lines in a row, and "how many of what" answers the debt
+    // question.
     if (warnings > 0) {
       say('  предупреждения по правилам:');
       for (const [rule, count] of [...byRule.entries()].sort((a, b) => b[1] - a[1])) {
@@ -148,11 +153,10 @@ function lint() {
     say(lintLine);
     return {
       ok: errors === 0,
-      blocking: false,
       note:
         errors === 0
           ? `${warnings} предупреждений (долг)`
-          : `${errors} ошибок, ${warnings} предупреждений (долг, прогон не роняет)`,
+          : `${errors} ошибок, ${warnings} предупреждений (предупреждения — долг)`,
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
