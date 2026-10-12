@@ -260,8 +260,8 @@ export function useVehicleRequestLifecycle({
           assignment: command.assignment,
           // The dialog always asks for the term when taking into work — `null` never comes here.
           schedule: command.schedule ?? undefined,
-          // Of the assignment dialog's transitions only the "done" -> "confirmed" rollback sends it:
-          // taking a new request into work calls no preview, and nothing was promised.
+          // Of the assignment dialog's transitions only the "done" -> "confirmed" rollback sends
+          // it: taking a new request into work calls no preview, and nothing was promised.
           previewFingerprint: command.previewFingerprint,
         })
       : undefined;

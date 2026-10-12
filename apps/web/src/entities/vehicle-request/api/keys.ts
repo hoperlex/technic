@@ -125,12 +125,13 @@ export const vehicleRequestKeys = createQueryKeys('vehicle-requests', {
    */
   waybills: (id: string | null | undefined) => [id, 'waybills'],
   /**
-   * Перегоны заявки — доставка техники на объект и вывоз с него (миграция 0082). Один ключ на два
-   * места: карточку и блок перегонов внутри неё, — вопрос у них один, и второй ключ означал бы
-   * второй поход за уже загруженным списком. Окно возврата заявки в «Новую» их больше не
-   * спрашивает: что снимет возврат, считает сервер одним ответом (ADR 0211).
+   * The request's relocations — delivering the equipment to the site and taking it away (migration
+   * 0082). One key for two places, the card and the relocation block inside it: their question is
+   * one, and a second key would mean a second trip for an already loaded list. The dialog returning
+   * the request to "new" no longer asks for them: what the return removes is computed by the server
+   * in one answer (ADR 0211).
    *
-   * Пусто здесь законно: технику могли привезти тралом, и перегона не бывает вовсе.
+   * Empty is legitimate here: the equipment may have come on a carrier, with no relocation at all.
    */
   relocations: (id: string | undefined) => [id, 'relocations'],
   /**

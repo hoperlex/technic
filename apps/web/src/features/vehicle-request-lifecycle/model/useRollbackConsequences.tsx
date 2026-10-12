@@ -9,34 +9,38 @@ import {
 import { RollbackConsequences } from '../ui/RollbackConsequences';
 
 /**
- * Разговор окна возврата заявки в «Новую» с сервером (ADR 0211): спросить последствия на открытии,
- * подтвердить их отпечатком, а на отказ двери — спросить заново и сказать, что они изменились.
- *
- * Почему окно не собирает перечень само, объяснено в ADR 0211: правило «что стирает откат» жило в
- * двух носителях, сервер его исполнял, портал пересказывал, и пересказ разошёлся в обе стороны —
- * молчал о днях, сменах, досрочном и ЭСМ-2 и обещал убрать перегон, который остаётся. Здесь
- * портал не считает ничего: он показывает присланный план и возвращает его отпечаток.
- */
-
-/**
- * Отказ двери по устаревшему отпечатку своего кода не имеет — это 409 с общим `version_conflict`
- * (ADR 0211 решение 4), и отличить его от обычного расхождения версий нечем. Поэтому ответ на
- * любой 409 здесь один и честен в оба случая: спросить последствия заново. Разъехалась версия —
- * предпросмотр откажет тем же 409, и его текст встанет в окно вместо перечня.
+ * The door's refusal over a stale fingerprint has no code of its own — it is a 409 with the shared
+ * `version_conflict` (ADR 0211 decision 4), and nothing tells it apart from an ordinary version
+ * mismatch. So the answer to such a 409 is one and honest in both cases: ask the consequences
+ * again. If the version went stale, the preview refuses with the same 409, and its text takes the
+ * list's place in the dialog.
  */
 const STALE_REASON =
   'Данные изменились с того момента, как вы их смотрели, — вот что снимет возврат теперь. Прочитайте и подтвердите заново.';
 
 interface Input {
-  /** Заявка открытого окна; `null` — окна нет, и спрашивать нечего. */
+  /** The request of the open dialog; `null` — there is no dialog and nothing to ask. */
   target: VehicleRequestDto | null;
 }
 
+/**
+ * The rollback dialog's conversation with the server (ADR 0211): ask the consequences on opening,
+ * confirm them with the fingerprint, and on the door's refusal ask again and say that they changed.
+ *
+ * Why the dialog does not assemble the list itself is explained in ADR 0211: the rule "what the
+ * rollback erases" lived in two carriers, the server executed it and the portal retold it, and the
+ * retelling diverged both ways — it kept silent about days, shifts, the early end and ESM-2 and
+ * promised to remove a relocation that stays. Here the portal computes nothing: it shows the plan
+ * it was sent and returns its fingerprint.
+ *
+ * The preview is a POST asked through a mutation, not a cached query: an answer is valid only for
+ * the opening that read it, and a cached plan would confirm consequences nobody looked at.
+ */
 export function useRollbackConsequences({ target }: Input) {
   /**
-   * Показанные последствия и версия, под которую они посчитаны. Пара неизменна: отпечаток
-   * подтверждает ровно тот план, который человек прочёл, и уехать он обязан с той же версией —
-   * иначе дверь сверяла бы отпечаток одного состояния с версией другого.
+   * The consequences shown and the version they were computed for. The pair is immutable: the
+   * fingerprint confirms exactly the plan the person read, and it must leave with the same version
+   * — otherwise the door would check the fingerprint of one state against the version of another.
    */
   const [shown, setShown] = useState<{
     preview: VehicleRequestRollbackPreviewDto;
@@ -57,9 +61,9 @@ export function useRollbackConsequences({ target }: Input) {
       setShown({ preview, version });
     },
     /*
-     * Отказ показывается в самом окне, а не тостом: тост исчезает, а решение «стирать ли работу»
-     * человек принимает именно здесь и именно сейчас. Прежний перечень при этом снимается — он
-     * описывал состояние, которого сервер уже не подтвердил.
+     * The refusal is shown in the dialog itself, not as a toast: a toast disappears, and the
+     * decision "erase the work or not" is taken right here and now. The previous list is removed —
+     * it described a state the server no longer confirmed.
      */
     onError: (e) => {
       setShown(null);
@@ -68,10 +72,10 @@ export function useRollbackConsequences({ target }: Input) {
   });
 
   /*
-   * Последствия спрашиваются на каждое открытие и заново: между вчерашним просмотром и сегодняшним
-   * нажатием план меняется, не тронув заявку (по перегону выписали лист, лист аннулировали своей
-   * ручкой, появился черновик смены, неделя стала отработанной), а `version` ни одного из этих
-   * случаев не ловит.
+   * The consequences are asked anew on every opening: between yesterday's look and today's click
+   * the plan changes without touching the request (a waybill was issued for a relocation, a sheet
+   * was cancelled through its own door, a shift draft appeared, a week became worked), and
+   * `version` catches none of these cases.
    */
   const targetId = target?.id ?? null;
   const ask = useEffectEvent((_id: string | null) => {
@@ -80,29 +84,30 @@ export function useRollbackConsequences({ target }: Input) {
     setFailure(null);
     if (target) mut.mutate({ request: target, stale: null });
   });
-  // Зависимость — идентификатор заявки: перерисовка той же заявки приходит новым объектом и
-  // спрашивала бы план по кругу.
+  // The dependency is the request id: a rerender of the same request arrives as a new object and
+  // would ask the plan in a loop.
   useEffect(() => ask(targetId), [targetId]);
 
   return {
     /**
-     * Версия, под которую посчитаны показанные последствия, — её и шлёт подтверждение. Нет
-     * предпросмотра — нет и ответа: версию берёт сама заявка, и возврат идёт, как шёл до этой
-     * работы (отпечаток у двери необязателен).
+     * The version the shown consequences were computed for — the confirmation sends it. No preview
+     * — no answer: the version comes from the request itself, and the return goes as it went
+     * before this work (the door's fingerprint is optional).
      */
     version: shown?.version,
-    /** Отпечаток прочитанного плана; `undefined` — подтверждать нечего, и дверь его не спросит. */
+    /** Fingerprint of the plan read; `undefined` — nothing to confirm, the door will not ask. */
     fingerprint: shown?.preview.fingerprint,
     /**
-     * Ответ ещё в пути. Окно отдаёт это в `confirmLoading`: пока последствий нет, нажатие не
-     * должно уходить — обещать человеку нечего, а стёрлось бы всё.
+     * The answer is still on its way. The dialog passes this to `confirmLoading`: while there are
+     * no consequences the click must not go out — there is nothing to promise, while everything
+     * would be erased.
      */
     pending: mut.isPending,
     /**
-     * Разобрать отказ двери. 409 — не ошибка, а вопрос: последствия изменились между просмотром и
-     * нажатием, и правильный ответ окна — свежий перечень с объяснением, а не тост «повторите».
-     * Возвращает `true`, когда отказ взят на себя, чтобы вызывающий тост промолчал. Кругов не
-     * будет: каждый требует нового нажатия.
+     * Sort out the door's refusal. A 409 is not an error but a question: the consequences changed
+     * between reading and clicking, and the dialog's right answer is a fresh list with an
+     * explanation, not a "try again" toast. Returns `true` when the refusal is taken over, so the
+     * caller's toast stays silent. There are no loops: each round needs a new click.
      */
     recheck: (error: unknown) => {
       if (!target || !isApiError(error) || error.status !== 409) return false;

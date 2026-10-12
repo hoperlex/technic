@@ -59,8 +59,8 @@ function renderTab() {
     'GET /vehicle-classifications': () => json(list([classification()])),
     // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
     'GET /vehicles': () => json(emptyList()),
-    // Что снимет возврат, считает сервер (ADR 0211): окно спрашивает это при открытии, и без
-    // ответа оно не отпустит нажатие. Сценарию важно лишь, что окно открылось и отпустило.
+    // What the return removes is computed by the server (ADR 0211): the dialog asks on opening and
+    // holds the click until the answer. The scenario only cares that the dialog opened and let go.
     'POST /vehicle-requests/:id/rollback/preview': () =>
       json(rollbackPreview({ assignment: true })),
     'PATCH /vehicle-requests/:id/status': ({ params, body }) =>
@@ -113,7 +113,7 @@ describe('срез гаража после смены статуса заказ�
 
     // Возврат спрашивает причину: работу стирает подтверждение, а не промах по пункту меню.
     expect(await screen.findByText('Возврат заявки в «Новую»')).toBeDefined();
-    // Пока последствия не пришли, кнопка показывает ожидание и нажатие не уходит.
+    // Until the consequences arrive the button shows a wait and the click does not go out.
     await screen.findByText('Заявка вернётся в состояние только что заведённой');
     const reason = document.querySelector('textarea');
     expect(reason, 'поле причины').toBeTruthy();

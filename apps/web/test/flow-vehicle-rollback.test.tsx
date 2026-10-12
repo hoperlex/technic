@@ -22,29 +22,30 @@ import { MOBILE_VIEWPORT } from './viewport';
 import { expectModalClosed } from './antd';
 
 /**
- * Возврат заявки на технику из «В работе» в «Новую» — откат администратора, который стирает всё,
- * что заявка нажила в работе (`transitionResetsWork`).
+ * Returning a vehicle request from "in work" to "new" — the administrator's rollback that erases
+ * everything the request gained in work (`transitionResetsWork`).
  *
- * ПЕРЕЧЕНЬ СТИРАЕМОГО СЧИТАЕТ СЕРВЕР (ADR 0211), и это главное, что сторожит сценарий. Прежде его
- * собирал портал по DTO заявки и её перегонам — вторым носителем правила, которое исполняет дверь, —
- * и пересказ разошёлся в обе стороны: молчал о днях, сменах, досрочном завершении и листах ЭСМ-2 и
- * обещал убрать перегон, который остаётся из-за выписанного по нему листа. Поэтому проверяется не
- * «строка про рейс есть», а «на экране ровно то, что прислал предпросмотр»: строка, которой в
- * ответе нет, — это снова вранье ровно там, где человек решает, стирать ли работу.
+ * THE LIST OF WHAT IS ERASED IS COMPUTED BY THE SERVER (ADR 0211), and that is the main thing the
+ * scenario guards. The portal used to assemble it from the request DTO and its relocations — a
+ * second carrier of the rule the door executes — and the retelling diverged both ways: it kept
+ * silent about days, shifts, the early end and ESM-2 sheets, and promised to remove a relocation
+ * that stays because a waybill was issued for it. So the check is not "a route line is present"
+ * but "the screen shows exactly what the preview sent": a line absent from the answer is again a
+ * lie exactly where the person decides whether to erase the work.
  *
- * Остальные четыре вещи по разметке неотличимы от исправной работы:
+ * Four more things are indistinguishable from correct work by markup alone:
  *
- * 1. Возврат не выполняется нажатием пункта меню: сперва окно с обязательной причиной.
- * 2. **Визы в перечне нет вовсе** (ADR 0172): откат её не снимает, и строка о ней остановила бы
- *    человека ради сбережения того, чему ничего не грозит. Проверяется отрицанием — такая строка в
- *    перечне была, и вернуть её обратно легче всего незаметно.
- * 3. Пока предпросмотр не ответил, окно не обещает ничего: ни пустого «стирать нечего», ни
- *    перечня. Пустой перечень читается как «работы не завелось» — и возврат жмут спокойно.
- * 4. На сервер уходит один PATCH статуса — с причиной, версией и отпечатком прочитанных
- *    последствий, — а список после него перезапрашивается.
+ * 1. The return does not happen on a menu click: first comes a dialog with a mandatory reason.
+ * 2. **The approval is absent from the list entirely** (ADR 0172): the rollback keeps it, and a
+ *    line about it would stop the person to protect what is not at risk. Checked by negation — such
+ *    a line used to be there, and bringing it back unnoticed is easiest.
+ * 3. Until the preview answers the dialog promises nothing: neither an empty "nothing to erase"
+ *    nor a list. An empty list reads as "no work was gained" — and the return gets pressed calmly.
+ * 4. One status PATCH goes to the server — with the reason, the version and the fingerprint of the
+ *    consequences read — and the list is refetched after it.
  */
 
-/** Собственная машина со ставкой: её назначение и есть та договорённость, которую стирает возврат. */
+/** Own vehicle with a rate: its assignment is the very agreement the return erases. */
 const OWN_VEHICLE: VehicleRequestAssignmentDto = {
   vehicleId: 'v-1',
   ownership: 'own',
@@ -67,7 +68,7 @@ const OWN_VEHICLE: VehicleRequestAssignmentDto = {
   assignedAt: '2026-08-02T08:00:00.000Z',
 };
 
-/** Арендная: ставок по ней не согласовали, и назвать в перечне остаётся арендодателя. */
+/** A rental: no rates were agreed for it, so the list names the lessor. */
 const RENTAL_VEHICLE: VehicleRequestAssignmentDto = {
   ...OWN_VEHICLE,
   vehicleId: 'v-2',
@@ -81,9 +82,9 @@ const RENTAL_VEHICLE: VehicleRequestAssignmentDto = {
 };
 
 /**
- * Факт у заявки «В работе» — не выдумка: так выглядит заявка, которую уже закрывали и откатили
- * администратором назад в работу (откат `done` → `confirmed` прежний факт бережёт). Возврат в
- * «Новую» — единственный переход, который его стирает, и сказать об этом нужно заранее.
+ * A fact on a request "in work" is no invention: this is how a request looks after it was closed
+ * and rolled back into work by an administrator (the `done` → `confirmed` rollback keeps the fact).
+ * The return to "new" is the only transition that erases it, and that must be said in advance.
  */
 const COMPLETION: VehicleRequestCompletionDto = {
   workedUnit: 'hours',
@@ -93,18 +94,19 @@ const COMPLETION: VehicleRequestCompletionDto = {
   completedBy: 'user-1',
   completedByName: 'Диспетчеров Д. П.',
   completedAt: '2026-08-03T14:00:00.000Z',
-  // Заявка закрыта старым статусным путём: фактической даты у такого факта нет (Р3 плана
-  // закрытия фактической датой), и снимка прежнего срока тоже.
+  // Closed the old status way: such a fact has no actual date (R3 of the actual-end-date plan) and
+  // no snapshot of the previous term either.
   endedOn: null,
   previousDateTo: null,
 };
 
 /**
- * Ответ предпросмотра со всеми семью частями плана сразу. Не «типичная» заявка, а полная: окно
- * обязано назвать каждую часть, и заявка, у которой половины нет, этого не проверит.
+ * A preview answer with all seven parts of the plan at once. Not a "typical" request but a full
+ * one: the dialog must name every part, and a request missing half of them would not check that.
  *
- * Номера бланков здесь есть — так отвечают держателю `waybills.read`; без журнала сервер пришлёт
- * `sheets: null`, и тогда о бумаге говорят счётчики (отдельная проверка ниже).
+ * Form numbers are present — that is the answer to a `waybills.read` holder; without the journal
+ * the server sends `sheets: null`, and then the counters speak about the paper (a separate check
+ * below).
  */
 const PREVIEW: VehicleRequestRollbackPreviewDto = {
   blockers: [],
@@ -135,7 +137,7 @@ const PREVIEW: VehicleRequestRollbackPreviewDto = {
   fingerprint: 'fp-1',
 };
 
-/** Плана нет вовсе: сервер сказал, что стирать нечего, — и только тогда об этом говорит окно. */
+/** No plan at all: the server said there is nothing to erase — only then does the dialog say so. */
 const EMPTY_PREVIEW: VehicleRequestRollbackPreviewDto = {
   ...PREVIEW,
   routes: { detach: [], frozen: [] },
@@ -149,8 +151,9 @@ const EMPTY_PREVIEW: VehicleRequestRollbackPreviewDto = {
 };
 
 /**
- * Заявка в работе со всем нажитым: виза, машина со ставкой, место в рейсе и факт прошлого
- * закрытия. Версия нарочно не первая — её видно в теле запроса.
+ * A request in work with everything it gained: the approval, a vehicle with a rate, a route place
+ * and the fact of an earlier closing. The version is deliberately not the first — it shows in the
+ * request body.
  */
 const IN_WORK = approvedVehicleRequest({
   id: 'vr-1',
@@ -174,24 +177,24 @@ const STATUS_ROUTE = 'PATCH /vehicle-requests/:id/status';
 const PREVIEW_ROUTE = 'POST /vehicle-requests/:id/rollback/preview';
 
 /**
- * Вкладка глазами администратора: откат назад по циклу — его право
- * (`requests.rollbackStatus`), и пункта «Новая» в меню статусов больше ни у кого нет.
+ * The tab through an administrator's eyes: rolling back along the cycle is their right
+ * (`requests.rollbackStatus`), and nobody else has the "Новая" item in the status menu.
  */
 function renderTab(over: RouteMap = {}, mobile = false): HttpMock {
   const http = mockHttp({
     'GET /vehicle-requests/feed': () => json(vehicleFeed([IN_WORK])),
     'GET /vehicle-requests/summary': () => json(vehicleSummary({ confirmed: 1 })),
-    // Справочники экрана: сценарию не нужны, но вкладка их спрашивает при первом рендере.
+    // Screen dictionaries: the scenario does not need them, but the tab asks on its first render.
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'GET /vehicle-classifications': () => json(list([classification()])),
-    // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
+    // The vehicle directory is the assigned-vehicle filter (ADR 0098); the list does not need it.
     'GET /vehicles': () => json(emptyList()),
-    // Последствия спрашиваются ровно на открытие окна возврата и считаются сервером тем же планом,
-    // которым он их потом исполнит, — своего перечня у портала больше нет.
+    // The consequences are asked exactly when the rollback dialog opens and are computed by the
+    // server with the plan it will then execute — the portal has no list of its own any more.
     [PREVIEW_ROUTE]: () => json(PREVIEW),
-    // Отвечаем той же заявкой, уже вернувшейся в «Новую», — так отвечает и сервер. Виза в ответе
-    // остаётся: её откат не снимает (ADR 0172), и заявка возвращается готовой к работе.
+    // Answer with the same request already returned to "new" — as the server does. The approval
+    // stays in the answer: the rollback keeps it (ADR 0172), and the request returns ready to work.
     [STATUS_ROUTE]: ({ params, body }) =>
       json(
         approvedVehicleRequest({
@@ -214,14 +217,17 @@ function renderTab(over: RouteMap = {}, mobile = false): HttpMock {
   return http;
 }
 
-/** Кнопка по видимой подписи: `*ByRole` на таблице antd считает доступные имена всему дереву. */
+/** A button by its visible caption: `*ByRole` on an antd table names the whole tree. */
 function clickButton(label: string) {
   const button = [...document.querySelectorAll('button')].find((el) => el.textContent === label);
   expect(button, `кнопка «${label}»`).toBeTruthy();
   fireEvent.click(button!);
 }
 
-/** Смена статуса строки: тег статуса — кнопка с меню переходов, доступных этой роли (ADR 0021). */
+/**
+ * A row's status change: the status tag is a button with the menu of this role's transitions
+ * (ADR 0021).
+ */
 async function openStatusMenu(target: string) {
   clickButton('В работе');
   const item = await waitFor(() => {
@@ -234,12 +240,12 @@ async function openStatusMenu(target: string) {
   fireEvent.click(item);
 }
 
-/** Кнопка окна возврата: подписи у неё свои — «Вернуть в «Новую»» и «Не возвращать». */
+/** The rollback dialog's button: its captions are "Вернуть в «Новую»" and "Не возвращать". */
 function submitRollbackModal() {
   clickButton('Вернуть в «Новую»');
 }
 
-/** Окно открыто и последствия на экране: до их появления окно ничего не обещает. */
+/** The dialog is open and the consequences are shown: before they appear it promises nothing. */
 async function openRollbackWindow() {
   await openStatusMenu('Новая');
   expect(await screen.findByText('Возврат заявки в «Новую»')).toBeDefined();
@@ -258,14 +264,15 @@ describe('возврат заявки на технику в «Новую»', ()
     expect(await screen.findByText('Т-42')).toBeDefined();
 
     await openRollbackWindow();
-    // Пункт меню сам по себе ничего не меняет: работу стирает подтверждение, а не промах пальцем.
+    // The menu item alone changes nothing: the work is erased by the confirmation, not a misclick.
     expect(http.countOf(STATUS_ROUTE)).toBe(0);
-    // Последствия спрошены под ту версию, которую окно потом и предъявит двери.
+    // The consequences are asked for the version the dialog will then present to the door.
     expect(http.lastCall(PREVIEW_ROUTE)?.body).toEqual({ version: IN_WORK.version });
 
-    // Снимется: машина со ставкой (название — из заявки, сам факт снятия — из плана), место в
-    // рейсе, перегон без листа, дни работ с согласованными врозь, ожидающее досрочное, лист ЭСМ-2
-    // текущей недели, заморозка линейности и предъявленный факт.
+    // Removed: the vehicle with its rate (the name from the request, the removal itself from the
+    // plan), the route place, the relocation without a waybill, the work days with approved ones
+    // named apart, the pending early end, the current week's ESM-2 sheet, the linearity freeze and
+    // the presented fact.
     expect(await screen.findByText(/Назначенная техника: Е646СК799 — .*₽\/час/)).toBeDefined();
     expect(screen.getByText('Место в рейсе Р-3 за 05.08.2026')).toBeDefined();
     expect(screen.getByText('Доставка техники на объект — рейс Р-8 от 05.08.2026')).toBeDefined();
@@ -281,8 +288,9 @@ describe('возврат заявки на технику в «Новую»', ()
     expect(screen.getByText(/Снимется заморозка линейности/)).toBeDefined();
     expect(screen.getByText('Предъявленный факт: 26 ч')).toBeDefined();
 
-    // Останется — и сказано почему: лист держит и место в рейсе, и перегон, а отработанная неделя
-    // сверкой не аннулируется. Молчание об этом и обещало лишнее.
+    // Stays — and it says why: a waybill holds both the route place and the relocation, and a
+    // worked week is not cancelled by the reconciliation. Silence about it is what promised too
+    // much.
     expect(
       screen.getByText('Место в рейсе Р-4 за 06.08.2026 — его держит действующий путевой лист'),
     ).toBeDefined();
@@ -291,14 +299,15 @@ describe('возврат заявки на технику в «Новую»', ()
       screen.getByText(/Останутся действующими листы ЭСМ-2 за отработанные недели: ЭСМ2-000120/),
     ).toBeDefined();
 
-    // Виза у заявки есть (`approvedVehicleRequest`), и всё же о ней не сказано ни слова: откат её
-    // не снимает, и завизированной она вернётся в «Новую» (ADR 0172).
+    // The request has an approval (`approvedVehicleRequest`), and yet not a word about it: the
+    // rollback keeps it, and the request returns to "new" approved (ADR 0172).
     expect(screen.queryByText(/Виза руководителя строительства/)).toBeNull();
   });
 
   it('перечень не обещает того, чего в плане сервера нет', async () => {
-    // Та же заявка арендной машиной, а план пуст: кроме назначения сервер не назвал ничего — и
-    // окно не называет. Прежний портал дорисовывал бы сюда перегоны и место в рейсе по DTO.
+    // The same request on a rental vehicle with an empty plan: apart from the assignment the server
+    // named nothing — and neither does the dialog. The old portal would add relocations and a route
+    // place here from the DTO.
     renderTab({
       'GET /vehicle-requests/feed': () =>
         json(
@@ -317,7 +326,7 @@ describe('возврат заявки на технику в «Новую»', ()
 
     await openRollbackWindow();
 
-    // У аренды ставок не согласовали — назван арендодатель: с ним договаривались, ему и звонить.
+    // A rental without agreed rates names the lessor: the deal was with them, they get the call.
     expect(
       screen.getByText('Назначенная техника: Автокран 25 тн — ООО «Кран-Сервис»'),
     ).toBeDefined();
@@ -330,8 +339,9 @@ describe('возврат заявки на технику в «Новую»', ()
   });
 
   it('без журнала листов о бумаге говорят счётчики, а не номера бланков', async () => {
-    // `sheets: null` — так сервер отвечает держателю права отката без `waybills.read` (ADR 0106):
-    // «сгорит ли бумага» он узнаёт полностью, номера строгой отчётности ему не открываются.
+    // `sheets: null` is the server's answer to a rollback-right holder without `waybills.read`
+    // (ADR 0106): they learn fully whether the paper burns, but strict-accounting numbers stay
+    // closed.
     renderTab({
       [PREVIEW_ROUTE]: () =>
         json({ ...PREVIEW, esm2: { cancelCount: 2, keepCount: 1, sheets: null } }),
@@ -347,7 +357,7 @@ describe('возврат заявки на технику в «Новую»', ()
   });
 
   it('до ответа сервера окно не обещает ни перечня, ни пустоты', async () => {
-    // Ответ придерживается до нажатия: ожидание — это состояние окна, а не мгновение между кадрами.
+    // The answer is held back: waiting is a state of the dialog, not an instant between frames.
     const held: { release?: () => void } = {};
     renderTab({
       [PREVIEW_ROUTE]: () =>
@@ -359,8 +369,8 @@ describe('возврат заявки на технику в «Новую»', ()
     await openStatusMenu('Новая');
     expect(await screen.findByText('Возврат заявки в «Новую»')).toBeDefined();
 
-    // Ожидание названо вслух. Пустой перечень или «стирать нечего» человек читает как «работы по
-    // заявке не завелось» и жмёт возврат спокойно — а стёрлось бы всё.
+    // The wait is named aloud. An empty list or "nothing to erase" reads as "the request gained no
+    // work", and the return gets pressed calmly — while everything would be erased.
     expect(await screen.findByText('Выясняем, что снимет возврат')).toBeDefined();
     expect(screen.queryByText('Стирать у заявки нечего — сменится только статус.')).toBeNull();
     expect(screen.queryByText(/Назначенная техника/)).toBeNull();
@@ -370,8 +380,8 @@ describe('возврат заявки на технику в «Новую»', ()
   });
 
   it('помеха берётся из ответа предпросмотра, а не из флага заявки', async () => {
-    // Флага `hasActiveWaybill` у заявки нет, а лист держит день заказа (ADR 0207): сказать об этом
-    // может только сервер, и говорит он теми же словами, которыми откажет дверь.
+    // The request has no `hasActiveWaybill` flag, yet a waybill holds a day of the order
+    // (ADR 0207): only the server can say so, and it says it in the words the door refuses with.
     renderTab({
       'GET /vehicle-requests/feed': () =>
         json(vehicleFeed([approvedVehicleRequest({ ...IN_WORK, hasActiveWaybill: false })])),
@@ -387,8 +397,9 @@ describe('возврат заявки на технику в «Новую»', ()
   });
 
   it('флаг заявки сам по себе помехой больше не считается', async () => {
-    // Обратная сторона того же: `hasActiveWaybill` держится и при аннулированном листе, а план
-    // блокировок не нашёл. Пугать запретом, которого у двери нет, — не лучше, чем молчать о нём.
+    // The other side of the same: `hasActiveWaybill` holds even for a cancelled sheet, while the
+    // plan found no blockers. Scaring with a prohibition the door does not have is no better than
+    // keeping silent about one.
     renderTab({
       'GET /vehicle-requests/feed': () =>
         json(vehicleFeed([approvedVehicleRequest({ ...IN_WORK, hasActiveWaybill: true })])),
@@ -419,8 +430,8 @@ describe('возврат заявки на технику в «Новую»', ()
     expect(await screen.findByText('Укажите причину')).toBeDefined();
     expect(http.countOf(STATUS_ROUTE)).toBe(0);
 
-    // Пробелы причиной не считаются: иначе поле обходилось бы нажатием на пробел, а в истории
-    // статусов осталась бы пустая строка вместо объяснения, зачем стёрли работу.
+    // Spaces are not a reason: otherwise the field would be bypassed with the space bar, and the
+    // status history would keep an empty line instead of why the work was erased.
     typeReason('   ');
     submitRollbackModal();
     await waitFor(() => expect(screen.getByText('Укажите причину')).toBeDefined());
@@ -433,28 +444,30 @@ describe('возврат заявки на технику в «Новую»', ()
 
     await openRollbackWindow();
 
-    // Причина набирается с лишними пробелами: в историю статусов она попадает обрезанной.
+    // The reason is typed with extra spaces: it reaches the status history trimmed.
     typeReason(`  ${REASON}  `);
     submitRollbackModal();
 
     await waitFor(() => expect(http.countOf(STATUS_ROUTE)).toBe(1));
     const call = http.lastCall(STATUS_ROUTE);
-    // Адрес — та самая заявка, из строки которой открыли меню.
+    // The address is the very request whose row opened the menu.
     expect(call?.path).toBe(`/vehicle-requests/${IN_WORK.id}/status`);
     expect(call?.body).toMatchObject({
       status: 'new',
-      // Причина обязательна и уходит тем же запросом, что и статус: отдельным она разъехалась бы
-      // со сменой статуса при первом же отказе сервера.
+      // The reason is mandatory and leaves with the status in one request: sent separately, it
+      // would part from the status change at the server's first refusal.
       comment: REASON,
-      // Версия — защита от одновременной правки: без неё сервер не отличит возврат «этой» заявки
-      // от возврата той, которую тем временем успели взять в работу другой машиной.
+      // The version guards against a concurrent edit: without it the server could not tell the
+      // return of "this" request from one taken into work meanwhile on another vehicle.
       version: IN_WORK.version,
-      // Отпечаток — последствия, которые человек прочитал. Изменились между просмотром и нажатием,
-      // не тронув версию (по перегону выписали лист, неделя стала отработанной), — дверь откажет.
+      // The fingerprint is the consequences the person read. Changed between reading and clicking
+      // without touching the version (a relocation got a waybill, a week became worked) — the door
+      // refuses.
       previewFingerprint: PREVIEW.fingerprint,
     });
-    // Снятие машины и стирание факта — дело сервера: вторым запросом портал их не досылает. Кроме
-    // PATCH статуса окно написало ровно один POST — вопрос предпросмотра, и тот ничего не меняет.
+    // Removing the vehicle and erasing the fact is the server's job: the portal sends no second
+    // request for them. Besides the status PATCH the dialog wrote exactly one POST — the preview
+    // question, which changes nothing.
     expect(http.calls.filter((c) => c.method === 'PATCH')).toHaveLength(1);
     expect(http.countOf(PREVIEW_ROUTE)).toBe(1);
     expect(http.calls.filter((c) => c.method !== 'GET')).toHaveLength(2);
@@ -467,8 +480,8 @@ describe('возврат заявки на технику в «Новую»', ()
         json(
           patches === 0
             ? PREVIEW
-            : // Неделя кончилась, пока человек читал: лист больше не сгорит, и подтверждать он
-              // должен уже это.
+            : // The week ended while the person was reading: the sheet no longer burns, and that is
+              // what they must confirm now.
               {
                 ...PREVIEW,
                 esm2: { cancelCount: 0, keepCount: 2, sheets: null },
@@ -502,14 +515,14 @@ describe('возврат заявки на технику в «Новую»', ()
     typeReason();
     submitRollbackModal();
 
-    // Окно не закрылось и не показало тост: оно спросило последствия заново и сказало, почему.
+    // The dialog neither closed nor toasted: it asked the consequences again and said why.
     expect(await screen.findByText('Последствия пересчитаны')).toBeDefined();
     await waitFor(() => expect(http.countOf(PREVIEW_ROUTE)).toBe(2));
-    // Прежняя строка о сгорающем листе снята: перечень описывает новое состояние, а не прежнее.
+    // The old line about the burning sheet is gone: the list describes the new state, not the old.
     expect(screen.queryByText(/Аннулируются/)).toBeNull();
     expect(http.countOf(STATUS_ROUTE)).toBe(1);
 
-    // Второе нажатие — по прочитанному заново: уезжает новый отпечаток, и дверь пропускает.
+    // The second click follows the re-read list: the new fingerprint leaves, the door lets it in.
     submitRollbackModal();
     await waitFor(() => expect(http.countOf(STATUS_ROUTE)).toBe(2));
     expect(http.lastCall(STATUS_ROUTE)?.body).toMatchObject({ previewFingerprint: 'fp-2' });
@@ -525,8 +538,8 @@ describe('возврат заявки на технику в «Новую»', ()
     typeReason();
     submitRollbackModal();
 
-    // Строка списка обязана показать новый статус сама: перезапрос — единственное, что об этом
-    // заботится, а прежний статус на экране читался бы как «возврат не прошёл».
+    // The list row must show the new status by itself: the refetch is the only thing taking care of
+    // it, and the old status on screen would read as "the return failed".
     await waitFor(() => expect(http.countOf('GET /vehicle-requests/feed')).toBe(2));
     await expectModalClosed('Возврат заявки в «Новую»');
   });
@@ -535,9 +548,9 @@ describe('возврат заявки на технику в «Новую»', ()
     const http = renderTab({}, true);
     expect(await screen.findByText('Т-42')).toBeDefined();
 
-    // На телефоне переходы показываются списком снизу, а не выпадающим меню (ADR 0030): пункт
-    // «Новая» появляется там сам, и окно причины обязано открыться и отсюда — иначе возврат
-    // с телефона уходил бы без объяснения либо не уходил вовсе.
+    // On a phone the transitions show as a bottom list, not a dropdown (ADR 0030): the "Новая" item
+    // appears there by itself, and the reason dialog must open from here too — otherwise a return
+    // from a phone would go without an explanation or not at all.
     fireEvent.click(screen.getByLabelText('Изменить статус'));
     clickButton('Новая');
 

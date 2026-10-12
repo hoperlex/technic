@@ -984,26 +984,27 @@ describe('копия заявки на технику', () => {
 });
 
 /**
- * Копия из журнала закрытых заказов (ADR 0206, отложенный пункт отвергнутых) — та же форма
- * заведения, но названная **адресом**.
+ * A copy from the closed-order journal (ADR 0206, the postponed item of the rejected options) —
+ * the same create form, but named by **address**.
  *
- * Карточка журнала открыта на чтение и своей формы заведения не ведёт: заводить заявки умеет первая
- * вкладка, и она одна. Поэтому «Завести такую же» в журнале не открывает форму на месте, а уводит
- * на `?tab=requests&copy=<id>` — и форму открывает уже та вкладка, прочитав параметр.
+ * The journal card is read-only and has no create form of its own: only the first tab creates
+ * requests, and there is one of it. So "Завести такую же" in the journal does not open the form in
+ * place but leads to `?tab=requests&copy=<id>` — and that tab opens the form after reading the
+ * parameter.
  *
- * Стережётся здесь то, что ломается молча и тремя разными способами:
+ * Guarded here is what breaks silently, in three different ways:
  *
- * 1. **Кнопка в журнале — у того, кто заявки заводит.** Ворота у действия те же, что у кнопки в
- *    списке (`canCopyVehicleRequest`): разойдись они — журнал предлагал бы повтор роли, у которой
- *    сохранение кончится отказом сервера.
- * 2. **Параметр уходит из адреса.** Останься он — «назад» из формы и всякое возвращение на вкладку
- *    открывали бы форму копии заново, поверх начатой работы.
- * 3. **Недоступный образец говорит словами.** Ссылку пересылают и открывают назавтра: заявку к тому
- *    времени могли удалить, а право — снять. Молча пустая вкладка в ответ на пересланную ссылку
- *    читается как поломка портала.
+ * 1. **The journal button belongs to whoever creates requests.** The action's gate is the button's
+ *    gate in the list (`canCopyVehicleRequest`): if they diverged, the journal would offer a
+ *    repeat to a role whose save ends in a server refusal.
+ * 2. **The parameter leaves the address.** Left in place, "back" from the form and every return to
+ *    the tab would reopen the copy form over the work already started.
+ * 3. **An unavailable sample says so in words.** Links are forwarded and opened the next day: the
+ *    request may have been deleted by then, or the right withdrawn. A silently empty tab in answer
+ *    to a forwarded link reads as a broken portal.
  */
 
-/** Выполненная заявка журнала: ровно тот случай, ради которого копию и просили — «как в прошлом году». */
+/** A done request in the journal: exactly the case the copy was asked for — "as last year". */
 const CLOSED = vehicleRequest({
   id: 'vr-20',
   displayNumber: 'Т-60',
@@ -1013,7 +1014,7 @@ const CLOSED = vehicleRequest({
   assignment: ownAssignment(),
 });
 
-/** Адрес целиком: проверяется и уход на первую вкладку, и исчезновение параметра копии. */
+/** The whole address: both the move to the first tab and the copy parameter's removal count. */
 function SearchProbe() {
   const location = useLocation();
   return <div data-testid="search">{location.search}</div>;
@@ -1024,8 +1025,8 @@ function search(): string {
 }
 
 /**
- * Весь раздел, открытый на журнале: переход из журнала в список — это смена вкладки адресом, и
- * одной вкладкой его не проверить вовсе.
+ * The whole section opened on the journal: moving from the journal to the list is a tab change by
+ * address, and a single tab cannot check it at all.
  */
 function renderSection(
   items: VehicleRequestDto[],
@@ -1033,16 +1034,16 @@ function renderSection(
   route = '/vehicle-requests?tab=history',
 ): HttpMock {
   const http = mockHttp({
-    // Журнал стоит до `:id`: маршруты разбираются в порядке объявления, и `/history` ушёл бы в
-    // карточку заявки с идентификатором «history».
+    // The journal goes before `:id`: routes match in declaration order, and `/history` would land
+    // in the card of a request with the id "history".
     'GET /vehicle-requests/history': () => json(list(items)),
     'GET /vehicle-requests/history/summary': () =>
       json({ total: items.length, done: items.length, cancelled: 0, totalCost: 0, withoutCost: 0 }),
     'GET /vehicle-requests/feed': () => json(vehicleFeed([])),
     'GET /vehicle-requests/summary': () => json(vehicleSummary()),
     ...CARD_ROUTES,
-    // Образец копии спрашивается по идентификатору из адреса, а не ищется в строках списка: в
-    // первой вкладке закрытой заявки нет вовсе.
+    // The copy's sample is asked by the id from the address rather than looked up in the list
+    // rows: the first tab does not hold the closed request at all.
     'GET /vehicle-requests/:id': ({ params }) => {
       const found = items.find((item) => item.id === params.id);
       return found ? json(found) : json({ code: 'NOT_FOUND', message: 'Заявка не найдена' }, 404);
@@ -1065,7 +1066,7 @@ function renderSection(
   return http;
 }
 
-/** Открыть карточку журнала — её открывают кнопкой строки, а не нажатием по строке. */
+/** Open a journal card — it opens with the row's button, not with a click on the row. */
 async function openJournalCard(displayNumber: string) {
   await screen.findByText(displayNumber);
   fireEvent.click(screen.getByLabelText('Открыть карточку'));
@@ -1085,32 +1086,32 @@ describe('копия заказа из журнала закрытых', () => {
 
     fireEvent.click(button('Завести такую же')!);
 
-    // Форма открылась там, где она и живёт, — в списке заказов, и с номером образца в заголовке.
+    // The form opened where it lives — in the order list, with the sample's number in the title.
     await waitFor(() =>
       expect(screen.getByText('Новая заявка на автотехнику — по образцу Т-60')).toBeDefined(),
     );
     expect(search()).toContain('tab=requests');
-    // Параметр сделал своё дело и ушёл: иначе «назад» и всякий возврат на вкладку открывали бы
-    // форму копии заново — поверх работы, начатой в ней человеком.
+    // The parameter did its job and left: otherwise "back" and every return to the tab would reopen
+    // the copy form — over the work the person started in it.
     await waitFor(() => expect(search()).not.toContain('copy='));
 
-    // Состав перенесён тот же, что и у копии из списка: адрес меняет дверь, а не правило копии.
+    // The same values as a copy from the list: the address changes the door, not the copy rule.
     expect(selectedValue('Объект/отдел')).toContain('ЖК Северный');
     expect(selectedValue('Тип/категория ТС')).toContain('г/п 25 т');
     expect(fieldValue('Комментарий (планируемые задачи)')).toBe('разгрузка плит');
-    // Срок 10.08–12.08 прошёл: сдвиг с сохранением длительности, как и у копии из списка.
+    // The term 10.08–12.08 has passed: a shift keeping the length, as for a copy from the list.
     expect(fieldValue('Дата начала')).toBe('22.09.2026');
     expect(fieldValue('Дата окончания')).toBe('24.09.2026');
 
     fireEvent.click(button('Сохранить')!);
     await waitFor(() => expect(http.countOf(CREATE)).toBe(1));
-    // Исходная закрытая заявка не тронута ни одним запросом: она ушла в выгрузку бухгалтерии.
+    // No request touched the closed source: it has gone into the accounting export.
     expect(writesToRequests(http)).toHaveLength(0);
   });
 
   it('в журнале кнопки нет у того, кто заявок не заводит', async () => {
-    // Наблюдатель журнал читает — за тем он и открыт, — но заводить заявки не может, и повтор
-    // кончился бы у него отказом сервера на сохранении.
+    // An observer reads the journal — that is what it is open for — but cannot create requests, and
+    // a repeat would end in a server refusal on save.
     renderSection([CLOSED], authUser({ role: 'observer' }));
     await openJournalCard('Т-60');
 
@@ -1118,23 +1119,23 @@ describe('копия заказа из журнала закрытых', () => {
   });
 
   it('недоступный образец в адресе не открывает форму, а говорит словами', async () => {
-    // Пересланная ссылка, открытая назавтра: заявку удалили либо она вне области смотрящего —
-    // сервер отвечает одним 404 на оба случая. Молчание в ответ на ссылку читается как поломка.
+    // A forwarded link opened the next day: the request was deleted or is outside the viewer's
+    // scope — the server answers one 404 for both. Silence in answer to a link reads as a breakage.
     const http = renderSection([CLOSED], authUser(), '/vehicle-requests?tab=requests&copy=vr-404');
 
     expect(await screen.findByText('Заявка для копии не найдена или недоступна')).toBeDefined();
     expect(screen.queryByText(/по образцу/)).toBeNull();
-    // И адрес вычищен: иначе каждое возвращение на вкладку повторяло бы сообщение об ошибке.
+    // And the address is cleaned: otherwise every return to the tab would repeat the error message.
     await waitFor(() => expect(search()).not.toContain('copy='));
     expect(http.countOf(CREATE)).toBe(0);
   });
 
   /**
-   * Ворота адреса — те же, что у кнопки: архивная заявка копии не даёт (ADR 0206 решение 1), и
-   * ссылка, построенная до удаления заявки, обязана кончиться объяснением, а не формой.
+   * The address's gate is the button's gate: an archived request gives no copy (ADR 0206 decision
+   * 1), and a link built before the request was deleted must end in an explanation, not a form.
    *
-   * Второй двери в форму заведения из этого не получается: условия проверяет та же вкладка, что
-   * показывает кнопку, и ответ у них один.
+   * No second door into the create form comes of it: the conditions are checked by the same tab
+   * that shows the button, and their answer is one.
    */
   it('архивный образец в адресе копию не открывает', async () => {
     renderSection([ARCHIVED], authUser(), `/vehicle-requests?tab=requests&copy=${ARCHIVED.id}`);
@@ -1148,17 +1149,20 @@ describe('копия заказа из журнала закрытых', () => {
 });
 
 /**
- * Площадка отдела в копии заказа спецтехники (ADR 0201).
+ * A department's site in a copy of an on-site equipment order (ADR 0201).
  *
- * Дефект, который здесь закрыт, был тихим: состав подбора «Объект/отдел» зависит от типа заявки,
- * стоящего в ФОРМЕ (спецтехника — площадочная ось, грузоперевозка — область и отделы), а в миг
- * нажатия «Завести такую же» в форме стоит тип от прошлого открытия либо ничего вовсе. Спрошенный
- * там, подбор отвечал про не тот тип: роль отдела с закреплёнными площадками узнавала, что объектов
- * у неё нет, — и площадка, которая ей положена, в копию не подставлялась. Человек видел пустое
- * обязательное поле и ни слова о причине.
+ * The defect closed here was silent: the composition of the "Объект/отдел" picker depends on the
+ * request kind standing in the FORM (on-site equipment — the place axis, freight — scope and
+ * departments), and at the click on "Завести такую же" the form holds the kind of the previous
+ * opening or nothing at all. Asked there, the picker answered about the wrong kind: a department
+ * role with assigned sites learnt it had no objects — and the site it is entitled to never reached
+ * the copy. The person saw an empty required field and not a word about why.
  */
 describe('копия спецтехники у роли отдела с площадками', () => {
-  /** Отдел с площадкой: спецтехника ему открыта ровно ею (ADR 0201), а заказчиком стоит объект. */
+  /**
+   * A department with a site: on-site equipment is open to it by that site (ADR 0201), and the
+   * object is the customer.
+   */
   const DEPARTMENT = departmentUser('dep-1', ['obj-1']);
 
   it('подставляет площадку, положенную отделу, а не оставляет поле пустым', async () => {
@@ -1166,7 +1170,7 @@ describe('копия спецтехники у роли отдела с площ
 
     await openCopy('Т-42');
 
-    // Поле обязательное, и пустым оно здесь означало бы «подбор ответил про грузоперевозку».
+    // The field is required, and empty here it would mean "the picker answered about freight".
     expect(selectedValue('Объект/отдел')).toContain('ЖК Северный');
   });
 
@@ -1177,8 +1181,8 @@ describe('копия спецтехники у роли отдела с площ
     fireEvent.click(button('Сохранить')!);
 
     await waitFor(() => expect(http.countOf(CREATE)).toBe(1));
-    // Объект, а не отдел: заказчиком заказа спецтехники отдел не бывает вовсе
-    // (`vehicle_requests_department_freight_check`), и пара заполняется ровно одной колонкой.
+    // An object, not a department: a department is never the customer of an on-site order
+    // (`vehicle_requests_department_freight_check`), and the pair fills exactly one column.
     expect(http.lastCall(CREATE)?.body).toMatchObject({ objectId: 'obj-1' });
     expect(http.lastCall(CREATE)?.body).not.toHaveProperty('departmentId', 'dep-1');
   });

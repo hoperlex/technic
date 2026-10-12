@@ -36,9 +36,9 @@ export function useCopyCustomerSync({ copy, customer, form }: Input) {
   const copyCustomerPair = customer.customerPairOf(copyCustomerKey);
   const copyCustomerOffered = !!copyCustomerPair.objectId || !!copyCustomerPair.departmentId;
   /*
-   * `copy` stands in the dependencies next to the key: reopening a copy of the SAME order gives the
-   * same key, and keyed by it alone the fill would skip the second opening, whose form has just been
-   * reset.
+   * `copy` stands in the dependencies next to the key: reopening a copy of the SAME order gives
+   * the same key, and keyed by it alone the fill would skip the second opening, whose form has
+   * just been reset.
    */
   useEffect(() => {
     if (!copy || !copyCustomerKey || !copyCustomerOffered) return;

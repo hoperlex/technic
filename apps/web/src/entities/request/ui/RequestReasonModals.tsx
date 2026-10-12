@@ -7,11 +7,14 @@ interface CancelProps {
   onCancel: () => void;
   onSubmit: (reason: string) => void;
   confirmLoading?: boolean;
-  /** Пояснение над полем: какую именно заявку отменяем. */
+  /** Caption above the field: which request is being cancelled. */
   subject?: string;
 }
 
-/** Отмена заявки: причина обязательна (её требует и сервер) и уходит в историю статусов. */
+/**
+ * Cancelling a request: the reason is mandatory (the server demands it too) and goes into the
+ * status history.
+ */
 export function CancelReasonModal({ subject, ...rest }: CancelProps) {
   return (
     <ReasonModal
@@ -29,48 +32,46 @@ interface RollbackProps {
   onCancel: () => void;
   onSubmit: (reason: string) => void;
   confirmLoading?: boolean;
-  /** Пояснение над полем: какую именно заявку возвращаем. */
+  /** Caption above the field: which request is being returned. */
   subject?: string;
   /**
-   * Что возврат сотрёт у этой самой заявки — строками, по её собственным данным. Перечень
-   * собирает вызывающий экран: у заказа техники стирается одно (машина, рейс, факт), у вывоза
-   * мусора другое (факт и талоны), а обещать снятие того, чего у заявки нет, нельзя — общий
-   * список для обоих модулей врал бы половине заявок.
+   * What the return erases from this very request — as lines built from its own data. The calling
+   * screen assembles the list: a waste removal request loses one thing (the fact and the tickets),
+   * a mechanization request another (the deal), and promising to remove what the request does not
+   * have is not allowed — one shared list for every module would lie to half of the requests.
    *
-   * Не спрашивается, когда последствия приходят готовой плашкой (`consequences`).
+   * Not asked when the consequences come as a ready notice (`consequences`).
    */
   erases?: string[];
   /**
-   * Готовая плашка последствий вместо перечня строками — и вместо `erases` с `blocker` сразу.
+   * A ready notice of consequences instead of the list of lines.
    *
-   * Заведена для заказа техники, где перечень считает сервер (ADR 0211): там бывает не только
-   * «будет стёрто», но и «останется, потому что держит лист», ожидание ответа и отказ
-   * предпросмотра, — а окно о заявке не знает ничего и разбирать эти состояния не должно. Вывоз
-   * мусора и механизация по-прежнему передают строки: правило у них своё и целиком в портале.
+   * Introduced for the vehicle order, whose list the server computes (ADR 0211): there it is not
+   * only "will be erased" but also "stays because a waybill holds it", the wait for the answer, the
+   * blockers and a failed preview — and this dialog knows nothing about the request and must not
+   * sort those states out. Waste removal and mechanization still pass lines: their rule is their
+   * own and lives wholly in the portal.
+   *
+   * The former `blocker` prop went with the vehicle order's own list: its blocker now arrives in
+   * the server's answer, inside this notice.
    */
   consequences?: ReactNode;
-  /**
-   * Помеха, из-за которой сервер возврат не пропустит (выписанный путевой лист,
-   * `ROLLBACK_WAYBILL_MESSAGE`). Показывается тут же: узнать о ней после набранной причины
-   * и нажатия — значит проделать работу впустую.
-   */
-  blocker?: string | null;
 }
 
 /**
- * Возврат заявки из «В работе» в «Новую» (`transitionResetsWork`). От отмены отличается не
- * подписями, а тем, что стирает нажитое заявкой в работе, — поэтому перечень стираемого стоит
- * над полем причины, до нажатия: после него восстанавливать будет нечего.
+ * Returning a request from "in work" to "new" (`transitionResetsWork`). It differs from a
+ * cancellation not by captions but by erasing what the request gained in work — so the list of
+ * what is erased stands above the reason field, before the click: after it there is nothing left
+ * to restore.
  *
- * Окно то же самое, что у отмены: причина обязательна и там, и здесь, и уходит она тем же
- * запросом смены статуса. Второе окно с полем «Причина» отличалось бы от первого только
- * заголовком — и разъезжалось бы с ним при каждой правке.
+ * The dialog is the same one as the cancellation's: the reason is mandatory in both and leaves with
+ * the same status-change request. A second dialog with a "Reason" field would differ from the first
+ * only by its title — and would drift away from it with every edit.
  */
 export function RollbackReasonModal({
   subject,
   erases = [],
   consequences,
-  blocker,
   ...rest
 }: RollbackProps) {
   return (
@@ -83,33 +84,28 @@ export function RollbackReasonModal({
       danger
       notice={
         consequences ?? (
-          <>
-            {blocker && (
-              <Alert type="error" showIcon title={blocker} style={{ marginBottom: 12 }} />
-            )}
-            <Alert
-              type="warning"
-              showIcon
-              title="Заявка вернётся в состояние только что заведённой"
-              description={
-                erases.length > 0 ? (
-                  <>
-                    Будет стёрто:
-                    <ul style={{ margin: '4px 0 0', paddingInlineStart: 20 }}>
-                      {erases.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </>
-                ) : (
-                  // Нечего стирать — так и сказано: пустой список «будет стёрто» человек читает
-                  // как недогрузившийся, а не как «работы по заявке не завелось».
-                  'Стирать у заявки нечего — сменится только статус.'
-                )
-              }
-              style={{ marginBottom: 16 }}
-            />
-          </>
+          <Alert
+            type="warning"
+            showIcon
+            title="Заявка вернётся в состояние только что заведённой"
+            description={
+              erases.length > 0 ? (
+                <>
+                  Будет стёрто:
+                  <ul style={{ margin: '4px 0 0', paddingInlineStart: 20 }}>
+                    {erases.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                // Nothing to erase is said so: an empty "will be erased" list reads as one that
+                // failed to load, not as "the request gained no work".
+                'Стирать у заявки нечего — сменится только статус.'
+              )
+            }
+            style={{ marginBottom: 16 }}
+          />
         )
       }
     />

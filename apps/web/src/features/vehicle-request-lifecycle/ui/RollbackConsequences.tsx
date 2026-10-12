@@ -28,17 +28,20 @@ import { consequencesListStyle as listStyle } from '@entities/vehicle-request';
  */
 
 interface Props {
-  /** Названия стираемого: номер машины, ставка, предъявленный факт — их знает только заявка. */
+  /**
+   * Names of what is erased: the vehicle number, the rate, the presented fact — only the request
+   * knows them.
+   */
   request: VehicleRequestDto;
-  /** `null` — ответа ещё нет: обещать нечего, и окно показывает ожидание. */
+  /** `null` — no answer yet: nothing to promise, and the dialog shows a wait. */
   preview: VehicleRequestRollbackPreviewDto | null;
   /**
-   * Почему последствия не прочитаны. Показывается вместо перечня: нажать «Вернуть» человек всё
-   * равно сможет (отпечаток у двери необязателен, ADR 0211 решение 4, и возврат не должен
-   * заклиниваться из-за недоступного предпросмотра) — но вслепую, и об этом сказано прямо.
+   * Why the consequences were not read. Shown instead of the list: the person can still press
+   * "Return" (the door's fingerprint is optional, ADR 0211 decision 4, and the return must not jam
+   * over an unavailable preview) — but blind, and that is said plainly.
    */
   failure: string | null;
-  /** Почему перечень пересчитан сам: дверь отказала по устаревшему отпечатку. */
+  /** Why the list was recomputed by itself: the door refused over a stale fingerprint. */
   staleReason: string | null;
   onRetry: () => void;
 }
@@ -48,7 +51,10 @@ interface Line {
   text: string;
 }
 
-/** «1 строка» / «2 строки» / «5 строк»: число дней работ читают вслух, и «строк(и)» тут не годится. */
+/**
+ * "1 строка" / "2 строки" / "5 строк": the number of work days is read aloud, and a "строк(и)"
+ * placeholder does not do here.
+ */
 function rowsText(count: number): string {
   const tail = count % 100;
   const last = count % 10;
@@ -67,12 +73,14 @@ function sheetText(sheet: Esm2CancelPreviewDto): string {
   return `${sheet.number} (${formatDateOnly(sheet.from)} — ${formatDateOnly(sheet.to)})`;
 }
 
-/** Что возврат снимет. Порядок — от договорённости к бумаге: так о потере и рассказывают. */
+/**
+ * What the return removes. The order runs from the agreement to the paper — the way a loss is told.
+ */
 function eraseLines(request: VehicleRequestDto, p: VehicleRequestRollbackPreviewDto): Line[] {
   const lines: Line[] = [];
   if (p.assignment && request.assignment) {
-    // Ставки называют ту самую коммерческую договорённость, которая снимается; у аренды без
-    // согласованных ставок называется арендодатель — с ним договаривались, ему и звонить.
+    // Rates name the very commercial agreement being removed; a rental without agreed rates names
+    // the lessor — the agreement was with them, and they are the one to call.
     const detail = assignmentRateLabel(request.assignment) || request.assignment.lessorName;
     lines.push({
       key: 'assignment',
@@ -95,8 +103,9 @@ function eraseLines(request: VehicleRequestDto, p: VehicleRequestRollbackPreview
     const approved = p.shifts.filter((s) => s.approved);
     lines.push({
       key: 'shifts',
-      // Подписанный день бывает только за пределами срока: внутри срока он возврат запирает, а
-      // дверь удаляет строки по заявке целиком — и молчать о принятых часах нельзя.
+      // An approved day exists only outside the term: inside it the day locks the return, while the
+      // door deletes the request's rows wholesale — and keeping silent about accepted hours is not
+      // allowed.
       text:
         `Дни работ — ${rowsText(p.shifts.length)}` +
         (approved.length > 0
@@ -111,8 +120,8 @@ function eraseLines(request: VehicleRequestDto, p: VehicleRequestRollbackPreview
     });
   }
   if (p.esm2.cancelCount > 0) {
-    // Номера бланков строгой отчётности открыты только журналу (ADR 0106): без него счётчик — и
-    // есть полный ответ на вопрос «сгорит ли бумага».
+    // Strict-accounting form numbers are open only to the journal (ADR 0106): without it the
+    // counter is the full answer to "will the paper burn".
     lines.push({
       key: 'esm2-cancel',
       text: p.esm2.sheets
@@ -135,7 +144,10 @@ function eraseLines(request: VehicleRequestDto, p: VehicleRequestRollbackPreview
   return lines;
 }
 
-/** Что останется, хотя человек ждёт обратного, — и почему. Молчание здесь и обещало лишнее. */
+/**
+ * What stays although the person expects otherwise — and why. Silence here is what promised too
+ * much.
+ */
 function keepLines(p: VehicleRequestRollbackPreviewDto): Line[] {
   const lines: Line[] = [];
   for (const r of p.routes.frozen) {
@@ -167,8 +179,8 @@ export function RollbackConsequences({ request, preview, failure, staleReason, o
       {staleReason && (
         <Alert type="warning" showIcon title="Последствия пересчитаны" description={staleReason} />
       )}
-      {/* Помеха — выше перечня: при ней не случится ничего из того, что ниже, и читать перечень
-        раньше запрета значило бы читать его зря. Текст — тот же, которым откажет дверь. */}
+      {/* A blocker stands above the list: with it nothing below will happen, and reading the list
+        before the prohibition would be reading it in vain. The text is the door's own refusal. */}
       {preview?.blockers.map((b) => (
         <Alert key={b.code} type="error" showIcon title={b.message} />
       ))}
@@ -231,8 +243,8 @@ function ConsequencesAlert({
               </ul>
             </>
           ) : (
-            // Так ответил сервер — значит это и есть правда о заявке, а не недогрузившийся
-            // список: пустой перечень «будет стёрто» человек читает как поломку.
+            // The server answered so — this is the truth about the request, not a list that failed
+            // to load: an empty "will be erased" list reads as a breakage.
             'Стирать у заявки нечего — сменится только статус.'
           )}
           {keep.length > 0 && (
