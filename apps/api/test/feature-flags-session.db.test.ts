@@ -17,12 +17,13 @@ import type { db as AppDb } from '../src/db/client';
  * (`login`, `refresh`, `/auth/me`, смена пароля), отдают одно и то же значение**, по умолчанию
  * выключенное, и `UPDATE` по строке меняет его во всех четырёх сразу.
  *
- * ПОЧЕМУ ЧЕТЫРЕ, А НЕ ОДИН `/auth/me`. Сборщик ответа в `routes/auth.ts` один, и «поле появилось»
- * проверялось бы одним запросом. Но каждая из четырёх ручек — самостоятельная дыра: портал рисует
- * экраны по ответу ВХОДА, ещё не спросив `/auth/me`; `refresh` обязан донести аварийное выключение
- * до открытой вкладки; смена пароля выдаёт новую сессию и вместе с ней новый ответ. Забытое поле в
- * одной из них означало бы, что приём кандидатов открыт или закрыт в зависимости от того, КАК
- * человек вошёл, — и поймать это можно только запросом в каждую.
+ * WHY FOUR AND NOT ONE `/auth/me`. There is one response builder
+ * (`apps/api/src/auth/session-user.ts`), and "the field is there" could be checked with a single
+ * request. But each of the four routes is a hole of its own: the portal draws screens from the
+ * LOGIN response before it asks `/auth/me`; `refresh` must deliver an emergency switch-off to an
+ * open tab; password change issues a new session and a new response with it. A field forgotten in
+ * one of them would mean candidate intake is open or closed depending on HOW the person signed in,
+ * and only a request to each route catches that.
  *
  * ЗАЧЕМ БАЗА. Значение живёт строкой (`feature_flags`, миграция 0293), и всё, что здесь
  * утверждается, — про эту строку: что миграция её завела, что умолчание выключенное и что `UPDATE`

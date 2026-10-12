@@ -23,14 +23,16 @@ import type * as SchemaNs from '../src/db/schema';
  * Сервер отдаёт эффективные права учётки (ADR 0106, решение 5; план реструктуризации доступа §10.1)
  * — во всех четырёх ответах, которые устанавливают или обновляют сессию, на живой схеме.
  *
- * **Почему четыре ответа, а не только `/auth/me`.** Сборщик ответа в `routes/auth.ts` один, и
- * «поле появилось» проверялось бы одним запросом. Но план перечисляет четыре места именно потому,
- * что каждое из них — самостоятельная дыра: вход рисует меню до первого `/auth/me`; `refresh` после
- * `authVersion + 1` обязан обновить пользователя целиком, иначе сервер уже считает по-новому, а меню
- * остаётся прежним до перезагрузки страницы; смена пароля выдаёт новую сессию и вместе с ней должна
- * обновить доступ. Сборщик может остаться один, а субъект в него прийти **обрезанным** — что и было
- * до этого шага у входа и смены пароля: они читали коды наборов (ради пометок рядом с ролью) и не
- * читали прав наборов вовсе. Поймать это можно только запросом в каждую из четырёх ручек.
+ * **Why four responses and not only `/auth/me`.** There is one response builder
+ * (`apps/api/src/auth/session-user.ts`), and "the field is there" could be checked with a single
+ * request. But the plan lists four places precisely because each of them is a hole of its own:
+ * login draws the menu before the first `/auth/me`; `refresh` after `authVersion + 1` must refresh
+ * the whole user, otherwise the server already computes the new way while the menu stays old until
+ * a page reload; password change issues a new session and must refresh access along with it. The
+ * builder can stay single while the subject reaches it **truncated**, which is exactly what login
+ * and password change did before this step: they read grant codes (for the badges next to the
+ * role) and did not read grant permissions at all. Only a request to each of the four routes
+ * catches that.
  *
  * **Зачем база.** Права наборов считает SQL (`grantPermissionsExpr`) с гейтом совместимости по роли,
  * и собранный администратором набор существует только в таблицах — ни роль, ни пометки о нём не

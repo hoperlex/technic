@@ -271,7 +271,8 @@ export interface AuthUser extends PersonNameParts {
    * Права интерфейса, а не доказательство доступа: решение по запросу сервер по-прежнему принимает
    * сам, на своём субъекте. Список управляет только тем, что человек видит.
    *
-   * Порядок — словарный (`PERMISSIONS`), см. сборщик ответа в `routes/auth.ts`.
+   * The order is the dictionary order (`PERMISSIONS`); see the response builder in
+   * `apps/api/src/auth/session-user.ts`.
    */
   permissions: Permission[];
   /**
