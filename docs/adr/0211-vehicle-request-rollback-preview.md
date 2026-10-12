@@ -1,24 +1,34 @@
 # ADR 0211. Что снимет возврат заказа техники в «Новую», считает сервер — тем же планом, что исполняет дверь
 
-- Статус: Принято (28.09.2026). Реализована серверная половина: контракты, план отката, ручка
-  предпросмотра, необязательный отпечаток у двери, db-тест. Портал подключится отдельной работой
-  после волны портала (решение 7). Миграций и записи выпуска нет: пока портал не подключён,
-  видимого пользователю изменения нет, а пол клиента не поднимается
+- Статус: Реализовано (12.10.2026). Accepted on 28.09.2026 with the server half — contracts, the
+  rollback plan, the preview handle, the optional fingerprint at the door, the db test; the portal
+  half (decision 8) followed on 12.10.2026: the rollback window shows the preview's answer and sends
+  its fingerprint, and the portal's own list `rollbackErases` is gone. No migrations; the portal
+  change is visible to users, so its release record goes with its deployment window (ADR 0077). The
+  client floor is not raised: the fingerprint stays optional at the door (decision 4)
 - Домены: заказ-тс, путевые-листы
-- Область: контракты — [vehicle-requests.ts](../../packages/contracts/src/vehicle-requests.ts)
+- Область: contracts — [vehicle-requests.ts](../../packages/contracts/src/vehicle-requests.ts)
   (`VehicleRequestRollbackPreviewDto`, `previewVehicleRequestRollbackSchema`,
-  `VEHICLE_REQUEST_ROLLBACK_BLOCKERS`, описание `previewFingerprint`); сервер — новый
+  `VEHICLE_REQUEST_ROLLBACK_BLOCKERS`, the description of `previewFingerprint`); server — new
   [vehicle-request-rollback-plan.ts](../../apps/api/src/services/vehicle-request-rollback-plan.ts),
-  [vehicle-requests.ts](../../apps/api/src/routes/vehicle-requests.ts) (дверь смены статуса и
+  [vehicle-requests.ts](../../apps/api/src/routes/vehicle-requests.ts) (the status door and
   `POST /vehicle-requests/:id/rollback/preview`),
   [waybill-esm2.ts](../../apps/api/src/services/waybill-esm2.ts) (`assumeStatus`,
   `esm2SheetPreviews`), [vehicle-routes.ts](../../apps/api/src/services/vehicle-routes.ts)
-  (`planRelocationDrop` и `dropRelocations` вместо `dropPlannedRelocations`),
+  (`planRelocationDrop` and `dropRelocations` instead of `dropPlannedRelocations`),
   [vehicle-request-shifts.ts](../../apps/api/src/services/vehicle-request-shifts.ts)
   (`requestShiftRows`), [vehicle-request-period.ts](../../apps/api/src/services/vehicle-request-period.ts)
-  (`pendingEarlyEndOf`), [access-manifest.ts](../../apps/api/src/lib/access-manifest.ts); тесты —
+  (`pendingEarlyEndOf`), [access-manifest.ts](../../apps/api/src/lib/access-manifest.ts); portal —
+  [lifecycle.ts](../../apps/web/src/entities/vehicle-request/api/lifecycle.ts) (`rollbackPreview`),
+  new [useRollbackConsequences.tsx](../../apps/web/src/features/vehicle-request-lifecycle/model/useRollbackConsequences.tsx)
+  and [RollbackConsequences.tsx](../../apps/web/src/features/vehicle-request-lifecycle/ui/RollbackConsequences.tsx),
+  [useVehicleRequestLifecycle.tsx](../../apps/web/src/widgets/vehicle-request-lifecycle/model/useVehicleRequestLifecycle.tsx),
+  [RequestReasonModals.tsx](../../apps/web/src/entities/request/ui/RequestReasonModals.tsx)
+  (`consequences`), [ReasonModal.tsx](../../apps/web/src/shared/ui/ReasonModal.tsx)
+  (`okDisabled`); tests —
   [vehicle-request-rollback-preview.db.test.ts](../../apps/api/test/vehicle-request-rollback-preview.db.test.ts),
-  [access-conditions.test.ts](../../apps/api/test/access-conditions.test.ts) (фикстура маршрута)
+  [access-conditions.test.ts](../../apps/api/test/access-conditions.test.ts) (the route fixture),
+  [flow-vehicle-rollback.test.tsx](../../apps/web/test/flow-vehicle-rollback.test.tsx)
 - Уточняет: [ADR 0058](0058-request-rollback-to-new.md) (перечень стираемого откатом считает
   сервер, а не портал), [ADR 0172](0172-vehicle-request-rollback-keeps-approval.md) п. 4 («портал не
   обещает того, чего не будет» — теперь это обещание сервера)
@@ -165,21 +175,55 @@
 истории назначения (`assertAssignmentBackstop`). Они не правила отката, у них свои окна и тексты, и
 пересказывать их здесь значило бы завести им второй носитель.
 
-### 7. Портал подключится отдельной работой
+### 7. The portal is connected by separate work
 
-Решение заказчика от 25.09.2026: сейчас делается только сервер, портал — после волны портала,
-отдельной карточкой. Тогда окно возврата будет показывать ответ предпросмотра и слать его отпечаток,
-а `rollbackErases` в `apps/web/src/features/vehicle-request-lifecycle/model/rollbackErases.ts`
-уйдёт — это и есть второй носитель
-правила, который предпросмотр заменяет. До этого портал показывает прежний перечень, и его дефект
-остаётся видимым пользователю.
+The customer's decision of 25.09.2026: only the server was done at first, the portal after the
+portal wave, as a separate card. Then the rollback window would show the preview's answer and send
+its fingerprint, and `rollbackErases` in
+`apps/web/src/features/vehicle-request-lifecycle/model/rollbackErases.ts` would go — it is the
+second carrier of the rule that the preview replaces. Until then the portal showed the old list,
+and its defect stayed visible to users. Done on 12.10.2026 — decision 8.
+
+### 8. The portal half: the window says exactly what the server answered
+
+The rollback window asks `POST /vehicle-requests/:id/rollback/preview` on **every opening**
+(`useRollbackConsequences`): between yesterday's look and today's click the plan changes without
+touching `version` (a relocation got a waybill, a week became worked, a shift draft appeared), so a
+cached answer would confirm consequences nobody looked at. The preview is therefore asked as a
+mutation, not a cached query.
+
+The notice (`RollbackConsequences`) prints the answer and nothing else:
+
+- **what goes** — the assignment, the route places in `routes.detach`, the relocations in
+  `relocations.drop`, the shift rows with the approved ones named by date, the pending early end,
+  the ESM-2 sheets to cancel (numbers for a `waybills.read` holder, the counter otherwise), the
+  linearity freeze and the presented fact;
+- **what stays and why** — `routes.frozen`, `relocations.keep` and the sheets of worked weeks;
+- **the blockers** — above the list, in the door's own words.
+
+_Whether_ a line is there is the plan's answer and is never recomputed. The request DTO only
+_names_ two lines — the vehicle with its rate and the presented fact — because the registration
+number and the fact live in the DTO, not in the preview. The portal's list `rollbackErases`, the
+relocations read that fed it and the dialog's `hasActiveWaybill` blocker are gone: all three were
+second carriers of rules the plan owns.
+
+Confirmation sends the version the shown plan was computed for together with its `fingerprint`. A
+409 from the door is answered in the dialog — the consequences are asked again and the window says
+they were recomputed («Последствия пересчитаны») — not with a "try again" toast. A failed preview is
+shown in place of the list; the return can still be confirmed (the door's fingerprint is optional,
+decision 4), but blind, and the window says so.
 
 ## Совместимость и порядок выката
 
-Схема не меняется, миграций и записи выпуска нет. Новая ручка никем не вызывается, пока портал её не
-подключит; новое в двери — сверка отпечатка, который прежний портал при откате в «Новую» не шлёт
-(`previewFingerprint` уходит только с отката «Выполнена» → «В работе»). Выкат обычный, одной сборкой
-сервера; откат — обратной сборкой.
+The schema does not change and there are no migrations. The server half shipped alone: the new
+handle was called by nobody, and the fingerprint check was new in the door, which the old portal
+did not send on the return to «Новая» (`previewFingerprint` went only with the «Выполнена» → «В
+работе» rollback). Deployment was an ordinary server build; rollback a reverse build.
+
+The portal half ships as an ordinary build of the portal: the handle and the optional fingerprint
+are already in the server. A tab opened before it keeps sending the return without a fingerprint
+and keeps working, so the client floor is not raised. The change is visible to users, so the
+deployment window carries its release record (ADR 0077).
 
 Что поведение двери не изменилось, доказано прогоном её тестов (откат с визой, блокировки рейсов,
 дни линейного заказа, ЭСМ-2 по требованию, переключение линейности, закрытие, доставка, досрочное
@@ -187,14 +231,29 @@
 
 ## Последствия
 
-- у правила «что стирает откат в „Новую“» остаётся один носитель — сервер; портал, подключившись,
-  перестанет пересказывать его своими словами;
+- the rule "what the return to «Новая» erases" has one carrier — the server; since 12.10.2026 the
+  portal no longer retells it in its own words (decision 8);
 - впервые есть db-тест того, что откат снимает дни, удаляет смены и ожидающее досрочное, аннулирует
   ЭСМ-2 текущих недель и не трогает отработанные, а перегон с аннулированным листом оставляет;
 - держатель права отката без журнала листов видит, что сгорит бумага, но не видит номеров бланков;
-- до подключения портала окно возврата по-прежнему молчит о днях, сменах, досрочном и ЭСМ-2 и
-  обещает удалить перегон с листом. Серверная половина этого не лечит — она делает лечение
-  возможным без второго носителя.
+- the window now names the days, shifts, the pending early end and the ESM-2 sheets, and no longer
+  promises to remove a relocation that a waybill holds — the defect that opened this decision;
+- **waiting for the answer disables only the confirmation.** The dialog's `okDisabled` holds the
+  click until the plan is on screen; `confirmLoading` would also refuse «Не возвращать», Esc and the
+  close icon, and a hung preview would lock the person inside a dialog they want to leave;
+- **an answer about another request is dropped.** The dialog may be closed while the answer is on
+  its way and opened on another row; a late answer for the first request would show its
+  consequences — and send its version and fingerprint — under the second request's title;
+- **a refusal on a named blocker is not "recomputed".** The active-waybill refusal is a 409 with the
+  same `version_conflict` code as a stale fingerprint, but the door raises it before comparing
+  fingerprints. When the shown plan already carries a blocker, the dialog leaves the door's own text
+  to the toast instead of announcing changed data that did not change;
+- **the plan, not the row, decides a line.** A list row that went stale before the dialog opened may
+  lack the vehicle or the fact the server is about to remove; the line then stays, unnamed
+  («Назначенная техника со ставками», «Предъявленный факт»), rather than the window keeping silent;
+- the fingerprint is now sent by the portal, but making it mandatory remains a separate decision
+  together with raising the client floor (decision 4): tabs older than the portal half still send
+  the return without it.
 
 ## Отвергнутые варианты
 

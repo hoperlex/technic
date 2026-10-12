@@ -1,9 +1,11 @@
 # ADR 0206. Копию заказа техники снимают с заявки любого статуса, а срок ей считает календарь, а не статус
 
-- Статус: Реализовано (22.09.2026). Решение заказчика от 22.09.2026, обратное его же ответу от
-  08.09.2026. Схема, контракты и API не меняются: копия — та же форма заведения, сохранение уходит
-  прежним `POST /vehicle-requests`. Из миграций — только запись выпуска
-  ([`0338`](../../apps/api/drizzle/0338_releases_copy_any_status.sql), ADR 0077)
+- Статус: Реализовано (22.09.2026; the copy from the closed-order journal followed on 12.10.2026,
+  decision 8). The customer's decision of 22.09.2026, reversing their own answer of 08.09.2026.
+  Schema and API do not change: the copy is the same create form, and saving goes through the same
+  `POST /vehicle-requests`; the contracts gained only the address of the copy form (decision 8).
+  Migrations: only release records — [`0338`](../../apps/api/drizzle/0338_releases_copy_any_status.sql)
+  for decisions 1–7 (ADR 0077); the journal copy goes with the record of its deployment window
 - Домены: заказ-тс
 - Отменяет: **решение 2 [ADR 0173](0173-vehicle-request-copy.md)** — «копию снимают только с
   „Новой“». Вместе с ограничением снято и его основание: прошедшие даты чинит календарь формы, а
@@ -27,19 +29,28 @@
   [ADR 0135](0135-waste-request-completed.md) («Завершена» — статус вывоза мусора, у заказа ТС его
   не бывает), [ADR 0152](0152-mechanization-module.md) («Дублировать» у соседнего модуля отвечает
   на другой вопрос), [ADR 0029](0029-vehicle-request-completion.md) (журнал закрытых заказов)
-- Область: портал — новый
-  [copyNotice.tsx](../../apps/web/src/features/vehicle-request-editor/ui/copyNotice.tsx) (надпись над формой копии);
-  правки [requestFormValues.ts](../../apps/web/src/features/vehicle-request-editor/model/requestFormValues.ts)
+- Область: portal — new
+  [copyNotice.tsx](../../apps/web/src/features/vehicle-request-editor/ui/copyNotice.tsx) (the notice above the copy form);
+  edits to [requestFormValues.ts](../../apps/web/src/features/vehicle-request-editor/model/requestFormValues.ts)
   (`copyTermPlan`, `copyScheduledPlan`, `copyFormValues`),
   [useVehicleRequestEditorState.ts](../../apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState.ts)
-  (`canCopy`) и
+  (`canCopy`) and
   [VehicleRequestEditorDialog.tsx](../../apps/web/src/widgets/vehicle-request-editor/ui/VehicleRequestEditorDialog.tsx)
-  (заголовок формы и надпись),
+  (the form title and the notice),
   [vehicleRequestCardFooter.tsx](../../apps/web/src/widgets/vehicle-request-view/ui/vehicleRequestCardFooter.tsx)
-  (надпись кнопки); тесты —
-  [vehicle-request-copy.test.tsx](../../apps/web/test/vehicle-request-copy.test.tsx) и фабрика
-  [factories/vehicle.ts](../../apps/web/test/factories/vehicle.ts) (заявка в работе с назначением
-  и рейсом — собрать её до этой волны было нечем)
+  (the button caption); the journal copy (decision 8) — the gate
+  [copyAccess.ts](../../apps/web/src/entities/vehicle-request/model/copyAccess.ts)
+  (`canCopyVehicleRequest`, `vehicleRequestCopyLink`), the address in
+  [links.ts](../../packages/contracts/src/links.ts) (`VEHICLE_REQUEST_COPY_PARAM`,
+  `vehicleRequestCopyPath`), the journal card
+  [VehicleRequestsHistoryTab.tsx](../../apps/web/src/pages/vehicle/VehicleRequestsHistoryTab.tsx),
+  the address reader
+  [useVehicleRequestOperations.tsx](../../apps/web/src/pages/vehicle/useVehicleRequestOperations.tsx)
+  and the delayed customer fill
+  [useCopyCustomerSync.ts](../../apps/web/src/widgets/vehicle-request-editor/model/useCopyCustomerSync.ts);
+  tests — [vehicle-request-copy.test.tsx](../../apps/web/test/vehicle-request-copy.test.tsx) and the
+  factory [factories/vehicle.ts](../../apps/web/test/factories/vehicle.ts) (a request in work with an
+  assignment and a route — nothing could build one before this wave)
 
 ## Контекст
 
@@ -203,13 +214,60 @@ ADR 0173 работает прежним (`copyScheduledPlan`).
 полностью, и сведение их в одно правило завело бы второй носитель того же знания — расходящийся
 молча.
 
+### 8. The copy is also taken from the closed-order journal — by address, behind one gate
+
+Added on 12.10.2026; this is the option the first wave postponed (see the rejected alternatives).
+The journal card is read-only and stays so: the only action it carries is «Завести такую же», and
+that one it carries as a **link**. The section has exactly one create form, in the order list, so
+the journal card closes and leads to `/vehicle-requests?tab=requests&copy=<id>`; the first tab
+reads the parameter, fetches the source by id (a closed order is not among its rows), drops the
+parameter from the address and opens the same copy form as its own card does. Everything decisions
+1–7 say about the copy holds unchanged: the address changes the door, not the copy rule.
+
+- **The address lives in the contracts** (`VEHICLE_REQUEST_COPY_PARAM`, `vehicleRequestCopyPath` in
+  `packages/contracts/src/links.ts`): the journal builds the link and the list reads it, and two
+  separately written names would land on a tab that does not recognise the parameter. It is a key
+  of its own, not the shared `open`: `open` shows a card for reading, `copy` opens the create form,
+  and one key with two meanings would diverge silently.
+- **The parameter is one-shot.** It leaves the address as soon as the form opens — left in place,
+  "back" and every return to the tab would reopen the form over the work begun in it. A forwarded
+  link opened later says what went wrong in words: a source that is gone or out of scope («Заявка
+  для копии не найдена или недоступна»), archived, or of a kind the account may not order — instead
+  of a silently empty tab or a form whose save the server would refuse.
+- **One gate for both screens.** The journal button, the list card's button and the address reader
+  all ask `canCopyVehicleRequest` (`apps/web/src/entities/vehicle-request/model/copyAccess.ts`;
+  `vehicleRequestCopyLink` pairs it with the address). Its conditions are decision 1's: not
+  archived, the `vehicleRequests.create` permission, and the account's corridor of request kinds.
+  A second copy of the gate would offer the copy on one screen and hide it on the other.
+- **Why a portal gate over the server's list, not a contracts predicate.** The permission is
+  membership in the list the server computed for the session (the portal's `can`); the corridor is
+  the contracts predicate `canOrderVehicleRequestType`, which keeps its rule in one place. A
+  contracts `canCopyVehicleRequest(subject, …)` would have to call the contracts `can()` — that is,
+  recompute the permission matrix over the session's subject, which agrees with the server's list
+  only by convention and misses nothing today only because no one has assembled a set the matrix
+  does not know. ADR 0223 (`docs/adr/0223-portal-permission-oracle.md`) records this as the
+  portal's rule: availability that depends on a permission is decided by the server's list, and a
+  contract predicate that needs a permission takes the membership from it. The wave first placed
+  the gate in the contracts and moved it to the entity slice for exactly this reason. The server
+  remains the last gate: `POST /vehicle-requests` checks the permission and the corridor itself.
+- **The customer of a copy is filled one render later** (`useCopyCustomerSync`). The picker's
+  composition follows the request kind standing in the form — the place axis for on-site equipment,
+  scope plus departments for freight (ADR 0201) — and inside the click that opens the copy the form
+  still holds the previous opening's kind. Answered there, "is this customer on offer" was answered
+  about the wrong kind: a department with its own sites copying an on-site order faced an empty
+  required field. The fill now waits for the picker to follow the source kind and never overwrites
+  a customer chosen by hand; a customer outside the account's offer stays empty, as decision 3 of
+  ADR 0173 requires.
+
 ## Совместимость и порядок выката
 
-Изменение целиком портальное: схема, контракты, права и API не меняются, новых полей форма не
-отправляет — значит пол клиента не поднимается, и старая вкладка рядом с новой сборкой работает как
-работала (просто не покажет кнопку у не-«Новой»). Выкат обычный, одной сборкой портала; откат —
-обратной сборкой. Из миграций едет только запись выпуска
-[`0338`](../../apps/api/drizzle/0338_releases_copy_any_status.sql).
+The change is entirely the portal's: schema, permissions and API do not change, and the form sends
+no new fields — so the client floor is not raised, and an old tab next to a new build works as it
+did (it simply shows no button on a non-«Новая» request, and no journal button). The contracts
+gained only the copy-form address (decision 8), which the server does not read. Deployment is an
+ordinary portal build; rollback is the previous build. Decisions 1–7 shipped with the release record
+[`0338`](../../apps/api/drizzle/0338_releases_copy_any_status.sql); the journal copy goes with the
+record of its deployment window.
 
 ## Последствия
 
@@ -229,7 +287,10 @@ ADR 0173 работает прежним (`copyScheduledPlan`).
   продлением срока и недельной заявкой ([ADR 0085](0085-weekly-vehicle-request.md)), и копия этих
   дверей не заменяет;
 - ADR 0173 остаётся действующим во всём остальном: копия — по-прежнему форма заведения (решение 1),
-  ездки копии — новые строки (решение 4), связь «копия чего» не хранится (решение 5).
+  ездки копии — новые строки (решение 4), связь «копия чего» не хранится (решение 5);
+- **a closed order is repeated from where it is read** — the journal (decision 8) — and a copy link
+  can be forwarded: it opens the form once for whoever may create such a request, and explains
+  itself to anyone else.
 
 ## Отвергнутые варианты
 
@@ -245,8 +306,9 @@ ADR 0173 работает прежним (`copyScheduledPlan`).
 ответа на «что делать, если исходную заявку удалили». Источник копии живёт ровно столько, сколько
 открыта форма, и назван в её заголовке и в надписи.
 
-**Копия из журнала закрытых заказов** (вторая вкладка, ADR 0029). Отложена следующей волной, и не
-по мелочи: карточка журнала не ведёт действий вовсе — она открыта на чтение, — и копии там нужна
-либо своя форма заведения во второй вкладке, либо переход в первую с адресом. Оба хода стоят
-дороже, чем сама возможность, а спрос на неё пока не измерен: заявки за прошлый год повторяют реже,
-чем недельной давности.
+**A create form of its own in the closed-order journal** (the second tab, ADR 0029). The first wave
+postponed the journal copy altogether: the journal card carries no actions — it is read-only — and
+a copy there needs either its own create form in the second tab or a move to the first one by
+address. Decision 8 took the second move on 12.10.2026; a second form was rejected, because it
+would be a second copy of the one create form, its gates and its PICK-freshness rules, drifting
+from the first with every edit.
