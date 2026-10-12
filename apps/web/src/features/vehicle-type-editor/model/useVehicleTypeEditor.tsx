@@ -22,6 +22,7 @@ import {
 } from '@entities/vehicle-type';
 import { trailerKeys } from '@entities/vehicle-trailer';
 import { vehicleKeys } from '@entities/vehicle';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { fuelNormKeys } from '@entities/fuel-norm';
 import { isApiError } from '@shared/api';
 import { formatDateOnly } from '@shared/lib';
@@ -296,6 +297,9 @@ export function useVehicleTypeEditor(): VehicleTypeEditorController {
     } finally {
       // The type is re-read in every outcome: after a switch it is different even if the PATCH
       // failed, and an extra request is cheaper than a form arguing with the directory.
+      // A switch also rewrites the requests of the type: the caught ones get their snapshot
+      // (`isLinearFrozen`), and every other one now reads the new flag as its own `isLinear`.
+      if (switched) void queryClient.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       invalidateTypes();
       setSaving(false);
     }
