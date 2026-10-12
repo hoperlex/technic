@@ -1,13 +1,8 @@
-import { Collapse, Space, Table, Tooltip, Typography } from 'antd';
+import { Collapse, Space, Table, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { wasteTicketFieldLabels, type TicketAuditFieldRow } from '@technic/contracts';
-import {
-  correctedView,
-  disputedView,
-  resolvedDisputeView,
-  unreadableView,
-  type RatioView,
-} from '../model/numbers';
+import { correctedView, disputedView, resolvedDisputeView, unreadableView } from '../model/numbers';
+import { CardLine, ColumnTitle } from './CardLine';
 import { Ratio } from './Ratio';
 
 /**
@@ -15,15 +10,6 @@ import { Ratio } from './Ratio';
  * (§5.1 плана). Оба вида в одном файле намеренно: показатели у них одни и те же, и разъедься они
  * по двум местам, столбец, добавленный в таблицу, молча не доехал бы до телефона.
  */
-
-/** Заголовки столбцов с определением показателя: число без определения читается как знание. */
-function ColumnTitle({ title, hint }: { title: string; hint: string }) {
-  return (
-    <Tooltip title={hint}>
-      <span>{title}</span>
-    </Tooltip>
-  );
-}
 
 const COLUMN_HINTS = {
   corrected:
@@ -104,30 +90,18 @@ export function FieldCards({ rows }: { rows: TicketAuditFieldRow[] }) {
         ),
         children: (
           <Space orientation="vertical" size={4} style={{ width: '100%' }}>
-            <CardLine title="Спорных" hint={COLUMN_HINTS.disputed} view={disputedView(row)} />
-            <CardLine
-              title="Не прочитано"
-              hint={COLUMN_HINTS.unreadable}
-              view={unreadableView(row)}
-            />
-            <CardLine
-              title="Решено человеком"
-              hint={COLUMN_HINTS.resolvedDispute}
-              view={resolvedDisputeView(row)}
-            />
+            <CardLine title="Спорных" hint={COLUMN_HINTS.disputed}>
+              <Ratio view={disputedView(row)} />
+            </CardLine>
+            <CardLine title="Не прочитано" hint={COLUMN_HINTS.unreadable}>
+              <Ratio view={unreadableView(row)} />
+            </CardLine>
+            <CardLine title="Решено человеком" hint={COLUMN_HINTS.resolvedDispute}>
+              <Ratio view={resolvedDisputeView(row)} />
+            </CardLine>
           </Space>
         ),
       }))}
     />
-  );
-}
-
-/** Строка раскрытия: подпись показателя слева, числа справа — как ячейка таблицы, только в столбик. */
-function CardLine({ title, hint, view }: { title: string; hint: string; view: RatioView }) {
-  return (
-    <Space size={8} style={{ width: '100%', justifyContent: 'space-between' }}>
-      <ColumnTitle title={title} hint={hint} />
-      <Ratio view={view} />
-    </Space>
   );
 }

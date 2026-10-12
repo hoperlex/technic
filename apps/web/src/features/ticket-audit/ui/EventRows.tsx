@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react';
 import { Collapse, Space, Table, Tooltip, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { wasteTicketFieldLabels, type TicketAuditEventRow } from '@technic/contracts';
@@ -16,6 +15,7 @@ import {
   type EmptyValueView,
   type EventValueLine,
 } from '../model/eventRows';
+import { CardLine } from './CardLine';
 import { ModelCell } from './ModelCell';
 import { TicketScanButton } from './TicketScan';
 
@@ -157,16 +157,6 @@ export function EventCards({ rows }: { rows: readonly TicketAuditEventRow[] }) {
         ),
       }))}
     />
-  );
-}
-
-/** Строка раскрытия: подпись слева, значение справа — как ячейка таблицы, поставленная в столбик. */
-function CardLine({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <Space size={8} style={{ width: '100%', justifyContent: 'space-between' }}>
-      <Typography.Text type="secondary">{title}</Typography.Text>
-      {children}
-    </Space>
   );
 }
 

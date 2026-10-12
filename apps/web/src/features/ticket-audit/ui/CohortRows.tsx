@@ -1,9 +1,9 @@
-import type { ReactNode } from 'react';
-import { Collapse, Space, Table, Tooltip, Typography } from 'antd';
+import { Collapse, Space, Table, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import type { TicketAuditCohortRow } from '@technic/contracts';
 import { cohortKey, escalationModelView, primaryModelView, versionsLabel } from '../model/cohorts';
 import { cohortCorrectedView, cohortUnreadableView } from '../model/numbers';
+import { CardLine, ColumnTitle } from './CardLine';
 import { ModelCell } from './ModelCell';
 import { Ratio } from './Ratio';
 
@@ -12,15 +12,6 @@ import { Ratio } from './Ratio';
  * файле по той же причине, что у полей сводки: показатели у них общие, и разъедься они по двум
  * местам, столбец, добавленный в таблицу, молча не доехал бы до телефона.
  */
-
-/** Заголовок столбца с определением показателя: число без определения читается как знание. */
-function ColumnTitle({ title, hint }: { title: string; hint: string }) {
-  return (
-    <Tooltip title={hint}>
-      <span>{title}</span>
-    </Tooltip>
-  );
-}
 
 const COLUMN_HINTS = {
   primary:
@@ -129,15 +120,5 @@ export function CohortCards({ rows }: { rows: TicketAuditCohortRow[] }) {
         ),
       }))}
     />
-  );
-}
-
-/** Строка раскрытия: подпись показателя слева, значение справа — как ячейка таблицы, в столбик. */
-function CardLine({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
-  return (
-    <Space size={8} style={{ width: '100%', justifyContent: 'space-between' }}>
-      <ColumnTitle title={title} hint={hint} />
-      {children}
-    </Space>
   );
 }

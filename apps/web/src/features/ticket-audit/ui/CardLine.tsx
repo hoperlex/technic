@@ -2,20 +2,20 @@ import type { ReactNode } from 'react';
 import { Space, Tooltip, Typography } from 'antd';
 
 /**
- * Подпись показателя и строка раскрытия карточки — одни на весь слайс «Аудит талонов».
+ * The metric caption and the card expansion line — one pair for the whole «Аудит талонов» slice.
  *
- * Все четыре вида строк (сводка, точность, когорты, лента) показывают одно и то же устройство:
- * таблица на десктопе, карточки на телефоне, и в раскрытии карточки — подпись слева, значение
- * справа. Разъедься эта пара по четырём файлам (как было), правка отступа или тултипа доезжала бы
- * до одного вида из четырёх.
+ * All four row views (summary, accuracy, cohorts, event feed) are built the same way: a table on
+ * desktop, cards on a phone, and inside an expanded card the caption on the left and the value on
+ * the right. With the pair copied into four files (as it used to be), a change to a gap or a
+ * tooltip reached one view out of four.
  */
 
 /**
- * Заголовок столбца с определением показателя: число без определения читается как знание.
+ * A column title carrying the metric's definition: a number without one reads as knowledge.
  *
- * Без подсказки подпись печатается приглушённой: в ленте событий «Модель» и «Автор» — не показатели,
- * а названия полей записи, и определять там нечего. Пунктир тултипа над ними обещал бы объяснение,
- * которого нет.
+ * Without a hint the caption is printed muted: in the event feed «Модель» and «Автор» are not
+ * metrics but names of record fields, and there is nothing to define. A tooltip over them would
+ * promise an explanation that does not exist.
  */
 export function ColumnTitle({ title, hint }: { title: string; hint?: string }) {
   if (hint === undefined) return <Typography.Text type="secondary">{title}</Typography.Text>;
@@ -26,7 +26,10 @@ export function ColumnTitle({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
-/** Строка раскрытия: подпись показателя слева, значение справа — как ячейка таблицы, в столбик. */
+/**
+ * An expansion line: the metric caption on the left, the value on the right — a table cell turned
+ * into a column.
+ */
 export function CardLine({
   title,
   hint,

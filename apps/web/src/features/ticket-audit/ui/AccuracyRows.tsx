@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react';
 import { Collapse, Space, Table, Tooltip, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { wasteTicketFieldLabels, type TicketAuditAccuracyField } from '@technic/contracts';
@@ -8,6 +7,7 @@ import {
   ACCURACY_MATCHED_NOTE,
 } from '../model/accuracy';
 import { accuracyFieldView } from '../model/numbers';
+import { CardLine, ColumnTitle } from './CardLine';
 import { Ratio } from './Ratio';
 
 /**
@@ -20,15 +20,6 @@ import { Ratio } from './Ratio';
  * входят вовсе, и строк с прочерками здесь нет — «поля нет в таблице» честнее, чем «поле есть, но
  * ни одного числа по нему».
  */
-
-/** Заголовок столбца с определением показателя: число без определения читается как знание. */
-function ColumnTitle({ title, hint }: { title: string; hint: string }) {
-  return (
-    <Tooltip title={hint}>
-      <span>{title}</span>
-    </Tooltip>
-  );
-}
 
 const COLUMN_HINTS = {
   right: `Верных чтений: совпадения плюс расхождения, где арбитр признал правой машину. ${ACCURACY_DENOMINATOR_NOTE}`,
@@ -150,15 +141,5 @@ export function AccuracyCards({ rows }: { rows: TicketAuditAccuracyField[] }) {
         ),
       }))}
     />
-  );
-}
-
-/** Строка раскрытия: подпись показателя слева, значение справа — как ячейка таблицы, в столбик. */
-function CardLine({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
-  return (
-    <Space size={8} style={{ width: '100%', justifyContent: 'space-between' }}>
-      <ColumnTitle title={title} hint={hint} />
-      {children}
-    </Space>
   );
 }
