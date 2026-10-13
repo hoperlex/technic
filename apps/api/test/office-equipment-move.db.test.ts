@@ -459,7 +459,17 @@ describe.skipIf(!DB_URL)('перемещение оргтехники из ка�
         { objectId: ctx.objectB, location: 'кабинет 202', reason: 'Переезд первый' },
         { objectId: ctx.objectC, location: 'кабинет 303', reason: 'Переезд второй' },
       ];
-      const results = await Promise.all(targets.map((target) => move(id, { from, ...target })));
+      /*
+       * Both moves run as the admin, not as the staff operator. The scope check reads the SOURCE
+       * side under the row lock (R60), and the operator owns A and B but not C. Whichever move
+       * takes the lock first decides what the loser sees: if the move to C wins, the other one
+       * reads a card on C and gets 403 "only own objects" instead of 409. The test failed on
+       * about half of the runs because of that order. Scope is the subject of group 3; this case
+       * checks the lock and the `from` comparison only, so the actor must have no object scope.
+       */
+      const results = await Promise.all(
+        targets.map((target) => move(id, { from, ...target }, ctx.admin.auth)),
+      );
 
       const codes = results.map((res) => res.statusCode).sort();
       expect(codes, results.map((r) => r.body).join('\n')).toEqual([201, 409]);
@@ -499,9 +509,19 @@ describe.skipIf(!DB_URL)('перемещение оргтехники из ка�
        * ветки из одного «откуда». Это и есть проверка того, что `FOR UPDATE` работает сам по себе.
        */
       const id = await makeEquipment('race-nofrom');
+      // Admin, not staff, for the same reason as the case above: if the move to C takes the lock
+      // first, the operator's second write starts from a foreign site and gets 403.
       const results = await Promise.all([
-        move(id, { objectId: ctx.objectB, location: 'кабинет 202', reason: 'Без сверки первый' }),
-        move(id, { objectId: ctx.objectC, location: 'кабинет 303', reason: 'Без сверки второй' }),
+        move(
+          id,
+          { objectId: ctx.objectB, location: 'кабинет 202', reason: 'Без сверки первый' },
+          ctx.admin.auth,
+        ),
+        move(
+          id,
+          { objectId: ctx.objectC, location: 'кабинет 303', reason: 'Без сверки второй' },
+          ctx.admin.auth,
+        ),
       ]);
       expect(results.map((r) => r.statusCode)).toEqual([201, 201]);
 
