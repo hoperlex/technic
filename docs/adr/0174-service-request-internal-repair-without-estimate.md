@@ -16,8 +16,9 @@
   executor no longer submits the estimate document at all (workflow-fixes Р6); «Передать документ
   на согласование» stays for the administrator, the one subject left who may submit and may not
   declare the exemption
-- Миграции: `*_service_request_done_at.sql` (wave 1, `done_at` and its backfill); the number is the
-  next free one at integration, and the code and the tests never name it
+- Миграции: `*_service_request_done_at.sql` (wave 1, `done_at` and its backfill) and
+  `*_service_request_cancel_grant.sql` (wave 2, the cancel right in the IT set); the numbers are the
+  next free ones at integration, and the code and the tests never name them
 - Домены: оргтехника
 - Область: контракты —
   [service-requests.ts](../../packages/contracts/src/service-requests.ts) (`serviceRequestNeedsEstimate`,
@@ -41,7 +42,10 @@
   [files.ts](../../apps/api/src/routes/files.ts), the letter planner
   [service-request-mail.ts](../../apps/api/src/services/service-request-mail.ts), the history
   [service-request-history.ts](../../apps/api/src/services/service-request-history.ts) and the
-  consumables tab [ServiceRequestConsumablesTab.tsx](../../apps/web/src/pages/service/ServiceRequestConsumablesTab.tsx)
+  consumables tab [ServiceRequestConsumablesTab.tsx](../../apps/web/src/pages/service/ServiceRequestConsumablesTab.tsx); stage Э5 — the cancel right in the dictionary
+  [permissions.ts](../../packages/contracts/src/permissions.ts) and the catalog, the cancel corridor
+  and the per-target status question in the contracts, the guards of the status and batch doors in the
+  route, and the batch runner [service-request-bulk.ts](../../apps/api/src/services/service-request-bulk.ts)
 - Решение вырастает из: [ADR 0085](0085-office-equipment-module.md) (модуль),
   [0125](0125-service-request-cycle-changes.md) (цикл после слияния статусов),
   [0160](0160-service-request-audiences.md) (аудитории карточки),
@@ -345,3 +349,69 @@ new one hides — the contractor's empty tabs, «Отметить выдачу»
 closing window — and a press gets the sentence, shown by the shared failure handler as a toast, not
 a crash. The old closing window of the contractor shows no rows (his composition is empty) and sends
 `consumables: []`, which the server accepts; this is read from the code, not run in a browser.
+
+### Э5. The IT service cancels (Р2)
+
+The owner's walkthrough: the IT account cannot cancel a request with a comment. The cancel arcs sit
+in the operator corridor behind `serviceRequests.status`, which the IT service does not have and must
+not (it opens the acceptance, the return for rework and, with `requests.rollbackStatus`, the
+rollbacks — the same walkthrough, item 6, asked to take exactly these away). So the cancel got a
+right of its own, **`serviceRequests.cancel`**, and a corridor of its own, `SERVICE_CANCEL_TRANSITIONS`:
+«Новая», «В работе», «Отложена» → «Отменена» and nothing more. A test pins it row by row against the
+cancelling arcs of the operator corridor, so the IT cancel and the «Ведение» cancel cannot become two
+different operations.
+
+- **Where it lives.** The dictionary and the catalog entry (action `status`, next to the hold);
+  `PERMISSION_REQUIRES` asks `serviceRequests.read`; the live composition of the IT set
+  (`ROLE_ADDON_PERMISSIONS`) and the catalog migration `*_service_request_cancel_grant.sql`, which
+  appends the right to that one system set and to no other. «Ведение» does not get it (it holds
+  `status` and cancels with it), the contractor does not (his side answers instead of the others and
+  never reaches the branch, whatever set is handed to him by hand), the administrator has the whole
+  dictionary.
+- **The doors.** `PATCH /:id/status` is guarded by `status` OR `cancel`; the corridor behind the
+  guard still decides which move — there is no second map of rules. The batch: the route guard of
+  `POST /bulk`, `canUseServiceBulk` and `canRunServiceBulkOperation('cancel')` all ask `status ∨
+cancel`; the accept stays on `status`. The access manifest and its tests say the same.
+- **A finding the plan did not have: the guard was part of a rule.** The corridor hands the IT service
+  one more arc through the status door besides the cancel — `in_work → new` («Вернуть в «Новую»») comes
+  to it from the right to assign — and the door had always been closed to it by the guard alone. Let
+  the cancel right through the guard and the arc comes back through the API (the portal item already
+  asked `status` itself, which is why the first walkthrough fix worked). The door therefore asks
+  `holdsServiceStatusRight(subject, to)` of the contracts: `status` for any target, `status` or
+  `cancel` for «Отменена». The portal's rollback item asks the same function. A test sends the
+  rollback with the cancel right and gets 403; the line was checked against its removal.
+- **The right works inside the executor scope (ADR 0179).** The IT account is an «executor only»
+  profile, and with the scope switched on every mutating door — the cancel included — answers it for
+  requests it is named on or has authored. A request of someone else's is out of reach until the IT
+  service takes it by assignment; the cancel right does not bypass that, and a test pins the
+  sentence. This is the existing rule meeting the new right, not a decision of this wave.
+- **A latent defect found on the way and fixed in the same wave.** The batch runner switched the
+  deferred executor-invariant triggers to immediate at the very START of every row's transaction,
+  while a cancel removes the executors before it writes the status: the cancel of a «В работе»
+  request with an in-house executor failed on its first `DELETE` with «Не удалось выполнить» — for
+  every holder, «Ведение» included, and the IT service's own requests are exactly such. The statement
+  moved to AFTER the row's step and before the checkpoint; `SET CONSTRAINTS` in mid-transaction acts
+  retroactively, so a bad row still fails before the checkpoint with the same refusal. The whole
+  batch suite and a control for «Ведение» stand on it.
+
+**The catalog migration and the roll-out window.** The migration runs while the portal is up and
+before the application restarts, so for a while only the OLD server reads the catalog with the new
+row. That is safe, and verified: the old server drops a permission code it does not know at the
+"database to code" boundary (`isPermission` in `loadPrincipal` and in the session builder), so a
+holder's session is built from the codes it knows — the mechanism that has always carried orphan
+rows (`auth-permissions.db.test.ts`). The sessions are NOT invalidated (`auth_version` stays): the
+right is added, not taken away, the server computes permissions on every request, and the portal
+learns the new list with the next session response — the cancel item appears after a reload, the
+server accepts the move earlier. The in-file guard is relative (a snapshot before the insert against
+the state after it) and compares nothing with a hard-coded size of a set, so it cannot fire on any
+data; it raises, with a readable sentence, only if the insert itself did something other than it
+says (the set is missing, the right landed in a second system set, the composition grew by more than
+one right, a grant row appeared or vanished). A test with the fixtures BEFORE the migration (an own
+database, the file found by its suffix) pins all of it, and every guard was checked by removing it.
+
+**Compatibility with shipped bundles.** No response field is added, removed or retyped, no request
+schema becomes stricter, no header is required. The set of subjects the status door and the batch
+answer `200` to GROWS (the IT service, holders of the cancel); nobody is refused more, except by the
+per-target question, which keeps closed what the door has always kept closed. An old bundle draws the
+cancel item for the IT service only after the next session response and never draws the rollback item
+for it.
