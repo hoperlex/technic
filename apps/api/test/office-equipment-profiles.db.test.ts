@@ -593,6 +593,37 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
       'объём работ по ней не составляют',
     );
 
+    /*
+     * THE SIDE REFUSAL OF THE SAME DOOR, where the subject check passes: a request that DOES need an
+     * estimate (a service company is assigned). The same unassigned holder of the executor set is
+     * not its author, and gets the 403 about the side — the request is visible to him (site staff),
+     * the refusal is about the person. Without this case the 422 above would be the only answer the
+     * test could ever see from the door, and a regression that dropped the side check altogether
+     * would pass. The status check comes after the side, so the request may stay «Новая».
+     */
+    const contractor = await ctx.newRequest('t7-contractor');
+    const assignedToService = await inject(
+      'PUT',
+      `/api/v1/service-requests/${contractor.id}/executors`,
+      ctx.operator.auth,
+      {
+        userIds: [],
+        serviceCounterpartyId: ctx.serviceCounterpartyId,
+        version: await version(contractor.id),
+      },
+    );
+    expect(assignedToService.statusCode, assignedToService.body).toBe(200);
+    const foreignEstimate = await inject(
+      'PUT',
+      `/api/v1/service-requests/${contractor.id}/estimate`,
+      ctx.executor.auth,
+      { items: ESTIMATE_ITEMS, version: await version(contractor.id) },
+    );
+    expect(foreignEstimate.statusCode, foreignEstimate.body).toBe(403);
+    expect((foreignEstimate.json() as { message: string }).message).toContain(
+      'его составляет назначенная сервисная компания',
+    );
+
     const complete = await inject(
       'PATCH',
       `/api/v1/service-requests/${request.id}/complete`,

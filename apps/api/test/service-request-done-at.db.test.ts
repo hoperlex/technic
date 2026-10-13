@@ -19,11 +19,21 @@ import { applyMigrations, listMigrationFiles, readMigration } from '../src/db/mi
  * file's text as it is and rolls everything back. The file is found by its name, not its number: a
  * parallel stream may take the number, and the integrator renumbers.
  *
+ * OWN DATABASE, NOT THE SHARED ONE: the cases run `ALTER TABLE service_requests DROP COLUMN` and the
+ * migration's own `ALTER TABLE` inside a transaction — an ACCESS EXCLUSIVE lock on the hottest table
+ * of the module, held under the neighbouring files that share the base (the auto-close and the
+ * requester-mail suites read and write it at the same time). The database is created, migrated from
+ * scratch and dropped in `afterAll`, as the sibling replay tests do
+ * (`assignment-ordered-type-not-null.db.test.ts`).
+ *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:55982/technic_test \
  *     npx vitest run service-request-done-at --maxWorkers=1
  */
 
 const DB_URL = process.env.TEST_DATABASE_URL;
+const OWN_DB_NAME = 'technic_service_request_done_at_test';
+const OWN_DB = DB_URL?.replace(/\/[^/]+$/, `/${OWN_DB_NAME}`);
+const ADMIN_DB = DB_URL?.replace(/\/[^/]+$/, '/postgres');
 const RUN = randomUUID().slice(0, 8);
 const MIGRATION_SUFFIX = '_service_request_done_at.sql';
 
@@ -158,13 +168,33 @@ async function versionOf(id: string): Promise<number> {
 
 describe.skipIf(!DB_URL)('done_at: the backfill sees the rows that existed before it', () => {
   beforeAll(async () => {
-    client = new pg.Client({ connectionString: DB_URL });
+    const admin = new pg.Client({ connectionString: ADMIN_DB });
+    await admin.connect();
+    try {
+      await admin.query(`DROP DATABASE IF EXISTS ${OWN_DB_NAME} WITH (FORCE)`);
+      await admin.query(`CREATE DATABASE ${OWN_DB_NAME}`);
+    } finally {
+      await admin.end();
+    }
+    client = new pg.Client({ connectionString: OWN_DB });
     await client.connect();
+    // The first migrations expect these extensions and do not create them.
+    for (const ext of ['pgcrypto', 'citext', 'pg_trgm']) {
+      await client.query(`CREATE EXTENSION IF NOT EXISTS ${ext}`);
+    }
     await applyMigrations(client);
-  }, 180_000);
+  }, 240_000);
 
   afterAll(async () => {
     await client?.end();
+    if (!ADMIN_DB) return;
+    const admin = new pg.Client({ connectionString: ADMIN_DB });
+    await admin.connect();
+    try {
+      await admin.query(`DROP DATABASE IF EXISTS ${OWN_DB_NAME} WITH (FORCE)`);
+    } finally {
+      await admin.end();
+    }
   });
 
   it('the migrated schema carries the column, empty for every row outside «Решена»', async () => {

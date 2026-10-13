@@ -168,6 +168,13 @@ interface MakeRequest {
    * `status_changed_at`. By default the row is the new writer's — `done_at` is the entry moment.
    */
   oldWriter?: boolean;
+  /**
+   * How long ago the last touch of `status_changed_at` was, when it is LATER than the entry into
+   * «Решена»: a `done → done` move (the post-dispute signature, a trace of the module) bumps the
+   * column and leaves `done_at` alone (`applyTransition`, workflow-fixes plan Н14). Defaults to the
+   * entry moment, the common case.
+   */
+  statusTouchedAgo?: string;
   /** Исполнитель — сервисная компания: только такой заявке закрывающий документ обязателен (Н8). */
   service?: boolean;
   kind?: 'repair' | 'consumable';
@@ -198,7 +205,7 @@ async function makeRequest(tag: string, opts: MakeRequest): Promise<string> {
               ${opts.held ? 'Ждём запчасть' : ''},
               ${opts.service ? ctx.serviceCounterpartyId : null},
               now() - ${opts.completedAgo}::interval,
-              now() - ${opts.completedAgo}::interval,
+              now() - ${opts.statusTouchedAgo ?? opts.completedAgo}::interval,
               ${opts.oldWriter || opts.held ? null : sql`now() - ${opts.completedAgo}::interval`},
               ${ctx.adminId})
       RETURNING id`);
@@ -440,6 +447,42 @@ describe.skipIf(!DB_URL)('автозакрытие заявок оргтехни
       sql`SELECT done_at FROM service_requests WHERE id = ${id}`,
     );
     expect(after.rows[0]!.done_at).toBeNull();
+  });
+
+  /*
+   * THE ANCHOR IS CLEARED BY THE AUTO-CLOSE ITSELF (workflow-fixes plan Н14). Its own SQL leaves
+   * «Решена» without `applyTransition`, so the `done_at = NULL` in that statement is the only thing
+   * that keeps a closed request from carrying an anchor into «Принята». The old-writer case starts
+   * from an empty column and cannot see it; this one starts from a set one.
+   */
+  it('автоприёмка гасит якорь: done_at был, после закрытия его нет', async () => {
+    const id = await makeRequest('clears-anchor', { completedAgo: '25 hours' });
+    const doneAt = async () =>
+      (
+        await ctx.db.execute<{ done_at: string | null }>(
+          sql`SELECT done_at::text AS done_at FROM service_requests WHERE id = ${id}`,
+        )
+      ).rows[0]!.done_at;
+    expect(await doneAt()).not.toBeNull();
+
+    await autoClose();
+    expect(await statusOf(id)).toBe('accepted');
+    expect(await doneAt()).toBeNull();
+  });
+
+  /*
+   * THE ANCHOR OUTLIVES A LATER TOUCH OF `status_changed_at`. A `done → done` move (the signature
+   * after a dispute) bumps `status_changed_at` and leaves `done_at` at the real entry, so a request
+   * that entered «Решена» 30 hours ago and was touched an hour ago is mature — a reader that took
+   * `status_changed_at` alone would restart the objection window at every small move.
+   */
+  it('касание status_changed_at позже входа в «Решена» окно не сдвигает: якорь — done_at', async () => {
+    const id = await makeRequest('touched', {
+      completedAgo: '30 hours',
+      statusTouchedAgo: '1 hour',
+    });
+    await autoClose();
+    expect(await statusOf(id)).toBe('accepted');
   });
 
   it('возврат на доработку и повторная «Решена» отсчитывают сутки заново', async () => {
