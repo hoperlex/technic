@@ -264,7 +264,7 @@ describe.skipIf(!DB_URL)('барьер пустоты склада перед з
       await expect(ctx.assertStockFrozenEmpty({ client: ctx.shadow })).resolves.toBeUndefined();
 
       const message = warn.mock.calls.map((call) => String(call[1] ?? call[0])).join('\n');
-      expect(message).toMatch(/Склад автозапчастей не пуст/);
+      expect(message).toMatch(/Прежний склад автозапчастей ADR 0134 не пуст/);
       // Предупреждение обязано называть себя предупреждением: иначе тот же текст в логе дева
       // читается как отказ, которого не было.
       expect(message).toMatch(/Вне production это предупреждение/);
@@ -280,7 +280,7 @@ describe.skipIf(!DB_URL)('барьер пустоты склада перед з
    */
   it('нечитаемый счёт в проде тоже отказ, а вне прода — предупреждение', async () => {
     await expect(ctx.assertStockFrozenEmpty({ client: ctx.blind, strict: true })).rejects.toThrow(
-      /Не удалось сосчитать строки склада/,
+      /Не удалось сосчитать строки прежнего склада/,
     );
 
     const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {});
@@ -289,7 +289,7 @@ describe.skipIf(!DB_URL)('барьер пустоты склада перед з
         ctx.assertStockFrozenEmpty({ client: ctx.blind, strict: false }),
       ).resolves.toBeUndefined();
       const message = warn.mock.calls.map((call) => String(call[1] ?? call[0])).join('\n');
-      expect(message).toMatch(/Не удалось сосчитать строки склада/);
+      expect(message).toMatch(/Не удалось сосчитать строки прежнего склада/);
     } finally {
       warn.mockRestore();
     }
