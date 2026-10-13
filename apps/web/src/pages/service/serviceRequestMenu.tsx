@@ -15,6 +15,7 @@ import {
   canDeclineServiceRequest,
   canResumeService,
   hasServiceClosingDocument,
+  holdsServiceStatusRight,
   serviceIsFirstAssignment,
   serviceRequestConsumablesAreOurs,
   serviceRequestNeedsClosingDocument,
@@ -264,15 +265,22 @@ export function serviceRequestMenuItems(
    * `PATCH /:id/status`, guarded by `serviceRequests.status`. The «Системный администратор»
    * profile (`assign` and `hold`, no `status`) therefore drew the item and got a 403 «Недостаточно
    * прав для смены статуса» — checked by asking the server directly. Exactly what the handler will
-   * ask is asked, of `ctx.can` (ADR 0223), by the same rule as the neighbours in
-   * `serviceRequestExtras`.
+   * ask is asked: the contracts function `holdsServiceStatusRight` that the door asks itself. Since
+   * workflow-fixes Р2 the guard of the door admits the cancel right of the IT service too, so the
+   * guard alone no longer closes this arc to that profile — the per-target question does, on the
+   * server and here.
    *
    * The same arc used to serve REassignment too — `PUT /:id/executors` itself returned a running
    * request to «Новая». It no longer does (ADR 0187), and the arc has one move left: this one.
    * Reassignment did not go anywhere — «Изменить исполнителей» lives as its own item with its own
    * predicate and does not ask the corridor at all.
    */
-  if (mayAct && request.status === 'in_work' && has('new') && ctx.can('serviceRequests.status')) {
+  if (
+    mayAct &&
+    request.status === 'in_work' &&
+    has('new') &&
+    holdsServiceStatusRight(ctx.user, 'new')
+  ) {
     items.push({
       key: 'rollback-start',
       label: 'Вернуть в «Новую»',

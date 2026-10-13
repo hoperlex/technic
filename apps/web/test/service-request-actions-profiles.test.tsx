@@ -271,3 +271,49 @@ describe('склад не двигается у заявки подрядчик�
     expect(keysFor(mixed, contractor)).not.toContain('consumables');
   });
 });
+
+describe(`${IT}: отмена есть, остального коридора «Ведения» нет (Р2)`, () => {
+  const operator = serviceOperator();
+  const CANCELLABLE: ServiceRequestStatus[] = ['new', 'in_work', 'on_hold'];
+
+  it.each(CANCELLABLE)('внутренняя заявка в «%s»: «Отменить заявку» есть', (status) => {
+    expect(keysFor(serviceRequest({ status, ...NAMED_ONLY }), itAdmin), status).toContain('cancel');
+  });
+
+  it.each(['done', 'accepted', 'cancelled'] as const)(
+    'внутренняя заявка в «%s»: отмены нет — это дуги «Ведения», а не отмены',
+    (status) => {
+      expect(keysFor(serviceRequest({ status, ...NAMED_ONLY }), itAdmin), status).not.toContain(
+        'cancel',
+      );
+    },
+  );
+
+  it('ни приёмки, ни возврата на доработку, ни отката приёмки, ни «Вернуть в «Новую»»', () => {
+    // The guard of the status door admits the cancel right now, so «rollback-start» (an arc that
+    // the right to assign puts into the corridor) is closed only by the per-target question.
+    const forbidden = ['accept', 'rework', 'rollback-accept', 'reopen-request', 'rollback-start'];
+    for (const status of WORKING) {
+      const keys = keysFor(serviceRequest({ status, ...NAMED_ONLY }), itAdmin);
+      for (const key of forbidden) expect(keys, `${status}: ${key}`).not.toContain(key);
+    }
+  });
+
+  it('контроль: «Ведение» эти пункты получает там, где им положено', () => {
+    expect(keysFor(serviceRequest({ status: 'done', ...NAMED_ONLY }), operator)).toEqual(
+      expect.arrayContaining(['accept', 'rework']),
+    );
+    expect(keysFor(serviceRequest({ status: 'in_work', ...NAMED_ONLY }), operator)).toEqual(
+      expect.arrayContaining(['rollback-start', 'cancel']),
+    );
+  });
+
+  it('подрядчик по-прежнему без отмены, чьи бы права ни лежали в наборе', () => {
+    for (const status of CANCELLABLE) {
+      expect(
+        keysFor(assignedServiceRequest({ status, executors: [] }), contractor),
+        status,
+      ).not.toContain('cancel');
+    }
+  });
+});
