@@ -27,7 +27,7 @@
  */
 import process from 'node:process';
 import path from 'node:path';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import prettier from 'prettier';
 import { DOMAINS, COLLISION_EXCEPTIONS, readAdrs } from './lib/docs-navigation.mjs';
@@ -211,20 +211,37 @@ export async function renderIndex(adrs) {
   return prettier.format(raw, { ...config, filepath: INDEX });
 }
 
-const adrs = readAdrs(ROOT);
-const index = await renderIndex(adrs);
-if (process.argv.includes('--check')) {
-  const current = existsSync(INDEX) ? readFileSync(INDEX, 'utf8') : null;
-  if (current === index) {
-    say(`Указатель свеж: ${adrs.length} решений.`);
-    process.exit(0);
+/**
+ * Writing and `--check` run only when this file is the entry point. The docs parser test
+ * (`docs-navigation.test.mjs`) imports `renderIndex` for the pure text build; without this guard
+ * the import itself rewrote `docs/adr/README.md`, so `pnpm test:docs` left an uncommitted edit in
+ * the tree and, on a stale index, made a stale index look fresh to the next `--check`.
+ */
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
   }
-  say(
-    current === null
-      ? 'Указателя docs/adr/README.md нет — соберите `pnpm docs:index`.'
-      : 'Указатель docs/adr/README.md отстал от решений — соберите `pnpm docs:index`.',
-  );
-  process.exit(1);
 }
-writeFileSync(INDEX, index);
-say(`Указатель собран: ${adrs.length} решений, ${DOMAINS.length} доменов.`);
+
+if (invokedDirectly()) {
+  const adrs = readAdrs(ROOT);
+  const index = await renderIndex(adrs);
+  if (process.argv.includes('--check')) {
+    const current = existsSync(INDEX) ? readFileSync(INDEX, 'utf8') : null;
+    if (current === index) {
+      say(`Указатель свеж: ${adrs.length} решений.`);
+      process.exit(0);
+    }
+    say(
+      current === null
+        ? 'Указателя docs/adr/README.md нет — соберите `pnpm docs:index`.'
+        : 'Указатель docs/adr/README.md отстал от решений — соберите `pnpm docs:index`.',
+    );
+    process.exit(1);
+  }
+  writeFileSync(INDEX, index);
+  say(`Указатель собран: ${adrs.length} решений, ${DOMAINS.length} доменов.`);
+}
