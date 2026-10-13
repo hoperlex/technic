@@ -858,6 +858,149 @@ health_check() {
 }
 
 # ---------------------------------------------------------------------------
+# PUBLIC_ORIGIN against the address people actually open (HEALTH_EXTERNAL).
+#
+# On /auth/refresh the API compares the browser's Origin with PUBLIC_ORIGIN byte for byte
+# (assertCookieOrigin, apps/api/src/lib/cookies.ts); the same value sets the host SmartCaptcha must
+# report and the base of the links in mails. After the October 2026 host move prod.env kept the
+# nip.io name of the new IP: login worked, every refresh got 403, and every page reload threw people
+# to the login form, while the deploy reported success, because the external health check only asks
+# whether the domain answers. Hence a preflight that reads the value and a probe that asks the API.
+#
+# Both only warn. A deploy never edits prod.env, so a refusal would fix nothing and would only block
+# the forward fixes that must keep shipping until the owner corrects the file by hand (runbook,
+# "Reload throws the user to the login form"). The external health check behaves the same way.
+#
+# Defined here, after prod_env_bootstrap and before every mode that calls them: bash resolves a
+# function when the call runs, so a definition below the cutover-revert or rollback block would be
+# `command not found` in exactly those modes.
+# ---------------------------------------------------------------------------
+
+# The origin of an http(s) URL spelled the way a browser sends it in the Origin header: lower-case
+# scheme and host, no default port, no path, no trailing slash. Anything else fails without output,
+# so a malformed value is reported as malformed instead of being compared.
+origin_normalize() {
+  local url="$1" scheme authority host port=""
+  case "$url" in *://*) ;; *) return 1 ;; esac
+  scheme="${url%%://*}"; scheme="${scheme,,}"
+  authority="${url#*://}"; authority="${authority%%[/?#]*}"; authority="${authority##*@}"
+  host="${authority%%:*}"; host="${host,,}"
+  case "$authority" in *:*) port="${authority#*:}" ;; esac
+  case "$scheme" in http|https) ;; *) return 1 ;; esac
+  [ -n "$host" ] || return 1
+  case "$port" in *[!0-9]*) return 1 ;; esac
+  if { [ "$scheme" = "https" ] && [ "$port" = "443" ]; } || { [ "$scheme" = "http" ] && [ "$port" = "80" ]; }; then
+    port=""
+  fi
+  printf '%s://%s%s' "$scheme" "$host" "${port:+:$port}"
+}
+
+# Verdict on the raw PUBLIC_ORIGIN value ($1) against the address people open ($2), as one word:
+#   ok           the value is exactly the Origin a browser on that address sends;
+#   noncanonical the same site spelled otherwise (trailing slash, upper case, default port, a path):
+#                still refused, because the API compares bytes, not sites;
+#   mismatch     another site: another host (the nip.io case), http instead of https, another port;
+#   absent       no line or an empty value;
+#   invalid      not an http(s) URL;
+#   unknown      the reference address itself does not parse — nothing to compare with.
+public_origin_verdict() {
+  local raw="$1" want got
+  want="$(origin_normalize "$2")" || { printf 'unknown'; return 0; }
+  if [ -z "$raw" ]; then printf 'absent'
+  elif ! got="$(origin_normalize "$raw")"; then printf 'invalid'
+  elif [ "$got" != "$want" ]; then printf 'mismatch'
+  elif [ "$raw" != "$want" ]; then printf 'noncanonical'
+  else printf 'ok'
+  fi
+}
+
+# The way out, shared by the preflight and the probe so that both name the same command.
+public_origin_fix_hint() {
+  warn "=== Деплой prod.env не меняет — исправить руками: PUBLIC_ORIGIN=$1 в $PROD_ENV"
+  warn "=== (схема и хост, без слеша и пути), затем пересоздать контейнеры — restart env_file не перечитывает:"
+  warn "===   ${COMPOSE[*]} up -d --force-recreate technic-api technic-worker"
+  warn "=== Подробности: docs/runbook.md, «Reload throws the user to the login form»."
+}
+
+# Preflight: reads PUBLIC_ORIGIN the way compose reads env_file (maint_env_get strips the quotes) and
+# compares it with HEALTH_EXTERNAL. An unreadable prod.env is only noted: the modes that need the
+# file refuse on it themselves, with the reason from prod_env_fail_reason.
+public_origin_preflight() {
+  local raw want verdict
+  want="$(origin_normalize "$HEALTH_EXTERNAL" || true)"
+  if [ ! -r "$PROD_ENV" ]; then
+    warn "PUBLIC_ORIGIN не сверен с адресом портала: $PROD_ENV нечитаем"
+    return 0
+  fi
+  raw="$(maint_env_get PUBLIC_ORIGIN || true)"
+  verdict="$(public_origin_verdict "$raw" "$HEALTH_EXTERNAL")"
+  case "$verdict" in
+    ok)
+      log "PUBLIC_ORIGIN: ok ($raw)"
+      return 0 ;;
+    unknown)
+      warn "PUBLIC_ORIGIN не сверен: HEALTH_EXTERNAL ($HEALTH_EXTERNAL) не разбирается как адрес"
+      return 0 ;;
+    mismatch)
+      warn "=== PUBLIC_ORIGIN в $PROD_ENV не совпадает с адресом портала:"
+      warn "===   PUBLIC_ORIGIN : $raw"
+      warn "===   адрес портала : $want (HEALTH_EXTERNAL)"
+      warn "=== Обновление сессии на настоящем домене получает 403: любая перезагрузка страницы выкидывает"
+      warn "=== людей на форму входа. Тем же значением заданы домен, которого ждёт SmartCaptcha (регистрация"
+      warn "=== и сброс пароля), и база ссылок в письмах." ;;
+    noncanonical)
+      warn "=== PUBLIC_ORIGIN в $PROD_ENV записан не так, как браузер пишет Origin:"
+      warn "===   PUBLIC_ORIGIN : $raw"
+      warn "===   нужно ровно   : $want"
+      warn "=== API сравнивает Origin с PUBLIC_ORIGIN побайтно: каждое обновление сессии получит 403, и любая"
+      warn "=== перезагрузка страницы выкинет людей на форму входа. Ссылки в письмах строятся от того же значения." ;;
+    absent)
+      warn "=== PUBLIC_ORIGIN не задан в $PROD_ENV (адрес портала — $want)."
+      warn "=== Это обязательное поле конфигурации technic-api (apps/api/src/config.ts): без него api не"
+      warn "=== стартует вовсе, и этот запуск упадёт на health после пересоздания контейнеров." ;;
+    invalid)
+      warn "=== PUBLIC_ORIGIN в $PROD_ENV — не http(s)-адрес: '$raw' (адрес портала — $want)."
+      warn "=== technic-api с таким значением либо не стартует (поле проверяется как URL), либо отвечает 403"
+      warn "=== на каждое обновление сессии — перезагрузка страницы выкидывает людей на форму входа." ;;
+  esac
+  public_origin_fix_hint "$want"
+}
+
+# Probe: one POST to /api/v1/auth/refresh through the public address, with the Origin a browser on
+# that address sends and no cookie. The handler checks the origin before it looks for the cookie, so
+# 401 means the origin was accepted and 403 means PUBLIC_ORIGIN differs. One request, no retries:
+# the endpoint allows 10 per minute per address.
+public_origin_probe() {
+  local origin code
+  origin="$(origin_normalize "$HEALTH_EXTERNAL")" || return 0
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H "Origin: $origin" \
+    "$origin/api/v1/auth/refresh" 2>/dev/null || true)"
+  case "$code" in
+    401)
+      log "обновление сессии: ok (401 без cookie — Origin $origin принят)" ;;
+    403)
+      warn "=== PUBLIC_ORIGIN не совпадает с адресом портала: POST $origin/api/v1/auth/refresh с Origin"
+      warn "=== $origin отвечает 403 — любая перезагрузка страницы выкидывает людей на форму входа."
+      public_origin_fix_hint "$origin" ;;
+    *)
+      warn "обновление сессии ответило ${code:-000} вместо 401 — PUBLIC_ORIGIN этим запуском не подтверждён."
+      warn "  Проверить руками: curl -s -o /dev/null -w '%{http_code}\\n' -X POST $origin/api/v1/auth/refresh -H 'Origin: $origin'" ;;
+  esac
+}
+
+# External health through infra-nginx/TLS/DNS, then the refresh probe. The probe runs only when the
+# portal answers at all: otherwise it would repeat the same failure under a misleading name.
+external_health() {
+  if curl -fsSI -m 10 "$HEALTH_EXTERNAL" >/dev/null 2>&1; then
+    log "внешний health: ok ($HEALTH_EXTERNAL)"
+    public_origin_probe
+  else
+    warn "внешний health недоступен ($HEALTH_EXTERNAL) — проверьте infra-nginx/TLS/DNS."
+    warn "Приложение при этом здорово изнутри; на выкатку это не влияет."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Пол версии клиента (ADR 0146, решение 7): `MIN_CLIENT_CONTRACT` в prod.env.
 #
 # ЗАЧЕМ ЭТО В deploy-auto, А НЕ РУЧНЫМ `sed`. У операции есть предусловие, которое человек глазами
@@ -2403,11 +2546,7 @@ EOF
   CUTOVER_ACTIVE=0
 
   sync_vhost
-  if curl -fsSI -m 10 "$HEALTH_EXTERNAL" >/dev/null 2>&1; then
-    log "внешний health: ok ($HEALTH_EXTERNAL)"
-  else
-    warn "внешний health недоступен ($HEALTH_EXTERNAL) — проверьте infra-nginx/TLS/DNS."
-  fi
+  external_health
   prune_images
   prune_cache
 
@@ -2472,6 +2611,9 @@ if [ "$DO_CUTOVER_REVERT" -eq 1 ]; then
     REASON="окно было широким — вместе с $CUTOVER_MIGRATION уехали обычные миграции ($CUTOVER_EXTRAS). Teardown снимет только необратимую, остальные останутся в журнале без файлов старого образа. Откат этого окна — deploy-auto --previous --restore-db закреплённым дампом ${CUTOVER_DUMP:-<не записан>} (протокол §5)"
     fail "$REASON"; }
 
+  # After every refusal and before the teardown: the services come back up below and read prod.env.
+  public_origin_preflight
+
   if list_has "$CUTOVER_MIGRATION" "$JOURNAL_APPLIED"; then
     # Применён ровно бандл: посторонняя неприменённая миграция означает, что рядом с нашей приехала
     # чужая, и снятие одной оставило бы вторую в журнале без файла.
@@ -2529,6 +2671,9 @@ if [ "$ROLLBACK_MODE" -eq 1 ]; then
     TARGET_TAG="${CURRENT_BEFORE:-latest}"
   fi
 
+  # The rollback recreates the containers, so they read prod.env anew: a wrong PUBLIC_ORIGIN there
+  # throws people to the login form whatever release is brought back.
+  public_origin_preflight
   snapshot_config
   log "ВНИМАНИЕ: откат образов НЕ отменяет миграции БД; откат схемы — только --restore-db или PITR"
 
@@ -2755,6 +2900,11 @@ fi
 log "build: ${SERVICES[*]} (technic-*:$COMMIT_SHA)"
 "${COMPOSE[@]}" build "${SERVICES[@]}" || { REASON="сборка провалилась"; fail "$REASON"; }
 BUILT_TAG="$COMMIT_SHA"
+
+# Warn-only, so it may stand anywhere before the migrations; here, after the minutes of the build,
+# the warning is not scrolled away before the operator reads it. Covers the plain deploy,
+# --skip-migrate and --cutover alike.
+public_origin_preflight
 
 # ---------------------------------------------------------------------------
 # Client floor preflight (ADR 0226). The API of a release refuses to start in production when
@@ -3084,13 +3234,9 @@ else
   exit 1
 fi
 
-# Внешний health — отдельно: проверяет infra-nginx/TLS/DNS, а не наш код.
-if curl -fsSI -m 10 "$HEALTH_EXTERNAL" >/dev/null 2>&1; then
-  log "внешний health: ok ($HEALTH_EXTERNAL)"
-else
-  warn "внешний health недоступен ($HEALTH_EXTERNAL) — проверьте infra-nginx/TLS/DNS."
-  warn "Приложение при этом здорово изнутри; на выкатку это не влияет."
-fi
+# Checked separately from the internal health above: this tests infra-nginx/TLS/DNS and prod.env,
+# not the code, so it warns instead of failing the rollout.
+external_health
 
 # Forward-fix состоялся: активное состояние выката закрывается как перекрытое (§3.2). Без этого
 # следующий cutover встретил бы чужой SHA, а «активного состояния больше нет» неоткуда взяться.
