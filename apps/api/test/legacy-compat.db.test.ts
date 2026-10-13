@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
@@ -354,7 +354,28 @@ async function resolveCopyTools(sourceUrl: string): Promise<PgCopyTools> {
   );
 }
 
-/** Копия базы `pg_dump | psql`: поток идёт мимо диска, 80 МБ тестовой базы копируются за секунды. */
+/**
+ * Upper bound for the whole copy. The test database copies in seconds; the bound exists so that a
+ * stuck copy (pg_dump waiting for a table lock a neighbour holds, a child that never exits) fails
+ * with the stderr collected so far well inside the 600 s hook timeout, instead of the hook dying
+ * on that timeout with every diagnostic lost.
+ */
+const COPY_TIMEOUT_MS = 240_000;
+
+/**
+ * Copies the database with `pg_dump | psql`: the stream bypasses the disk, and 80 MB of test data
+ * copy in seconds.
+ *
+ * Why the pipe is wired by hand and not just `dump.stdout.pipe(restore.stdin)` plus two exit
+ * codes. psql runs with ON_ERROR_STOP and exits on the first failed statement while pg_dump still
+ * has megabytes to write. The next write into psql's stdin then fails with EPIPE; with no listener
+ * that error is uncaught, `pipe` detaches, nobody reads pg_dump any more, and pg_dump blocks on a
+ * full socket forever. Its `close` never fires, the copy never settles, and the hook died on its
+ * 600 s timeout with psql's message never printed (seen in the R1 rehearsal: "Hook timed out in
+ * 600000ms" plus "Uncaught Exception: write EPIPE"). So: EPIPE is swallowed because it says nothing
+ * that psql's exit code and stderr do not; a psql that is gone takes pg_dump down with it, since
+ * no one will read pg_dump again; and the timeout above backs both up.
+ */
 async function copyDatabase(tools: PgCopyTools, source: string, target: string): Promise<void> {
   const dump = spawn(tools.pgDump, ['--no-owner', '--no-privileges', source], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -365,19 +386,53 @@ async function copyDatabase(tools: PgCopyTools, source: string, target: string):
   let errors = '';
   dump.stderr.on('data', (chunk: Buffer) => (errors += chunk.toString()));
   restore.stderr.on('data', (chunk: Buffer) => (errors += chunk.toString()));
+  restore.stdin.on('error', () => {});
   dump.stdout.pipe(restore.stdin);
 
-  const codes = await Promise.all(
-    [dump, restore].map(
-      (child) =>
-        new Promise<number>((resolve, reject) => {
-          child.on('error', reject);
-          child.on('close', (code) => resolve(code ?? -1));
-        }),
-    ),
-  );
-  if (codes.some((code) => code !== 0)) {
-    throw new Error(`Копия базы не снялась (коды ${codes.join('/')}): ${errors}`);
+  const running = (child: ChildProcess) => child.exitCode === null && child.signalCode === null;
+  const stop = (child: ChildProcess) => {
+    if (running(child)) child.kill('SIGKILL');
+  };
+  /** Resolves with `null` on success and with a short reason otherwise; never rejects. */
+  const outcome = (child: ChildProcess, name: string, peer: ChildProcess) =>
+    new Promise<string | null>((resolve) => {
+      child.on('error', (e) => {
+        stop(peer);
+        resolve(`${name}: ${e.message}`);
+      });
+      child.on('close', (code, signal) => {
+        if (code !== 0) stop(peer);
+        resolve(
+          code === 0 ? null : `${name} ${signal ? `снят сигналом ${signal}` : `код ${code}`}`,
+        );
+      });
+    });
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    stop(dump);
+    stop(restore);
+  }, COPY_TIMEOUT_MS);
+  // psql leaving while pg_dump still writes, even with code 0, leaves pg_dump without a reader.
+  // Once pg_dump's output has ended it is only disconnecting and must be let exit on its own:
+  // killing it then would turn a finished copy into a failure.
+  restore.on('close', () => {
+    if (!dump.stdout.readableEnded) stop(dump);
+  });
+  const failures = (
+    await Promise.all([outcome(dump, 'pg_dump', restore), outcome(restore, 'psql', dump)])
+  ).filter((reason): reason is string => reason !== null);
+  clearTimeout(timer);
+
+  if (timedOut) {
+    throw new Error(
+      `Копия базы не снялась за ${COPY_TIMEOUT_MS / 1000} с — pg_dump и psql сняты ` +
+        `(${failures.join(', ')}); их вывод: ${errors.trim() || 'пусто'}`,
+    );
+  }
+  if (failures.length > 0) {
+    throw new Error(`Копия базы не снялась (${failures.join(', ')}): ${errors.trim()}`);
   }
 }
 
