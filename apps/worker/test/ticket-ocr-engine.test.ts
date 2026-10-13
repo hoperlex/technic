@@ -453,8 +453,16 @@ describe('заглушка (Р3)', () => {
   const stub = createStubEngine();
 
   it('отвечает одинаково на одну и ту же страницу', async () => {
-    const first = await stub.recognize(PAGE, { model: 'stub-model' });
-    const second = await stub.recognize(PAGE, { model: 'stub-model' });
+    /*
+     * The clock is pinned on purpose. `meta.durationMs` is `now() - started` around the call, so
+     * with the wall clock two answers differ by a millisecond whenever one call straddles a tick
+     * (the first call is also the colder one) - measured at about 1 in 1000 pairs on a loaded
+     * machine, and the only field that ever differed. A measurement of the call is not part of
+     * "the same answer"; everything else, the idempotency key and request id included, still is.
+     */
+    const pinned = createStubEngine({ now: () => 0 });
+    const first = await pinned.recognize(PAGE, { model: 'stub-model' });
+    const second = await pinned.recognize(PAGE, { model: 'stub-model' });
     expect(first.status).toBe('done');
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
   });
