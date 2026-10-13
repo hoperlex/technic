@@ -105,13 +105,15 @@ export default defineMaintenanceConfig({
   },
 
   /*
-   * Цех: система работает не в общем дереве, а в отдельном, собранном от HEAD.
+   * Workshop: `converge` works not in the shared tree but in a separate worktree built from `HEAD`
+   * (ADR 0224 §6). Only `converge`: the deep window and a manual `maintain verify` still edit the
+   * shared tree under the per-file checkpoint, and an accepted edit stays there to be committed.
    *
-   * Дерево здесь не останавливается — рядом непрерывно правят несколько сессий. Партия живёт
-   * десять-двадцать минут, и чужая правка за это время появляется почти наверняка; замок
-   * поведения обязан считать её поводом остановиться, потому что отличить её от выхода
-   * исполнителя за границы партии нечем. В цехе этого нет по построению, а принятое уходит в
-   * историю коммитом — иначе оно сгинуло бы вместе с деревом.
+   * The shared tree never stands still: several sessions edit it continuously. A batch lives ten
+   * to twenty minutes, and someone else's edit almost certainly appears in that time; the behaviour
+   * lock has to treat it as a reason to stop, since nothing tells it apart from the executor
+   * stepping outside the batch. The workshop has none of this by construction, and an accepted
+   * batch leaves into history as a commit (`commit`), or it would vanish with the workshop.
    */
   workshop: {
     enabled: true,
