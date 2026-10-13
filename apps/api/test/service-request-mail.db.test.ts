@@ -1452,6 +1452,139 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     expect(toContractor.body_text).toContain('файлов в заявке: 1');
   });
   /**
+   * The document letter of a CONSUMABLES request does not reach the contractor's side (workflow-fixes
+   * plan Р7, the sixth channel): the letter names the kind and the file names, and those tell what
+   * is closed to the contractor in the card. The addressees whose source is the contractor are
+   * struck — his live operators and the company mailbox — and the own side of the `service` target
+   * stays: a named in-house executor is addressed by the letter rightly.
+   *
+   * Three cases, because the policy has three outcomes and the third is the one that is easy to
+   * get wrong: (1) the contractor and his mailbox are struck, (2) the in-house executor still
+   * receives and the outcome says `queued`, (3) when the policy struck EVERY addressee of the
+   * target the outcome is `not_needed` — the same word the module uses for «nobody is owed this» —
+   * and not `no_recipients`, which would send the administrator to fix a mailbox that needs no fix.
+   */
+  describe('письмо о документе заявки на расходники (Р7)', () => {
+    async function consumablesRequestFor(
+      tag: string,
+      assignment: { userIds: string[]; serviceCounterpartyId: string | null },
+    ): Promise<string> {
+      const created = await inject('POST', '/api/v1/service-requests', ctx.customer, {
+        officeEquipmentId: await ctx.newEquipment(tag),
+        kind: 'consumable',
+        description: 'Нужны картриджи',
+        responsibleName: 'Иванов Иван Иванович',
+        responsiblePhone: '+79990000000',
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const request = (created.json() as { request: ServiceRequestDto }).request;
+      const assigned = await inject(
+        'PUT',
+        `/api/v1/service-requests/${request.id}/executors`,
+        ctx.admin,
+        { ...assignment, version: request.version },
+      );
+      expect(assigned.statusCode, assigned.body).toBe(200);
+      return request.id;
+    }
+
+    /** The document is attached by the administrator, as the service attaches an invoice. */
+    async function attachDocument(requestId: string): Promise<void> {
+      const fileRow = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO files (bucket, object_key, filename, content_type, size, status, uploaded_by)
+        VALUES ('test', ${`oe/${RUN}/${randomUUID()}`}, 'schet-toner-ricoh.pdf', 'application/pdf',
+                2048, 'pending', ${ctx.people.admin.id})
+        RETURNING id`);
+      await withEvent('service_request_document', async () => {
+        const attached = await inject(
+          'POST',
+          `/api/v1/service-requests/${requestId}/files`,
+          ctx.admin,
+          { fileIds: [fileRow.rows[0]!.id], kind: 'attachment' },
+        );
+        expect(attached.statusCode, attached.body).toBe(200);
+      });
+    }
+
+    async function documentLetters(requestId: string): Promise<string[]> {
+      const res = await ctx.db.execute<{ to_email: string }>(sql`
+        SELECT to_email FROM mail_messages
+         WHERE entity_type = 'serviceRequest' AND entity_id = ${requestId}
+           AND kind = 'service_request_document'
+         ORDER BY to_email`);
+      return res.rows.map((row) => row.to_email);
+    }
+
+    /** The outcome the planner wrote down: it is the journal that the admin screen reads. */
+    async function documentOutcome(requestId: string): Promise<string | undefined> {
+      return (await documentPlan(requestId))?.outcome;
+    }
+
+    async function documentPlan(
+      requestId: string,
+    ): Promise<{ outcome: string; targets: Record<string, string> } | undefined> {
+      const res = await ctx.db.execute<{ outcome: string; targets: Record<string, string> }>(sql`
+        SELECT metadata->>'outcome' AS outcome, metadata->'targets' AS targets FROM audit_log
+         WHERE entity_type = 'serviceRequest' AND entity_id = ${requestId}
+           AND action = 'serviceRequest.mailPlanned'
+           AND metadata->>'event' = 'service_request_document'
+         ORDER BY created_at DESC LIMIT 1`);
+      return res.rows[0];
+    }
+
+    it('подрядчик и общий ящик его компании письма не получают, свой исполнитель получает — исход «поставлено»', async () => {
+      const id = await consumablesRequestFor('cdoc1', {
+        userIds: [ctx.people.exec1.id],
+        serviceCounterpartyId: ctx.serviceCounterpartyId,
+      });
+      await attachDocument(id);
+
+      const letters = await documentLetters(id);
+      expect(letters).not.toContain(CONTRACTOR_MAILBOX);
+      expect(letters).not.toContain(ctx.people.operator.email);
+      expect(letters).toEqual([ctx.people.exec1.email]);
+      const plan = await documentPlan(id);
+      expect(plan?.outcome).toBe('queued');
+      // The `service` target is served by the own executor and is recorded as such — not dropped
+      // from the required ones, which would leave the journal silent about who received it.
+      expect(plan?.targets.service).toBe('queued');
+    });
+
+    it('контроль: тот же документ у ремонта той же компании уходит и её оператору, и общему ящику', async () => {
+      // Without this pair the case above would pass on a mail that never leaves the system at all.
+      const { request } = await createRequest(await ctx.newEquipment('cdoc-rep'), 'Порвало плёнку');
+      const assigned = await inject(
+        'PUT',
+        `/api/v1/service-requests/${request.id}/executors`,
+        ctx.admin,
+        {
+          userIds: [ctx.people.exec1.id],
+          serviceCounterpartyId: ctx.serviceCounterpartyId,
+          version: request.version,
+        },
+      );
+      expect(assigned.statusCode, assigned.body).toBe(200);
+      await attachDocument(request.id);
+
+      const letters = await documentLetters(request.id);
+      expect(letters).toContain(CONTRACTOR_MAILBOX);
+      expect(letters).toContain(ctx.people.operator.email);
+      expect(letters).toContain(ctx.people.exec1.email);
+    });
+
+    it('назначен только подрядчик: все адресаты цели сняты политикой — очередь пуста, исход «не требовалось»', async () => {
+      const id = await consumablesRequestFor('cdoc3', {
+        userIds: [],
+        serviceCounterpartyId: ctx.serviceCounterpartyId,
+      });
+      await attachDocument(id);
+
+      expect(await documentLetters(id)).toEqual([]);
+      expect(await documentOutcome(id)).toBe('not_needed');
+    });
+  });
+
+  /**
    * Реплика уходит письмом ТОЛЬКО адресатам (§ 4) — и всей стороне сервиса, включая общий ящик
    * компании: у подрядчика без учёток в портале это единственный способ прочитать сообщение.
    *

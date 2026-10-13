@@ -64,6 +64,7 @@ import {
   openServiceEstimateDisputeSchema,
   parseServiceRequestNumberSearch,
   projectServiceRequestForAudience,
+  projectServiceRequestForConsumablesReader,
   putServiceEstimateBreakdownSchema,
   putServiceEstimateSchema,
   putServiceExecutorsSchema,
@@ -97,6 +98,8 @@ import {
   serviceRequestBulkKeyParams,
   serviceRequestBulkSchema,
   serviceRequestListQuerySchema,
+  serviceConsumablesHiddenFrom,
+  serviceConsumablesHiddenFromContractors,
   serviceRequestHasEffectivePendingEstimate,
   serviceRequestNeedsClosingDocument,
   serviceRequestNeedsEstimate,
@@ -1311,9 +1314,17 @@ async function loadFullDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceReq
  * Ответ в объёме аудитории. Аудиторию не пересчитывает, а читает из самого DTO: она посчитана по
  * строке при сборке, и второй расчёт по субъекту разошёлся бы с первым на назначенной заявке —
  * ровно там, где цена расхождения выше всего.
+ *
+ * Second cut — by the READER, not by the audience (workflow-fixes plan Р7): the contractor is on
+ * the `finance` side of the audience map, and the nomenclature of a consumables request is hidden
+ * from him anyway, so the principal is an argument of this function. Every response that carries a
+ * `ServiceRequestDto` goes through here — a call that forgot the principal would not compile.
  */
-function forAudience(dto: ServiceRequestDto): ServiceRequestDto {
-  return projectServiceRequestForAudience(dto, dto.audience);
+function forAudience(p: Principal, dto: ServiceRequestDto): ServiceRequestDto {
+  return projectServiceRequestForConsumablesReader(
+    projectServiceRequestForAudience(dto, dto.audience),
+    p,
+  );
 }
 
 /**
@@ -1331,11 +1342,11 @@ function forAudience(dto: ServiceRequestDto): ServiceRequestDto {
  * данных, а не сокрытие.
  *
  * Отсюда же правило для ручек, которым нужно и то и другое (правка, срочность, состав, закрытие):
- * `before`/`after` берутся полными, а в ответ уходит `forAudience(after)` — одной строкой рядом с
+ * `before`/`after` берутся полными, а в ответ уходит `forAudience(p, after)` — одной строкой рядом с
  * `return`, а не «где-нибудь выше», чтобы читалось вместе с ответом.
  */
 async function loadDtos(p: Principal, rows: HeaderRow[]): Promise<ServiceRequestDto[]> {
-  return (await loadFullDtos(p, rows)).map(forAudience);
+  return (await loadFullDtos(p, rows)).map((dto) => forAudience(p, dto));
 }
 
 async function getFullDto(p: Principal, id: string): Promise<ServiceRequestDto | null> {
@@ -1347,7 +1358,7 @@ async function getFullDto(p: Principal, id: string): Promise<ServiceRequestDto |
 
 async function getDto(p: Principal, id: string): Promise<ServiceRequestDto | null> {
   const dto = await getFullDto(p, id);
-  return dto === null ? null : forAudience(dto);
+  return dto === null ? null : forAudience(p, dto);
 }
 
 // ── Область и коридор ──
@@ -1855,6 +1866,30 @@ async function assertConsumableIssuer(
   throw serviceDenied.side(
     `${who} не отмечает выдачу по этой заявке — это шаг назначенного исполнителя`,
     row.id,
+  );
+}
+
+/**
+ * Closes the nomenclature doors of a consumables request to the contractor's side (workflow-fixes
+ * plan Р7): editing the composition and attaching a document. The rule is the contracts pair
+ * «request × reader» (`serviceConsumablesHiddenFrom`); the portal hides the matching tabs and items
+ * as a CONSEQUENCE, and this refusal is what keeps a hidden button from being the only protection.
+ *
+ * A side refusal (403), asked right after the scope: the person reaches the request legitimately,
+ * and the step is another side's — the composition is filled in by the company's own people.
+ * Nothing is leaked by saying so: the refusal names no item, and the contractor knows the kind of
+ * the request he was assigned.
+ */
+function assertConsumablesNotHidden(
+  p: Principal,
+  request: Pick<RequestRow, 'id' | 'kind'>,
+  action: string,
+): void {
+  if (!serviceConsumablesHiddenFrom(request, p)) return;
+  const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+  throw serviceDenied.side(
+    `${who} не ${action} по заявке на расходники — это дело службы, которая ведёт заявку`,
+    request.id,
   );
 }
 
@@ -2921,6 +2956,9 @@ function assertFileKindAllowed(
   assignment: ServiceExecutorAssignment,
 ): void {
   const requestId = request.id;
+  // Before the audience layer: the contractor is on the `finance` side of it and would pass, while
+  // the documents of a consumables request are hidden from him altogether (workflow-fixes plan Р7).
+  assertConsumablesNotHidden(p, request, 'прикладывает документы');
   const audience = serviceRequestAudienceOf(p, assignment);
   if (!isServiceFileKindAttachable(kind, audience)) {
     throw serviceDenied.side(
@@ -4204,6 +4242,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         actorName: author?.fullName ?? '',
       },
       serviceRequestAudienceOf(p, await executorAssignment(p, row)),
+      serviceConsumablesHiddenFrom(row, p),
     );
   });
 
@@ -4667,7 +4706,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       reply.code(201);
       // Наружу — в объёме аудитории: полное `dto` собрано ради заголовка в журнале.
       return {
-        request: forAudience(dto),
+        request: forAudience(p, dto),
         mail: created.mail?.outcome ?? 'not_needed',
         /**
          * Исход второго письма — ОТДЕЛЬНЫМ полем и только у заведения с сообщением о технике
@@ -4700,7 +4739,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     requestId: string,
   ): Promise<{ request: ServiceRequestDto; mail: ModuleMailOutcome }> {
     const dto = (await getFullDto(p, requestId))!;
-    return { request: forAudience(dto), mail: 'not_needed' };
+    return { request: forAudience(p, dto), mail: 'not_needed' };
   }
 
   /**
@@ -5548,7 +5587,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         metadata: { changes: diffServiceRequests(before, after) },
       });
       // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
-      return forAudience(after);
+      return forAudience(p, after);
     },
   );
 
@@ -5639,9 +5678,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     '/:id/urgency',
     { ...canUrgency, schema: { params: idParams, body: setServiceUrgencySchema } },
     async (req) => {
-      const after = await urgencyStep(requirePrincipal(req), req.params.id, req.body);
+      const p = requirePrincipal(req);
+      const after = await urgencyStep(p, req.params.id, req.body);
       // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
-      return forAudience(after);
+      return forAudience(p, after);
     },
   );
 
@@ -6797,7 +6837,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         metadata: { changes: diffServiceEstimate(before.items, after.items) },
       });
       // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
-      return forAudience(after);
+      return forAudience(p, after);
     },
   );
 
@@ -7028,7 +7068,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         },
       });
       // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
-      return forAudience(after);
+      return forAudience(p, after);
     },
   );
 
@@ -8102,6 +8142,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
       const row = await requireEditable(p, req.params.id);
+      // The contractor does not see the nomenclature of this request, so he does not edit it either
+      // (workflow-fixes plan Р7); his permission pair `estimate` + `execute` would let him through.
+      assertConsumablesNotHidden(p, row, 'ведёт состав');
       if (row.kind !== 'consumable') {
         throw err.unprocessable('Строки номенклатуры бывают только у заявки на расходники', {
           items: 'Не тот вид заявки',
@@ -8180,7 +8223,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         },
       });
       // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
-      return forAudience(after);
+      return forAudience(p, after);
     },
   );
 
@@ -8750,7 +8793,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
                 },
       });
       // Наружу — в объёме аудитории: полное `after` собрано ради журнала, а не ради ответа.
-      return forAudience(after);
+      return forAudience(p, after);
     },
   );
 
@@ -9336,6 +9379,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           kind,
           names: names.map((n) => n.filename),
           total: existing.length + fileIds.length,
+          // The letter names the kind and the files of a consumables request: what the contractor's
+          // side is not to learn (workflow-fixes plan Р7).
+          contractorBlind: serviceConsumablesHiddenFromContractors(locked),
         };
         await queueServiceMailForIntent(tx, {
           prepared: mailPlan,
@@ -9385,6 +9431,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
 
     const detached = await db.transaction(async (tx) => {
       const locked = await lockRequest(tx, row.id);
+      // The documents of a consumables request are not there for the contractor (workflow-fixes
+      // plan Р7): the answer is the same 404 as for «no such link», so that the door tells him
+      // nothing about what is attached.
+      if (serviceConsumablesHiddenFrom(locked, p)) throw err.notFound(FILE_NOT_LINKED);
       // Аудитория — под той же блокировкой, что и остальные проверки ручки (Р4): версии в теле у
       // снятия документа нет, и посчитанная снаружи она отвечала бы про назначение, снятое до
       // `COMMIT`. Запрос за строкой исполнителей идёт по `tx` — второе соединение, взятое из общего

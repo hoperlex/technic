@@ -3744,6 +3744,45 @@ export function serviceRequestNeedsEstimate(request: {
 }
 
 /**
+ * Is the nomenclature of this consumables request hidden from this reader (workflow-fixes plan Р7).
+ * True for the contractor's side on a request of kind `consumable`: what exactly is taken from the
+ * shelf is the company's own business, and the owner asked to remove its visibility from the card
+ * and the documents (§1.2 of the plan).
+ *
+ * A PAIR «REQUEST × READER», NOT A FLAG OF THE REQUEST. The composition is hidden from one reader,
+ * and the same rows are filled in by the in-house executor and «Ведение»: applied to the request
+ * alone, the rule would hide the list from those who fill it in.
+ *
+ * The reader is asked by his counterparty type, not by his assignment to THIS request: the
+ * contractor sees only requests assigned to his company anyway (the scope answers that), and a type
+ * check is fail-closed for the one who slipped through. The server applies the rule on EVERY
+ * channel that carries the nomenclature — the card and the list, the history, the file list and the
+ * direct link, the composition and the document doors, the document letter — and the portal's tabs
+ * and items are a consequence of it, never the rule itself: a thing hidden by markup stays in the
+ * response.
+ */
+export function serviceConsumablesHiddenFrom(
+  request: { kind: ServiceRequestKind },
+  subject: AccessSubject | null | undefined,
+): boolean {
+  return (
+    serviceConsumablesHiddenFromContractors(request) && actsForCounterparty(subject, 'service')
+  );
+}
+
+/**
+ * The request half of `serviceConsumablesHiddenFrom`: is the nomenclature of this request hidden
+ * from the contractor's side as such. For readers who are not subjects with a counterparty type —
+ * the recipients of a letter, planned before anyone is signed in — this is the whole question, and
+ * the letter planner asks it here instead of repeating «kind is consumable».
+ */
+export function serviceConsumablesHiddenFromContractors(request: {
+  kind: ServiceRequestKind;
+}): boolean {
+  return request.kind === 'consumable';
+}
+
+/**
  * ДЕЙСТВУЮЩЕЕ ожидание подписи — в отличие от сырой колонки `estimate_pending_revision` (Н11).
  *
  * Колонка отвечает на вопрос «предъявляли ли и получили ли ответ», и у исторической внутренней
@@ -5306,6 +5345,27 @@ export function projectServiceRequestForAudience(
 }
 
 /**
+ * The card cut for a reader the nomenclature is hidden from (`serviceConsumablesHiddenFrom`,
+ * workflow-fixes plan Р7): no composition rows and no documents.
+ *
+ * A SECOND PROJECTION NEXT TO THE AUDIENCE ONE, NOT A ROW OF ITS MAP. The audience map answers
+ * «may this reader see the money of this row» and has two values; the contractor is on the `finance`
+ * side of it (he sees the money of his own repair), so a cut keyed by audience would never reach
+ * him. The question here is a pair «request × reader» and the map has no reader.
+ *
+ * The files go with the rows because every kind of document of a consumables request can name the
+ * item: a photograph of the toner, an invoice for it. Idempotent, like the audience projection: the
+ * cut fields are replaced by constants.
+ */
+export function projectServiceRequestForConsumablesReader(
+  dto: ServiceRequestDto,
+  subject: AccessSubject | null | undefined,
+): ServiceRequestDto {
+  if (!serviceConsumablesHiddenFrom(dto, subject)) return dto;
+  return { ...dto, consumables: [], files: [] };
+}
+
+/**
  * Проекция СОСЕДНЕГО типа по его собственной карте (Р13): строка «Истории обслуживания» в карточке
  * единицы техники и событие её ленты — не `ServiceRequestDto`, а сумма ремонта в них та же самая.
  *
@@ -5481,6 +5541,72 @@ export function projectHistoryForAudience<T extends { changes: RequestChangeDto[
   return entries.map((entry) => ({
     ...entry,
     changes: entry.changes.flatMap((change) => projectHistoryChange(change, hiddenPrefixes)),
+  }));
+}
+
+/**
+ * Which history keys carry the nomenclature of a consumables request or the documents attached to
+ * it (workflow-fixes plan Р7). Closed by `Record` like the audience map above: a new history key
+ * does not compile without an answer here, so the decision cannot be forgotten.
+ *
+ * `filesAdded` and `filesRemoved` are here although they carry no item names themselves: the file
+ * name and the kind of a document of a consumables request («Счёт: Тонер Ricoh MP C305.pdf») tell
+ * exactly what the reader is not to learn, and the contractor does not see the documents of such a
+ * request at all.
+ */
+export const SERVICE_HISTORY_CHANGE_NOMENCLATURE: Record<
+  ServiceRequestChangeKey,
+  'all' | 'hidden_from_contractor'
+> = {
+  description: 'all',
+  dueDate: 'all',
+  customerDepartment: 'all',
+  responsibleName: 'all',
+  responsiblePhone: 'all',
+  isUrgent: 'all',
+  urgencyReason: 'all',
+  itApproval: 'all',
+  comment: 'all',
+  warrantyClaim: 'all',
+  filesAdded: 'hidden_from_contractor',
+  filesRemoved: 'hidden_from_contractor',
+  estimateItemsAdded: 'all',
+  estimateItemsRemoved: 'all',
+  rejectionResolution: 'all',
+  itemsNotPerformed: 'all',
+  itemsPartial: 'all',
+  consumablesIssued: 'hidden_from_contractor',
+  consumablesReturned: 'hidden_from_contractor',
+  consumables: 'hidden_from_contractor',
+  moveObject: 'all',
+  moveLocation: 'all',
+  moveDepartment: 'all',
+  moveState: 'all',
+};
+
+/**
+ * The history cut for a reader the nomenclature is hidden from — the history twin of
+ * `projectServiceRequestForConsumablesReader`. `hidden` is the answer of
+ * `serviceConsumablesHiddenFrom` computed by the caller for the one request of the page.
+ *
+ * FAIL-CLOSED, as the audience cut: a key this map knows nothing about is dropped. Rows of past
+ * months carry keys that no longer exist, and the reverse default would let a removed field that
+ * once held an item name come back into the feed silently. As there, an entry whose changes all
+ * disappeared stays: «состав изменён» without the rows is still the answer to «what happened to my
+ * request».
+ */
+export function projectHistoryForConsumablesReader<T extends { changes: RequestChangeDto[] }>(
+  entries: readonly T[],
+  hidden: boolean,
+): T[] {
+  if (!hidden) return [...entries];
+  const decisions = SERVICE_HISTORY_CHANGE_NOMENCLATURE as Record<
+    string,
+    'all' | 'hidden_from_contractor' | undefined
+  >;
+  return entries.map((entry) => ({
+    ...entry,
+    changes: entry.changes.filter((change) => decisions[change.field] === 'all'),
   }));
 }
 

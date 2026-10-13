@@ -200,6 +200,14 @@ export interface ServiceMailIntent {
     names: string[];
     /** Сколько файлов у заявки стало всего — чтобы адресат понимал, полон ли комплект. */
     total: number;
+    /**
+     * A document of a consumables request, which the contractor does not receive
+     * (`serviceConsumablesHiddenFromContractors`, workflow-fixes plan Р7): the letter names the
+     * kind and the file names, and those tell exactly what is closed to him. The addressees whose
+     * source is the contractor are struck, not the whole target: the `service` side includes the
+     * own named executors, to whom the letter is rightly addressed.
+     */
+    contractorBlind?: boolean;
   };
   /**
    * Реплика обсуждения; есть только у `service_request_comment`. Цели считает `chatMailTargets` из
@@ -624,12 +632,18 @@ export async function queueServiceMailForIntent(
 
   if (!(await isServiceMailEventEnabled(tx, intent.event))) return finish('event_off');
 
-  const required = requiredTargetsOf(intent, params.side);
+  let required = requiredTargetsOf(intent, params.side);
   if (required.length === 0) return finish('not_needed');
 
   if (params.prepared.configOutcome) return finish(params.prepared.configOutcome);
 
-  const candidates = await candidatesOf(tx, intent, params.side, ctx);
+  let candidates = await candidatesOf(tx, intent, params.side, ctx);
+  if (intent.event === 'service_request_document' && intent.document?.contractorBlind) {
+    ({ candidates, required } = withholdFromContractor(candidates, required));
+    // Every target was withheld and nobody else is left (not even a copy): the letter is not owed
+    // to anyone, which is `not_needed` and not the red «no recipients» of a missing address.
+    if (required.length === 0 && candidates.length === 0) return finish('not_needed');
+  }
   const recipients = collectServiceMailRecipients(candidates, ctx.actor);
   /** Хоть одна сводка окна мертва: исход события обязан это назвать, а не отчитаться «ушло». */
   let deadSummary = false;
@@ -750,6 +764,33 @@ export async function queueServiceMailForIntent(
 
   if (deadSummary) return finish('mail_failed', recipients);
   return finish(outcomeOf(required, recipients, targets), recipients);
+}
+
+/**
+ * The document letter of a consumables request, without the contractor's side (workflow-fixes plan
+ * Р7): the addressees whose source is the contractor — his live operators and the company mailbox —
+ * are struck, those of the own side stay.
+ *
+ * The `service` target counts as served if a named in-house executor is left. If none is, the
+ * target itself is withdrawn from the required ones, and not left to fail: its only addressees were
+ * removed by the visibility policy, not by a missing address, and the outcome must say «not owed»
+ * (`not_needed`) instead of «no recipients», which sends the administrator to fix a mailbox that
+ * does not need fixing. A target that had no addressee before the policy is NOT withdrawn — there the
+ * missing address is the real story.
+ */
+function withholdFromContractor(
+  candidates: ServiceMailRecipient[],
+  required: RequiredTarget[],
+): { candidates: ServiceMailRecipient[]; required: RequiredTarget[] } {
+  const kept = candidates.filter(
+    (candidate) => candidate.source !== 'contractor' && candidate.source !== 'contractor_withdrawn',
+  );
+  const struck = kept.length !== candidates.length;
+  const served = kept.some((candidate) => candidate.source === 'internal_user');
+  return {
+    candidates: kept,
+    required: struck && !served ? required.filter((target) => target !== 'service') : required,
+  };
 }
 
 /**

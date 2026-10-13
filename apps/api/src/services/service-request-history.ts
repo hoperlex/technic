@@ -2,6 +2,7 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import {
   officeEquipmentStateLabels,
   projectHistoryForAudience,
+  projectHistoryForConsumablesReader,
   serviceChatSideLabels,
   type RequestChangeDto,
   type RequestHistoryEntryDto,
@@ -574,6 +575,12 @@ export async function loadServiceRequestHistory(
   requestId: string,
   created: { at: Date; actorId: string; actorName: string },
   audience: ServiceRequestAudience,
+  /**
+   * The nomenclature of this request is hidden from the reader (`serviceConsumablesHiddenFrom`,
+   * workflow-fixes plan Р7). Required, with no default: a caller that forgot the question would
+   * hand the contractor the composition of a consumables request through the feed.
+   */
+  nomenclatureHidden: boolean,
 ): Promise<ServiceRequestHistoryEntryDto[]> {
   const [statusRows, auditRows, chatRows, movementRows] = await Promise.all([
     db
@@ -688,5 +695,13 @@ export async function loadServiceRequestHistory(
    * условия «если карантин» здесь нет.
    */
   await applyFileNameRule(page);
-  return projectHistoryForAudience(page, audience);
+  /*
+   * The reader cut goes after the audience one and on the same page: the audience cut is keyed by a
+   * two-value audience and the contractor is on the `finance` side of it, so it leaves him the
+   * composition, the issue marks and the document names that this second cut removes.
+   */
+  return projectHistoryForConsumablesReader(
+    projectHistoryForAudience(page, audience),
+    nomenclatureHidden,
+  );
 }

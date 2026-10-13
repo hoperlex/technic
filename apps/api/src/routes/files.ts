@@ -3,7 +3,19 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { and, eq, exists, inArray, isNotNull, isNull, not, or, type SQL, sql } from 'drizzle-orm';
+import {
+  and,
+  eq,
+  exists,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  not,
+  or,
+  type SQL,
+  sql,
+} from 'drizzle-orm';
 import {
   actsForCounterparty,
   can,
@@ -11,6 +23,7 @@ import {
   fileDownloadQuerySchema,
   type FileDto,
   isInlineViewable,
+  serviceConsumablesHiddenFrom,
   type ServiceRequestAudience,
   visibleServiceFileKinds,
 } from '@technic/contracts';
@@ -376,6 +389,23 @@ function serviceFileKindWhere(p: Principal): SQL {
   return or(and(finance, kindsOf('finance')), and(not(finance), kindsOf('requester')))!;
 }
 
+/**
+ * The documents of a consumables request are hidden from the contractor's side (workflow-fixes
+ * plan Р7), the direct link included: the card cuts the file list, and a link that still opened the
+ * file would leave the very hole the plan is written for.
+ *
+ * The rule stays the contracts pair `serviceConsumablesHiddenFrom`, asked here with a probe of the
+ * only kind it can hide: «is this reader cut off from consumables requests at all». The answer does
+ * not depend on the row, so it is known before the query, like the `finance` branch above, and the
+ * SQL only has to say which rows are of that kind. A row-by-row copy of the reader condition in
+ * SQL would drift from the card silently, and as a hidden file in the card that still downloads.
+ */
+function serviceNomenclatureWhere(p: Principal): SQL | undefined {
+  return serviceConsumablesHiddenFrom({ kind: 'consumable' }, p)
+    ? ne(serviceRequests.kind, 'consumable')
+    : undefined;
+}
+
 async function canAccessFile(
   p: Principal,
   fileId: string,
@@ -489,6 +519,7 @@ async function canAccessFile(
           can(p, 'archive.read') ? undefined : isNull(serviceRequests.deletedAt),
           serviceRequestVisibilityWhere(p),
           serviceFileKindWhere(p),
+          serviceNomenclatureWhere(p),
         ),
       )
       .limit(1);
