@@ -43,6 +43,17 @@ import { officeEquipmentModelId } from './office-equipment-model';
  */
 
 const DB_URL = process.env.TEST_DATABASE_URL;
+/*
+ * Its own database, not the shared one. The scope test below needs the executor scope switch
+ * (ADR 0179) ON, which is how every migrated database arrives, but the switch is global and
+ * `pinExecutorScopeOff` (helper of the files written against release A's model) leaves it OFF on
+ * purpose for its siblings on the shared base. On the shared base this file passed or failed by
+ * the order the parallel files happened to run in. `service-executor-scope.db.test.ts` solves the
+ * same problem the same way.
+ */
+const OWN_DB_NAME = 'technic_sr_it_cancel_test';
+const OWN_DB = DB_URL?.replace(/\/[^/]+$/, `/${OWN_DB_NAME}`);
+const ADMIN_DB = DB_URL?.replace(/\/[^/]+$/, '/postgres');
 
 /** Own suffix per run: the base outlives the run, and the cleanup finds its own rows by it. */
 const RUN = randomUUID().slice(0, 8);
@@ -115,6 +126,10 @@ async function migrate(databaseUrl: string): Promise<void> {
   const client = new pg.Client({ connectionString: databaseUrl });
   await client.connect();
   try {
+    // A fresh database has no extensions yet; the migrations assume them.
+    await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    await client.query('CREATE EXTENSION IF NOT EXISTS citext');
+    await client.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
     await applyMigrations(client);
   } finally {
     await client.end();
@@ -284,8 +299,16 @@ describe.skipIf(!DB_URL)(
   'отмена заявки ИТ-службой: своё право, три дуги и ничего сверх (Р2)',
   () => {
     beforeAll(async () => {
-      prepareEnv(DB_URL!);
-      await migrate(DB_URL!);
+      const adminClient = new pg.Client({ connectionString: ADMIN_DB });
+      await adminClient.connect();
+      try {
+        await adminClient.query(`DROP DATABASE IF EXISTS ${OWN_DB_NAME}`);
+        await adminClient.query(`CREATE DATABASE ${OWN_DB_NAME}`);
+      } finally {
+        await adminClient.end();
+      }
+      await migrate(OWN_DB!);
+      prepareEnv(OWN_DB!);
 
       const { db, closeDb } = await import('../src/db/client');
       const { hashPassword } = await import('../src/auth/password');
@@ -419,6 +442,14 @@ describe.skipIf(!DB_URL)(
       await ctx?.app.close();
       if (ctx?.db) await cleanup(ctx.db);
       await ctx?.closeDb();
+      if (!ADMIN_DB) return;
+      const adminClient = new pg.Client({ connectionString: ADMIN_DB });
+      await adminClient.connect();
+      try {
+        await adminClient.query(`DROP DATABASE IF EXISTS ${OWN_DB_NAME}`);
+      } finally {
+        await adminClient.end();
+      }
     });
 
     // ────────────────────────────────────────────────────────────────────────────────────────────
