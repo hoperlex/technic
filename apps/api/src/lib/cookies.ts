@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config';
+import { err } from './errors';
 
 export const REFRESH_COOKIE = 'refresh_token';
 const REFRESH_PATH = '/api/v1/auth';
@@ -22,6 +23,28 @@ export function clearRefreshCookie(reply: FastifyReply): void {
     secure: config.isProd,
     sameSite: 'lax',
   });
+}
+
+/**
+ * CSRF guard for the cookie endpoints (`/auth/refresh`, `/auth/logout`): in production the browser's
+ * `Origin` must be exactly `PUBLIC_ORIGIN`.
+ *
+ * The comparison is strict, so `PUBLIC_ORIGIN` drifting from the address people actually open
+ * (a server move that left the old or a nip.io host in `prod.env`) rejects EVERY refresh. Nothing
+ * else notices: login does not run this check and keeps working, the access token lives in tab
+ * memory only, and a reload then reads the 403 as "session ended" and lands on the login form from
+ * any screen. The warning below names both values on purpose — it is the only trace that tells this
+ * apart from a cookie that did not arrive. The value is public, so logging it leaks nothing.
+ */
+export function assertCookieOrigin(req: FastifyRequest): void {
+  if (!config.isProd) return;
+  const origin = req.headers.origin;
+  if (origin && origin === config.publicOrigin) return;
+  req.log.warn(
+    { origin: origin ?? null, expected: config.publicOrigin },
+    'Cookie-эндпоинт отбит: Origin запроса не равен PUBLIC_ORIGIN',
+  );
+  throw err.forbidden('Недопустимый источник запроса');
 }
 
 export function readRefreshCookie(req: FastifyRequest): string | null {

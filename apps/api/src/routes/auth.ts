@@ -20,7 +20,12 @@ import { db } from '../db/client';
 import { counterparties, persons, users } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
-import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../lib/cookies';
+import {
+  assertCookieOrigin,
+  clearRefreshCookie,
+  readRefreshCookie,
+  setRefreshCookie,
+} from '../lib/cookies';
 import { hashPassword, verifyPassword } from '../auth/password';
 import { verifyCaptcha } from '../auth/captcha';
 import { signAccessToken } from '../auth/tokens';
@@ -89,15 +94,6 @@ function userWithCounterpartyType() {
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
     .leftJoin(persons, eq(users.personId, persons.id));
-}
-
-/** Защита cookie-эндпоинтов от CSRF: проверка Origin (при single-origin + SameSite=Strict). */
-function assertCookieOrigin(req: FastifyRequest): void {
-  if (!config.isProd) return;
-  const origin = req.headers.origin;
-  if (!origin || origin !== config.publicOrigin) {
-    throw err.forbidden('Недопустимый источник запроса');
-  }
 }
 
 const authRateLimit = { rateLimit: { max: 10, timeWindow: '1 minute' } };

@@ -573,7 +573,7 @@ deploy-auto --client-floor=2        # фаза B: поднять пол и пе�
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' https://auto.su10.ru/api/v1/service-requests      # 426
-curl -s -o /dev/null -w '%{http_code}\n' -X POST https://auto.su10.ru/api/v1/auth/refresh  # 401, не 426
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://auto.su10.ru/api/v1/auth/refresh  # 403 (нет Origin), но не 426
 ```
 
 Отказ гейта в журнале `api` виден строкой «Запрос отбит гейтом версии клиента» с полями
@@ -1177,6 +1177,45 @@ curl -i -X OPTIONS "$UPLOAD_URL" \
 `403 AccessDenied` без `Access-Control-*` и с host `<bucket>.s3.cloud.ru` → virtual-hosted-style,
 чинится `S3_FORCE_PATH_STYLE=true`. Ответ без CORS-заголовков на **path-style** URL → проблема
 в CORS-политике бакета, а не в приложении.
+
+## Reload throws the user to the login form (`PUBLIC_ORIGIN`)
+
+Symptom: login works, but a page reload from any screen lands on the login form again.
+
+Cause: the access token lives in tab memory only, so a reload must call `POST /api/v1/auth/refresh`,
+and the portal reads any refusal as "session ended". In production the API accepts that call only
+if the browser's `Origin` equals `PUBLIC_ORIGIN` byte for byte (`assertCookieOrigin`,
+`apps/api/src/lib/cookies.ts`). When `PUBLIC_ORIGIN` names another host than the one people open,
+every refresh is answered `403 Недопустимый источник запроса`. Login has no such check and keeps
+working, which is why this looks like a lost cookie rather than a configuration error.
+
+Seen after the move to the new server (October 2026): `prod.env` kept
+`PUBLIC_ORIGIN=https://auto.213-171-26-249.nip.io` (the nip.io name of the new IP) while the portal
+is opened at `https://auto.su10.ru`. The same value also sets the host SmartCaptcha must report
+(registration and password reset fail with "токен выдан чужим доменом") and the base of the links in
+mails, so fixing it is not optional even where reload happens to work.
+
+Check, without a session and without secrets. The first command must print `401` (no cookie); `403`
+means the origin differs:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://auto.su10.ru/api/v1/auth/refresh \
+  -H 'Origin: https://auto.su10.ru'
+docker exec technic-api sh -lc 'env | grep -E "^PUBLIC_ORIGIN="'
+# fields `origin` (what the browser sent) and `expected` (PUBLIC_ORIGIN) in one line:
+docker logs technic-api 2>&1 | grep 'не равен PUBLIC_ORIGIN' | tail -3
+```
+
+Fix: set `PUBLIC_ORIGIN=https://auto.su10.ru` in `/etc/technic-portal/prod.env` — scheme and host
+only, no trailing slash, no path — and recreate the containers, because a restart does not reread
+`env_file`:
+
+```bash
+docker compose -f deploy/docker-compose.yml -p technic up -d --force-recreate technic-api technic-worker
+```
+
+Open tabs need no action. People who still hold a refresh cookie are let in by their next reload;
+the rest sign in once.
 
 ## Backup / restore
 
