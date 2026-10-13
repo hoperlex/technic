@@ -8,7 +8,10 @@
   [office-equipment-workflow-fixes-plan.md](../office-equipment-workflow-fixes-plan.md), stages
   Э2 and Э3): the estimate belongs to its author, the estimate step sits on its tab, and the
   auto-close counts from the moment of the transition — see
-  [the last section](#workflow-fixes-wave-1-2026-10-12)
+  [the wave 1 section](#workflow-fixes-wave-1-2026-10-12). Extended on 2026-10-13 by wave 2
+  (stages Э4 and Э5): the contractor does not see the nomenclature of a consumables request and the
+  warehouse does not move on it, and the IT service cancels with a permission of its own — see
+  [the wave 2 section](#workflow-fixes-wave-2-2026-10-13)
 - Изменяет: [ADR 0208](0208-service-work-completed-document-flow.md) — решение 4: the named in-house
   executor no longer submits the estimate document at all (workflow-fixes Р6); «Передать документ
   на согласование» stays for the administrator, the one subject left who may submit and may not
@@ -31,7 +34,14 @@
   [internal-service-requests.ts](../../apps/api/src/routes/internal-service-requests.ts), the
   schema [schema.ts](../../apps/api/src/db/schema.ts) (`done_at`), the estimate tab
   [ServiceRequestEstimate.tsx](../../apps/web/src/pages/service/ServiceRequestEstimate.tsx) and the
-  placement [serviceMenuPlacement.ts](../../apps/web/src/pages/service/serviceMenuPlacement.ts)
+  placement [serviceMenuPlacement.ts](../../apps/web/src/pages/service/serviceMenuPlacement.ts);
+  wave 2 — the reader and shelf predicates in the contracts
+  [service-requests.ts](../../packages/contracts/src/service-requests.ts)
+  (`serviceConsumablesHiddenFrom`, `serviceRequestConsumablesAreOurs`), the file door
+  [files.ts](../../apps/api/src/routes/files.ts), the letter planner
+  [service-request-mail.ts](../../apps/api/src/services/service-request-mail.ts), the history
+  [service-request-history.ts](../../apps/api/src/services/service-request-history.ts) and the
+  consumables tab [ServiceRequestConsumablesTab.tsx](../../apps/web/src/pages/service/ServiceRequestConsumablesTab.tsx)
 - Решение вырастает из: [ADR 0085](0085-office-equipment-module.md) (модуль),
   [0125](0125-service-request-cycle-changes.md) (цикл после слияния статусов),
   [0160](0160-service-request-audiences.md) (аудитории карточки),
@@ -255,4 +265,83 @@ closing schema stay exactly as they were, and the date of the work is still chos
 ### Not done here, on purpose
 
 - the bulk `assign` keeps its required reason (plan Р3 bullet, Р9 of stage Э6);
-- stages Э4–Э6 of the plan (Р7, Р8, Р2, Р9) are the next wave.
+- stage Э6 of the plan (Р9, the bulk reassignment and the bulk «Решена») rides release R2 with Р4:
+  its «Решена» half needs the closing without a window (S-23). Stages Э4 and Э5 are the next
+  section.
+
+## Workflow-fixes wave 2 (2026-10-13)
+
+The same plan, stages Э4 and Э5. Nothing in this wave touches the closing body or the client
+floor: Р4/Р4а and Р9 stay held for release R2 (S-23), and the closing window of this wave is the
+old one with one more mode.
+
+### Э4. The service centre and the cartridges (Р7, Р8)
+
+**Р7. The nomenclature of a consumables request is hidden from the contractor — on every channel.**
+The owner asked to remove the visibility of the nomenclature «in the card and in the documents».
+The rule is one pair «request × reader», `serviceConsumablesHiddenFrom(request, subject)` in the
+contracts: true for the contractor's side (the counterparty type `service`) on a request of kind
+`consumable`. Applied to the request alone it would hide the list from the in-house executor and
+«Ведение», who fill it in; applied through the audience map it would not reach the contractor at
+all, because he is on the `finance` side of that map (he sees the money of his own repair). So it is
+a second cut next to the audience one, not a row of its map. The reader is asked by his
+counterparty type and not by his assignment to the request: the scope already hides requests of
+other companies, and a type check is fail-closed for whoever slipped through.
+
+The server applies it on every channel that carries the rows or the names of the documents:
+
+| Channel                              | What the contractor gets                                                                                                                                                                                    |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| card, list, response of every action | `consumables: []` and `files: []` — `forAudience` takes the principal now, so a response built without the cut does not compile                                                                             |
+| history                              | the entries stay, the keys `consumables`, `consumablesIssued`, `consumablesReturned`, `filesAdded`, `filesRemoved` go (`SERVICE_HISTORY_CHANGE_NOMENCLATURE`, a closed `Record`; an unknown key is dropped) |
+| direct link to a file                | `404 «Файл не найден»`, as for a missing link — the SQL predicate asks the same contracts rule with a probe of the only kind it can hide                                                                    |
+| `PUT /:id/consumables`               | `403` (side), asked right after the scope, before the kind and status                                                                                                                                       |
+| `POST /:id/files`                    | `403` (side), before the audience layer — he passes that one as `finance`                                                                                                                                   |
+| `DELETE /:id/files/:fileId`          | `404`, the answer for «no such link»                                                                                                                                                                        |
+| letter about a document              | the addressees whose source is the contractor (his live operators, the company mailbox) are struck; the own named executors stay                                                                            |
+
+All kinds of documents are hidden, not only some: any of them can name the item («Счёт: Тонер Ricoh
+MP C305.pdf»). The letter is cut by SOURCE, not by target: the `service` side includes the own named
+executors, to whom the letter is rightly addressed. If the policy struck every addressee of the
+target, the target is withdrawn and the outcome is `not_needed` — the word the module already uses
+for «nobody is owed this» — and not `no_recipients`, which would send the administrator to fix a
+mailbox that needs no fix. Copies stay: they are the company's own observers.
+
+Named gaps, not hidden ones: free text is not filtered (the description, the discussion — the same
+boundary as in ADR 0160, «not a DLP filter»), and the unit's service history in the directory card
+carries no composition at all (checked, not assumed). The portal's tabs «Расходники» and
+«Документы» and the items «Заполнить расходники» are a CONSEQUENCE of the server cut: a contractor
+gets the tabs «Заявка» and «История», and a response that forgot the cut would still not be drawn
+as a tab — but markup is never the protection, the response is.
+
+**Р8. The request handed to a contractor does not move our warehouse.** The owner's answer is «the
+warehouse does not move at all». `serviceRequestConsumablesAreOurs({ kind, serviceCounterpartyId })`
+in the contracts: true for consumables without a contractor. With one on the request — alone or
+next to an own administrator (a mixed assignment) — nobody marks an issue, «Ведение» and the
+in-house executor included. The issue door answers `422` about the shelf, not `403`: everyone who
+reaches the line holds the permission, and the shelf is not ours whoever asks. The refusal stands in
+front of the status check (a list of statuses would only suggest waiting) and once more inside the
+transaction, under the row lock — the assignment can change between the two (a test holds the row
+from a second connection, hands the request to the contractor and lets go). The closing of such a
+request does not call `applyConsumableFacts` and demands no rows: a contractor who cannot see the
+composition could not fill them in. A body that still carries issue rows (a stale tab) gets the
+sentence of the issue door and is neither applied nor silently dropped: the person typed
+quantities, and «saved but not saved» is what the module refuses elsewhere too. A fact written
+while the request was ours stays a fact (plan Н10); handing the request back to an own executor
+opens the mark again.
+
+The portal follows through the same two functions: the item «Отметить выдачу» is not drawn when the
+shelf is not ours; the item `complete` of such a request is named «Перевести в «Решена»» (an item
+named «Закрыть работы» by someone who issues nothing reads as a report of an issue) and its window
+has a mode of its own, `supplied`: the date and words, no rows, no `consumables` key in the body.
+That mode, like the whole window, goes away with Р4 in release R2.
+
+**Compatibility with shipped bundles (client contract 4 and later).** No response field is added,
+removed or retyped, no request schema becomes stricter, no header is required. Only the set of
+subjects the server answers `200` to shrinks, each time with a sentence of its own: the contractor
+on the composition and the document doors (`403`, `404`), the issue mark on a contractor request
+(`422`), the closing of such a request with issue rows (`422`). An old bundle still draws what the
+new one hides — the contractor's empty tabs, «Отметить выдачу» for «Ведение», the issue rows in its
+closing window — and a press gets the sentence, shown by the shared failure handler as a toast, not
+a crash. The old closing window of the contractor shows no rows (his composition is empty) and sends
+`consumables: []`, which the server accepts; this is read from the code, not run in a browser.
