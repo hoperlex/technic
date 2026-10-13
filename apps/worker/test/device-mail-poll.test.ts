@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readDeviceMailConfig } from '../src/device-mail/config';
 import { readDirMailboxState } from '../src/device-mail/mailbox-dir';
 import { startDeviceMailPoller } from '../src/device-mail/poller';
@@ -126,7 +126,7 @@ function createSpyMailbox(letters: SpyLetter[], uidValidity = 777) {
   return { mailbox, calls, failure };
 }
 
-/** Путь файла состояния транспорта `dir` — то же имя, что строит `mailbox-dir.ts`. */
+/** State file of the `dir` transport; the name must match `mailbox-dir.ts` or cleanup misses it. */
 function stateFileOf(dir: string): string {
   return join(dirname(dir), `${basename(dir)}.device-mail-state.json`);
 }
@@ -160,12 +160,19 @@ describe('приёмник писем оргтехники', () => {
       DEVICE_MAIL_DIR: dir,
       DEVICE_MAIL_ACCOUNT: 'pilot',
       DEVICE_MAIL_BATCH: '10',
-      // Потолок нарочно маленький: переросток изображается килобайтами, а не мегабайтами.
+      // The ceiling is deliberately small so an oversized letter is kilobytes, not megabytes.
       DEVICE_MAIL_MAX_SIZE_BYTES: '2048',
     } as NodeJS.ProcessEnv);
     if (!parsed) throw new Error('Настройки приёма не собрались');
     config = parsed;
     warnings = [];
+  });
+
+  // Every case gets a fresh mailbox in the shared /tmp; left behind, they piled up by the hundred.
+  // The state file lives next to the directory, not inside it, so it has to go separately.
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(stateFileOf(dir), { force: true });
   });
 
   let warnings: string[] = [];

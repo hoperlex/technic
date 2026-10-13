@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import {
   AnonymizeRefusal,
   anonymizeEml,
@@ -175,13 +175,15 @@ function cli(argv: readonly string[]): { code: number; out: string } {
 }
 
 /**
- * Единственный прогон команды на весь файл: батарея проверяет ЗАПИСАННЫЙ им файл.
+ * One run of the command for the whole file: the battery checks the file that run WROTE.
  *
- * Отсутствие файла здесь не роняет сборку набора, а оставляется первому же случаю: сломанный
- * скрипт обязан дать названную неудачу («команда не записала файл»), а не ошибку чтения при сборе
- * тестов — по ней не видно, что именно сломалось.
+ * A missing file does not break test collection here; it is left to the first case, so a broken
+ * script yields a named failure ("the command did not write the file") rather than a read error
+ * during collection, which does not show what actually broke.
  */
 const dir = mkdtempSync(join(tmpdir(), 'anonymize-eml-'));
+// The directory sits in the shared /tmp and every run made a new one; nothing else removes it.
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const OUT = join(dir, 'clean.eml');
 const run = cli([FIXTURE, OUT, ...FLAGS]);
 const source = readFileSync(FIXTURE);
