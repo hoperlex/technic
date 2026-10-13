@@ -688,11 +688,13 @@ psql "$DATABASE_URL" -c "update feature_flags set is_enabled=false, updated_at=n
 ADR 0183 разрешён только после разбора всех активных документных ревизий: старый читатель не знает
 роль `estimate_basis` и может ошибочно принять счёт-основание за закрывающий документ.
 
-Since release B of ADR 0183 (the migration `…_service_estimate_approval_source_strict.sql`) the
-estimate signature and its source are one pair in the database. A rollback to any release that
-already writes the source — ADR 0183's own and every later one — needs nothing. Code older than
-ADR 0183 signs without a source, so before such a rollback, after the review above, weaken the
-constraint back to the release A text of `0306`:
+Since release B of ADR 0183 (the migrations `…_service_estimate_approval_source_strict.sql` and
+`…_service_estimate_pending_source_strict.sql`) the estimate signature and its source, and the
+pending estimate and its origin, are two pairs in the database. A rollback to any release that
+already writes both — ADR 0183's own and every later one — needs nothing. Code older than ADR 0183
+signs without a source and opens a wait without an origin, so before such a rollback, after the
+review above, weaken both constraints back to the release A texts of `0306` (both constraints exist
+since `0306`, so the command is valid whichever of the two migrations is applied):
 
 ```bash
 psql "${DATABASE_MIGRATION_URL:-$DATABASE_URL}" -c "begin;
@@ -701,6 +703,9 @@ psql "${DATABASE_MIGRATION_URL:-$DATABASE_URL}" -c "begin;
     estimate_approval_source is null
     or (estimate_approval_source in ('human','auto')
         and (estimate_approval_source <> 'auto' or estimate_approved_by is null)));
+  alter table service_requests drop constraint service_requests_estimate_pending_source_check;
+  alter table service_requests add constraint service_requests_estimate_pending_source_check check (
+    estimate_pending_source is null or estimate_pending_source in ('submit','dispute'));
   commit;"
 ```
 

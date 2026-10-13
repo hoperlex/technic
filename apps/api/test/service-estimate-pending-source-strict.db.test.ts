@@ -285,9 +285,10 @@ describe.skipIf(!DB_URL)('pending estimate ⇔ origin: backfill, guard, strict p
 
       // A wait whose origin is unknown.
       expect(
-        await refusedBy('UPDATE service_requests SET estimate_pending_source = NULL WHERE id = $1', [
-          ids.pendingSubmit,
-        ]),
+        await refusedBy(
+          'UPDATE service_requests SET estimate_pending_source = NULL WHERE id = $1',
+          [ids.pendingSubmit],
+        ),
       ).toBe(CONSTRAINT);
       // An origin of nothing: the trace of a wait that is gone.
       expect(

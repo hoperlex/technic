@@ -2,7 +2,8 @@
 
 - Статус: Реализовано (14.09.2026) — сервер и портал; оба рубильника включены миграцией `0341`
   ([ADR 0208](0208-service-work-completed-document-flow.md)), на проде с 07.10.2026; выпуск B —
-  строгая пара подписи и её источника — 12.10.2026 (раздел «Release B» ниже). План —
+  строгая пара подписи и её источника — 12.10.2026, строгая пара ожидания подписи и его
+  происхождения — 13.10.2026 (раздел «Release B» ниже). План —
   [office-equipment-on-site-and-invoice-estimate-plan.md](../office-equipment-on-site-and-invoice-estimate-plan.md),
   редакция 5, решения Р1–Р13. Схема: `0306` (форматы ревизии, роль файла, источник подписи,
   происхождение ожидания, окно приёмки, вид заморозки, карантин файла, ослабленный
@@ -226,6 +227,23 @@ flows are covered by the existing db suites (`service-estimate-dispute`,
 `service-auto-close-dispute` and the rest of the module), which now run against the strict
 constraint.
 
-**Not in this release.** The pending side has the same soft shape — `estimate_pending_source`
-without a pair with `estimate_pending_revision`, read as `submit` when empty. It is left for a
-separate item with its own audit.
+**The pending side (2026-10-13).** The second half of the item makes `estimate_pending_source` one
+pair with `estimate_pending_revision`: a request waits for a signature exactly when it is known what
+opened the wait. The audit read every writer at the tip and in `dc647215` (identical; no commit since
+prod touched them). The three opening paths name the origin — the submission (`submit`, or neither
+column when the exemption applies), the re-issue of a breakdown (`submit`) and the dispute outcome
+"signature required" (`dispute`); the six clearing paths — the reset matrix (flag `estimate`), the
+handover in `assignStep`, approval, rejection, the return for editing and the internal close — clear
+both; a plain cancellation touches neither. No trigger, function, worker job or script writes them.
+The migration (`…_service_estimate_pending_source_strict.sql`) locks the table, backfills a wait
+without an origin to `submit` (such waits were opened by code older than release A, `dispute` has a
+single writer that always names it, and `submit` is what every reader assumed), clears an origin
+without a wait (reachable only after a rollback below release A, read by nobody), runs an
+unreachable guard and replaces `service_requests_estimate_pending_source_check` with
+`(estimate_pending_revision IS NULL) = (estimate_pending_source IS NULL)` plus the value list.
+Readers take the origin as stored: auto-close compares it with plain `<>` under a pending revision,
+`ServiceRequestDto.estimatePendingSource` is required (`null` exactly when nothing is pending, and
+for the requester; the wire shape is unchanged — every server since release A sends it), and the
+portal no longer substitutes `null`. A rollback below ADR 0183 weakens this constraint too
+(runbook). `service-estimate-pending-source-strict.db.test.ts` covers the backfill, the refusals and
+the guard; the route suites assert both columns at every writer.

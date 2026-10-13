@@ -101,5 +101,7 @@ every human one carries its source.
 
 One line of the rollback above becomes stricter: returning to a version older than ADR 0183 now
 also requires weakening `service_requests_estimate_approval_source_check` back to the release A text
-of `0306`, because such code signs without a source and would fail its first approval. Rolling back
-to ADR 0183's own release or to any later one needs nothing.
+of `0306`, because such code signs without a source and would fail its first approval — and, since
+the pending side became strict on 2026-10-13, `service_requests_estimate_pending_source_check` as
+well, because such code opens a wait without an origin. Rolling back to ADR 0183's own release or to
+any later one needs nothing.
