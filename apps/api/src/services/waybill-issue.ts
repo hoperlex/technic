@@ -649,13 +649,13 @@ async function loadTaskRowFacts(
 }
 
 /**
- * Контекст выписки: читает всё, что нужно бумаге и рукопожатию, и проверяет то, без чего листа не
- * существует, — бланк рейса и водителя.
+ * The issue context: reads everything the paper and the handshake need, and checks what a sheet
+ * cannot exist without — the route's form and its driver.
  *
- * Обе проверки живут здесь, а не в вызывающем, ровно потому, что обе требуют чтения: бланк
- * приходит с типа машины, водитель — из справочника на дату рейса. The status checks stay with the
- * caller (`canIssueWaybill`), made under its locks before any read; the form's capacity is not one
- * of them — it is a blocker counted from this context (`issueBlockersOf`).
+ * Both checks live here rather than in the caller precisely because both need a read: the form
+ * comes from the machine's type, the driver from the directory on the route's date. The status
+ * checks stay with the caller (`canIssueWaybill`), made under its locks before any read; the form's
+ * capacity is not one of them — it is a blocker counted from this context (`issueBlockersOf`).
  */
 export async function loadWaybillIssueContext(
   tx: Tx,
@@ -849,11 +849,11 @@ async function loadTrailerSource(
 // ── Блокеры, предупреждения и рукопожатие (Р21, Р21а) ──
 
 /**
- * Что мешает выписать лист по этому рейсу; пусто — не мешает ничего (Р11а).
+ * What prevents issuing a sheet for this route; empty means nothing does (R11a).
  *
- * Считается тем же правилом, что показывает портал при сборке маршрута (`routeIssueBlockers`), и
- * из того же контекста, из которого печатается бумага (Р22): показать одно, а напечатать другое
- * здесь хуже, чем не показать вовсе.
+ * Counted by the same rule the portal shows while a route is assembled (`routeIssueBlockers`), and
+ * from the same context the paper is printed from (R22): showing one thing and printing another is
+ * worse here than showing nothing at all.
  *
  * The overlap with `canIssueWaybill` (contracts) is one place, the driver: that predicate asks for
  * it first and without any read, and here it arrives non-empty
@@ -1242,17 +1242,19 @@ function collectSnapshot(
 }
 
 /**
- * Выдача листа по рейсу (маршруты, план `docs/vehicle-routes-plan.md`).
+ * Issuing a sheet for a route (routes, plan `docs/vehicle-routes-plan.md`).
  *
- * Отличие от прежней выдачи «в транзакции перевода заявки в работу» не только в источнике данных.
- * Лист теперь рождается тогда, когда состав рейса собран, а не на первой заявке: номер бланка не
- * сгорает на каждой перестановке, и талоны заполняются в том порядке, в котором машина поедет.
+ * The difference from the former issue "inside the transaction that moves a request into work" is
+ * not only the data source. A sheet is now born once the route's composition is assembled, not on
+ * the first request: a form number does not burn on every rearrangement, and the tear-off coupons
+ * are filled in the order the machine will drive.
  *
- * Проверки «водитель назначен, состав непуст, все заявки в работе» и «действующего листа ещё нет»
- * делает вызывающий (`canIssueWaybill` в контрактах) — под блокировкой рейса и строк заявок. The
- * form's capacity is not the caller's: it is the `capacity_exceeded` blocker checked below.
- * Здесь остаётся то, что требует чтения справочников, — и читается оно один раз, в неизменяемый
- * контекст (Р22): бланк по машине, допуск водителя на дату рейса, точки маршрута и заявки листа.
+ * The checks "driver assigned, composition not empty, all requests in work" and "no live sheet
+ * yet" are the caller's (`canIssueWaybill` in the contracts), made under the lock of the route and
+ * of the request rows. The form's capacity is not the caller's: it is the `capacity_exceeded`
+ * blocker checked below. What stays here needs directory reads, and they are read once, into an
+ * immutable context (R22): the form by machine, the driver's admission on the route's date, the
+ * route's points and the sheet's requests.
  */
 export async function issueWaybillForRoute(
   tx: Tx,

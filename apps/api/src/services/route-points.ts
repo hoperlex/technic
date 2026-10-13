@@ -469,12 +469,12 @@ export async function compositionTaskRefs(
 }
 
 /**
- * Ёмкость бланка (Р11, ADR 0068): строк задания в маршруте не больше, чем строк в бумаге.
+ * The form's capacity (R11, ADR 0068): a route holds no more task rows than the paper has lines.
  *
- * Спрашивается при всякой правке, добавляющей работу, — укладке заявки, постановке дня, правке
- * состава ездок, — потому что переполнение рождается не в точках, а в составе: точки лишь
- * показывают то, что уже заказано. The count itself is the contracts' one (`capacityBlocker`),
- * shared with the issue blockers: the placement refuses exactly what the issue would.
+ * Asked on every edit that adds work — placing a request, adding a day, editing the trip list —
+ * because an overflow is born in the composition, not in the points: the points only show what is
+ * already ordered. The count itself is the contracts' one (`capacityBlocker`), shared with the
+ * issue blockers: the placement refuses exactly what the issue would.
  */
 export async function assertRouteCapacity(
   tx: Tx,

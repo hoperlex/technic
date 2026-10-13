@@ -50,21 +50,25 @@ export function WaybillIssueCheck({ check = NOT_CHECKED }: { check?: WaybillIssu
  * «Clean» and «not checked» stay silent in the row on purpose. Every sheet before migration 0136
  * and every weekly ESM-2 written by reconciliation is `not_checked`, and a tag on each of them would
  * drown the few rows that carry a decision; the view window names all three states.
+ *
+ * Which warnings, the tooltip says, and a hover-only tooltip on an unfocusable tag never opens from
+ * the keyboard: the tab stop and the focus trigger fix that. The hidden text is for a screen reader:
+ * the tooltip describes its anchor only while open, so the warnings are part of the tag's own text.
  */
 export function WaybillIssueCheckTag({ check }: { check?: WaybillIssueCheckDto }) {
   if (check?.status !== 'acknowledged') return null;
+  const lines = check.warnings.length > 0 ? checkLines(check) : null;
   return (
     <Tooltip
-      title={
-        check.warnings.length > 0 ? (
-          <WarnedLineList lines={checkLines(check)} />
-        ) : (
-          waybillIssueCheckLabels.acknowledged
-        )
-      }
+      trigger={['hover', 'focus']}
+      title={lines ? <WarnedLineList lines={lines} /> : waybillIssueCheckLabels.acknowledged}
     >
-      <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+      <Tag color="orange" tabIndex={0} style={{ marginInlineEnd: 0 }}>
         с предупреждениями
+        <span className="visually-hidden">
+          :{' '}
+          {lines ? lines.map((line) => line.text).join('; ') : waybillIssueCheckLabels.acknowledged}
+        </span>
       </Tag>
     </Tooltip>
   );

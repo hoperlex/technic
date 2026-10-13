@@ -243,18 +243,19 @@ export interface ProspectiveRoute {
 }
 
 /**
- * Проверки будущего состояния — до первого аннулирования (Р36, ADR 0101 п. 11).
+ * Checks of the future state, made before the first cancellation (R36, ADR 0101 item 11).
  *
- * Смена машины меняет больше, чем строку в шапке: у нового типа бывает другой бланк (4-П против
- * формы № 3, а с ним ёмкость семь против десяти — ADR 0068), другая организация-владелец и другие
- * требования к водителю (категория, прицеп — ADR 0037 п. 7 и 8). Узнать об этом после того, как
- * действующий номер уже списан, — худший из возможных порядков: номер, положим, не сгорит (счётчик
- * серии живёт строкой и откатывается с транзакцией), но человек получит поздний и невнятный отказ
- * вместо названной причины.
+ * Changing the machine changes more than a header line: the new type may have another form (4-P
+ * against form No. 3, and with it a capacity of seven against ten — ADR 0068), another owning
+ * organization and other requirements for the driver (category, trailer — ADR 0037 items 7 and 8).
+ * Learning that after the live number is already written off is the worst possible order: the
+ * number would not burn, as it happens (the series counter lives in a row and rolls back with the
+ * transaction), but the person would get a late and vague refusal instead of a named reason.
  *
- * Проверки те же самые, что у обычной выписки, и это главное здесь: коррекция кончается настоящим
- * листом, и второй набор правил для него разошёлся бы с первым. Снимается ровно одна — «по
- * маршруту уже есть действующий лист» (`correction: { allowed: true }`): его и аннулируют.
+ * The checks are the very same as the ordinary issue's, and that is the point here: a correction
+ * ends in a real sheet, and a second rule set for it would drift from the first. Exactly one is
+ * lifted — "the route already has a live sheet" (`correction: { allowed: true }`): that sheet is
+ * the one being cancelled.
  *
  * The form's capacity is asked by the issue's own count (`capacityBlocker`) over the prospective
  * task rows — the composition's trips plus linear days, read by `compositionTaskRefs` because a
@@ -265,8 +266,8 @@ export interface ProspectiveRoute {
  * issue point after both cancellations and was refused there — rolled back, but late and in other
  * words.
  *
- * Возвращает бланк будущего листа: им же считается вместимость задания, и считать её потом заново
- * значило бы задать тот же вопрос дважды.
+ * Returns the future sheet's form: the task capacity is counted by it as well, and counting it
+ * again later would ask the same question twice.
  */
 export async function preflightCorrection(
   tx: Tx,

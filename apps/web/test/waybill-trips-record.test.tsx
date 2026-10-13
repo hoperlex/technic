@@ -86,7 +86,11 @@ describe('журнал листов: ездки по строкам и пров�
     await waitFor(() => expect(screen.getByText(NUMBER)).toBeDefined());
 
     const row = rowOf(NUMBER);
-    expect(within(row).getByText('с предупреждениями')).toBeDefined();
+    const tag = within(row).getByText('с предупреждениями');
+    // The warnings sit in a tooltip: the tag takes focus, which opens it, and carries their text
+    // for a screen reader, which does not read tooltips.
+    expect(tag.tabIndex).toBe(0);
+    expect(tag.textContent).toContain('не внесён СНИЛС');
     // Two printed trips under one coupon: the rows are named next to it. A one-trip request is its
     // coupon's own row, and naming it again would say nothing.
     expect(within(row).getByText(/строки 1, 2/)).toBeDefined();
