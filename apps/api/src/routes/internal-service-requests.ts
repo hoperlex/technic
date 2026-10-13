@@ -217,7 +217,7 @@ const NO_OPEN_DISPUTE = sql`NOT EXISTS (SELECT 1 FROM service_request_estimate_d
                                          WHERE d.request_id = r.id AND d.state = 'open')`;
 
 /**
- * ПОСТСПОРНОЕ ОЖИДАНИЕ ПОДПИСИ НЕ СОЗРЕВАЕТ ВОВСЕ — сколько бы времени ни прошло (Р9, Н9).
+ * A WAIT FOR THE SIGNATURE AFTER A DISPUTE NEVER MATURES, however much time passes (Р9, Н9).
  *
  * The dispute outcome «signature required» removes the automatic signature and opens the wait right
  * in «Решена»: the status is the same, the anchor `done_at` is the moment of the resolution (the
@@ -226,24 +226,23 @@ const NO_OPEN_DISPUTE = sql`NOT EXISTS (SELECT 1 FROM service_request_estimate_d
  * would mature a day after the resolution, the signature still not given, and the dispute would end
  * exactly in what it was opened against.
  *
- * ЗАПРЕТ ПО СОСТОЯНИЮ, А НЕ СДВИГ СРОКА: «ждём подпись» — не «ещё рано». Выразить его датой значило
- * бы назвать срок, которого никто не знает: подпишут через час или через неделю, решает человек.
+ * A BAN BY STATE, NOT A SHIFTED DUE DATE: "waiting for a signature" is not "too early". Expressing it
+ * as a date would name a moment nobody knows — whether they sign in an hour or in a week is a
+ * person's decision.
  *
- * `IS DISTINCT FROM`, А НЕ `<>`: у обычного ожидания происхождение пустое (`NULL` читается как
- * `submit`), и сравнение неравенством ответило бы `NULL` — то есть выкинуло бы из отбора все
- * заявки с висящим предъявлением заодно, а заметить это было бы нечем.
+ * THE WAIT IS THE REVISION, THE ORIGIN ONLY DESCRIBES IT — the rule the whole module reads the wait
+ * by (`serviceEstimatePending`). Plain `<>` is safe because a wait and its origin are one pair
+ * (`service_requests_estimate_pending_source_check`, release B of ADR 0183): under a pending
+ * revision the origin is never `NULL`, so the comparison never answers `NULL`. Before release B an
+ * empty origin was legal and read as `submit`, and `<>` would have silently dropped every request
+ * with an ordinary pending submission from the selection.
  *
- * ПРИЗНАК ОЖИДАНИЯ — РЕВИЗИЯ, А НЕ ПРОИСХОЖДЕНИЕ. Ограничение базы разрешает «источник без
- * ожидания» намеренно (старый код в окне выката гасит ожидание, про происхождение не зная), и
- * заявка с забытым словом `dispute` при пустой `estimate_pending_revision` подписана — держать её
- * вечно из-за неубранной приметы значило бы не закрыть её никогда.
- *
- * Соседний `ESTIMATE_SIGNED` случай не покрывает: он спрашивает только там, где обязателен
- * документ, а объём работ предъявляют и по заявке, которой бумага не нужна, — значит и спорить о
- * снятой подписи по ней могут.
+ * The neighbouring `ESTIMATE_SIGNED` does not cover the case: it asks only where a document is
+ * required, while an estimate is submitted for requests that need no paper too — so a removed
+ * signature can be disputed there as well.
  */
 const NO_DISPUTE_SIGNATURE_PENDING = sql`(r.estimate_pending_revision IS NULL
-  OR r.estimate_pending_source IS DISTINCT FROM 'dispute')`;
+  OR r.estimate_pending_source <> 'dispute')`;
 
 /**
  * Созревшая заявка целиком.

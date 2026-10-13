@@ -122,6 +122,10 @@ export function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): Serv
     // делает заявку «ждущей подписи» после снятия `estimate_review` (Р1), поэтому умолчание тут
     // молчаливое: сценарий про согласование обязан назвать ревизию сам.
     estimatePendingRevision: null,
+    // The origin goes with the wait — the database keeps them one pair (release B of ADR 0183) —
+    // so a scenario that names a pending revision gets an ordinary submission unless it names the
+    // origin itself. A fixed `null` would describe a wait the server can no longer send.
+    estimatePendingSource: overrides.estimatePendingRevision == null ? null : 'submit',
     estimateSubmittedAt: null,
     estimatedTotalAmount: null,
     approval: null,

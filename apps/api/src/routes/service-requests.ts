@@ -1071,12 +1071,14 @@ function toDto(
      */
     estimatePendingRevision: r.estimatePendingRevision,
     /**
-     * ЧЕМ ОТКРЫТО ОЖИДАНИЕ ПОДПИСИ (Р9): предъявлением (`submit`) либо исходом разрешённого спора
-     * (`dispute`). `null` — ожидания нет вовсе либо его открыл старый код, не знавший про
-     * происхождение; читается такое значение как `submit` — тем же правилом, что и в базе.
+     * WHAT OPENED THE WAIT FOR THE SIGNATURE (Р9): a submission (`submit`) or the outcome of a
+     * resolved dispute (`dispute`). `null` exactly when nothing is pending — the database keeps the
+     * two columns one pair (`service_requests_estimate_pending_source_check`, release B of ADR
+     * 0183), so the value is passed as stored.
      *
-     * Полем DTO, а не выводом портала: этим признаком `canApproveServiceEstimate` решает, пускать ли
-     * подпись в «Решена», и портал зовёт тот же предикат теми же полями.
+     * A DTO field rather than a portal inference: `canApproveServiceEstimate` decides by it whether
+     * the signature is admitted in «Решена», and the portal calls the same predicate with the same
+     * fields.
      */
     estimatePendingSource: r.estimatePendingSource,
     /**

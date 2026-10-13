@@ -32,16 +32,17 @@ export function serviceActionRow(request: ServiceRequestDto): ServiceActionReque
     estimatePendingRevision: request.estimatePendingRevision,
     approvedEstimateRevision: request.approval?.revision ?? null,
     /*
-     * ДВА ПОЛЯ ПОСТСПОРНОЙ ПОДПИСИ ПЕРЕНОСЯТСЯ ЗДЕСЬ, А НЕ ТАМ, ГДЕ ПОНАДОБЯТСЯ (Р9 плана
-     * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`). На `ServiceActionRequest` они
-     * необязательны ради окна выката — значит забытые, они не ломают сборку, а тихо уводят
-     * `allowsEstimateApprovalInStatus` в fail-closed: пункт «Согласовать объём работ» в «Решена» не
-     * появился бы НИКОГДА, даже когда сервер уже пускает подпись (он-то читает настоящие колонки).
-     * Сегодня источник ожидания пуст и ответ прежний, поэтому расхождение нашёл бы человек на Э5/Э7,
-     * а не прогон.
+     * THE TWO FIELDS OF THE POST-DISPUTE SIGNATURE ARE CARRIED HERE, NOT WHERE THEY ARE NEEDED (Р9 of
+     * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`). They are optional on
+     * `ServiceActionRequest`, so forgotten they would not break the build but would silently send
+     * `allowsEstimateApprovalInStatus` to fail-closed: «Согласовать объём работ» in «Решена» would
+     * NEVER appear, although the server admits the signature (it reads the real columns).
+     *
+     * The origin is passed as sent: the card always carries it, `null` exactly when nothing is
+     * pending (the database pair, release B of ADR 0183).
      */
     estimateRevision: request.estimateRevision,
-    estimatePendingSource: request.estimatePendingSource ?? null,
+    estimatePendingSource: request.estimatePendingSource,
   };
 }
 

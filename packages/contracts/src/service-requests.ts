@@ -4564,11 +4564,15 @@ export interface ServiceRequestDto {
    */
   estimateFormat?: ServiceEstimateFormat | null;
   /**
-   * ЧЕМ ОТКРЫТО НЕПОГАШЕННОЕ ОЖИДАНИЕ ПОДПИСИ (Р9): предъявлением или исходом разрешённого спора.
-   * Полем карточки, потому что этим признаком `canApproveServiceEstimate` решает, пускать ли подпись
-   * в «Решена», — а портал спрашивает тот же предикат теми же полями.
+   * WHAT OPENED THE PENDING WAIT FOR THE SIGNATURE (Р9): a submission or the outcome of a resolved
+   * dispute. A card field, because `canApproveServiceEstimate` decides by it whether the signature
+   * is admitted in «Решена», and the portal asks the same predicate with the same fields.
+   *
+   * `null` exactly when `estimatePendingRevision` is: the database keeps them one pair (release B
+   * of ADR 0183), and the requester's projection blanks both. Required, although it used to be
+   * optional: every server since release A sends it, so the wire shape old bundles read is the same.
    */
-  estimatePendingSource?: ServiceEstimatePendingSource | null;
+  estimatePendingSource: ServiceEstimatePendingSource | null;
   /** Заявление об освобождении от подписи и его исход (Р3); `null` — заявления не было. */
   exemption?: ServiceRequestEstimateExemptionDto | null;
   /** Спор об освобождении (Р9); `null` — спора не было ни разу. */
