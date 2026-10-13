@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   formatVehicleRequestNumber,
   moscowDateKeyOf,
@@ -39,6 +39,27 @@ import type { db as AppDb } from '../src/db/client';
  *
  * Skipped without `TEST_DATABASE_URL`.
  */
+
+/**
+ * Sheets the correction cancelled, recorded by a pass-through wrapper. The refusal tests below
+ * must prove the preflight stopped the operation BEFORE the first cancellation: after the cancel
+ * the issue point refuses the same overfull form with the same 422 and the transaction rolls back,
+ * so the response and the database look identical either way and only a call count tells them
+ * apart.
+ */
+const cancelled = vi.hoisted(() => ({ waybillIds: [] as string[] }));
+vi.mock('../src/services/waybill-correction', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/waybill-correction')>();
+  return {
+    ...actual,
+    cancelWaybillForCorrection: async (
+      ...args: Parameters<typeof actual.cancelWaybillForCorrection>
+    ) => {
+      cancelled.waybillIds.push(args[1].waybillId);
+      return actual.cancelWaybillForCorrection(...args);
+    },
+  };
+});
 
 const DB_URL = process.env.TEST_DATABASE_URL;
 
@@ -515,6 +536,7 @@ describe.skipIf(!DB_URL)('ездки листа и ёмкость бланка �
     const before = await sheetsOf(request.routeId);
     expect(before.map((sheet) => sheet.status)).toEqual(['issued']);
 
+    cancelled.waybillIds.length = 0;
     const res = await ctx.app.inject({
       method: 'POST',
       url: `/api/v1/vehicle-routes/${request.routeId}/correction`,
@@ -530,6 +552,7 @@ describe.skipIf(!DB_URL)('ездки листа и ёмкость бланка �
       { code: 'capacity_exceeded', rows: 8, capacity: ROUTE_REQUEST_CAPACITY['4p'] },
     ]);
     expect(await sheetsOf(request.routeId)).toEqual(before);
+    expect(cancelled.waybillIds).toEqual([]);
   }, 180_000);
 
   /*
@@ -549,6 +572,7 @@ describe.skipIf(!DB_URL)('ездки листа и ёмкость бланка �
       source: await sheetsOf(moving.routeId),
     };
 
+    cancelled.waybillIds.length = 0;
     const res = await ctx.app.inject({
       method: 'POST',
       url: `/api/v1/vehicle-routes/${arrived.routeId}/correction/transfer`,
@@ -566,6 +590,7 @@ describe.skipIf(!DB_URL)('ездки листа и ёмкость бланка �
     ]);
     expect(await sheetsOf(arrived.routeId)).toEqual(before.target);
     expect(await sheetsOf(moving.routeId)).toEqual(before.source);
+    expect(cancelled.waybillIds).toEqual([]);
     const stayed = await ctx.db.execute<{ route_id: string }>(sql`
       SELECT route_id FROM vehicle_route_requests WHERE request_id = ${moving.id}`);
     expect(stayed.rows.map((row) => row.route_id)).toEqual([moving.routeId]);

@@ -6,7 +6,8 @@
   **всеми** своими ездками) и п. 16 («задание печатается всем рейсом»: строка задания — ездка либо
   день линейного заказа, адреса в неё идут от точек, а не от заявки);
   [ADR 0068](0068-route-requests-by-form.md) — п. 1 (вместимость бланка считается **строками
-  задания**, а не заявками) и п. 2 (порядок талонов задаёт объезд, а не позиция заявки в составе);
+  задания**, а не заявками), п. 2 (порядок талонов задаёт объезд, а не позиция заявки в составе) и
+  п. 9 (выписку останавливает счёт строк задания, а не `canIssueWaybill`);
   [ADR 0071](0071-blank-waybill-and-form3-task.md) — п. 3 в части «что считают десять мест»
 - Уточняет: [ADR 0100](0100-linear-vehicle-days.md) (день линейного заказа встаёт в тот же порядок
   объезда одной точкой `work`), [ADR 0101](0101-backdated-correction.md) (рукопожатие выписки стоит
@@ -637,8 +638,9 @@
 - ~~One capacity count~~ — done for issuing 12.10.2026: `canIssueWaybill` no longer counts
   requests. What remains counted by requests is the **join pre-check** — `canJoinRoute`, the day
   batch's route pick and the portal's «N из M заявок» counters: a fast refusal before work enters a
-  route, a lower bound that never lets through what the row count after placement
-  (`assertRouteCapacity`) would refuse.
+  route, a lower bound: it refuses only what the row count after placement
+  (`assertRouteCapacity`) would refuse too, and lets through what only the row count refuses —
+  that one is caught later by `assertRouteCapacity` and by the issue check.
 
 ## Implementation 12.10.2026: screens of the two records and one capacity count
 

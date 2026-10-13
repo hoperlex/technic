@@ -91,7 +91,8 @@ export function WaybillViewModal({ waybill, onClose }: Props) {
           children:
             trips.length === 0 ? (
               <Typography.Text type="secondary">
-                Ездок в листе нет: строки задания — дни работ или задание самого рейса
+                Ездок в листе нет. У линейного заказа строка задания — день работ; недельный лист
+                ЭСМ-2 рейса не имеет вовсе
               </Typography.Text>
             ) : (
               <WaybillTripRows trips={trips} />
