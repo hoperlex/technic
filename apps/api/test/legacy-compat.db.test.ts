@@ -858,15 +858,21 @@ beforeAll(async () => {
   await migrate(DB_URL);
 
   const copyUrl = copyUrlOf(DB_URL);
-  // Имя запоминается ДО создания базы, а не после: `DROP DATABASE IF EXISTS` по несозданной
-  // безвреден, а вот пропустить снос уже созданной — нет.
+  // The name is recorded BEFORE the database is created, not after: `DROP DATABASE IF EXISTS` on
+  // a database that was never created is harmless, while skipping the drop of a created one is not.
   copyName = databaseNameOf(copyUrl);
 
   const admin = new pg.Client({ connectionString: maintenanceUrlOf(DB_URL) });
   await admin.connect();
   try {
     await admin.query(`DROP DATABASE IF EXISTS ${copyName} WITH (FORCE)`);
-    await admin.query(`CREATE DATABASE ${copyName}`);
+    // From template0, not the default template1: a plain dump restores only into an EMPTY
+    // database, and template1 holds whatever the cluster's owner put there. The R1 rehearsal
+    // cluster had template1 replaced by a migrated base to speed up its runs, so the copy was born
+    // with the whole schema and psql stopped on the dump's first CREATE ("type "container_kind"
+    // already exists"). The dump carries its own `CREATE EXTENSION IF NOT EXISTS` lines, so
+    // template0 loses nothing the copy needs.
+    await admin.query(`CREATE DATABASE ${copyName} TEMPLATE template0`);
   } finally {
     await admin.end();
   }
