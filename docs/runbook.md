@@ -1204,6 +1204,12 @@ is opened at `https://auto.su10.ru`. The same value also sets the host SmartCapt
 (registration and password reset fail with "токен выдан чужим доменом") and the base of the links in
 mails, so fixing it is not optional even where reload happens to work.
 
+`deploy-auto` warns about it without refusing, since a deploy never edits `prod.env`: before the
+migrations of every deploy and rollback it compares `PUBLIC_ORIGIN` with the portal address
+(`HEALTH_EXTERNAL` in the script) and names both values and the fix on a foreign host, `http`, a
+trailing slash or a missing value, and after the external health check it sends the first request
+below once and reports a `403`.
+
 Check, without a session and without secrets. The first command must print `401` (no cookie); `403`
 means the origin differs:
 
