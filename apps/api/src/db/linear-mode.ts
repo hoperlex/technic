@@ -2,29 +2,32 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 
 /**
- * Режим заказа: днями (линейная техника) или неделями стояния на площадке.
+ * Order mode: by days (linear equipment) or by weeks of standing on a site.
  *
- * Норма — ADR 0100 §1: признак читается **живым** join'ом заказанного типа, снимка в заявке нет.
- * Хотфикс переключения признака под работающими заказами добавил к этому ровно одно исключение —
- * заявку, застигнутую переключением: у неё лежит снимок (`vehicle_requests.is_linear_frozen`,
- * миграция 0137), и до конца работы она ведётся по нему.
+ * The norm is ADR 0100 §1: the flag is read **live** by joining the ordered type; a request holds
+ * no snapshot. The linear-switch workaround added exactly one exception: a request caught by a
+ * switch carries a snapshot (`vehicle_requests.is_linear_frozen`, migration 0137) and is run by
+ * it until it leaves "В работе".
  *
- * Отсюда единственное выражение режима на весь портал:
+ * Hence the single mode expression for the whole portal:
  *
  *     coalesce(vehicle_requests.is_linear_frozen, vehicle_types.is_linear)
  *
- * **Второго такого места быть не должно.** Читателей у признака семь, и они самостоятельные: DTO
- * заявки, укладка в рейс, дни заказа, режим ЭСМ-2, два разных запроса гаража и сводка рассылки.
- * Забытый читатель не ошибается вслух — он молча возвращает заявку на живой режим: замороженный
- * заказ перестаёт занимать свою машину, гараж показывает её свободной, и на те же дни ложится
- * второй заказ. Поэтому обращаться к `vehicleTypes.isLinear` в запросе о заявке нельзя, и это
- * стережёт тест `linear-mode-readers`.
+ * **There must be no second such place.** The flag has seven independent readers: the request
+ * DTO, trip packing, order days, the ESM-2 mode, two different garage queries and the mailing
+ * digest. A forgotten reader does not fail loudly - it silently puts the request back on the live
+ * mode: a frozen order stops occupying its vehicle, the garage shows it free, and a second order
+ * lands on the same days. So a request query must never touch `vehicleTypes.isLinear`; the
+ * `linear-mode-readers` test guards this.
  *
- * Формы три, потому что три способа спросить: drizzle-выражение, сырой SQL и уже прочитанные
- * значения. Расходиться им негде — все три пишут одну и ту же формулу.
+ * Three forms because there are three ways to ask: a drizzle expression, raw SQL and values that
+ * are already read. They cannot drift apart - all three write the same formula.
  *
- * Живёт файл ровно столько, сколько живут колонки снимка (§9 плана, релиз N+2): после уборки
- * семь читателей возвращаются к прямому чтению справочника, а этот модуль исчезает целиком.
+ * This module and the snapshot columns are permanent. The owner decided on 2026-10-12 (survey
+ * S-13, ADR 0107 "Owner decision") to keep switching linearity under live orders as a feature of
+ * the type directory, which cancelled the cleanup chain that would have dropped the columns and
+ * returned the seven readers to a direct directory read. Removing the snapshot is a new decision,
+ * not leftover work: do not read the old hotfix plan's section 9 as a to-do list.
  */
 export function requestIsLinearSql(isLinearFrozen: PgColumn, typeIsLinear: PgColumn): SQL<boolean> {
   return sql<boolean>`coalesce(${isLinearFrozen}, ${typeIsLinear})`;

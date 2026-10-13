@@ -86,10 +86,12 @@ const categoryCount = sql<number>`(
   SELECT count(*) FROM ${vehicleCategories}
   WHERE ${vehicleCategories.vehicleTypeId} = ${typeIdRef}
 )`;
-// Сколько заявок типа дорабатывает по прежнему режиму — их застигло переключение признака
-// (миграция 0137). Тем же коррелированным подзапросом, что и счётчики выше, и по частичному
-// индексу `vehicle_requests_linear_frozen_idx`. Число отвечает на вопрос «можно ли убирать
-// костыль»: колонки снимка уходят, когда оно обнулится по всем типам, — и уходит вместе с ними.
+// How many requests of the type still run by their previous mode, caught by a switch of the
+// linear flag (migration 0137). A correlated subquery like the counters above, served by the
+// partial index `vehicle_requests_linear_frozen_idx`. The portal shows the number so a directory
+// editor sees that a just-switched type still has orders finishing the old way. It is not a
+// cleanup gauge: the snapshot is permanent (owner decision S-13, ADR 0107), so a zero here means
+// "nothing is caught right now", never "the columns can go".
 const frozenRequests = sql<number>`(
   SELECT count(*) FROM ${vehicleRequests}
   WHERE ${vehicleRequests.vehicleTypeId} = ${typeIdRef}

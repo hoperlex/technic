@@ -6,6 +6,14 @@
 [ADR 0098](adr/0098-assigned-vehicle-filter.md). ADR и миграция — **следующие свободные на момент
 слияния**; на 13.08.2026 это `0107` и `0136`, оба проверяются перед созданием файлов (§5.9).
 
+> **2026-10-12, survey S-13: the workaround is permanent.** The owner keeps switching linearity
+> under live orders as a feature of the type directory, so the cleanup chain of §9 (release N+1
+> returns the ban, N+2 stops reading the snapshot, N+3 drops the columns) is cancelled and the
+> snapshot columns, the single mode expression and the `/linear` endpoint stay for good. This plan
+> is kept as the history of the intent; where it calls the mechanism temporary or promises its
+> removal, the accepted [ADR 0107](adr/0107-linear-mode-freeze.md) ("Owner decision 2026-10-12")
+> is the state.
+
 ---
 
 ## 1. Задача
