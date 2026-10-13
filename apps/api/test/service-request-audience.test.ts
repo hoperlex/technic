@@ -5,17 +5,23 @@ import {
   canAttachServiceFile,
   isServiceFileKindVisible,
   projectHistoryForAudience,
+  projectHistoryForConsumablesReader,
   projectServiceRequestForAudience,
+  projectServiceRequestForConsumablesReader,
   type RequestHistoryEntryDto,
   SERVICE_FILE_KINDS,
   SERVICE_HISTORY_CHANGE_AUDIENCE,
+  SERVICE_HISTORY_CHANGE_NOMENCLATURE,
   SERVICE_REQUEST_FIELD_AUDIENCE,
   SERVICE_REQUEST_STATUSES,
   type ServiceExecutorAssignment,
   type ServiceFileKind,
   type ServiceRequestDto,
+  serviceConsumablesHiddenFrom,
+  serviceConsumablesHiddenFromContractors,
   serviceRequestAudienceOf,
   serviceRequestChangeLabels,
+  serviceRequestConsumablesAreOurs,
   visibleServiceFileKinds,
 } from '@technic/contracts';
 
@@ -813,5 +819,103 @@ describe('история заявки', () => {
     const projected = projectHistoryForAudience(ENTRIES, 'requester');
     expect(projected[4].changes).toEqual([]);
     expect(projected[4].kind).toBe('updated');
+  });
+});
+
+/**
+ * THE NOMENCLATURE CUT OF A CONSUMABLES REQUEST (workflow-fixes plan Р7, Р8) — the pure half.
+ *
+ * The database half (`service-request-contractor-consumables.db.test.ts`) proves that every channel
+ * of the server applies the cut; this file proves what the cut IS: the truth table of the pair
+ * «request × reader», the fail-closed history map and the shape of the projections. A rule that is
+ * only exercised through the server could be wrong in the same way on both sides of a test.
+ */
+describe('номенклатура расходников: пара «заявка × читатель» и «чей склад»', () => {
+  const CONTRACTOR = SERVICE_COMPANY;
+
+  it('скрыта ровно от стороны подрядчика и ровно на заявке вида consumable', () => {
+    const consumable = { kind: 'consumable' } as const;
+    const repair = { kind: 'repair' } as const;
+    expect(serviceConsumablesHiddenFrom(consumable, CONTRACTOR)).toBe(true);
+    // The readers it must NOT cut off: the people who fill the composition in and read it.
+    for (const subject of [OPERATOR, CUSTOMER, EXECUTOR, ADMIN]) {
+      expect(serviceConsumablesHiddenFrom(consumable, subject), JSON.stringify(subject)).toBe(
+        false,
+      );
+    }
+    // And the same contractor on a repair: the cut is for consumables only.
+    expect(serviceConsumablesHiddenFrom(repair, CONTRACTOR)).toBe(false);
+    expect(serviceConsumablesHiddenFrom(consumable, null)).toBe(false);
+    // The request half, for the letter planner that has no subject.
+    expect(serviceConsumablesHiddenFromContractors(consumable)).toBe(true);
+    expect(serviceConsumablesHiddenFromContractors(repair)).toBe(false);
+  });
+
+  it('склад наш ровно у расходников без подрядчика', () => {
+    expect(
+      serviceRequestConsumablesAreOurs({ kind: 'consumable', serviceCounterpartyId: null }),
+    ).toBe(true);
+    expect(
+      serviceRequestConsumablesAreOurs({ kind: 'consumable', serviceCounterpartyId: UUID }),
+    ).toBe(false);
+    // A repair has no shelf at all.
+    expect(serviceRequestConsumablesAreOurs({ kind: 'repair', serviceCounterpartyId: null })).toBe(
+      false,
+    );
+  });
+
+  it('проекция карточки вычитает состав и файлы, не трогает остальное и идемпотентна', () => {
+    const dto = {
+      kind: 'consumable',
+      consumables: [{ id: 'c1', name: 'Тонер Ricoh 201' }],
+      files: [{ id: 'f1', filename: 'Счёт: Тонер.pdf' }],
+      version: 7,
+    } as unknown as ServiceRequestDto;
+    const cut = projectServiceRequestForConsumablesReader(dto, CONTRACTOR);
+    expect(cut.consumables).toEqual([]);
+    expect(cut.files).toEqual([]);
+    expect(cut.version).toBe(7);
+    expect(projectServiceRequestForConsumablesReader(cut, CONTRACTOR)).toEqual(cut);
+    // The original is not mutated: the full DTO also goes to the audit, uncut.
+    expect(dto.consumables).toHaveLength(1);
+    // A reader who is not cut off gets the very object back, without a copy.
+    expect(projectServiceRequestForConsumablesReader(dto, OPERATOR)).toBe(dto);
+  });
+
+  it('ключи истории: перечисленные скрыты от подрядчика, прочие остаются, неизвестный скрыт', () => {
+    const hidden = Object.entries(SERVICE_HISTORY_CHANGE_NOMENCLATURE)
+      .filter(([, decision]) => decision === 'hidden_from_contractor')
+      .map(([key]) => key)
+      .sort();
+    expect(hidden).toEqual([
+      'consumables',
+      'consumablesIssued',
+      'consumablesReturned',
+      'filesAdded',
+      'filesRemoved',
+    ]);
+    // The map answers for every key of the labels: a new key does not compile without a decision.
+    expect(Object.keys(SERVICE_HISTORY_CHANGE_NOMENCLATURE).sort()).toEqual(
+      Object.keys(serviceRequestChangeLabels).sort(),
+    );
+
+    const entries = [
+      {
+        changes: [
+          { field: 'description', from: 'а', to: 'б' },
+          { field: 'consumables', from: '—', to: 'Тонер Ricoh 201 — 2 шт' },
+          { field: 'consumablesIssued', from: null, to: 'Тонер Ricoh 201 — 2 шт' },
+          { field: 'filesAdded', from: null, to: 'Счёт: Тонер.pdf' },
+          // A key of a past month that no map knows: dropped, as the audience cut drops it.
+          { field: 'removedFieldWithAnItemName', from: 'x', to: 'Тонер' },
+        ],
+      },
+    ];
+    const cut = projectHistoryForConsumablesReader(entries, true);
+    expect(cut[0]!.changes.map((c) => c.field)).toEqual(['description']);
+    // Not hidden: the feed comes back whole, in a new array.
+    const whole = projectHistoryForConsumablesReader(entries, false);
+    expect(whole).toEqual(entries);
+    expect(whole).not.toBe(entries);
   });
 });
