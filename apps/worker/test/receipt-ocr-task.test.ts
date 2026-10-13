@@ -89,7 +89,11 @@ describe('задание чека', () => {
 
 describe('заглушка чека', () => {
   it('отвечает по содержимому страницы, а не случайно', async () => {
-    const stub = createReceiptStubEngine();
+    // The clock is pinned: `meta.durationMs` is `now() - started` around the call, so with the wall
+    // clock two answers differ by a millisecond whenever one call straddles a tick (the same defect
+    // as in the ticket stub test). The measurement of a call is not part of "the same answer";
+    // the idempotency key and everything else still are.
+    const stub = createReceiptStubEngine({ now: () => 0 });
     const first = await stub.recognize(PAGE, { model: 'm' });
     const second = await stub.recognize(PAGE, { model: 'm' });
     expect(first.status).toBe('done');
