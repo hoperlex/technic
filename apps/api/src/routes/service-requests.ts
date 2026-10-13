@@ -2683,6 +2683,19 @@ async function applyTransition(
       ...patch,
       status: to,
       ...(statusChanged || params.touchStatusAt ? { statusChangedAt: now } : {}),
+      /*
+       * The auto-close anchor (workflow-fixes plan Н14): the moment of a REAL entry into «Решена»,
+       * written with the same `now` as `status_changed_at`, and cleared on leaving it. A `done →
+       * done` move (a signature after a dispute, a reassignment-like trace) is no entry and leaves
+       * it alone — otherwise any small move in «Решена» would restart the objection window. The
+       * completion date is NOT this: it is the date of the work the executor chose, and it may lie
+       * in the past, so the window must not hang on it.
+       *
+       * Every status change of a request goes through this function (the one other writer of
+       * `status` is the auto-close, which clears the anchor in its own SQL); a new path that moved
+       * the status around it would leave a stale anchor behind.
+       */
+      ...(statusChanged ? { doneAt: to === 'done' ? now : null } : {}),
       updatedBy: actor.id,
       updatedAt: now,
       version: row.version + 1,

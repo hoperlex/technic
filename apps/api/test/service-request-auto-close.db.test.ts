@@ -162,6 +162,12 @@ async function makeEquipment(tag: string): Promise<string> {
 interface MakeRequest {
   /** Сколько назад заявка ушла в «Решена»: интервал PostgreSQL, например `'25 hours'`. */
   completedAgo: string;
+  /**
+   * The row as the PREVIOUS server writes it in the deploy window (workflow-fixes plan Н14): it
+   * knows nothing of `done_at` and leaves it empty, so the reader falls back to
+   * `status_changed_at`. By default the row is the new writer's — `done_at` is the entry moment.
+   */
+  oldWriter?: boolean;
   /** Исполнитель — сервисная компания: только такой заявке закрывающий документ обязателен (Н8). */
   service?: boolean;
   kind?: 'repair' | 'consumable';
@@ -185,7 +191,7 @@ async function makeRequest(tag: string, opts: MakeRequest): Promise<string> {
       INSERT INTO service_requests (kind, office_equipment_id, equipment_object_id, equipment_name,
                                     description, status, held_from_status, hold_reason,
                                     service_counterparty_id, completed_at, status_changed_at,
-                                    created_by)
+                                    done_at, created_by)
       VALUES (${kind}, ${equipmentId}, ${ctx.objectId}, ${`МФУ ${tag} ${RUN}`},
               ${`Автозакрытие ${tag}`}, ${status}::service_request_status,
               ${opts.held ? sql`'done'::service_request_status` : null},
@@ -193,6 +199,7 @@ async function makeRequest(tag: string, opts: MakeRequest): Promise<string> {
               ${opts.service ? ctx.serviceCounterpartyId : null},
               now() - ${opts.completedAgo}::interval,
               now() - ${opts.completedAgo}::interval,
+              ${opts.oldWriter || opts.held ? null : sql`now() - ${opts.completedAgo}::interval`},
               ${ctx.adminId})
       RETURNING id`);
     const id = res.rows[0]!.id;
@@ -223,10 +230,15 @@ async function attachDocument(
             now() - ${attachedAgo}::interval)`);
 }
 
-/** Состарить заявку: заново поставить дату предъявления работ. */
-async function setCompletedAgo(requestId: string, ago: string): Promise<void> {
+/**
+ * Age the request: move its entry into «Решена» — `done_at` and `status_changed_at` together, as
+ * `applyTransition` writes them. The date of the work (`completed_at`) is NOT the anchor any more
+ * (workflow-fixes plan Н14) and is left alone.
+ */
+async function setDoneAgo(requestId: string, ago: string): Promise<void> {
   await ctx.db.execute(sql`
-    UPDATE service_requests SET completed_at = now() - ${ago}::interval
+    UPDATE service_requests
+       SET done_at = now() - ${ago}::interval, status_changed_at = now() - ${ago}::interval
      WHERE id = ${requestId}`);
 }
 
@@ -374,9 +386,60 @@ describe.skipIf(!DB_URL)('автозакрытие заявок оргтехни
     await autoClose();
     expect(await statusOf(id)).toBe('done');
 
-    await setCompletedAgo(id, '24 hours');
+    await setDoneAgo(id, '24 hours');
     await autoClose();
     expect(await statusOf(id)).toBe('accepted');
+  });
+
+  /*
+   * THE COMPLETION DATE MOVED BACK IN «РЕШЕНА» DOES NOT BRING THE AUTO-CLOSE CLOSER (workflow-fixes
+   * plan Н14, the test the plan names). The date of the work and the objection window are two
+   * notions: the window hangs on the moment of the transition, so a request whose date of the work
+   * lies ten days back, however it got there, still waits its day. Before Н14 the window was
+   * counted from `completed_at` and such a request closed on the next run.
+   */
+  it('правка даты выполнения назад в «Решена» не приближает автоприёмку', async () => {
+    const id = await makeRequest('edit-back', { completedAgo: '1 minute' });
+    await ctx.db.execute(sql`
+      UPDATE service_requests SET completed_at = now() - interval '10 days' WHERE id = ${id}`);
+    await autoClose();
+    expect(await statusOf(id)).toBe('done');
+
+    await setDoneAgo(id, '25 hours');
+    await autoClose();
+    expect(await statusOf(id)).toBe('accepted');
+  });
+
+  /*
+   * THE OLD WRITER (workflow-fixes plan Н14): between the migration and the restart the previous
+   * server moves a request into «Решена» writing `completed_at` (the chosen date — here ten days
+   * back, the original defect), `status_changed_at` and history, but not `done_at`. The new reader
+   * must neither lose such a row (a comparison with NULL is false — it would hang in «Решена»
+   * forever) nor close it at once by the old date: it matures exactly a day after the transition.
+   */
+  it('переход старого писателя без done_at дозревает ровно через сутки', async () => {
+    const id = await makeRequest('old-writer', {
+      completedAgo: '23 hours 59 minutes',
+      oldWriter: true,
+    });
+    await ctx.db.execute(sql`
+      UPDATE service_requests SET completed_at = now() - interval '10 days' WHERE id = ${id}`);
+    const before = await ctx.db.execute<{ done_at: string | null }>(
+      sql`SELECT done_at FROM service_requests WHERE id = ${id}`,
+    );
+    expect(before.rows[0]!.done_at).toBeNull();
+    await autoClose();
+    expect(await statusOf(id)).toBe('done');
+
+    await ctx.db.execute(sql`
+      UPDATE service_requests SET status_changed_at = now() - interval '24 hours' WHERE id = ${id}`);
+    await autoClose();
+    expect(await statusOf(id)).toBe('accepted');
+    // Leaving «Решена» clears the anchor, as every exit of the new code does.
+    const after = await ctx.db.execute<{ done_at: string | null }>(
+      sql`SELECT done_at FROM service_requests WHERE id = ${id}`,
+    );
+    expect(after.rows[0]!.done_at).toBeNull();
   });
 
   it('возврат на доработку и повторная «Решена» отсчитывают сутки заново', async () => {
@@ -389,12 +452,12 @@ describe.skipIf(!DB_URL)('автозакрытие заявок оргтехни
       VALUES (${id}, 'in_work', 'done', ${ctx.adminId}, now() - interval '3 days'),
              (${id}, 'done', 'in_work', ${ctx.adminId}, now() - interval '2 days'),
              (${id}, 'in_work', 'done', ${ctx.adminId}, now() - interval '1 minute')`);
-    await setCompletedAgo(id, '1 minute');
+    await setDoneAgo(id, '1 minute');
 
     await autoClose();
     expect(await statusOf(id)).toBe('done');
 
-    await setCompletedAgo(id, '25 hours');
+    await setDoneAgo(id, '25 hours');
     await autoClose();
     expect(await statusOf(id)).toBe('accepted');
   });

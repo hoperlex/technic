@@ -109,6 +109,20 @@ const FIRST_DOCUMENT_AT = sql`(SELECT min(f.attached_at) FROM service_request_fi
                                   )})`;
 
 /**
+ * The moment the request entered «Решена» — the anchor of the objection window (workflow-fixes plan
+ * Н14). Not `completed_at`: that column holds the CHOSEN date of the work at midnight, and a request
+ * closed with yesterday's date was mature the second it entered the status — the window never
+ * opened. The date of the work may be moved afterwards (and later waves will do it on purpose), so
+ * the window must not hang on it at all.
+ *
+ * `COALESCE` with `status_changed_at`, not a bare `done_at`, and forever: in the deploy window the
+ * previous server moves a request into «Решена» without writing `done_at`, and a comparison with
+ * `NULL` is false — such a request would hang in «Решена» silently. `status_changed_at` is written
+ * by every transition of the old code too, and for a row in `done` it is the moment of that entry.
+ */
+const DONE_AT = sql`COALESCE(r.done_at, r.status_changed_at)`;
+
+/**
  * Когда заявка созревает для закрытия по выполнению и бумаге — первое из двух слагаемых срока
  * (второе, порог автоприёмки, ниже).
  *
@@ -123,13 +137,13 @@ const FIRST_DOCUMENT_AT = sql`(SELECT min(f.attached_at) FROM service_request_fi
  * закрываемой, и закрыть её той же секундой значило бы отдать сутки на возражение, которых никто
  * не видел.
  *
- * `completed_at` ставит переход в «Решена» и переписывает на КАЖДОМ таком переходе, поэтому возврат
- * на доработку и повторное закрытие отсчитывают сутки заново: окно на возражение открывается после
- * последнего предъявления работы, а не после первого.
+ * The anchor is rewritten on EVERY entry into «Решена» (`DONE_AT`), so a return for rework and a
+ * second closing count the day anew: the objection window opens after the last presentation of the
+ * work, not after the first.
  */
 const COMPLETION_DUE_AT = sql`(CASE WHEN ${NEEDS_DOCUMENT}
-                                    THEN GREATEST(r.completed_at, ${FIRST_DOCUMENT_AT})
-                                    ELSE r.completed_at END)`;
+                                    THEN GREATEST(${DONE_AT}, ${FIRST_DOCUMENT_AT})
+                                    ELSE ${DONE_AT} END)`;
 
 /**
  * То же с учётом ПОРОГА АВТОПРИЁМКИ `auto_close_not_before`: позже порога, но считая от него те же
@@ -230,9 +244,9 @@ const NO_DISPUTE_SIGNATURE_PENDING = sql`(r.estimate_pending_revision IS NULL
  * Условие повторяет `serviceRequestNeedsClosingDocument` на SQL: «либо документ не требуется, либо
  * он есть».
  *
- * Условие держит и второе: без него `GREATEST(completed_at, NULL)` в PostgreSQL равен
- * `completed_at` — то есть заявка сервиса без единой бумаги закрывалась бы ровно так же, как с
- * бумагой, и планка Н8 обходилась бы молчанием.
+ * The condition holds a second thing: without it `GREATEST(<anchor>, NULL)` in PostgreSQL equals
+ * the anchor — a service request without a single paper would close exactly like one with it, and
+ * the Н8 bar would be bypassed by silence.
  *
  * Отложенная заявка (`on_hold`) сюда не попадает по статусу: её `status` не `done`, а
  * `held_from_status` условие не читает — отложенная заявка стоит, и срок ей не идёт. На спор,
@@ -320,9 +334,11 @@ async function runAutoClose(limit: number): Promise<{ stats: AutoCloseStats; clo
            * `updated_by` тоже обнуляется: оставить там прежнего человека значило бы записать
            * закрытие на того, кто последним правил заявку, — а закрыл её портал.
            */
+          // `done_at` is cleared on leaving «Решена», as `applyTransition` does on every exit.
           await one.execute(sql`
             UPDATE service_requests
                SET status = 'accepted',
+                   done_at = NULL,
                    accepted_at = now(),
                    accepted_by = NULL,
                    acceptance_source = 'auto',

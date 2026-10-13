@@ -176,6 +176,19 @@ async function lastRequesterAudit(requestId: string, event: string): Promise<Pla
   return row.metadata;
 }
 
+/**
+ * The auto-close anchor of a request and the moment of its last status change, both as text so the
+ * comparison is exact: `applyTransition` writes them with one `now`.
+ */
+async function anchorsOf(
+  id: string,
+): Promise<{ done_at: string | null; status_changed_at: string }> {
+  const res = await ctx.db.execute<{ done_at: string | null; status_changed_at: string }>(sql`
+    SELECT done_at::text AS done_at, status_changed_at::text AS status_changed_at
+      FROM service_requests WHERE id = ${id}`);
+  return res.rows[0]!;
+}
+
 async function version(id: string): Promise<number> {
   const res = await ctx.db.execute<{ version: number }>(
     sql`SELECT version FROM service_requests WHERE id = ${id}`,
@@ -492,8 +505,20 @@ describe.skipIf(!DB_URL)('письма заявителю (живая схема
       ['complete', { completedOn: today(), items: [] }, 'Работы по заявке выполнены'],
       ['accept', {}, 'Заявка закрыта'],
     ];
+    const entries: string[] = [];
     for (const [i, [step, body, line]] of steps.entries()) {
       await patch(request.id, step, body);
+      // The auto-close anchor follows the status (workflow-fixes plan Н14): written with the same
+      // moment as the status change on every entry into «Решена», empty after every other move —
+      // including the exit through «Закрыта». A path that changed the status around
+      // `applyTransition` would leave it stale here.
+      const anchors = await anchorsOf(request.id);
+      if (step === 'complete') {
+        expect(anchors.done_at, `${step}`).toBe(anchors.status_changed_at);
+        entries.push(anchors.done_at!);
+      } else {
+        expect(anchors.done_at, `${step}`).toBeNull();
+      }
       const letters = await requesterLetters(request.id);
       expect(letters, `${step}`).toHaveLength(i + 1);
       const last = letters.at(-1)!;
@@ -501,6 +526,9 @@ describe.skipIf(!DB_URL)('письма заявителю (живая схема
       expect(last.reply_to).toBe(PORTAL_REPLY_TO);
       expect(last.body_text).toContain(line);
     }
+    // The second presentation of the work restarts the objection window: a later anchor.
+    expect(entries).toHaveLength(2);
+    expect(new Date(entries[1]!).getTime()).toBeGreaterThan(new Date(entries[0]!).getTime());
     const letters = await requesterLetters(request.id);
     expect(letters.at(-1)!.subject).toBe(`${request.displayNumber} · Заявка закрыта`);
     expect(letters.at(-1)!.body_text).toContain(
@@ -514,8 +542,12 @@ describe.skipIf(!DB_URL)('письма заявителю (живая схема
     await assignInHouse(request.id);
     await patch(request.id, 'start', {});
     await complete(request.id);
+    // Aged by its entry into «Решена» — the auto-close anchor since the workflow-fixes plan Н14;
+    // the date of the work no longer matters to the objection window.
     await ctx.db.execute(sql`
-      UPDATE service_requests SET completed_at = now() - interval '2 days' WHERE id = ${request.id}`);
+      UPDATE service_requests
+         SET done_at = now() - interval '2 days', status_changed_at = now() - interval '2 days'
+       WHERE id = ${request.id}`);
     const before = (await requesterLetters(request.id)).length;
 
     const res = await ctx.app.inject({

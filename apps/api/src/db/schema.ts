@@ -3278,6 +3278,15 @@ export const serviceRequests = pgTable(
     // сразу после неё, не дав никому отреагировать. Порог выставляет тот, кто знает, какой блокер
     // снят последним, и читается он одним сравнением, а не сборкой `GREATEST` из трёх источников.
     autoCloseNotBefore: timestamp('auto_close_not_before', { withTimezone: true }),
+    // The moment of the last real entry into «Решена» — the auto-close anchor, apart from the date
+    // of completion (`completed_at`), which holds the date the executor chose, possibly in the
+    // past (ADR 0174, workflow-fixes plan Н14, migration `*_service_request_done_at.sql`). Written
+    // by `applyTransition` on entering `done`, cleared on leaving it, never touched by a change of
+    // the completion date.
+    // Readers take `COALESCE(done_at, status_changed_at)`: in the deploy window the previous server
+    // enters `done` without writing it, and `status_changed_at` is that moment too. No constraint
+    // ties it to the status for the same reason — the old code leaves `done` without clearing it.
+    doneAt: timestamp('done_at', { withTimezone: true }),
     // «Ремонт нецелесообразен, аппарат под замену» (Н3, В21, миграция M5): пометка объясняет,
     // почему заявку закрыли, ничего не починив, и потому существует только у отменённой
     // (`service_requests_replacement_check`). Возврат отменённой в «Новую» её снимает — это делает

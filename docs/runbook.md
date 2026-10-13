@@ -695,25 +695,41 @@ psql "${DATABASE_MIGRATION_URL:-$DATABASE_URL}" -c "begin;
   commit;"
 ```
 
-### Первый прогон автозакрытия заявок оргтехники (ADR 0133)
+### Auto-close of office equipment requests (ADR 0133; anchor since ADR 0174 / plan Н14)
 
-Заявка, простоявшая сутки в «Решена», закрывается порталом сама: worker раз в пять минут зовёт
-`POST /internal/service-requests/auto-close`, а ручка отбирает созревшие заявки и закрывает их
-пачками. Миграций под этот шаг нет — правило приезжает кодом, — но **первый прогон после выката
-особенный**: отбор увидит все заявки, стоявшие в «Решена» до релиза, и закроет их разом, разослав
-столько же писем. Правило при этом верно, а всплеск рассылки на сотню адресатов запомнится лучше
-самой работы, поэтому первый прогон идёт уменьшенной пачкой.
+A request that has stood in «Решена» for 24 hours is closed by the portal itself: the worker calls
+`POST /internal/service-requests/auto-close` every five minutes, and the handler picks the mature
+requests and closes them in batches.
 
-**Срок молчания (сутки) настройкой не вынесен и не трогается**: это правило цикла, одинаковое для
-всех заявок. Настройками заданы только нагрузка и частота:
+**What the 24 hours count from.** Since the release with migration
+`*_service_request_done_at.sql` (workflow-fixes plan Н14) the anchor is the MOMENT the request
+entered «Решена» — `COALESCE(done_at, status_changed_at)` — and no longer `completed_at`. The
+latter holds the chosen date of the work at midnight, and a request closed with yesterday's date
+used to be mature the second it entered the status. For a service repair the anchor is still
+pushed to the first closing document (`GREATEST`), and an `auto_close_not_before` threshold still
+wins.
 
-| Переменная | Где читается | Умолчание |
+**The release that brings the anchor needs no batch care.** The new anchor is never earlier than
+the old one for the same request (the moment of entry is not before the midnight of the chosen
+date), so the first run after it closes no more than the old rule would have — some requests only
+mature later. The migration backfills `done_at` for the requests in «Решена» (the last real entry
+from the status history, otherwise `GREATEST(status_changed_at, completed_at)`) and stops with
+request numbers if any stays empty. A request the previous server moves into «Решена» between the
+migration and the restart keeps `done_at` empty and matures by `status_changed_at` — 24 hours after
+its real transition.
+
+**The 24 hours are not a setting and are not touched**: it is a rule of the cycle, the same for
+every request. Only the load and the frequency are settings:
+
+| Variable | Read by | Default |
 | --- | --- | --- |
-| `SERVICE_REQUEST_AUTO_CLOSE_BATCH` | API, сколько заявок за прогон | `50` |
-| `SERVICE_AUTO_CLOSE_TICK_INTERVAL_MS` | worker, как часто будить | `300000` (5 мин) |
+| `SERVICE_REQUEST_AUTO_CLOSE_BATCH` | API, requests per run | `50` |
+| `SERVICE_AUTO_CLOSE_TICK_INTERVAL_MS` | worker, how often to wake | `300000` (5 min) |
 
-**1. До выката** — узнать размер очереди. Запрос read-only и повторяет условие отбора: «Решена»,
-сутки прошли, и закрывающий документ либо есть, либо не требуется (свой ремонт и расходники).
+**1. The queue right now** (read-only; it repeats the selection: «Решена», 24 hours past the
+anchor, and a closing document either present or not required — an own repair and consumables).
+The closing kinds below are the line-format ones; a request whose estimate was submitted as a
+document is closed by the act only.
 
 ```bash
 psql "$DATABASE_URL" -c "
@@ -721,67 +737,72 @@ select count(*) from service_requests r
  where r.status = 'done' and r.deleted_at is null and r.completed_at is not null
    and (not (r.kind = 'repair' and r.service_counterparty_id is not null)
         or exists (select 1 from service_request_files f
-                    where f.request_id = r.id
+                    where f.request_id = r.id and f.purpose = 'closing_evidence'
                       and f.kind in ('act','invoice','warranty_card')))
-   and (case when r.kind = 'repair' and r.service_counterparty_id is not null
-             then greatest(r.completed_at,
-                           (select min(f.attached_at) from service_request_files f
-                             where f.request_id = r.id
-                               and f.kind in ('act','invoice','warranty_card')))
-             else r.completed_at end) <= now() - interval '24 hours';"
+   and greatest(
+         case when r.kind = 'repair' and r.service_counterparty_id is not null
+              then greatest(coalesce(r.done_at, r.status_changed_at),
+                            (select min(f.attached_at) from service_request_files f
+                              where f.request_id = r.id and f.purpose = 'closing_evidence'
+                                and f.kind in ('act','invoice','warranty_card')))
+              else coalesce(r.done_at, r.status_changed_at) end,
+         r.auto_close_not_before) <= now() - interval '24 hours';"
 ```
 
-Ответ до десятка — уменьшать пачку незачем, шаг пропускается целиком. Десятки и больше — шаг 2.
+Up to a dozen — no need to shrink the batch. Dozens and more (a backlog after the worker was down)
+— step 2.
 
-**2. Перед выкатом** дописать в `/etc/technic-portal/prod.env` уменьшенное значение; деплой поднимет
-контейнеры уже с ним, и отдельного перезапуска не нужно:
+**2. Shrink the batch** in `/etc/technic-portal/prod.env`; a deploy starts the containers with it,
+no separate restart is needed:
 
 ```bash
 sudo sh -c 'echo "SERVICE_REQUEST_AUTO_CLOSE_BATCH=5" >> /etc/technic-portal/prod.env'
 deploy-auto
 ```
 
-**3. После подъёма** смотреть журнал worker: строка пишется только у прогонов, которые что-то
-сделали, и несёт четыре числа — `taken` (взято в пачку), `closed`, `skipped` (заявку успели тронуть
-между отбором и закрытием — нормально, следующий прогон посмотрит заново), `failed`.
+**3. Watch the worker log**: a line is written only by runs that did something, with four numbers
+— `taken` (in the batch), `closed`, `skipped` (the request was touched between the selection and
+the closing — normal, the next run looks again), `failed`.
 
 ```bash
 docker compose -f deploy/docker-compose.yml -p technic logs -f technic-worker | grep -i 'Автозакрытие'
 ```
 
-Очередь из шага 1 разбирается за `ceil(N / 5)` прогонов, то есть по пять заявок каждые пять минут.
-`failed > 0` — смотреть журнал API по тому же событию: пачку одна негодная заявка не роняет (у
-каждой своя точка сохранения), но разбирать её надо руками.
+The queue of step 1 drains in `ceil(N / 5)` runs, five requests every five minutes. `failed > 0` —
+read the API log for the same event: one bad request does not drop the batch (each has its own
+savepoint), but it has to be looked at by hand.
 
-**4. Когда счётчик из шага 1 дошёл до нуля** — вернуть умолчание и перезапустить:
+**4. When the count of step 1 reaches zero** — restore the default and restart:
 
 ```bash
 sudo sed -i '/^SERVICE_REQUEST_AUTO_CLOSE_BATCH=/d' /etc/technic-portal/prod.env
 docker compose -f deploy/docker-compose.yml -p technic up -d --force-recreate technic-api technic-worker
 ```
 
-**Заявка, которую автозакрытие не возьмёт никогда** — сервисный ремонт, ушедший в «Решена» без
-закрывающего документа. Такие строки существуют: до этого выпуска планка стояла на приёмке, и без
-бумаги заявка проходила дальше. Отбор отсекает их намеренно (иначе они заняли бы пачку целиком и
-вытесняли законные заявки каждый прогон), а разбирает человек — подшивает документ или принимает
-работу руками:
+**A request the auto-close will never take** — a service repair that went into «Решена» without a
+closing document. Such rows exist: before the closing-document bar moved to «Решена» a request
+passed without paper. The selection leaves them out on purpose (they would fill the batch and push
+out the lawful ones every run); a person resolves them — attaches the document or accepts the work
+by hand:
 
 ```bash
 psql "$DATABASE_URL" -c "
-select r.num, r.completed_at from service_requests r
+select r.num, coalesce(r.done_at, r.status_changed_at) as entered_done
+  from service_requests r
  where r.status = 'done' and r.deleted_at is null
    and r.kind = 'repair' and r.service_counterparty_id is not null
    and not exists (select 1 from service_request_files f
-                    where f.request_id = r.id
+                    where f.request_id = r.id and f.purpose = 'closing_evidence'
                       and f.kind in ('act','invoice','warranty_card'))
- order by r.completed_at;"
+ order by 2;"
 ```
 
-**Остановить автозакрытие по одной заявке** можно заморозкой: у отложенной статус `on_hold`, а отбор
-берёт только `done`. Это штатный ход портала («ждём разбирательства»), а не аварийная мера.
-Остановить его целиком — снять `INTERNAL_API_TOKEN` нельзя: тем же секретом ходит планировщик
-рассылок. Нужен выключатель на время аварии — это `SERVICE_AUTO_CLOSE_TICK_INTERVAL_MS` с заведомо
-большим значением и перезапуск worker.
+**To stop the auto-close for one request**, put it on hold: a held request is `on_hold`, and the
+selection takes only `done`. This is a regular move of the portal, not an emergency measure. To
+stop it entirely, `INTERNAL_API_TOKEN` cannot be removed — the mailing scheduler uses the same
+secret; the switch for an emergency is `SERVICE_AUTO_CLOSE_TICK_INTERVAL_MS` set very high and a
+worker restart. Moving the completion date of a request in «Решена» does NOT bring its auto-close
+closer: the anchor is the moment of the transition.
 
 ### Разовый шаг: сверка перевода ролей (этапы 8 и 9, ADR 0113)
 
