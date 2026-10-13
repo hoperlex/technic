@@ -44,8 +44,11 @@
 --
 -- EMERGENCY OFF. `UPDATE feature_flags SET is_enabled = false, updated_at = now() WHERE key =
 -- 'service_request_executor_scope'` on the live database: no deploy, no rollback of this file, no
--- restart. Rolling back the code (`deploy-auto --previous`) needs nothing either: the previous
--- release reads the same key.
+-- restart. The previous release reads the same key, so it needs nothing either while it keeps
+-- serving.
+-- The previous server REFUSES to start on a schema with migrations its image does not know
+-- (`assertMigrationsApplied`, "База новее кода"), so a code-only `--previous` after this release
+-- cannot boot; the consistent rollback is `--previous --restore-db` (runbook, section «Откат»).
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
 -- 1. Preconditions: the row to switch and the trace that makes the narrowing complete.

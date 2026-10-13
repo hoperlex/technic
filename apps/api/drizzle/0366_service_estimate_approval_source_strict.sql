@@ -53,8 +53,12 @@
 -- `service_requests_it_revision_check` requires the author for a revision.
 -- `service_requests_executor_present` (0178) fires only on status and contractor columns.
 --
--- ROLLBACK. Code: the previous release writes the pair consistently, so `deploy-auto --previous`
--- works with this schema. Code older than ADR 0183 signs without a source: besides the review of
+-- ROLLBACK. Code: the previous release writes the pair consistently, so it is compatible with this
+-- schema while it keeps serving.
+-- The previous server REFUSES to start on a schema with migrations its image does not know
+-- (`assertMigrationsApplied`, "База новее кода"), so a code-only `--previous` after this release
+-- cannot boot; the consistent rollback is `--previous --restore-db` (runbook, section «Откат»).
+-- Code older than ADR 0183 signs without a source: besides the review of
 -- active document revisions the runbook already requires for it, such a rollback first weakens the
 -- constraint back to the release A text of 0306 (the command is in the runbook, section on ADR
 -- 0208). That weakening is safe at any time.

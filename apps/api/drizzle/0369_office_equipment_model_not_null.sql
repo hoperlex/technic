@@ -30,8 +30,12 @@
 -- holds for the previous release's PATCH by name and for its file import (which already writes the
 -- model id). No portal bundle the prod floor admits sends `name` at all.
 --
--- ROLLBACK. Code: the previous release writes through the same mirror, so `deploy-auto --previous`
--- works with this schema. Schema: `ALTER TABLE office_equipment ALTER COLUMN model_id DROP NOT
+-- ROLLBACK. Code: the previous release writes through the same mirror, so it is compatible with this
+-- schema while it keeps serving.
+-- The previous server REFUSES to start on a schema with migrations its image does not know
+-- (`assertMigrationsApplied`, "База новее кода"), so a code-only `--previous` after this release
+-- cannot boot; the consistent rollback is `--previous --restore-db` (runbook, section «Откат»).
+-- Schema: `ALTER TABLE office_equipment ALTER COLUMN model_id DROP NOT
 -- NULL` is safe at any time; the backfilled links are correct data and stay.
 
 -- ── 1. Lock ──

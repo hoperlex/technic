@@ -61,6 +61,15 @@ schema-откат — **Yandex Managed PG PITR** (метку времени пе
 правило: **миграции backwards-compatible** — после применённых миграций/`up -d` скрипт
 авто-отката кода НЕ делает.
 
+**Limit of code-only `--previous` (found by the R1 window rehearsal, 13.10.2026).** The old image
+refuses to START on a schema newer than itself: `assertMigrationsApplied`
+(`apps/api/src/db/migration-check.ts`) throws «База новее кода» when `_migrations` holds names the
+image does not carry, and there is no bypass. So after any release that carried migrations a
+code-only `--previous` brings up a container that cannot boot, and so does a restart of the old API
+container between the migrate step and `up -d`. Backwards-compatible migrations make the old code
+SAFE while it keeps serving through the window; they do not make it bootable. The working rollback
+after such a release is `--previous --restore-db`.
+
 **Гейты отката (протокол выката §4–§5).** Оба разрушительных режима теперь fail-closed и молча не
 проходят:
 
