@@ -100,6 +100,7 @@ import {
   serviceRequestListQuerySchema,
   serviceConsumablesHiddenFrom,
   serviceConsumablesHiddenFromContractors,
+  serviceRequestConsumablesAreOurs,
   serviceRequestHasEffectivePendingEstimate,
   serviceRequestNeedsClosingDocument,
   serviceRequestNeedsEstimate,
@@ -1860,12 +1861,33 @@ async function assertConsumableIssuer(
   row: RequestRow,
   exec: typeof db | Tx = db,
 ): Promise<void> {
+  assertShelfIsOurs(row);
   if (isServiceExecutor(p, await executorAssignment(p, row, exec))) return;
   if (can(p, 'serviceRequests.status')) return;
   const who = p.role ? roleLabels[p.role] : 'Учётная запись';
   throw serviceDenied.side(
     `${who} не отмечает выдачу по этой заявке — это шаг назначенного исполнителя`,
     row.id,
+  );
+}
+
+/**
+ * A request with a contractor on it does not move our warehouse (workflow-fixes plan Р8, owner
+ * answer of 08.09.2026: «склад вообще не двигается»): if the service centre brings the cartridges,
+ * there is nothing to write off the shelf, and the issue mark has no author — «Ведение» and the
+ * in-house executor are refused exactly as the contractor is.
+ *
+ * 422 and not 403, and asked BEFORE the side, in the order of `assertEstimateApplies`: the refusal
+ * is about the request, not the person. Everyone who reaches this line holds the permission, and a
+ * 403 would send a holder to look for a right that changes nothing — the shelf is not ours whoever
+ * asks. The same function stands in front of the status check of the door and inside the
+ * transaction (the contractor can be assigned between the two), and in front of the closing.
+ */
+function assertShelfIsOurs(row: Pick<RequestRow, 'kind' | 'serviceCounterpartyId'>): void {
+  if (serviceRequestConsumablesAreOurs(row)) return;
+  throw err.unprocessable(
+    'Заявка отдана сервисной компании — склад по ней не двигается, выдачу не отмечают',
+    { serviceCounterpartyId: 'Расходники привозит подрядчик' },
   );
 }
 
@@ -8253,6 +8275,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           items: 'Не тот вид заявки',
         });
       }
+      // Before the status check: «склад по ней не двигается» is the answer for a request with a
+      // contractor in every status, and a list of statuses would only suggest waiting.
+      assertShelfIsOurs(row);
       /**
        * Матрица §6.2 называет **два** статуса поимённо — «В работе» и «Решена», — и проверка
        * перечисляет их так же, вместо прежнего «лишь бы не закрыта». Разница не редакционная:
@@ -8713,12 +8738,29 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
          * Списывается **факт**, а не запрошенное (Р3): заявка на два тонера, из которых поставили
          * один, оставила бы склад врущим на единицу — и без всякого признака, что это произошло.
          */
-        const movements = await applyConsumableFacts(tx, {
-          request: { id: locked.id, num: locked.num, kind: locked.kind },
-          actor: p,
-          facts: body.consumables ?? [],
-          requireEveryLine: true,
-        });
+        /*
+         * A request with a contractor on it does not touch our warehouse at all (workflow-fixes
+         * plan Р8). The closing of such a request writes no facts and demands none — the
+         * contractor does not even see the rows he would have to fill in (Р7) — and a body that
+         * still carries issue rows (a stale tab of a build that predates the rule) is refused with
+         * the sentence of the issue door, not applied and not silently dropped: the person typed
+         * quantities, and «saved but not saved» is the failure the module refuses elsewhere too.
+         * The rows keep whatever fact they had (a write-off made while the request was ours stays a
+         * fact), and the same assertion stands in front of the door of the issue mark.
+         */
+        const shelfIsOurs = serviceRequestConsumablesAreOurs(locked);
+        if (locked.kind === 'consumable' && !shelfIsOurs && (body.consumables?.length ?? 0) > 0) {
+          assertShelfIsOurs(locked);
+        }
+        const movements =
+          locked.kind === 'consumable' && !shelfIsOurs
+            ? []
+            : await applyConsumableFacts(tx, {
+                request: { id: locked.id, num: locked.num, kind: locked.kind },
+                actor: p,
+                facts: body.consumables ?? [],
+                requireEveryLine: true,
+              });
 
         // Шаг 6: факт закрытия. Дата выполнения — календарные сутки, момент собирается по Москве:
         // от неё считаются гарантии, и часовой пояс сдвигал бы их на день.

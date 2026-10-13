@@ -3,6 +3,7 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  moscowDateKeyOf,
   type OfficeEquipmentConsumableDto,
   type ServiceFileKind,
   type ServiceRequestDto,
@@ -50,6 +51,7 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 const RUN = randomUUID().slice(0, 8);
 const PASSWORD = 'db-test-password-123';
 const KEY_PREFIX = `srcc/${RUN}/`;
+const TODAY = moscowDateKeyOf(new Date());
 const REQUESTS = '/api/v1/service-requests';
 
 type Auth = { authorization: string };
@@ -125,7 +127,12 @@ function inject(
   auth: Auth,
   payload?: unknown,
 ): Promise<LightMyRequestResponse> {
-  const options: InjectOptions = { method, url, headers: auth, remoteAddress: nextAddress() };
+  const options: InjectOptions = {
+    method,
+    url,
+    headers: auth,
+    remoteAddress: nextAddress(),
+  };
   if (payload !== undefined) options.payload = payload as InjectOptions['payload'];
   return ctx.app.inject(options);
 }
@@ -200,6 +207,12 @@ async function makeConsumable(quantity: number): Promise<{ id: string; name: str
   });
   expect(res.statusCode, res.body).toBe(201);
   return { id: (res.json() as OfficeEquipmentConsumableDto).id, name };
+}
+
+async function stockOf(consumableId: string): Promise<number> {
+  const res = await ctx.db.execute<{ quantity: number }>(sql`
+    SELECT quantity FROM office_equipment_consumables WHERE id = ${consumableId}`);
+  return res.rows[0]!.quantity;
 }
 
 async function card(id: string, user: TestUser = ctx.admin): Promise<ServiceRequestDto> {
@@ -298,13 +311,22 @@ async function consumablesRequest(
   const documentId = await attach(id, 'attachment', ctx.admin, documentName);
 
   if (assignment === 'ours') {
-    await assign(id, { userIds: [ctx.inHouse.id], serviceCounterpartyId: null });
+    await assign(id, {
+      userIds: [ctx.inHouse.id],
+      serviceCounterpartyId: null,
+    });
     if (started) await start(id, ctx.inHouse);
   } else if (assignment === 'contractor') {
-    await assign(id, { userIds: [], serviceCounterpartyId: ctx.counterpartyId });
+    await assign(id, {
+      userIds: [],
+      serviceCounterpartyId: ctx.counterpartyId,
+    });
     if (started) await start(id, ctx.service);
   } else {
-    await assign(id, { userIds: [ctx.inHouse.id], serviceCounterpartyId: ctx.counterpartyId });
+    await assign(id, {
+      userIds: [ctx.inHouse.id],
+      serviceCounterpartyId: ctx.counterpartyId,
+    });
     if (started) await start(id, ctx.inHouse);
   }
   const request = await card(id);
@@ -318,7 +340,29 @@ async function consumablesRequest(
   };
 }
 
-describe.skipIf(!DB_URL)('заявка на расходники у подрядчика: номенклатура (Р7)', () => {
+function markIssued(fixture: Fixture, user: TestUser, issuedQuantity = 2) {
+  return card(fixture.id).then((request) =>
+    inject('PATCH', `${REQUESTS}/${fixture.id}/consumables/issued`, user.auth, {
+      items: [{ id: fixture.lineId, issuedQuantity }],
+      version: request.version,
+    }),
+  );
+}
+
+async function close(
+  id: string,
+  user: TestUser,
+  consumables?: { id: string; issuedQuantity: number }[],
+) {
+  return inject('PATCH', `${REQUESTS}/${id}/complete`, user.auth, {
+    completedOn: TODAY,
+    items: [],
+    ...(consumables === undefined ? {} : { consumables }),
+    version: (await card(id)).version,
+  });
+}
+
+describe.skipIf(!DB_URL)('заявка на расходники у подрядчика: номенклатура и склад (Р7, Р8)', () => {
   beforeAll(async () => {
     prepareEnv(DB_URL!);
     await migrate(DB_URL!);
@@ -361,7 +405,11 @@ describe.skipIf(!DB_URL)('заявка на расходники у подряд
     const customer = await makeUser({ tag: 'cust', role: 'shtab' });
     const operator = await makeUser({ tag: 'oper', role: 'shtab' });
     const inHouse = await makeUser({ tag: 'exec', role: 'shtab' });
-    const service = await makeUser({ tag: 'srv', role: 'operator', counterpartyId });
+    const service = await makeUser({
+      tag: 'srv',
+      role: 'operator',
+      counterpartyId,
+    });
     await db.execute(sql`
       INSERT INTO user_construction_objects (user_id, construction_object_id)
       VALUES (${customer.id}, ${objectId}), (${operator.id}, ${objectId}),
@@ -483,13 +531,25 @@ describe.skipIf(!DB_URL)('заявка на расходники у подряд
 
     it('ответ действия тоже урезан: «принять в работу» не возвращает подрядчику состав', async () => {
       // Every response that carries the card goes through the same cut, not only the read doors.
-      const fixture = await consumablesRequest('contractor', 10, { started: false });
+      const fixture = await consumablesRequest('contractor', 10, {
+        started: false,
+      });
       const res = await inject('PATCH', `${REQUESTS}/${fixture.id}/start`, ctx.service.auth, {
         version: (await card(fixture.id)).version,
       });
       expect(res.statusCode, res.body).toBe(200);
       const body = res.json() as ServiceRequestDto;
       expect(body.status).toBe('in_work');
+      expect(body.consumables).toEqual([]);
+      expect(body.files).toEqual([]);
+    });
+
+    it('ответ действия тоже урезан: закрытие работ не возвращает подрядчику состав', async () => {
+      const fixture = await consumablesRequest('contractor');
+      const closed = await close(fixture.id, ctx.service);
+      expect(closed.statusCode, closed.body).toBe(200);
+      const body = closed.json() as ServiceRequestDto;
+      expect(body.status).toBe('done');
       expect(body.consumables).toEqual([]);
       expect(body.files).toEqual([]);
     });
@@ -505,7 +565,10 @@ describe.skipIf(!DB_URL)('заявка на расходники у подряд
       expect(created.statusCode, created.body).toBe(201);
       const id = (created.json() as { request: ServiceRequestDto }).request.id;
       const photoId = await attach(id, 'attachment', ctx.admin, `Фото ${RUN}.pdf`);
-      await assign(id, { userIds: [], serviceCounterpartyId: ctx.counterpartyId });
+      await assign(id, {
+        userIds: [],
+        serviceCounterpartyId: ctx.counterpartyId,
+      });
 
       const repair = await card(id, ctx.service);
       expect(repair.kind).toBe('repair');
@@ -550,7 +613,10 @@ describe.skipIf(!DB_URL)('заявка на расходники у подряд
         },
       );
       expect(marked.statusCode, marked.body).toBe(200);
-      await assign(fixture.id, { userIds: [], serviceCounterpartyId: ctx.counterpartyId });
+      await assign(fixture.id, {
+        userIds: [],
+        serviceCounterpartyId: ctx.counterpartyId,
+      });
 
       // The edit entries of the request are written by the edit door from the DTO diff; one is
       // seeded here exactly as it lies in the journal, so that the document-name keys have a row to
@@ -560,8 +626,16 @@ describe.skipIf(!DB_URL)('заявка на расходники у подряд
         VALUES (${ctx.admin.id}::uuid, 'serviceRequest.update', 'serviceRequest', ${fixture.id},
                 ${JSON.stringify({
                   changes: [
-                    { field: 'description', from: 'Нужны картриджи', to: 'Нужны картриджи срочно' },
-                    { field: 'filesAdded', from: null, to: `Счёт: ${fixture.documentName}` },
+                    {
+                      field: 'description',
+                      from: 'Нужны картриджи',
+                      to: 'Нужны картриджи срочно',
+                    },
+                    {
+                      field: 'filesAdded',
+                      from: null,
+                      to: `Счёт: ${fixture.documentName}`,
+                    },
                   ],
                 })}::jsonb)`);
 
@@ -687,6 +761,178 @@ describe.skipIf(!DB_URL)('заявка на расходники у подряд
         ctx.admin.auth,
       );
       expect(allowed.statusCode, allowed.body).toBe(200);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────────────────────────
+  // Р8. The warehouse does not move
+  // ────────────────────────────────────────────────────────────────────────────────────────────
+
+  describe('Р8: склад по заявке подрядчика не двигается', () => {
+    it('отметки выдачи нет ни у кого: подрядчик, «Ведение», администратор, свой исполнитель при смешанном назначении', async () => {
+      const contractorOnly = await consumablesRequest('contractor');
+      const mixed = await consumablesRequest('mixed');
+      const cases: [string, Fixture, TestUser][] = [
+        ['подрядчик', contractorOnly, ctx.service],
+        ['«Ведение»', contractorOnly, ctx.operator],
+        ['администратор', contractorOnly, ctx.admin],
+        ['свой исполнитель на смешанном назначении', mixed, ctx.inHouse],
+        ['подрядчик на смешанном назначении', mixed, ctx.service],
+      ];
+      for (const [who, fixture, user] of cases) {
+        const before = await stockOf(fixture.consumableId);
+        const res = await markIssued(fixture, user);
+        expect(res.statusCode, `${who}: ${res.body}`).toBe(422);
+        expect((res.json() as { message: string }).message, who).toContain(
+          'склад по ней не двигается',
+        );
+        expect(await stockOf(fixture.consumableId), `${who}: склад`).toBe(before);
+        expect((await card(fixture.id)).consumables[0]!.issuedQuantity, who).toBeNull();
+      }
+    });
+
+    it('в «Новой» ответ тот же: про склад, а не про статус', async () => {
+      // The refusal about the shelf stands in front of the status list: «выдачу отмечают в
+      // статусах…» would suggest waiting for a status after which nothing changes.
+      const fixture = await consumablesRequest('contractor', 10, {
+        started: false,
+      });
+      for (const user of [ctx.operator, ctx.admin]) {
+        const res = await markIssued(fixture, user);
+        expect(res.statusCode, `${user.email}: ${res.body}`).toBe(422);
+        expect((res.json() as { message: string }).message, user.email).toContain(
+          'склад по ней не двигается',
+        );
+      }
+    });
+
+    it('подрядчика назначили, пока отметка ждала блокировки заявки: под замком отказ тот же, склад не тронут', async () => {
+      // The assignment is read under the row lock of the transaction itself. A second connection
+      // holds the row, the mark queues behind it, the holder hands the request to the contractor
+      // and lets go — the mark then wakes up on a request that is no longer ours.
+      const fixture = await consumablesRequest('ours');
+      const before = await stockOf(fixture.consumableId);
+      const version = (await card(fixture.id)).version;
+
+      const holder = new pg.Client({ connectionString: DB_URL });
+      await holder.connect();
+      const probe = new pg.Client({ connectionString: DB_URL });
+      await probe.connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT 1 FROM service_requests WHERE id = $1 FOR UPDATE', [fixture.id]);
+        const { rows: pidRows } = await holder.query<{ pid: number }>(
+          'SELECT pg_backend_pid() AS pid',
+        );
+        const pending = inject(
+          'PATCH',
+          `${REQUESTS}/${fixture.id}/consumables/issued`,
+          ctx.inHouse.auth,
+          { items: [{ id: fixture.lineId, issuedQuantity: 2 }], version },
+        );
+        // Wait for the barrier, not for a pause: the request is queued once someone waits on us.
+        const deadline = Date.now() + 20_000;
+        for (;;) {
+          const { rows } = await probe.query(
+            'SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))',
+            [pidRows[0]!.pid],
+          );
+          if (rows.length > 0) break;
+          if (Date.now() > deadline)
+            throw new Error('отметка не встала в очередь за замком заявки');
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        await holder.query(
+          'UPDATE service_requests SET service_counterparty_id = $2 WHERE id = $1',
+          [fixture.id, ctx.counterpartyId],
+        );
+        await holder.query('COMMIT');
+
+        const res = await pending;
+        expect(res.statusCode, res.body).toBe(422);
+        expect((res.json() as { message: string }).message).toContain('склад по ней не двигается');
+        expect(await stockOf(fixture.consumableId)).toBe(before);
+      } finally {
+        await holder.end();
+        await probe.end();
+      }
+    });
+
+    it('контроль: у своей заявки (подрядчика нет) отметка выдачи двигает склад, как и прежде', async () => {
+      const fixture = await consumablesRequest('ours');
+      const before = await stockOf(fixture.consumableId);
+      const res = await markIssued(fixture, ctx.inHouse, 2);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(await stockOf(fixture.consumableId)).toBe(before - 2);
+    });
+
+    it('закрытие подрядчиком без строк выдачи: «Решена», склад и факт строк не тронуты', async () => {
+      const fixture = await consumablesRequest('contractor');
+      const before = await stockOf(fixture.consumableId);
+      const closed = await close(fixture.id, ctx.service, []);
+      expect(closed.statusCode, closed.body).toBe(200);
+      expect((closed.json() as ServiceRequestDto).status).toBe('done');
+      expect(await stockOf(fixture.consumableId)).toBe(before);
+      const moves = await ctx.db.execute(sql`
+        SELECT 1 FROM office_equipment_consumable_stock_entries
+         WHERE service_request_id = ${fixture.id}::uuid`);
+      expect(moves.rows).toHaveLength(0);
+      // The row's fact is still empty: nobody issued anything from our shelf.
+      expect((await card(fixture.id)).consumables[0]!.issuedQuantity).toBeNull();
+    });
+
+    it('закрытие без поля consumables вовсе — то же самое, что пустой список', async () => {
+      const fixture = await consumablesRequest('contractor');
+      const closed = await close(fixture.id, ctx.service);
+      expect(closed.statusCode, closed.body).toBe(200);
+      expect(await stockOf(fixture.consumableId)).toBe(10);
+    });
+
+    it('старая вкладка шлёт строки выдачи — отказ 422, заявка остаётся «В работе», склад на месте', async () => {
+      const fixture = await consumablesRequest('contractor');
+      // «Ведение» has no door to the closing at all (it asks `estimate` or `execute`); the
+      // administrator does, and closes for any side.
+      for (const user of [ctx.service, ctx.admin]) {
+        const before = await stockOf(fixture.consumableId);
+        const res = await close(fixture.id, user, [{ id: fixture.lineId, issuedQuantity: 2 }]);
+        expect(res.statusCode, `${user.email}: ${res.body}`).toBe(422);
+        expect((res.json() as { message: string }).message).toContain('склад по ней не двигается');
+        expect((await card(fixture.id)).status).toBe('in_work');
+        expect(await stockOf(fixture.consumableId)).toBe(before);
+      }
+    });
+
+    it('контроль: у своей заявки закрытие по-прежнему требует факт выдачи по строке', async () => {
+      const fixture = await consumablesRequest('ours');
+      const noFact = await close(fixture.id, ctx.inHouse, []);
+      expect(noFact.statusCode, noFact.body).toBe(422);
+      const before = await stockOf(fixture.consumableId);
+      const closed = await close(fixture.id, ctx.inHouse, [
+        { id: fixture.lineId, issuedQuantity: 2 },
+      ]);
+      expect(closed.statusCode, closed.body).toBe(200);
+      expect(await stockOf(fixture.consumableId)).toBe(before - 2);
+    });
+
+    it('выдачу отметили своей заявке, потом назначили подрядчика: факт остаётся, закрытие склад не двигает', async () => {
+      // The owner's rule is about the shelf from now on: what was written off is a fact and is not
+      // reversed (the plan's N10), and the contractor's closing adds nothing on top of it.
+      const fixture = await consumablesRequest('ours');
+      const marked = await markIssued(fixture, ctx.inHouse, 2);
+      expect(marked.statusCode, marked.body).toBe(200);
+      const afterMark = await stockOf(fixture.consumableId);
+      await assign(fixture.id, {
+        userIds: [],
+        serviceCounterpartyId: ctx.counterpartyId,
+      });
+
+      const closed = await close(fixture.id, ctx.service, []);
+      expect(closed.statusCode, closed.body).toBe(200);
+      expect(await stockOf(fixture.consumableId)).toBe(afterMark);
+      const moves = await ctx.db.execute(sql`
+        SELECT 1 FROM office_equipment_consumable_stock_entries
+         WHERE service_request_id = ${fixture.id}::uuid`);
+      expect(moves.rows).toHaveLength(1);
     });
   });
 });

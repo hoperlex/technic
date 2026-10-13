@@ -3744,6 +3744,30 @@ export function serviceRequestNeedsEstimate(request: {
 }
 
 /**
+ * Whose shelf the consumables of this request come from (workflow-fixes plan Р8, owner answer of
+ * 08.09.2026: «склад вообще не двигается»): ours exactly when it is a consumables request with NO
+ * contractor on it. If the service centre brings the cartridges, there is nothing to write off our
+ * shelf, and nobody — «Ведение» and the in-house executor included — marks an issue on such a
+ * request.
+ *
+ * The pair «kind + contractor» and not the reader, like `serviceRequestNeedsEstimate`: it describes
+ * the REQUEST, and asked of the server row and of the portal card alike. A mixed assignment (an own
+ * administrator next to a service company) is NOT ours: the contractor is on the request, and the
+ * issue mark has no author who could be right.
+ *
+ * Every consumer asks this one function: the issue door, the closing (which then does not touch the
+ * warehouse at all), the issue item of the menu and the closing window. A copy in any of them would
+ * show a button the server answers with a refusal — or move the shelf the owner said must not move.
+ */
+export function serviceRequestConsumablesAreOurs(request: {
+  kind: ServiceRequestKind;
+  /** The contractor on the request; `null` — nobody from outside is assigned. */
+  serviceCounterpartyId: string | null;
+}): boolean {
+  return request.kind === 'consumable' && request.serviceCounterpartyId === null;
+}
+
+/**
  * Is the nomenclature of this consumables request hidden from this reader (workflow-fixes plan Р7).
  * True for the contractor's side on a request of kind `consumable`: what exactly is taken from the
  * shelf is the company's own business, and the owner asked to remove its visibility from the card
