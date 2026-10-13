@@ -709,14 +709,27 @@ used to be mature the second it entered the status. For a service repair the anc
 pushed to the first closing document (`GREATEST`), and an `auto_close_not_before` threshold still
 wins.
 
-**The release that brings the anchor needs no batch care.** The new anchor is never earlier than
-the old one for the same request (the moment of entry is not before the midnight of the chosen
-date), so the first run after it closes no more than the old rule would have — some requests only
-mature later. The migration backfills `done_at` for the requests in «Решена» (the last real entry
-from the status history, otherwise `GREATEST(status_changed_at, completed_at)`) and stops with
-request numbers if any stays empty. A request the previous server moves into «Решена» between the
-migration and the restart keeps `done_at` empty and matures by `status_changed_at` — 24 hours after
-its real transition.
+**The release that brings the anchor needs no batch care.** Apart from the residual below, the new
+anchor is never earlier than the old one for the same request (the moment of entry is not before
+the midnight of the chosen date), so the first run after it closes no more than the old rule would
+have — some requests only mature later. The migration backfills `done_at` for the requests in
+«Решена» (the last real entry from the status history, otherwise `GREATEST(status_changed_at,
+completed_at)`) and stops with request numbers if any stays empty.
+
+Between the migration and the restart the previous server still serves, and it neither reads nor
+writes `done_at`:
+
+- A request it moves into «Решена» FROM ANOTHER STATUS keeps `done_at` empty and matures by
+  `status_changed_at` — 24 hours after its real transition.
+- **Residual: a request that was ALREADY in «Решена» at the backfill and that the previous server
+  re-enters inside this window** (rework and close again, hold and resume, accepted → done) keeps
+  its stale backfilled `done_at`: the old code writes `status_changed_at` but not the new column,
+  and the older `done_at` wins. Such a request can mature at the next five-minute tick instead of
+  24 hours after its real re-entry — it may close early. The window is minutes long and needs both
+  the backfilled row and a move in it, so it is expected to concern no request; the backfill and
+  the reader are kept as they are on purpose (plan Н14). A request that must not close early is
+  repaired by clearing its anchor by hand — the reader then falls back to `status_changed_at`,
+  the moment of the real re-entry: `update service_requests set done_at = null where num = …`.
 
 **The 24 hours are not a setting and are not touched**: it is a rule of the cycle, the same for
 every request. Only the load and the frequency are settings:

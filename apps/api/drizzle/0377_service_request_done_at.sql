@@ -26,6 +26,14 @@
 -- closes at once (`service-request-auto-close.db.test.ts`, the old writer case). No constraint ties
 -- the column to the status for the same reason: the old code leaves `done` without clearing it.
 --
+-- KNOWN RESIDUAL. The paragraph above holds for a request the old server moves into «Решена» from
+-- another status. A request that is ALREADY in «Решена» at the backfill gets a non-empty `done_at`,
+-- and if the old server re-enters `done` with it inside the window (rework and close again, hold and
+-- resume, accepted → done), it writes `status_changed_at` but not the column — the stale backfilled
+-- value wins and that one request can mature at the next five-minute tick: it may close early. The
+-- window is minutes long; the backfill is kept on purpose (docs/runbook.md, section on the
+-- auto-close, names the manual repair).
+--
 -- REVERSIBILITY: additive. A code rollback ignores the column; `DROP COLUMN` is never needed for it.
 
 ALTER TABLE service_requests ADD COLUMN IF NOT EXISTS done_at timestamptz;

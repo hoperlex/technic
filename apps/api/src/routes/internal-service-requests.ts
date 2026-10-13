@@ -119,6 +119,15 @@ const FIRST_DOCUMENT_AT = sql`(SELECT min(f.attached_at) FROM service_request_fi
  * previous server moves a request into «Решена» without writing `done_at`, and a comparison with
  * `NULL` is false — such a request would hang in «Решена» silently. `status_changed_at` is written
  * by every transition of the old code too, and for a row in `done` it is the moment of that entry.
+ *
+ * KNOWN RESIDUAL, chosen deliberately (plan Н14): a request that was ALREADY in «Решена» at the
+ * backfill keeps a non-empty `done_at`, and the previous server does not know the column. If that
+ * server re-enters `done` inside the deploy window (rework and close again, hold and resume,
+ * accepted → done), it writes `status_changed_at` but leaves the stale `done_at` — which wins here
+ * and can make that one request mature at the next five-minute tick. The window is minutes long and
+ * the case needs both the backfilled row and a move in it; the consequence is that this request may
+ * close early. The alternative (reading `GREATEST` of the two) would turn the touch of a `done →
+ * done` move into a restart of the objection window, which is the thing the anchor exists to stop.
  */
 const DONE_AT = sql`COALESCE(r.done_at, r.status_changed_at)`;
 
@@ -210,10 +219,12 @@ const NO_OPEN_DISPUTE = sql`NOT EXISTS (SELECT 1 FROM service_request_estimate_d
 /**
  * ПОСТСПОРНОЕ ОЖИДАНИЕ ПОДПИСИ НЕ СОЗРЕВАЕТ ВОВСЕ — сколько бы времени ни прошло (Р9, Н9).
  *
- * Исход спора «нужна подпись» снимает автоподпись и открывает ожидание прямо в «Решена»: статус тот
- * же, `completed_at` недельной давности, а порога окна приёмки ещё нет — его ставит сама подпись.
- * Без этого слагаемого такая заявка созрела бы на первом же прогоне, подписи так и не дождавшись, и
- * спор кончился бы ровно тем, против чего его открывали.
+ * The dispute outcome «signature required» removes the automatic signature and opens the wait right
+ * in «Решена»: the status is the same, the anchor `done_at` is the moment of the resolution (the
+ * return from the hold is a real re-entry), and the acceptance-window threshold is not there yet —
+ * the signature itself sets it, and a human signs days later. Without this term such a request
+ * would mature a day after the resolution, the signature still not given, and the dispute would end
+ * exactly in what it was opened against.
  *
  * ЗАПРЕТ ПО СОСТОЯНИЮ, А НЕ СДВИГ СРОКА: «ждём подпись» — не «ещё рано». Выразить его датой значило
  * бы назвать срок, которого никто не знает: подпишут через час или через неделю, решает человек.

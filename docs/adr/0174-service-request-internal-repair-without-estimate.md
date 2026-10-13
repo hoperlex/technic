@@ -221,12 +221,21 @@ No new index: the selection stays driven by the `(status, status_changed_at)` on
 `done_at` (drizzle names its columns), so a request it moves into «Решена» after the backfill keeps
 the column empty and matures by `status_changed_at` — exactly 24 hours after its real transition
 (the auto-close db test imitates this writer). No constraint ties the column to the status, for
-the same reason. A residual: a request already in «Решена» at the backfill that the old server
-reworks and closes again inside the window keeps its backfilled anchor; the window is minutes long
-and the case needs both moves in it. The new anchor is never earlier than the old one for the same
-request, so the first run after the release closes no more than the old rule would have. The
-runbook section on the auto-close is rewritten (it said «no migrations» and counted from
-`completed_at`).
+the same reason.
+
+**The residual, stated honestly.** The statement «keeps `done_at` empty» holds only for a request
+the old server moves into «Решена» from another status. A request ALREADY in «Решена» at the
+backfill has a non-empty `done_at`; if the old server re-enters `done` with it inside the window
+(rework and close again, hold and resume, accepted → done), the old code writes
+`status_changed_at` but not the column, the stale backfilled `done_at` wins in
+`COALESCE(done_at, status_changed_at)`, and that request can mature at the next five-minute tick —
+it may close early. The window is minutes long and the case needs both the backfilled row and a
+move in it. The plan chose the backfill and the `COALESCE` reader on purpose and they are kept:
+reading the later of the two would let the touch of a `done → done` move restart the objection
+window, the very thing the anchor exists to stop. Outside this residual the new anchor is never
+earlier than the old one for the same request, so the first run after the release closes no more
+than the old rule would have. The runbook section on the auto-close is rewritten (it said «no
+migrations» and counted from `completed_at`) and names the residual and the manual repair.
 
 ### Held for R2 (S-23)
 
