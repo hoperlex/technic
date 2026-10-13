@@ -207,7 +207,7 @@ describe.skipIf(!DB_URL)('migration of the cancel right: the IT service, and onl
       const once = await rightsOf(IT);
       // The snapshot table lives to the end of the migration's own transaction (`ON COMMIT DROP`);
       // the second run is a new transaction in life, so the table of the first is dropped by hand.
-      await client.query('DROP TABLE grant_snapshot_0379');
+      await client.query('DROP TABLE grant_snapshot_cancel');
       await client.query(MIGRATION_SQL);
       expect(await rightsOf(IT)).toEqual(once);
     });

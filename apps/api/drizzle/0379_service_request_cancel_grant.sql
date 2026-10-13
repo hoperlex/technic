@@ -67,7 +67,7 @@
 -- in the database. A snapshot and not a constant: the sets are issued to live accounts, and the
 -- numbers "before" differ between production, a developer's database and one restored from a copy.
 
-CREATE TEMP TABLE grant_snapshot_0379 ON COMMIT DROP AS
+CREATE TEMP TABLE grant_snapshot_cancel ON COMMIT DROP AS
 SELECT g.code,
        (SELECT count(*) FROM grant_permissions gp WHERE gp.grant_id = g.id)::bigint AS rights,
        (SELECT count(*) FROM user_grants ug WHERE ug.grant_id = g.id)::bigint AS holders,
@@ -134,7 +134,7 @@ BEGIN
       -- The composition grew by one right, or by none if it was there already — never by more.
       SELECT format('the set "%s" had %s rights and has %s: the migration adds one right, not %s',
                     s.code, s.rights, now_rights.n, now_rights.n - s.rights)
-        FROM grant_snapshot_0379 s
+        FROM grant_snapshot_cancel s
         CROSS JOIN LATERAL (
           SELECT count(*)::bigint AS n
             FROM grant_permissions gp
@@ -149,7 +149,7 @@ BEGIN
       -- The grants are untouched: the number of holders of every system set is the snapshot's.
       SELECT format('the set "%s" had %s holders and has %s: the composition is edited, not the grants',
                     s.code, s.holders, now_holders.n)
-        FROM grant_snapshot_0379 s
+        FROM grant_snapshot_cancel s
         CROSS JOIN LATERAL (
           SELECT count(*)::bigint AS n
             FROM user_grants ug
