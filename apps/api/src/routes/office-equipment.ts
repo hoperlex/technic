@@ -1293,6 +1293,14 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
             // Флаг ставится только вместе с заявкой — схема без неё его не принимает (Р8).
             confirmsDeclaredPlace: b.confirmsDeclaredPlace,
             movedBy: p.id,
+            /*
+             * Written explicitly: the column default `now()` is the START of the transaction, and
+             * this transaction began before it waited for the row lock. A move that started first
+             * but took the lock second would get the earlier stamp and sort below the move that
+             * actually happened before it in the journal (`ORDER BY moved_on DESC, created_at DESC`).
+             * `now` is taken after the lock, so the stamps follow the order of the writes.
+             */
+            createdAt: now,
           })
           .returning({ id: officeEquipmentMovements.id });
 
