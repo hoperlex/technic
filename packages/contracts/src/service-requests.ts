@@ -863,18 +863,18 @@ export interface ServiceActionRequest extends ServiceExecutorsRow {
   /** Ревизия, под которой стоит подпись; `null` — согласования нет (Р9, «есть что снимать»). */
   approvedEstimateRevision: number | null;
   /*
-   * ДВА ПОЛЯ ПОСТСПОРНОЙ ПОДПИСИ (Р9 плана
-   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`) — НЕОБЯЗАТЕЛЬНЫЕ, и это
-   * осознанный fail-closed, а не послабление.
+   * The two fields of the post-dispute signature (Р9 of
+   * `docs/office-equipment-on-site-and-invoice-estimate-plan.md`) stay OPTIONAL on purpose, as a
+   * fail-closed default rather than a leniency.
    *
-   * Контракты волны едут первым этапом, сервер и портал — следующими: до них ни одна строка заявки
-   * этих полей не приносит. Отсутствие значения означает «ожидание не постспорное», то есть подпись
-   * в «Решена» закрыта и поведение ровно сегодняшнее. Обязательными они уронили бы сборку у всех
-   * зовущих раньше, чем сервер научился бы их отдавать, — и ради этого же приёма `assignment`
-   * объявлен необязательным у коридора выше.
+   * Every server since release A sends both on every request row, and the DTO declares the origin
+   * required, but this shape is assembled by hand (the portal's `serviceActionRow`, test fixtures),
+   * and a builder that forgets a field must fail closed, not open. A missing value reads as "the
+   * wait was not opened by a dispute", which keeps the approval in «Решена» closed: exactly the
+   * behaviour without the feature.
    *
-   * Опасная половина здесь одна — открыть согласование в «Решена» лишнему ожиданию, — и она
-   * требует ОБОИХ полей сразу: пустые они дают отказ, а не допуск.
+   * The dangerous half is one — opening the approval in «Решена» to a wait that should not have it
+   * — and it needs BOTH fields at once: empty, they refuse rather than admit.
    */
   /** Номер действующей ревизии объёма работ: с ним сверяется происхождение ожидания (Р9). */
   estimateRevision?: number;
