@@ -413,15 +413,15 @@ describe.skipIf(!DB_URL)('автозакрытие и спор об освобо
   });
 
   /**
-   * Ожидание с происхождением `dispute` запирает и заявку, которой закрывающий документ не нужен
-   * (инхаус-ремонт без контрагента). Случай отдельный потому, что соседнее слагаемое
-   * `ESTIMATE_SIGNED` такую заявку не спрашивает вовсе: убери запрет по происхождению — и дыра
-   * откроется ровно здесь, у заявок без бумаги.
+   * A wait with the origin `dispute` locks a request that needs no closing document too (an
+   * in-house repair without a contractor). The case is separate because the neighbouring term
+   * `ESTIMATE_SIGNED` does not ask such a request at all: drop the lock by origin and the hole opens
+   * exactly here, at requests without paper.
    *
-   * Рядом — ловушка `NULL`: обычное ожидание приходит без происхождения (`NULL` читается как
-   * `submit`), и напиши условие неравенством вместо `IS DISTINCT FROM`, отбор ответил бы `NULL` и
-   * молча перестал закрывать такие заявки. Поэтому контроль здесь не «заявка без ожидания», а
-   * именно «заявка с обычным ожиданием».
+   * The control is a request with an ORDINARY wait (`submit`), not one without a wait: the term
+   * under test asks for the origin only under a wait, and only a wait with the other origin proves
+   * that the lock is the origin and not the wait itself. Since release B a wait always carries its
+   * origin (`service_requests_estimate_pending_source_check`), so the seed names it.
    */
   it('постспорное ожидание запирает заявку без документа, а обычное ожидание — нет', async () => {
     const afterDispute = await makeRequest('inhouse-dispute');
@@ -432,7 +432,7 @@ describe.skipIf(!DB_URL)('автозакрытие и спор об освобо
 
     const ordinary = await makeRequest('inhouse-submit');
     await ctx.db.execute(sql`
-      UPDATE service_requests SET estimate_pending_revision = 1, estimate_pending_source = NULL
+      UPDATE service_requests SET estimate_pending_revision = 1, estimate_pending_source = 'submit'
        WHERE id = ${ordinary}`);
 
     await autoClose();

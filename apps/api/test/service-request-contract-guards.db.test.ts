@@ -208,14 +208,16 @@ describe.skipIf(!DB_URL)('обходы, закрытые схемой выпус
   // ── 0224: ожидание подписи и решение при отказе ──
 
   /**
-   * Признак «объём работ предъявлен, ответа нет» живёт **своей** колонкой (Р2), и у неё есть
-   * инвариант: ждать можно только подписи под ТЕКУЩЕЙ ревизией. Предъявление поднимает ревизию и
-   * тут же ставит сюда тот же номер, а повторное предъявление под висящим счётом запрещено
-   * маршрутом; равенство, а не `<=`, потому что согласованной бывает и устаревшая ревизия, а
-   * ожидающей — только предъявленная сейчас.
+   * "The estimate is submitted and has no answer" lives in its **own** column (Р2), and the column
+   * has an invariant: only a signature under the CURRENT revision can be awaited. A submission
+   * raises the revision and writes the same number here, and a second submission under a pending
+   * invoice is refused by the route; equality rather than `<=`, because an approved revision may be
+   * an outdated one, while a pending one is only the revision submitted now.
    *
-   * Проверяется базой, а не маршрутом, ровно потому же, почему и весь этот файл: колонку правит и
-   * скрипт обслуживания, а `NULL` из старого кода ограничению удовлетворяет при любой ревизии.
+   * Checked by the database rather than the route, for the reason of this whole file: a maintenance
+   * script edits the column too. Every statement names the origin as well — since release B a wait
+   * and its origin are one pair (`service_requests_estimate_pending_source_check`), and a revision
+   * written alone would be refused by that constraint instead of the one under test.
    */
   it('ожидать можно только подписи под текущей ревизией объёма работ', async () => {
     const id = await makeRequest('pend');
@@ -226,18 +228,23 @@ describe.skipIf(!DB_URL)('обходы, закрытые схемой выпус
     for (const pending of [1, 3]) {
       const res = await refusal(
         ctx.db.execute(sql`
-          UPDATE service_requests SET estimate_pending_revision = ${pending}
+          UPDATE service_requests
+             SET estimate_pending_revision = ${pending}, estimate_pending_source = 'submit'
            WHERE id = ${id}::uuid`),
       );
       expect(res.code, String(pending)).toBe('23514');
       expect(res.constraint, String(pending)).toBe('service_requests_estimate_pending_check');
     }
 
-    // Обе законные формы проходят: равная ревизия и `NULL` («ответ получен» либо старый код).
+    // Both legal forms pass: the equal revision, and `NULL` — the answer is received.
     await ctx.db.execute(sql`
-      UPDATE service_requests SET estimate_pending_revision = 2 WHERE id = ${id}::uuid`);
+      UPDATE service_requests
+         SET estimate_pending_revision = 2, estimate_pending_source = 'submit'
+       WHERE id = ${id}::uuid`);
     await ctx.db.execute(sql`
-      UPDATE service_requests SET estimate_pending_revision = NULL WHERE id = ${id}::uuid`);
+      UPDATE service_requests
+         SET estimate_pending_revision = NULL, estimate_pending_source = NULL
+       WHERE id = ${id}::uuid`);
   });
 
   /**

@@ -3222,14 +3222,15 @@ export const serviceRequests = pgTable(
     // ограничение ниже: передача заявки другому исполнителю и полный сброс сметы обнуляют
     // `estimate_revision` до нуля, и оставленная pending-ревизия уронила бы запись ошибкой БД.
     estimatePendingRevision: integer('estimate_pending_revision'),
-    // Происхождение ожидания подписи (Р9 плана освобождения, миграция 0306): `submit` — обычное
-    // предъявление, `dispute` — ожидание, открытое исходом разрешённого спора. `NULL` читается как
-    // `submit`: старый код открывает ожидание, про происхождение не зная.
+    // Origin of the pending signature (decision Р9 of the exemption plan, migration 0306): `submit`
+    // — a submission or a re-issue, `dispute` — the wait opened by the dispute outcome "signature
+    // required". Present exactly when `estimate_pending_revision` is (release B, ADR 0183): the
+    // revision says THAT a signature is awaited, this column says what opened the wait.
     //
-    // Поле завелось из-за подписи в статусе «Решена». Разрешить её по статусу было нельзя:
-    // `canApproveServiceEstimate` пустил бы к согласованию ЛЮБОЕ ожидание, случайно оказавшееся в
-    // «Решена», — в том числе наследственное, от предъявления, переехавшего туда вместе с заявкой.
-    // Происхождение сужает дверь до того единственного ожидания, которое открыл разбор спора.
+    // The column exists because of the signature in «Решена». Allowing it by status was impossible:
+    // `canApproveServiceEstimate` would admit ANY wait that happened to be in «Решена», including an
+    // inherited one that moved there with the request. The origin narrows the door to the single
+    // wait the dispute resolution opened.
     estimatePendingSource: text('estimate_pending_source').$type<'submit' | 'dispute'>(),
     estimateSubmittedAt: timestamp('estimate_submitted_at', { withTimezone: true }),
     estimateApprovedBy: uuid('estimate_approved_by').references(() => users.id, {
@@ -3446,14 +3447,17 @@ export const serviceRequests = pgTable(
           AND (${t.estimateApprovalSource} IS NULL OR ${t.estimateApprovalSource} IN ('human','auto'))
           AND (${t.estimateApprovalSource} <> 'auto' OR ${t.estimateApprovedBy} IS NULL)`,
     ),
-    // Перечень значений и ничего больше: связку с `estimate_pending_revision` нельзя поставить ни в
-    // одну сторону, пока в проде живёт старый код. Он открывает ожидание без происхождения
-    // («ожидание без источника») и гасит ожидание, не убрав источник («источник без ожидания»), —
-    // то есть в окне выката законны оба перекоса. Пустое значение читается как `submit`.
+    // Waiting exactly when the origin is known — the second half of release B (ADR 0183), the same
+    // shape as the signature pair above. Release A (0306) could require only the value list: code
+    // that knew nothing about the origin still opened waits without it and cleared waits leaving it
+    // behind in its rollout window. Every writer since then sets and clears both columns together
+    // (the audit is in the migration that made the pair strict), so readers take the origin of a
+    // wait as known and no longer read an empty one as `submit`.
     estimatePendingSource: check(
       'service_requests_estimate_pending_source_check',
-      sql`${t.estimatePendingSource} IS NULL
-          OR ${t.estimatePendingSource} IN ('submit','dispute')`,
+      sql`(${t.estimatePendingRevision} IS NULL) = (${t.estimatePendingSource} IS NULL)
+          AND (${t.estimatePendingSource} IS NULL
+               OR ${t.estimatePendingSource} IN ('submit','dispute'))`,
     ),
     // Перечень закрыт ценой опечатки: по виду заморозки заперты возврат из неё, закрытие работ и
     // приёмка, и незнакомое значение сняло бы все три замка молча — заявка выглядела бы обычной

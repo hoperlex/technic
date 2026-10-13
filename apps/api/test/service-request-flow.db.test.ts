@@ -5392,10 +5392,12 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
      * обходятся. Отказаться от случая значило бы не проверить ни Р7, ни Н18 — то есть выкатить
      * правило, доказанное только на заявках, которых оно не касается.
      *
-     * Прошлое воспроизводится ИМЕННО ТАКИМ, каким оно записано в базе: строка `service_request_items`
-     * с ценой и гарантией, поднятая ревизия и `estimate_pending_revision`, равная ей (`CHECK`
-     * сторожит это равенство). Версия поднимается тем же UPDATE — иначе следующий ход упёрся бы в
-     * сверку версий и случай доказывал бы оптимистичную блокировку.
+     * The past is reproduced EXACTLY as the database holds it: a `service_request_items` row with a
+     * price and a warranty, a raised revision, `estimate_pending_revision` equal to it (a `CHECK`
+     * guards the equality) and the origin `submit` — such a wait was opened by code older than
+     * release A, and the migration that made the wait and its origin one pair backfilled `submit`
+     * into exactly these rows. The version is bumped by the same UPDATE, otherwise the next move
+     * would hit the version check and the case would prove optimistic locking.
      */
     async function internalWithHistory(description: string): Promise<ServiceRequestDto> {
       const dto = await internalInWork(description);
@@ -5404,6 +5406,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         UPDATE service_requests
            SET estimate_revision = 1,
                estimate_pending_revision = 1,
+               estimate_pending_source = 'submit',
                estimate_submitted_at = now(),
                version = version + 1
          WHERE id = ${dto.id}`);
