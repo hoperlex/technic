@@ -122,11 +122,6 @@ export function requiredCredentialType(jobTitle: string): CredentialTypeCode {
   return jobTitleCredentialType(jobTitle) ?? 'driver_license';
 }
 
-/** Водительская ли должность — тот же вопрос, что задаёт разбор кадровой строки (ADR 0049). */
-export function isDriverJobTitle(jobTitle: string): boolean {
-  return jobTitleCredentialType(jobTitle) === 'driver_license';
-}
-
 // ── DTO ──
 
 /**
