@@ -862,27 +862,30 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
   });
 
   /**
-   * Т6 ПЛАНА (§5.1, строки «Принять работу» и «Отменить»; §10): **системный администратор не
-   * принимает работу и не отменяет заявку**, и отказывает ему ПРАВО, а не коридор.
+   * T6 OF THE PLAN (§5.1, the rows «Принять работу» and «Отменить»; §10): **the system administrator
+   * does not accept the work**, and the refusal comes from the RIGHT, not from the corridor. Since
+   * workflow-fixes Р2 the profile **does cancel** — with a right of its own, `serviceRequests.cancel`,
+   * and not with `status`; the test used to say «and does not cancel» and was rewritten with the
+   * decision, not around it.
    *
-   * Профиль здесь настоящий — оба каталожных кода (`office_equipment_it_approver` +
-   * `office_equipment_executor`), то есть весь его сегодняшний набор из восьми плюс трёх прав. Ни
-   * в одной из двух половин нет `serviceRequests.status`, и это решение, а не пропуск: право
-   * открывает ВЕСЬ операторский коридор — приёмку из «Решена» и отмену из любого статуса, — то
-   * есть ровно то, что матрица оставляет «Ведению».
+   * The profile is real here — both catalog codes (`office_equipment_it_approver` +
+   * `office_equipment_executor`), the whole of today's set. Neither half has `serviceRequests.status`,
+   * and that is a decision: the right opens the WHOLE operator corridor — the acceptance from
+   * «Решена», the return for rework, the rollbacks — which is exactly what the matrix leaves to
+   * «Ведение». The cancel is the one arc taken out of that corridor into a right of its own.
    *
-   * ПОЛОЖИТЕЛЬНЫЕ КОНТРОЛИ ОБЯЗАТЕЛЬНЫ И СТОЯТ ПЕРВЫМИ: назначение (в том числе себя), ход
-   * исполнителя по назначению и заморозка проходят у того же субъекта на той же заявке. Без них
-   * два отказа ниже доказывали бы что угодно — вплоть до того, что учётка вообще не работает.
+   * THE POSITIVE CONTROLS ARE MANDATORY AND STAND FIRST: the assignment (of oneself too), the
+   * executor's move on an assignment and the hold pass for the same subject on the same request.
+   * Without them the refusals below would prove anything — up to «the account does not work at all».
    *
-   * Проверяется и ПРИРОДА отказа, а не только код: сообщение не про «шаг другой стороны». Приди
-   * отказ от коридора, приёмка открылась бы, стоило кому-нибудь выдать профилю `status` «заодно с
-   * заморозкой», — а так падение случится в тот же день.
+   * The NATURE of the refusals is checked, not only the code: the sentence is not about «another
+   * side's step». Had the refusal come from the corridor, the acceptance would open the day somebody
+   * handed the profile `status` «along with the hold» — this way the test falls the same day.
    */
-  it('сисадмин назначает, ходит и откладывает, но не принимает и не отменяет (Т6)', async () => {
+  it('сисадмин назначает, ходит, откладывает и отменяет, но не принимает и не откатывает (Т6)', async () => {
     const request = await ctx.newRequest('t6');
 
-    // — Контроль 1: назначает, и назначает СЕБЯ. Право `assign` у координации есть.
+    // — Control 1: assigns, and assigns HIMSELF. The coordination holds `assign`.
     const assigned = await inject(
       'PUT',
       `/api/v1/service-requests/${request.id}/executors`,
@@ -896,7 +899,7 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
     expect(assigned.statusCode, assigned.body).toBe(200);
     expect(await executorRows(request.id)).toEqual([ctx.itAdmin.id]);
 
-    // — Контроль 2: работает исполнителем по назначению — второй код профиля.
+    // — Control 2: works as an executor on an assignment — the profile's second code.
     const started = await inject(
       'PATCH',
       `/api/v1/service-requests/${request.id}/start`,
@@ -906,7 +909,7 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
     expect(started.statusCode, started.body).toBe(200);
     expect((started.json() as ServiceRequestDto).status).toBe('in_work');
 
-    // — Отказ 1: приёмка. Право статуса профилю не выдано ни одной из двух половин.
+    // — Refusal 1: the acceptance. Neither half of the profile has the status right.
     const accept = await inject(
       'PATCH',
       `/api/v1/service-requests/${request.id}/accept`,
@@ -916,7 +919,32 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
     expect(accept.statusCode, accept.body).toBe(403);
     expect(accept.json<{ message: string }>().message).not.toContain('шаг другой стороны');
 
-    // — Отказ 2: отмена. Та же дверь `serviceRequests.status`, и «с причиной» её не открывает.
+    // — Refusal 2: «Вернуть в «Новую»». The corridor gives the profile this arc through `assign`,
+    // and the status door admits the cancel right now — so the per-target question is what closes
+    // it (workflow-fixes Р2, `holdsServiceStatusRight`).
+    const rollback = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/status`,
+      ctx.itAdmin.auth,
+      { status: 'new', version: await version(request.id) },
+    );
+    expect(rollback.statusCode, rollback.body).toBe(403);
+
+    // — Control 3: the hold passes. The refusals above are about particular moves, not about
+    // statuses at large: `hold` is a right of its own, and the profile has it.
+    const held = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/hold`,
+      ctx.itAdmin.auth,
+      { reason: 'Ждём картридж', version: await version(request.id) },
+    );
+    expect(held.statusCode, held.body).toBe(200);
+    expect((held.json() as ServiceRequestDto).status).toBe('on_hold');
+    // No refusal passed halfway: the request is neither accepted nor rolled back.
+    expect((await card(request.id, ctx.admin.auth)).status).toBe('on_hold');
+
+    // — The cancel, with a reason: the right of its own opens it from «Отложена» (and from the
+    // two other statuses, see `service-request-it-cancel.db.test.ts`).
     const cancel = await inject(
       'PATCH',
       `/api/v1/service-requests/${request.id}/status`,
@@ -927,21 +955,8 @@ describe.skipIf(!DB_URL)('профили модуля «Орг.техника»:
         version: await version(request.id),
       },
     );
-    expect(cancel.statusCode, cancel.body).toBe(403);
-    expect(cancel.json<{ message: string }>().message).not.toContain('шаг другой стороны');
-
-    // — Контроль 3: заморозка проходит. Отказы выше — про два конкретных хода, а не про статусы
-    // вообще: `hold` — своё право, и оно у профиля есть.
-    const held = await inject(
-      'PATCH',
-      `/api/v1/service-requests/${request.id}/hold`,
-      ctx.itAdmin.auth,
-      { reason: 'Ждём картридж', version: await version(request.id) },
-    );
-    expect(held.statusCode, held.body).toBe(200);
-    expect((held.json() as ServiceRequestDto).status).toBe('on_hold');
-    // Заявка не отменена и не принята: ни один из двух отказов не прошёл наполовину.
-    expect((await card(request.id, ctx.admin.auth)).status).toBe('on_hold');
+    expect(cancel.statusCode, cancel.body).toBe(200);
+    expect((cancel.json() as { request: ServiceRequestDto }).request.status).toBe('cancelled');
   });
 
   /**

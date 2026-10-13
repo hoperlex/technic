@@ -488,6 +488,9 @@ export const SERVICE_ACCESS_MANIFEST = {
   },
   // Отмена и административные откаты. Целевой статус называет тело, поэтому сторона спрашивается
   // дважды: `assertSideAllowed` по одной цели и `assertTransition` по паре «откуда → куда».
+  // Сторона названа `operator` по главному держателю; отмену открывает ещё и право
+  // `serviceRequests.cancel` ИТ-службы (workflow-fixes plan Р2) — только её дуги, коридор
+  // `SERVICE_CANCEL_TRANSITIONS`. Пятизначный `side` этого не выражает, доказывает разницу прогон.
   'PATCH /api/v1/service-requests/:id/status': {
     scope: 'visibility',
     side: 'operator',

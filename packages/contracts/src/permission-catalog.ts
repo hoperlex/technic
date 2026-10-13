@@ -381,6 +381,13 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'status',
     label: 'Откладывает заявку и возобновляет',
   },
+  // Action `status`, like the hold above it: a cancel is a move along the statuses too, and in the
+  // showcase it reads next to it and not among the «Особые».
+  'serviceRequests.cancel': {
+    module: 'service',
+    action: 'status',
+    label: 'Отменяет заявку на обслуживание',
+  },
   'serviceRequests.urgency': {
     module: 'service',
     action: 'manage',

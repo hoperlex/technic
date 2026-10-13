@@ -6,6 +6,8 @@ import {
   actsAsServiceExecutor,
   allowedServiceStatusTransitions,
   can,
+  canRunServiceBulkOperation,
+  canUseServiceBulk,
   canApproveServiceEstimate,
   canAssignServiceExecutors,
   canCoordinateServiceRequests,
@@ -21,6 +23,8 @@ import {
   isWaitingOn,
   SERVICE_ADMIN_ROLLBACKS,
   SERVICE_ASSIGNER_TRANSITIONS,
+  SERVICE_CANCEL_TRANSITIONS,
+  SERVICE_OPERATOR_TRANSITIONS,
   SERVICE_REQUEST_STATUSES,
   SERVICE_WAITING_ON,
   serviceEstimatePending,
@@ -416,26 +420,115 @@ describe('виза ИТ упразднена: ни таблицы, ни ветк
   });
 
   /**
-   * У ИТ-службы дуги остались, но приходят они другими правами — распределением и заморозкой
-   * (волна В5). Право распределения даёт ей дугу `in_work → new`, и это ВЕСЬ её вклад в коридор:
-   * само назначение статуса не двигает (ADR 0187), а ручку возврата (`PATCH /:id/status`) от неё
-   * закрывает страж `serviceRequests.status`, которого у ИТ-службы нет. Ходов «Ведения» у неё
-   * по-прежнему нет: ни приёмки, ни отмены.
+   * У ИТ-службы дуги остались, но приходят они другими правами — распределением, заморозкой и, с
+   * волны 2 правок по прогону ролей (план `office-equipment-workflow-fixes-plan.md`, Р2), своим
+   * правом отмены. Право распределения даёт ей дугу `in_work → new`: само назначение статуса не
+   * двигает (ADR 0187), а ручку возврата (`PATCH /:id/status`) от неё закрывает коридор, в котором
+   * возврата у неё нет. Отмена ей открыта из трёх статусов, где она вообще бывает, — «Новая»,
+   * «В работе», «Отложена». Ходов «Ведения» у неё по-прежнему нет: ни приёмки, ни возврата на
+   * доработку, ни отмены принятой работы, ни «вернуть в работу» отменённую.
    */
-  it('у ИТ-службы остаются дуга возврата и заморозка — и ни приёмки, ни отмены', () => {
+  it('у ИТ-службы: возврат, заморозка и отмена — и ни приёмки, ни возврата на доработку', () => {
     for (const approver of IT_APPROVERS) {
       const who = accessProfileLabel(approver);
-      expect(from('new', approver), who).toEqual(['on_hold']);
-      expect(from('in_work', approver), who).toEqual(['new', 'on_hold']);
+      expect(from('new', approver), who).toEqual(['cancelled', 'on_hold']);
+      expect(from('in_work', approver), who).toEqual(['cancelled', 'new', 'on_hold']);
+      expect(from('on_hold', approver), who).toEqual(['cancelled']);
       // Приёмка и возврат на доработку — не её: «Решена» она может только придержать.
       expect(from('done', approver), who).toEqual(['on_hold']);
       for (const status of ['accepted', 'cancelled'] as const) {
         expect(from(status, approver), `${who}: ${status}`).toEqual([]);
       }
       expect(canTransitionServiceStatus('done', 'accepted', approver), who).toBe(false);
-      expect(canTransitionServiceStatus('in_work', 'cancelled', approver), who).toBe(false);
-      expect(canTransitionServiceStatus('new', 'cancelled', approver), who).toBe(false);
+      expect(canTransitionServiceStatus('done', 'in_work', approver), who).toBe(false);
+      for (const status of ['new', 'in_work', 'on_hold'] as const) {
+        expect(canTransitionServiceStatus(status, 'cancelled', approver), `${who}: ${status}`).toBe(
+          true,
+        );
+      }
     }
+  });
+
+  /**
+   * ОТМЕНА — СВОЁ ПРАВО (workflow-fixes plan Р2): коридор держателя `serviceRequests.cancel` — это
+   * ровно отменяющие дуги операторского коридора и ничего сверх, а подрядчика ветка не достигает.
+   * Эти три утверждения — всё, что отличает отдельное право от выдачи ИТ-службе `status` целиком.
+   */
+  describe('право отмены', () => {
+    const cancelOnly: AccessSubject = {
+      role: 'shtab',
+      grantPermissions: ['serviceRequests.cancel'],
+    };
+
+    it('коридор держателя одной отмены — таблица отмены, и ничего сверх, в каждом статусе', () => {
+      for (const status of SERVICE_REQUEST_STATUSES) {
+        expect(from(status, cancelOnly), status).toEqual(
+          [...SERVICE_CANCEL_TRANSITIONS[status]].sort(),
+        );
+      }
+      // Ни приёмки, ни возврата на доработку, ни «вернуть в работу»: это дуги `status`.
+      expect(from('done', cancelOnly)).toEqual([]);
+      expect(from('cancelled', cancelOnly)).toEqual([]);
+    });
+
+    it('таблица отмены — это отменяющие дуги операторского коридора, строка в строку', () => {
+      // Разойдись они, «отмена» ИТ-службы и «отмена» «Ведения» стали бы двумя разными операциями.
+      for (const status of SERVICE_REQUEST_STATUSES) {
+        expect([...SERVICE_CANCEL_TRANSITIONS[status]], status).toEqual(
+          SERVICE_OPERATOR_TRANSITIONS[status].filter((to) => to === 'cancelled'),
+        );
+      }
+    });
+
+    it('с откатами права не складываются: `requests.rollbackStatus` без `status` откатов не открывает', () => {
+      const withRollback: AccessSubject = {
+        role: 'shtab',
+        grantPermissions: ['serviceRequests.cancel', 'requests.rollbackStatus'],
+      };
+      for (const status of SERVICE_REQUEST_STATUSES) {
+        expect(from(status, withRollback), status).toEqual(from(status, cancelOnly));
+      }
+    });
+
+    it('подрядчик не получает отмену, какой бы набор ему ни выдали руками', () => {
+      const contractor: AccessSubject = {
+        role: 'operator',
+        counterpartyType: 'service',
+        grantPermissions: ['serviceRequests.cancel'],
+      };
+      // Его сторона отвечает вместо остальных (Н4): только коридор исполнителя.
+      expect(from('in_work', contractor, BY_COUNTERPARTY)).toEqual(['done']);
+      expect(from('new', contractor, BY_COUNTERPARTY)).toEqual(['in_work']);
+      expect(canTransitionServiceStatus('in_work', 'cancelled', contractor, BY_COUNTERPARTY)).toBe(
+        false,
+      );
+    });
+
+    it('пачка: три рубежа пускают держателя одной отмены к отмене и ни к чему другому', () => {
+      // Наблюдатель с одним правом отмены: у `shtab` по роли есть `delete`, и «архивирование» ему
+      // открыто не отменой, а ролью — предмет случая другой.
+      const alone: AccessSubject = {
+        role: 'observer',
+        grantPermissions: ['serviceRequests.cancel'],
+      };
+      expect(canUseServiceBulk(alone)).toBe(true);
+      expect(canRunServiceBulkOperation(alone, 'cancel')).toBe(true);
+      for (const operation of ['accept', 'assign', 'start', 'archive', 'urgency_on'] as const) {
+        expect(canRunServiceBulkOperation(alone, operation), operation).toBe(false);
+      }
+      // Без права отмены держатель одного `assign` в отмену не идёт, а ИТ-служба идёт (набор).
+      expect(canRunServiceBulkOperation({ role: 'shtab', grantPermissions: [] }, 'cancel')).toBe(
+        false,
+      );
+      for (const approver of IT_APPROVERS) {
+        expect(canRunServiceBulkOperation(approver, 'cancel'), accessProfileLabel(approver)).toBe(
+          true,
+        );
+        expect(canRunServiceBulkOperation(approver, 'accept'), accessProfileLabel(approver)).toBe(
+          false,
+        );
+      }
+    });
   });
 
   /**

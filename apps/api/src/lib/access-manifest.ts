@@ -958,6 +958,7 @@ export const ACCESS_MANIFEST = {
       'serviceRequests.status',
       'serviceRequests.execute',
       'serviceRequests.hold',
+      'serviceRequests.cancel',
       'serviceRequests.urgency',
       'serviceRequests.delete',
     ],
@@ -1200,9 +1201,12 @@ export const ACCESS_MANIFEST = {
     anyOf: ['serviceRequests.status', 'serviceRequests.execute'],
     why: 'ход исполнителя: у стороны — право хода, у поимённого — назначение',
   },
+  // The guard admits `status` OR the cancel right of its own (workflow-fixes plan Р2); which move
+  // is allowed is decided inside by the corridor, and the cancel alone opens only the cancel arcs.
   'PATCH /api/v1/service-requests/:id/status': {
-    kind: 'permissions',
-    allOf: ['serviceRequests.status'],
+    kind: 'anyOf',
+    anyOf: ['serviceRequests.status', 'serviceRequests.cancel'],
+    why: 'отмена — своё право ИТ-службы, остальные ходы по статусам — право «Ведения»; какой именно, решает коридор',
   },
   // Срочность — своё право (Н12 плана переработки цикла): прежде флаг приходил вместе с
   // `serviceRequests.update`, то есть всякому, кто правит заявку, и составом набора его было не

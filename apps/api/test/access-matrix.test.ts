@@ -344,6 +344,19 @@ const SERVICE_REQUEST_ESTIMATE_APPROVERS: ProfileKey[] = [
 const SERVICE_REQUEST_EXECUTORS: ProfileKey[] = ['admin', 'operator/service'];
 
 /**
+ * Отмена заявки — «Ведение» и ИТ-служба (workflow-fixes plan Р2): первое по праву `status`, вторая
+ * по своему праву `cancel`. Ходы за отменой (приёмка, возврат на доработку, откаты) остаются за
+ * `status`, и матрица `/status` спрашивает здесь именно тело отмены: тело отката ИТ-службе закрыто
+ * коридором, а не стражем (проверяют db-тесты маршрута).
+ */
+const SERVICE_REQUEST_CANCELLERS: ProfileKey[] = [
+  ...SERVICE_REQUEST_OPERATORS,
+  'shtab+office_equipment_it_approver',
+  'site+office_equipment_it_approver',
+  'department+office_equipment_it_approver',
+];
+
+/**
  * Назначение исполнителей — «Ведение» и ИТ-служба (§6.1 плана переработки): второй набор получил
  * `serviceRequests.assign` волной В5, чтобы взять чужую заявку, назначив себя.
  */
@@ -1076,7 +1089,7 @@ const CASES: Case[] = [
     method: 'PATCH',
     url: `/api/v1/service-requests/${RECORD_ID}/status`,
     payload: { status: 'cancelled', reason: 'технику списали', version: 1 },
-    allowed: SERVICE_REQUEST_OPERATORS,
+    allowed: SERVICE_REQUEST_CANCELLERS,
   },
   {
     // Смета — право стороны исполнителя, и вне контрагента `service` оно есть только у

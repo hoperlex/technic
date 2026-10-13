@@ -51,6 +51,7 @@ import {
   declineServiceRequestSchema,
   evaluateExemption,
   formatServiceRequestNumber,
+  holdsServiceStatusRight,
   isDepartmentScopedRole,
   isObjectScopedRole,
   isServiceExecutor,
@@ -3157,6 +3158,25 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     ],
   };
   /**
+   * The guard of `PATCH /:id/status` only: the operator's `serviceRequests.status` OR the cancel
+   * right of its own (workflow-fixes plan Р2). Acceptance, rework and the notify door keep
+   * `canChangeStatus` above — those are not cancels.
+   *
+   * The guard answers «does this subject have any status move here at all»; WHICH move is decided
+   * inside, by the corridor (`assertSideAllowed`, `assertTransition`) — there is no second map of
+   * rules. A holder of the cancel alone who asks for a rollback or any target but «Отменена» gets
+   * the corridor's 403, not a pass: the corridor of this right is `SERVICE_CANCEL_TRANSITIONS`.
+   */
+  const canChangeOrCancel = {
+    preHandler: [
+      app.authenticate,
+      app.requireAnyPermission(
+        ['serviceRequests.status', 'serviceRequests.cancel'],
+        'Недостаточно прав для смены статуса',
+      ),
+    ],
+  };
+  /**
    * Две статусные дуги исполнителя — «принять в работу» и «отказаться». Право хода у них общее с
    * операторским коридором (`serviceRequests.status`), и по той же причине, что у сметы, страж
    * здесь «одно из перечисленных»: поимённому исполнителю дугу открывает назначение вместе с
@@ -4082,6 +4102,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           'serviceRequests.status',
           'serviceRequests.execute',
           'serviceRequests.hold',
+          // A holder of the cancel alone has a batch operation too (workflow-fixes plan Р2).
+          'serviceRequests.cancel',
           'serviceRequests.urgency',
           // `delete` страж принимает, иначе архивирование не прошло бы его вовсе; допуск
           // `canUseServiceBulk` держателя ОДНОГО лишь `delete` при этом отбивает — так и закрыт Н11.
@@ -9034,6 +9056,19 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     bulk: BulkStepContext = outsideBulk,
   ): Promise<ModuleMailOutcome> {
     const to = body.status;
+    /*
+     * The route guard admits `status` OR the cancel right (workflow-fixes plan Р2), and for a target
+     * other than «Отменена» only the first is enough. Asked FIRST: the corridor below would let the
+     * holder of `assign` (the IT service) through to «Новая» from «В работе» — an arc this door has
+     * always closed with its guard.
+     */
+    if (!holdsServiceStatusRight(p, to)) {
+      const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+      throw serviceDenied.side(
+        `${who} не переводит заявку в «${serviceRequestStatusLabels[to]}» — это шаг другой стороны`,
+        id,
+      );
+    }
     // Здесь дуга не одна: целевой статус называет тело, а исходных у отмены и откатов много.
     assertSideAllowed(p, id, to);
     const row = await requireEditable(p, id);
@@ -9219,7 +9254,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
 
   r.patch(
     '/:id/status',
-    { ...canChangeStatus, schema: { params: idParams, body: serviceStatusChangeSchema } },
+    { ...canChangeOrCancel, schema: { params: idParams, body: serviceStatusChangeSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const mail = await statusStep(p, req.params.id, req.body);

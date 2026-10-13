@@ -321,6 +321,8 @@ describe('манифест доступа маршрутов', () => {
    * без исключения. `estimate` в ней нет намеренно (Р5), и это единственное место, где пакет
    * строже одиночной ручки.
    */
+  const CANCEL_OR_STATUS_DOOR = 'PATCH /api/v1/service-requests/:id/status';
+
   it('дизъюнкция объявлена поимённо, и у ходов заявки второй член — назначение', () => {
     const declared = Object.entries(manifest).filter(([, c]) => c.kind === 'anyOf');
     expect(declared.map(([key]) => key).sort()).toEqual([
@@ -332,6 +334,7 @@ describe('манифест доступа маршрутов', () => {
       'PATCH /api/v1/service-requests/:id/estimate/reopen',
       'PATCH /api/v1/service-requests/:id/estimate/submit',
       'PATCH /api/v1/service-requests/:id/start',
+      'PATCH /api/v1/service-requests/:id/status',
       'POST /api/v1/service-requests/bulk',
       'PUT /api/v1/service-requests/:id/consumables',
       'PUT /api/v1/service-requests/:id/estimate',
@@ -339,12 +342,46 @@ describe('манифест доступа маршрутов', () => {
     for (const [key, condition] of declared) {
       if (condition.kind !== 'anyOf') continue;
       // Ходы заявки на обслуживание — и только они: второй член у них обязан быть назначением.
-      if (key.includes('/service-requests/')) {
+      // Единственное исключение названо: дверь статуса — это не ход исполнителя, а «Ведение» либо
+      // отмена своим правом ИТ-службы (workflow-fixes plan Р2), и назначение ей не открывает ничего.
+      if (key.includes('/service-requests/') && key !== CANCEL_OR_STATUS_DOOR) {
         expect(condition.anyOf, key).toContain('serviceRequests.execute');
       }
       // Выбор из одного члена — это `permissions`, только записанное так, что в ревью не спросить
       // «почему их два». Тип это уже требует; здесь проверка на случай приведения типа.
       expect(condition.anyOf.length, key).toBeGreaterThan(1);
+    }
+  });
+
+  /**
+   * Дверь статуса принимает `status` ИЛИ своё право отмены (workflow-fixes plan Р2), и пакетная
+   * ручка принимает отмену наравне с остальными операционными правами. Утверждается явно, а не
+   * только общей сверкой «манифест ↔ приложение»: удалённая из манифеста и из стража строка
+   * согласовалась бы сама с собой, и ИТ-служба снова осталась бы без отмены молча.
+   */
+  it('отмена открыта на двух дверях: статус и пачка', () => {
+    const status = manifest[CANCEL_OR_STATUS_DOOR];
+    expect(status?.kind).toBe('anyOf');
+    if (status?.kind === 'anyOf') {
+      expect([...status.anyOf].sort()).toEqual([
+        'serviceRequests.cancel',
+        'serviceRequests.status',
+      ]);
+    }
+    const bulk = manifest['POST /api/v1/service-requests/bulk'];
+    expect(bulk?.kind).toBe('anyOf');
+    if (bulk?.kind === 'anyOf') expect(bulk.anyOf).toContain('serviceRequests.cancel');
+    // А приёмка, возврат на доработку и повтор письма остаются за `status`: это не отмены.
+    for (const route of [
+      'PATCH /api/v1/service-requests/:id/accept',
+      'PATCH /api/v1/service-requests/:id/rework',
+      'POST /api/v1/service-requests/:id/notify',
+    ] as const) {
+      const condition = manifest[route];
+      expect(condition?.kind, route).toBe('permissions');
+      if (condition?.kind === 'permissions') {
+        expect([...condition.allOf], route).toEqual(['serviceRequests.status']);
+      }
     }
   });
 

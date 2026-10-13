@@ -689,19 +689,29 @@ async function runRow(params: {
         ),
       );
       /*
-       * Отложенные ограничения — немедленными (Н5). Заявка держит инвариант исполнителя отложенным
-       * constraint-триггером, срабатывающим на `COMMIT`: без этого негодная строка отвечала бы не
-       * своим доменным отказом, а падением `COMMIT` уже после checkpoint'а — то есть откатывала бы
-       * собственную отметку и повторялась бы на каждом заходе. Приём взят у автозакрытия.
-       */
-      await tx.execute(sql`SET CONSTRAINTS ALL IMMEDIATE`);
-      /*
        * Сток уезжает работе ВТОРЫМ аргументом — вместе с транзакцией и неотделимо от неё (Р10).
        * Доменный шаг передаёт его дальше, в `applyTransition` и в построитель письма; тот вместо
        * строки `mail_messages` кладёт намерение в `service_request_bulk_mail_items`, откуда его
        * заберёт одна сводка на пару «адресат + аудитория».
        */
       const out = await fn(tx, mailSink);
+      /*
+       * Deferred constraints become immediate (N5) — but AFTER the row's step, not before it
+       * (workflow-fixes plan Р2). A request keeps its executor invariant in a deferred
+       * constraint trigger that fires at `COMMIT`; without this statement a bad row would answer
+       * not with its own domain refusal but with a failed `COMMIT` after the checkpoint — it would
+       * roll back its own mark and repeat on every pass. The technique is the auto-close's.
+       *
+       * WHY NOT AT THE START OF THE TRANSACTION, AS IT WAS. The lawful order of statements inside
+       * one transition can be any — that is what the trigger is deferred for: a cancel removes the
+       * executors before it writes the status (`applyTransition`), and with immediate checking from
+       * the very start the cancel of a «В работе» request with an in-house executor failed on its
+       * first `DELETE` with the nameless «Не удалось выполнить» — and so did every batch that
+       * cancelled such rows. `SET CONSTRAINTS` in the middle of a transaction acts retroactively:
+       * the accumulated checks run on the statement itself, so a bad row still fails BEFORE the
+       * checkpoint and with the same refusal.
+       */
+      await tx.execute(sql`SET CONSTRAINTS ALL IMMEDIATE`);
       /*
        * Номер читается ЗДЕСЬ, до checkpoint'а и в той же транзакции. Проставленный после неё, он
        * попал бы только в ответ этого захода: в `row_results` уехала бы строка без номера, и

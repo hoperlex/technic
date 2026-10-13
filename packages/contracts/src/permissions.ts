@@ -349,6 +349,24 @@ export const PERMISSIONS = [
    */
   'serviceRequests.hold',
   /**
+   * Отмена заявки службой, которая её ведёт, но не принимает работу (workflow-fixes plan Р2, owner
+   * walkthrough of 08.09.2026: «нет возможности отменить заявку с комментарием»).
+   *
+   * ITS OWN RIGHT, NOT `serviceRequests.status` FOR THE IT SERVICE. `status` opens the WHOLE operator
+   * corridor — accepting the work, sending it back for rework, and together with
+   * `requests.rollbackStatus` the administrative rollbacks — and it is exactly what the owner asked
+   * to take away from the IT service in the same walkthrough (item 6). The corridor of this right is
+   * `SERVICE_CANCEL_TRANSITIONS`: the three cancel arcs of the operator and nothing beyond them. The
+   * reason, and for a repair the decision «what we do instead», are asked by the cancel window as
+   * they are for everyone: the permission opens the door, not the lack of an explanation.
+   *
+   * Not for the contractor: his side answers instead of the others (`allowedServiceStatusTransitions`)
+   * and never reaches this branch, whatever set he is given by hand. «Ведение» does not need it —
+   * it holds `status` — and does not get it: one right in two sets of the same person would read as
+   * a second source of the same arc.
+   */
+  'serviceRequests.cancel',
+  /**
    * Флаг «Срочная» — поставить и снять (Н12 набросков).
    *
    * Сегодня флаг приходит вместе с `serviceRequests.update`, то есть всякому, кто правит заявку, и
@@ -1604,6 +1622,14 @@ export const ROLE_ADDON_PERMISSIONS: Record<RoleAddon, readonly Permission[]> = 
      */
     'serviceRequests.assign',
     'serviceRequests.hold',
+    /*
+     * Cancel (workflow-fixes plan Р2) — a right of its own and not `status`: that one would open the
+     * acceptance of the work and the rollbacks to the IT service, which it must not have (see
+     * above). The arcs are those of the cancel of «Ведение»: «Новая», «В работе», «Отложена» — and
+     * nothing more (`SERVICE_CANCEL_TRANSITIONS`). Handed to the set by the catalog migration
+     * `*_service_request_cancel_grant.sql`.
+     */
+    'serviceRequests.cancel',
     /*
      * ЦЕЛЕВОЕ ПРАВО ЭТОГО НАБОРА (план `docs/office-equipment-move-from-request-plan.md`, Р1, Р2):
      * подтверждение перемещения. `officeEquipment.write` у ИТ-службы нет и не появляется (план

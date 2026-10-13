@@ -340,6 +340,31 @@ export const SERVICE_HOLD_TRANSITIONS: Record<ServiceRequestStatus, ServiceReque
 };
 
 /**
+ * Cancel (the right `serviceRequests.cancel`, workflow-fixes plan Р2): exactly the CANCELLING arcs of
+ * the operator corridor and nothing beyond them. A table of its own and not a row of the operator
+ * one, for the reason the hold has: the right is held by the IT service, which has no
+ * `serviceRequests.status` and must not (§7.2) — merged, they would hand out the acceptance of the
+ * work, the return for rework and (paired with `requests.rollbackStatus`) the administrative
+ * rollbacks together with the cancel.
+ *
+ * There is no arc from «Решена», «Принята» and «Отменена» on purpose: acceptance, return and
+ * «вернуть в работу» belong to «Ведение», and cancelling accepted work is not a cancel but a
+ * rollback.
+ */
+export const SERVICE_CANCEL_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
+  new: ['cancelled'],
+  it_approved: [], // мёртвый статус (0197)
+  assigned: [], // мёртвый статус (0224)
+  diagnostics: [], // мёртвый статус (0197)
+  estimate_review: [], // мёртвый статус (0224)
+  in_work: ['cancelled'],
+  on_hold: ['cancelled'],
+  done: [],
+  accepted: [],
+  cancelled: [],
+};
+
+/**
  * «Ведение» (право `serviceRequests.status`): решения заказчика — приёмка, возврат на доработку и
  * отмена. Ни одного шага исполнителя здесь нет и быть не должно.
  *
@@ -479,6 +504,14 @@ export function allowedServiceStatusTransitions(
   if (canHoldService(subject)) {
     for (const to of SERVICE_HOLD_TRANSITIONS[from]) allowed.add(to);
   }
+  // Cancel is a right of its own (workflow-fixes plan Р2). It stands after the hold and before the
+  // operator corridor because it is the same «narrow door»: the holder of `cancel` alone gets the
+  // cancelling arcs only, the holder of `status` gets the same and the acceptance besides (the
+  // `Set` makes the overlap harmless). The contractor never reaches the branch: his side answers
+  // above, instead of the others.
+  if (can(subject, 'serviceRequests.cancel')) {
+    for (const to of SERVICE_CANCEL_TRANSITIONS[from]) allowed.add(to);
+  }
   if (can(subject, 'serviceRequests.status')) {
     for (const to of SERVICE_OPERATOR_TRANSITIONS[from]) allowed.add(to);
   }
@@ -498,6 +531,28 @@ export function canTransitionServiceStatus(
   assignment?: ServiceExecutorAssignment | null,
 ): boolean {
   return allowedServiceStatusTransitions(from, subject, assignment).includes(to);
+}
+
+/**
+ * The right the status door (`PATCH /:id/status`) asks for a move INTO the given status
+ * (workflow-fixes plan Р2): `serviceRequests.status` for any target, and for «Отменена» the cancel
+ * right of its own as well.
+ *
+ * WHY THIS IS NOT LEFT TO THE CORRIDOR. The door used to be guarded by `status` alone, and that
+ * guard was part of the rule, not decoration: the corridor gives the IT service one more arc through
+ * this door besides the cancel — `in_work → new` ("Вернуть в «Новую»") comes to it from the right to
+ * assign (`SERVICE_ASSIGNER_TRANSITIONS`), and the owner asked in the same walkthrough (item 6) to
+ * take that item away from the IT account. Letting the cancel right through the guard without this
+ * question would have given the arc back by the side door. One function, asked by the route; the
+ * corridor still decides WHICH arcs exist — there is no second map of rules.
+ */
+export function holdsServiceStatusRight(
+  subject: AccessSubject | null | undefined,
+  to: ServiceRequestStatus,
+): boolean {
+  if (!subject) return false;
+  if (can(subject, 'serviceRequests.status')) return true;
+  return to === 'cancelled' && can(subject, 'serviceRequests.cancel');
 }
 
 /**
@@ -3489,6 +3544,10 @@ export function canUseServiceBulk(subject: AccessSubject | null | undefined): bo
     can(subject, 'serviceRequests.status') ||
     can(subject, 'serviceRequests.execute') ||
     can(subject, 'serviceRequests.hold') ||
+    // Cancel is a right of its own (workflow-fixes plan Р2) and the top gate of the batch together
+    // with the route guard: without this line a holder of the cancel alone would not pass the
+    // admission, while the IT service would be let through «on the side» by its `assign` and `hold`.
+    can(subject, 'serviceRequests.cancel') ||
     can(subject, 'serviceRequests.urgency')
   );
 }
@@ -3500,7 +3559,8 @@ export function canUseServiceBulk(subject: AccessSubject | null | undefined): bo
  * решает доменный шаг, и подменять один вопрос другим нельзя ни в какую сторону. Условия взяты у
  * одиночных ручек и второй раз не выводятся:
  *
- *   · отмена и приёмка работы — `serviceRequests.status` (коридор оператора);
+ *   · отмена — `serviceRequests.status` ∨ `serviceRequests.cancel` (Р2);
+ *   · приёмка работы — `serviceRequests.status` (коридор оператора);
  *   · заморозка и возврат — `canHoldService` (`hold ∨ status`, и исполнителю закрыто вовсе);
  *   · срочность — `serviceRequests.urgency`;
  *   · назначение — `serviceRequests.assign`;
@@ -3514,6 +3574,8 @@ export function canRunServiceBulkOperation(
   if (!subject) return false;
   switch (operation) {
     case 'cancel':
+      // `status` or the cancel right of its own (workflow-fixes plan Р2): the corridor answers «what exactly».
+      return can(subject, 'serviceRequests.status') || can(subject, 'serviceRequests.cancel');
     case 'accept':
       return can(subject, 'serviceRequests.status');
     case 'hold':
@@ -4710,6 +4772,8 @@ export const SERVICE_REQUEST_PERMISSIONS: readonly Permission[] = [
   'serviceRequests.approveIt',
   'serviceRequests.status',
   'serviceRequests.hold',
+  // Cancel — the IT service's right of its own (workflow-fixes plan Р2); the order of `PERMISSIONS`.
+  'serviceRequests.cancel',
   'serviceRequests.urgency',
   'serviceRequests.execute',
   'serviceRequests.files',

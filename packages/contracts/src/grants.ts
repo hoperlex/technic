@@ -868,7 +868,7 @@ export function isGrantable(permission: Permission): boolean {
  * из них — `wasteRequests.create: []` — прямо противоречила бы ADR 0021, где модуль закрывается
  * чтением. Расписать же честные требования всем действиям всех модулей значит принять сейчас
  * решения, которых в ADR 0106 нет, и сделать это в файле, который на этапе 1a обязан только
- * заводить структуры. Поэтому здесь ровно тридцать девять объявленных требований, а отсутствие
+ * заводить структуры. Поэтому здесь ровно сорок объявленных требований, а отсутствие
  * строки читается как «требование не объявлено», а не как «право ничего не требует»; расширяет
  * таблицу решение, а не молчание. Читают её через `?? []`.
  */
@@ -1018,6 +1018,8 @@ export const PERMISSION_REQUIRES: Partial<Record<Permission, readonly Permission
    */
   'serviceRequests.execute': ['serviceRequests.read'],
   'serviceRequests.hold': ['serviceRequests.read'],
+  // Cancel (workflow-fixes plan Р2): cancelling a request one cannot see is acting blind.
+  'serviceRequests.cancel': ['serviceRequests.read'],
   'serviceRequests.urgency': ['serviceRequests.read'],
   'serviceRequests.assign': ['serviceRequests.read'],
   'serviceRequests.status': ['serviceRequests.read'],
