@@ -1224,7 +1224,10 @@ describe.skipIf(!DB_URL)('спор об освобождении от подпи
         },
       );
       expect(reopened.statusCode, reopened.body).toBe(200);
-      expect(await stateOf(id)).toMatchObject({ estimate_pending_revision: null });
+      expect(await stateOf(id)).toMatchObject({
+        estimate_pending_revision: null,
+        estimate_pending_source: null,
+      });
 
       const again = await inject('PATCH', `${REQUESTS}/${id}/estimate/submit`, ctx.service.auth, {
         mode: 'items',

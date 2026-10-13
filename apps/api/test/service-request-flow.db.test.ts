@@ -1200,6 +1200,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     await driveTo(dto.id, 'in_work');
     const submitted = await submitEstimate(dto.id);
     expect(submitted.estimatePendingRevision).toBe(submitted.estimateRevision);
+    expect(submitted.estimatePendingSource).toBe('submit');
 
     const silent = await inject(
       'PATCH',
@@ -1234,6 +1235,8 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(after.rejectionResolution).toBe('Меняем аппарат, заявка на закупку заведена');
     // Ответ получен — предъявление погашено: иначе отменённая заявка осталась бы в очереди подписи.
     expect(after.estimatePendingRevision).toBeNull();
+    // The origin leaves with the wait: the two columns are one pair in the database.
+    expect(after.estimatePendingSource).toBeNull();
     expect(after.waitingOn).toBe('nobody');
 
     // Возврат отменённой в «Новую» снимает ОБЕ пометки разом (флаг `rejection` матрицы сброса,
@@ -1283,6 +1286,63 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(rejection.changes?.find((c) => c.field === 'rejectionResolution')?.to).toBe(
       'Меняем аппарат, заявка на закупку заведена',
     );
+  });
+
+  /**
+   * The reset matrix is the last writer of the wait. A plain cancellation keeps the wait and its
+   * origin — the matrix of `→ cancelled` clears the contractor and the signature, not the estimate,
+   * so neither column is touched — and the return to «Новая» erases the estimate together with both.
+   * The database holds the pair (`service_requests_estimate_pending_source_check`), so a matrix
+   * clearing one column without the other would fail this return with a database error.
+   */
+  it('отмена сохраняет ожидание вместе с происхождением, а возврат в «Новую» гасит оба', async () => {
+    const dto = await createRequest(
+      ctx.customer.auth,
+      ctx.choicePrinter.id,
+      'Мнёт бумагу на выходе',
+    );
+    await driveTo(dto.id, 'in_work');
+    const submitted = await submitEstimate(dto.id);
+    expect(submitted.estimatePendingSource).toBe('submit');
+
+    const cancelled = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${dto.id}/status`,
+      ctx.operator.auth,
+      { status: 'cancelled', reason: 'Аппарат списывают', version: await version(dto.id) },
+    );
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    const kept = (cancelled.json() as { request: ServiceRequestDto }).request;
+    expect(kept.estimatePendingRevision).toBe(submitted.estimatePendingRevision);
+    expect(kept.estimatePendingSource).toBe('submit');
+
+    const back = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${dto.id}/status`,
+      ctx.admin.auth,
+      {
+        status: 'new',
+        reason: 'Вернули по просьбе заказчика',
+        version: await version(dto.id, ctx.admin.auth),
+      },
+    );
+    expect(back.statusCode, back.body).toBe(200);
+    const returned = (back.json() as { request: ServiceRequestDto }).request;
+    expect(returned.estimateRevision).toBe(0);
+    expect(returned.estimatePendingRevision).toBeNull();
+    expect(returned.estimatePendingSource).toBeNull();
+
+    const closed = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${dto.id}/status`,
+      ctx.admin.auth,
+      {
+        status: 'cancelled',
+        reason: 'Служебная заявка теста',
+        version: await version(dto.id, ctx.admin.auth),
+      },
+    );
+    expect(closed.statusCode, closed.body).toBe(200);
   });
 
   it('автовизы при заведении больше нет: заявка согласующего от ИТ тоже «Новая»', async () => {
@@ -1732,6 +1792,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
      */
     expect(dto.status).toBe('in_work');
     expect(dto.estimatePendingRevision).toBe(1);
+    expect(dto.estimatePendingSource).toBe('submit');
     // Сторона `approval` — новая (Р3): согласующий не совпадает ни с одной старой, и оставь его
     // очередь на `operator`, поимённый исполнитель не увидел бы заявку в «Ждут меня» вовсе.
     expect(dto.waitingOn).toBe('approval');
@@ -1828,6 +1889,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     // ровно как просил заказчик, — а из очереди подписи её выводит погашенное предъявление.
     expect(dto.status).toBe('in_work');
     expect(dto.estimatePendingRevision).toBeNull();
+    expect(dto.estimatePendingSource).toBeNull();
     expect(dto.waitingOn).toBe('service');
     expect(dto.approval).toMatchObject({ by: ctx.operator.id, revision: 1 });
   });
@@ -2026,6 +2088,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(withdrawn.statusCode, withdrawn.body).toBe(200);
     const afterWithdraw = withdrawn.json() as ServiceRequestDto;
     expect(afterWithdraw.estimatePendingRevision).toBeNull();
+    expect(afterWithdraw.estimatePendingSource).toBeNull();
     expect(afterWithdraw.waitingOn).toBe('service');
     expect(new Date(afterWithdraw.statusChangedAt).getTime()).toBeGreaterThan(
       new Date(pending.statusChangedAt).getTime(),
@@ -4663,6 +4726,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       // ревизия уходит в 0, и оставленная pending-ревизия уронила бы саму запись (`CHECK`).
       expect(after.estimateRevision).toBe(0);
       expect(after.estimatePendingRevision).toBeNull();
+      expect(after.estimatePendingSource).toBeNull();
       expect(after.approval).toBeNull();
       expect(after.items).toEqual([]);
     });
@@ -5497,6 +5561,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(after.items[0]!.warrantyUntil).toBeNull();
       // 3. Предъявление погашено, а снимок согласования не трогали — его и не было.
       expect(after.estimatePendingRevision).toBeNull();
+      expect(after.estimatePendingSource).toBeNull();
       expect(after.estimateRevision).toBe(1);
       expect(after.approval).toBeNull();
 

@@ -636,6 +636,9 @@ describe.skipIf(!DB_URL)('раскладка объёма работ по гра
       // Заявка ждёт новой подписи: предъявление ставит сама ручка — у «Ведения» нет ни `reopen`,
       // ни `submit`, и без этого заявка повисла бы без очереди.
       expect(after.estimatePendingRevision).toBe(2);
+      // A re-issue is a submission, and it names itself so (Н4): an inherited `dispute` would admit
+      // the signature in «Решена» for a revision nobody disputed.
+      expect(after.estimatePendingSource).toBe('submit');
       expect(after.estimateSubmittedAt).not.toBeNull();
       // Итог пересчитан по строкам: 30 000 + 25 000 + 2 × 8 000.
       expect(after.estimatedTotalAmount).toBe(71_000);
