@@ -4953,6 +4953,29 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         'объём работ по ней не составляют',
       );
 
+      /*
+       * THE FIFTH DOOR — THE «ОБЪЁМ РАБОТ» DOCUMENT — SPEAKS ABOUT THE REQUEST TOO (workflow-fixes
+       * plan Р6). The subject (422) is asked before the side (403): on an internal repair nobody is
+       * an estimate's author, and a side refusal would send the in-house executor after «a service
+       * company» the request does not have. Both the assigned executor and the «Ведение» operator
+       * (a reader of the money who is not the author) get the same sentence as at the four doors.
+       * The side refusal itself stays for a request that DOES need an estimate: the mixed
+       * assignment test below pins it for the in-house executor.
+       */
+      for (const who of [ctx.namedExecutor, ctx.operator]) {
+        const { res } = await attach(
+          assigned.id,
+          'estimate',
+          `estimate-${randomUUID()}.pdf`,
+          who.auth,
+          who.id,
+        );
+        expect(res.statusCode, res.body).toBe(422);
+        expect((res.json() as { message: string }).message).toContain(
+          'объём работ по ней не составляют',
+        );
+      }
+
       // "What was done" is written in words, in the request chat (the executor note it replaced
       // is gone since ADR 0141 release B): the named executor is a side of the conversation.
       const commented = await inject(

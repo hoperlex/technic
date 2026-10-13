@@ -1922,12 +1922,15 @@ function assertServiceOperatorSide(p: Principal, requestId: string, action: stri
  * добывать себе полномочие, которого у него и так достаточно, а «Ведение» искало бы дыру в
  * матрице доступа вместо того, чтобы просто закрыть работы датой.
  *
- * СТОРОНА СПРАШИВАЕТСЯ РАНЬШЕ ПРЕДМЕТА — там, где сторона у ручки своя: `PUT /:id/estimate`
- * зовёт стража ПОСЛЕ `assertExecutorSide`. Иначе держатель `serviceRequests.execute`, не
- * назначенный на заявку, читал бы у чужой внутренней заявки «объём работ не составляют» вместо
- * «это шаг назначенного исполнителя» — то есть узнавал бы о состоянии заявки, к которой его не
- * подпускают, и терял бы настоящую причину отказа. Назначенному же исполнителю отвечает именно
- * предмет: сторона у него в порядке, а составлять по такой заявке нечего.
+ * THE SUBJECT IS ASKED BEFORE THE SIDE (workflow-fixes plan Р6; it used to be the other way
+ * round). `PUT /:id/estimate` and the file door of the «Объём работ» kind call the guard first and
+ * the side check second, in the order the submit and reopen predicates always had. Reason: on an
+ * internal request nobody is the estimate's author, so a side refusal would name a service company
+ * the request does not have and send the executor after a role that changes nothing — the refusal
+ * must speak about the request. Nothing is leaked by the new order: `requireEditable` runs before
+ * both and hides a request outside the caller's scope (404), so whoever reaches the guard already
+ * reads the request. The side refusal (403, `assertEstimateAuthor`) remains for a request that
+ * does need an estimate.
  *
  * ВРЕМЕННОЙ ТЕРПИМОСТИ ФАЗЫ A ЗДЕСЬ БОЛЬШЕ НЕТ, И РАЗНОБОЯ ОТВЕТОВ ТОЖЕ. Пока раздавалась старая
  * сборка портала, внутренняя заявка отбивалась чем придётся: предъявление — 403 предиката
@@ -2890,6 +2893,11 @@ function effectiveStatus(row: {
  * значило бы рассказывать заявителю про жизнь документа, которого он не увидит. Затем прежние два
  * `422` — они про форму, их читает тот, кому вид разрешён, и действующие тесты проверяют оба текста.
  *
+ * ОДНО ИСКЛЮЧЕНИЕ ИЗ «СНАЧАЛА 403»: отказ по предмету («объём работ по внутренней заявке не
+ * составляют», `422`) стоит МЕЖДУ слоем аудитории и слоем стороны — тем же порядком, что у
+ * `PUT /:id/estimate`. У внутренней заявки автора объёма работ нет ни у кого, и отказ по стороне
+ * назвал бы сервисную компанию, которой у заявки нет.
+ *
  * СЛОЁВ ДВА, И ОНИ ПРО РАЗНОЕ. Аудитория отвечает «видны ли этому читателю деньги заявки»
  * (`serviceRequests.finance` либо назначение), сторона — «его ли это бумага». Одной аудитории мало:
  * `finance` у ИТ-службы сквозной, и без второго слоя она подшивала бы акт к любой заявке компании,
@@ -2920,6 +2928,24 @@ function assertFileKindAllowed(
       requestId,
     );
   }
+  // THE SUBJECT BEFORE THE SIDE (workflow-fixes plan Р6, the order of `PUT /:id/estimate`): on an
+  // internal repair nobody is the author of an estimate, so a side refusal would name a service
+  // company the request does not have and send the in-house executor after a role that changes
+  // nothing. The refusal must speak about the request, not about the person: 422 for everyone who
+  // is allowed to see the money at all (the audience layer above is asked first, as it must —
+  // it keeps the requester from learning about a document he cannot see).
+  //
+  // Причина Р4 называется своими словами и ДО общего отказа по статусу: тот же `false` от
+  // `canAttachServiceFile` иначе объяснил бы внутреннему исполнителю, что «в другом статусе
+  // получится», — а не получится никогда, потому что этапа объёма работ у его заявки нет вовсе.
+  // Отказ обязан отвечать той причиной, по которой его писали, иначе человек пойдёт ждать смены
+  // статуса вместо того, чтобы подшить бумагу другим видом.
+  if (kind === 'estimate' && !serviceRequestNeedsEstimate(request)) {
+    throw err.unprocessable(
+      `«${serviceFileKindLabels[kind]}» не прикладывают: заявку ведёт свой сотрудник — объём работ по ней не составляют`,
+      { kind: 'Объём работ не составляется' },
+    );
+  }
   if (!canAttachServiceFileSide(kind, p, assignment)) {
     // Кто именно вправе — словами из той же таблицы: перечисли их здесь руками, и текст разошёлся
     // бы с правилом на первом же изменении матрицы.
@@ -2941,17 +2967,6 @@ function assertFileKindAllowed(
     throw err.unprocessable(
       `Закрытая заявка принимает только документы: ${closing.toLowerCase()}`,
       { kind: 'Заявка закрыта' },
-    );
-  }
-  // Причина Р4 называется своими словами и ДО общего отказа по статусу: тот же `false` от
-  // `canAttachServiceFile` иначе объяснил бы внутреннему исполнителю, что «в другом статусе
-  // получится», — а не получится никогда, потому что этапа объёма работ у его заявки нет вовсе.
-  // Отказ обязан отвечать той причиной, по которой его писали, иначе человек пойдёт ждать смены
-  // статуса вместо того, чтобы подшить бумагу другим видом.
-  if (kind === 'estimate' && !serviceRequestNeedsEstimate(request)) {
-    throw err.unprocessable(
-      `«${serviceFileKindLabels[kind]}» не прикладывают: заявку ведёт свой сотрудник — объём работ по ней не составляют`,
-      { kind: 'Объём работ не составляется' },
     );
   }
   if (!canAttachServiceFile(kind, status, audience, p, assignment, request)) {
@@ -7518,10 +7533,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
                  * подписи заявка в выборку автозакрытия не входит вовсе (`ESTIMATE_SIGNED` в
                  * `internal-service-requests.ts`): согласованная ревизия там не равна действующей.
                  *
-                 * ПО ПРОИСХОЖДЕНИЮ ОЖИДАНИЯ, А НЕ ПО СТАТУСУ «Решена»: спор бывает открыт и из «В
-                 * работе», и ветка на статус молчала бы про него. Лишним порог в этом случае не
-                 * становится — он раньше закрытия работ, а отбор берёт `GREATEST` с `completed_at`,
-                 * то есть у такой заявки срок остаётся прежним.
+                 * BY THE ORIGIN OF THE WAIT, NOT BY THE STATUS «Решена»: a dispute may be opened from
+                 * «В работе» too, and a branch on the status would be silent about it. The threshold
+                 * is harmless there — it is earlier than the closing of the work, and the selection
+                 * takes the `GREATEST` of it and the anchor `done_at` (Н14), so such a request keeps
+                 * its due date.
                  */
                 ...(row.estimatePendingSource === 'dispute'
                   ? { autoCloseNotBefore: signedAt }
@@ -7987,14 +8003,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
               : body.outcome === 'keep'
                 ? {
                     /*
-                     * ОКНО ПРИЁМКИ НАЧИНАЕТСЯ ЗАНОВО — от момента разрешения спора. Срок автоприёмки
-                     * идёт от `completed_at` и времени заморозки не вычитает, поэтому заявка,
-                     * простоявшая в споре неделю, созрела бы на первом же прогоне после возврата: её
-                     * закрыли бы автоматически в ту же минуту, в которую спор и разрешили.
-                     *
-                     * Ставится и у спора из «В работе», где порог ни на что не влияет (закрытие
-                     * работ позже, а отбор берёт `GREATEST` с `completed_at`): ветка на статус
-                     * завела бы второе правило там, где общее верно в обоих случаях.
+                     * THE ACCEPTANCE WINDOW STARTS ANEW — from the moment the dispute is resolved.
+                     * Since Н14 this is REDUNDANT for a dispute opened in «Решена»: the hold clears
+                     * `done_at` and the return to «Решена» below is a real re-entry that writes it
+                     * again, so the anchor is the resolution moment already (before Н14 the window
+                     * counted from `completed_at` and a request a week in dispute was mature on the
+                     * first run after the return). It stays because it is harmless — the selection
+                     * takes the `GREATEST` of the threshold and the anchor, and the two coincide — and
+                     * because it keeps the rule «the window opens at the resolution» readable at the
+                     * place that resolves, independent of how the anchor is written. For a dispute
+                     * opened in «В работе» it changes nothing (the closing of the work comes later),
+                     * and a branch on the status would add a second rule where the common one is
+                     * right in both cases.
                      */
                     autoCloseNotBefore: resolvedAt,
                   }
