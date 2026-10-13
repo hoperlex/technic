@@ -744,4 +744,56 @@ describe('аннулирование применённой недели: ком
 
     expect(screen.queryByText('Применение не прошло — неделя осталась там, где была')).toBeNull();
   });
+
+  /*
+   * A 422 means the plan the window showed is stale: between the view and the click the server
+   * found a blocker. Without a reread the window kept saying "allowed" with an active button, and
+   * the person could only click into the same refusal again (F6 tail).
+   */
+  it('отказ 422 перечитывает план: окно называет блокировку, кнопка гаснет', async () => {
+    const message = 'Аннулировать неделю нельзя: по заказу ТС-42 площадка уже подписала работу';
+    const signed = [WEEK];
+    const blocked = preview({
+      allowed: false,
+      blockedReason: message,
+      blockers: [
+        {
+          code: 'approved_shift',
+          itemId: 'wi-1',
+          dates: signed,
+          message: 'По заказу ТС-42 площадка уже подписала работу за снимаемые дни',
+        },
+      ],
+    });
+    let refused = false;
+    const http = mockHttp(
+      routes(
+        week(),
+        () => (refused ? blocked : preview()),
+        () => {
+          refused = true;
+          return apiError(422, { code: 'unprocessable', message });
+        },
+      ),
+    );
+    renderPage(rukstroy);
+
+    const dialog = await openWindow();
+    expect(okButton(dialog).disabled).toBe(false);
+    typeReason(dialog, 'Ошиблись площадкой');
+    fireEvent.click(okButton(dialog));
+    await screen.findByText(message, { selector: '.ant-message *' });
+
+    // The same window, now retelling the reread plan: the refusal and the blocker by its dates.
+    await within(dialog).findByText('Аннулировать нельзя');
+    within(dialog).getByText(
+      `${blocked.blockers[0]!.message}: ${signed.map(formatDateOnly).join(', ')}`,
+    );
+    expect(http.countOf('GET /weekly-vehicle-requests/:id/annul')).toBe(2);
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(okButton(dialog).disabled).toBe(true);
+    fireEvent.click(okButton(dialog));
+    await settle();
+    expect(http.countOf('POST /weekly-vehicle-requests/:id/annul')).toBe(1);
+  });
 });

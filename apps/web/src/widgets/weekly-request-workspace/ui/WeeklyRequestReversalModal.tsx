@@ -8,7 +8,7 @@ import {
   weeklyReturnDropsItem,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
-import { weeklyRequestKeys, weeklyRequestsApi } from '@entities/weekly-request';
+import { weeklyRequestsApi } from '@entities/weekly-request';
 import { FormModal, useFormRecordSession } from '@shared/ui';
 import { formatDateOnly } from '@shared/lib';
 import {
@@ -16,6 +16,7 @@ import {
   WEEKLY_REVERSAL_TEXTS,
   type WeeklyReversalIntent,
 } from '../model/reversalTexts';
+import { weeklyReversalPreviewKey } from '../model/useWeeklyReversal';
 
 /**
  * Reversal of an applied week — annulment (ADR 0218) or return for re-approval (ADR 0219).
@@ -84,10 +85,7 @@ export function WeeklyRequestReversalModal({ intent, request, onClose, onSubmit,
   });
 
   const previewQuery = useQuery({
-    queryKey:
-      intent === 'annul'
-        ? weeklyRequestKeys.annul(request?.id)
-        : weeklyRequestKeys.returnPreview(request?.id),
+    queryKey: weeklyReversalPreviewKey(intent, request?.id),
     queryFn: () =>
       intent === 'annul'
         ? weeklyRequestsApi.annulPreview(request!.id)
