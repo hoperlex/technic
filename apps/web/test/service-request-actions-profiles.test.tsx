@@ -12,6 +12,7 @@ import {
   estimatePendingServiceRequest,
   serviceExecutor,
   serviceInHouseExecutor,
+  serviceOperator,
   serviceRequest,
 } from './factories/service';
 import { serviceRequestMenuItems } from '../src/pages/service/serviceRequestMenu';
@@ -30,7 +31,7 @@ import {
  * them: a change to one predicate moves an item for one profile and nobody notices until the
  * owner walks the roles again. Each scenario ships with the decision it guards (plan §Р5): this
  * file starts with the estimate scenarios of stage Э2 (Р6); the scenarios of the later stages are
- * added by them.
+ * added by them (the consumables scenarios of stage Э4 — Р7, Р8 — are the last two blocks).
  */
 
 /** Windows that open nothing: the item list does not depend on what the windows are. */
@@ -58,13 +59,17 @@ const RUN = { start: () => {}, approve: () => {}, rollbackStart: () => {} };
 
 const DOCUMENT_FEATURES = ['service_estimate_document_mode', 'service_estimate_exemption'] as const;
 
-function keysFor(request: ServiceRequestDto, user: AuthUser): string[] {
+function itemsFor(request: ServiceRequestDto, user: AuthUser) {
   return serviceRequestMenuItems(request, {
     user,
     can: permissionChecks(user).can,
     modals: MODALS,
     run: RUN,
-  }).map((item) => item.key);
+  });
+}
+
+function keysFor(request: ServiceRequestDto, user: AuthUser): string[] {
+  return itemsFor(request, user).map((item) => item.key);
 }
 
 /** Every estimate action of the set: the money step, the three decisions and the dispute. */
@@ -158,5 +163,111 @@ describe(`${SERVICE} по ремонту: объём работ и закрыт�
       service: assignedServiceRequest().service,
     });
     expect(keysFor(request, contractor)).toContain('reopen');
+  });
+});
+
+/** The composition row a consumables request carries; the same row for every reader of the case. */
+const TONER = {
+  id: 'line-1',
+  consumableId: 'c-1',
+  code: 'RC201',
+  name: 'Тонер Ricoh 201',
+  color: null,
+  requestedQuantity: 2,
+  issuedQuantity: null,
+  issueNote: '',
+} satisfies ServiceRequestDto['consumables'][number];
+
+/** A consumables request handed to the service company alone (the contractor brings the toner). */
+function contractorConsumables(status: ServiceRequestStatus): ServiceRequestDto {
+  return assignedServiceRequest({
+    kind: 'consumable',
+    status,
+    consumables: [TONER],
+    executors: [],
+  });
+}
+
+/** The same request without a contractor: our shelf, the in-house administrator is named. */
+function ownConsumables(status: ServiceRequestStatus): ServiceRequestDto {
+  return serviceRequest({ kind: 'consumable', status, consumables: [TONER], ...NAMED_ONLY });
+}
+
+const STATE_OF_ISSUE: ServiceRequestStatus[] = ['in_work', 'done'];
+
+describe(`${SERVICE} по расходникам: номенклатуры, выдачи и отмены нет, ход в «Решена» есть (Р7, Р8)`, () => {
+  it('«Новая»: принять в работу; ни состава, ни выдачи, ни отмены', () => {
+    const keys = keysFor(contractorConsumables('new'), contractor);
+    expect(keys).toContain('start');
+    for (const key of ['consumables', 'consumables-issued', 'cancel']) {
+      expect(keys, key).not.toContain(key);
+    }
+  });
+
+  it('«В работе»: ход в «Решена» назван своим именем; ни состава, ни выдачи, ни отмены', () => {
+    const items = itemsFor(contractorConsumables('in_work'), contractor);
+    const complete = items.find((item) => item.key === 'complete');
+    expect(complete?.label).toBe('Перевести в «Решена»');
+    // Nothing is wrong with the move itself: the contractor closes his own request.
+    expect(complete?.disabled).toBeFalsy();
+    for (const key of ['consumables', 'consumables-issued', 'cancel']) {
+      expect(
+        items.map((item) => item.key),
+        key,
+      ).not.toContain(key);
+    }
+  });
+
+  it('контроль: у ремонта того же подрядчика ход называется по-прежнему «Закрыть работы»', () => {
+    const items = itemsFor(
+      assignedServiceRequest({ status: 'in_work', executors: [] }),
+      contractor,
+    );
+    expect(items.find((item) => item.key === 'complete')?.label).toBe('Закрыть работы');
+  });
+});
+
+describe('склад не двигается у заявки подрядчика: отметки выдачи нет ни у кого (Р8)', () => {
+  const operator = serviceOperator();
+
+  it.each(STATE_OF_ISSUE)('статус «%s»: ни «Ведению», ни ИТ, ни самому подрядчику', (status) => {
+    const request = contractorConsumables(status);
+    for (const [who, user] of [
+      ['«Ведение»', operator],
+      [IT, itAdmin],
+      [SERVICE, contractor],
+    ] as const) {
+      expect(keysFor(request, user), `${who}, ${status}`).not.toContain('consumables-issued');
+    }
+  });
+
+  it.each(STATE_OF_ISSUE)(
+    'смешанное назначение, статус «%s»: и свой сисадмин остаётся без неё',
+    (status) => {
+      const mixed = assignedServiceRequest({ kind: 'consumable', status, consumables: [TONER] });
+      expect(serviceExecutorAssignment(mixed, itAdmin).isNamedExecutor).toBe(true);
+      expect(keysFor(mixed, itAdmin)).not.toContain('consumables-issued');
+    },
+  );
+
+  it.each(STATE_OF_ISSUE)(
+    'контроль, статус «%s»: у своей заявки (подрядчика нет) пункт есть у «Ведения» и у назначенного ИТ',
+    (status) => {
+      const request = ownConsumables(status);
+      expect(keysFor(request, operator), `«Ведение», ${status}`).toContain('consumables-issued');
+      expect(keysFor(request, itAdmin), `${IT}, ${status}`).toContain('consumables-issued');
+    },
+  );
+
+  it('состав заявки подрядчика ведёт своя сторона: пункт есть у назначенного ИТ, у подрядчика нет', () => {
+    // The contractor does not see the nomenclature, so he does not fill it in; the own side does —
+    // applying the Р7 rule to the REQUEST alone would take the item from the people who fill it.
+    const mixed = assignedServiceRequest({
+      kind: 'consumable',
+      status: 'in_work',
+      consumables: [],
+    });
+    expect(keysFor(mixed, itAdmin)).toContain('consumables');
+    expect(keysFor(mixed, contractor)).not.toContain('consumables');
   });
 });

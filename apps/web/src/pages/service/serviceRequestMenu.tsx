@@ -16,6 +16,7 @@ import {
   canResumeService,
   hasServiceClosingDocument,
   serviceIsFirstAssignment,
+  serviceRequestConsumablesAreOurs,
   serviceRequestNeedsClosingDocument,
   type ServiceRequestDto,
 } from '@technic/contracts';
@@ -195,9 +196,21 @@ export function serviceRequestMenuItems(
         kind: request.kind,
         serviceCounterpartyId: request.service?.id ?? null,
       }) && !hasServiceClosingDocument(request, request.estimateFormat ?? null);
+    /*
+     * On a consumables request with a contractor the person who presses the item issues nothing
+     * (workflow-fixes plan Р8): «Закрыть работы» reads as a report of an issue, and the move is
+     * only the hand-over of the request to acceptance. It is named for what it does. The move itself
+     * and its permissions stay those of the item — only the words differ.
+     */
+    const supplied =
+      request.kind === 'consumable' &&
+      !serviceRequestConsumablesAreOurs({
+        kind: request.kind,
+        serviceCounterpartyId: request.service?.id ?? null,
+      });
     items.push({
       key: 'complete',
-      label: 'Закрыть работы',
+      label: supplied ? 'Перевести в «Решена»' : 'Закрыть работы',
       icon: <CheckCircleOutlined />,
       primary: !needsDoc,
       toStatus: 'done',

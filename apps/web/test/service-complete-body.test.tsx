@@ -174,7 +174,7 @@ describe('close-works body: contractor repair with rows', () => {
   });
 });
 
-describe('close-works body: the other three modes', () => {
+describe('close-works body: the other modes', () => {
   it('consumables: the fact of every line, an untouched one included', async () => {
     const raw = renderComplete(
       serviceRequest({
@@ -197,6 +197,29 @@ describe('close-works body: the other three modes', () => {
         '{"id":"src-1","issuedQuantity":1,"issueNote":"на складе был один"},' +
         '{"id":"src-2","issuedQuantity":1,"issueNote":""}' +
         '],"adjustmentAmount":null,"adjustmentReason":"","comment":"","version":3}',
+    );
+  });
+
+  it('consumables with a contractor on the request: no lines and no `consumables` key (Р8)', async () => {
+    // The warehouse does not move on a contractor's request (workflow-fixes plan Р8): the window
+    // asks for a date and words only, and the issue rows the server would refuse are not drawn —
+    // even when the card still carries a composition row (the contractor's own card has none).
+    const raw = renderComplete(
+      serviceRequest({
+        kind: 'consumable',
+        status: 'in_work',
+        service: { ...SERVICE_COUNTERPARTY },
+        consumables: [consumableLine({})],
+      }),
+    );
+    await screen.findByText('Расходники привозит подрядчик');
+    expect(screen.queryByLabelText(/^Выдано: /)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Перевести в «Решена»' }));
+    await waitFor(() => expect(raw).toHaveLength(1));
+    expect(raw[0]).toBe(
+      `{"completedOn":"${TODAY()}","items":[],"adjustmentAmount":null,` +
+        '"adjustmentReason":"","comment":"","version":3}',
     );
   });
 

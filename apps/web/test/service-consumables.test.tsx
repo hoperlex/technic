@@ -13,7 +13,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { equipmentSelectorOption, equipmentSelectorRoutes } from './factories/officeEquipment';
-import { SERVICE_COUNTERPARTY, serviceExecutor, serviceRequest } from './factories/service';
+import { serviceInHouseExecutor, serviceRequest } from './factories/service';
 import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
 import { ServiceRequestViewModal } from '../src/pages/service/ServiceRequestViewModal';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
@@ -689,15 +689,19 @@ function renderTab(items: ServiceRequestDto[], user: AuthUser = OPERATOR): void 
 }
 
 /**
- * Заявка на расходники, отданная сервисной компании: только на ней и открыт пункт правки состава —
- * сторону исполнителя спрашивает контрактный `actsAsServiceExecutor`, а «Ведение» состава не пишет.
+ * Заявка на расходники, которую ведёт свой сисадмин поимённо: состав заполняет сторона исполнителя
+ * (контрактный `actsAsServiceExecutor`), «Ведение» его не пишет. Подрядчика на заявке нет нарочно:
+ * номенклатуры он не видит и состав не правит (Р7 плана `office-equipment-workflow-fixes-plan.md`),
+ * а пункт правки состава у такой заявки спрашивают у её исполнителя из своих.
  */
 function executorRequest(lines: ServiceRequestConsumableDto[]): ServiceRequestDto {
   return serviceRequest({
     kind: 'consumable',
     status: 'in_work',
     consumables: lines,
-    service: { ...SERVICE_COUNTERPARTY },
+    executors: [
+      { userId: 'user-9', name: 'Сисадминов С. С.', assignedAt: '2026-08-05T10:00:00.000Z' },
+    ],
   });
 }
 
@@ -748,13 +752,13 @@ describe('подпись пункта состава (Р13)', () => {
    * читают, кнопкой под таблицей), и второе место показа берёт ту же подпись у того же набора.
    */
   it('у пустого состава пункт зовёт его заполнить', async () => {
-    renderTab([executorRequest([])], serviceExecutor());
+    renderTab([executorRequest([])], serviceInHouseExecutor());
 
     expect(await rowActionLabels()).toContain('Заполнить расходники');
   });
 
   it('у собранного состава пункт зовёт его изменить', async () => {
-    renderTab([executorRequest([line()])], serviceExecutor());
+    renderTab([executorRequest([line()])], serviceInHouseExecutor());
 
     const labels = await rowActionLabels();
     expect(labels).toContain('Изменить расходники');

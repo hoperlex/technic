@@ -10,6 +10,8 @@ import {
   actsForCounterparty,
   isServiceExecutor,
   isServiceRequestEditable,
+  serviceConsumablesHiddenFrom,
+  serviceRequestConsumablesAreOurs,
   type ServiceActionRequest,
   type ServiceExecutorAssignment,
   type ServiceRequestDto,
@@ -95,6 +97,9 @@ export function serviceRequestExtraItems(
   if (
     mayAct &&
     request.kind === 'consumable' &&
+    // The contractor does not see the nomenclature and does not fill it in (workflow-fixes plan
+    // Р7): the server refuses him, and the item that would lead to that refusal is not drawn.
+    !serviceConsumablesHiddenFrom(request, ctx.user) &&
     !request.consumables.some((line) => line.issuedQuantity !== null) &&
     actsAsServiceExecutor(ctx.user, assignment, ctx.can)
   ) {
@@ -123,7 +128,13 @@ export function serviceRequestExtraItems(
    */
   if (
     mayAct &&
-    request.kind === 'consumable' &&
+    // The shelf is ours only without a contractor on the request (workflow-fixes plan Р8): with
+    // one, nobody marks an issue — «Ведение» and the in-house executor included — and the server
+    // answers the mark with a refusal. The same contracts function stands in the door.
+    serviceRequestConsumablesAreOurs({
+      kind: request.kind,
+      serviceCounterpartyId: request.service?.id ?? null,
+    }) &&
     (request.status === 'in_work' || request.status === 'done') &&
     (isServiceExecutor(ctx.user, assignment, ctx.can) || ctx.can('serviceRequests.status'))
   ) {

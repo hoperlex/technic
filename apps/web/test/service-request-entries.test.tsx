@@ -351,8 +351,11 @@ function requestsIn(status: ServiceRequestStatus): ServiceRequestDto[] {
     // именно так заявка и доживает до приёмки.
     assignedServiceRequest({ status, files: [serviceRequestFile('act')] }),
     estimatePendingServiceRequest({ status, service: { ...SERVICE_COUNTERPARTY } }),
-    // Расходники: объёма работ у них нет, зато есть состав расходников и отметка выдачи.
+    // Расходники: объёма работ у них нет, зато есть состав расходников и отметка выдачи. Две строки:
+    // с подрядчиком состав ведёт своя сторона, а склад не двигается (Р7, Р8 плана
+    // `office-equipment-workflow-fixes-plan.md`), и отметка выдачи есть только у заявки без него.
     assignedServiceRequest({ status, kind: 'consumable' }),
+    assignedServiceRequest({ status, kind: 'consumable', service: null }),
     /*
      * Освобождение от подписи применено (Р3): без этой строки «Оспорить освобождение» не появилось
      * бы ни разу — предикат спора спрашивает не статус, а четвёрку признаков автопринятия, — и

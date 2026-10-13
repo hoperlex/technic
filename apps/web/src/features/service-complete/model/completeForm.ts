@@ -1,5 +1,6 @@
 import type { Dayjs } from 'dayjs';
 import {
+  serviceRequestConsumablesAreOurs,
   serviceRequestNeedsEstimate,
   type CompleteServiceRequestInput,
   type ServiceRequestDto,
@@ -23,7 +24,9 @@ const DATE = 'YYYY-MM-DD';
  *   mark, no discount, and a sum nobody knows yet;
  * - `inHouse` — the company's own administrator (R6 of
  *   `office-equipment-card-and-list-cleanup-plan.md`): a date and optional words, no money;
- * - `consumable` — what was issued from the warehouse (R3, §6.2), no estimate at all.
+ * - `consumable` — what was issued from the warehouse (R3, §6.2), no estimate at all;
+ * - `supplied` — a consumables request with a contractor on it: the warehouse does not move
+ *   (workflow-fixes plan Р8), so there are no issue rows to fill in, only the date and words.
  *
  * The money question is asked through the contracts' `serviceRequestNeedsEstimate` (R4) — the same
  * function the server's closing branch asks — and NOT through "does the request have rows". A
@@ -40,10 +43,19 @@ const DATE = 'YYYY-MM-DD';
  * created, and one already created is a fact of the request that a switch must not turn back
  * into zeros on screen.
  */
-export type CompleteMode = 'items' | 'document' | 'inHouse' | 'consumable';
+export type CompleteMode = 'items' | 'document' | 'inHouse' | 'consumable' | 'supplied';
 
 export function completeMode(request: ServiceRequestDto): CompleteMode {
-  if (request.kind === 'consumable') return 'consumable';
+  if (request.kind === 'consumable') {
+    // The same contracts function as the server's closing branch and the issue item of the menu:
+    // the window must not ask for rows the server will not take.
+    return serviceRequestConsumablesAreOurs({
+      kind: request.kind,
+      serviceCounterpartyId: request.service?.id ?? null,
+    })
+      ? 'consumable'
+      : 'supplied';
+  }
   // The DTO carries the company as an object, the predicate wants its id — the same translation
   // the actions menu does next to the closing-document bar.
   const priced = serviceRequestNeedsEstimate({

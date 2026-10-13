@@ -156,12 +156,18 @@ export function ServiceCompleteModal({
 
   return (
     <FormModal
-      title={request ? `Закрытие работ ${request.displayNumber}` : 'Закрытие работ'}
+      title={
+        mode === 'supplied'
+          ? `Перевод в «Решена» ${request?.displayNumber ?? ''}`.trim()
+          : request
+            ? `Закрытие работ ${request.displayNumber}`
+            : 'Закрытие работ'
+      }
       open={!!request}
       onCancel={onClose}
       onSubmit={() => form.submit()}
       confirmLoading={mutation.isPending}
-      okText="Закрыть работы"
+      okText={mode === 'supplied' ? 'Перевести в «Решена»' : 'Закрыть работы'}
       width={720}
     >
       {request && values && (
@@ -187,7 +193,14 @@ export function ServiceCompleteModal({
              * revision, no sum — and «Согласована ревизия 0 на 0,00 ₽» would name figures that are
              * not there.
              */}
-            {mode === 'consumable' ? (
+            {mode === 'supplied' ? (
+              <ServiceHint
+                coordinator={coordinator}
+                level="info"
+                title="Расходники привозит подрядчик"
+                description="Склад по этой заявке не двигается, отметок выдачи не нужно. Укажите дату — заявка уйдёт на приёмку."
+              />
+            ) : mode === 'consumable' ? (
               <ServiceHint
                 coordinator={coordinator}
                 level="info"
@@ -255,7 +268,9 @@ export function ServiceCompleteModal({
                 placeholder={
                   mode === 'inHouse'
                     ? 'Что сделали — необязательно: например, заменили ролик подачи'
-                    : 'Комментарий: что сделали и чего не понадобилось'
+                    : mode === 'supplied'
+                      ? 'Комментарий — необязательно'
+                      : 'Комментарий: что сделали и чего не понадобилось'
                 }
               />
             </Form.Item>

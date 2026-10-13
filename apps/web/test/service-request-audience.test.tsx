@@ -6,6 +6,7 @@ import { renderWithUser } from './render';
 import { emptyList, list } from './factories/common';
 import {
   serviceCustomer,
+  serviceExecutor,
   serviceGlobalRequester,
   serviceOperator,
   serviceRequest,
@@ -181,6 +182,69 @@ describe('вкладка «Объём работ» — по аудитории �
     // два («По объёму работ» и «По акту»), и оба законны: `findAllByText`, а не `findByText`.
     expect(await screen.findAllByText(/7\s?100,00/)).not.toHaveLength(0);
     expect(screen.getByText('Ролик подачи')).toBeDefined();
+  });
+});
+
+// ── Заявка на расходники у подрядчика (Р7) ────────────────────────────────────
+
+/** The card of a consumables request as «Ведение» reads it: the composition and a document. */
+const CONSUMABLES_FULL = serviceRequest({
+  kind: 'consumable',
+  status: 'in_work',
+  service: { ...SERVICE },
+  audience: 'finance',
+  consumables: [
+    {
+      id: 'line-1',
+      consumableId: 'c-1',
+      code: 'RC201',
+      name: 'Тонер Ricoh 201',
+      color: null,
+      requestedQuantity: 2,
+      issuedQuantity: null,
+      issueNote: '',
+    },
+  ],
+  files: [serviceRequestFile('attachment')],
+});
+
+/** The same request as the SERVER answers the contractor: the composition and the documents are cut. */
+const CONSUMABLES_CUT = { ...CONSUMABLES_FULL, consumables: [], files: [] };
+
+describe('заявка на расходники у подрядчика: вкладок две (Р7)', () => {
+  it('подрядчику без расходников и без документов: «Заявка» и «История»', async () => {
+    renderCard(CONSUMABLES_CUT, serviceExecutor());
+    await screen.findByRole('tab', { name: 'Заявка' });
+
+    expect(tabNames()).toEqual(['Заявка', 'История']);
+    expect(screen.queryByRole('tab', { name: 'Расходники' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Документы' })).toBeNull();
+  });
+
+  it('вкладка следствие правила, а не его замена: полный ответ подрядчику вкладок не строит', async () => {
+    // A server that forgot the cut must not be repaired by markup — but the portal does not draw
+    // the tabs the rule closes either, and the nomenclature never reaches the page.
+    renderCard(CONSUMABLES_FULL, serviceExecutor());
+    await screen.findByRole('tab', { name: 'Заявка' });
+
+    expect(tabNames()).toEqual(['Заявка', 'История']);
+    expect(screen.queryByText('Тонер Ricoh 201')).toBeNull();
+  });
+
+  it('«Ведению» по той же заявке — «Расходники» и «Документы» на месте, состав виден', async () => {
+    renderCard(CONSUMABLES_FULL, serviceOperator());
+    await screen.findByRole('tab', { name: 'Заявка' });
+
+    expect(tabNames()).toEqual(['Заявка', 'Расходники', 'Документы', 'История']);
+    fireEvent.click(screen.getByRole('tab', { name: 'Расходники' }));
+    expect(await screen.findByText('Тонер Ricoh 201')).toBeDefined();
+  });
+
+  it('контроль: ремонт того же подрядчика вкладок не теряет', async () => {
+    renderCard(repair({ audience: 'finance' }), serviceExecutor());
+    await screen.findByRole('tab', { name: 'Заявка' });
+
+    expect(tabNames()).toContain('Документы');
   });
 });
 

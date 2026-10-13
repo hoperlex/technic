@@ -1,25 +1,23 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Badge, Button, Space, Spin, Tabs, Typography } from 'antd';
-import { MessageOutlined, PlayCircleOutlined, ProfileOutlined } from '@ant-design/icons';
+import { Badge, Button, Spin, Tabs, Typography } from 'antd';
+import { MessageOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
   type RequestHistoryEntryDto,
   type ServiceRequestDto,
   serviceRequestChangeLabels,
+  serviceConsumablesHiddenFrom,
   serviceRequestNeedsEstimate,
   serviceRequestStatusColors,
   serviceRequestStatusLabels,
 } from '@technic/contracts';
-import {
-  ServiceConsumablesTable,
-  serviceRequestKeys,
-  serviceRequestsApi,
-} from '@entities/service-request';
+import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { useAuth } from '@entities/session';
 import { ActionMenuButton, ActionSheet, ViewFields, ViewModal } from '@shared/ui';
 import type { ServiceMenuItem } from './serviceStatusChoices';
 import { useIsMobile } from '@shared/lib';
 import { type HistoryRow, RequestHistoryTable } from '@entities/request-history';
+import { ServiceRequestConsumablesTab } from './ServiceRequestConsumablesTab';
 import { ServiceRequestDocuments } from './ServiceRequestDocuments';
 import { ServiceRequestEstimate } from './ServiceRequestEstimate';
 import { cardMenuItems } from './serviceMenuPlacement';
@@ -120,6 +118,13 @@ export function ServiceRequestViewModal({
     placeholderData: row ?? undefined,
   });
   const request = row ? (fresh ?? row) : null;
+  /*
+   * The contractor's tabs follow the SERVER cut, not replace it (workflow-fixes plan Р7): the
+   * composition and the documents of a consumables request are already absent from his response,
+   * and a tab left empty would answer «нет расходников» where the truth is «вам не показывают».
+   * The question is the contracts pair, so the card and the server cannot disagree about it.
+   */
+  const nomenclatureHidden = request ? serviceConsumablesHiddenFrom(request, user) : false;
 
   const { data: history, isPending } = useQuery({
     queryKey: serviceRequestKeys.history(request?.id ?? ''),
@@ -304,28 +309,17 @@ export function ServiceRequestViewModal({
              * данных либо вкладкой с пустой таблицей.
              */
             ...(request.kind === 'consumable'
-              ? [
-                  {
-                    key: 'consumables',
-                    label: 'Расходники',
-                    children: (
-                      <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-                        <ServiceConsumablesTable lines={request.consumables} />
-                        {consumables && (
-                          <Button
-                            type="link"
-                            size="small"
-                            icon={<ProfileOutlined />}
-                            style={{ padding: 0, alignSelf: 'flex-start' }}
-                            onClick={consumables.onClick}
-                          >
-                            {consumables.label}
-                          </Button>
-                        )}
-                      </Space>
-                    ),
-                  },
-                ]
+              ? nomenclatureHidden
+                ? []
+                : [
+                    {
+                      key: 'consumables',
+                      label: 'Расходники',
+                      children: (
+                        <ServiceRequestConsumablesTab request={request} edit={consumables} />
+                      ),
+                    },
+                  ]
               : /*
                  * Объём работ есть не у всякого ремонта (Р7), и обе половины условия обязательны.
                  *
@@ -356,11 +350,15 @@ export function ServiceRequestViewModal({
                     },
                   ]
                 : []),
-            {
-              key: 'documents',
-              label: 'Документы',
-              children: <ServiceRequestDocuments request={request} />,
-            },
+            ...(nomenclatureHidden
+              ? []
+              : [
+                  {
+                    key: 'documents',
+                    label: 'Документы',
+                    children: <ServiceRequestDocuments request={request} />,
+                  },
+                ]),
             {
               key: 'history',
               label: 'История',
