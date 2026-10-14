@@ -108,6 +108,13 @@ pre-migration `--restore-db` dump fails `restore_gate` check 3.
 `--cutover` тоже отказывает). Маркер удаляет тот же коммит, который привозит миграции, — забыть
 снять его невозможно по построению.
 
+After a server move, the migration journal and the running images may survive while
+`last_healthy.sha` and `freeze.done` do not. If the entire required set is already applied,
+`deploy-auto` can reconstruct those marks only when `release.state` names a revision containing the
+set, all three running images match both that revision's tags and `:latest`, and the current API
+passes its readiness check. A missing tag, mismatched image, or failed health keeps the R28 refusal;
+inspect the copied state and running release before retrying. Never create either mark by hand.
+
 ### A migration fails with `canceling statement due to lock timeout`
 
 A migration that takes a strong lock on a live table (ACCESS EXCLUSIVE or SHARE ROW EXCLUSIVE; in

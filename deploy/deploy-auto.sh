@@ -2113,6 +2113,22 @@ past_ok() {
   done < "$FREEZE_REQ"
 }
 
+# A server move may preserve the database and running images but lose deploy state files.
+# Recovering the healthy SHA is safe only when the recorded current release is actually running,
+# its three images still match :latest, and the API passes the same readiness gate as a deploy.
+# release.state alone is insufficient: it is written before health and may name a failed release.
+current_is_healthy_latest() {
+  local sha="$1" repo tagged latest running
+  [ -n "$sha" ] || return 1
+  for repo in "${IMAGES[@]}"; do
+    tagged="$(docker image inspect --format '{{.Id}}' "$repo:$sha" 2>/dev/null)" || return 1
+    latest="$(docker image inspect --format '{{.Id}}' "$repo:latest" 2>/dev/null)" || return 1
+    running="$(docker inspect --type container --format '{{if .State.Running}}{{.Image}}{{end}}' "$repo" 2>/dev/null)" || return 1
+    [ -n "$running" ] && [ "$running" = "$tagged" ] && [ "$running" = "$latest" ] || return 1
+  done
+  health_check
+}
+
 freeze_req_names() { list_clean "$(cat "$FREEZE_REQ" 2>/dev/null || true)"; }
 
 # Файл требований, который есть, но ничего не называет, — сломанный артефакт релиза: по такому
@@ -3083,11 +3099,20 @@ if [ -r "$FREEZE_REQ" ]; then
   if [ -z "$FREEZE_LEFT" ]; then
     # Набор применён целиком. Есть отметка о завершении — правило молчит.
     if [ ! -r "$FREEZE_DONE" ]; then
-      # Отметку либо потеряли, либо здоровый релиз — уже сам выкат 3 (маркер он удалил сам, и
-      # узнать это можно только по файлам набора в его дереве). Оба состояния законны.
-      { frozen_ok "$FREEZE_HS" || past_ok "$FREEZE_HS"; } || {
-        REASON="миграции набора применены мимо заморозки (Р28): последний здоровый релиз не знает ни выпуска 2, ни этих миграций. Выкатите выпуск 2 «Заморозка», дождитесь зелёного health и повторите"
-        fail "$REASON"; }
+      # A missing completion mark is valid if the last healthy release is frozen or already past
+      # this migration set. After a host move, reconstruct a missing/stale healthy SHA only from
+      # matching running images, matching :latest tags, and a fresh readiness check. This cannot
+      # bless a pre-freeze release or a release that started but never passed health.
+      if ! { frozen_ok "$FREEZE_HS" || past_ok "$FREEZE_HS"; }; then
+        if past_ok "$CURRENT_BEFORE" && current_is_healthy_latest "$CURRENT_BEFORE"; then
+          FREEZE_HS="$CURRENT_BEFORE"
+          write_last_healthy "$FREEZE_HS"
+          log "  последний здоровый релиз восстановлен по работающим образам и health: $FREEZE_HS"
+        else
+          REASON="миграции набора применены мимо заморозки (Р28): последний здоровый релиз не знает ни выпуска 2, ни этих миграций, а запущенные образы/health не подтвердили текущий релиз. Сверьте release.state, last_healthy.sha и теги образов перед повтором"
+          fail "$REASON"
+        fi
+      fi
       printf 'sha=%s\nrecovered=1\n' "$COMMIT_SHA" | write_state_atomic "$FREEZE_DONE"
       rm -f "$FREEZE_TRANSITION"; fsync_path "$STATE_DIR"
       log "  отметка о завершённом переходе восстановлена (журнал и $LAST_HEALTHY_SHA согласны)"
