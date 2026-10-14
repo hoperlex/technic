@@ -1,33 +1,36 @@
--- Шаг 1e перехода expand/contract: `user_role_addons` удаляется (план реструктуризации модели
--- доступа §13 и §15, шаги 1d/1e; ADR 0106 §9).
+-- Step 1e of the expand/contract transition: `user_role_addons` is dropped (access model
+-- restructuring plan §13 and §15, steps 1d/1e; ADR 0106 §9).
 --
--- ПОДГОТОВЛЕН, НО НЕ ВЫКАЧЕН — см. `pending/README.md`.
+-- PREPARED, NOT DEPLOYED — see `pending/README.md`.
 --
--- УСЛОВИЕ ГОТОВНОСТИ — ровно одно, и оно про порядок релизов: **шаг 1d выкачен ПРЕДЫДУЩИМ релизом
--- и приложение перезапущено.** Удали таблицу тем же релизом, который прекращает в неё писать, —
--- миграция снесёт её ДО перезапуска, и работающий код прежней версии, продолжающий двойную запись,
--- начнёт падать на каждой правке надстроек учётки. У шага 1d миграций нет вовсе (он целиком в
--- коде), поэтому подтверждается он не журналом `_migrations`, а версией образа: релиз, где
--- `replaceUserAddons` больше не пишет в старую таблицу, обязан быть уже запущен.
+-- READINESS CONDITION — exactly one, and it is about the order of releases: **step 1d was deployed
+-- by the PREVIOUS release and the application was restarted.** Drop the table in the same release
+-- that stops writing to it, and the migration removes it BEFORE the restart: the running code of the
+-- previous version, still writing both ways, starts failing on every edit of an account's add-ons.
+-- Step 1d has no migrations at all (it lives entirely in code), so it is confirmed not by the
+-- `_migrations` journal but by the image version: the release in which `replaceUserAddons` no
+-- longer writes to the old table must already be running.
 --
--- ЧТЕНИЕ ПЕРЕКЛЮЧЕНО ДАВНО (шаг 1c): права считаются по `user_grants`/`grant_permissions`, а
--- последний читатель старой таблицы — `addonsOfUser`, база разницы при правке карточки — переходит
--- на наборы шагом 1d. К этому файлу читателей у таблицы не остаётся ни одного.
+-- READING SWITCHED LONG AGO (step 1c): permissions are computed from `user_grants` /
+-- `grant_permissions`, and the last reader of the old table — `addonsOfUser`, the base of the diff
+-- when an account card is edited — moves to grants in step 1d. By this file the table has no readers
+-- left.
 --
--- ОБРАТИМОСТЬ. Односторонняя, и это признано планом: после 1e откат к версиям, читающим
--- `user_role_addons` (1c и глубже), невозможен — таблицы нет, и вернуть её может только PITR.
--- Откат `1e → 1d` при этом безопасен: версия 1d старую таблицу не читает и не пишет. Отсюда
--- требование к самому выкату — прогнать `backfill:grants --check` НЕ перед ним, а перед 1d: с
--- прекращением записи старая таблица начинает отставать, и сверка после 1d показывает расхождение
--- законно (см. runbook, «Перенос полномочий из надстроек роли»).
+-- REVERSIBILITY. One-way, and the plan accepts that: after 1e a rollback to versions that read
+-- `user_role_addons` (1c and older) is impossible — the table is gone and only PITR brings it back.
+-- A rollback `1e → 1d` is safe: version 1d neither reads nor writes the old table. Hence the
+-- requirement for the deploy itself: run `backfill:grants --check` NOT before it but before 1d; once
+-- writing stops the old table falls behind, and a check after 1d shows a divergence legitimately
+-- (see the runbook, "Role add-ons moved into assignable grants (ADR 0106)").
 --
--- ЧТО УЕЗЖАЕТ ВМЕСТЕ С ФАЙЛОМ (правки кода того же релиза — иначе сервер упадёт на старте
--- стартовой сверкой схемы или на первом же обращении):
---   · `apps/api/src/db/schema.ts` — `userRoleAddons`, `roleAddonEnum`, тип `UserRoleAddonRow`;
---   · `apps/api/src/services/user-scopes.ts` — `roleAddonsExpr` и `addonsByUserIds`, оставленные
---     на 1c ради откатываемости и с этого релиза не откатываемые никуда;
---   · `apps/api/src/backfill-grants.ts` вместе со скриптом `backfill:grants` в `package.json` и
---     своим db-тестом: перенос читает исчезнувшую таблицу и без неё не запускается вовсе.
+-- WHAT LEAVES TOGETHER WITH THE FILE (code edits of the same release — otherwise the server fails
+-- at the startup schema check or on the very first request):
+--   · `apps/api/src/db/schema.ts` — `userRoleAddons`, `roleAddonEnum`, the type `UserRoleAddonRow`;
+--   · `apps/api/src/services/user-scopes.ts` — `roleAddonsExpr` and `addonsByUserIds`, kept in 1c
+--     for rollbackability and not rollbackable anywhere from this release on;
+--   · `apps/api/src/backfill-grants.ts` together with the `backfill:grants` script in
+--     `package.json` and its db test: the transfer reads the vanished table and cannot even start
+--     without it.
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
 -- 0. Lock timeout.
@@ -45,25 +48,26 @@
 SET LOCAL lock_timeout = '10s';
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
--- 1. Таблица.
+-- 1. The table.
 --
--- Без `IF EXISTS`: отсутствие таблицы здесь — не «уже сделано», а признак того, что база не та
--- или журнал разошёлся с диском, и молчать об этом нечего. Идемпотентность миграции обеспечивает
--- журнал `_migrations`, а не сослагательное наклонение в SQL.
+-- No `IF EXISTS`: a missing table here does not mean "already done", it means a wrong database or
+-- a journal that drifted from disk, and that must not pass silently. Idempotence is the job of the
+-- `_migrations` journal, not of conditional SQL.
 DROP TABLE user_role_addons;
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
--- 2. Тип.
+-- 2. The type.
 --
--- `role_addon` (миграция `0106`, расширен `0117`) обслуживал ровно одну колонку — `addon`
--- удалённой таблицы. Значение набора с шага 1a хранится текстом (`grants.code`) именно затем, что
--- набор заводится в проде, а значение enum ни создать, ни удалить из интерфейса нельзя.
+-- `role_addon` (migration `0106`, extended by `0117`) served exactly one column — `addon` of the
+-- dropped table. Since step 1a a grant's value is stored as text (`grants.code`) precisely because
+-- grants are created on prod, while an enum value can be neither created nor removed from the UI.
 --
--- Удаление типа тем же файлом безопасно и самопроверяемо: останься где-нибудь колонка этого типа,
--- Postgres откажет и уронит миграцию — то есть весь выкат — вместо того, чтобы оставить висящий
--- тип. Обратимость сохраняется: тип воссоздаётся двумя строками, а данных в нём нет.
+-- Dropping the type in the same file is safe and self-checking: were a column of this type left
+-- anywhere, Postgres would refuse and fail the migration — that is, the whole deploy — instead of
+-- leaving a dangling type. Reversibility stays: the type is recreated in two lines, and it holds no
+-- data.
 --
--- В контрактах при этом `RoleAddon` остаётся: это TypeScript-объединение двух кодов системных
--- наборов (`SYSTEM_GRANT_CODES ... satisfies readonly RoleAddon[]`), от типа в базе оно не
--- зависело никогда, а поле `addons` в DTO уходит своим шагом витрины (§10.1 плана).
+-- In the contracts `RoleAddon` stays: it is a TypeScript union of the two system grant codes
+-- (`SYSTEM_GRANT_CODES ... satisfies readonly RoleAddon[]`), it never depended on the database
+-- type, and the `addons` field of the DTO leaves in its own showcase step (§10.1 of the plan).
 DROP TYPE role_addon;
