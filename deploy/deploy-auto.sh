@@ -1430,8 +1430,8 @@ write_report() {
   log "отчёт: $report"
 }
 
-# Восстановление знает, на каком шаге упало. ВАЖНО: после применённых миграций и после
-# up -d авто-отката кода НЕ делаем — иначе «старый код + новая схема». Оператор рядом.
+# Recovery uses the failed step. Once migrations have committed, restarting the previous image
+# would put old code on a newer schema; the operator must reconcile the database and image first.
 recover() {
   local code=$?
   [ "$code" -eq 0 ] && return 0
@@ -1457,7 +1457,9 @@ recover() {
   elif [ "$MIGRATION_ATTEMPTED" -eq 1 ]; then
     warn "миграции могли примениться частично. Сервисы работают на СТАРОМ коде (up -d не выполнялся)."
     warn "дамп до наката: $DUMP_FILE"
-    warn "согласованный откат: deploy-auto --previous --restore-db=$DUMP_FILE (или PITR)"
+    warn "сверьте журнал миграций и причину отказа; при тайм-ауте блокировки устраните блокирующий запрос и повторите deploy-auto."
+    warn "если новые миграции уже применились, restore_gate отвергнет предмиграционный дамп: откат схемы — PITR к состоянию до наката и подходящий образ кода."
+    warn "старый API на новой схеме не перезапускайте (см. runbook)."
   elif [ "$SERVICES_STOPPED" -eq 1 ]; then
     warn "поднимаю остановленные сервисы на ${CURRENT_BEFORE:-latest}"
     TAG="${CURRENT_BEFORE:-latest}" "${COMPOSE[@]}" up -d --no-build "${SERVICES[@]}" || true

@@ -215,16 +215,17 @@ export default tseslint.config(
       '**/*.config.{js,mjs,cjs,ts}',
       'apps/api/drizzle/**',
       'temp/**',
-      // Рабочий каталог системы обслуживания: производное состояние прогона. Там лежат не только
-      // отчёты, но и ИЗОЛИРОВАННЫЕ КОПИИ ДЕРЕВА, которыми она проверяет партии, — линт, зашедший
-      // туда, проверял бы репозиторий дважды и падал на файлах, которых нет ни в одном tsconfig.
+      // Maintenance runs keep isolated repository copies here. Linting them applies this checkout's
+      // configuration to another revision and turns a source check into a duplicate-tree check.
       '.maintenance/**',
       // Agent worktrees are full repository copies, not source owned by this checkout. Scanning
       // them duplicates the project and applies this checkout's tsconfig to another commit.
       '.claude/worktrees/**',
+      // The task journal may contain a Git worktree; ignored files must not become lint inputs.
+      '.local/**',
 
-      // Фикстуры границ слоёв: заведомо неверные импорты там — материал теста, а не código
-      // портала. Их проверяет apps/web/test/boundaries.test.ts своим конфигом.
+      // Boundary fixtures deliberately contain forbidden imports; their dedicated test uses its
+      // own configuration rather than treating them as portal source.
       'apps/web/test/fixtures/**',
     ],
   },

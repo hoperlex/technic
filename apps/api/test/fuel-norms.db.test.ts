@@ -323,15 +323,14 @@ async function submit(personId: string, date: string, items: ReportItemSubmit[],
   );
 }
 
-/** Открыть день и сдать по нему одну строку: сценариев в файле много, шагов у них два. */
+/** Every scenario submits one reading through the same two-step day flow. */
 async function reportDay(personId: string, date: string, reading: ReadingInput): Promise<void> {
   const opened = await report(personId, date);
   expect(opened.items).toHaveLength(1);
   await submit(personId, date, [line(opened.items[0]!.id, reading)]);
 }
 
-
-// ── Чтение агрегата ──
+// ── Aggregate reads ──
 
 async function fleetRowOf(vehicleId: string, from: string, to: string) {
   const rows = await ctx.aggregate.loadFleetStats(from, to);
@@ -611,11 +610,17 @@ describe.skipIf(!DB_URL)('сверка расхода топлива с норм
     expect(months.length, 'период обязан пересекать границу месяца').toBeGreaterThan(1);
     const sum = (pick: (m: ReadingMonthRow) => number) =>
       months.reduce((acc, month) => acc + pick(month), 0);
-    expect(card!.total.fuelSpentLiters).toBeCloseTo(sum((m) => m.fuelSpentLiters), 5);
-    expect(card!.total.fuelNormLiters).toBeCloseTo(sum((m) => m.fuelNormLiters), 5);
+    expect(card!.total.fuelSpentLiters).toBeCloseTo(
+      sum((m) => m.fuelSpentLiters),
+      5,
+    );
+    expect(card!.total.fuelNormLiters).toBeCloseTo(
+      sum((m) => m.fuelNormLiters),
+      5,
+    );
     expect(card!.total.verifiedShifts).toBe(sum((m) => m.verifiedShifts));
     expect(card!.total.shiftsWithFuel).toBe(sum((m) => m.shiftsWithFuel));
-    // Карточка несёт допуск и признак нормы: без них портал не покрасил бы превышение (Р12б, Р15а).
+    // The portal needs both the norm flag and tolerance to mark an overrun (Р12б, Р15а).
     expect(card!.hasNorm).toBe(true);
     expect(card!.tolerancePercent).toBeGreaterThanOrEqual(0);
   });
