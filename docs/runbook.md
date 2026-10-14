@@ -126,10 +126,12 @@ error. With it the wait ends after 10 s, and the output of `deploy-auto` reads:
 **State.** The files before `<file>` are committed and stay (the runner commits each file in its own
 transaction); `<file>` is rolled back whole and has no journal row; nothing was restarted, and the
 old release keeps serving — every file of a window is self-contained, so the old code serves on any
-prefix of it. The `--previous --restore-db` the failure message suggests is **not** needed here. Until
-the rerun, do not restart `technic-api` or `technic-worker` and do not run `--maintenance` or
-`--client-floor`: all of them recreate the API on the old image, which refuses to boot on the newer
-schema (see «Limit of code-only `--previous`» above).
+prefix of it. The `--previous --restore-db` the failure message suggests is **not** needed here,
+and once any file of the run is applied the restore gate refuses it anyway («текущая схема новее
+дампа»): the schema rollback left is PITR. Until the rerun, do not restart `technic-api` or
+`technic-worker` and do not run `--maintenance` or `--client-floor`: all of them recreate the API
+on the old image, which refuses to boot on the newer schema (see «Limit of code-only `--previous`»
+above).
 
 **Find the blocker.** The migration has given up, but the blocker usually still holds its
 transaction. Connect through `db-tools` and run both queries; the table is the one the header of
