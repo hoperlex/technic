@@ -94,19 +94,19 @@
         },
         {
           "source": "src/pages/service/WarrantiesTab.tsx",
-          "gzip": 604004
+          "gzip": 604003
         },
         {
           "source": "src/pages/service/ArchiveTab.tsx",
-          "gzip": 621817
+          "gzip": 621818
         },
         {
           "source": "src/pages/service/EquipmentTab.tsx",
-          "gzip": 605267
+          "gzip": 605266
         },
         {
           "source": "src/pages/service/ConsumablesTab.tsx",
-          "gzip": 586513
+          "gzip": 586512
         }
       ]
     },
