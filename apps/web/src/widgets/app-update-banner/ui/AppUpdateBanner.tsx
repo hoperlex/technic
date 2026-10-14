@@ -133,8 +133,11 @@ export function AppUpdateBanner() {
       style={{
         position: 'fixed',
         insetInline: 0,
-        // Stay above mobile navigation (ADR 0030), otherwise it would cover the update actions.
-        bottom: isMobile ? 'calc(56px + var(--safe-bottom) + 8px)' : 16,
+        // Stay above mobile navigation (ADR 0030), otherwise it would cover the update actions; the
+        // navigation's height is the stylesheet's token, so the two cannot drift apart.
+        bottom: isMobile
+          ? 'calc(var(--mobile-bar-height) + var(--safe-bottom) + var(--gap-xs))'
+          : 16,
         display: 'flex',
         justifyContent: 'center',
         zIndex: 900,

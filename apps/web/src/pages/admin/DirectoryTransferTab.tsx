@@ -105,16 +105,16 @@ export function DirectoryTransferTab() {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 12 }}>
+    <div className="page-layout">
       <Typography.Paragraph type="secondary" style={{ margin: 0, maxWidth: 900 }}>
         Справочник выгружается файлом .xlsx, правится в редакторе таблиц и загружается обратно.
         Загрузка ничего не удаляет: она заводит новые строки и меняет существующие, а погасить
         строку можно колонкой «Активен». Перед записью портал показывает, что изменится.
       </Typography.Paragraph>
-      {/* Таблица прокручивается сама: полоса вкладок отдана содержимому целиком
-          (`.full-height-tabs` прячет переполнение), и без своей прокрутки последние справочники
-          просто обрезались бы низом экрана. */}
-      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto' }}>
+      {/* The table scrolls itself: the tab strip hands its whole height to the content
+          (`.full-height-tabs` hides the overflow), and without a scroll of its own the last
+          directories would simply be cut off by the bottom of the screen. */}
+      <div className="page-layout__body page-layout__body--scroll">
         <Table<DirectoryInfoDto>
           rowKey="key"
           size="small"

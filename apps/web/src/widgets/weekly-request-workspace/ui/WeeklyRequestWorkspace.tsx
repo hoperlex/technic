@@ -38,10 +38,10 @@ export function WeeklyRequestWorkspace() {
 
   const blockedByWeek = !!weekState.weekBlocker;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 12 }}>
+    <div className="page-layout">
       <WeeklyRequestHeader request={request} onBack={workspace.goBack} />
 
-      <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', paddingRight: 4 }}>
+      <div className="page-layout__body page-layout__body--scroll" style={{ paddingRight: 4 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <WeeklyRequestBanners
             request={request}
