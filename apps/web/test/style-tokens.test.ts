@@ -2,7 +2,6 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { theme as antdTheme } from 'antd';
-import type { GlobalToken } from 'antd';
 import { themeFor } from '../src/theme';
 
 /**
@@ -22,7 +21,9 @@ import { themeFor } from '../src/theme';
 const src = join(import.meta.dirname, '../src');
 const stylesCss = readFileSync(join(src, 'styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
-const MIRRORED: Record<string, keyof GlobalToken> = {
+type DesignToken = ReturnType<typeof antdTheme.getDesignToken>;
+
+const MIRRORED: Record<string, keyof DesignToken> = {
   '--gap-xxs': 'sizeXXS',
   '--gap-xs': 'sizeXS',
   '--gap-sm': 'sizeSM',
@@ -51,11 +52,18 @@ const OWN = [
   '--z-sider-toggle',
 ];
 
+/** The first capture group of every match: the regexes below always have exactly one. */
+function captures(text: string, re: RegExp): string[] {
+  return [...text.matchAll(re)].map((m) => m[1] ?? '');
+}
+
 function rootTokens(): Map<string, string> {
   const tokens = new Map<string, string>();
-  for (const block of stylesCss.matchAll(/(?:^|\})\s*:root\s*\{([^}]*)\}/g))
-    for (const [, name, value] of block[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g))
-      tokens.set(name, value.trim());
+  for (const block of captures(stylesCss, /(?:^|\})\s*:root\s*\{([^}]*)\}/g))
+    for (const declaration of captures(block, /(--[\w-]+\s*:[^;]+);/g)) {
+      const colon = declaration.indexOf(':');
+      tokens.set(declaration.slice(0, colon).trim(), declaration.slice(colon + 1).trim());
+    }
   return tokens;
 }
 
@@ -100,12 +108,10 @@ describe('style tokens', () => {
     // that no :root declares is an error. antd's own variables and the ones a component sets inline
     // (the driver scale, the view-field columns) are not tokens.
     const files = sources(src).map((path) => readFileSync(path, 'utf8'));
-    const setInline = new Set(
-      files.flatMap((f) => [...f.matchAll(/['"](--[\w-]+)['"]\s*:/g)].map((m) => m[1])),
-    );
+    const setInline = new Set(files.flatMap((f) => captures(f, /['"](--[\w-]+)['"]\s*:/g)));
     const unknown = new Set<string>();
     for (const file of files)
-      for (const [, name] of file.matchAll(/var\((--[\w-]+)/g))
+      for (const name of captures(file, /var\((--[\w-]+)/g))
         if (!name.startsWith('--ant-') && !setInline.has(name) && !tokens.has(name))
           unknown.add(name);
     expect([...unknown]).toEqual([]);
