@@ -48,7 +48,8 @@
 -- serving.
 -- The previous server REFUSES to start on a schema with migrations its image does not know
 -- (`assertMigrationsApplied`, "База новее кода"), so a code-only `--previous` after this release
--- cannot boot; the consistent rollback is `--previous --restore-db` (runbook, section «Откат»).
+-- cannot boot; schema rollback needs PITR to the pre-migration state and the matching code image.
+-- The pre-migration dump is rejected by `restore_gate` after this file commits (runbook, «Откат»).
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
 -- 1. Preconditions: the row to switch and the trace that makes the narrowing complete.

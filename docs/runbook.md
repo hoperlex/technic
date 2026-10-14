@@ -54,10 +54,10 @@ and what to run — [Client floor preflight and the raise to 7](#client-floor-pr
 откат ещё разрешён. Рядом с закреплённым дампом лежат `<дамп>.release.state` и
 `<дамп>.schema-floor.state` — снимок состояния на момент записи границы.
 
-**Откат:** `--previous` возвращает прошлый код без пересборки, но схему НЕ откатывает;
-согласованный откат — `deploy-auto --previous --restore-db`. Важно: `pg_restore --clean`
-не гарантирует полный откат схемы (объекты новее дампа могут остаться) — authoritative
-schema-откат — **Yandex Managed PG PITR** (метку времени печатает `--restore-db`). Отсюда
+**Откат:** `--previous` возвращает прошлый код без пересборки, но схему НЕ откатывает.
+После применения новых миграций `restore_gate` отклоняет предмиграционный дамп: `pg_restore --clean`
+не удаляет объекты, созданные позже дампа. Согласованный откат схемы — **Yandex Managed PG PITR**
+к состоянию до миграций вместе с подходящим образом кода. Отсюда
 правило: **миграции backwards-compatible** — после применённых миграций/`up -d` скрипт
 авто-отката кода НЕ делает.
 
@@ -67,8 +67,9 @@ refuses to START on a schema newer than itself: `assertMigrationsApplied`
 image does not carry, and there is no bypass. So after any release that carried migrations a
 code-only `--previous` brings up a container that cannot boot, and so does a restart of the old API
 container between the migrate step and `up -d`. Backwards-compatible migrations make the old code
-SAFE while it keeps serving through the window; they do not make it bootable. The working rollback
-after such a release is `--previous --restore-db`.
+SAFE while it keeps serving through the window; they do not make it bootable. After new migrations,
+the rollback needs PITR to the pre-migration state and an image matching that state; the
+pre-migration `--restore-db` dump fails `restore_gate` check 3.
 
 **Гейты отката (протокол выката §4–§5).** Оба разрушительных режима теперь fail-closed и молча не
 проходят:

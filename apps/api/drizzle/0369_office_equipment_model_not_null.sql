@@ -34,7 +34,8 @@
 -- schema while it keeps serving.
 -- The previous server REFUSES to start on a schema with migrations its image does not know
 -- (`assertMigrationsApplied`, "База новее кода"), so a code-only `--previous` after this release
--- cannot boot; the consistent rollback is `--previous --restore-db` (runbook, section «Откат»).
+-- cannot boot; schema rollback needs PITR to the pre-migration state and the matching code image.
+-- The pre-migration dump is rejected by `restore_gate` after this file commits (runbook, «Откат»).
 -- Schema: `ALTER TABLE office_equipment ALTER COLUMN model_id DROP NOT
 -- NULL` is safe at any time; the backfilled links are correct data and stay.
 

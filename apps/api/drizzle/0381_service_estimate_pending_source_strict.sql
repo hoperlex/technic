@@ -59,7 +59,8 @@
 -- schema while it keeps serving.
 -- The previous server REFUSES to start on a schema with migrations its image does not know
 -- (`assertMigrationsApplied`, "База новее кода"), so a code-only `--previous` after this release
--- cannot boot; the consistent rollback is `--previous --restore-db` (runbook, section «Откат»).
+-- cannot boot; schema rollback needs PITR to the pre-migration state and the matching code image.
+-- The pre-migration dump is rejected by `restore_gate` after this file commits (runbook, «Откат»).
 -- Code older than ADR 0183 opens a wait without an origin: besides the review of active document
 -- revisions the runbook already requires for it, such a rollback first weakens this constraint back
 -- to the release A text of 0306, together with the signature pair (the command is in the runbook,
