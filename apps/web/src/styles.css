@@ -1,11 +1,65 @@
-/* Отступы под вырез и «домашнюю полоску»: после viewport-fit=cover контент лежит под ними, и
-   закреплённые элементы (верхняя панель, нижняя навигация, кнопки форм) отступают сами.
-   На десктопе и на устройствах без выреза env() возвращает 0 — правила ничего не меняют. */
+/* Insets for the notch and the home indicator: with viewport-fit=cover the content lies under them,
+   so the pinned elements (top bar, bottom navigation, form buttons) step aside by themselves. On a
+   desktop and on devices without a notch env() returns 0, and the rules change nothing. */
 :root {
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
+
+  /* Tokens of this stylesheet (FSD plan, section 6). Every value is a literal on purpose. antd 6
+     declares its theme variables (--ant-*) on the css-var class it puts on its component roots,
+     not on :root, and a custom property is computed where it is declared: a :root token written
+     as var(--ant-color-primary) would resolve to nothing at :root, and every element would
+     inherit that nothing. So a token that mirrors a theme quantity repeats its value and names
+     the antd token beside it, and test/style-tokens.test.ts holds the two equal for the portal
+     theme (theme.ts): a theme change the stylesheet does not follow fails that test. A value
+     with no antd counterpart is marked "own".
+
+     Tokens are constants, not per-component knobs: no rule below :root redefines them, which is
+     also what lets a build be checked against the previous one by plain substitution.
+
+     Breakpoints are not tokens — a custom property cannot stand in a media query. The phone mode
+     has no breakpoint in CSS at all: it hangs on the is-mobile class (ADR 0030). */
+
+  /* Spacing: antd's size scale for this theme, steps of 4 px, under antd's names. Off-scale
+     values (2, 6, 10 px) and component geometry — room reserved for a button, a toggle's width —
+     stay literals next to their rule; so does a shorthand that mixes them with scale steps. */
+  --gap-xxs: 4px; /* sizeXXS */
+  --gap-xs: 8px; /* sizeXS */
+  --gap-sm: 12px; /* sizeSM */
+  --gap: 16px; /* size */
+  --gap-lg: 24px; /* sizeLG */
+  --gap-xxl: 48px; /* sizeXXL */
+
+  --radius: 6px; /* borderRadius, the seed in theme.ts */
+  --radius-lg: 8px; /* borderRadiusLG, derived by antd from that seed */
+
+  /* Text colours under antd's names: "secondary" is colorTextSecondary (0.65), while the grey that
+     Typography.Text type="secondary" paints is colorTextDescription (0.45). */
+  --text-secondary: rgba(0, 0, 0, 0.65); /* colorTextSecondary */
+  --text-description: rgba(0, 0, 0, 0.45); /* colorTextDescription */
+  --text-disabled: rgba(0, 0, 0, 0.25); /* colorTextDisabled */
+  --text-icon: rgba(0, 0, 0, 0.55); /* own: the glyph of a round icon button */
+
+  --color-primary: #1677ff; /* colorPrimary, the seed in theme.ts */
+  --color-primary-hover: #4096ff; /* colorPrimaryHover */
+  --color-primary-bg: #e6f4ff; /* colorPrimaryBg */
+  --bg-container: #fff; /* colorBgContainer */
+  --fill-tertiary: rgba(0, 0, 0, 0.04); /* colorFillTertiary: antd's hover fill of menu items */
+  --line-split: rgba(0, 0, 0, 0.06); /* own hairline: antd's colorSplit is rgba(5, 5, 5, 0.06) */
+
+  /* Height of the phone's app bar and of its bottom navigation; the update banner
+     (AppUpdateBanner) sits above the navigation by it. It equals Layout.headerHeight of theme.ts
+     but is not derived from it: that one sizes antd's Layout.Header on a monitor, this one is a
+     touch bar, and a change of one owes nothing to the other. */
+  --mobile-bar-height: 56px;
+
+  /* Stacking of the layers this stylesheet owns. antd's popups — modals, drawers, dropdowns,
+     messages — start at its zIndexPopupBase (1000) and must cover every one of them. */
+  --z-raised: 1; /* over its own neighbours in the flow */
+  --z-fab: 10; /* the list's create button over the cards */
+  --z-sider-toggle: 20; /* the collapse button on the seam of the sider and the content */
 }
 
 html,
@@ -15,7 +69,7 @@ body,
   margin: 0;
 }
 
-/* Табы на всю высоту: скроллится только тело таблицы, панель вкладок закреплена */
+/* Full-height tabs: only the table body scrolls, the tab bar stays pinned. */
 .full-height-tabs.ant-tabs {
   display: flex;
   flex-direction: column;
@@ -33,33 +87,74 @@ body,
   height: 100%;
 }
 
-/* Поля формы в две колонки (десктоп): длинная форма в узком окне прячет половину полей под
-   прокрутку, хотя справа пусто. На телефоне колонка одна — см. правило в мобильном разделе.
-   Отступ между строками не нужен: каждое поле несёт свой нижний отступ само. */
+/* Table page layout (shared/ui/PageTableLayout.tsx, desktop branch): the header and the toolbar
+   keep their height, only the body shrinks, and the table inside scrolls through DataTable's
+   scroll.y. A page or a tab that is not a table list but has the same "header, then a body that
+   takes the rest" shape uses the same classes rather than a copy of them. */
+.page-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: var(--gap-sm);
+}
+.page-layout__header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-sm);
+  flex-wrap: wrap;
+}
+/* A header holding only the action keeps it at the right edge. */
+.page-layout__header--end {
+  justify-content: flex-end;
+}
+/* There may be many filters: the block takes the free width and wraps them onto rows, while the
+   action on the right stays in place. */
+.page-layout__filters {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.page-layout__toolbar {
+  flex: 0 0 auto;
+}
+.page-layout__body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* A body with no DataTable inside scrolls itself. */
+.page-layout__body--scroll {
+  overflow-y: auto;
+}
+
+/* Form fields in two columns (desktop): a long form in a narrow window hides half of its fields
+   under the scroll while the right side stays empty. On the phone there is one column — see the
+   rule in the mobile section. No gap between rows: every field carries its own bottom margin. */
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 16px;
+  column-gap: var(--gap);
   align-items: start;
 }
-/* Поле, которому половина ширины вредна: адрес, комментарий, список файлов. */
+/* A field that half the width would spoil: an address, a comment, a list of files. */
 .form-grid__full {
   grid-column: 1 / -1;
 }
 
-/* Вспышка полей-блокеров при отказе формы (ADR 0094).
+/* Flash of the blocking fields when a form refuses to submit (ADR 0094).
 
-   Красная рамка сама по себе беззвучна: в длинной форме отказ выглядит так же, как её обычный
-   вид, и повторное нажатие кнопки читается как «она не работает». Вспышка отвечает именно на
-   нажатие — она идёт от тёмного к целевому красному, то есть заканчивается там, где поле и так
-   стоит, и ничем не мигает после себя.
+   A red border by itself is silent: in a long form a refusal looks the same as the form's usual
+   state, and a second press of the button reads as "it does not work". The flash answers the
+   press itself — it runs from a dark red to the target red, so it ends where the field already
+   stands and blinks nothing after itself.
 
-   Цвета заданы числами, а не токенами: `cssVar` у antd не включён (см. theme.ts), а это ровно
-   палитра его состояния ошибки — #ff4d4f и тёмный #a8071a из того же ряда.
+   The colours are antd's error palette spelled as numbers: #ff4d4f is colorError, the border antd
+   paints on an error field, and #a8071a and #fff1f0 are the dark and the pale step of the same
+   red row. They stay out of the tokens above because they belong to this flash alone.
 
-   Два набора кадров с одинаковым телом — не копипаста, а условие перезапуска: анимация
-   стартует заново только при смене `animation-name`, и второе нажатие с тем же блокером иначе
-   не дало бы ничего (класс на форме чередуется, см. useFormBlockers). */
+   Two keyframe sets with the same body are not a copy but the restart condition: an animation
+   starts again only when animation-name changes, and a second press with the same blocker would
+   otherwise show nothing (the class on the form alternates, see useFormBlockers). */
 .form-blockers--a .ant-form-item-has-error,
 .form-blockers--a
   .ant-form-item-has-error
@@ -98,9 +193,9 @@ body,
   }
 }
 
-/* Кому движение мешает — тому только пометка и прокрутка: сама по себе вспышка ничего не
-   сообщает сверх красного поля с подстрочником. Правило идёт после и той же силы, поэтому
-   `!important` не нужен. */
+/* Whoever is bothered by motion gets only the mark and the scroll: the flash by itself says
+   nothing beyond the red field with its message. The rule comes later with the same specificity,
+   so it needs no !important. */
 @media (prefers-reduced-motion: reduce) {
   .form-blockers .ant-form-item-has-error,
   .form-blockers
@@ -116,14 +211,15 @@ body,
   }
 }
 
-/* Адресное поле: переключатель «Из справочника» стоит напротив заголовка (ADR 0069).
+/* Address field: the «Из справочника» switch stands opposite the label (ADR 0069).
 
-   Он вынесен из самого заголовка и посажен поверх строки: внутри `<label>` чекбокс — это вложенный
-   `<label>`, и браузер отдал бы клик по нему полю адреса (открытый список подсказок вместо
-   переключения). Заголовку при этом остаются его звёздочка, подсказка и отступы, которые рисует
-   antd, — их не пришлось повторять руками.
+   It is taken out of the label and laid over the row: inside a <label> the checkbox is a nested
+   <label>, and the browser would hand a click on it to the address field (an open list of
+   suggestions instead of a toggle). The label keeps the asterisk, the tooltip and the spacing antd
+   draws for it — none of that had to be repeated by hand.
 
-   Место справа резервируется отступом: длинная подпись иначе уехала бы под переключатель. */
+   The room on the right is reserved by padding: a long label would otherwise slide under the
+   switch. */
 .address-field {
   position: relative;
 }
@@ -134,16 +230,16 @@ body,
   position: absolute;
   top: 0;
   right: 0;
-  z-index: 1;
+  z-index: var(--z-raised);
   display: flex;
   align-items: center;
   min-height: 22px;
 }
 
-/* Плотный ритм формы: поля стоят на 20% ближе обычного. Нужен окнам, где набор полей задан
-   заранее и читается целиком — карточка учётной записи с ролью, областью и признаком активности
-   при обычных отступах не помещалась на экран ноутбука, и последнее поле уходило под прокрутку.
-   На телефоне ритм остаётся обычным (правило в мобильном разделе): там поля разносит палец. */
+/* Dense form rhythm: fields stand 20% closer than usual. It serves windows whose set of fields is
+   fixed and read as a whole — the account card with role, scope and the active flag did not fit a
+   laptop screen at the usual spacing, and the last field went under the scroll. On the phone the
+   rhythm stays usual (rule in the mobile section): there the finger spaces the fields. */
 .form-dense .ant-form-item {
   margin-bottom: 20px;
 }
@@ -151,33 +247,35 @@ body,
   padding-bottom: 6px;
 }
 
-/* Пара полей в строку (`Row gutter`) внутри модального окна: зазор между колонками antd делает
-   их внутренними отступами, а края строки выравнивает отрицательными полями — и задаёт их стилем
-   в самой разметке, поверх которого правило отсюда не встаёт. Своих отступов у тела окна нет,
-   поэтому строка выходит за его край на половину зазора, и в теле появляется горизонтальная
-   полоса прокрутки на ровном месте. Выступ обрезается: за краем формы у него только пустое поле
-   колонки, а выпадающие списки и подсказки полей живут в порталах и обрезку не замечают.
-   По вертикали не обрезается ничего — `clip` действует по одной оси. */
+/* A pair of fields in a row (Row gutter) inside a modal: antd turns the gap between the columns
+   into their inner padding and aligns the row's edges with negative margins — set by a style in
+   the markup itself, which no rule from here overrides. The modal body has no padding of its own,
+   so the row sticks out past its edge by half the gap, and a horizontal scrollbar appears in the
+   body out of nowhere. The overhang is clipped: beyond the form's edge it holds only the column's
+   empty padding, and dropdowns and field tooltips live in portals and do not notice the clip.
+   Nothing is clipped vertically — clip acts on one axis. */
 .form-dense {
   overflow-x: clip;
 }
 
-/* Колонки карточки просмотра (ViewFields, десктоп): подписи занимают свою ширину, значения делят
-   остаток поровну.
+/* Columns of the view card (ViewFields, desktop): labels take their own width, values share the
+   rest equally.
 
-   Таблица раскладывается по содержимому, и все строки делят ширину сообща: длинный тег в одной
-   строке отбирал место у значений всех остальных. Столбец значений сжимался до 84 px — дата
-   ломалась посреди числа («05.08.2 026 – 07.08.2 026»), фамилия шла по букве в строке, при том
-   что справа оставалось пустое место. Ширины колонок здесь задаёт сетка, а не содержимое, и
-   раскладка строки больше не зависит от того, что попало в соседнюю.
+   A table lays out by its content, and all rows share the width together: a long tag in one row
+   took space from the values of all the others. The value column shrank to 84 px — a date broke
+   in the middle of a number («05.08.2 026 – 07.08.2 026»), a surname went one letter per line,
+   while space stayed empty on the right. Here the grid, not the content, sets the column widths,
+   and the layout of a row no longer depends on what got into the next one.
 
-   Сетка надевается на готовую разметку antd: строки и тело таблицы становятся «прозрачными»
-   (display: contents), а ячейки встают дорожками сетки сами. Ячейка значения объявляет ширину
-   атрибутом colspan (2 × число колонок поля − 1) — правила ниже переводят его в дорожки. */
+   The grid is laid over antd's ready markup: the rows and the table body become "transparent"
+   (display: contents), and the cells turn into grid tracks by themselves. A value cell declares its
+   width with the colspan attribute (2 × the field's columns − 1); the rules below turn it into
+   tracks. */
 .view-fields--grid .ant-descriptions-view table {
   display: grid;
-  /* Дорожка подписи — по её тексту, дорожка значения — поровну с прочими, но не уже своего
-     min-content: тег, который не переносится, раздвинет колонку, а не выедет за карточку. */
+  /* The label track follows its text; the value track shares equally with the others but is never
+     narrower than its min-content: a tag that does not wrap widens the column instead of sticking
+     out of the card. */
   grid-template-columns: repeat(var(--view-fields-columns), auto minmax(min-content, 1fr));
 }
 .view-fields--grid .ant-descriptions-view tbody,
@@ -194,13 +292,13 @@ body,
   grid-column: span 7;
 }
 
-/* Строка списка выбора с припиской справа (порядок цены у позиции классификатора): наименование
-   занимает свободную ширину и обрезается многоточием, приписка остаётся на месте. */
+/* An option row with a note on the right (the price order of a classifier item): the name takes
+   the free width and is cut with an ellipsis, the note stays in place. */
 .option-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--gap-sm);
 }
 .option-row__label {
   min-width: 0;
@@ -213,25 +311,26 @@ body,
   white-space: nowrap;
 }
 
-/* Блок аккаунта внизу боковой панели */
+/* The account block at the bottom of the sider. */
 .sider-account {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  border-radius: 6px;
+  gap: var(--gap-xs);
+  padding: var(--gap-xs);
+  border-radius: var(--radius);
   cursor: pointer;
   transition: background 0.15s ease;
 }
 .sider-account:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--fill-tertiary);
 }
 .sider-account--collapsed {
   justify-content: center;
-  padding: 8px 0;
+  padding: var(--gap-xs) 0;
 }
 
-/* Свёрнутая навигация: иконки пунктов с круглым выделением активного (под аватар) */
+/* Collapsed navigation: item icons with a round highlight of the active one (matching the
+   avatar). */
 .sider-mini-nav {
   display: flex;
   flex-direction: column;
@@ -250,7 +349,7 @@ body,
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--text-secondary);
   font-size: 16px;
   line-height: 1;
   transition:
@@ -258,37 +357,38 @@ body,
     color 0.15s ease;
 }
 .sider-mini-item:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--fill-tertiary);
 }
 .sider-mini-item--active {
-  background: #e6f4ff;
-  color: #1677ff;
+  background: var(--color-primary-bg);
+  color: var(--color-primary);
 }
 .sider-mini-item:disabled {
-  color: rgba(0, 0, 0, 0.25);
+  color: var(--text-disabled);
   cursor: default;
 }
 .sider-mini-item:disabled:hover {
   background: transparent;
 }
 
-/* Служебные пункты (поддержка, новости портала) — своей полосой над блоком аккаунта */
+/* Utility items (support, portal news) in their own strip above the account block. */
 .sider-utility {
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
-  padding: 4px 0;
+  border-top: 1px solid var(--line-split);
+  padding: var(--gap-xxs) 0;
 }
-/* Пометка «скоро» у пункта, реализация которого впереди: подсказкой её на телефоне не показать */
+/* The «скоро» mark of an item whose implementation is ahead: a tooltip could not show it on the
+   phone. */
 .menu-soon__mark {
   margin-inline-start: 6px;
   font-size: 11px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--text-description);
 }
 
-/* Кнопка сворачивания: круг на стыке боковой панели и контента, на уровне логотипа */
+/* The collapse button: a circle on the seam of the sider and the content, level with the logo. */
 .sider-toggle {
   position: absolute;
   top: 15px;
-  z-index: 20;
+  z-index: var(--z-sider-toggle);
   width: 26px;
   height: 26px;
   padding: 0;
@@ -299,13 +399,13 @@ body,
   justify-content: center;
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 50%;
-  background: #fff;
-  color: rgba(0, 0, 0, 0.55);
+  background: var(--bg-container);
+  color: var(--text-icon);
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
-  /* left анимируется в такт со сворачиванием Sider у Ant Design (0.2s) */
+  /* left animates in step with the collapse of antd's Sider (0.2s). */
   transition:
     left 0.2s,
     background 0.15s ease,
@@ -313,18 +413,18 @@ body,
     border-color 0.15s ease;
 }
 .sider-toggle:hover {
-  background: #e6f4ff;
-  border-color: #1677ff;
-  color: #1677ff;
+  background: var(--color-primary-bg);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 .sider-toggle:focus-visible {
-  outline: 2px solid #1677ff;
+  outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
 
-/* Строка списка, открывающая карточку записи кликом: указатель говорит, что по ней нажимают.
-   Ячейки с активным содержимым (колонка действий) клик строке не отдают — и указатель у них
-   обычный, чтобы не обещать открытия там, где его не будет. */
+/* A list row that opens the record's card on click: the pointer says it can be pressed. Cells with
+   active content (the actions column) do not pass the click to the row, and their pointer stays
+   the usual one so as not to promise an opening where there will be none. */
 .data-row--clickable {
   cursor: pointer;
 }
@@ -332,16 +432,16 @@ body,
   cursor: default;
 }
 
-/* Сворачиваемая ячейка (ExpandableCell): свёрнутая занимает столько строк, сколько соседние
-   колонки, развёрнутая показывает содержимое целиком. Место под переключатель отведено справа
-   отступом — иначе последняя видимая строка уходила бы под него. */
+/* A collapsible cell (ExpandableCell): collapsed, it takes as many lines as the neighbouring
+   columns; expanded, it shows the whole content. The room for the toggle is reserved on the right
+   by padding equal to the toggle's width — otherwise the last visible line would go under it. */
 .expandable-cell {
   position: relative;
   padding-right: 16px;
 }
 .expandable-cell__body {
   line-height: 1.35;
-  /* Длинный адрес и слово без пробелов переносятся внутри колонки, а не растягивают её. */
+  /* A long address or a word without spaces wraps inside the column instead of stretching it. */
   overflow-wrap: anywhere;
 }
 .expandable-cell__body--clamped {
@@ -349,7 +449,8 @@ body,
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-/* Полоса во всю высоту ячейки: сама стрелка мелкая, а целятся в неё мышью. */
+/* A strip the full height of the cell: the arrow itself is small, and it is aimed at with a
+   mouse. */
 .expandable-cell__toggle {
   position: absolute;
   top: 0;
@@ -362,98 +463,99 @@ body,
   padding: 2px 0 0;
   border: none;
   background: transparent;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--text-description);
   font-size: 10px;
   line-height: 1;
   cursor: pointer;
 }
 .expandable-cell__toggle:hover {
-  color: #1677ff;
+  color: var(--color-primary);
 }
 .expandable-cell__toggle:focus-visible {
-  outline: 2px solid #1677ff;
+  outline: 2px solid var(--color-primary);
   outline-offset: -2px;
 }
 
-/* Колонка «Заказ/адрес» гаражного дня (pages/garage/busyColumns.tsx): куда едет первая заведённая
-   работа водителя — состав рейса, «откуда — куда» перегона, площадка заказа. Две строки и обрез;
-   то, что за них не поместилось, уходит в подсказку — и подсказка появляется по замеру, а не
-   всегда (см. `useClipped` там же). Обрез, а не перенос: соседние колонки того же дня — рейс и
-   техника — стоят вровень с этой, и состав из трёх заявок увёл бы их вниз, разорвав чтение строки
-   поперёк. */
+/* The «Заказ/адрес» column of the garage day (pages/garage/busyColumns.tsx): where the driver's
+   first recorded work goes — the route's requests, the «откуда — куда» of a transfer, the order's
+   site. Two lines and a clip; what does not fit goes into a tooltip, and the tooltip appears by
+   measurement, not always (see useClipped there). A clip, not a wrap: the neighbouring columns of
+   the same day — the route and the vehicle — stand level with this one, and a route of three
+   requests would push them down, breaking the reading of the row across. */
 .garage-busy-order {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
-  /* Номер заявки и адрес переносятся внутри узкой колонки, а не растягивают её. */
+  /* A request number and an address wrap inside the narrow column instead of stretching it. */
   overflow-wrap: anywhere;
 }
 
-/* Переключатель «ещё N» у дня водителя (pages/garage/busyColumns.tsx): мелкая ссылка, какой подпись
-   и была, — но кнопка, чтобы её брали с клавиатуры. Своя, а не antd: волна нажатия у той спрашивает
-   вычисленные стили на каждый клик. */
+/* The «ещё N» toggle of a driver's day (pages/garage/busyColumns.tsx): a small link, as the label
+   always looked, but a button, so the keyboard reaches it. Our own rather than antd's: the click
+   wave of antd's button asks for computed styles on every click. */
 .garage-busy-more {
   padding: 0;
   border: 0;
   background: none;
   font: inherit;
   font-size: 12px;
-  color: #1677ff;
+  color: var(--color-primary);
   cursor: pointer;
 }
 .garage-busy-more:hover {
-  color: #4096ff;
+  color: var(--color-primary-hover);
 }
 
-/* Развёрнутый день водителя (pages/garage/busyColumns.tsx): работы стоят общей сеткой во всех трёх
-   графах — блок каждой берёт одну и ту же высоту, поэтому вторая работа в «Технике» стоит напротив
-   второй в «Рейсе». Своей высоты у ячеек нет: это три отдельные `td`, и связать их иначе, чем общей
-   меркой блока, нечем. Мерка — две строки (14 px и 12 px с обычным межстрочным): столько занимает
-   самая высокая работа — номер с бланком в «Рейсе», состав из двух заявок в «Заказе/адресе»,
-   обрезанный там же по двум строкам. Свёрнутой строке класс не ставится вовсе: работа в графе одна,
-   и общая мерка растила бы каждую строку страницы. */
+/* An expanded driver's day (pages/garage/busyColumns.tsx): the works stand in one grid across all
+   three columns — each work's block takes the same height, so the second work in «Техника» stands
+   opposite the second in «Рейс». The cells share no height of their own: they are three separate
+   td, and nothing but a common block measure ties them. The measure is two lines (14 px and 12 px
+   at the usual line height): that is what the tallest work takes — a number with its form in
+   «Рейс», a route of two requests in «Заказ/адрес», clipped there to two lines. A collapsed row
+   gets no class at all: there is one work per column, and the common measure would grow every row
+   of the page. */
 .garage-busy-stack > * {
   min-height: 44px;
 }
 
-/* Ячейки гаражного дня водителя (pages/garage/GarageDriversTab.tsx) — вровень по верху. Умолчание
-   браузера для ячейки таблицы — «по середине», и стоит графе «Рейс/путевой лист» вырасти до трёх
-   строк (номер, бланк, «ещё 2»), как однострочная «Техника» уезжает в вертикальный центр: номер
-   машины оказывается не напротив номера рейса, то есть строка перестаёт читаться поперёк — ровно
-   ради этого чтения день и разложен на три графы.
+/* The cells of a driver's garage day (pages/garage/GarageDriversTab.tsx) align to the top. The
+   browser's default for a table cell is the middle, and once «Рейс/путевой лист» grows to three
+   lines (number, form, «ещё 2»), the one-line «Техника» moves to the vertical centre: the
+   vehicle's number no longer stands opposite the route's number, so the row stops reading across —
+   and the day is laid out in three columns exactly for that reading.
 
-   Класс вешает `onCell` каждой колонки (`TOP_CELL` там же): своего `className` таблица `DataTable`
-   наружу не отдаёт, а ячейка чужие свойства принимает. Приём тот же, что у `.history-table` ниже,
-   только адресован ячейкам, а не таблице целиком. */
+   The class is set by each column's onCell (TOP_CELL there): DataTable does not hand out a
+   className of its own, while a cell accepts foreign props. The same device as .history-table
+   below, only addressed to the cells rather than the whole table. */
 .garage-day-cell.ant-table-cell {
   vertical-align: top;
 }
 
-/* Способ связи с поддержкой: ссылкой служит вся строка, а не подпись внутри неё — 52 px высоты
-   попадают и под палец на телефоне, и под курсор на мониторе, так что раскладка нужна одна. */
+/* A way to contact support: the whole row is the link, not the label inside it — 52 px of height
+   suit a finger on the phone and a cursor on a monitor alike, so one layout serves both. */
 .support-contact {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--gap-sm);
   min-height: 52px;
-  padding: 8px 12px;
+  padding: var(--gap-xs) var(--gap-sm);
   border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   color: inherit;
 }
 .support-contact + .support-contact {
-  margin-top: 8px;
+  margin-top: var(--gap-xs);
 }
 .support-contact:hover {
-  border-color: #1677ff;
+  border-color: var(--color-primary);
   background: rgba(0, 0, 0, 0.02);
   color: inherit;
 }
 .support-contact__icon {
   flex: 0 0 auto;
   font-size: 20px;
-  color: #1677ff;
+  color: var(--color-primary);
 }
 .support-contact__body {
   min-width: 0;
@@ -462,13 +564,14 @@ body,
 .support-contact__title,
 .support-contact__hint {
   display: block;
-  /* Тем же видом показываются руководства, а их название и пояснение вводит администратор: адрес
-     или «СОГЛАСОВАНИЕ_ЗАЯВОК_v3» без единого пробела иначе распирал бы окно по своей длине. */
+  /* Guides are shown in the same view, and their title and hint are typed by an administrator: an
+     address or «СОГЛАСОВАНИЕ_ЗАЯВОК_v3» without a single space would otherwise stretch the window
+     to its length. */
   overflow-wrap: anywhere;
 }
 .support-contact__hint {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--text-description);
 }
 
 /* Rows with actions at the end (shared/ui/ItemList.tsx), in place of antd `List`, deprecated in
@@ -576,12 +679,13 @@ body,
   }
 }
 
-/* ─── Мобильный режим (ADR 0030) ────────────────────────────────────────────────────────────
-   Все правила ниже действуют только при классе `is-mobile` на <html>: его ставит useIsMobile
-   по единственному медиазапросу портала. Копии медиазапроса в стилях нет намеренно. */
+/* ─── Mobile mode (ADR 0030) ─────────────────────────────────────────────────────────────────
+   Every rule below acts only with the is-mobile class on <html>: useIsMobile sets it by the
+   portal's single media query. The stylesheet holds no copy of that query on purpose. */
 
-/* Поле мельче 16 px Safari увеличивает при фокусе, и масштаб обратно не возвращается. Токен темы
-   покрывает элементы antd, это правило — всё остальное, включая нативные поля загрузки файлов. */
+/* Safari zooms into a field smaller than 16 px on focus, and the zoom does not come back. The
+   theme token covers antd's elements; this rule covers everything else, native file inputs
+   included. */
 .is-mobile input,
 .is-mobile textarea,
 .is-mobile select,
@@ -590,10 +694,11 @@ body,
   font-size: 16px;
 }
 
-/* Классы ниже принадлежат компонентам, которые рендерятся только в мобильной ветке каркаса,
-   поэтому предок `.is-mobile` им не нужен: на десктопе такой разметки не существует. */
+/* The classes below belong to components rendered only in the shell's mobile branch, so they need
+   no .is-mobile ancestor: on a desktop such markup does not exist. */
 
-/* Каркас: панель сверху, навигация снизу, содержимое между ними со своей прокруткой */
+/* Shell: the bar on top, the navigation at the bottom, the content between them with its own
+   scroll. */
 .mobile-shell {
   height: 100dvh;
   display: flex;
@@ -604,7 +709,7 @@ body,
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-  padding: 12px;
+  padding: var(--gap-sm);
 }
 
 .mobile-appbar {
@@ -612,10 +717,11 @@ body,
   display: flex;
   align-items: center;
   gap: 10px;
-  height: calc(56px + var(--safe-top));
-  padding: var(--safe-top) calc(12px + var(--safe-right)) 0 calc(12px + var(--safe-left));
-  background: #fff;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  height: calc(var(--mobile-bar-height) + var(--safe-top));
+  padding: var(--safe-top) calc(var(--gap-sm) + var(--safe-right)) 0
+    calc(var(--gap-sm) + var(--safe-left));
+  background: var(--bg-container);
+  border-bottom: 1px solid var(--line-split);
 }
 .mobile-appbar__title {
   flex: 1 1 auto;
@@ -627,7 +733,8 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Тач-цель 44×44 при аватаре 24: попасть пальцем важнее, чем сэкономить полоску экрана. */
+  /* A 44×44 touch target for a 24 px avatar: hitting it with a finger matters more than saving a
+     strip of the screen. */
   width: 44px;
   height: 44px;
   padding: 0;
@@ -637,7 +744,7 @@ body,
   cursor: pointer;
 }
 .mobile-appbar__account:active {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--fill-tertiary);
 }
 
 .mobile-nav {
@@ -645,8 +752,8 @@ body,
   display: flex;
   align-items: stretch;
   padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
-  background: #fff;
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  background: var(--bg-container);
+  border-top: 1px solid var(--line-split);
 }
 .mobile-nav__item {
   flex: 1 1 0;
@@ -656,15 +763,15 @@ body,
   align-items: center;
   justify-content: center;
   gap: 2px;
-  height: 56px;
-  padding: 0 4px;
+  height: var(--mobile-bar-height);
+  padding: 0 var(--gap-xxs);
   border: none;
   background: transparent;
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 .mobile-nav__item--active {
-  color: #1677ff;
+  color: var(--color-primary);
 }
 .mobile-nav__icon {
   font-size: 20px;
@@ -679,36 +786,37 @@ body,
   line-height: 1.2;
 }
 .mobile-nav__item:focus-visible {
-  outline: 2px solid #1677ff;
+  outline: 2px solid var(--color-primary);
   outline-offset: -2px;
 }
 
-/* Пара полей, стоящая в строку на десктопе, на телефоне укладывается в столбец.
-   Отступ между ними не нужен: каждое поле формы несёт свой нижний отступ само. */
+/* A pair of fields standing in a row on a desktop is stacked into a column on the phone. No gap
+   between them: every form field carries its own bottom margin. */
 .is-mobile .form-row {
   flex-direction: column;
   gap: 0;
 }
 
-/* Две колонки полей — приём десктопа: на 360 px половина ширины остаётся полоской, и форма в
-   шите идёт одной колонкой, в том же порядке, в каком её читают сверху вниз на десктопе. */
+/* Two columns of fields are a desktop device: at 360 px half the width is a strip, so the form in
+   a sheet goes in one column, in the order it is read top to bottom on the desktop. */
 .is-mobile .form-grid {
   grid-template-columns: 1fr;
 }
 
-/* Плотный ритм — тоже приём десктопа: в шите форму листают, а не охватывают взглядом, и сжатые
-   отступы там только сближают цели для пальца (ADR 0030). */
+/* The dense rhythm is a desktop device too: in a sheet the form is scrolled, not taken in at a
+   glance, and tight spacing there only brings the finger's targets closer (ADR 0030). These are
+   the margins antd itself gives a form (Form itemMarginBottom and the vertical label padding). */
 .is-mobile .form-dense .ant-form-item {
-  margin-bottom: 24px;
+  margin-bottom: var(--gap-lg);
 }
 .is-mobile .form-dense .ant-form-item-label {
-  padding-bottom: 8px;
+  padding-bottom: var(--gap-xs);
 }
 
-/* Кнопки формы-шита: делят ширину поровну, с отступом под «домашнюю полоску» */
+/* The buttons of a sheet form share the width equally, with room for the home indicator. */
 .sheet-footer {
   display: flex;
-  gap: 8px;
+  gap: var(--gap-xs);
   padding-bottom: var(--safe-bottom);
 }
 .sheet-footer > * {
@@ -716,79 +824,79 @@ body,
   min-width: 0;
 }
 
-/* Место виджета вкладки (сводка) под строкой вкладок; пока виджета нет — места не занимает */
+/* The slot of a tab's widget (a summary) under the tab strip; with no widget it takes no room. */
 .mobile-tabs-slot:not(:empty) {
   padding: 6px 0 2px;
 }
 
-/* Пустое состояние вкладки: на телефоне столько воздуха вокруг сообщения не нужно */
+/* A tab's empty state: on the phone the message needs less air around it. */
 .page-empty {
   display: flex;
   justify-content: center;
-  padding: 48px;
+  padding: var(--gap-xxl);
 }
 .is-mobile .page-empty {
-  padding: 24px 12px;
+  padding: var(--gap-lg) var(--gap-sm);
 }
 
-/* ─── Список на телефоне ───────────────────────────────────────────────────────────────── */
+/* ─── List on the phone ────────────────────────────────────────────────────────────────────── */
 
-/* Панель со входом в фильтры и сортировку закреплена, прокручивается только список */
+/* The bar with the entries to filters and sorting is pinned; only the list scrolls. */
 .mobile-page {
   position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
-  gap: 8px;
+  gap: var(--gap-xs);
 }
 .mobile-page__body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  /* Место под круглую кнопку создания: без него она накрывает последнюю карточку */
+  /* Room under the round create button: without it the button covers the last card. */
   padding-bottom: 72px;
 }
 
-/* Панель списка: строка поиска сверху, кнопки шитов под ней. Поиск на виду — в справочнике
-   «найти по названию» самое частое действие (ADR 0042). */
+/* The list bar: the search line on top, the sheet buttons under it. Search is in sight because in
+   a directory «find by name» is the most frequent action (ADR 0042). */
 .list-toolbar {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--gap-xs);
 }
 
-/* Главное действие списка: над нижней навигацией, у правого края большого пальца */
+/* The list's main action: above the bottom navigation, at the right edge under the thumb. */
 .list-fab {
   position: absolute;
   right: 4px;
   bottom: 8px;
-  z-index: 10;
+  z-index: var(--z-fab);
   width: 52px;
   height: 52px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.24);
 }
 
-/* Карточка записи: номер и статус в шапке, дальше — суть строки */
+/* A record card: the number and the status in the head, then the gist of the row. */
 .list-cards {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--gap-xs);
 }
 .list-cards--loading .list-card {
   opacity: 0.55;
   pointer-events: none;
 }
 .list-cards__loading {
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--text-secondary);
   font-size: 13px;
 }
 .list-card {
   position: relative;
   padding: 10px 40px 10px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 8px;
-  background: #fff;
+  border: 1px solid var(--line-split);
+  border-radius: var(--radius-lg);
+  background: var(--bg-container);
   line-height: 1.4;
 }
 .list-card--openable {
@@ -801,7 +909,7 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--gap-xs);
   margin-bottom: 2px;
 }
 .list-card__badge {
@@ -811,10 +919,10 @@ body,
   font-weight: 500;
 }
 .list-card__line {
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--text-secondary);
   font-size: 13px;
 }
-/* Меню действий: тач-цель 40×40 в правом верхнем углу карточки */
+/* The actions menu: a 40×40 touch target in the card's top right corner. */
 .list-card__more {
   position: absolute;
   top: 4px;
@@ -828,7 +936,7 @@ body,
   border: none;
   border-radius: 50%;
   background: transparent;
-  color: rgba(0, 0, 0, 0.55);
+  color: var(--text-icon);
   font-size: 18px;
   cursor: pointer;
 }
@@ -836,7 +944,7 @@ body,
   background: rgba(0, 0, 0, 0.06);
 }
 
-/* История заявки на телефоне: событие карточкой, подробности раскрываются касанием */
+/* Request history on the phone: an event per card, the details open with a tap. */
 .history-list {
   display: flex;
   flex-direction: column;
@@ -847,8 +955,8 @@ body,
   flex-direction: column;
   gap: 2px;
   padding: 8px 10px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 8px;
+  border: 1px solid var(--line-split);
+  border-radius: var(--radius-lg);
   line-height: 1.35;
 }
 .history-item--expandable {
@@ -858,28 +966,30 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--gap-xs);
   flex-wrap: wrap;
 }
-/* Суть события с изменениями: подстроки стопкой, вплотную и без разреженного межстрочья */
+/* The gist of an event with changes: the sub-lines stacked tight, with no loose line spacing. */
 .history-cell {
   display: flex;
   flex-direction: column;
   gap: 2px;
   line-height: 1.35;
 }
-/* Событие занимает несколько строк — баблы и «когда · кто» держатся за верх, а не за середину */
+/* An event takes several lines, so the bubbles and «когда · кто» hold to the top, not the
+   middle. */
 .history-table .ant-table-cell {
   vertical-align: top;
 }
 
-/* Кнопка-значок внутри таблицы: на телефоне ей нужна тач-цель, а не только видимая иконка */
+/* An icon button inside a table: on the phone it needs a touch target, not just the visible
+   icon. */
 .is-mobile .touch-icon.ant-btn {
   min-width: 36px;
   height: 36px;
 }
 
-/* Тег статуса в карточке — кнопка: открывает список переходов снизу */
+/* The status tag in a card is a button: it opens the list of moves from the bottom. */
 .status-trigger {
   display: inline-flex;
   align-items: center;
@@ -892,11 +1002,11 @@ body,
   opacity: 0.6;
 }
 
-/* Справочник на телефоне: таблица прокручивается вбок внутри своей рамки, страница — нет */
+/* A directory on the phone: the table scrolls sideways inside its frame, the page does not. */
 .list-scroll-table {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--gap-xs);
 }
 .list-scroll-table .ant-table-wrapper {
   max-width: 100%;
@@ -906,56 +1016,55 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 8px 0 4px;
+  gap: var(--gap-xs);
+  padding: var(--gap-xs) 0 var(--gap-xxs);
 }
 
-/* Полоса выбранного на телефоне: стоит над листалкой, чтобы не спорить с ней за ширину */
+/* The selection strip on the phone stands above the pager so as not to fight it for width. */
 .list-pager--selection {
   justify-content: flex-start;
   flex-wrap: wrap;
 }
 
 /*
- * Подвал таблицы со списком, где выбирают строки: слева полоса выбранного, справа управление
- * страницами. Одна строка на двоих — выбор относится ко всему списку, и его место там же, где
- * листалка, а не поверх таблицы.
+ * The footer of a table whose rows can be selected: the selection strip on the left, the page
+ * controls on the right. One line for both — a selection belongs to the whole list, and its place
+ * is next to the pager, not over the table.
  */
 .table-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--gap-sm);
   flex-wrap: wrap;
-  padding: 16px 0 0;
+  padding: var(--gap) 0 0;
 }
 
 .table-footer__bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--gap-xs);
   min-height: 32px;
 }
 
-/* Фильтры в шите: каждый во всю ширину, подпись сверху */
+/* Filters in a sheet: each one full width, its label on top. */
 .filter-sheet {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--gap-sm);
 }
 .filter-sheet__row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--gap-xxs);
 }
 .filter-sheet__label {
   font-size: 12px;
 }
 
-/* Действия и сортировка: пункты во всю ширину, подписи слева */
-/* Текст только для озвучивания. Причина, по которой пункт меню выключен, обязана достаться
-   программе чтения с экрана, но на экране она уже сказана подсказкой — второй раз показывать её
-   значило бы объяснять запрет тем, кто его и так видит. */
+/* Text for screen readers only. The reason a menu item is disabled must reach the screen reader,
+   but on the screen it is already told by the tooltip — showing it a second time would explain
+   the prohibition to those who already see it. */
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -968,6 +1077,7 @@ body,
   border: 0;
 }
 
+/* Actions and sorting: full-width items, labels on the left. */
 .action-sheet {
   display: flex;
   flex-direction: column;
@@ -979,51 +1089,54 @@ body,
   text-align: left;
 }
 .sort-sheet__option {
-  padding: 8px 0;
+  padding: var(--gap-xs) 0;
 }
 
-/* Ссылка на чужую запись в строке списка (`EntityLink`): номер маршрута, номер заявки, номер
-   листа. Выглядит ссылкой портала — иначе переход не отличить от обычного текста колонки. */
+/* A link to another record in a list row (EntityLink): a route number, a request number, a
+   waybill number. It looks like a portal link — otherwise the jump could not be told from the
+   column's plain text. */
 .entity-link {
-  color: #1677ff;
+  color: var(--color-primary);
   text-decoration: none;
 }
 .entity-link:hover {
-  color: #4096ff;
+  color: var(--color-primary-hover);
   text-decoration: underline;
 }
 
-/* ── Кабинет водителя: каркас и лист показаний (план driver-cabinet-ux-plan, Р1–Р3, П4) ── */
+/* ── Driver cabinet: shell and readings sheet (plan driver-cabinet-ux-plan, Р1–Р3, П4) ── */
 
 /*
- * Масштаб шрифта кабинета (Р1). Кабинет читают с телефона в кабине — в перчатках, на солнце и
- * стоя у машины, поэтому размер задаётся одной переменной на каркасе, а не правкой каждого
- * компонента: подобрать его на живом телефоне — работа одного значения, а не поиска по файлам.
+ * The cabinet's font scale (Р1). The cabinet is read from a phone in the cab — in gloves, in the
+ * sun, standing by the vehicle — so the size is set by one variable on the shell rather than by
+ * editing every component: tuning it on a live phone is the work of one value, not a search
+ * through files.
  *
- * Само значение приходит инлайном из TS-константы `DRIVER_FONT_SCALE` (`pages/driver/theme.ts`),
- * а запасное здесь нейтральное (1): дублировать число в таблице стилей значило бы завести второй
- * источник той же правды — и первая же правка масштаба разошлась бы с тем, что показывает портал.
+ * The value itself comes inline from the TS constant DRIVER_FONT_SCALE (pages/driver/theme.ts),
+ * and the fallback here is neutral (1): repeating the number in the stylesheet would create a
+ * second source of the same truth, and the first change of the scale would diverge from what the
+ * portal shows.
  *
- * Той же константой считается тема antd кабинета: правило ниже поднимает голый текст и подписи в
- * `em`, а размер полей, кнопок и календаря живёт в токене темы — до них таблица стилей не
- * дотягивается вовсе (план типографики, Р1).
+ * The cabinet's antd theme is computed from the same constant: the rule below raises bare text
+ * and labels in em, while the size of fields, buttons and the calendar lives in the theme token —
+ * the stylesheet does not reach them at all (typography plan, Р1).
  */
 .driver-shell {
   font-size: calc(16px * var(--driver-scale, 1));
   /*
-   * Горизонтальная прокрутка (Р2) берётся из непереносимого содержимого: подпись машины, номер
-   * листа, адрес заявки. Именно `clip`, а не `hidden`: `hidden` завёл бы область прокрутки, и
-   * липкая шапка кабинета перестала бы липнуть — своей она считает не страницу, а ближайшую
-   * прокручиваемую коробку. Заодно `clip` не обязывает вторую ось стать `auto`.
+   * Horizontal scrolling (Р2) comes from unbreakable content: a vehicle label, a waybill number, a
+   * request address. clip, not hidden: hidden would make a scroll container, and the cabinet's
+   * sticky header would stop sticking — it sticks to the nearest scrolling box, not to the page.
+   * clip also does not force the other axis to become auto.
    */
   overflow-x: clip;
 }
 
 /*
- * Потомкам — право сжиматься и переносить. `min-width: 0` здесь существенен: во flex-строке
- * потомок по умолчанию (`min-width: auto`) не сжимается меньше своего содержимого — это и
- * растягивает страницу вбок, а не «широкий» текст сам по себе. `anywhere` рвёт слово в любом
- * месте: номер листа и государственный знак пробелов не имеют вовсе.
+ * Descendants get the right to shrink and to wrap. min-width: 0 matters here: in a flex row a
+ * child by default (min-width: auto) does not shrink below its content — that is what stretches
+ * the page sideways, not "wide" text by itself. anywhere breaks a word at any point: a waybill
+ * number and a licence plate have no spaces at all.
  */
 .driver-shell * {
   min-width: 0;
@@ -1031,59 +1144,61 @@ body,
 }
 
 /*
- * Подвал страницы показаний (Р3) закреплён у нижнего края экрана, а не липнет к концу содержимого:
- * показания вводят стоя у машины, клавиатура занимает половину экрана, и кнопка, уехавшая вверх
- * вместе с прокруткой, означает несданный день. Имя без `sheet`: листа поверх задания больше нет,
- * подвал принадлежит самой странице (план driver-readings-first, Р4).
+ * The footer of the readings page (Р3) is fixed to the bottom edge of the screen instead of
+ * sticking to the end of the content: readings are entered standing by the vehicle, the keyboard
+ * takes half of the screen, and a button that rode up with the scroll means a day not handed in.
+ * The name has no "sheet": there is no sheet over the assignment any more, the footer belongs to
+ * the page itself (plan driver-readings-first, Р4).
  *
- * Смещение `bottom` задаёт страница замером `visualViewport` (Р9) — здесь стоит только исходное
- * значение: на настольном браузере и на Android поднимать подвал не над чем.
+ * The bottom offset is set by the page from a visualViewport measurement (Р9); only the initial
+ * value stands here: on a desktop browser and on Android there is nothing to lift the footer over.
  *
- * Фон непрозрачный и своя ступень наложения — под подвалом проезжает содержимое страницы. Нижний
- * отступ не меньше 8px даже там, где выреза экрана нет: кнопка вплотную к краю нажимается краем
- * пальца. Отступ содержимого под этот подвал — на стороне самой страницы: высоту своего подвала
- * знает она, а не таблица стилей.
+ * An opaque background and a stacking step of its own: the page content passes under the footer.
+ * The bottom padding is at least 8px even where the screen has no notch: a button flush with the
+ * edge is pressed with the edge of the finger. The content's room for this footer is on the page's
+ * side: the page knows its footer's height, the stylesheet does not.
  */
 .driver-footer {
   position: fixed;
   inset-inline: 0;
   bottom: 0;
-  z-index: 1;
-  background: #fff;
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
-  padding: 8px calc(12px + var(--safe-right)) max(var(--safe-bottom), 8px)
-    calc(12px + var(--safe-left));
+  z-index: var(--z-raised);
+  background: var(--bg-container);
+  border-top: 1px solid var(--line-split);
+  padding: var(--gap-xs) calc(var(--gap-sm) + var(--safe-right))
+    max(var(--safe-bottom), var(--gap-xs)) calc(var(--gap-sm) + var(--safe-left));
 }
 
 /*
- * Переход между показаниями и заданием (Р5) — ссылка во всю ширину шапки, а не строчка текста:
- * задание перестало быть первым экраном кабинета, и попасть в него нужно одним нажатием пальца.
- * Оформление сдержаннее строки долга намеренно: там новость, здесь навигация.
+ * The switch between the readings and the assignment (Р5) is a link the full width of the header,
+ * not a line of text: the assignment is no longer the cabinet's first screen, and it must be
+ * reached with one tap. The look is quieter than the debt line on purpose: that one is news, this
+ * one is navigation.
  */
 .driver-nav {
   display: block;
   width: 100%;
-  padding: 8px 12px;
+  padding: var(--gap-xs) var(--gap-sm);
   border: 1px solid #d9d9d9;
-  border-radius: 8px;
-  background: #fff;
-  color: #1677ff;
+  border-radius: var(--radius-lg);
+  background: var(--bg-container);
+  color: var(--color-primary);
   font-size: 1em;
   text-align: center;
   text-decoration: none;
 }
 
 /*
- * Строка «не сдано» в шапке (П4) — единственное место, где кабинет говорит о ДРУГОМ дне, поэтому
- * она не текст, а ссылка во всю ширину: на телефоне по ней попадают пальцем, и мелкая цель тут
- * стоила бы промаха по соседней кнопке.
+ * The «не сдано» line in the header (П4) is the only place where the cabinet speaks of ANOTHER
+ * day, so it is a full-width link rather than text: on the phone it is hit with a finger, and a
+ * small target here would cost a miss onto the neighbouring button.
  */
 .driver-pending {
   display: block;
   width: 100%;
-  padding: 8px 12px;
+  padding: var(--gap-xs) var(--gap-sm);
   border: 1px solid #ffe58f;
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: #fffbe6;
   color: #ad6800;
   font-size: 0.95em;
@@ -1091,10 +1206,10 @@ body,
 }
 
 /*
- * Дата в шапке кабинета (план типографики, Р2). Размер задаёт внутреннее поле ввода пикера, а не
- * его корень, — поэтому классом, а не инлайновым стилем: `style` на компоненте до `input` не
- * доходит. Полужирная и крупнее базы: это и подпись «где я во времени», и самая большая цель
- * шапки — по ней открывают календарь.
+ * The date in the cabinet header (typography plan, Р2). The size is set on the picker's inner
+ * input, not on its root — hence a class and not an inline style: a style on the component does
+ * not reach the input. Semibold and larger than the base: it is both the "where am I in time"
+ * label and the header's largest target — the calendar opens from it.
  */
 .driver-date .ant-picker-input > input {
   font-size: 1.15em;
@@ -1103,14 +1218,15 @@ body,
 }
 
 /*
- * Числовые поля показаний (Р4) — отдельно и крупнее прочего: их набирают пальцем и сверяют с
- * прибором, и это единственные значения кабинета, ошибка в которых уезжает в учёт. Величина —
- * произведение двух констант из `pages/driver/theme.ts`: общий масштаб кабинета и собственный
- * множитель чисел. Подняв им весь кабинет, мы получили бы ту же разницу, только выше: подписи
- * росли бы вместе с числами и снова сравнялись бы с ними.
+ * The numeric reading fields (Р4) stand apart and larger than the rest: they are typed with a
+ * finger and checked against the instrument, and they are the only values of the cabinet whose
+ * error goes into the accounts. The size is the product of two constants from
+ * pages/driver/theme.ts: the cabinet's overall scale and the numbers' own multiplier. Raising the
+ * whole cabinet by it would give the same difference, only higher: the labels would grow with the
+ * numbers and match them again.
  *
- * `tabular-nums` — цифры одной ширины: набранное не должно дёргаться при каждом знаке, а «1» и «7»
- * в пропорциональном начертании уже двигают строку.
+ * tabular-nums gives digits of one width: what is typed must not jitter with every character, and
+ * «1» and «7» in a proportional face already shift the line.
  */
 .driver-number .ant-input,
 .ant-input.driver-number {
