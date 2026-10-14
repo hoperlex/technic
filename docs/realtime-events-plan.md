@@ -96,9 +96,11 @@ plan closes — not only the seven timers.
   silently, a dirty one keeps its fields and the version it was filled with and shows the notice
   with "Reload". Nine forms use it: the receipt form and its deletion mark, the estimate editor, the
   weekly composition and its reversal, the equipment move, candidate review and declaration, and the
-  fuel-norm settings. Other edit forms are filled once per opening from a click-time snapshot —
-  `ServiceRequestForm` gets the `editing` state of its tab — so a reread does not reset them, but
-  they do not learn of a newer record either.
+  fuel-norm settings. Other edit forms are not on it. `ServiceRequestForm`, for one, is filled once
+  per opening from the click-time `editing` state of its tab, so a reread does not reset it, but it
+  does not learn of a newer record either; ADR 0222 decision 3 notes that "some forms still
+  initialize from live props". Which ones is audited per module stage
+  ([§8.3](#83-forms-tables-chat)).
 - `listQueryOptions` keeps the previous rows during a parameter change, and selection and bulk
   actions are disabled on placeholder rows (ADR 0222 decision 6).
 
@@ -532,9 +534,10 @@ everything is additive. A stage that depends on an open question waits for its a
 
 **Stage 3 — background operations.**
 
-- Receipt OCR (2 s) and the bulk run (1 s) become topics targeted at the initiator, fed by their own
-  tables (`auto_part_receipt_scans`, `service_request_bulk_operations`); their timers are gated.
-  Waste-ticket recognition results reach the screens through the waste removal topic in stage 4.
+- Receipt OCR (2 s) and the bulk run (1 s) become topics fed by their own tables
+  (`auto_part_receipt_scans`, `service_request_bulk_operations`) — targeted at the initiator or open
+  to the module audience, decided by the stage's inventory; their timers are gated. Waste-ticket
+  recognition results reach the screens through the waste removal topic in stage 4.
 - Acceptance: each state change arrives as an event; F5 in the middle of a run restores it; the two
   60 s ticket health timers stay — they are time-driven (§1).
 
