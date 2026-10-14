@@ -22,4 +22,16 @@
 -- No `IF EXISTS`: a missing table here does not mean "already done", it means a wrong database or a
 -- journal that drifted from disk, and that must not pass silently. Idempotence is the job of the
 -- `_migrations` journal.
+--
+-- LOCK TIMEOUT. Dropping the table drops its foreign key to `mailing_schedules`, which takes ACCESS
+-- EXCLUSIVE on `mailing_schedules`. That table is cold (the digest scheduler and the admin page
+-- read it), so the timeout here keeps the deploy itself from hanging without an error behind a
+-- forgotten session, as on the hot tables of this window: after 10 s the file fails with SQLSTATE
+-- 55P03 "canceling statement due to lock timeout", rolls back whole, `deploy-auto` stops before the
+-- restart, the old release keeps serving, and the same deploy is rerun (runbook, "A migration fails
+-- with canceling statement due to lock timeout"). `SET LOCAL` ends with this file only because the
+-- runner wraps each file in its own transaction (`applyMigrations`,
+-- `apps/api/src/db/migration-journal.ts`); outside a transaction it would do nothing.
+SET LOCAL lock_timeout = '10s';
+
 DROP TABLE mailing_schedule_roles;
