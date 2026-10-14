@@ -107,6 +107,68 @@ after such a release is `--previous --restore-db`.
 `--cutover` тоже отказывает). Маркер удаляет тот же коммит, который привозит миграции, — забыть
 снять его невозможно по построению.
 
+### A migration fails with `canceling statement due to lock timeout`
+
+A migration that takes a strong lock on a live table (ACCESS EXCLUSIVE or SHARE ROW EXCLUSIVE; in
+the R1 window: `users`, `service_requests`, `office_equipment`, `vehicle_request_assignments`,
+`mech_requests`, `module_mail_event_settings`, `mailing_schedules`) opens with
+`SET LOCAL lock_timeout = '10s'` (owner decision S-27). Without it a long transaction on the table
+would make the migration wait, and every portal query on that table would queue behind it with no
+error. With it the wait ends after 10 s, and the output of `deploy-auto` reads:
+
+```text
+→ применяю <file>.sql
+Ошибка миграций: error: canceling statement due to lock timeout   (code 55P03)
+ОШИБКА (deploy): миграция провалилась
+миграции могли примениться частично. Сервисы работают на СТАРОМ коде (up -d не выполнялся).
+```
+
+**State.** The files before `<file>` are committed and stay (the runner commits each file in its own
+transaction); `<file>` is rolled back whole and has no journal row; nothing was restarted, and the
+old release keeps serving — every file of a window is self-contained, so the old code serves on any
+prefix of it. The `--previous --restore-db` the failure message suggests is **not** needed here. Until
+the rerun, do not restart `technic-api` or `technic-worker` and do not run `--maintenance` or
+`--client-floor`: all of them recreate the API on the old image, which refuses to boot on the newer
+schema (see «Limit of code-only `--previous`» above).
+
+**Find the blocker.** The migration has given up, but the blocker usually still holds its
+transaction. Connect through `db-tools` and run both queries; the table is the one the header of
+`<file>` names under «Lock timeout»:
+
+```bash
+docker compose -f deploy/docker-compose.yml -p technic run --rm db-tools sh -c \
+  'psql "${DATABASE_MIGRATION_URL:-$DATABASE_URL}"'
+```
+
+```sql
+-- Who holds a lock on the table (put the table name in the first line).
+WITH t AS (SELECT 'service_requests'::regclass AS rel)
+SELECT a.pid, a.usename, a.client_addr, a.state, now() - a.xact_start AS in_transaction_for,
+       l.mode, left(a.query, 160) AS last_query
+  FROM t
+  JOIN pg_locks l ON l.relation = t.rel AND l.granted
+  JOIN pg_stat_activity a ON a.pid = l.pid
+ WHERE a.pid <> pg_backend_pid()
+ ORDER BY a.xact_start;
+
+-- Every transaction open longer than the timeout, whatever it holds.
+SELECT pid, usename, client_addr, state, now() - xact_start AS in_transaction_for,
+       left(query, 160) AS last_query
+  FROM pg_stat_activity
+ WHERE xact_start < now() - interval '10 seconds' AND pid <> pg_backend_pid()
+ ORDER BY xact_start;
+```
+
+`last_query` reads `<insufficient privilege>` for sessions of another role unless the connecting role
+may read all statistics; `pid`, `usename` and `in_transaction_for` are enough to decide.
+
+**Then rerun the same `deploy-auto`.** It takes a fresh dump and continues from `<file>`. A stray
+session (a forgotten `psql`, a report left `idle in transaction`) may be ended first with
+`SELECT pg_terminate_backend(<pid>);`, which rolls back that session's transaction; a portal
+connection that is merely busy is not terminated — wait for it. If the rerun fails on the same file
+again with no long blocker in sight, the table has a steady stream of long reads: repeat at a quieter
+hour.
+
 ### Тег выпуска (ADR 0191)
 
 Тег `v<версия>` — аннотированный, на коммите, который **привёз миграцию выпуска**
