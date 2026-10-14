@@ -38,6 +38,19 @@
 -- Schema: `ALTER TABLE office_equipment ALTER COLUMN model_id DROP NOT
 -- NULL` is safe at any time; the backfilled links are correct data and stay.
 
+-- ── 0. Lock timeout ──
+--
+-- The `LOCK` below takes ACCESS EXCLUSIVE on `office_equipment`. Migrations run while the previous
+-- release serves (`docs/runbook.md`), so a long transaction on that table makes this request wait,
+-- and every later query that conflicts with it queues behind the waiting request: the portal hangs
+-- with no error. With the timeout the wait ends after 10 s with SQLSTATE 55P03 "canceling statement
+-- due to lock timeout": the file rolls back whole, `deploy-auto` stops before the restart, the old
+-- release keeps serving, and the same deploy is rerun (runbook, "A migration fails with canceling
+-- statement due to lock timeout"). `SET LOCAL` ends with this file only because the runner wraps
+-- each file in its own transaction (`applyMigrations`, `apps/api/src/db/migration-journal.ts`);
+-- outside a transaction it would do nothing.
+SET LOCAL lock_timeout = '10s';
+
 -- ── 1. Lock ──
 --
 -- First, before the fleet is read, for the reason 0171 gives at its first line: between a snapshot

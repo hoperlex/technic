@@ -30,6 +30,21 @@
 --     своим db-тестом: перенос читает исчезнувшую таблицу и без неё не запускается вовсе.
 
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
+-- 0. Lock timeout.
+--
+-- Dropping the table drops its foreign key to `users`, and removing that key's triggers takes
+-- ACCESS EXCLUSIVE on `users`, the table every authenticated request reads. Migrations run while
+-- the previous release serves (`docs/runbook.md`), so a long transaction on that table makes this
+-- request wait, and every later query that conflicts with it queues behind the waiting request:
+-- the portal hangs with no error. With the timeout the wait ends after 10 s with SQLSTATE 55P03
+-- "canceling statement due to lock timeout": the file rolls back whole, `deploy-auto` stops before
+-- the restart, the old release keeps serving, and the same deploy is rerun (runbook, "A migration
+-- fails with canceling statement due to lock timeout"). `SET LOCAL` ends with this file only
+-- because the runner wraps each file in its own transaction (`applyMigrations`,
+-- `apps/api/src/db/migration-journal.ts`); outside a transaction it would do nothing.
+SET LOCAL lock_timeout = '10s';
+
+-- ─────────────────────────────────────────────────────────────────────────────────────────────
 -- 1. Таблица.
 --
 -- Без `IF EXISTS`: отсутствие таблицы здесь — не «уже сделано», а признак того, что база не та

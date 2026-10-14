@@ -21,6 +21,21 @@
 -- REVERSIBILITY: delete the two rows and restore the previous CHECK; the previous code neither
 -- reads nor lists them. Stopping the letters needs no rollback at all — it is the switch.
 
+-- ── Lock timeout ──
+--
+-- Replacing the CHECK takes ACCESS EXCLUSIVE on `module_mail_event_settings`: a table of eleven
+-- rows, but read on every opening of the service request list and inside every transition that
+-- sends a letter. Migrations run while the previous release serves (`docs/runbook.md`), so a long
+-- transaction on that table makes this request wait, and every later query that conflicts with it
+-- queues behind the waiting request: the module hangs with no error. With the timeout the wait ends
+-- after 10 s with SQLSTATE 55P03 "canceling statement due to lock timeout": the file rolls back
+-- whole, `deploy-auto` stops before the restart, the old release keeps serving, and the same deploy
+-- is rerun (runbook, "A migration fails with canceling statement due to lock timeout"). `SET LOCAL`
+-- ends with this file only because the runner wraps each file in its own transaction
+-- (`applyMigrations`, `apps/api/src/db/migration-journal.ts`); outside a transaction it would do
+-- nothing.
+SET LOCAL lock_timeout = '10s';
+
 ALTER TABLE module_mail_event_settings DROP CONSTRAINT module_mail_event_settings_event_check;
 
 ALTER TABLE module_mail_event_settings ADD CONSTRAINT module_mail_event_settings_event_check

@@ -29,6 +29,20 @@
 -- `vehicle-route-correction.ts`, `vehicle-request-assignment-repair.ts`) never touch the column.
 -- So the previous release keeps working on the new schema, and a rollback to it stays safe.
 
+-- ── Lock timeout ──
+--
+-- `SET NOT NULL` takes ACCESS EXCLUSIVE on `vehicle_request_assignments`, which every vehicle
+-- request list and card reads (the `UPDATE` before it holds a weaker lock and upgrades). Migrations
+-- run while the previous release serves (`docs/runbook.md`), so a long transaction on that table
+-- makes this request wait, and every later query that conflicts with it queues behind the waiting
+-- request: the portal hangs with no error. With the timeout the wait ends after 10 s with SQLSTATE
+-- 55P03 "canceling statement due to lock timeout": the file rolls back whole, `deploy-auto` stops
+-- before the restart, the old release keeps serving, and the same deploy is rerun (runbook, "A
+-- migration fails with canceling statement due to lock timeout"). `SET LOCAL` ends with this file
+-- only because the runner wraps each file in its own transaction (`applyMigrations`,
+-- `apps/api/src/db/migration-journal.ts`); outside a transaction it would do nothing.
+SET LOCAL lock_timeout = '10s';
+
 UPDATE vehicle_request_assignments a
    SET ordered_vehicle_type_id = r.vehicle_type_id
   FROM vehicle_requests r

@@ -36,6 +36,19 @@
 --
 -- REVERSIBILITY: additive. A code rollback ignores the column; `DROP COLUMN` is never needed for it.
 
+-- ── Lock timeout ──
+--
+-- `ADD COLUMN` takes ACCESS EXCLUSIVE on `service_requests`, held through the backfill. Migrations
+-- run while the previous release serves (`docs/runbook.md`), so a long transaction on that table
+-- makes this request wait, and every later query that conflicts with it queues behind the waiting
+-- request: the portal hangs with no error. With the timeout the wait ends after 10 s with SQLSTATE
+-- 55P03 "canceling statement due to lock timeout": the file rolls back whole, `deploy-auto` stops
+-- before the restart, the old release keeps serving, and the same deploy is rerun (runbook, "A
+-- migration fails with canceling statement due to lock timeout"). `SET LOCAL` ends with this file
+-- only because the runner wraps each file in its own transaction (`applyMigrations`,
+-- `apps/api/src/db/migration-journal.ts`); outside a transaction it would do nothing.
+SET LOCAL lock_timeout = '10s';
+
 ALTER TABLE service_requests ADD COLUMN IF NOT EXISTS done_at timestamptz;
 
 COMMENT ON COLUMN service_requests.done_at IS

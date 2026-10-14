@@ -69,6 +69,19 @@
 -- one transaction (`apps/api/src/db/migration-journal.ts`); the lock is held for the backfill and
 -- one validation scan of a table of thousands of rows.
 
+-- ── 0. Lock timeout ──
+--
+-- The `LOCK` below takes ACCESS EXCLUSIVE on `service_requests`. Migrations run while the previous
+-- release serves (`docs/runbook.md`), so a long transaction on that table makes this request wait,
+-- and every later query that conflicts with it queues behind the waiting request: the portal hangs
+-- with no error. With the timeout the wait ends after 10 s with SQLSTATE 55P03 "canceling statement
+-- due to lock timeout": the file rolls back whole, `deploy-auto` stops before the restart, the old
+-- release keeps serving, and the same deploy is rerun (runbook, "A migration fails with canceling
+-- statement due to lock timeout"). `SET LOCAL` ends with this file only because the runner wraps
+-- each file in its own transaction (`applyMigrations`, `apps/api/src/db/migration-journal.ts`);
+-- outside a transaction it would do nothing.
+SET LOCAL lock_timeout = '10s';
+
 -- ── 1. Lock ──
 --
 -- ACCESS EXCLUSIVE first, as in the signature pair: `ADD CONSTRAINT` would take it anyway, but only

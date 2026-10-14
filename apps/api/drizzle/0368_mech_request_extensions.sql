@@ -38,6 +38,20 @@
 --   DROP TABLE IF EXISTS mech_request_extensions;
 --   DROP TYPE IF EXISTS mech_extension_status;
 
+-- ── Lock timeout ──
+--
+-- The foreign keys of the new table take SHARE ROW EXCLUSIVE on `users` and `mech_requests`:
+-- readers pass, writers of those tables wait. Migrations run while the previous release serves
+-- (`docs/runbook.md`), so a long transaction writing either table makes this request wait, and
+-- every later query that conflicts with it queues behind the waiting request: writes hang with no
+-- error. With the timeout the wait ends after 10 s with SQLSTATE 55P03 "canceling statement due to
+-- lock timeout": the file rolls back whole, `deploy-auto` stops before the restart, the old release
+-- keeps serving, and the same deploy is rerun (runbook, "A migration fails with canceling statement
+-- due to lock timeout"). `SET LOCAL` ends with this file only because the runner wraps each file in
+-- its own transaction (`applyMigrations`, `apps/api/src/db/migration-journal.ts`); outside a
+-- transaction it would do nothing.
+SET LOCAL lock_timeout = '10s';
+
 CREATE TYPE mech_extension_status AS ENUM ('pending', 'approved', 'rejected');
 
 CREATE TABLE mech_request_extensions (
