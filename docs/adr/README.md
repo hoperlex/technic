@@ -6,7 +6,7 @@
 
 Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями (в скобках — граница, если решение правится не целиком) · миграции · пути, названные областью. **⛔ стоит только у решения, которое само объявило себя отменённым или заменённым.** Входящая связь показывает, кто его правил, но насколько — знает лишь текст самого решения: ADR 0141 отменяет приём ADR 0053 в модуле оргтехники, а в вывозе мусора тот приём работает.
 
-Решений: 228. Доменов: 16.
+Решений: 229. Доменов: 16.
 
 ## ⚠ Номера, занятые дважды
 
@@ -243,7 +243,7 @@
 - [0216](0216-auto-part-receipt-warehouse.md) — Склад автозапчастей — партии из чеков, применение — отдельным документом · код: `packages/contracts/src/auto-part-receipts.ts`, `apps/api/src/db/schema.ts`, `apps/api/src/services/auto-part-receipts.ts`, `apps/api/src/services/auto-part-receipts-read.ts`, `apps/api/src/routes/auto-part-receipts.ts`, `apps/web/src/entities/auto-part-receipt/api/autoPartReceiptApi.ts`
 - [0217](0217-manager-auto-part-receipts.md) — Менеджер ведёт чеки автозапчастей · код: `packages/contracts/src/permissions.ts`, `apps/web/src/pages/garage/AutoPartReceiptsTab.tsx`, `apps/api/test/permissions.test.ts`, `apps/api/test/auto-part-receipts.db.test.ts`, `apps/web/test/garage-receipt-windows.test.tsx`
 
-## доступ (29)
+## доступ (30)
 
 - [0021](0021-permissions-model.md) — Единая модель прав: матрица разрешений вместо списков ролей · изменён 0085, 0102, 0160, 0223 (decision 2) · код: `packages/contracts/src/permissions.ts`, `apps/api/src/auth/plugin.ts`, `apps/api/src/lib/access.ts`, `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/app/routing/ProtectedRoute.tsx`, `apps/web/src/components/AppLayout.tsx`, `apps/api/test/route-authorization.test.ts`
 - [0033](0033-observer-role.md) — Роль «Наблюдатель» — сквозной просмотр заявок без права что-либо менять · код: `packages/contracts/src/permissions.ts`, `apps/api/drizzle/0054_observer_role.sql`, `apps/api/test/permissions.test.ts`, `apps/api/test/access-matrix.test.ts`
@@ -274,6 +274,7 @@
 - [0201](0201-department-special-equipment.md) — Отдел с площадкой заказывает спецтехнику на неё · реализовано · код: `packages/contracts/src/permissions.ts`, `packages/contracts/src/permission-catalog.ts`, `apps/api/src/lib/access.ts`, `apps/web/src/entities/session/model/usePlaceObjectScope.ts`, `apps/web/src/features/request-customer/model/useRequestCustomerOptions.ts`, `apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState.ts`, `apps/web/src/pages/vehicle/VehicleRequestsOnSiteTab.tsx`, `apps/api/test/access-scope.test.ts`, `apps/api/test/vehicle-request-customer.db.test.ts`, `apps/web/test/permissions-ui.test.tsx`
 - [0217](0217-manager-auto-part-receipts.md) — Менеджер ведёт чеки автозапчастей · код: `packages/contracts/src/permissions.ts`, `apps/web/src/pages/garage/AutoPartReceiptsTab.tsx`, `apps/api/test/permissions.test.ts`, `apps/api/test/auto-part-receipts.db.test.ts`, `apps/web/test/garage-receipt-windows.test.tsx`
 - [0223](0223-portal-permission-oracle.md) — The portal asks the server's permission list, never the contracts matrix · реализовано · код: `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/entities/office-equipment-candidate/model/intake.ts`, `apps/web/src/entities/vehicle-request/model/dateRules.ts`, `apps/web/src/pages/mech/mechRequestMenu.tsx`, `apps/web/src/pages/service/serviceRequestGrid.tsx`, `apps/web/src/pages/service/serviceRequestExtras.tsx`, `apps/web/src/pages/service/serviceRequestModals.tsx`, `packages/contracts/src/permissions.ts`, `packages/contracts/src/mech-requests.ts`, `packages/contracts/src/vehicle-requests.ts`, `packages/contracts/src/service-requests.ts`, `eslint.config.mjs`, `apps/web/test/permission-oracle.test.ts`
+- [0229](0229-server-sent-events-for-portal-updates.md) — Server-sent events for portal updates · код: `apps/web/src/shared/api/session.ts`, `apps/web/src/shared/api/http.ts`, `apps/web/src/shared/config/query.ts`, `apps/web/quality-budget.json`, `apps/api/src/auth/plugin.ts`, `packages/contracts/src/feature-flags.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/technic.conf`
 
 ## учётки-и-аудит (11)
 
@@ -309,7 +310,7 @@
 - [0195](0195-waste-ticket-review-cross.md) — Колонка «Талоны»: крестик вместо разбивки значков · реализовано · код: `apps/web/src/features/waste-ticket-review/ui/ticketBadgeLegend.ts`, `apps/web/src/features/waste-ticket-review/ui/TicketBadge.tsx`, `apps/web/src/features/waste-ticket-review/ui/TicketCell.tsx`, `apps/web/src/widgets/waste-request-feed/ui/feedColumns.tsx`, `apps/web/src/widgets/waste-request-view/model/useWasteRequestView.tsx`, `apps/web/src/widgets/waste-request-view/ui/WasteRequestView.tsx`, `apps/web/src/shared/lib/useScrollIntoViewWhen.ts`, `apps/web/test/waste-ticket-cell-review.test.tsx`, `apps/web/test/waste-ticket-confirm-button.test.tsx`
 - [0203](0203-auto-part-receipt-recognition.md) — Распознавание чеков на автозапчасти · реализовано · код: `packages/contracts/src/recognition.ts`, `packages/contracts/src/auto-part-receipt-recognition.ts`, `apps/worker/src/ocr-engine`, `apps/worker/src/receipt-ocr`, `apps/api/src/services/auto-part-receipt-recognition.ts`, `apps/api/src/routes/auto-part-receipts.ts`, `apps/web/src/pages/garage/ReceiptRecognitionPanel.tsx`, `apps/web/src/pages/garage/AutoPartReceiptFormModal.tsx`
 
-## каркас-портала (11)
+## каркас-портала (12)
 
 - [0030](0030-responsive-layout.md) — Адаптивная вёрстка: мобильный режим поверх десктопа, а не вместо него · изменён 0102 · код: `apps/web/src/hooks/useIsMobile.ts`, `apps/web/src/theme.ts`, `apps/web/src/main.tsx`, `apps/web/src/components/AppLayout.tsx`, `apps/web/src/components/DataTable.tsx`, `apps/web/src/components/FormModal.tsx`, `apps/web/src/components/PageTableLayout.tsx`, `apps/web/test/setup.ts`
 - [0042](0042-directories-on-phone.md) — Справочники и администрирование на телефоне — карточками · код: `apps/web/src/shared/ui/ListToolbar.tsx`, `apps/web/src/shared/ui/listControls.ts`, `apps/web/src/widgets/user-account-registry/ui/UserAccountRegistry.tsx`
@@ -322,8 +323,9 @@
 - [0222](0222-frontend-query-freshness-and-render.md) — Portal query freshness, deferred options, and list rendering · код: `apps/web/src/shared/config/query.ts`, `apps/web/src/app/providers/query.tsx`, `apps/web/src/shared/api/listQueryOptions.ts`, `apps/web/src/shared/lib/useDeferredOptions.ts`, `apps/web/scripts/check-cache-invalidation.mjs`
 - [0223](0223-portal-permission-oracle.md) — The portal asks the server's permission list, never the contracts matrix · реализовано · код: `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/entities/office-equipment-candidate/model/intake.ts`, `apps/web/src/entities/vehicle-request/model/dateRules.ts`, `apps/web/src/pages/mech/mechRequestMenu.tsx`, `apps/web/src/pages/service/serviceRequestGrid.tsx`, `apps/web/src/pages/service/serviceRequestExtras.tsx`, `apps/web/src/pages/service/serviceRequestModals.tsx`, `packages/contracts/src/permissions.ts`, `packages/contracts/src/mech-requests.ts`, `packages/contracts/src/vehicle-requests.ts`, `packages/contracts/src/service-requests.ts`, `eslint.config.mjs`, `apps/web/test/permission-oracle.test.ts`
 - [0228](0228-frontend-architecture.md) — Front-end structure: six layers, slice entries and a 400-line file limit · реализовано · код: `eslint.config.mjs`, `apps/web/tsconfig.json`, `apps/web/test/boundaries.test.ts`, `apps/web/test/fixtures/boundaries`, `apps/web/scripts/quality.mjs`, `apps/web/quality-budget.json`, `apps/web/scripts/check-stage1-layout.mjs`, `apps/web/scripts/check-stage2-layout.mjs`
+- [0229](0229-server-sent-events-for-portal-updates.md) — Server-sent events for portal updates · код: `apps/web/src/shared/api/session.ts`, `apps/web/src/shared/api/http.ts`, `apps/web/src/shared/config/query.ts`, `apps/web/quality-budget.json`, `apps/api/src/auth/plugin.ts`, `packages/contracts/src/feature-flags.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/technic.conf`
 
-## схема-и-выкат (11)
+## схема-и-выкат (12)
 
 - [0077](0077-release-notes.md) — Журнал обновлений: выпуск как логический блок, а не отрезок календаря · изменён 0191 · код: `apps/web/src/shared/lib/useVersionCheck.ts`, `apps/web/src/components/AppUpdateBanner.tsx`, `packages/contracts/src/releases.ts`, `apps/api/src/routes/releases.ts`
 - [0157](0157-maintenance-mode.md) — Портал закрывается на окно работ переменной окружения, а токены гасятся эпохой по `iat` · код: `apps/api/src/lib/maintenance.ts`, `apps/api/src/config.ts`, `apps/api/src/app.ts`, `apps/api/src/auth/tokens.ts`, `apps/api/src/auth/plugin.ts`, `apps/web/src/shared/api/maintenance.ts`, `apps/web/src/app/MaintenanceBoundary.tsx`, `apps/web/src/shared/api/http.ts`, `apps/web/src/main.tsx`, `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/shared/api/clientContract.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/maintenance.html`, `deploy/Dockerfile.web`, `deploy/docker-compose.yml`, `deploy/docker-compose.stand.yml`, `deploy/deploy-auto.sh`
@@ -336,6 +338,7 @@
 - [0205](0205-device-network-poll.md) — Показание снимается опросом аппарата по сети, и записывается оно только при сверенном серийнике · код: `packages/contracts/src/device-poll.ts`, `apps/api/src/services/device-snmp`, `apps/api/src/routes/device-poll.ts`, `apps/api/src/db/schema.ts`, `apps/web/src/features/device-poll`, `apps/web/src/pages/service/EquipmentTab.tsx`
 - [0208](0208-service-work-completed-document-flow.md) — Исполнитель завершает денежный шаг кнопкой «Работы выполнены» и сразу подшивает акт · реализовано · изменён 0174 · код: `apps/api/drizzle/0341_service_estimate_document_workflow_enable.sql`, `apps/api/drizzle/0342_releases_service_estimate_document_workflow.sql`, `apps/web/src/pages/service/serviceRequestEstimateMenu.tsx`, `apps/web/src/pages/service/serviceRequestModals.tsx`
 - [0226](0226-client-floor-seven-and-deploy-preflight.md) — Client floor 7 in one raise for every floor-gated debt, and deploy-auto compares floors before migrations · код: `apps/api/src/lib/client-floor.ts`, `apps/api/scripts/client-floor-check.ts`, `apps/api/src/config.ts`, `apps/api/package.json`, `apps/web/src/shared/api/clientContract.ts`, `deploy/deploy-auto.sh`, `apps/api/test/client-floor-preflight.test.ts`
+- [0229](0229-server-sent-events-for-portal-updates.md) — Server-sent events for portal updates · код: `apps/web/src/shared/api/session.ts`, `apps/web/src/shared/api/http.ts`, `apps/web/src/shared/config/query.ts`, `apps/web/quality-budget.json`, `apps/api/src/auth/plugin.ts`, `packages/contracts/src/feature-flags.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/technic.conf`
 
 ## качество (8)
 
