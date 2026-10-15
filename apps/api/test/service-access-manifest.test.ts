@@ -216,6 +216,16 @@ function stepBodies(lines: string[]): Map<string, string> {
 function sourceRoutes(): SourceRoute[] {
   const lines = stripComments(routesSource).split('\n');
   const steps = stepBodies(lines);
+  const createHandlerStart = lines.findIndex((line) => /^ {2}const createHandler = \{$/.test(line));
+  const createHandlerEnd = lines.findIndex(
+    (line, index) => index > createHandlerStart && /^ {2}\};$/.test(line),
+  );
+  if (createHandlerStart < 0 || createHandlerEnd < 0) {
+    throw new Error(
+      'The service create handler moved; review scope tracing before updating this test',
+    );
+  }
+  const createHandlerBody = lines.slice(createHandlerStart, createHandlerEnd + 1).join('\n');
   const starts: { line: number; method: string; path: string | null }[] = [];
   lines.forEach((line, index) => {
     const match = /^\s{0,4}r\.(get|post|put|patch|delete)\(\s*(?:'([^']*)')?/.exec(line);
@@ -230,7 +240,14 @@ function sourceRoutes(): SourceRoute[] {
     const end = starts[index + 1]?.line ?? lines.length;
     const body = lines
       .slice(start.line, end)
-      .filter((line) => !/\bfunction\s+\w+\s*\(/.test(line))
+      .filter((line, offset) => {
+        const absoluteLine = start.line + offset;
+        // The helper is declared after reconciliation but only invoked by the two create routes.
+        return (
+          (absoluteLine < createHandlerStart || absoluteLine > createHandlerEnd) &&
+          !/\bfunction\s+\w+\s*\(/.test(line)
+        );
+      })
       .join('\n');
     /*
      * Тело ручки плюс тела доменных шагов, которые она зовёт: область у восьми операций живёт
@@ -250,6 +267,13 @@ function sourceRoutes(): SourceRoute[] {
           !markers.includes(`${marker} (${step})`)
         ) {
           markers.push(`${marker} (${step})`);
+        }
+      }
+    }
+    if (/\bcreateHandler\.handle\s*\(/.test(body)) {
+      for (const marker of SCOPE_MARKERS) {
+        if (new RegExp(`\\b${marker}\\(`).test(createHandlerBody)) {
+          markers.push(`${marker} (createHandler.handle)`);
         }
       }
     }
@@ -306,6 +330,7 @@ describe('манифест области и стороны заявок на о
     const none = Object.entries(manifest).filter(([, row]) => row.scope === 'none');
     expect(none.map(([key]) => key).sort()).toEqual([
       'DELETE /api/v1/service-requests/:id/purge',
+      'POST /api/v1/service-requests/_create-attempts/reconcile',
       'POST /internal/service-requests/auto-close',
       'POST /internal/service-requests/bulk-sweep',
     ]);

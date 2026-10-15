@@ -242,25 +242,19 @@ describe('манифест доступа маршрутов', () => {
     const conditional = Object.entries(manifest).filter(
       ([, c]) => c.kind === 'conditionalPermissions',
     );
-    // Условных мест в модели четыре. Два в «Вывозе мусора»: заведение и правка заявки требуют
-    // `wasteRequests.assignOperator` только при присутствии `operatorCounterpartyId`. Третье —
-    // заведение расходника оргтехники: ненулевой начальный остаток требует
-    // `officeEquipmentConsumables.stock` сверх `manage`, потому что это уже утверждение о складе, а
-    // не о номенклатуре. Оно отличается от первых способом проверки: право спрашивается по
-    // ЗНАЧЕНИЮ (`quantity > 0`), а не по присутствию поля, — `quantity` приезжает умолчанием схемы
-    // и в теле есть всегда. Пятым было заведение автозапчасти тем же приёмом — оно уехало вместе со
-    // складом автозапчастей (план `docs/auto-part-receipts-plan.md`, Р2).
-    //
-    // Правка заявки на обслуживание сюда НЕ ВХОДИТ, хотя срочность там тоже спрашивает своё право:
-    // условие у неё по ЭФФЕКТУ, а не по телу (`effectConditionalPermissions`, план профилей
-    // оргтехники, Р10). Разница не в оформлении — форма шлёт пару срочности всегда, и условие «поле
-    // прислали» закрыло бы правом срочности всю правку заявителя.
-    // Список поимённый: пятое такое место обязано попасть в ревью, а не приехать молча.
+    // Both waste creation routes and edit require assignOperator when operatorCounterpartyId is set.
+    // The receipt route must keep the same condition as ordinary creation. Consumable creation
+    // requires stock for a positive initial quantity; its schema supplies quantity even when the
+    // client omits it, so presence alone cannot decide authorization. Service message posting uses
+    // an empty conditional set because participation depends on the request's actors, not a role.
+    // Service urgency editing has an effect-based condition and belongs to the other manifest kind.
+    // Naming all five routes makes a new conditional authorization visible in review.
     expect(conditional.map(([key]) => key).sort()).toEqual([
       'PATCH /api/v1/waste-requests/:id',
       'POST /api/v1/office-equipment-consumables',
       'POST /api/v1/service-requests/:id/messages',
       'POST /api/v1/waste-requests',
+      'POST /api/v1/waste-requests/_create-with-receipt',
     ]);
     /*
      * Четвёртое место — отправка реплики в обсуждение заявки (ADR 0141) — единственное с ПУСТЫМ

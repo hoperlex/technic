@@ -602,6 +602,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'комментарий 323 («в отличие от ЭСМ-2, где граф под удостоверение нет»); весь файл — пустой бланк 4-П по рейсу',
   },
   {
+    file: 'waybill-ack.db.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'Legacy esm2 appears only as a vehicle-type form code; the test checks that issue is refused before a number is allocated.',
+  },
+  {
     file: 'waybill-correction.test.ts',
     klass: 'mention',
     status: 'done',

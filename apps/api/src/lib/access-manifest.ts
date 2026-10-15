@@ -928,6 +928,14 @@ export const ACCESS_MANIFEST = {
   // `access-manifest.test.ts` checks the correspondence anyway.
   'GET /api/v1/service-requests': { kind: 'permissions', allOf: ['serviceRequests.read'] },
   'POST /api/v1/service-requests': { kind: 'permissions', allOf: ['serviceRequests.create'] },
+  'POST /api/v1/service-requests/_create-with-receipt': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.create'],
+  },
+  'POST /api/v1/service-requests/_create-attempts/reconcile': {
+    kind: 'authenticated',
+    why: 'The receipt binds the original creator even if create permission was later revoked.',
+  },
   // Кандидаты в поимённые исполнители: страж — право назначения, а не `users.manage`. Иначе поле
   // выбора заполнялось бы только у администратора портала, а у того, кто заявки распределяет,
   // оставалось бы пустым.
@@ -1251,11 +1259,27 @@ export const ACCESS_MANIFEST = {
   'GET /api/v1/mech-requests/:id': { kind: 'permissions', allOf: ['mechRequests.read'] },
   'GET /api/v1/mech-requests/:id/history': { kind: 'permissions', allOf: ['mechRequests.read'] },
   'POST /api/v1/mech-requests': { kind: 'permissions', allOf: ['mechRequests.create'] },
+  'POST /api/v1/mech-requests/_create-with-receipt': {
+    kind: 'permissions',
+    allOf: ['mechRequests.create'],
+  },
+  'POST /api/v1/mech-requests/_create-attempts/reconcile': {
+    kind: 'authenticated',
+    why: 'The receipt binds the original creator even if create permission was later revoked.',
+  },
   // «Дублировать» — это заведение новой заявки, а не копия строки: право то же, и пара
   // «отдел — площадка» проверяется заново.
   'POST /api/v1/mech-requests/:id/duplicate': {
     kind: 'permissions',
     allOf: ['mechRequests.create'],
+  },
+  'POST /api/v1/mech-requests/:id/_duplicate-with-receipt': {
+    kind: 'permissions',
+    allOf: ['mechRequests.create'],
+  },
+  'POST /api/v1/mech-requests/:id/_duplicate-attempts/reconcile': {
+    kind: 'authenticated',
+    why: 'The receipt binds the original duplicator even if create permission was later revoked.',
   },
   'PATCH /api/v1/mech-requests/:id': { kind: 'permissions', allOf: ['mechRequests.update'] },
   'PATCH /api/v1/mech-requests/:id/deal': { kind: 'permissions', allOf: ['mechRequests.status'] },
@@ -1343,6 +1367,16 @@ export const ACCESS_MANIFEST = {
     baseAllOf: ['wasteRequests.create'],
     conditionalAllOf: [{ when: 'operatorCounterpartyId', allOf: ['wasteRequests.assignOperator'] }],
     conditionDeclaredOnRoute: false,
+  },
+  'POST /api/v1/waste-requests/_create-with-receipt': {
+    kind: 'conditionalPermissions',
+    baseAllOf: ['wasteRequests.create'],
+    conditionalAllOf: [{ when: 'operatorCounterpartyId', allOf: ['wasteRequests.assignOperator'] }],
+    conditionDeclaredOnRoute: false,
+  },
+  'POST /api/v1/waste-requests/_create-attempts/reconcile': {
+    kind: 'authenticated',
+    why: 'The receipt binds the original creator even if create permission was later revoked.',
   },
   // Журнал закрытых заявок — вкладка «История» (ADR 0135). Право то же, что у списка: закрытая
   // заявка — это те же сведения, по которым уже нечего решать, а границы видимости (свой объект,
@@ -1633,6 +1667,14 @@ export const ACCESS_MANIFEST = {
   // пара `waybills.read` + `vehicleRequests.status`, объявленная инлайн у каждого (ADR 0050 п. 11).
   'GET /api/v1/vehicle-requests': { kind: 'permissions', allOf: ['vehicleRequests.read'] },
   'POST /api/v1/vehicle-requests': { kind: 'permissions', allOf: ['vehicleRequests.create'] },
+  'POST /api/v1/vehicle-requests/_create-with-receipt': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.create'],
+  },
+  'POST /api/v1/vehicle-requests/_create-attempts/reconcile': {
+    kind: 'authenticated',
+    why: 'The receipt binds the original creator even if create permission was later revoked.',
+  },
   'GET /api/v1/vehicle-requests/:id': { kind: 'permissions', allOf: ['vehicleRequests.read'] },
   'PATCH /api/v1/vehicle-requests/:id': { kind: 'permissions', allOf: ['vehicleRequests.update'] },
   'DELETE /api/v1/vehicle-requests/:id': { kind: 'permissions', allOf: ['vehicleRequests.delete'] },

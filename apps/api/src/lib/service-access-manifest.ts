@@ -312,6 +312,17 @@ export const SERVICE_ACCESS_MANIFEST = {
   // `resolveRequestSubject` зовёт `assertServiceRequestScope` по площадке и отделу-заказчику.
   // Ручка объявлена `'visibility'` именно поэтому: вопрос «моя ли это область» здесь задаётся.
   'POST /api/v1/service-requests': { scope: 'visibility', side: 'customer', state: null },
+  'POST /api/v1/service-requests/_create-with-receipt': {
+    scope: 'visibility',
+    side: 'customer',
+    state: null,
+  },
+  'POST /api/v1/service-requests/_create-attempts/reconcile': {
+    scope: 'none',
+    why: 'The receipt verifies the original actor and body without reading a request or its subject.',
+    side: 'any',
+    state: null,
+  },
   'PATCH /api/v1/service-requests/:id': {
     scope: 'visibility',
     side: 'customer',

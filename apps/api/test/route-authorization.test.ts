@@ -71,6 +71,7 @@ const SELF_SERVICE_ROUTES = new Set([
   '/api/v1/vehicle-requests/_create-attempts/reconcile',
   '/api/v1/waste-requests/_create-attempts/reconcile',
   '/api/v1/mech-requests/_create-attempts/reconcile',
+  '/api/v1/mech-requests/:id/_duplicate-attempts/reconcile',
   '/api/v1/service-requests/_create-attempts/reconcile',
 ]);
 

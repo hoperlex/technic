@@ -745,9 +745,9 @@ describe('заморозка: кто откладывает, кто возвра
     ]);
     // Право возврата — то же самое и считается той же функцией: заморозка, из которой возвращает
     // не тот, кто её поставил, означала бы заявку, отпущенную мимо человека, знающего причину.
-    expect(ACCESS_PROFILES.filter(canResumeService).map(accessProfileLabel)).toEqual(
-      holders.map(accessProfileLabel),
-    );
+    expect(
+      ACCESS_PROFILES.filter((subject) => canResumeService(subject)).map(accessProfileLabel),
+    ).toEqual(holders.map(accessProfileLabel));
   });
 
   it('возврат закрыт исполнителю, заказчику и наблюдателю — и субъекта может не быть вовсе', () => {
