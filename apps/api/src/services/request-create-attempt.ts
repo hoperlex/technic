@@ -13,6 +13,8 @@ const REUSE_ERROR = 'Ключ создания заявки уже исполь�
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
+  // Zod turns Waste Removal deliveryAt into a Date; enumerating it would erase the date from the key.
+  if (value instanceof Date) return value.toJSON();
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(
     Object.entries(value)

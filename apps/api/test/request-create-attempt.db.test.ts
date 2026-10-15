@@ -72,6 +72,11 @@ describe.skipIf(!SERVER_URL)('shared request creation receipts', () => {
       service.createAttemptFingerprint({ a: { x: 3, y: 1 }, b: 2 }),
     );
     expect(() => service.createAttemptKey('not-a-uuid')).toThrow();
+    expect(
+      service.createAttemptFingerprint({ deliveryAt: new Date('2026-10-15T07:00:00.000Z') }),
+    ).not.toBe(
+      service.createAttemptFingerprint({ deliveryAt: new Date('2026-10-16T07:00:00.000Z') }),
+    );
   });
 
   it.each(['vehicle', 'waste', 'mech', 'service'] as const)(
