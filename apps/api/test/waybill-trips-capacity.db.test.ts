@@ -14,6 +14,7 @@ import { issueRouteWaybill } from './waybill-issue-helper';
 // config reads it on import and fails without it.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import type * as WaybillCorrectionModule from '../src/services/waybill-correction';
 
 /**
  * Printed trips, the issue check, and one count of the form's capacity (ADR 0108 items 11, 20, 21;
@@ -49,7 +50,7 @@ import type { db as AppDb } from '../src/db/client';
  */
 const cancelled = vi.hoisted(() => ({ waybillIds: [] as string[] }));
 vi.mock('../src/services/waybill-correction', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/services/waybill-correction')>();
+  const actual = await importOriginal<typeof WaybillCorrectionModule>();
   return {
     ...actual,
     cancelWaybillForCorrection: async (
