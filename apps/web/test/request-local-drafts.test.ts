@@ -17,6 +17,35 @@ beforeEach(() => {
 });
 
 describe('request draft recovery across forms', () => {
+  it('keeps an uncertain submitted attempt after unsent drafts age out', () => {
+    const savedAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
+    const base = {
+      schema: 1 as const,
+      userId: 'dispatcher',
+      form: 'mech-duplicate',
+      target: 'source-1',
+      savedAt,
+      payload: { id: 'source-1' },
+    };
+    expect(writeLocalFormDraft({ ...base, id: 'unsent' })).toBe(true);
+    expect(
+      writeLocalFormDraft({
+        ...base,
+        id: 'attempted',
+        createAttempt: {
+          key: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          body: {},
+          protocol: 'receipt-v1',
+        },
+      }),
+    ).toBe(true);
+    expect(
+      listLocalFormDrafts('dispatcher', 'mech-duplicate', undefined, objectDraftPayload).drafts.map(
+        (item) => item.id,
+      ),
+    ).toEqual(['attempted']);
+  });
+
   it('keeps form types, accounts and targets separate and restores calendar dates', () => {
     const payload = storeFormDateFields(
       { deliveryDate: dayjs('2026-10-16'), comment: 'После обеда' },

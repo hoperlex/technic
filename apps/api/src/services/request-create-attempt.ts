@@ -75,7 +75,7 @@ async function finishReceipt<Response, Metadata>(
   return saved.response as Response;
 }
 
-/** Replay precedes mutable date and directory checks, but follows actor and scope guards. */
+/** Replay precedes mutable domain checks; each route decides its current access and response projection. */
 export async function replayRequestCreate<Response, Metadata = never>(
   key: string,
   kind: RequestCreateKind,

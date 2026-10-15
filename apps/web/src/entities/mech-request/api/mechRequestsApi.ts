@@ -131,6 +131,18 @@ export const mechRequestsApi = {
    */
   duplicate: (id: string) =>
     apiFetch<MechRequestDto>(`${PATH}/${id}/duplicate`, { method: 'POST', body: {} }),
+  duplicateWithReceipt: (id: string, idempotencyKey: string) =>
+    apiFetch<{ requestId: string }>(`${PATH}/${id}/_duplicate-with-receipt`, {
+      method: 'POST',
+      body: {},
+      headers: { 'Idempotency-Key': idempotencyKey },
+    }),
+  reconcileDuplicate: (id: string, idempotencyKey: string) =>
+    apiFetch<RequestCreateReconciliation>(`${PATH}/${id}/_duplicate-attempts/reconcile`, {
+      method: 'POST',
+      body: { originalBody: {} },
+      headers: { 'Idempotency-Key': idempotencyKey },
+    }),
 
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`${PATH}/${id}/history`),
 

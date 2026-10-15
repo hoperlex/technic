@@ -31,12 +31,14 @@ import { mechMenuItems } from './mechRequestMenu';
  */
 export function useMechRequestActions({
   onEdit,
+  onDuplicate,
 }: {
   /**
    * Правка открывает форму, а форма принадлежит вкладке: набор действий ею не владеет. Не передана
    * — пункта «Редактировать» в меню нет: так вкладка «В аренде» и живёт, формы у неё нет.
    */
   onEdit?: (request: MechRequestDto) => void;
+  onDuplicate?: (request: MechRequestDto) => void;
 }): {
   actionsFor: (request: MechRequestDto) => ActionSheetItem[];
   /**
@@ -142,15 +144,6 @@ export function useMechRequestActions({
     });
   };
 
-  const duplicateMutation = useMutation({
-    mutationFn: (request: MechRequestDto) => mechRequestsApi.duplicate(request.id),
-    onSuccess: (created) => {
-      message.success(`Заведена копия: ${created.displayNumber}`);
-      refresh();
-    },
-    onError: (e) => message.error(mechFailureText(e)),
-  });
-
   const removeMutation = useMutation({
     mutationFn: (request: MechRequestDto) => mechRequestsApi.remove(request.id, request.version),
     onSuccess: (res) => {
@@ -206,7 +199,7 @@ export function useMechRequestActions({
       run: {
         rollback: (r, status) => statusMutation.mutate({ request: r, status }),
         setApproval,
-        duplicate: (r) => duplicateMutation.mutate(r),
+        duplicate: (r) => onDuplicate?.(r),
         remove: confirmRemove,
         withdrawExtension: extension.withdraw,
       },
@@ -274,7 +267,6 @@ export function useMechRequestActions({
       extension.pending ||
       statusMutation.isPending ||
       approvalMutation.isPending ||
-      duplicateMutation.isPending ||
       removeMutation.isPending,
   };
 }

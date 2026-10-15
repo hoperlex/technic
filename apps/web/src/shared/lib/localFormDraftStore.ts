@@ -80,7 +80,7 @@ export function removeLocalFormDraft(id: string): boolean {
 export function listLocalFormDrafts<Payload>(
   userId: string,
   form: string,
-  target: string,
+  target: string | undefined,
   parsePayload: (value: unknown) => Payload | null,
 ): { drafts: LocalFormDraft<Payload>[]; available: boolean } {
   try {
@@ -92,10 +92,11 @@ export function listLocalFormDrafts<Payload>(
         !envelope ||
         envelope.userId !== userId ||
         envelope.form !== form ||
-        envelope.target !== target
+        (target !== undefined && envelope.target !== target)
       )
         continue;
-      if (Date.now() - envelope.savedAt > MAX_AGE_MS) continue;
+      // An uncertain write must remain recoverable even after ordinary unsent drafts age out.
+      if (Date.now() - envelope.savedAt > MAX_AGE_MS && !envelope.createAttempt) continue;
       const payload = parsePayload(envelope.payload);
       if (payload === null) continue;
       drafts.push({ ...envelope, payload });

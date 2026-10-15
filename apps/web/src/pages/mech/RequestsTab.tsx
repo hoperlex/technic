@@ -23,6 +23,7 @@ import {
 import { useMechRequestActions } from './mechRequestActions';
 import { MechRequestForm } from './MechRequestForm';
 import { MechRequestViewModal } from './MechRequestViewModal';
+import { useMechDuplicate } from './useMechDuplicate';
 
 /**
  * Рабочий список аренд: «Новая» и «В работе» (§7).
@@ -136,8 +137,10 @@ export function RequestsTab() {
    * двух местах нельзя — это два экземпляра одного окна. Состав пунктов при этом один: его решают
    * барьеры контрактов, а не место вызова.
    */
-  const actions = useMechRequestActions({ onEdit: openEdit });
-  const cardActions = useMechRequestActions({ onEdit: openEdit });
+  const duplicate = useMechDuplicate();
+  const cardDuplicate = useMechDuplicate();
+  const actions = useMechRequestActions({ onEdit: openEdit, onDuplicate: duplicate.open });
+  const cardActions = useMechRequestActions({ onEdit: openEdit, onDuplicate: cardDuplicate.open });
 
   /*
    * Закрылась карточка — гаснут и её окна. Карточку закрывают не только её кнопками: «Назад»
@@ -205,6 +208,8 @@ export function RequestsTab() {
         <SummaryBar title="Заявок" items={summaryItems} />
       </TabsExtra>
 
+      {duplicate.notice}
+
       <DataTable<MechRequestDto>
         columns={columns}
         card={mechRequestCard(grid)}
@@ -239,7 +244,12 @@ export function RequestsTab() {
             : undefined
         }
         actions={(r) => cardActions.actionsFor(r).filter((item) => item.key !== 'edit')}
-        modals={cardActions.modals}
+        modals={
+          <>
+            {cardActions.modals}
+            {cardDuplicate.modal}
+          </>
+        }
         extension={cardActions.extensionStrip}
         onClose={() => {
           setViewRecord(null);
@@ -248,6 +258,7 @@ export function RequestsTab() {
       />
 
       {actions.modals}
+      {duplicate.modal}
     </PageTableLayout>
   );
 }

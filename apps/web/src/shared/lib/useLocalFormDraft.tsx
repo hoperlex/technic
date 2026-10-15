@@ -19,7 +19,7 @@ export class LocalCreateAttemptError extends Error {}
 export interface LocalFormDraftController<Payload> {
   active: LocalFormDraft<Payload> | null;
   begin: (target: string) => void;
-  clear: () => void;
+  clear: () => boolean;
   discardPending: () => void;
   pending: LocalFormDraft<Payload>[];
   persist: () => boolean;
@@ -244,6 +244,7 @@ export function useLocalFormDraft<Payload>({
       setPending([]);
     }
     setStatus({ available: removed, savedAt: null });
+    return removed;
   };
 
   return {

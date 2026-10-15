@@ -283,3 +283,96 @@ describe.skipIf(!SERVER_URL)('ordinary request receipt HTTP protocol outside Veh
     expect(check.json().message).toContain('отдельному ключу');
   });
 });
+
+describe.skipIf(!SERVER_URL)('Mechanization duplicate receipt HTTP protocol', () => {
+  const createSource = async (label: string) => {
+    const response = await app!.inject({
+      method: 'POST',
+      url: ROOT.mech,
+      headers: headers(),
+      payload: body('mech', label),
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    return response.json() as { id: string; version: number };
+  };
+  const duplicate = (sourceId: string, key?: string) =>
+    app!.inject({
+      method: 'POST',
+      url: `${ROOT.mech}/${sourceId}/_duplicate-with-receipt`,
+      headers: headers(key),
+      payload: {},
+    });
+  const reconcile = (sourceId: string, key: string) =>
+    app!.inject({
+      method: 'POST',
+      url: `${ROOT.mech}/${sourceId}/_duplicate-attempts/reconcile`,
+      headers: headers(key),
+      payload: { originalBody: {} },
+    });
+
+  it('keeps the legacy door and rejects a missing key on the versioned door', async () => {
+    const source = await createSource(`duplicate-legacy-${randomUUID()}`);
+    const missing = await duplicate(source.id);
+    expect(missing.statusCode, missing.body).toBe(422);
+    const old = await app!.inject({
+      method: 'POST',
+      url: `${ROOT.mech}/${source.id}/duplicate`,
+      headers: headers(),
+      payload: {},
+    });
+    expect(old.statusCode, old.body).toBe(201);
+    expect(old.json().id).toBeTypeOf('string');
+  });
+
+  it('replays one ID after the source changes and is hard deleted', async () => {
+    const source = await createSource(`duplicate-replay-${randomUUID()}`);
+    const key = randomUUID();
+    const [first, concurrent] = await Promise.all([
+      duplicate(source.id, key),
+      duplicate(source.id, key),
+    ]);
+    expect([first.statusCode, concurrent.statusCode].sort()).toEqual([200, 201]);
+    expect(concurrent.json()).toEqual(first.json());
+    const requestId = first.json().requestId as string;
+    expect(requestId).toBeTypeOf('string');
+
+    const edit = await app!.inject({
+      method: 'PATCH',
+      url: `${ROOT.mech}/${source.id}`,
+      headers: headers(),
+      payload: { version: source.version, comment: `source changed ${randomUUID()}` },
+    });
+    expect(edit.statusCode, edit.body).toBe(200);
+    const removed = await app!.inject({
+      method: 'DELETE',
+      url: `${ROOT.mech}/${source.id}?version=${edit.json().version}`,
+      headers: headers(),
+    });
+    expect(removed.statusCode, removed.body).toBe(200);
+    const replay = await duplicate(source.id, key);
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json()).toEqual({ requestId });
+    const checked = await reconcile(source.id, key);
+    expect(checked.statusCode, checked.body).toBe(200);
+    expect(checked.json()).toEqual({ state: 'created', requestId });
+  });
+
+  it('binds a key to the source and tombstones an absent attempt', async () => {
+    const source = await createSource(`duplicate-tombstone-${randomUUID()}`);
+    const other = await createSource(`duplicate-other-${randomUUID()}`);
+    const key = randomUUID();
+    const checked = await reconcile(source.id, key);
+    expect(checked.statusCode, checked.body).toBe(200);
+    expect(checked.json()).toMatchObject({ state: 'not-created' });
+    const old = await duplicate(source.id, key);
+    expect(old.statusCode, old.body).toBe(409);
+    const replacement = checked.json().nextOperationId as string;
+    const created = await duplicate(source.id, replacement);
+    expect(created.statusCode, created.body).toBe(201);
+    const mismatch = await duplicate(other.id, replacement);
+    expect(mismatch.statusCode, mismatch.body).toBe(409);
+    const next = await duplicate(source.id, randomUUID());
+    expect(next.statusCode, next.body).toBe(201);
+    expect(next.json().requestId).not.toBe(created.json().requestId);
+  });
+});

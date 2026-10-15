@@ -464,15 +464,10 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
   });
 
   /**
-   * Заведение — **отдельная ветка протокола Р21**: запереть ещё не существующую строку нечем.
-   * Последовательность своя: транзакция → проверка пары «отдел — площадка» и активности её половин
-   * → проверка модели → вставка → привязка файлов → первая запись истории статусов → коммит →
-   * аудит обычным `writeAudit`.
-   *
-   * Аудит здесь ПОСЛЕ транзакции, а не в ней: заведения нет в строгом перечне (`writeAuditTx`), и
-   * держать обещание, которого протокол не даёт, хуже, чем назвать границу. Снимок при этом
-   * пишется полный — тот же, что у `hard_delete` и `purge`, — хотя половина его ключей у новой
-   * заявки пуста по существу: один набор с пустыми значениями честнее второго, укороченного.
+   * Creation is a separate R21 protocol branch: there is no existing row to lock. Its transaction
+   * checks the department/site pair and model before inserting the request, links and first status.
+   * Audit follows the commit because create is outside the strict `writeAuditTx` set. The full
+   * snapshot matches hard delete and purge even when most fields start empty.
    */
   const createRequest = async (
     p: Principal,
@@ -487,37 +482,30 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
       comment: string;
       fileIds: string[];
     },
-    /** Исходная заявка «Дублировать»; в журнале только она и отличает копию от обычного заведения. */
+    /** The source ID is the history marker distinguishing a duplicate from ordinary creation. */
     sourceRequestId?: string,
     createKey?: string | null,
+    fingerprintOverride?: string,
   ): Promise<{ dto: MechRequestDto; repeated: boolean }> => {
     assertPlaceObjectScope(p, input.objectId, MECH_SCOPE_LABEL);
     assertMechRequesterAllowed(p, input.departmentId);
-    const fingerprint = createKey ? createAttemptFingerprint(input) : null;
+    const fingerprint = createKey ? (fingerprintOverride ?? createAttemptFingerprint(input)) : null;
     const load = (id: string) => loadMechRequestDto(db, id);
     if (createKey && fingerprint) {
       const replay = await replayRequestCreate(createKey, 'mech', p.id, fingerprint, load);
       if (replay) return { dto: replay, repeated: true };
     }
-    /*
-     * Автовиза подачей (план визы, Р6): заявка, заведённая тем, кто её же и подписывает,
-     * согласована самим фактом заведения — отдельного нажатия «Согласовать» от одного человека
-     * портал не требует. Правило считается ДО транзакции и по тем же двум колонкам, которые
-     * вставляются ниже: спрашивать его у сохранённой строки значило бы читать её второй раз ради
-     * ответа, который уже известен.
-     *
-     * Дублирование идёт этой же веткой и получает то же правило: копия — новая заявка, и виза
-     * исходной на неё не переносится ни при каком авторе.
-     */
+    // A request created by its own approver is approved at submission (R6). Use the inserted
+    // object's scope inputs before the transaction; reading the saved row would add no evidence.
+    // A duplicate is a new request and never inherits approval from its source.
     const selfApproved = approvesOwnMechRequestOnCreate(p, {
       objectId: input.objectId,
       departmentId: input.departmentId,
     });
     const insertRequest = async (tx: CreateTx) => {
       await assertMechPairAssignable(tx, input.objectId, input.departmentId);
-      // Модель проверяется до вставки: внешний ключ отвечает «такая строка есть», а «её можно
-      // выбрать сегодня» — вопрос сервиса. Наименование при этом никуда не пишется: с уборкой Э3
-      // снимка написания у заявки нет вовсе, предмет аренды хранится одной ссылкой (ADR 0156).
+      // The foreign key proves the model exists; the service also checks it is selectable today.
+      // The request keeps only the model link, without a copied name (ADR 0156).
       await assertMechModelAssignable(tx, input.mechModelId);
       const [row] = await tx
         .insert(mechRequests)
@@ -621,55 +609,98 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
   registerCreate(true);
 
   /**
-   * «Дублировать» (Р3): ставка задаётся за час или смену ЕДИНИЦЫ, две единицы возвращают в разные
-   * дни и работают разное число часов — поэтому «нужны две виброплиты» это две заявки, а не
-   * количество в одной. Кнопка закрывает эргономику этого решения.
-   *
-   * Исходная заявка читается **без замка**: из неё только копируются значения, и запирать её
-   * незачем — параллельная правка исходной на копию не влияет.
-   *
-   * Пара «отдел + площадка» проверяется заново: это заведение новой заявки, а не копия строки, и
-   * площадку у отдела могли снять после того, как завели исходную. Вложения не копируются вовсе —
-   * файл принадлежит одной заявке (`UNIQUE(file_id)`), а копия документа это новая загрузка.
+   * A duplicate is a new rental unit. The keyed door is absent from old API releases, so a cached
+   * client cannot accidentally send an unprotected retry after rollback. The source is read without
+   * a lock: only its values are copied. The department/site pair is checked anew because its
+   * assignment may have changed. File links never move to the new request.
    */
-  r.post(
-    '/:id/duplicate',
-    { ...canCreate, schema: { params: idParams, body: duplicateMechRequestSchema } },
-    async (req, reply) => {
-      const p = requirePrincipal(req);
-      const source = await loadMechRequestDto(db, req.params.id);
-      if (!source) throw err.notFound('Заявка не найдена');
-      assertArchiveVisible(p, source.deletedAt, 'Заявка не найдена');
-      assertPlaceObjectScope(p, source.objectId, MECH_SCOPE_LABEL);
-      // Копия ссылается на ту же модель. У заявки старше Э2 ссылки может не быть вовсе — её
-      // написание не нашлось в справочнике при переносе, а уборка Э3 сняла и само написание, — и
-      // копировать тут нечего: предмета аренды у такой заявки не осталось, а строгий выбор не
-      // допускает завести новую заявку без модели. Отказ поэтому не называет модель по имени: имя
-      // потеряно вместе с колонкой, и подставить в кавычки нечего.
-      if (!source.mechModelId) {
-        throw err.unprocessable(
-          'У этой заявки модель не указана — её завели до справочника, и скопировать заявку нечем: ' +
-            'оформите новую и выберите модель в «Справочниках»',
-          { mechModelId: 'Модель не указана' },
+  const registerDuplicate = (receiptRequired: boolean) =>
+    r.post(
+      receiptRequired ? '/:id/_duplicate-with-receipt' : '/:id/duplicate',
+      { ...canCreate, schema: { params: idParams, body: duplicateMechRequestSchema } },
+      async (req, reply) => {
+        const p = requirePrincipal(req);
+        const createKey = receiptRequired ? createAttemptKey(req.headers['idempotency-key']) : null;
+        if (receiptRequired && !createKey)
+          throw err.unprocessable('Передайте ключ дублирования заявки');
+        // The source may have changed or been deleted after the first POST. The source ID and validated
+        // command body identify the intent; the mutable source DTO must not enter its fingerprint.
+        const fingerprint = createKey
+          ? createAttemptFingerprint({
+              operation: 'mech-duplicate',
+              sourceRequestId: req.params.id,
+              body: req.body,
+            })
+          : null;
+        if (createKey && fingerprint) {
+          const replay = await replayRequestCreate(createKey, 'mech', p.id, fingerprint, (id) =>
+            loadMechRequestDto(db, id),
+          );
+          if (replay) {
+            reply.code(200);
+            return { requestId: replay.id };
+          }
+        }
+        const source = await loadMechRequestDto(db, req.params.id);
+        if (!source) throw err.notFound('Заявка не найдена');
+        assertArchiveVisible(p, source.deletedAt, 'Заявка не найдена');
+        assertPlaceObjectScope(p, source.objectId, MECH_SCOPE_LABEL);
+        // A pre-directory source may have no model link. The copy cannot satisfy the current model
+        // requirement, and the old model name was not retained for a useful error label.
+        if (!source.mechModelId) {
+          throw err.unprocessable(
+            'У этой заявки модель не указана — её завели до справочника, и скопировать заявку нечем: ' +
+              'оформите новую и выберите модель в «Справочниках»',
+            { mechModelId: 'Модель не указана' },
+          );
+        }
+        const result = await createRequest(
+          p,
+          {
+            objectId: source.objectId,
+            departmentId: source.departmentId,
+            mechModelId: source.mechModelId,
+            plannedFrom: source.plannedFrom,
+            plannedTo: source.plannedTo,
+            responsibleName: source.responsibleName,
+            responsiblePhone: source.responsiblePhone,
+            comment: source.comment,
+            fileIds: [],
+          },
+          source.id,
+          createKey,
+          fingerprint ?? undefined,
         );
-      }
-      const result = await createRequest(
-        p,
-        {
-          objectId: source.objectId,
-          departmentId: source.departmentId,
-          mechModelId: source.mechModelId,
-          plannedFrom: source.plannedFrom,
-          plannedTo: source.plannedTo,
-          responsibleName: source.responsibleName,
-          responsiblePhone: source.responsiblePhone,
-          comment: source.comment,
-          fileIds: [],
-        },
-        source.id,
-      );
-      reply.code(201);
-      return result.dto;
+        reply.code(result.repeated ? 200 : 201);
+        return receiptRequired ? { requestId: result.dto.id } : result.dto;
+      },
+    );
+  registerDuplicate(false);
+  registerDuplicate(true);
+
+  r.post(
+    '/:id/_duplicate-attempts/reconcile',
+    {
+      preHandler: [app.authenticate],
+      schema: {
+        params: idParams,
+        body: z.object({ originalBody: duplicateMechRequestSchema }).strict(),
+      },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const key = createAttemptKey(req.headers['idempotency-key']);
+      if (!key) throw err.unprocessable('Передайте ключ исходной попытки');
+      return reconcileRequestCreate({
+        key,
+        kind: 'mech',
+        actorUserId: p.id,
+        fingerprint: createAttemptFingerprint({
+          operation: 'mech-duplicate',
+          sourceRequestId: req.params.id,
+          body: req.body.originalBody,
+        }),
+      });
     },
   );
 
