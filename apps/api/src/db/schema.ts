@@ -6452,14 +6452,14 @@ export const vehicleRequests = pgTable(
     deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     /*
-     * Снимок режима, застигнутого переключением признака «Линейная техника» у заказанного типа
-     * (миграция 0137). NULL — норма ADR 0100 §1: признак читается живым из справочника.
-     * Заполнено — заявка была в работе, когда признак типа переключили, и дорабатывает по
-     * записанному значению; снимается уходом из «В работе».
+     * A request caught in progress by a vehicle type's linear-mode switch keeps the previous
+     * mode until it leaves "In progress". NULL means the mode still comes from the type. Switching
+     * under live requests is permanent (ADR 0107, S-13), so future switches may create new
+     * snapshots; the columns are not scheduled for removal.
      *
-     * Читать напрямую нельзя: режим заявки — это `requestIsLinearSql` / `requestIsLinear`
-     * (`src/db/linear-mode.ts`), и второе место, решающее «днями или неделями», разойдётся с
-     * первым на первой же правке. Колонки временные — условие их смерти в комментарии миграции.
+     * Read the effective mode through `requestIsLinearSql` / `requestIsLinear` in
+     * `src/db/linear-mode.ts`. A direct read would make one path silently choose a different
+     * day/week workflow from the rest of the portal.
      */
     isLinearFrozen: boolean('is_linear_frozen'),
     linearFrozenAt: timestamp('linear_frozen_at', { withTimezone: true }),

@@ -808,6 +808,9 @@ CREATE INDEX vehicle_requests_linear_frozen_idx
 
 ## 9. Уборка костыля — четырьмя релизами, а не одним
 
+This cleanup chain was cancelled by the owner's 2026-10-12 decision S-13. Switching linearity
+under live orders is permanent; this section records the earlier intent, not a future release plan.
+
 Мешают этому две вещи сразу, и обе про время между проверкой и выкатом.
 
 Первое: `deploy-auto` накатывает миграции **до** перезапуска

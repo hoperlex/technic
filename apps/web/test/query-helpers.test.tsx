@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { lazy, Suspense, useState } from 'react';
 import { fireEvent, screen } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
@@ -85,6 +85,45 @@ describe('settle: экран затих', () => {
     await settle(queryClient);
 
     expect(log).toEqual(['inner']);
+    expect(screen.getByText('loaded')).toBeDefined();
+  });
+
+  /*
+   * The flake of the probe above, made deterministic. On a loaded host the tab's chunk sometimes
+   * landed while `settle` waited for queries; that wait ran outside `act`, React then held the
+   * reveal back for 300 ms, and `settle` returned with the tab on its fallback. Here the chunk is
+   * released at the moment `settle` first asks whether a query is in flight, which is that wait.
+   */
+  it('waits for a tab whose chunk arrives while it waits for queries', async () => {
+    function Tab() {
+      const { data } = useQuery({ queryKey: ['probe', 'late-chunk'], queryFn: () => 'loaded' });
+      return <div>{data ?? 'loading'}</div>;
+    }
+    let release = () => {};
+    const LateTab = lazy(
+      () =>
+        new Promise<{ default: typeof Tab }>((resolve) => {
+          release = () => resolve({ default: Tab });
+        }),
+    );
+    const { queryClient } = renderWithUser(
+      <Suspense fallback={<div>tab loading</div>}>
+        <LateTab />
+      </Suspense>,
+    );
+    const isFetching = queryClient.isFetching.bind(queryClient);
+    let released = false;
+    vi.spyOn(queryClient, 'isFetching').mockImplementation((...args) => {
+      if (!released) {
+        released = true;
+        release();
+      }
+      return isFetching(...args);
+    });
+
+    await settle(queryClient);
+
+    expect(released).toBe(true);
     expect(screen.getByText('loaded')).toBeDefined();
   });
 });

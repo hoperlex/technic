@@ -60,6 +60,7 @@ git mv apps/api/drizzle/pending/<файл>.sql apps/api/drizzle/<NNNN>_<имя>.
 | `service-chat-drop-service-comment.sql` | request discussion, release C                | the one after release B (ADR 0141, plan §3.10)    |
 | `department-object-column-drop.sql`     | department objects stage 9, release B        | the one after release A (ADR 0144)                |
 | `vehicle-type-waybill-form-check.sql`   | ADR 0128: CHECK `4p\|leg3`, guard names `esm2` types | R2, after R1 is confirmed deployed |
+| `linear-mode-snapshot-comments.sql`      | ADR 0107: replace obsolete live column comments after S-13 | next numbered release |
 
 Step 1e (`step1e-drop-user-role-addons.sql`) left this directory: it became a numbered migration in
 the release after 1d, by the procedure above.
