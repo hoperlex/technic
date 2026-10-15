@@ -119,6 +119,12 @@ import { fileView } from '../services/file-view';
 import { vehiclesByRequestIds } from '../services/waste-request-vehicles';
 import { assertOperatorServesObject } from '../services/object-operators';
 import { enqueueTicketRecognition, purgeRequestRecognition } from '../services/waste-tickets';
+import {
+  createAttemptFingerprint,
+  createAttemptKey,
+  createRequestOnce,
+  replayRequestCreate,
+} from '../services/request-create-attempt';
 import { wasteTicketChecks } from '../services/waste-ticket-checks';
 import { loadTicketCheckInputs, loadTicketCheckRequestRow } from '../services/waste-ticket-inputs';
 import {
@@ -1369,10 +1375,25 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     if (body.operatorCounterpartyId !== undefined) {
       assertCan(p, 'wasteRequests.assignOperator', ASSIGN_OPERATOR_DENIED);
     }
+    const createKey = createAttemptKey(req.headers['idempotency-key']);
+    const fingerprint = createKey ? createAttemptFingerprint(body) : null;
+    if (createKey && fingerprint) {
+      const replay = await replayRequestCreate(
+        createKey,
+        'waste',
+        p.id,
+        fingerprint,
+        getRequestDto,
+      );
+      if (replay) {
+        reply.code(200);
+        return replay;
+      }
+    }
     // Подтверждённый вывоз чужого контейнера — своё событие истории, и пишется оно после
     // фиксации заявки: причина известна внутри транзакции, а номер заявки — только после неё.
     let mismatchReason = '';
-    const created = await db.transaction(async (tx) => {
+    const insertRequest = async (tx: Tx) => {
       // Оператор проверяется до расчёта: цена берётся из его прайса (ADR 0026), и считать её по
       // исполнителю, которого нельзя назначить, незачем.
       if (body.operatorCounterpartyId) {
@@ -1420,16 +1441,29 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       });
       await linkFiles(tx, row!.id, body.fileIds, p.id);
       return row!;
-    });
-    await writeAudit({
-      actorUserId: p.id,
-      action: 'waste_request.create',
-      entityType: 'waste_request',
-      entityId: created.id,
-    });
-    const dto = (await getRequestDto(created.id))!;
-    await writeOwnerMismatchAudit(p.id, dto, mismatchReason);
-    reply.code(201);
+    };
+    const outcome =
+      createKey && fingerprint
+        ? await createRequestOnce({
+            key: createKey,
+            kind: 'waste',
+            actorUserId: p.id,
+            fingerprint,
+            create: async (tx) => ({ id: (await insertRequest(tx)).id, metadata: null }),
+            load: getRequestDto,
+          })
+        : null;
+    const created = outcome ? { id: outcome.id } : await db.transaction(insertRequest);
+    if (!outcome?.repeated)
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'waste_request.create',
+        entityType: 'waste_request',
+        entityId: created.id,
+      });
+    const dto = outcome?.response ?? (await getRequestDto(created.id))!;
+    if (!outcome?.repeated) await writeOwnerMismatchAudit(p.id, dto, mismatchReason);
+    reply.code(outcome?.repeated ? 200 : 201);
     return dto;
   });
 

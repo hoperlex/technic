@@ -10,6 +10,7 @@ import { mayHaveCommittedWrite } from '@shared/api';
 import { AutoSelect, FormModal, LocalFormDraftNotice, useFormBlockers } from '@shared/ui';
 import {
   FormDraftAutosave,
+  LocalCreateAttemptError,
   objectDraftPayload,
   restoreFormDateFields,
   storeFormDateFields,
@@ -180,7 +181,7 @@ export function MechRequestForm({
           version: request.version,
         });
       }
-      return mechRequestsApi.create({
+      const payload = {
         objectId: pair!.objectId,
         ...(pair!.departmentId ? { departmentId: pair!.departmentId } : {}),
         mechModelId: values.mechModelId,
@@ -189,7 +190,9 @@ export function MechRequestForm({
         ...contact,
         comment,
         fileIds: attachments.ids,
-      });
+      };
+      const attempt = draft.prepareCreate(payload);
+      return mechRequestsApi.create(attempt.body, attempt.key);
     },
     onSuccess: () => {
       if (!request) draft.clear();
@@ -198,7 +201,7 @@ export function MechRequestForm({
       onClose();
     },
     onError: (e) => {
-      if (!request && mayHaveCommittedWrite(e))
+      if (!request && !(e instanceof LocalCreateAttemptError) && mayHaveCommittedWrite(e))
         message.warning(
           'Ответ мог потеряться после создания заявки. Проверьте список перед повторной отправкой.',
         );
@@ -242,6 +245,7 @@ export function MechRequestForm({
             active={!!draft.active}
             pending={draft.pending}
             status={draft.status}
+            attemptKey={draft.active?.createAttempt?.key}
             fileNotice
             createMayHaveSucceeded
             onRestore={(candidate) => {

@@ -103,8 +103,12 @@ export const wasteRequestsApi = {
   get: (id: string) => apiFetch<WasteRequestDto>(`/waste-requests/${id}`),
   /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0012). */
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/waste-requests/${id}/history`),
-  create: (body: WasteRequestPayload) =>
-    apiFetch<WasteRequestDto>('/waste-requests', { method: 'POST', body }),
+  create: (body: WasteRequestPayload, idempotencyKey?: string) =>
+    apiFetch<WasteRequestDto>('/waste-requests', {
+      method: 'POST',
+      body,
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    }),
   update: (id: string, body: WasteRequestUpdatePayload) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}`, { method: 'PATCH', body }),
   /**

@@ -195,6 +195,7 @@ export function WasteRequestEditorModal({
             active={!!draft.active}
             pending={draft.pending}
             status={draft.status}
+            attemptKey={draft.active?.createAttempt?.key}
             fileNotice
             createMayHaveSucceeded
             onRestore={(candidate) =>

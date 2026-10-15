@@ -45,6 +45,7 @@ export function VehicleRequestEditorDialog({ confirmLoading, onFinish, state }: 
         active={!!draft.active}
         pending={draft.pending}
         status={draft.status}
+        attemptKey={draft.active?.createAttempt?.key}
         fileNotice
         createMayHaveSucceeded={draft.pending[0]?.target.kind !== 'edit'}
         restoring={state.restoring}

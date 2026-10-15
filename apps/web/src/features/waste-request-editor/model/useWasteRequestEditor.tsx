@@ -30,6 +30,7 @@ import {
 import { MOSCOW_TZ } from '@shared/config';
 import { mayHaveCommittedWrite } from '@shared/api';
 import {
+  LocalCreateAttemptError,
   objectDraftPayload,
   storeFormDateFields,
   useDeferredOptions,
@@ -260,7 +261,8 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
         ...base,
         fileIds: files.filter((file) => file.isNew).map((file) => file.id),
       };
-      return wasteRequestsApi.create(payload);
+      const attempt = draft.prepareCreate(payload);
+      return wasteRequestsApi.create(attempt.body, attempt.key);
     },
     onSuccess: () => {
       if (!record) draft.clear();
@@ -269,7 +271,7 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
       setOpen(false);
     },
     onError: (error) => {
-      if (!record && mayHaveCommittedWrite(error))
+      if (!record && !(error instanceof LocalCreateAttemptError) && mayHaveCommittedWrite(error))
         message.warning(
           'Ответ мог потеряться после создания заявки. Проверьте список перед повторной отправкой.',
         );

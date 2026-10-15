@@ -2,6 +2,7 @@ import dayjs from 'dayjs';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { Form } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CreateVehicleRequestInput } from '@technic/contracts';
 import {
   draftValues,
   listLocalDrafts,
@@ -48,6 +49,25 @@ beforeEach(() => {
 });
 
 describe('vehicle request local draft', () => {
+  it('retains the original create key and submitted body across a storage round-trip', () => {
+    const createAttempt = {
+      key: crypto.randomUUID(),
+      body: {
+        requestType: 'freight_transport',
+        objectId: 'site-1',
+        vehicleTypeId: 'truck',
+        scheduledAt: '2026-10-16T00:00:00+03:00',
+        scheduledTimeUnspecified: true,
+        comment: 'first',
+        trips: [],
+        fileIds: [],
+      } satisfies CreateVehicleRequestInput,
+    };
+    expect(writeLocalDraft(snapshot({ target: { kind: 'create' }, createAttempt }))).toBe(true);
+    expect(listLocalDrafts('user-1', { kind: 'create' }).drafts[0]?.createAttempt).toEqual(
+      createAttempt,
+    );
+  });
   it('recovers dates, both trip rows and address metadata after storage round-trip', () => {
     expect(writeLocalDraft(snapshot())).toBe(true);
     const found = listLocalDrafts('user-1', target);

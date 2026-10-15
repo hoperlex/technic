@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Form, type FormInstance } from 'antd';
+import { newIdempotencyKey } from './idempotency';
 import {
   listLocalFormDrafts,
   newLocalFormDraftId,
@@ -13,6 +14,8 @@ export interface LocalDraftStatus {
   savedAt: number | null;
 }
 
+export class LocalCreateAttemptError extends Error {}
+
 export interface LocalFormDraftController<Payload> {
   active: LocalFormDraft<Payload> | null;
   begin: (target: string) => void;
@@ -20,6 +23,7 @@ export interface LocalFormDraftController<Payload> {
   discardPending: () => void;
   pending: LocalFormDraft<Payload>[];
   persist: () => boolean;
+  prepareCreate: <Body>(body: Body) => { body: Body; key: string };
   restore: (candidate: LocalFormDraft<Payload>) => Payload;
   status: LocalDraftStatus;
 }
@@ -41,22 +45,27 @@ export function useLocalFormDraft<Payload>({
   const parseRef = useRef(parse);
   parseRef.current = parse;
   const [active, setActive] = useState<LocalFormDraft<Payload> | null>(null);
+  const activeRef = useRef<LocalFormDraft<Payload> | null>(null);
   const [pending, setPending] = useState<LocalFormDraft<Payload>[]>([]);
   const [status, setStatus] = useState<LocalDraftStatus>({ available: true, savedAt: null });
   const context = useRef<string | null>(null);
+  const activate = useCallback((next: LocalFormDraft<Payload> | null) => {
+    activeRef.current = next;
+    setActive(next);
+  }, []);
 
   const begin = useCallback(
     (target: string) => {
       context.current = target;
       if (!userId) {
-        setActive(null);
+        activate(null);
         setPending([]);
         setStatus({ available: false, savedAt: null });
         return;
       }
       const found = listLocalFormDrafts(userId, form, target, parseRef.current);
       setPending(found.drafts);
-      setActive(
+      activate(
         found.drafts.length
           ? null
           : {
@@ -71,22 +80,48 @@ export function useLocalFormDraft<Payload>({
       );
       setStatus({ available: found.available, savedAt: null });
     },
-    [userId, form],
+    [userId, form, activate],
   );
 
   const persist = useCallback((): boolean => {
-    if (!active) return false;
+    const current = activeRef.current;
+    if (!current) return false;
     const savedAt = Date.now();
-    const ok = writeLocalFormDraft({ ...active, savedAt, payload: readRef.current() });
+    const next = { ...current, savedAt, payload: readRef.current() };
+    const ok = writeLocalFormDraft(next);
+    if (ok) activate(next);
     setStatus({ available: ok, savedAt: ok ? savedAt : null });
     return ok;
-  }, [active]);
+  }, [activate]);
+
+  // A rejected retry cannot thaw an earlier in-flight POST; only success clears this attempt.
+  const prepareCreate = <Body,>(body: Body): { body: Body; key: string } => {
+    const current = activeRef.current;
+    if (!current) throw new LocalCreateAttemptError('Черновик недоступен — откройте форму заново');
+    const key = current.createAttempt?.key ?? newIdempotencyKey();
+    const submittedBody = current.createAttempt ? (current.createAttempt.body as Body) : body;
+    const next = {
+      ...current,
+      savedAt: Date.now(),
+      payload: readRef.current(),
+      createAttempt: { key, body: submittedBody },
+    };
+    if (!writeLocalFormDraft(next)) {
+      setStatus({ available: false, savedAt: null });
+      throw new LocalCreateAttemptError(
+        'Не удалось сохранить попытку создания на устройстве. Освободите место и повторите.',
+      );
+    }
+    activate(next);
+    setStatus({ available: true, savedAt: next.savedAt });
+    return { body: submittedBody, key };
+  };
 
   const restore = (candidate: LocalFormDraft<Payload>): Payload => {
     const next = { ...candidate, id: newLocalFormDraftId(), savedAt: Date.now() };
     const ok = writeLocalFormDraft(next);
     // The source may still be open in another tab. Keep it until an explicit discard.
-    setActive(next);
+    activate(next);
     setPending([]);
     setStatus({ available: ok, savedAt: ok ? next.savedAt : null });
     return candidate.payload;
@@ -96,7 +131,7 @@ export function useLocalFormDraft<Payload>({
     const removed = pending.map((item) => removeLocalFormDraft(item.id)).every(Boolean);
     setPending([]);
     if (userId && context.current) {
-      setActive({
+      activate({
         schema: 1,
         id: newLocalFormDraftId(),
         userId,
@@ -110,13 +145,23 @@ export function useLocalFormDraft<Payload>({
   };
 
   const clear = () => {
-    if (active) removeLocalFormDraft(active.id);
-    setActive(null);
+    if (activeRef.current) removeLocalFormDraft(activeRef.current.id);
+    activate(null);
     setPending([]);
     setStatus({ available: true, savedAt: null });
   };
 
-  return { active, begin, clear, discardPending, pending, persist, restore, status };
+  return {
+    active,
+    begin,
+    clear,
+    discardPending,
+    pending,
+    persist,
+    prepareCreate,
+    restore,
+    status,
+  };
 }
 
 export function LocalFormDraftAutosave({

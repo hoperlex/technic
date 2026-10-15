@@ -6564,6 +6564,41 @@ export const vehicleRequests = pgTable(
   }),
 );
 
+/**
+ * Ordinary request creation uses this receipt when a response is lost. The row is reserved and
+ * linked to the new request in the same transaction; its response is frozen before any HTTP 201 is
+ * sent. No FK to the request: a later hard delete must not make the original key reusable.
+ */
+export const requestCreateAttempts = pgTable(
+  'request_create_attempts',
+  {
+    key: uuid('key').primaryKey(),
+    kind: text('kind').notNull(),
+    actorUserId: uuid('actor_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    fingerprint: text('fingerprint').notNull(),
+    requestId: uuid('request_id'),
+    metadata: jsonb('metadata').$type<unknown>(),
+    response: jsonb('response').$type<unknown>(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    kindKnown: check(
+      'request_create_attempts_kind_check',
+      sql`${t.kind} IN ('vehicle', 'waste', 'mech', 'service')`,
+    ),
+    fingerprintNonempty: check(
+      'request_create_attempts_fingerprint_check',
+      sql`btrim(${t.fingerprint}) <> ''`,
+    ),
+    responseLinked: check(
+      'request_create_attempts_response_check',
+      sql`${t.response} IS NULL OR ${t.requestId} IS NOT NULL`,
+    ),
+  }),
+);
+
 // Детали заказа спецтехники: период date-only (без времени; date_to пусто = один день).
 export const specialEquipmentRequestDetails = pgTable(
   'special_equipment_request_details',

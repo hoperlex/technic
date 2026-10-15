@@ -1,5 +1,5 @@
 import dayjs from 'dayjs';
-import type { VehicleRequestType } from '@technic/contracts';
+import type { CreateVehicleRequestInput, VehicleRequestType } from '@technic/contracts';
 import {
   listLocalFormDrafts,
   newLocalFormDraftId,
@@ -32,6 +32,7 @@ export interface VehicleRequestLocalDraft {
   operationId: string;
   savedAt: number;
   values: StoredValues;
+  createAttempt?: { key: string; body: CreateVehicleRequestInput };
 }
 
 function storedDate(value: FormValues['dateFrom']): string | null | undefined {
@@ -70,6 +71,7 @@ interface Payload {
   baseVersion: number | null;
   operationId: string;
   values: StoredValues;
+  createAttempt?: { key: string; body: CreateVehicleRequestInput };
 }
 
 function parsePayload(value: unknown): Payload | null {
@@ -88,7 +90,12 @@ function parsePayload(value: unknown): Payload | null {
       typeof draft.values.classificationKey !== 'string') ||
     (draft.values.customerKey !== undefined && typeof draft.values.customerKey !== 'string') ||
     (draft.values.trips !== undefined && !Array.isArray(draft.values.trips)) ||
-    (draft.values.trips ?? []).some((trip) => !trip || typeof trip.key !== 'string')
+    (draft.values.trips ?? []).some((trip) => !trip || typeof trip.key !== 'string') ||
+    (draft.createAttempt !== undefined &&
+      (!draft.createAttempt ||
+        typeof draft.createAttempt.key !== 'string' ||
+        !draft.createAttempt.body ||
+        typeof draft.createAttempt.body !== 'object'))
   )
     return null;
   return draft as Payload;
@@ -135,6 +142,7 @@ export function writeLocalDraft(draft: VehicleRequestLocalDraft): boolean {
       baseVersion: draft.baseVersion,
       operationId: draft.operationId,
       values: draft.values,
+      createAttempt: draft.createAttempt,
     },
   });
 }

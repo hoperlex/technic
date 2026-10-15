@@ -376,22 +376,12 @@ export const createFreightTransportRequestSchema = z
   })
   .strict();
 
-/*
- * Дата в прошлом (ADR 0101, Р15). Схема больше не отвечает на этот вопрос сама: настоящий ответ
- * складывается из права субъекта, глубины и причины (`backdateGuard`), а из тела запроса видно
- * только последнее — кто его прислал, схема не знает вовсе.
- *
- * Поэтому граница осталась, но стала условной: **необъявленное** прошлое отклоняется, как и
- * прежде. Это и есть очевидный мусор — заявка с датой прошлого года, набранная опечаткой в
- * дейтпикере, или заведение вчерашним днём по привычке: тот, кто действительно правит прошлое,
- * пришёл сюда за этим и объяснение написал. Снять проверку совсем значило бы отдать серверу и
- * опечатки тоже — а он на них ответит тем же 422, только на круг позже и без указания поля.
- *
- * Схема при этом ничего не разрешает: `backdateReason` — заявление о намерении, а не авторизация.
- * Право (`waybills.correct`), глубину (`WAYBILL_CORRECTION_DAYS`) и непустоту причины сервер
- * спрашивает **всегда**, даже когда схема пропустила тело молча.
+/**
+ * A receipt replay must still satisfy structural and cross-field rules after the calendar day
+ * changes. The separate date gate below rejects undeclared past dates only for new commands;
+ * `backdateReason` declares intent, while the server checks the actor's right and depth (ADR 0101).
  */
-export const createVehicleRequestSchema = z
+export const createVehicleRequestStableSchema = z
   .discriminatedUnion('requestType', [
     createSpecialEquipmentRequestSchema,
     createFreightTransportRequestSchema,
@@ -405,19 +395,8 @@ export const createVehicleRequestSchema = z
           message: 'Дата окончания раньше даты начала',
         });
       }
-      // Начало срока не раньше сегодня — пока прошлое не объявлено причиной. Конец периода
-      // проверять отдельно не нужно: он не раньше начала, а `backdateGuard` на сервере считает
-      // глубину по той границе, которую двигают (§4 плана).
-      //
-      // Заявленное прошлое схема пропускает молча и не решает о нём ничего: `backdateReason` —
-      // намерение, а не авторизация. Право (`waybills.correct`), глубину и непустоту причины
-      // сервер спрашивает всегда и отвечает точным кодом — 403 на право, 422 на глубину.
-      if (!v.backdateReason && !isAllowedRequestDate(v.dateFrom)) {
-        ctx.addIssue({ code: 'custom', path: ['dateFrom'], message: BACKDATE_UNDECLARED_MESSAGE });
-      }
     } else {
-      // Заказчик ровно один (ADR 0040): двое дали бы два ответа на «кто визирует», ноль —
-      // ничью заявку. То же условие держит CHECK `vehicle_requests_customer_check`.
+      // One customer determines who approves the request; the database holds the same invariant.
       if ((v.objectId == null) === (v.departmentId == null)) {
         ctx.addIssue({
           code: 'custom',
@@ -425,23 +404,12 @@ export const createVehicleRequestSchema = z
           message: 'Укажите объект либо отдел — что-то одно',
         });
       }
-      // Объём и масса здесь не проверяются: нужны ли они, зависит от бланка заказанного типа ТС
-      // (`isCargoAmountRequired`), а бланк живёт в справочнике — схеме его взять неоткуда.
-      // Обязательность условная и решается сервером, как категория ТС и ставки (ADR 0037 п. 4).
+      // Cargo quantity depends on the selected vehicle type in the directory, which this schema
+      // cannot read. The server applies that conditional rule (ADR 0037 decision 4).
       if (!v.scheduledTimeUnspecified && !isWithinWorkTimeAt(new Date(v.scheduledAt))) {
         ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: WORK_TIME_MESSAGE });
       }
-      // День подачи по МСК — тем же правилом, что и срок выше: необъявленное прошлое отклоняется,
-      // объявленное уходит серверу, который один знает право и глубину.
-      if (!v.backdateReason && !isAllowedRequestDateAt(new Date(v.scheduledAt))) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['scheduledAt'],
-          message: BACKDATE_UNDECLARED_MESSAGE,
-        });
-      }
-      // Своё время ездки — внутри дня заявки (Р18). Здесь схема отвечает целиком: при заведении
-      // видны обе стороны сравнения, и день заявки взяться больше неоткуда.
+      // At creation both dates are available, so a trip outside the request day is rejected here.
       for (const i of tripsOutOfRequestDay(v.scheduledAt, v.trips)) {
         ctx.addIssue({
           code: 'custom',
@@ -451,6 +419,16 @@ export const createVehicleRequestSchema = z
       }
     }
   });
+/** A receipt replay must pass stable validation before the clock-dependent date gate runs. */
+export const createVehicleRequestSchema = createVehicleRequestStableSchema.superRefine((v, ctx) => {
+  if (v.backdateReason) return;
+  if (v.requestType === 'special_equipment' && !isAllowedRequestDate(v.dateFrom)) {
+    ctx.addIssue({ code: 'custom', path: ['dateFrom'], message: BACKDATE_UNDECLARED_MESSAGE });
+  }
+  if (v.requestType === 'freight_transport' && !isAllowedRequestDateAt(new Date(v.scheduledAt))) {
+    ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: BACKDATE_UNDECLARED_MESSAGE });
+  }
+});
 export type CreateSpecialEquipmentRequestInput = z.infer<
   typeof createSpecialEquipmentRequestSchema
 >;

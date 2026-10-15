@@ -27,6 +27,7 @@ import {
 } from '@features/vehicle-request-editor';
 import { MOSCOW_TZ } from '@shared/config';
 import { mayHaveCommittedWrite } from '@shared/api';
+import { LocalCreateAttemptError } from '@shared/lib';
 import { useEditorTermDoor, type TermStepResult } from './useEditorTermDoor';
 import type { VehicleRequestEditorState } from './useVehicleRequestEditorState';
 
@@ -144,11 +145,13 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
           ...backdate,
         };
         if (!state.record || !edit) {
-          return vehicleRequestsApi.create({
+          const body = {
             ...base,
             ...term,
             fileIds: state.editor.newFileIds(),
-          });
+          };
+          const attempt = state.draft.prepareCreate(body);
+          return vehicleRequestsApi.create(attempt.body, attempt.key);
         }
         if (retyping) {
           return vehicleRequestsApi.changeRequestType(state.record.id, {
@@ -209,11 +212,13 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
        */
       const created = formTrips.map((trip) => newTripBody(trip, requestDay));
       if (!state.record || !edit) {
-        return vehicleRequestsApi.create({
+        const body = {
           ...base,
           trips: created,
           fileIds: state.editor.newFileIds(),
-        });
+        };
+        const attempt = state.draft.prepareCreate(body);
+        return vehicleRequestsApi.create(attempt.body, attempt.key);
       }
       if (retyping) {
         return vehicleRequestsApi.changeRequestType(state.record.id, {
@@ -262,7 +267,11 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
           ? `Срок работ изменён, но остальные правки не сохранены: ${errorMessage(error)}`
           : errorMessage(error),
       );
-      if (!state.record && mayHaveCommittedWrite(error)) {
+      if (
+        !state.record &&
+        !(error instanceof LocalCreateAttemptError) &&
+        mayHaveCommittedWrite(error)
+      ) {
         message.warning(
           'Ответ сервера мог не дойти. Перед повторной отправкой проверьте список заявок, чтобы не создать дубль.',
         );

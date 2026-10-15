@@ -1,21 +1,8 @@
 /**
- * Ключ идемпотентности — UUID одной попытки отправки.
- *
- * Механизм общий, а не свойство экрана: пара «ключ + отпечаток тела» стоит уже у двух ручек
- * портала — отправка дня в кабинете водителя (ADR 0103) и заведение плановой закупки расходников
- * (ADR 0146, Р17), — и обе просят от клиента одного: чтобы повтор той же попытки нёс тот же ключ,
- * а новая попытка — новый. Второй генератор рядом с первым различался бы ровно тем, чем различаться
- * не должен, — запасным путём ниже.
- *
- * `crypto.randomUUID` есть только в защищённом контексте, а кабинет открывают и по адресу в
- * локальной сети. Запасной путь нужен не для красоты: без ключа отправка перестала бы быть
- * повторяемой ровно там, где связь и рвётся.
- *
- * Здесь только порождение. СКОЛЬКО ЖИВЁТ КЛЮЧ — решает тот, кто отправляет, и решает по-разному: у
- * кабинета водителя он привязан к ветке черновика и хранится между сеансами, у формы закупки
- * рождается на открытие формы и держится до её закрытия, чтобы повторное нажатие кнопки попало в
- * тот же ключ. Общей политики жизни у ключа нет и быть не может — она следует из того, что считать
- * «той же попыткой».
+ * A retry must reuse one UUID across every send of the same operation. The caller owns its
+ * lifetime: request drafts persist it across tabs, while other actions may keep it only for one
+ * form opening. A second generator would diverge on the fallback path. randomUUID is unavailable
+ * on some local-network origins, so random bytes keep retries possible there too.
  */
 export function newIdempotencyKey(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -24,7 +11,7 @@ export function newIdempotencyKey(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   const hex = [...bytes]
-    // Версия 4 и вариант 10x — иначе сервер не примет строку как uuid.
+    // The server accepts UUID v4 variant 10x; an arbitrary byte string would fail validation.
     .map((b, i) => (i === 6 ? (b & 0x0f) | 0x40 : i === 8 ? (b & 0x3f) | 0x80 : b))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');

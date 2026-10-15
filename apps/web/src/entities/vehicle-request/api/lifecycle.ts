@@ -63,8 +63,12 @@ export const vehicleRequestLifecycle = {
   get: (id: string) => apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`),
   /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0015). */
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/vehicle-requests/${id}/history`),
-  create: (body: CreateVehicleRequestInput) =>
-    apiFetch<VehicleRequestDto>('/vehicle-requests', { method: 'POST', body }),
+  create: (body: CreateVehicleRequestInput, idempotencyKey?: string) =>
+    apiFetch<VehicleRequestDto>('/vehicle-requests', {
+      method: 'POST',
+      body,
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    }),
   update: (id: string, body: UpdateVehicleRequestInput) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`, { method: 'PATCH', body }),
   /**

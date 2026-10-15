@@ -12,6 +12,7 @@ import { officeEquipmentKeys } from '@entities/office-equipment';
 import { serviceRequestKeys } from '@entities/service-request';
 import { useAuth } from '@entities/session';
 import { mayHaveCommittedWrite } from '@shared/api';
+import { LocalCreateAttemptError } from '@shared/lib';
 import { ServiceRequestCustomerField, useServiceRequestCustomer } from '@features/request-customer';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import {
@@ -36,10 +37,7 @@ import { useServiceRequestDraft } from './useServiceRequestDraft';
 import { PhoneInput } from '@entities/user-account';
 import { ResponsibleFields } from '@entities/request';
 
-/** Поля формы объявлены рядом с отправкой (`serviceRequestSubmit`): они — её вход. */
 type Values = ServiceFormValues;
-/* Там же живёт и предустановка обращения по гарантии — она вход той же отправки; отсюда её
-   по-прежнему берут реестр и блок гарантии, чтобы правка импортов не расползлась по модулю. */
 export type { WarrantyClaimPreset };
 
 /**
@@ -214,6 +212,7 @@ export function ServiceRequestForm({
         requesterPlace: place.body(values.requesterPlaceId),
         fileIds: attachments.ids,
         equipmentCandidate: draft,
+        prepareCreate: local.draft.prepareCreate,
         /*
          * Аппарат стоит вне площадок учётки (Р5): объектом заявки станет своя площадка — та, что
          * выбрана заказчиком, — а не объект карточки. Признак считает сервер и отдаёт проекцией
@@ -238,7 +237,7 @@ export function ServiceRequestForm({
     // Отказ разбирает отдельный модуль: кодов четыре, и у каждого своё место на экране; форма
     // передана ему затем, что дубль в парке (Р10) ставит найденную единицу прямо в её поля.
     onError: (e, values) => {
-      if (!request && mayHaveCommittedWrite(e))
+      if (!request && !(e instanceof LocalCreateAttemptError) && mayHaveCommittedWrite(e))
         message.warning(
           'Ответ мог потеряться после создания заявки. Проверьте список перед повторной отправкой.',
         );

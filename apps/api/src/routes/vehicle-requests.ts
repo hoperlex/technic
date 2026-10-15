@@ -19,6 +19,12 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
+import {
+  createAttemptFingerprint,
+  createAttemptKey,
+  createRequestOnce,
+  replayRequestCreate,
+} from '../services/request-create-attempt';
 import { alias, unionAll } from 'drizzle-orm/pg-core';
 import {
   type AddressMeta,
@@ -50,6 +56,7 @@ import {
   dateOnlySchema,
   type ConfirmScheduleInput,
   createVehicleRequestSchema,
+  createVehicleRequestStableSchema,
   type CreateVehicleRequestInput,
   decideVehicleEarlyEndApplySchema,
   decideVehicleEarlyEndPreviewSchema,
@@ -4596,7 +4603,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   // ── Создание ──
   r.post(
     '/',
-    { ...canCreate, schema: { body: createVehicleRequestSchema } },
+    { ...canCreate, schema: { body: createVehicleRequestStableSchema } },
     async (req, reply) => {
       const p = requirePrincipal(req);
       const body = req.body;
@@ -4606,6 +4613,30 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       assertVehicleRequestTypeAllowed(p, body.requestType);
       const customer = customerOf(body);
       assertRequestScope(p, customer);
+      const createKey = createAttemptKey(req.headers['idempotency-key']);
+      const createFingerprint = createKey ? createAttemptFingerprint(body) : null;
+      if (createKey && createFingerprint) {
+        const replay = await replayRequestCreate(
+          createKey,
+          'vehicle',
+          p.id,
+          createFingerprint,
+          getDto,
+        );
+        if (replay) {
+          reply.code(200);
+          return replay;
+        }
+      }
+      // A receipt can survive a calendar change; new commands still pass the full date gate.
+      const checked = createVehicleRequestSchema.safeParse(body);
+      if (!checked.success) {
+        throw err.validation(
+          Object.fromEntries(
+            checked.error.issues.map((issue) => [issue.path.join('.') || 'root', issue.message]),
+          ),
+        );
+      }
       // Заявку завёл тот, кто за объект или отдел и отвечает, — согласование уже состоялось
       // (ADR 0025): просить его завизировать собственную заявку незачем. Право визы само по себе
       // автовизы не даёт (ADR 0032) — администратор заводит заявку не за себя.
@@ -4726,14 +4757,28 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       };
 
       let createdId: string;
-      /** Повтор той же операции (Р31): заявка уже заведена, второй записи в аудит быть не должно. */
+      /** A replay, whether a correction or an ordinary create receipt, must not repeat audit. */
       let repeated = false;
+      let createdDto: VehicleRequestDto | null = null;
       if (!backdated) {
-        createdId = await db.transaction(insertRequest);
+        if (createKey && createFingerprint) {
+          const outcome = await createRequestOnce({
+            key: createKey,
+            kind: 'vehicle',
+            actorUserId: p.id,
+            fingerprint: createFingerprint,
+            create: async (tx) => ({ id: await insertRequest(tx), metadata: null }),
+            load: getDto,
+          });
+          createdId = outcome.id;
+          createdDto = outcome.response;
+          repeated = outcome.repeated;
+        } else {
+          createdId = await db.transaction(insertRequest);
+        }
       } else {
-        // Ключ идемпотентности обязателен ровно здесь: обычное заведение повтора не боится (человек
-        // увидит вторую заявку в списке и снесёт её), а заведение задним числом заводит строку в
-        // журнале коррекций — и без ключа обрыв связи оставил бы две заявки и две операции.
+        // Backdated creation retains the correction operation ID. Ordinary creation uses the
+        // optional header receipt above; the two keys protect different journals.
         if (!body.operationId) {
           throw err.unprocessable(CORRECTION_OPERATION_ID_REQUIRED, {
             operationId: 'Не передан ключ операции',
@@ -4801,8 +4846,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           });
         }
       }
-      reply.code(201);
-      return (await getDto(createdId))!;
+      reply.code(!backdated && repeated ? 200 : 201);
+      return createdDto ?? (await getDto(createdId))!;
     },
   );
 

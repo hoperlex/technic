@@ -16,6 +16,7 @@ import {
   CLOSED_REQUEST_STATUSES,
   completeVehicleRequestSchema,
   createVehicleRequestSchema,
+  createVehicleRequestStableSchema,
   decideVehicleEarlyEndApplySchema,
   decideVehicleEarlyEndPreviewSchema,
   earlyEndBlocker,
@@ -120,6 +121,19 @@ const freight = {
 const withTrip = (over: Record<string, unknown>) => ({
   ...freight,
   trips: [{ ...freight.trips[0], ...over }],
+});
+
+it('validates a receipt body structurally after midnight, while new creation keeps the date gate', () => {
+  vi.setSystemTime(new Date('2026-07-25T21:01:00.000Z'));
+  try {
+    expect(createVehicleRequestStableSchema.safeParse(special).success).toBe(true);
+    expect(createVehicleRequestSchema.safeParse(special).success).toBe(false);
+    expect(
+      createVehicleRequestStableSchema.safeParse({ ...special, objectId: undefined }).success,
+    ).toBe(false);
+  } finally {
+    vi.setSystemTime(new Date('2026-07-24T09:00:00.000Z'));
+  }
 });
 
 /** Заявка без названного поля ездки: им проверяется обязательность. */

@@ -100,6 +100,13 @@ import {
 } from '../services/mech-request-diff';
 import { loadMechRequestHistory } from '../services/mech-request-history';
 import { dropPendingMechExtension } from '../services/mech-request-extension';
+import {
+  createAttemptFingerprint,
+  createAttemptKey,
+  createRequestOnce,
+  replayRequestCreate,
+  type CreateTx,
+} from '../services/request-create-attempt';
 import { registerMechExtensionRoutes } from './mech-request-extension';
 
 /*
@@ -481,9 +488,16 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     },
     /** Исходная заявка «Дублировать»; в журнале только она и отличает копию от обычного заведения. */
     sourceRequestId?: string,
-  ): Promise<MechRequestDto> => {
+    createKey?: string | null,
+  ): Promise<{ dto: MechRequestDto; repeated: boolean }> => {
     assertPlaceObjectScope(p, input.objectId, MECH_SCOPE_LABEL);
     assertMechRequesterAllowed(p, input.departmentId);
+    const fingerprint = createKey ? createAttemptFingerprint(input) : null;
+    const load = (id: string) => loadMechRequestDto(db, id);
+    if (createKey && fingerprint) {
+      const replay = await replayRequestCreate(createKey, 'mech', p.id, fingerprint, load);
+      if (replay) return { dto: replay, repeated: true };
+    }
     /*
      * Автовиза подачей (план визы, Р6): заявка, заведённая тем, кто её же и подписывает,
      * согласована самим фактом заведения — отдельного нажатия «Согласовать» от одного человека
@@ -498,7 +512,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
       objectId: input.objectId,
       departmentId: input.departmentId,
     });
-    const created = await db.transaction(async (tx) => {
+    const insertRequest = async (tx: CreateTx) => {
       await assertMechPairAssignable(tx, input.objectId, input.departmentId);
       // Модель проверяется до вставки: внешний ключ отвечает «такая строка есть», а «её можно
       // выбрать сегодня» — вопрос сервиса. Наименование при этом никуда не пишется: с уборкой Э3
@@ -529,37 +543,55 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
       });
       await linkMechRequestFiles(tx, row!.id, input.fileIds, p.id);
       return row!;
-    });
-    const dto = (await loadMechRequestDto(db, created.id))!;
-    await writeAudit({
-      actorUserId: p.id,
-      action: 'mech_request.create',
-      entityType: 'mech_request',
-      entityId: created.id,
-      metadata: {
-        ...mechAuditSnapshot(dto),
-        ...(sourceRequestId ? { sourceRequestId } : {}),
-      },
-    });
-    return dto;
+    };
+    const outcome =
+      createKey && fingerprint
+        ? await createRequestOnce({
+            key: createKey,
+            kind: 'mech',
+            actorUserId: p.id,
+            fingerprint,
+            create: async (tx) => ({ id: (await insertRequest(tx)).id, metadata: null }),
+            load,
+          })
+        : null;
+    const created = outcome ? { id: outcome.id } : await db.transaction(insertRequest);
+    const dto = outcome?.response ?? (await loadMechRequestDto(db, created.id))!;
+    if (!outcome?.repeated)
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'mech_request.create',
+        entityType: 'mech_request',
+        entityId: created.id,
+        metadata: {
+          ...mechAuditSnapshot(dto),
+          ...(sourceRequestId ? { sourceRequestId } : {}),
+        },
+      });
+    return { dto, repeated: outcome?.repeated ?? false };
   };
 
   r.post('/', { ...canCreate, schema: { body: createMechRequestSchema } }, async (req, reply) => {
     const p = requirePrincipal(req);
     const body = req.body;
-    const dto = await createRequest(p, {
-      objectId: body.objectId,
-      departmentId: body.departmentId ?? null,
-      mechModelId: body.mechModelId,
-      plannedFrom: body.plannedFrom,
-      plannedTo: body.plannedTo,
-      responsibleName: body.responsibleName,
-      responsiblePhone: body.responsiblePhone,
-      comment: body.comment,
-      fileIds: body.fileIds,
-    });
-    reply.code(201);
-    return dto;
+    const result = await createRequest(
+      p,
+      {
+        objectId: body.objectId,
+        departmentId: body.departmentId ?? null,
+        mechModelId: body.mechModelId,
+        plannedFrom: body.plannedFrom,
+        plannedTo: body.plannedTo,
+        responsibleName: body.responsibleName,
+        responsiblePhone: body.responsiblePhone,
+        comment: body.comment,
+        fileIds: body.fileIds,
+      },
+      undefined,
+      createAttemptKey(req.headers['idempotency-key']),
+    );
+    reply.code(result.repeated ? 200 : 201);
+    return result.dto;
   });
 
   /**
@@ -595,7 +627,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           { mechModelId: 'Модель не указана' },
         );
       }
-      const dto = await createRequest(
+      const result = await createRequest(
         p,
         {
           objectId: source.objectId,
@@ -611,7 +643,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         source.id,
       );
       reply.code(201);
-      return dto;
+      return result.dto;
     },
   );
 

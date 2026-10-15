@@ -1,4 +1,5 @@
 import type {
+  CreateServiceRequestInput,
   ModuleMailOutcome,
   ServiceRequestDto,
   ServiceRequestKind,
@@ -110,6 +111,10 @@ export interface ServiceFormContext {
    * уходит всегда и принимается всегда — это не запрос срочности, а её отсутствие.
    */
   canUrgency: boolean;
+  prepareCreate?: (body: CreateServiceRequestInput) => {
+    body: CreateServiceRequestInput;
+    key: string;
+  };
 }
 
 /**
@@ -245,48 +250,49 @@ export async function submitServiceRequest(
    * выбирать всё равно приходится; выбираем в пользу того, что человек видит в поле.
    */
   const candidate = equipmentId ? undefined : ctx.equipmentCandidate;
-  return serviceRequestsApi.create(
-    {
-      ...common,
-      ...urgency,
-      // Подразделение заявителя — выбором из своих и только когда выбор был (Н11).
-      ...ctx.requesterPlace,
-      ...(candidate
-        ? { equipmentCandidate: candidate.input, warrantyClaim: undefined }
-        : // Явным `null`, а не пропуском: «аппарата у заявки нет» — ответ, а не умолчание клиента.
-          { officeEquipmentId: equipmentId }),
-      kind,
-      /*
-       * У `objectId` ДВА СМЫСЛА, и различает их аппарат — ровно как на сервере (Р6).
-       *
-       * С АППАРАТОМ это «где он стоит на самом деле», и уходит поле только парой с пометкой: пометка
-       * без объекта и объект без пометки одинаково отвергаются схемой. Нетронутая галочка не шлёт ни
-       * того ни другого — умолчание заявки — объект из карточки техники, и присланный вместе с ним
-       * `objectId` сервер прочёл бы как заявление о расхождении, которого никто не делал. Значение
-       * при этом собрано выше из двух источников (`overrideObjectId`): у аппарата чужой площадки
-       * его называет не галочка, а сама форма — заявленным местом либо выбранным заказчиком.
-       *
-       * БЕЗ АППАРАТА то же поле называет ЗАКАЗЧИКА-площадку: колонка `equipment_object_id` заведует
-       * областью роли площадки, и завести туда заявку иначе нечем. Пара с пометкой здесь невозможна
-       * (выше), поэтому два смысла не путаются: с пометкой — «не тот объект», без аппарата — «для
-       * кого». Вторую половину пары (отдел) шлёт `common` — обе сразу схема не принимает.
-       *
-       * У объектной оси на аппарате чужой площадки оба смысла СОВПАДАЮТ, и это не совмещение, а
-       * решение Р5: заявка записывается на ту самую свою площадку, которую человек назвал
-       * заказчиком, — иначе он отправил бы её и не увидел.
-       */
-      objectOverridden: !candidate && objectOverridden,
-      objectId: candidate
-        ? undefined
-        : equipmentId
-          ? objectOverridden
-            ? (overrideObjectId ?? undefined)
-            : undefined
-          : (ctx.customerObjectId ?? undefined),
-      fileIds: ctx.fileIds,
-    },
-    // Ключ несёт только ветка кандидата: у неё он обязателен (§8), а обычной заявке маршрут его
-    // не ждёт вовсе. Ключ живёт в черновике — попыткой, а не нажатием (`EquipmentCandidateDraft`).
-    candidate?.intakeKey,
-  );
+  const payload: CreateServiceRequestInput = {
+    ...common,
+    ...urgency,
+    // Подразделение заявителя — выбором из своих и только когда выбор был (Н11).
+    ...ctx.requesterPlace,
+    ...(candidate
+      ? { equipmentCandidate: candidate.input, warrantyClaim: undefined }
+      : // Явным `null`, а не пропуском: «аппарата у заявки нет» — ответ, а не умолчание клиента.
+        { officeEquipmentId: equipmentId }),
+    kind,
+    /*
+     * У `objectId` ДВА СМЫСЛА, и различает их аппарат — ровно как на сервере (Р6).
+     *
+     * С АППАРАТОМ это «где он стоит на самом деле», и уходит поле только парой с пометкой: пометка
+     * без объекта и объект без пометки одинаково отвергаются схемой. Нетронутая галочка не шлёт ни
+     * того ни другого — умолчание заявки — объект из карточки техники, и присланный вместе с ним
+     * `objectId` сервер прочёл бы как заявление о расхождении, которого никто не делал. Значение
+     * при этом собрано выше из двух источников (`overrideObjectId`): у аппарата чужой площадки
+     * его называет не галочка, а сама форма — заявленным местом либо выбранным заказчиком.
+     *
+     * БЕЗ АППАРАТА то же поле называет ЗАКАЗЧИКА-площадку: колонка `equipment_object_id` заведует
+     * областью роли площадки, и завести туда заявку иначе нечем. Пара с пометкой здесь невозможна
+     * (выше), поэтому два смысла не путаются: с пометкой — «не тот объект», без аппарата — «для
+     * кого». Вторую половину пары (отдел) шлёт `common` — обе сразу схема не принимает.
+     *
+     * У объектной оси на аппарате чужой площадки оба смысла СОВПАДАЮТ, и это не совмещение, а
+     * решение Р5: заявка записывается на ту самую свою площадку, которую человек назвал
+     * заказчиком, — иначе он отправил бы её и не увидел.
+     */
+    objectOverridden: !candidate && objectOverridden,
+    objectId: candidate
+      ? undefined
+      : equipmentId
+        ? objectOverridden
+          ? (overrideObjectId ?? undefined)
+          : undefined
+        : (ctx.customerObjectId ?? undefined),
+    fileIds: ctx.fileIds,
+  };
+  // The candidate branch keeps its existing pair receipt; ordinary creation uses the shared
+  // draft attempt so a lost response can replay the exact body after restoration.
+  const attempt = candidate
+    ? { body: payload, key: candidate.intakeKey }
+    : ctx.prepareCreate?.(payload);
+  return serviceRequestsApi.create(attempt?.body ?? payload, attempt?.key);
 }

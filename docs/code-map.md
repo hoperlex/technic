@@ -201,11 +201,12 @@
   [query.tsx](../apps/web/src/app/providers/query.tsx),
   [listQueryOptions.ts](../apps/web/src/shared/api/listQueryOptions.ts),
   [useDeferredOptions.ts](../apps/web/src/shared/lib/useDeferredOptions.ts),
-  request drafts: [localFormDraftStore.ts](../apps/web/src/shared/lib/localFormDraftStore.ts),
+  request drafts and create retries: [localFormDraftStore.ts](../apps/web/src/shared/lib/localFormDraftStore.ts),
   [useLocalFormDraft.tsx](../apps/web/src/shared/lib/useLocalFormDraft.tsx),
-  [LocalFormDraftNotice.tsx](../apps/web/src/shared/ui/LocalFormDraftNotice.tsx)
+  [LocalFormDraftNotice.tsx](../apps/web/src/shared/ui/LocalFormDraftNotice.tsx),
+  [request-create-attempt.ts](../apps/api/src/services/request-create-attempt.ts)
 - Тесты: `boundaries.test.ts`, `portal-sections.test.ts`, `chunk-recovery.test.tsx`, `app-update-banner.test.tsx`, `*-list.test.tsx`
-- Решения: [ADR 0030](adr/0030-responsive-layout.md), [ADR 0121](adr/0121-portal-sections-registry.md), [ADR 0136](adr/0136-select-popup-width.md), [ADR 0222](adr/0222-frontend-query-freshness-and-render.md), [ADR 0228](adr/0228-frontend-architecture.md), [ADR 0230](adr/0230-request-local-drafts.md)
+- Решения: [ADR 0030](adr/0030-responsive-layout.md), [ADR 0121](adr/0121-portal-sections-registry.md), [ADR 0136](adr/0136-select-popup-width.md), [ADR 0222](adr/0222-frontend-query-freshness-and-render.md), [ADR 0228](adr/0228-frontend-architecture.md), [ADR 0230](adr/0230-request-local-drafts.md), [ADR 0231](adr/0231-request-create-receipts.md)
 
 ## Схема, миграции и выкат
 

@@ -38,6 +38,12 @@ export const mechRequestsApi = {
   ...createListApi<MechRequestDto>(PATH),
   ...createGetApi<MechRequestDto>(PATH),
   ...createWriteApi<MechRequestDto, CreateMechRequestInput, UpdateMechRequestInput>(PATH),
+  create: (body: CreateMechRequestInput, idempotencyKey?: string) =>
+    apiFetch<MechRequestDto>(PATH, {
+      method: 'POST',
+      body,
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    }),
 
   /**
    * Удаление: «Новая» стирается физически вместе с вложениями, прочие уходят в архив (ADR 0070).

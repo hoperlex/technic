@@ -158,6 +158,12 @@ import {
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
+  createAttemptFingerprint,
+  createAttemptKey,
+  createRequestOnce,
+  replayRequestCreate,
+} from '../services/request-create-attempt';
+import {
   constructionObjects,
   counterparties,
   departments,
@@ -4423,6 +4429,22 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         const repeatOf = await findIntakeRepeat(p, intake.key, intake.fingerprint);
         if (repeatOf) return await repeatedIntakeAnswer(p, repeatOf);
       }
+      const createKey = candidate ? null : createAttemptKey(req.headers['idempotency-key']);
+      const createFingerprint = createKey ? createAttemptFingerprint(body) : null;
+      const loadCreated = async (id: string, mail: ModuleMailOutcome | null) => {
+        const dto = await getFullDto(p, id);
+        return dto ? { request: forAudience(p, dto), mail: mail ?? 'not_needed' } : null;
+      };
+      if (createKey) {
+        const previous = await replayRequestCreate(
+          createKey,
+          'service',
+          p.id,
+          createFingerprint!,
+          loadCreated,
+        );
+        if (previous) return previous;
+      }
 
       /**
        * СРОЧНОСТЬ ПРИ ЗАВЕДЕНИИ — ПРАВО, А НЕ УКРАШЕНИЕ ФОРМЫ (план предмета заявки, Р9).
@@ -4496,13 +4518,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const kind: ServiceRequestKind = body.kind ?? 'repair';
       const consumables = body.consumables ?? [];
 
-      /*
-       * Промис заведения берётся ОТДЕЛЬНОЙ ПЕРЕМЕННОЙ, а не цепочкой прямо на вызове: разбор
-       * `23505` обязан стоять снаружи транзакции (ниже), а `.catch`, приписанный к самому вызову,
-       * сдвинул бы внутрь всё тело заведения, ничего в нём не изменив. Промис при этом не «висит»:
-       * обработчик приписан к нему следующим же выражением, без единого `await` между ними.
-       */
-      const attempt = db.transaction(async (tx) => {
+      // The candidate uniqueness conflict must be handled after the transaction aborts; the
+      // ordinary receipt path also needs this callback inside its reservation transaction.
+      const createInTransaction = async (tx: Tx) => {
         // Замок «одна открытая заявка вида на аппарат» (Р21) без аппарата не зовётся, и это не
         // послабление, а буквальное прочтение правила: запирается ЕДИНИЦА, а её здесь нет. Тем же
         // читаются и частичные уникальные индексы под ним — в B-tree `NULL` не равен `NULL`, и
@@ -4668,27 +4686,37 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             ? await queueCandidateMail(tx, { prepared: candidateMailPlan, candidateId })
             : null;
         return { ...request, mail: transition.mail, requester, candidateId, candidateMail };
-      });
-      /**
-       * РУБЕЖ 2 И ГОНКА КЛЮЧА — СНАРУЖИ ПРЕРВАННОЙ ТРАНЗАКЦИИ (Р10, §8). К моменту `23505`
-       * транзакция прервана, и читать в ней нечего: любой запрос в ней ответит `25P02`.
-       *
-       * Второго чтения ключа «под блокировкой», как у закупки (её шаг 4), здесь нет и не нужно:
-       * закупка берёт `FOR UPDATE` на строки расходников и потому обязана перечитать ключ уже под
-       * замком, а заведение пары блокировок не берёт вовсе — точкой сериализации служит сам
-       * уникальный индекс, и разбор его отказа эту работу и делает.
-       */
-      const created = await attempt.catch(async (e: unknown) => {
-        if (!intake) throw e;
-        const repeat = await asCandidateIntakeRepeat(
-          e,
-          p,
-          intake.key,
-          intake.fingerprint,
-          candidate!,
-        );
-        return { repeatOf: repeat.requestId };
-      });
+      };
+      // The candidate intake uniqueness conflict is resolved outside its aborted transaction;
+      // its unique index serializes the pair without a second locked read.
+      let freshCreated: Awaited<ReturnType<typeof createInTransaction>> | null = null;
+      const keyed = createKey
+        ? await createRequestOnce({
+            key: createKey,
+            kind: 'service',
+            actorUserId: p.id,
+            fingerprint: createFingerprint!,
+            create: async (tx) => {
+              freshCreated = await createInTransaction(tx);
+              return { id: freshCreated.id, metadata: freshCreated.mail?.outcome ?? 'not_needed' };
+            },
+            load: loadCreated,
+          })
+        : null;
+      if (keyed?.repeated) return keyed.response;
+      const created = keyed
+        ? freshCreated!
+        : await db.transaction(createInTransaction).catch(async (e: unknown) => {
+            if (!intake) throw e;
+            const repeat = await asCandidateIntakeRepeat(
+              e,
+              p,
+              intake.key,
+              intake.fingerprint,
+              candidate!,
+            );
+            return { repeatOf: repeat.requestId };
+          });
       if ('repeatOf' in created) return await repeatedIntakeAnswer(p, created.repeatOf);
 
       const dto = (await getFullDto(p, created.id))!;
@@ -4750,6 +4778,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         });
       }
       reply.code(201);
+      if (keyed) return keyed.response;
       // Наружу — в объёме аудитории: полное `dto` собрано ради заголовка в журнале.
       return {
         request: forAudience(p, dto),
