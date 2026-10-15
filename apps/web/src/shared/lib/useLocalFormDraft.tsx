@@ -106,7 +106,8 @@ export function useLocalFormDraft<Payload>({
       );
     }
     const key = current.createAttempt?.key ?? current.nextCreateKey ?? newIdempotencyKey();
-    // The sent JSON must remain stable even if the form mutates a nested list after a timeout.
+    // Form libraries may mutate nested values after a send; the retry must keep the bytes represented
+    // by the first persisted JSON body, including file IDs and trip rows.
     const submittedBody = current.createAttempt
       ? (current.createAttempt.body as Body)
       : (JSON.parse(JSON.stringify(body)) as Body);
@@ -210,15 +211,15 @@ export function useLocalFormDraft<Payload>({
   const clear = () => {
     const current = activeRef.current;
     let removed = true;
-    if (current?.createAttempt && userId && context.current) {
+    if (current?.createAttempt) {
       // A successful response settles every restored fork of this attempt. Leaving the source
       // behind would reopen it as an undiscardable pending send on the next form opening.
-      const found = listLocalFormDrafts(userId, form, context.current, parseRef.current);
+      const found = listLocalFormDrafts(current.userId, form, current.target, parseRef.current);
       removed = found.available;
       if (found.available) {
-        for (const copy of found.drafts) {
-          if (copy.createAttempt?.key === current.createAttempt.key) {
-            removed = removeLocalFormDraft(copy.id) && removed;
+        for (const candidate of found.drafts) {
+          if (candidate.createAttempt?.key === current.createAttempt.key) {
+            removed = removeLocalFormDraft(candidate.id) && removed;
           }
         }
       }
