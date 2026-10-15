@@ -19,7 +19,7 @@
 #   deploy-auto --allow-vhost-drift деплой при нераскатанном vhost (аварийный обход гейта)
 #   deploy-auto --cutover           необратимый выкат: остановка записи → миграция → верификатор →
 #                                   граница совместимости → подъём (docs/schema-cutover-protocol.md)
-#   deploy-auto --cutover-revert    откат незавершённого cutover (только пока граница не записана)
+#   deploy-auto --cutover-revert    откат узкого cutover до записи границы
 #   deploy-auto --client-floor      показать пол версии клиента и контракт раздаваемой сборки
 #   deploy-auto --client-floor=N    поднять/опустить пол (MIN_CLIENT_CONTRACT) и перезапустить api
 #   deploy-auto --maintenance       показать состояние режима техработ (три канала порознь)
@@ -122,7 +122,7 @@ deploy-auto — деплой/обновление портала technic (auto.s
   deploy-auto --cutover-revert      откат незавершённого cutover: teardown релиза и возврат
                                     сервисов на прежний тег. Разрешён только на фазе migrated,
                                     только пока граница не записана и только если окно было
-                                    узким — широкое откатывается --restore-db (протокол §6)
+                                    узким. Широкое после миграций требует PITR (протокол §6)
   deploy-auto --client-floor        показать пол версии клиента (MIN_CLIENT_CONTRACT в prod.env)
                                     и контракт раздаваемой сборки; ничего не меняет.
   deploy-auto --client-floor=N      поднять/опустить пол и перезапустить technic-api. Отказывает,
@@ -539,12 +539,9 @@ write_state_atomic() {
 }
 
 CUTOVER_PHASE="" CUTOVER_CANDIDATE="" CUTOVER_MIGRATION="" CUTOVER_DUMP="" CUTOVER_STARTED=""
-# Обычные миграции, уехавшие в одном окне с необратимой (§6). Пусто — окно узкое, откат teardown'ом
-# возможен; непусто — единственный откат окна это дамп, и `--cutover-revert` обязан отказать.
+# Other migrations shipped with the irreversible one (§6). A nonempty value makes teardown
+# incomplete, so the active window permits forward recovery only; rollback requires external PITR.
 CUTOVER_EXTRAS=""
-# Ставится гейтом, когда разрушительный режим пропущен как откат широкого окна: по нему в конце
-# снимается состояние выката, иначе площадка осталась бы с записью о выкате, которого больше нет.
-CUTOVER_WIDE_ROLLBACK=0
 
 # Читает активное состояние выката. Коды: 0 — прочитано, 1 — активного состояния нет (штатная
 # жизнь площадки: файл существует только между началом cutover и его архивированием), 2 — файл
@@ -695,6 +692,18 @@ floor_append() {
   log "ГРАНИЦА ЗАПИСАНА: $migration (sha $sha) — откат ниже неё запрещён навсегда"
 }
 
+# Recovery advice must follow the recorded phase and bundle width. In migrating the journal may
+# already contain committed files even though the phase has not advanced; never promise teardown.
+cutover_recovery_hint() {
+  if [ -n "$CUTOVER_EXTRAS" ]; then
+    printf 'продолжить: deploy-auto --cutover с тем же кандидатом; сверить журнал миграций; если бандл уже применён, откат схемы — PITR к состоянию до окна с соответствующим образом кода'
+  elif [ "$CUTOVER_PHASE" = "migrated" ]; then
+    printf 'продолжить: deploy-auto --cutover; если граница ещё не записана, откатить: deploy-auto --cutover-revert'
+  else
+    printf 'продолжить: deploy-auto --cutover; сверить журнал миграций перед решением об откате'
+  fi
+}
+
 # Строки сводки --status: только чтение, ни одного отказа. Повреждённое состояние здесь именно
 # показывается, а не роняет команду: --status зовут как раз затем, чтобы понять, что происходит.
 cutover_status_line() {
@@ -703,10 +712,8 @@ cutover_status_line() {
   case "$st" in
     0) printf 'фаза %s, кандидат %s, миграция %s' \
          "$CUTOVER_PHASE" "$CUTOVER_CANDIDATE" "${CUTOVER_MIGRATION:-?}"
-       # Широкое окно меняет способ отката, и узнать об этом надо из статуса, а не из отказа
-       # `--cutover-revert` в ту минуту, когда откатывать уже понадобилось.
-       [ -z "$CUTOVER_EXTRAS" ] || printf '; ОКНО ШИРОКОЕ (+%s) — откат только --previous --restore-db дампом %s' \
-         "$CUTOVER_EXTRAS" "${CUTOVER_DUMP:-?}" ;;
+       [ -z "$CUTOVER_EXTRAS" ] || printf '; ОКНО ШИРОКОЕ (+%s), закреплённый дамп %s; %s' \
+         "$CUTOVER_EXTRAS" "${CUTOVER_DUMP:-?}" "$(cutover_recovery_hint)" ;;
     1) printf 'нет активного выката' ;;
     *) printf 'ПОВРЕЖДЁН %s' "$CUTOVER_STATE" ;;
   esac
@@ -1440,12 +1447,10 @@ recover() {
   echo "ОШИБКА ($ACTION): $REASON" >&2
 
   if [ "$CUTOVER_ACTIVE" -eq 1 ]; then
-    # Единственное восстановление, которое здесь допустимо, — никакого. Поднять сервисы значит
-    # свести старый код с новой схемой (или наоборот), а именно от этого протокол и защищает.
+    # Leaving services stopped prevents the old image from writing against a changed schema.
     warn "необратимый выкат прерван на фазе ${CUTOVER_PHASE:-<нет>} — сервисы ОСТАВЛЕНЫ как есть."
     warn "состояние: $CUTOVER_STATE (граница: $SCHEMA_FLOOR_STATE)"
-    warn "продолжить с того же места: deploy-auto --cutover"
-    warn "откат (пока фаза migrated и граница НЕ записана): deploy-auto --cutover-revert"
+    warn "$(cutover_recovery_hint)"
   elif [ "$RESTORE_DB_TOUCHED" -eq 1 ]; then
     warn "pg_restore прерван. Restore шёл одной транзакцией — БД, скорее всего, осталась"
     warn "в состоянии до restore, но это НУЖНО ПРОВЕРИТЬ вручную."
@@ -2222,26 +2227,13 @@ containers_at_tag() {
 # Гейты разрушительных режимов (§3.2, §4.1, §5).
 # ---------------------------------------------------------------------------
 
-# Пока выкат не прошёл точку невозврата, откатывать нечего и незачем: откат схемы делает его
-# собственный режим (--cutover-revert), а --previous/--restore-db прошли бы мимо состояния.
+# Active cutovers must reject destructive rollback before any snapshot, confirmation or service
+# change. A wide bundle cannot use teardown, and pg_restore cannot undo newer schema objects.
 cutover_guard_destructive() {
   cutover_phase_or_fail
   case "$CUTOVER_PHASE" in
     migrating|migrated)
-      # Широкое окно (§6) — единственное исключение, и оно не поблажка, а необходимость: teardown
-      # там неприменим, `--cutover-revert` отказывает, и запрет разрушительных режимов оставил бы
-      # окно совсем без выхода. Дверь ровно одна: восстановление закреплённого дампа этого же окна.
-      # Откат одного лишь кода запрещён и здесь — он посадил бы старый образ на новую схему.
-      if [ -n "$CUTOVER_EXTRAS" ]; then
-        [ "$DO_RESTORE_DB" -eq 1 ] || {
-          REASON="идёт необратимый выкат $CUTOVER_CANDIDATE (фаза $CUTOVER_PHASE), окно широкое (+$CUTOVER_EXTRAS): откатить его можно только вместе с базой — deploy-auto --previous --restore-db. Откат одного кода посадил бы старый образ на новую схему"
-          fail "$REASON"; }
-        CUTOVER_WIDE_ROLLBACK=1
-        warn "откат широкого окна $CUTOVER_CANDIDATE: база возвращается дампом, teardown не применяется."
-        warn "закреплённый дамп окна: ${CUTOVER_DUMP:-<не записан>}"
-        return 0
-      fi
-      REASON="идёт необратимый выкат $CUTOVER_CANDIDATE (фаза $CUTOVER_PHASE): продолжите его — deploy-auto --cutover, либо откатите — deploy-auto --cutover-revert"
+      REASON="идёт необратимый выкат $CUTOVER_CANDIDATE (фаза $CUTOVER_PHASE): $(cutover_recovery_hint)"
       fail "$REASON" ;;
   esac
 }
@@ -2446,16 +2438,16 @@ EOF
     log "бандл: $CUTOVER_MIGRATION (кандидат $COMMIT_SHA)"
     if [ -n "$CUTOVER_EXTRAS" ]; then
       warn "в том же окне едут обычные миграции: $CUTOVER_EXTRAS"
-      warn "откат этого окна — ТОЛЬКО deploy-auto --previous --restore-db: teardown снимет"
-      warn "$CUTOVER_MIGRATION, а перечисленные останутся в журнале без файлов, и старый образ не стартует."
-      warn "--cutover-revert для такого окна откажет намеренно (протокол §6)."
+      warn "после применения бандла автоматического отката нет: teardown снимет только $CUTOVER_MIGRATION,"
+      warn "а pg_restore не удалит созданные позже дампа объекты. Откат схемы — PITR к состоянию"
+      warn "до окна с соответствующим образом кода; --cutover-revert откажет (протокол §6)."
     fi
     # Верификатор, teardown и отметка о прогоне спрашиваются ЗДЕСЬ, пока сервисы работают: узнать,
     # что релиз их не привёз, посреди окна обслуживания — значит остаться и без проверки, и без
     # отката. Отметка идёт первой: она дешевле всех — чтение файла и два сравнения.
     cutover_verifier
     [ -f "$TEARDOWN_DIR/$CUTOVER_MIGRATION" ] || {
-      REASON="релиз не привёз teardown: нет $TEARDOWN_DIR/$CUTOVER_MIGRATION. Без него --cutover-revert невозможен, а он — единственный откат до записи границы (протокол §7)"
+      REASON="релиз не привёз teardown: нет $TEARDOWN_DIR/$CUTOVER_MIGRATION. Без него нельзя подтвердить состав необратимого бандла и откатить узкое окно до границы (протокол §7)"
       fail "$REASON"; }
     log "  верификатор: $CUTOVER_VERIFY"
     log "  teardown:    apps/api/teardown/$CUTOVER_MIGRATION"
@@ -2506,13 +2498,13 @@ EOF
     cutover_state_write migrated
   fi
 
-  # --- Шаг 6: верификатор, fail-closed. Ненулевой код — сервисы остаются лежать, фаза migrated,
-  # откат ещё возможен. ---
+  # Step 6 leaves services stopped on verifier failure. Narrow-window teardown remains possible
+  # before the floor; wide windows require PITR after committed migrations.
   if [ "$step" -le 6 ]; then
     [ -n "$CUTOVER_VERIFY" ] || cutover_verifier
     log "верификатор релиза: $CUTOVER_VERIFY"
     "${COMPOSE[@]}" run --rm -T migrate sh -c "$CUTOVER_VERIFY" || {
-      REASON="верификатор релиза не прошёл — граница НЕ записана, сервисы оставлены лежащими. Откат: deploy-auto --cutover-revert"
+      REASON="верификатор релиза не прошёл — граница НЕ записана, сервисы оставлены лежащими. $(cutover_recovery_hint)"
       fail "$REASON"; }
     log "верификатор: чисто"
   fi
@@ -2621,12 +2613,10 @@ if [ "$DO_CUTOVER_REVERT" -eq 1 ]; then
     REASON="журнал ссылается на отсутствующие в образе кандидата файлы: $(list_brief "$JOURNAL_MISSING")— это не тот образ или не тот журнал"
     fail "$REASON"; }
 
-  # Широкое окно (§6): рядом с необратимой уехали обычные, и teardown их не снимает. Снять одну
-  # значит оставить остальные в журнале при живых файлах — но уже на СТАРОМ образе, где этих
-  # файлов нет, и он не стартует (`missing`). Единственный откат такого окна — дамп, снятый в его
-  # начале и закреплённый от ротации. Отказ здесь дороже отказа: он до остановки чего-либо.
+  # A wide bundle cannot use teardown: it would leave its other migrations in the journal. Its
+  # pinned dump is also unusable on a newer schema; rollback needs PITR outside this command.
   [ -z "$CUTOVER_EXTRAS" ] || {
-    REASON="окно было широким — вместе с $CUTOVER_MIGRATION уехали обычные миграции ($CUTOVER_EXTRAS). Teardown снимет только необратимую, остальные останутся в журнале без файлов старого образа. Откат этого окна — deploy-auto --previous --restore-db закреплённым дампом ${CUTOVER_DUMP:-<не записан>} (протокол §5)"
+    REASON="окно было широким — вместе с $CUTOVER_MIGRATION уехали обычные миграции ($CUTOVER_EXTRAS). Teardown снимет только необратимую. $(cutover_recovery_hint)"
     fail "$REASON"; }
 
   # After every refusal and before the teardown: the services come back up below and read prod.env.
@@ -2779,17 +2769,6 @@ if [ "$ROLLBACK_MODE" -eq 1 ]; then
     warn "health не подтверждён — :latest не переставлен"
   fi
 
-  # Откат широкого окна завершён — активного выката больше нет. Состояние снимается тем же
-  # порядком, что и в --cutover-revert: иначе следующий --cutover встретил бы чужую фазу, а
-  # разрушительные режимы остались бы запертыми выкатом, которого уже нет.
-  if [ "$CUTOVER_WIDE_ROLLBACK" -eq 1 ]; then
-    rm -f "$CUTOVER_STATE" "$BACKUP_DIR/${CUTOVER_DUMP%.dump}.pin"
-    fsync_path "$STATE_DIR"
-    CUTOVER_PHASE="" CUTOVER_ACTIVE=0
-    rotate_dumps
-    log "состояние выката $CUTOVER_CANDIDATE снято: окно откачено дампом, закрепление снято"
-  fi
-
   RESULT="ok"; write_report; trap - EXIT
   log "Готово ($ACTION): technic @ $TARGET_TAG"
   exit 0
@@ -2816,7 +2795,7 @@ if [ "$DO_CUTOVER" -eq 0 ]; then
   cutover_phase_or_fail
   case "$CUTOVER_PHASE" in
     migrating|migrated)
-      REASON="идёт необратимый выкат $CUTOVER_CANDIDATE (фаза $CUTOVER_PHASE): продолжите его — deploy-auto --cutover, либо откатите — deploy-auto --cutover-revert"
+      REASON="идёт необратимый выкат $CUTOVER_CANDIDATE (фаза $CUTOVER_PHASE): $(cutover_recovery_hint)"
       fail "$REASON" ;;
   esac
 fi

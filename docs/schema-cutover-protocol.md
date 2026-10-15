@@ -46,16 +46,16 @@ teardown и свой верификатор, а протокол — этот ж
 
 1. **сверка бандла** — до всякого действия. Среди неприменённых должна быть ровно одна необратимая
    (узнаётся по teardown в образе); две — отказ, ни одной — отказ с отсылкой к обычному деплою.
-   Обычные соседи допускаются и пишутся в `extras`, а окно объявляется широким: откат такого окна
-   идёт дампом, а не teardown'ом, и об этом предупреждают сразу, пока сервисы работают (§6);
+   Other migrations are allowed and recorded in `extras`; this makes the window wide. After they
+   commit, rollback requires PITR and a matching image, which is announced before services stop (§6);
 2. остановка `technic-api` и `technic-worker` — запись прекращена;
 3. дамп + `<дамп>.pin` (закрепление от ротации) + `.meta` с **точным набором применённых миграций**
    (§5);
 4. `cutover.state` = `migrating` (SHA кандидата, имя миграции, имя дампа) — **до** наката: обрыв
    между применением и записью иначе оставил бы миграцию, о которой состояние не знает;
 5. накат миграции → фаза `migrated`;
-6. **верификатор**, fail-closed: ненулевой код — сервисы остаются лежать, состояние `migrated`,
-   откат ещё возможен;
+6. **верификатор**, fail-closed: ненулевой код — сервисы остаются лежать, состояние `migrated`;
+   a narrow window may still use teardown before the floor, while a wide one requires PITR;
 7. **атомарная запись floor** (§4) — ← **точка невозврата**;
 8. фаза `irreversible`;
 9. `up -d` → health-гейт;
@@ -93,10 +93,10 @@ SHA кандидата при возобновлении обязан совпа
 
 ### 3.2. Что заблокировано и когда
 
-| Фаза                        | `deploy-auto` (другой SHA) | `--previous` / `--restore-db`     |
-| --------------------------- | -------------------------- | --------------------------------- |
-| `migrating`, `migrated`     | отказ: идёт cutover        | отказ: идёт cutover               |
-| `irreversible`, `done`, нет | разрешён (forward-fix)     | только через гейты floor (§4, §5) |
+| Фаза                        | `deploy-auto` (другой SHA) | `--previous` / `--restore-db`               |
+| --------------------------- | -------------------------- | ------------------------------------------- |
+| `migrating`, `migrated`     | отказ: идёт cutover        | отказ: идёт cutover, including wide windows |
+| `irreversible`, `done`, нет | разрешён (forward-fix)     | только через гейты floor (§4, §5)           |
 
 После `irreversible` блокировка обычного деплоя снимается намеренно: схема уже новая, и обычный
 релиз ничего не обходит — он выкатывает следующий код на ту же схему. Это единственный путь, когда
@@ -112,7 +112,7 @@ health не подтвердился из-за дефекта кода. Заве
 
 Второе условие и есть закрытие обрыва между шагами 7 и 8: floor уже стоит, фаза ещё нет — откат
 запрещён, чинится вперёд. Дополнительно проверяются: окно было узким (`extras` пуст — иначе отказ
-с отсылкой к `--restore-db`, §6), сервисы остановлены, применённый набор совпадает с бандлом,
+с отсылкой к PITR, §6), сервисы остановлены, применённый набор совпадает с бандлом,
 посторонних миграций нет, закреплённый дамп на месте.
 
 Сам revert возобновляем: обрыв между teardown и подъёмом сервисов оставляет базу без миграции и
@@ -230,28 +230,37 @@ state-файла добавляются туда же — потерять «в�
 запирала площадку наглухо — обычный путь отказывался из-за неё, `--cutover` из-за соседей, и
 разъехаться можно было только переписав ветку. Состав релиза — не то, чем чинят площадку.
 
-**Ценой широкого окна уходит `--cutover-revert`.** Teardown снимает одну миграцию; остальные
-останутся в журнале при том, что в старом образе их файлов нет, — и он не стартует (`missing`).
-Поэтому откат широкого окна идёт **только** восстановлением дампа, снятого в начале этого же окна
-и закреплённого от ротации (§5), а `--cutover-revert` для такого окна отказывает намеренно, до
-остановки чего-либо. Состав окна пишется в `cutover.state` полем `extras` — по нему отказ и
-принимается, а не по догадке о том, что застали в журнале.
+**A wide window cannot use `--cutover-revert`.** Teardown removes only the irreversible migration;
+the other files would remain in the journal, and the old image would refuse to start. The pinned
+pre-migration dump is evidence and a retention safeguard, not an executable rollback on a schema
+with committed new objects: `restore_gate` check 3 rejects it because `pg_restore --clean` cannot
+remove those objects (§5). The script rejects `--previous` and `--restore-db` throughout an active
+`migrating` or `migrated` window, before any snapshot, confirmation, service stop or state change.
+The `extras` field in `cutover.state` identifies a wide window; no operator guess from the current
+journal is needed. A narrow `migrated` window can still use `--cutover-revert` before the floor.
 
-Дверь при этом обязана быть открыта, и это отдельное исключение в гейте разрушительных режимов.
-По общему правилу (§3.2) активный выкат запирает `--previous` и `--restore-db`: откатывать его
-положено его же режимом. Для широкого окна это правило оставило бы выход запертым с обеих сторон —
-`--cutover-revert` отказывает, а разрушительные режимы не пускает гейт. Поэтому при непустом
-`extras` гейт пропускает откат, **требуя оба флага**: `deploy-auto --previous --restore-db`. Одного
-`--previous` мало — он посадил бы старый образ на новую схему. По завершении такого отката
-состояние выката снимается и закрепление с дампа снимается тоже, ровно как после `--cutover-revert`.
+Forward recovery is `deploy-auto --cutover` with the same candidate. In `migrating`, inspect the
+migration journal first: files may have committed before the phase was recorded. Once any bundle
+migration committed, rollback of a wide window is an **operator-managed PITR** to a point before
+the window, paired with an image whose migration files exactly match the restored journal. Before
+cutover step 9 the pre-window image is `release.state`'s `current`, not `--previous`: `previous`
+still points one release further back. Keep the API and worker stopped until the following checks
+are complete:
 
-Потери данных этот путь не несёт, пока окно не закрыто: с шага 2 и до подъёма сервисов запись
-остановлена, так что дамп шага 3 и есть полное состояние окна. Дороже он не данными, а временем —
-восстановление базы против снятия одной миграции.
-
-Узкое окно — по-прежнему лучшее: `extras` пуст, откат идёт teardown'ом, дамп остаётся страховкой,
-а не единственной дорогой назад. Широкое — законный, но худший режим, и скрипт говорит об этом
-предупреждением в момент сверки бандла, пока сервисы ещё работают.
+1. Confirm the restored migration journal against the selected image, including the old floor,
+   and inspect the database at the PITR point. Do not run `pg_restore --clean` against the newer
+   schema or bypass `restore_gate`.
+2. Restore the exact pre-window `release.state` and `schema-floor.state` from the config snapshot
+   taken before this cutover if either changed. The pinned dump's `.schema-floor.state` companion
+   was captured **after** the floor append and is not a pre-window snapshot. Restoring an exact
+   earlier floor after PITR is allowed; inventing or manually editing floor entries is not.
+3. Compare `last_healthy.sha`, the `:latest` image tags, and `freeze.transition` / `freeze.done`
+   against the restored journal and selected release. These host files are not in `snapshot_config`
+   and require explicit reconciliation. Check the freeze transition protocol before clearing a
+   marker; a database PITR does not rewind host files.
+4. Only after the journal, image, floor and host state agree, remove the stale active
+   `cutover.state` and the dump pin. Keep services stopped through these checks, then start the
+   selected images and confirm health. Preserve the state and pin if the checks fail.
 
 Сверка бандла отвечает на вопрос «этот ли состав», но не на вопрос «тем ли путём». Обычный
 `deploy-auto` применял pending-набор, не спрашивая, нет ли среди него необратимого: раннеру всё

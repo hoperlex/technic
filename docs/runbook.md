@@ -46,13 +46,13 @@ and what to run — [Client floor preflight and the raise to 7](#client-floor-pr
 аварийный `prerestore-*`); снимок `prod.env`+CA+vhost в `config-backups` (2 последних).
 Ротация идёт всегда, даже при `--no-prune`. Бэкапы содержат ПДн/секреты — каталоги 700/600.
 
-`.meta` несёт не только метки времени и коммита, но и **точный состав применённых миграций**
-(`migrations_count`, `migrations_sha256` и строки `migration=`) — по нему сверяется дамп при
-восстановлении (см. «Гейты отката»). Дамп с файлом `<дамп>.pin` рядом **закреплён**: его ставит
-`--cutover` на предмиграционный дамп, и keep-2 такой дамп не считает и не удаляет. Снимать
-закрепление руками (`rm <дамп>.pin`) можно только осознанно: это единственный дамп, к которому
-откат ещё разрешён. Рядом с закреплённым дампом лежат `<дамп>.release.state` и
-`<дамп>.schema-floor.state` — снимок состояния на момент записи границы.
+The dump's `.meta` records the exact set of applied migrations (`migrations_count`,
+`migrations_sha256`, and `migration=` lines), which the restore gates verify. A neighboring
+`<dump>.pin` excludes the pre-migration cutover dump from keep-2 rotation. Keep the pin during an
+active cutover and after requesting PITR until the restored journal, image and host state agree.
+The neighboring `<dump>.release.state` and `<dump>.schema-floor.state` files are captured **after**
+the floor append. For PITR to before the cutover, use the exact pre-window `release.state` and
+`schema-floor.state` in the earlier `config-backups` snapshot instead.
 
 **Откат:** `--previous` возвращает прошлый код без пересборки, но схему НЕ откатывает.
 После применения новых миграций `restore_gate` отклоняет предмиграционный дамп: `pg_restore --clean`
@@ -233,27 +233,42 @@ deploy-auto --status         # где мы сейчас: строка cutover п
 
 Что делать по фазе, если что-то пошло не так:
 
-| Фаза в `--status`      | Где мы                       | Что делать                                                                         |
-| ---------------------- | ---------------------------- | ---------------------------------------------------------------------------------- |
-| `migrating`            | миграция накатывается        | повторить `--cutover`                                                              |
-| `migrated`             | схема новая, границы ещё нет | вперёд — `--cutover`; назад — `--cutover-revert` (единственное окно для отката)    |
-| `irreversible`, `done` | граница записана             | только вперёд: `--cutover` (повторит health) либо обычный `deploy-auto` нового SHA |
-| нет активного выката   | всё закрыто                  | обычный `deploy-auto`                                                              |
+| Phase | Action |
+| --- | --- |
+| `migrating` | Inspect the journal, then retry `--cutover` with the same candidate; a commit may precede the phase update. |
+| `migrated`, narrow | Retry `--cutover`, or use `--cutover-revert` if the floor is absent. |
+| `migrated`, wide | Retry `--cutover`; rollback after a committed migration requires PITR and a matching image. |
+| `irreversible`, `done` | Retry `--cutover` for health, or deploy a forward fix on the new schema. |
+| No active cutover | Use ordinary `deploy-auto`. |
 
 **Health не подтвердился — выкат не заперт.** Схема уже новая, поэтому обычный `deploy-auto` с
 исправленным кодом разрешён и ничего не обходит: он выкатывает следующий код на ту же схему и
 закрывает состояние выката как `superseded`. Повтор `--cutover` прогоняет health заново.
 
-**Откат — только до записи границы:**
+**Narrow-window teardown is available only before the floor is recorded:**
 
 ```bash
 deploy-auto --cutover-revert   # teardown релиза + возврат сервисов на прежний тег
 ```
 
-Разрешён тогда и только тогда, когда фаза ровно `migrated` **и** миграции ещё нет в
-`schema-floor.state`. Дополнительно проверяются: сервисы остановлены, применённый набор совпадает с
-бандлом, посторонних миграций нет, закреплённый дамп на месте, образ кандидата не вычищен
-ретеншном. После `irreversible` откат отклоняется навсегда — дальше PITR либо ремонт вперёд.
+This command requires phase `migrated`, an absent floor entry for the bundle migration, and an
+empty `extras` field. It also checks that services are stopped, the applied set matches the
+bundle, no unrelated migration is present, the pinned dump exists, and the candidate image is
+available. After `irreversible`, use PITR or a forward repair.
+
+**Wide-window rollback after a committed migration is an operator-managed PITR.** The pinned
+pre-migration dump cannot be restored over the newer schema: `restore_gate` rejects it because
+`pg_restore --clean` leaves new objects behind. `--previous --restore-db` is blocked while the
+cutover is active. Before step 9, `release.state` still names the pre-window image as `current`;
+`--previous` names an older image. Keep API and worker stopped. Restore the database to before the
+window, compare its migration journal with the selected image, restore the exact pre-window
+`release.state` and `schema-floor.state` from the config snapshot if changed, and reconcile
+`last_healthy.sha`, `:latest`, `freeze.transition` and `freeze.done`. Those last three state files
+are not in the config snapshot. The pinned dump's floor companion is post-floor and must not be
+used as the pre-window floor. Restoring an exact old floor snapshot after PITR is distinct from
+editing a floor by hand. Clear stale `cutover.state` and the dump pin only after these checks agree;
+then start the matching image and verify health. See the [protocol §6](schema-cutover-protocol.md#6-бандл-одна-необратимая-на-выкат)
+for the ordered checks.
 
 **Граница совместимости** живёт в `/var/lib/technic/deploy/schema-floor.state` и переживает всё:
 архивирование состояния выката, следующие релизы, перенос площадки (файл едет в снимке конфига).
