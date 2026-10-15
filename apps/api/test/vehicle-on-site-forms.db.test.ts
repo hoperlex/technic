@@ -470,121 +470,150 @@ describe.skipIf(!DB_URL)('отбор среза «На объекте» по б�
   describeReadModes(readMode, 'формы на площадке', (mode) => {
     void mode;
 
-  it('нелинейный заказ своей машиной ищется как ЭСМ-2 и только им', async () => {
-    const request = await requestInProgress(ctx.plainTypeId, ctx.plainVehicleId);
+    it('нелинейный заказ своей машиной ищется как ЭСМ-2 и только им', async () => {
+      const request = await requestInProgress(ctx.plainTypeId, ctx.plainVehicleId);
 
-    // Без фильтра строка в срезе есть — заказ идёт, машина стоит на площадке (ADR 0036).
-    expect(await onSiteNums(request)).toEqual([request.num]);
-    // Заказ ведётся недельными листами (`esm2Mode = 'auto'`), и бланк у его дня один — ЭСМ-2.
-    // Лист на эту неделю может быть ещё не выписан: спрашивают не про выданную бумагу, а про ту,
-    // которой работу закроют.
-    expect(await onSiteNums(request, 'esm2')).toEqual([request.num]);
-    expect(await onSiteNums(request, '4p')).toEqual([]);
-    expect(await onSiteNums(request, 'leg3')).toEqual([]);
-  });
+      // Без фильтра строка в срезе есть — заказ идёт, машина стоит на площадке (ADR 0036).
+      expect(await onSiteNums(request)).toEqual([request.num]);
+      // Заказ ведётся недельными листами (`esm2Mode = 'auto'`), и бланк у его дня один — ЭСМ-2.
+      // Лист на эту неделю может быть ещё не выписан: спрашивают не про выданную бумагу, а про ту,
+      // которой работу закроют.
+      expect(await onSiteNums(request, 'esm2')).toEqual([request.num]);
+      expect(await onSiteNums(request, '4p')).toEqual([]);
+      expect(await onSiteNums(request, 'leg3')).toEqual([]);
+    });
 
-  it('линейный день ищется бланком машины рейса, а не машины назначения', async () => {
-    const request = await linearInProgress();
-    await planToday(request.id, ctx.dayVehicleLeg3Id);
+    it('линейный день ищется бланком машины рейса, а не машины назначения', async () => {
+      const request = await linearInProgress();
+      await planToday(request.id, ctx.dayVehicleLeg3Id);
 
-    // Машина рейса — легковая, и бланк дня её: форма № 3. У назначенной машины бланк 4-П, и
-    // считай отбор по ней — фильтр и колонка отвечали бы про разные машины (Р16).
-    expect(await onSiteNums(request, 'leg3')).toEqual([request.num]);
-    expect(await onSiteNums(request, '4p')).toEqual([]);
-    // Недельным листом линейный день не закрывается сам собой: его выписывают по требованию, и
-    // пока не выписали — бланка ЭСМ-2 у дня нет (ADR 0100 §5).
-    expect(await onSiteNums(request, 'esm2')).toEqual([]);
-  });
+      // Машина рейса — легковая, и бланк дня её: форма № 3. У назначенной машины бланк 4-П, и
+      // считай отбор по ней — фильтр и колонка отвечали бы про разные машины (Р16).
+      expect(await onSiteNums(request, 'leg3')).toEqual([request.num]);
+      expect(await onSiteNums(request, '4p')).toEqual([]);
+      // Недельным листом линейный день не закрывается сам собой: его выписывают по требованию, и
+      // пока не выписали — бланка ЭСМ-2 у дня нет (ADR 0100 §5).
+      expect(await onSiteNums(request, 'esm2')).toEqual([]);
+    });
 
-  it('срез называет прицеп по сохранённым реквизитам рейса дня', async () => {
-    const request = await linearInProgress();
-    const routeId = await planToday(request.id, ctx.dayVehicleId);
-    await ctx.db.execute(sql`
+    it('срез называет прицеп по сохранённым реквизитам рейса дня', async () => {
+      const request = await linearInProgress();
+      const routeId = await planToday(request.id, ctx.dayVehicleId);
+      await ctx.db.execute(sql`
       UPDATE vehicle_routes SET with_trailer = true,
         trailer1_model = 'КРОНА SDP27', trailer1_reg_number = 'ЕН806277',
         trailer2_model = 'НЕФАЗ 8332', trailer2_reg_number = 'АВ123477'
       WHERE id = ${routeId}`);
 
-    const res = await ctx.app.inject({
-      method: 'GET',
-      url: `/api/v1/vehicle-requests/on-site?num=${request.num}`,
-      headers: ctx.auth,
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/vehicle-requests/on-site?num=${request.num}`,
+        headers: ctx.auth,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().items[0].dayVehicle).toMatchObject({
+        routeId,
+        trailerLabel: 'КРОНА SDP27 ЕН806277 · НЕФАЗ 8332 АВ123477',
+      });
     });
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().items[0].dayVehicle).toMatchObject({
-      routeId,
-      trailerLabel: 'КРОНА SDP27 ЕН806277 · НЕФАЗ 8332 АВ123477',
-    });
-  });
 
-  it('линейный день с листом по требованию находится обоими бланками и стоит один раз', async () => {
-    const request = await linearInProgress();
-    await planToday(request.id, ctx.dayVehicleId);
-    await issueEsm2OnDemand(request.id, ctx.dayVehicleId);
-
-    // Две работы одного дня — рейс и недельный лист, — и строка находится каждой из них.
-    expect(await onSiteNums(request, '4p')).toEqual([request.num]);
-    expect(await onSiteNums(request, 'esm2')).toEqual([request.num]);
-    // А обоими сразу — по-прежнему одной строкой: отбор идёт условием `EXISTS`, а не join'ом к
-    // работам дня, иначе заказ стоял бы в выдаче дважды (Р6).
-    expect(await onSiteNums(request, '4p,esm2')).toEqual([request.num]);
-  });
-
-  it('линейный заказ без распланированного дня выпадает из любого бланка', async () => {
-    const request = await linearInProgress();
-
-    // Строка из среза не уходит — заказ идёт, площадка машину ждёт (ADR 0100 §12).
-    expect(await onSiteNums(request)).toEqual([request.num]);
-    // Но работы в этот день у неё нет: ни рейса, ни листа, — и бланка нет тоже. Показывать такую
-    // строку в ответе «покажи всех на 4-П» значило бы отвечать не на вопрос (Р7).
-    for (const forms of ['4p', 'leg3', 'esm2', '4p,leg3,esm2']) {
-      expect(await onSiteNums(request, forms), forms).toEqual([]);
-    }
-  });
-
-  it('арендная машина бланка не имеет: лист на неё выписывает арендодатель', async () => {
-    const request = await requestInProgress(ctx.plainTypeId, ctx.rentalVehicleId);
-
-    expect(await onSiteNums(request)).toEqual([request.num]);
-    for (const forms of ['4p', 'leg3', 'esm2', '4p,leg3,esm2']) {
-      expect(await onSiteNums(request, forms), forms).toEqual([]);
-    }
-  });
-
-  it('долговая строка работы в день среза не имеет и под фильтром выпадает', async () => {
-    const request = await requestInProgress(ctx.plainTypeId, ctx.plainVehicleId);
     /*
-     * Срок уводится в прошлое прямо в базе: задним числом заявку не заводят (`isAllowedRequestDate`),
-     * а нужна она именно такой — отработавшей свой срок без подписи площадки под днями. Держит
-     * такую строку в срезе `hasUnapprovedPastShiftsSql`: работа не принята, закрыть заявку нельзя,
-     * и исчезать с экрана, куда смотрят каждое утро, она не должна.
+     * The old database CHECK still permits esm2 on a vehicle type. A planned freight route for such
+     * a type has no settled form until the owner chooses 4-P or No. 3; it remains in the day slice.
      */
-    await ctx.db.execute(sql`
+    it('a day route of a vehicle whose type still carries esm2 is found by no form', async () => {
+      const request = await linearInProgress();
+      await planToday(request.id, ctx.dayVehicleId);
+      const [type] = (
+        await ctx.db.execute<{ id: string; form: string }>(sql`
+        SELECT vt.id, vt.waybill_form_code AS form FROM vehicles v
+        JOIN vehicle_types vt ON vt.id = v.vehicle_type_id
+        WHERE v.id = ${ctx.dayVehicleId}`)
+      ).rows;
+      expect(type?.form).toBe('4p');
+      await ctx.db.execute(
+        sql`UPDATE vehicle_types SET waybill_form_code = 'esm2' WHERE id = ${type!.id}`,
+      );
+      try {
+        expect(await onSiteNums(request)).toEqual([request.num]);
+        for (const forms of ['esm2', '4p', 'leg3', '4p,leg3,esm2']) {
+          expect(await onSiteNums(request, forms), forms).toEqual([]);
+        }
+      } finally {
+        await ctx.db.execute(
+          sql`UPDATE vehicle_types SET waybill_form_code = ${type!.form} WHERE id = ${type!.id}`,
+        );
+      }
+    });
+
+    it('линейный день с листом по требованию находится обоими бланками и стоит один раз', async () => {
+      const request = await linearInProgress();
+      await planToday(request.id, ctx.dayVehicleId);
+      await issueEsm2OnDemand(request.id, ctx.dayVehicleId);
+
+      // Две работы одного дня — рейс и недельный лист, — и строка находится каждой из них.
+      expect(await onSiteNums(request, '4p')).toEqual([request.num]);
+      expect(await onSiteNums(request, 'esm2')).toEqual([request.num]);
+      // А обоими сразу — по-прежнему одной строкой: отбор идёт условием `EXISTS`, а не join'ом к
+      // работам дня, иначе заказ стоял бы в выдаче дважды (Р6).
+      expect(await onSiteNums(request, '4p,esm2')).toEqual([request.num]);
+    });
+
+    it('линейный заказ без распланированного дня выпадает из любого бланка', async () => {
+      const request = await linearInProgress();
+
+      // Строка из среза не уходит — заказ идёт, площадка машину ждёт (ADR 0100 §12).
+      expect(await onSiteNums(request)).toEqual([request.num]);
+      // Но работы в этот день у неё нет: ни рейса, ни листа, — и бланка нет тоже. Показывать такую
+      // строку в ответе «покажи всех на 4-П» значило бы отвечать не на вопрос (Р7).
+      for (const forms of ['4p', 'leg3', 'esm2', '4p,leg3,esm2']) {
+        expect(await onSiteNums(request, forms), forms).toEqual([]);
+      }
+    });
+
+    it('арендная машина бланка не имеет: лист на неё выписывает арендодатель', async () => {
+      const request = await requestInProgress(ctx.plainTypeId, ctx.rentalVehicleId);
+
+      expect(await onSiteNums(request)).toEqual([request.num]);
+      for (const forms of ['4p', 'leg3', 'esm2', '4p,leg3,esm2']) {
+        expect(await onSiteNums(request, forms), forms).toEqual([]);
+      }
+    });
+
+    it('долговая строка работы в день среза не имеет и под фильтром выпадает', async () => {
+      const request = await requestInProgress(ctx.plainTypeId, ctx.plainVehicleId);
+      /*
+       * Срок уводится в прошлое прямо в базе: задним числом заявку не заводят (`isAllowedRequestDate`),
+       * а нужна она именно такой — отработавшей свой срок без подписи площадки под днями. Держит
+       * такую строку в срезе `hasUnapprovedPastShiftsSql`: работа не принята, закрыть заявку нельзя,
+       * и исчезать с экрана, куда смотрят каждое утро, она не должна.
+       */
+      await ctx.db.execute(sql`
       UPDATE special_equipment_request_details
       SET date_from = ${shiftDateKey(ctx.today, -5)}::date, date_to = ${shiftDateKey(ctx.today, -3)}::date
       WHERE request_id = ${request.id}`);
 
-    expect(await onSiteNums(request)).toEqual([request.num]);
-    // Недели давно кончились, и притворяться, будто сегодня по этой заявке выписывается ЭСМ-2,
-    // нельзя (Р21). Долг при этом виден без фильтра и в сводке «Ждут согласования смен».
-    for (const forms of ['4p', 'leg3', 'esm2', '4p,leg3,esm2']) {
-      expect(await onSiteNums(request, forms), forms).toEqual([]);
-    }
-  });
+      expect(await onSiteNums(request)).toEqual([request.num]);
+      // Недели давно кончились, и притворяться, будто сегодня по этой заявке выписывается ЭСМ-2,
+      // нельзя (Р21). Долг при этом виден без фильтра и в сводке «Ждут согласования смен».
+      for (const forms of ['4p', 'leg3', 'esm2', '4p,leg3,esm2']) {
+        expect(await onSiteNums(request, forms), forms).toEqual([]);
+      }
+    });
 
-  it('сводка среза сужается тем же фильтром, что и таблица', async () => {
-    const request = await requestInProgress(ctx.plainTypeId, ctx.plainVehicleId);
+    it('сводка среза сужается тем же фильтром, что и таблица', async () => {
+      const request = await requestInProgress(ctx.plainTypeId, ctx.plainVehicleId);
 
-    // Площадка и бланк — фильтры, **определяющие** список, а не одна из его цифр: в сводку они
-    // уходят как есть, и цифра над таблицей обязана сходиться с числом строк под ней (Р7).
-    expect(await onSiteSummaryTotal(request)).toBe(1);
-    expect(await onSiteSummaryTotal(request, 'esm2')).toBe(1);
-    expect(await onSiteSummaryTotal(request, '4p')).toBe(0);
+      // Площадка и бланк — фильтры, **определяющие** список, а не одна из его цифр: в сводку они
+      // уходят как есть, и цифра над таблицей обязана сходиться с числом строк под ней (Р7).
+      expect(await onSiteSummaryTotal(request)).toBe(1);
+      expect(await onSiteSummaryTotal(request, 'esm2')).toBe(1);
+      expect(await onSiteSummaryTotal(request, '4p')).toBe(0);
 
-    const linear = await linearInProgress();
-    await planToday(linear.id, ctx.dayVehicleId);
-    expect(await onSiteSummaryTotal(linear, '4p')).toBe(1);
-    expect(await onSiteSummaryTotal(linear, 'esm2')).toBe(0);
-  });
+      const linear = await linearInProgress();
+      await planToday(linear.id, ctx.dayVehicleId);
+      expect(await onSiteSummaryTotal(linear, '4p')).toBe(1);
+      expect(await onSiteSummaryTotal(linear, 'esm2')).toBe(0);
+    });
   });
 });

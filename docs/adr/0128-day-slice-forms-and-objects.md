@@ -280,6 +280,11 @@ own database: the gap before it, the guard naming two types, the narrowed CHECK 
 
 **What still reads the raw column.** The two SQL writings of the day form rule,
 `driverDayFormsSql` (`services/garage.ts`) and `onSiteDayFormsSql` (`routes/vehicle-requests.ts`),
-take `vehicle_types.waybill_form_code` as stored, so a type with `esm2` would still reach the form
-filters through them until the CHECK ships. Until then the narrow types are a promise kept by every
-writer, not by the database; the CHECK turns it into a constraint.
+took `vehicle_types.waybill_form_code` as stored, so a type with `esm2` still reached the form
+filters through them. Narrowed in the C10c reader fix (2026-10-15): both ask `routeFormSettledSql` — a freight route
+counts only when its type carries one of `TYPE_WAYBILL_FORM_CODES` — and `busyWaybillForm` in the
+contracts answers `null` for the same route (`isTypeWaybillFormCode`), so the garage parity test
+still holds the two writings together. Such a route is dropped from every form filter rather than
+read as 4-П: which form the type gets stays the owner's decision. It is still a work of the day —
+the driver and the vehicle stay busy. Until the CHECK ships, the narrow types are a promise kept by
+every writer and by these readers, not by the database; the CHECK turns it into a constraint.

@@ -54,6 +54,16 @@ export const typeWaybillFormCodeSchema = z.enum(TYPE_WAYBILL_FORM_CODES, {
 });
 export type TypeWaybillFormCode = (typeof TYPE_WAYBILL_FORM_CODES)[number];
 
+/**
+ * Whether a stored code is a form a type may carry. The Drizzle column is typed narrow, but until
+ * `drizzle/pending/vehicle-type-waybill-form-check.sql` narrows the CHECK the database still admits
+ * 'esm2' on a type (ADR 0128), so a reader whose answer would change on such a row asks this
+ * instead of trusting the type.
+ */
+export function isTypeWaybillFormCode(code: string): code is TypeWaybillFormCode {
+  return (TYPE_WAYBILL_FORM_CODES as readonly string[]).includes(code);
+}
+
 /** Бланк типа по умолчанию: им заводится тип, у которого не сказано обратного (миграция 0094). */
 export const DEFAULT_TYPE_WAYBILL_FORM: TypeWaybillFormCode = '4p';
 

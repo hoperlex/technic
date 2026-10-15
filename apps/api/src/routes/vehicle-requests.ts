@@ -255,6 +255,7 @@ import {
   scheduleFilesDeletion,
 } from '../services/request-files';
 import { fileView } from '../services/file-view';
+import { routeFormSettledSql } from '../services/garage';
 import { asReferenceConflict, registerPurgeRoute } from '../services/directory-purge';
 // Уборка следов недельной заявки при удалении насовсем (ADR 0085 Р15): общая на все четыре
 // вкладки, откуда `purge` доходит до её ссылок.
@@ -3725,37 +3726,38 @@ function listCountQuery() {
 }
 
 /**
- * Бланки работы дня у строки среза — по строке на работу (Р21), тем же правилом, каким бланк
- * считают гараж (`driverDayFormsSql`) и контракты (`busyWaybillForms`): бланк работы — это тот,
- * которым она **закрывается**, а не тот, что уже выписан.
+ * The forms of a slice row's works of the day, one row per work (R21), by the same rule the garage
+ * (`driverDayFormsSql`) and the contracts (`busyWaybillForms`) count a form by: the form of a work
+ * is the one it is **closed** with, not the one already issued.
  *
- * Три ветки на три вида работы, и каждая спрашивает принадлежность машины отдельно: на арендную
- * лист выписывает арендодатель, и бланка у такой работы нет вовсе — строка арендного заказа не
- * проходит никакой отбор по бланку.
+ * Three branches for three kinds of work, and each asks the vehicle's ownership on its own: a
+ * rental vehicle's waybill is issued by the lessor, so such a work has no form at all and the row of
+ * a rental order passes no form filter.
  *
- * 1. **Нелинейный заказ на своей машине**, чей срок накрывает день, — `esm2`: он ведётся
- *    недельными листами (`esm2Mode = 'auto'`), даже если лист на эту неделю ещё не выписан.
- *    Срок спрашивается своим join'ом деталей, а не выражением отбора: в срез попадает и заявка,
- *    чей срок кончился, а смены не подписаны (`hasUnapprovedPastShiftsSql`), — работы **в день
- *    среза** у неё нет, и притворяться, будто по ней сегодня выписывается ЭСМ-2, нельзя.
- *    Линейность читается режимом заявки у **заказанного** типа (ADR 0100 §1): каким заказ ведут,
- *    решает заказ, а не то, какую единицу под него нашли, и заявку могло застать переключение.
- * 2. **День заказа, поставленный в рейс**, — бланк рейса по машине **рейса**, а не назначения:
- *    тем же ответом колонка называет машину дня (Р16), и отбор с колонкой обязаны говорить об
- *    одной машине. Перегон идёт по 4-П независимо от типа, грузовой рейс — по бланку типа своей
- *    машины. Режима заявки эта ветка не спрашивает, и с ADR 0207 это уже не потому, что день
- *    бывает только у линейного заказа: день бывает у любого заказа техники на объект, а бланк ему
- *    даёт рейс. Отсюда и строка, у которой в наборе стоят сразу два бланка: неделя ЭСМ-2 из
- *    ветки 1 и 4-П дня отсюда (ADR 0207 §2) — бумаги две, работа одна, и отбор обязан находить
- *    такую строку по любому из двух.
- * 3. **Лист ЭСМ-2 по требованию на распланированный день** (ADR 0100 §5) — второй бланк той же
- *    работы: неделю заказа, который ведут днями, называет человек, и день закрывается сразу
- *    двумя бумагами.
- *    Нераспланированного дня это не касается: работы в такой день нет, строка среза говорит о нём
- *    «машина не назначена», и отбор обязан отвечать то же самое.
+ * 1. **A non-linear order on an own vehicle** whose term covers the day — `esm2`: it is run by
+ *    weekly sheets (`esm2Mode = 'auto'`) even if this week's sheet is not issued yet. The term is
+ *    asked through its own join of the details, not through the filter expression: the slice also
+ *    holds a request whose term is over while its shifts are unsigned (`hasUnapprovedPastShiftsSql`)
+ *    — it has no work **on the slice day**, and pretending an ESM-2 is issued for it today is wrong.
+ *    Linearity is read as the request's mode at the **ordered** type (ADR 0100 §1): the order
+ *    decides how it is run, not the unit found for it, and a switch may have caught the request.
+ * 2. **An order day placed in a route** — the route's form by the **route's** vehicle, not the
+ *    assignment's: the column names the day's vehicle by the same answer (R16), and the filter and
+ *    the column must speak of one vehicle. A relocation goes on 4-P whatever the type, a freight
+ *    route on its vehicle's type form, and only when that type carries a type form
+ *    (`routeFormSettledSql`, ADR 0128: a type still holding 'esm2' in the database gives no row
+ *    rather than a weekly sheet). This branch does not ask the request's mode, and since ADR 0207
+ *    not because only a linear order has days: any on-site order can have a day, and the route
+ *    gives it its form. Hence a row that carries two forms at once: the ESM-2 week of branch 1 and
+ *    the 4-P day from here (ADR 0207 §2) — two papers, one work, and the filter must find such a row
+ *    by either.
+ * 3. **An on-demand ESM-2 sheet on a planned day** (ADR 0100 §5) — the second form of the same
+ *    work: a person names the week of an order run by days, and the day is closed by two papers at
+ *    once. An unplanned day is not affected: there is no work on it, the slice row says "no vehicle
+ *    assigned", and the filter must answer the same.
  *
- * Возвращается тело подзапроса со столбцом `form`: набор строки из него собирает `EXISTS`
- * отбора — join'ом к работам дня строка стояла бы в выдаче дважды.
+ * It returns the body of a subquery with a `form` column: the filter's `EXISTS` collects the row's
+ * set from it — a join to the works of the day would list the row twice.
  */
 function onSiteDayFormsSql(onDate: string): SQL {
   return sql`
@@ -3778,6 +3780,7 @@ function onSiteDayFormsSql(onDate: string): SQL {
      WHERE os_rr.request_id = ${vehicleRequests.id}
        AND os_rr.work_date = ${onDate}::date
        AND os_rv.ownership = 'own'
+       AND ${routeFormSettledSql('os_rt', 'os_rvt')}
     UNION ALL
     SELECT 'esm2'
       FROM ${waybills} os_w

@@ -17,6 +17,7 @@ import {
   vehicleLabel,
   type VehicleOwnership,
   waybillDisplayNumber,
+  TYPE_WAYBILL_FORM_CODES,
   type TypeWaybillFormCode,
   type WaybillFormCode,
 } from '@technic/contracts';
@@ -359,23 +360,50 @@ export function driverObjectFilterSql(on: string, objects: readonly string[]): S
 }
 
 /**
- * Бланки работ дня водителя — по строке на работу, тем же правилом, что и чистая функция
- * `busyWaybillForms` в контрактах.
+ * Whether a route of the day has a settled form, in SQL: a relocation always does (4-P whatever
+ * the type), a freight route only when its vehicle's type carries a form a type may carry
+ * (`TYPE_WAYBILL_FORM_CODES`, ADR 0128).
  *
- * Две записи одного правила — плата за отбор до страницы: посчитанный по загруженной странице
- * фильтр врал бы и в счётчике, и в листании. Сверка у них одна и настоящая — тест паритета
- * (`garage.db.test.ts`) спрашивает обе на общем наборе занятостей.
+ * The type column is narrow in TypeScript, but raw SQL reads what the database holds, and the CHECK
+ * still admits 'esm2' until `drizzle/pending/vehicle-type-waybill-form-check.sql` ships. Without
+ * this condition a freight route of such a type answered 'esm2' and was found by the weekly-sheet
+ * filter as if it were a weekly sheet. The route is dropped rather than read as '4p': which form
+ * such a type gets is the owner's decision, not the filter's. `busyWaybillForm` in the contracts
+ * answers `null` for the same route, so the two writings of the rule stay equal.
  *
- * Ветки повторяют `busyWaybillForm` буква в букву:
+ * The list is built from the contract constant, like the capacity `CASE` of the routes list: a new
+ * type form reaches SQL together with the contracts. Aliases are strings, as in `routeHasWork`. Both
+ * day form bodies use it — the garage (`driverDayFormsSql`) and the "Equipment on site" slice
+ * (`onSiteDayFormsSql`).
+ */
+export function routeFormSettledSql(route: string, type: string): SQL {
+  const forms = sql.join(
+    TYPE_WAYBILL_FORM_CODES.map((code) => sql`${code}`),
+    sql`, `,
+  );
+  return sql`(${sql.raw(route)}.purpose <> 'freight' OR ${sql.raw(type)}.waybill_form_code IN (${forms}))`;
+}
+
+/**
+ * The forms of a driver's works of the day, one row per work, by the same rule as the pure
+ * `busyWaybillForms` in the contracts.
  *
- * - рейс дня — `routeWaybillForm`: перегон (`purpose <> 'freight'`) идёт по 4-П независимо от типа
- *   машины, грузовой — по бланку её типа;
- * - недельный лист на человека — `esm2`;
- * - арендная машина не даёт строки ни в одной ветке: лист на неё выписывает арендодатель, и бланка
- *   у работы нет вовсе.
+ * Two writings of one rule are the price of filtering before the page: a filter computed over the
+ * loaded page would lie both in the counter and in paging. They have one real check — the parity
+ * test (`garage.db.test.ts`) asks both over a shared set of busy entries.
  *
- * Возвращается **тело** подзапроса со столбцом `form`, а не готовое условие: им пользуются оба
- * читателя — отбор (`driverFormFilterSql`) и сверка, собирающая из него набор строки.
+ * The branches repeat `busyWaybillForm` letter for letter:
+ *
+ * - a route of the day — `routeWaybillForm`: a relocation (`purpose <> 'freight'`) goes on 4-P
+ *   whatever the vehicle's type, a freight route on its type's form; a freight route whose type
+ *   carries no type form has no row (`routeFormSettledSql`);
+ * - a weekly sheet on the person — `esm2`;
+ * - a rental vehicle gives no row in any branch: its waybill is issued by the lessor, and the work
+ *   has no form at all.
+ *
+ * It returns the **body** of a subquery with a `form` column, not a finished condition: both readers
+ * use it — the filter (`driverFormFilterSql`) and the parity check, which collects the row's set from
+ * it.
  */
 export function driverDayFormsSql(on: string): SQL {
   return sql`
@@ -387,6 +415,7 @@ export function driverDayFormsSql(on: string): SQL {
        AND ga_rt.route_date = ${on}::date
        AND ga_v.ownership = 'own'
        AND ${routeHasWork('ga_rt')}
+       AND ${routeFormSettledSql('ga_rt', 'ga_vt')}
     UNION ALL
     SELECT 'esm2'
       FROM ${waybills} ga_w

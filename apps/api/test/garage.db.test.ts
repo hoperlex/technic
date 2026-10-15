@@ -802,6 +802,8 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
         WHERE vehicle_id IN (${ourVehicles}) OR source_request_id IN (${ourRequests})`);
       await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
       await ctx.db.execute(sql`DELETE FROM vehicles WHERE id IN (${ourVehicles})`);
+      // The type that still carries 'esm2' (form filter block): only its vehicle referenced it.
+      await ctx.db.execute(sql`DELETE FROM vehicle_types WHERE code LIKE 'zz_garage_esm2_%'`);
       // Второй водитель — по своей метке-комментарию и только он: первого сцена заводит один раз и
       // подхватывает по СНИЛСу на следующем прогоне (`seed`), а этот заводится заново каждый раз, и
       // оставленный он копился бы в базе так же, как копились машины до уборки. Строкой позже
@@ -1179,6 +1181,11 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
       specialVehicleId: string;
       esm2VehicleId: string;
       /**
+       * A freight route on a vehicle whose type still carries 'esm2' in the database (ADR 0128):
+       * the work exists, its form is not settled, and no form filter may find it.
+       */
+      unsettledDay: string;
+      /**
        * Второй водитель, занятый в `compositionDay` **не** на `routeObject`: с ним и сверяется
        * сужение сводки по площадке — не с тем, кого случайно занесло в базу соседним прогоном.
        */
@@ -1376,6 +1383,34 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
                     ${esm2Day}::date, ${esm2Day}::date, ${adminId}::uuid)`,
       );
 
+      /*
+       * A type that still carries 'esm2' (ADR 0128): the database CHECK admits it until
+       * `pending/vehicle-type-waybill-form-check.sql` ships, while no writer of today's portal
+       * produces it — hence the direct insert. Its code sorts after every seeded type, so the
+       * `ORDER BY code LIMIT 1` selections of this file never pick it.
+       */
+      const unsettledType = await ctx.db.execute<{ id: string }>(
+        sql`INSERT INTO vehicle_types (kind_id, code, name, waybill_form_code)
+            SELECT kind_id, ${`zz_garage_esm2_${RUN}`},
+                   ${`яя Тип с бланком ЭСМ-2 (гараж ${RUN})`}, 'esm2'
+              FROM vehicle_types WHERE id = ${freightType.id}::uuid
+            RETURNING id`,
+      );
+      const unsettledDay = dayAfter(46);
+      const unsettledRequest = await addRequest({
+        requestType: 'freight_transport',
+        vehicleTypeId: freightType.id,
+        departmentId,
+      });
+      await addRouteRequest(
+        await addRoute({
+          vehicleId: await addVehicle(ctx.db, unsettledType.rows[0]!.id, null),
+          on: unsettledDay,
+          purpose: 'freight',
+        }),
+        unsettledRequest,
+      );
+
       f = {
         routeObject: routeObject!,
         relocationObject: relocationObject!,
@@ -1391,6 +1426,7 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
         passengerVehicleId,
         specialVehicleId,
         esm2VehicleId,
+        unsettledDay,
         otherDriverPersonId,
       };
     }, 120_000);
@@ -1431,6 +1467,20 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
 
       expect(await driverRow(formsQuery(['esm2']), f.esm2Day)).toBeDefined();
       expect(await driverRow(formsQuery(['4p', 'leg3']), f.esm2Day)).toBeUndefined();
+    });
+
+    /*
+     * The defect ADR 0128 names: a freight route of a type that still carries 'esm2' was found by
+     * the weekly-sheet filter as a weekly sheet. The day keeps its work (the driver is busy), but
+     * its form is the owner's decision, so neither the ESM-2 filter nor a guessed 4-P finds it.
+     */
+    it('a freight route of a type still carrying esm2 is a work no form filter finds', async () => {
+      const row = await driverRow('', f.unsettledDay);
+      expect(row?.state).toBe('assigned');
+      expect(busyKinds(row!.busy)).toEqual(['route']);
+
+      expect(await driverRow(formsQuery(['esm2']), f.unsettledDay)).toBeUndefined();
+      expect(await driverRow(formsQuery(['4p', 'leg3']), f.unsettledDay)).toBeUndefined();
     });
 
     it('перегон ищется как 4-П независимо от типа машины', async () => {
@@ -1593,6 +1643,7 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
         f.departmentDay,
         f.idleDay,
         f.esm2Day,
+        f.unsettledDay,
         drafted.draftDay,
         drafted.paperDay,
       ]) {
@@ -1621,6 +1672,9 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
       // с листом даёт бланк своей машины.
       expect(answers.get(drafted.draftDay)).toHaveLength(0);
       expect(answers.get(drafted.paperDay)).toEqual(['4p']);
+      // A freight route of a type still carrying 'esm2' is a work without a settled form on both
+      // sides (ADR 0128).
+      expect(answers.get(f.unsettledDay)).toHaveLength(0);
     });
   });
 

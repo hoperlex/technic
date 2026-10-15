@@ -105,6 +105,19 @@ describe('бланк одной работы', () => {
     expect(busyWaybillForm(routeBusy('freight', '4p'))).toBe('4p');
   });
 
+  /*
+   * The type column is narrow in TypeScript, but until the pending CHECK ships the database may
+   * still hold 'esm2' on a type (ADR 0128). Such a freight route has no settled form: 'esm2' would
+   * put an ordinary route under the weekly-sheet filter, '4p' would guess the owner's decision. A
+   * relocation of the same vehicle is unaffected — it never asks the type.
+   */
+  it('a freight route of a type still carrying esm2 has no form; its relocation stays 4-P', () => {
+    expect(busyWaybillForm(routeBusy('freight', 'esm2'))).toBeNull();
+    expect(busyWaybillForm(routeBusy('delivery', 'esm2'))).toBe('4p');
+    expect(busyWaybillForms([routeBusy('freight', 'esm2'), esm2Busy()])).toEqual(['esm2']);
+    expect(busyWaybillForms([routeBusy('freight', 'esm2')])).toEqual([]);
+  });
+
   /**
    * Аренда бланка не имеет ни в одном из видов: лист на такую машину выписывает арендодатель.
    * Рейс на арендную машину сегодня не заводится (`assertRouteVehicle`), но правило обязано
