@@ -43,6 +43,7 @@ policies:
     scope: ['apps/web/src/shared/**']
     enforcedBy: eslint
     source: eslint.config.mjs
+    adr: [docs/adr/0228-frontend-architecture.md]
     autofix: false
     rule: >
       `shared` не импортирует `@technic/contracts`: правила пароля, ФИО, статусов и прав — это
@@ -84,6 +85,7 @@ policies:
     severity: hard
     scope: ['packages/contracts/**']
     enforcedBy: ai-review
+    adr: [docs/adr/0224-codebase-maintenance-framework.md]
     autofix: false
     rule: >
       `packages/contracts` не импортирует ничего из `apps/**`. Направление одностороннее: словарь
