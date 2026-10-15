@@ -6,9 +6,10 @@
   [§13](#13-questions-to-the-owner) are open and no stage that depends on one starts before it is
   answered.
 - Source: the draft of 01.10.2026, `.local/plans/realtime-events-plan.md` (outside history, in
-  Russian), re-verified against `origin/main` `805d5902`. What the draft got wrong or what changed
-  since is listed in [§2.6](#26-what-changed-since-the-draft). The draft stays as the owner's
-  material; this file replaces it as the working plan.
+  Russian), first re-verified against `origin/main` `805d5902` and reviewed again against local
+  `main` `583a0e3b` on 15.10.2026. What the draft got wrong or what changed since is listed in
+  [§2.6](#26-what-changed-since-the-draft). The draft stays as the owner's material; this file
+  replaces it as the working plan.
 - Numbers: nothing is reserved besides ADR 0229. Stage 1 needs one migration (the switch key and the
   producer side); it gets its number when it is merged, under the release-train rules.
 - Client floor: no stage raises it ([§9.3](#93-client-floor)).
@@ -46,7 +47,7 @@ Not in scope — each needs its own decision:
 "No polling" does not mean "no traffic": an open stream, heartbeats, reconnects and the rereads
 after a real change remain. A request that stays open in the network panel is the normal state.
 
-## 2. What the code has today (`805d5902`)
+## 2. What the code has today (`583a0e3b`)
 
 Everything in this section is confirmed in code at the named commit; everything after it is
 proposed.
@@ -88,9 +89,12 @@ plan closes — not only the seven timers.
   mutation's effect, and the eight multi-root slices name the root a write lands in with
   `cache-home: <root> — reason` markers; the budget
   [cache-budget.json](../apps/web/cache-budget.json) has empty `unresolved` and `home-ambiguous`
-  lists. Its header names what it cannot know — what the **server** changes — and ADR 0222 ends with
-  "mapping server tables to query roots is still not done; it waits for the realtime-events
-  decision". [§4](#4-event-model) is that mapping.
+  lists. The `server-read-root-missed` rule also follows registered API routes into local Drizzle
+  helpers and maps writes through the existing API path and GET read inventories. It catches
+  `PATCH /vehicles/:id` releasing trailers and requiring the `vehicle-trailers` root. That static
+  relationship is limited to conventional routes and resource names; raw SQL, worker writes,
+  database triggers and other producers still need the inventory in [§4](#4-event-model), which
+  maps their effects to topics and the topics to query roots.
 - **Forms already survive rereads.** `useRecordSession` and `useFormRecordSession` with
   `StaleRecordNotice` (stage 5 plan §4.5, ADR 0222 decision 7): a clean form takes a newer record
   silently, a dirty one keeps its fields and the version it was filled with and shows the notice
@@ -183,6 +187,9 @@ plan closes — not only the seven timers.
 The draft's analysis of WebSocket versus SSE, of the two delivery profiles, of the access lifecycle
 and of the protected editing still holds and is carried into the sections below.
 
+The 15.10 review found the new `server-read-root-missed` rule described in §2.2. It provides a
+partial route-to-read-root check; it does not produce notifications or close the event inventory.
+
 ## 3. The decision in short
 
 Recorded in [ADR 0229](adr/0229-server-sent-events-for-portal-updates.md): commands and reads stay
@@ -196,8 +203,11 @@ contract headers through the same session code as every other request. Delivery 
 ### 4.1 Topics: one vocabulary in the contracts
 
 A new contracts module (proposed name `packages/contracts/src/realtime-events.ts`) holds the closed
-list of topics, the envelope schema, the control events and the protocol version. Server and portal
-both import it; neither keeps a copy (AGENTS.md, "one rule, one place").
+list of client change topics, the envelope schema, the stream control events and the protocol
+version. Server and portal both import it; neither keeps a copy (AGENTS.md, "one rule, one place").
+The `access` notification of [§6](#6-authentication-and-session) is server-internal: it closes
+affected streams and is never emitted as a client `change` topic or mapped to query roots. The
+notification envelope can type both cases, but `access` is excluded from the client topic union.
 
 A **topic is a server aggregate that a portal screen reads**, named in the portal's language
 (`service-requests`, `vehicle-requests`, `waybills`, …), not a table name: the portal must not learn
@@ -211,10 +221,11 @@ server's question; the portal never filters events.
 
 ### 4.2 Producer side: tables to topics
 
-Proposed ([Q4](#q4-producer-mechanism)): one generic trigger function that takes the topic as its
-trigger argument, and an `AFTER` trigger with that argument on each table read by the GET handlers
-of a covered module. The function calls `pg_notify` on one channel with a short JSON payload: the
-topic and, for a targeted topic, the recipient user id. Never row data.
+Proposed ([Q4](#q4-producer-mechanism)): one generic trigger function that takes a notification
+name as its argument, and an `AFTER` trigger with that argument on each table read by the GET
+handlers of a covered module. The function calls `pg_notify` on one channel with a short JSON
+payload: a client change topic or the internal `access` signal and, when targeted, the recipient
+user id. Never row data.
 
 Why a trigger and not a call in the service code (the case for option (a) of Q4):
 
@@ -224,22 +235,23 @@ Why a trigger and not a call in the service code (the case for option (a) of Q4)
   retention, migrations and repair scripts — with no call to forget;
 - the table-to-topic mapping lives in one place, the database catalog (`pg_trigger.tgargs` of the
   triggers on that function). A db test compares that set with the contracts list in both
-  directions: every topic has at least one table, every trigger names a known topic. The inventory
-  is a query, not a document that drifts.
+  directions: every client topic has at least one table, and every notification trigger names a
+  known client topic or the server-internal `access` signal. The inventory is a query, not a
+  document that drifts.
 
 Statement-level or row-level triggers is a measured choice of stage 1: the largest bulk write of the
 pilot module and the directory import, with and without triggers. Queue and log tables that no
 covered screen reads (`jobs`, `audit_log`) get no trigger.
 
 The step a module stage starts with is its **inventory**: for each GET handler of the module, the
-tables it reads, hence its topic, hence the roots that read it. This is the step the cache check's
-header names as not done.
+tables it reads, hence its topic, hence the roots that read it. The existing route-level write
+check does not establish this mapping for every server producer.
 
 ### 4.3 Consumer side: topics to query roots
 
 One table in a new app slice (proposed `apps/web/src/app/realtime/`), typed as a record over the
-contracts topic union, so that a new topic fails `tsc` until it is mapped. Its values are the owning
-entities' roots. It lives in `app` because an effect spanning several entities can live neither in
+contracts **client change topic** union, so that a new topic fails `tsc` until it is mapped. Its
+values are the owning entities' roots. It lives in `app` because an effect spanning several entities can live neither in
 one of them (ADR 0228 rule 2) nor in `shared` (rule 4) — ADR 0228 names this as a known cost, and
 `app` is the one layer that sees every entity.
 
@@ -372,7 +384,7 @@ for per-event history appears. It is then its own ADR and its own migrations:
   **never** call `refresh()` — a network failure inside `refresh()` ends the session
   ([§2.3](#23-session-gates-and-limits)).
 - **`auth_version` is the revocation signal.** A trigger on the change of `users.auth_version` sends
-  the server-internal topic `access` with the user id; the server closes that user's streams with
+  the server-internal signal `access` with the user id; the server closes that user's streams with
   `bye(reauth)`, because their token's `av` no longer matches; the client runs `refresh()`, whose
   answer also brings the recomputed rights to the menus (`onRefreshedUser`), and reconnects. The
   epoch of the maintenance mode needs nothing extra: leaving the mode recreates the API, the streams
@@ -511,7 +523,7 @@ everything is additive. A stage that depends on an open question waits for its a
 
 **Stage 1 — the prototype of profile A on one pilot topic** ([Q1](#q1-pilot-module)).
 
-- Contracts: topics (the pilot topic and `access`), envelope, control events, protocol version 1.
+- Contracts: the pilot client change topic, envelope, stream control events, protocol version 1.
 - Server: the stream route, the listener with self-ping, fanout, heartbeat, `bye` on shutdown and
   token expiry, audience by permission, the principal backstop, the producer check of §9.4, metrics.
   Producer side for the pilot tables and `users.auth_version` ([Q4](#q4-producer-mechanism)).

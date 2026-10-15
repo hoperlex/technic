@@ -5,8 +5,8 @@
   outcome of the profile A prototype (stage 1) is to be recorded here
 - Домены: каркас-портала, доступ, схема-и-выкат
 - Развивает: [ADR 0222](0222-frontend-query-freshness-and-render.md) — its query roots and freshness
-  profiles become the targets of server notifications, and the mapping of server tables to query
-  roots that it left waiting for this decision is built by the stages of the plan
+  profiles become the targets of server notifications; the stages of the plan inventory all server
+  producers for each covered topic and map those topics to query roots
 - Связано: [ADR 0228](0228-frontend-architecture.md) (which layer holds each client part),
   [ADR 0157](0157-maintenance-mode.md) (both gates apply when a stream opens; only the status file
   ends the mode), [ADR 0146](0146-office-equipment-consumables-tab-and-purchase.md) decision 7 and
@@ -37,7 +37,9 @@ A draft of 01.10.2026 audited polling, access, deploy and the transports; on 06.
 suggested a persistent channel with targeted change flags and the maintenance mode on the same
 channel; stage 5 of the front end (ADR 0222) prepared the ground — one owner per query root, the
 cache check at zero, forms that keep their input across rereads — and deferred the event mapping to
-this decision. On 14.10.2026 the owner chose the transport (survey S-28).
+this decision. On 14.10.2026 the owner chose the transport (survey S-28). The
+`server-read-root-missed` rule added on 15.10 follows conventional API route writes to GET roots,
+but cannot cover every server producer.
 
 ## Decision
 
@@ -71,7 +73,8 @@ this decision. On 14.10.2026 the owner chose the transport (survey S-28).
 6. **One vocabulary, two homes for the mapping.** Topics, the envelope and the control events live
    in `packages/contracts`. Which server tables feed a topic is decided on the server side; which
    query roots a topic invalidates is one table in the portal's app layer, checked against the
-   declared roots by the cache check. Neither side copies the other's keys.
+   declared roots by the cache check. The server-internal `access` revocation signal is outside the
+   client change-topic union and has no query-root mapping. Neither side copies the other's keys.
 
 ## Alternatives
 
@@ -102,8 +105,8 @@ this decision. On 14.10.2026 the owner chose the transport (survey S-28).
 - Every reconnect — after sleep, network loss, a restart, a deploy, a maintenance or floor switch —
   rereads the mounted queries. Reconnects are spread by jitter and measured against the per-IP rate
   limit.
-- Each module stage starts with an inventory of the tables its GET handlers read; that inventory is
-  the server-table mapping ADR 0222 deferred.
+- Each module stage starts with an inventory of the tables its GET handlers read and the producers
+  that write them; the stage checks notification coverage against that inventory.
 - The seven timers stay in the code as the fallback until the last stage, gated by stream health;
   states that change with time alone keep their timers.
 - An idle open tab learns about a raised client floor or the start of a maintenance window when its
