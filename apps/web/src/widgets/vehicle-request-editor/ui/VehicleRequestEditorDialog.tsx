@@ -1,6 +1,6 @@
 import { lazy } from 'react';
 import { Alert, Button } from 'antd';
-import type { FormValues } from '@features/vehicle-request-editor';
+import { isBackdatedCreateAttempt, type FormValues } from '@features/vehicle-request-editor';
 import { FormDraftAutosave } from '@shared/lib';
 import { AsyncContent, FormModal, LocalFormDraftNotice } from '@shared/ui';
 import type { VehicleRequestEditorState } from '../model/useVehicleRequestEditorState';
@@ -14,12 +14,23 @@ const VehicleRequestEditorBody = lazy(() =>
 interface Props {
   confirmLoading: boolean;
   onFinish: (values: FormValues) => void;
+  onReconcile: () => void;
+  onResetBackdated: () => void;
+  reconciling: boolean;
   state: VehicleRequestEditorState;
 }
 
 /** The controller freezes the copy calendar and operation key at open, before UI code arrives. */
-export function VehicleRequestEditorDialog({ confirmLoading, onFinish, state }: Props) {
+export function VehicleRequestEditorDialog({
+  confirmLoading,
+  onFinish,
+  onReconcile,
+  onResetBackdated,
+  reconciling,
+  state,
+}: Props) {
   const { draft } = state;
+  const attempt = draft.active?.createAttempt;
   return (
     <FormModal
       title={
@@ -45,7 +56,16 @@ export function VehicleRequestEditorDialog({ confirmLoading, onFinish, state }: 
         active={!!draft.active}
         pending={draft.pending}
         status={draft.status}
-        attemptKey={draft.active?.createAttempt?.key}
+        attemptKey={attempt?.key}
+        attemptHelp={
+          attempt && !attempt.protocol && !attempt.body.operationId && !attempt.body.backdateReason
+            ? `Попытка ${attempt.key} отправлена старой версией портала. Её исход нужно проверить в реестре или поддержке; новая сверка для неё недоступна.`
+            : attempt?.protocol === 'receipt-v1'
+              ? `Исходное тело и файлы сохранены с кодом ${attempt.key}. Сверка определит, создана ли заявка; отказ 400/422 сам по себе этого не доказывает.`
+              : undefined
+        }
+        onReconcile={attempt?.protocol === 'receipt-v1' ? onReconcile : undefined}
+        reconciling={reconciling}
         fileNotice
         createMayHaveSucceeded={draft.pending[0]?.target.kind !== 'edit'}
         restoring={state.restoring}
@@ -53,6 +73,19 @@ export function VehicleRequestEditorDialog({ confirmLoading, onFinish, state }: 
         onRestore={(candidate) => void state.restoreDraft(candidate)}
         onDiscard={() => draft.discardPending(state.operationId)}
       />
+      {isBackdatedCreateAttempt(attempt) && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          title="Отправка задним числом требует ручной проверки"
+          description={
+            <Button size="small" onClick={onResetBackdated}>
+              Проверил список — начать новую попытку
+            </Button>
+          }
+        />
+      )}
       {state.reviewRequired && (
         <Alert
           type="warning"

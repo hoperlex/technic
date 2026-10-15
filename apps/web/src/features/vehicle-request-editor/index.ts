@@ -25,13 +25,19 @@ export type { TripFormValue } from './model/requestTripsForm';
 export type { VehiclePeriodCommand } from './model/types';
 export {
   draftValues,
+  isBackdatedCreateAttempt,
   listLocalDrafts,
   newDraftId,
   removeLocalDraft,
   restoreDraftValues,
   writeLocalDraft,
 } from './model/localDraft';
-export type { DraftTarget, VehicleRequestLocalDraft } from './model/localDraft';
+export type {
+  DraftTarget,
+  VehicleCreateAttempt,
+  VehicleCreateProtocol,
+  VehicleRequestLocalDraft,
+} from './model/localDraft';
 export {
   silentTermApplyBody,
   termCommandOf,

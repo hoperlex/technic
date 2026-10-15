@@ -14,6 +14,9 @@ export function LocalFormDraftNotice<
   fileNotice = false,
   createMayHaveSucceeded = false,
   attemptKey,
+  attemptHelp,
+  onReconcile,
+  reconciling = false,
 }: {
   active: boolean;
   pending: Draft[];
@@ -25,6 +28,9 @@ export function LocalFormDraftNotice<
   fileNotice?: boolean;
   createMayHaveSucceeded?: boolean;
   attemptKey?: string;
+  attemptHelp?: string;
+  onReconcile?: () => void;
+  reconciling?: boolean;
 }) {
   if (pending.length) {
     return (
@@ -83,9 +89,19 @@ export function LocalFormDraftNotice<
         style={{ marginBottom: 12 }}
         title="Результат прошлой отправки неизвестен"
         description={
-          status.available
-            ? `Повторное сохранение отправит первоначальные данные и прежние файлы с кодом попытки ${attemptKey}. Поздние изменения формы в повтор не войдут. Если повтор снова отклонён, сверьте список заявок и обратитесь в поддержку с этим кодом. До сверки не создавайте вторую заявку.`
-            : 'Не удалось сохранить ключ попытки на устройстве. Повторная отправка остановлена; проверьте хранилище браузера.'
+          <Space orientation="vertical" size={8}>
+            <Typography.Text>
+              {attemptHelp ??
+                (status.available
+                  ? `Повторное сохранение отправит первоначальные данные и прежние файлы с кодом попытки ${attemptKey}. Поздние изменения формы в повтор не войдут. До сверки не создавайте вторую заявку.`
+                  : 'Не удалось сохранить ключ попытки на устройстве. Повторная отправка остановлена; проверьте хранилище браузера.')}
+            </Typography.Text>
+            {onReconcile && (
+              <Button size="small" loading={reconciling} onClick={onReconcile}>
+                Сверить исходную отправку
+              </Button>
+            )}
+          </Space>
         }
       />
     );

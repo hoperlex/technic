@@ -267,6 +267,13 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     recovery.resetReview();
     return nextOperationId;
   };
+  const resetBackdatedAttempt = (key: string) => {
+    const nextOperationId = crypto.randomUUID();
+    const nextCreateKey = crypto.randomUUID();
+    const outcome = draft.resetBackdatedAttempt(key, nextOperationId, nextCreateKey);
+    if (outcome === 'resolved') setOperationId(nextOperationId);
+    return outcome;
+  };
   const openCreate = () => {
     setRecord(null);
     setCopy(null);
@@ -380,6 +387,7 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     ...recovery,
     record,
     recordTrips,
+    resetBackdatedAttempt,
     relocationsEditable,
     requestType,
     requestTypeOptions,
