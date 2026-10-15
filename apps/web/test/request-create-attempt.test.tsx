@@ -11,7 +11,10 @@ beforeEach(() => {
 describe('ordinary request creation attempt', () => {
   const failRemovalOf = (id: string) => {
     const original = Storage.prototype.removeItem;
-    return vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (this: Storage, key) {
+    return vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (
+      this: Storage,
+      key,
+    ) {
       if (key.endsWith(id)) throw new Error('storage temporarily unavailable');
       original.call(this, key);
     });
