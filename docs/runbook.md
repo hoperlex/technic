@@ -672,10 +672,16 @@ curl -s -o /dev/null -w '%{http_code}\n' https://auto.su10.ru/api/v1/service-req
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://auto.su10.ru/api/v1/auth/refresh  # 403 (нет Origin), но не 426
 ```
 
-Отказ гейта в журнале `api` виден строкой «Запрос отбит гейтом версии клиента» с полями
-`clientContract`, `minContract` и `clientBuild` — по последнему видно, какая именно вкладка ещё
-жива. Обратный ход — `deploy-auto --client-floor=1`: понижение разрешено и предупреждает вслух,
-что старые вкладки снова получат доступ к данным, которых не умеют читать.
+The API log records a client gate refusal as «Запрос отбит гейтом версии клиента» with
+`clientContract`, `minContract` and `clientBuild`; the last field identifies the active old tab.
+To lower the floor, run `deploy-auto --client-floor=N` with N at least the serving API's
+`REQUIRED_CLIENT_FLOOR`. The command reads that requirement from the `current` revision in
+`release.state` (the R1 module or the earlier `config.ts`) and refuses before editing `prod.env`
+if N is lower or the requirement cannot be read. Its forced API recreation would otherwise fail to
+start. For a lower floor, first roll the release back using the applicable rollback procedure and
+verify which revision serves, then repeat the floor operation. A permitted decrease warns that old
+tabs regain access to data they may not understand. `--client-floor=N` still runs before the deploy
+lock; do not run it concurrently with a deploy.
 
 **Чего гейт не делает.** Он блокирует старую вкладку, но не обновляет её: обработчика `426` у
 сборок до этого выпуска нет, и человек увидит обычное окно ошибки — поэтому текст в теле отказа
@@ -745,7 +751,8 @@ deploy-auto
 
 Between steps 1 and 2 nothing changes for open tabs. After step 2 a tab opened before R1 sees the
 mandatory reload banner on its next request. Rolling step 2 back is `deploy-auto --client-floor=6`,
-and it is legal only while R2 is not deployed: R2 refuses to start below 7.
+and the command permits it only while the serving release requires no more than 6. Once R2 serves,
+its requirement is 7, so lowering to 6 is refused before `prod.env` changes.
 
 ### Документ выполненных работ и автосогласование оргтехники (ADR 0208)
 

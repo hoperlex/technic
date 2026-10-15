@@ -127,8 +127,10 @@ deploy-auto — деплой/обновление портала technic (auto.s
                                     и контракт раздаваемой сборки; ничего не меняет.
   deploy-auto --client-floor=N      поднять/опустить пол и перезапустить technic-api. Отказывает,
                                     если N выше контракта раздаваемой сборки: так портал закрылся
-                                    бы целиком. После перезапуска проверяет, что старый контракт
-                                    отбивается 426, а обновление сессии — нет (ADR 0146, реш. 7).
+                                    бы целиком, или ниже требования работающего API: после
+                                    пересоздания он не запустился бы. После перезапуска проверяет,
+                                    что старый контракт отбивается 426, а обновление сессии — нет
+                                    (ADR 0146, реш. 7).
                                     Отметку спрашивают только выкаты без отката — те, что несут
                                     миграцию или идут окном --cutover; пропуск попадает в отчёт
   deploy-auto --maintenance         показать режим технических работ: prod.env, фактическое
@@ -1044,6 +1046,26 @@ client_contract_module_exists() {
   git_c cat-file -e "$CURRENT_BEFORE:apps/web/src/shared/api/clientContract.ts" 2>/dev/null
 }
 
+# A lower floor can make the serving API refuse to start on its forced recreation. Read the
+# requirement from release.state's revision, never from HEAD: after a pull, HEAD may already be
+# R2 while R1 still serves. Before R1 the constant lived in config.ts; an unrecognized format is
+# unknown, not permission to lower the floor.
+client_floor_required_deployed() {
+  local path source required
+  [ -n "${CURRENT_BEFORE:-}" ] || return 1
+  if git_c cat-file -e "$CURRENT_BEFORE:apps/api/src/lib/client-floor.ts" 2>/dev/null; then
+    path=apps/api/src/lib/client-floor.ts
+    source="$(git_c show "$CURRENT_BEFORE:$path" 2>/dev/null)" || return 1
+    required="$(printf '%s\n' "$source" | sed -n 's/^export const REQUIRED_CLIENT_FLOOR = \([1-9][0-9]*\);[[:space:]]*$/\1/p')"
+  else
+    path=apps/api/src/config.ts
+    source="$(git_c show "$CURRENT_BEFORE:$path" 2>/dev/null)" || return 1
+    required="$(printf '%s\n' "$source" | sed -n 's/^const REQUIRED_CLIENT_FLOOR = \([1-9][0-9]*\);[[:space:]]*$/\1/p')"
+  fi
+  [ -n "$required" ] && printf '%s\n' "$required" | grep -qE '^[1-9][0-9]*$' || return 1
+  printf '%s' "$required"
+}
+
 # Строка для --status: пол, контракт сборки и вывод о том, согласованы ли они.
 client_floor_line() {
   local floor served
@@ -1115,6 +1137,14 @@ if [ "$DO_CLIENT_FLOOR" -eq 1 ]; then
     fail "пол $CLIENT_FLOOR_ARG выше контракта раздаваемой сборки ($SERVED).
   Так портал закрывается ДЛЯ ВСЕХ: 426 получит и только что открытая вкладка.
   Сначала выкатите сборку с нужным контрактом, потом поднимайте пол."
+  fi
+  REQUIRED_SERVED="$(client_floor_required_deployed)" || fail "требование пола работающей ревизии
+  ${CURRENT_BEFORE:-<нет>} (REQUIRED_CLIENT_FLOOR) прочитать не удалось — prod.env не изменён.
+  Проверьте release.state и формат константы в исходнике работающего выпуска."
+  if [ "$CLIENT_FLOOR_ARG" -lt "$REQUIRED_SERVED" ]; then
+    fail "пол $CLIENT_FLOOR_ARG ниже требования работающего выпуска ($REQUIRED_SERVED, REQUIRED_CLIENT_FLOOR;
+  ревизия ${CURRENT_BEFORE:-<нет>}). После пересоздания technic-api не запустится.
+  Оставьте пол не ниже $REQUIRED_SERVED. Для отката выпуска сначала откатите код по runbook."
   fi
   [ -f "$PROD_ENV" ] || [ "$PROD_ENV_EXISTS" -eq 1 ] || fail "нет $PROD_ENV"
   # Пол правится через sudo и записался бы даже в нечитаемый файл — но тогда ни текущий пол, ни

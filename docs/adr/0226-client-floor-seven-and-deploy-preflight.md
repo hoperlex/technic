@@ -38,6 +38,13 @@ looked like this: migrations applied, `technic-api` in a restart loop, the healt
 `--previous` bringing back code but not schema. The plan text said "first the floor, then the
 release"; nothing executed it before the point of no return.
 
+The floor operation checks both sides too. `--client-floor=N` reads the serving revision from
+`release.state` and refuses N below that API's `REQUIRED_CLIENT_FLOOR` before changing `prod.env`:
+its forced API recreation would otherwise enter the same restart loop. It reads the R1 module or
+the earlier `config.ts` location from that revision, rather than HEAD after a pull. If the serving
+requirement is unavailable or its declaration has changed format, the operation refuses; the
+operator must inspect the serving release before changing the floor.
+
 By 12.10.2026 several releases had left debts that can be paid only above floor 6: the deprecated
 waste statistics fields (`volumeM3`, `volumeOrderedM3`, `totalCost`, `costEstimated`, `confirmed*`,
 ADR 0209 R5 and ADR 0213) and other removals planned for release R2. Each of those releases was
@@ -134,7 +141,8 @@ the floor operation records the new number.
 - R2: `REQUIRED_CLIENT_FLOOR = 7` with a new `REQUIRED_CLIENT_FLOOR_REASON`, the removals, and the
   confirmed production floor in the test.
 - `--client-floor=N` still runs before the deploy lock (known defect, maintenance mode plan §5.1);
-  this decision does not move it.
+  this decision does not move it. Its two checks cannot prevent a concurrent deploy from changing
+  the serving release after they run.
 
 ## Rejected
 
