@@ -1,12 +1,22 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Alert, App, DatePicker, Form, Input } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { mechEditScope, type MechRequestDto } from '@technic/contracts';
 import { mechModelOptionsQuery } from '@entities/mech-model';
 import { mechFailureText, mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
-import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
-import { useDeferredOptions, withSavedOption } from '@shared/lib';
+import { useAuth } from '@entities/session';
+import { mayHaveCommittedWrite } from '@shared/api';
+import { AutoSelect, FormModal, LocalFormDraftNotice, useFormBlockers } from '@shared/ui';
+import {
+  FormDraftAutosave,
+  objectDraftPayload,
+  restoreFormDateFields,
+  storeFormDateFields,
+  useDeferredOptions,
+  useLocalFormDraft,
+  withSavedOption,
+} from '@shared/lib';
 import { MechRequestAttachments, useMechAttachments } from './MechRequestAttachments';
 import { useMechRequesterFields } from './MechRequesterFields';
 import { PhoneInput } from '@entities/user-account';
@@ -49,8 +59,16 @@ export function MechRequestForm({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
+  const { user } = useAuth();
   const qc = useQueryClient();
   const [form] = Form.useForm<Values>();
+  const restored = useRef(false);
+  const draft = useLocalFormDraft({
+    userId: user?.id ?? null,
+    form: 'mech-request',
+    read: () => storeFormDateFields(form.getFieldsValue(true), ['plannedFrom', 'plannedTo']),
+    parse: objectDraftPayload,
+  });
   const blockers = useFormBlockers(form);
   const attachments = useMechAttachments(request, open);
   const customerKey = Form.useWatch('customer', form);
@@ -87,6 +105,7 @@ export function MechRequestForm({
 
   useEffect(() => {
     if (!open) return;
+    if (restored.current && !request) return;
     form.resetFields();
     if (request) {
       form.setFieldsValue({
@@ -108,6 +127,14 @@ export function MechRequestForm({
       return;
     }
   }, [open, request, form, savedKey]);
+
+  useEffect(() => {
+    if (!open) restored.current = false;
+  }, [open]);
+  const { begin } = draft;
+  useEffect(() => {
+    if (open && !request) begin('create');
+  }, [open, request, begin]);
 
   useEffect(() => {
     // PICK may finish after the new form opens. Filling its only customer must not reset contact,
@@ -165,11 +192,16 @@ export function MechRequestForm({
       });
     },
     onSuccess: () => {
+      if (!request) draft.clear();
       message.success(request ? 'Заявка сохранена' : 'Заявка заведена');
       void qc.invalidateQueries({ queryKey: mechRequestKeys.root });
       onClose();
     },
     onError: (e) => {
+      if (!request && mayHaveCommittedWrite(e))
+        message.warning(
+          'Ответ мог потеряться после создания заявки. Проверьте список перед повторной отправкой.',
+        );
       if (!blockers.fromApi(e)) message.error(mechFailureText(e));
     },
   });
@@ -187,117 +219,158 @@ export function MechRequestForm({
     mutation.mutate(values);
   };
 
+  const close = () => {
+    if (!request && draft.active) draft.persist();
+    restored.current = false;
+    onClose();
+  };
+
   return (
     <FormModal
       title={request ? `Заявка ${request.displayNumber}` : 'Новая заявка на аренду'}
       open={open}
-      onCancel={onClose}
+      onCancel={close}
       onSubmit={() => form.submit()}
       confirmLoading={mutation.isPending}
+      okDisabled={!request && draft.pending.length > 0}
       width={620}
     >
-      <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
-        {lockedSubject && (
-          // Почему половина полей заперта — сказано до попытки, а не отказом после нажатия.
-          <Alert
-            type="info"
-            showIcon
-            title="Предмет заявки уже нельзя менять"
-            description={
-              lockedContact
-                ? 'Заявка закрыта: правятся комментарий и вложения — акт приходит позже, и подшить его надо.'
-                : 'За сроком, моделью и площадкой стоит договорённость с арендодателем. Срок двигает продление, договорённость — действие «Изменить договорённость».'
-            }
-            style={{ marginBottom: 16 }}
+      {!request && (
+        <>
+          <FormDraftAutosave active={open && !!draft.active} form={form} onSave={draft.persist} />
+          <LocalFormDraftNotice
+            active={!!draft.active}
+            pending={draft.pending}
+            status={draft.status}
+            fileNotice
+            createMayHaveSucceeded
+            onRestore={(candidate) => {
+              restored.current = true;
+              form.setFieldsValue(
+                restoreFormDateFields<Values>(draft.restore(candidate), [
+                  'plannedFrom',
+                  'plannedTo',
+                ]),
+              );
+            }}
+            onDiscard={draft.discardPending}
           />
-        )}
+        </>
+      )}
+      {(request || draft.pending.length === 0) && (
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(values) => {
+            if (!request) draft.persist();
+            submit(values);
+          }}
+          {...blockers.formProps}
+        >
+          {lockedSubject && (
+            // Почему половина полей заперта — сказано до попытки, а не отказом после нажатия.
+            <Alert
+              type="info"
+              showIcon
+              title="Предмет заявки уже нельзя менять"
+              description={
+                lockedContact
+                  ? 'Заявка закрыта: правятся комментарий и вложения — акт приходит позже, и подшить его надо.'
+                  : 'За сроком, моделью и площадкой стоит договорённость с арендодателем. Срок двигает продление, договорённость — действие «Изменить договорённость».'
+              }
+              style={{ marginBottom: 16 }}
+            />
+          )}
 
-        {requester.fields}
+          {requester.fields}
 
-        {/* Модель — строго из справочника (ADR 0156): свободной строки у поля больше нет. Нужной
+          {/* Модель — строго из справочника (ADR 0156): свободной строки у поля больше нет. Нужной
             позиции в списке не нашлось — её заводит держатель справочников на своей вкладке, и
             ярлыка «завести прямо отсюда» первым выпуском намеренно нет. */}
-        <Form.Item
-          name="mechModelId"
-          label="Модель"
-          rules={[{ required: true, message: 'Выберите модель' }]}
-        >
-          <AutoSelect
-            showSearch
-            optionFilterProp="label"
-            options={models}
-            loading={modelsLoading}
-            autoSelectSole={modelsCurrent}
-            disabled={lockedSubject}
-            placeholder="Например: виброплита Wacker DPU 3070Н"
-          />
-        </Form.Item>
+          <Form.Item
+            name="mechModelId"
+            label="Модель"
+            rules={[{ required: true, message: 'Выберите модель' }]}
+          >
+            <AutoSelect
+              showSearch
+              optionFilterProp="label"
+              options={models}
+              loading={modelsLoading}
+              autoSelectSole={modelsCurrent}
+              disabled={lockedSubject}
+              placeholder="Например: виброплита Wacker DPU 3070Н"
+            />
+          </Form.Item>
 
-        <Form.Item
-          name="plannedFrom"
-          label="Подача"
-          rules={[{ required: true, message: 'Укажите дату подачи' }]}
-        >
-          <DatePicker
-            style={{ width: 220 }}
-            format="DD.MM.YYYY"
-            allowClear={false}
-            disabled={lockedSubject}
-          />
-        </Form.Item>
+          <Form.Item
+            name="plannedFrom"
+            label="Подача"
+            rules={[{ required: true, message: 'Укажите дату подачи' }]}
+          >
+            <DatePicker
+              style={{ width: 220 }}
+              format="DD.MM.YYYY"
+              allowClear={false}
+              disabled={lockedSubject}
+            />
+          </Form.Item>
 
-        <Form.Item
-          name="plannedTo"
-          label="Плановый возврат"
-          dependencies={['plannedFrom']}
-          rules={[
-            { required: true, message: 'Укажите дату возврата' },
-            /*
-             * Порядок дат проверяется и здесь, и схемой контрактов, и сервером. Здесь — потому
-             * что это единственное место, где человек видит обе даты сразу: отказ сервера пришёл
-             * бы после нажатия и без указания, какую из них править.
-             */
-            ({ getFieldValue }) => ({
-              validator: (_r, value: Dayjs | null | undefined) => {
-                const from = getFieldValue('plannedFrom') as Dayjs | undefined;
-                return !value || !from || !value.isBefore(from, 'day')
-                  ? Promise.resolve()
-                  : Promise.reject(new Error('Дата возврата не может быть раньше даты подачи'));
-              },
-            }),
-          ]}
-        >
-          <DatePicker
-            style={{ width: 220 }}
-            format="DD.MM.YYYY"
-            allowClear={false}
-            disabled={lockedSubject}
-          />
-        </Form.Item>
+          <Form.Item
+            name="plannedTo"
+            label="Плановый возврат"
+            dependencies={['plannedFrom']}
+            rules={[
+              { required: true, message: 'Укажите дату возврата' },
+              /*
+               * Порядок дат проверяется и здесь, и схемой контрактов, и сервером. Здесь — потому
+               * что это единственное место, где человек видит обе даты сразу: отказ сервера пришёл
+               * бы после нажатия и без указания, какую из них править.
+               */
+              ({ getFieldValue }) => ({
+                validator: (_r, value: Dayjs | null | undefined) => {
+                  const from = getFieldValue('plannedFrom') as Dayjs | undefined;
+                  return !value || !from || !value.isBefore(from, 'day')
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('Дата возврата не может быть раньше даты подачи'));
+                },
+              }),
+            ]}
+          >
+            <DatePicker
+              style={{ width: 220 }}
+              format="DD.MM.YYYY"
+              allowClear={false}
+              disabled={lockedSubject}
+            />
+          </Form.Item>
 
-        {/* Ответственный — тот, к кому арендодатель везёт технику: адрес отвечает «куда», а этот
+          {/* Ответственный — тот, к кому арендодатель везёт технику: адрес отвечает «куда», а этот
             контакт — «к кому и кому звонить, если на месте никого». Правится, пока заявка не
             закрыта: у закрытой принимать технику уже некому, и правка переписывала бы историю. */}
-        <ResponsibleFields
-          nameField="responsibleName"
-          phoneField="responsiblePhone"
-          nameLabel="Кто принимает технику"
-          phoneLabel="Телефон для связи"
-          disabled={lockedContact}
-          kept={
-            request ? { name: request.responsibleName, phone: request.responsiblePhone } : undefined
-          }
-          phoneInput={PhoneInput}
-        />
+          <ResponsibleFields
+            nameField="responsibleName"
+            phoneField="responsiblePhone"
+            nameLabel="Кто принимает технику"
+            phoneLabel="Телефон для связи"
+            disabled={lockedContact}
+            kept={
+              request
+                ? { name: request.responsibleName, phone: request.responsiblePhone }
+                : undefined
+            }
+            phoneInput={PhoneInput}
+          />
 
-        <Form.Item name="comment" label="Комментарий">
-          <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />
-        </Form.Item>
+          <Form.Item name="comment" label="Комментарий">
+            <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />
+          </Form.Item>
 
-        {/* Вложения правятся в любом состоянии, кроме архива (Р14, Р19): счёт и акт приходят
+          {/* Вложения правятся в любом состоянии, кроме архива (Р14, Р19): счёт и акт приходят
             позже самой аренды, и подшить их надо к той же заявке. */}
-        <MechRequestAttachments attachments={attachments} disabled={scope === 'none'} />
-      </Form>
+          <MechRequestAttachments attachments={attachments} disabled={scope === 'none'} />
+        </Form>
+      )}
     </FormModal>
   );
 }

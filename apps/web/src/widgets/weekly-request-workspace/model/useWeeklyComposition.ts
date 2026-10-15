@@ -20,6 +20,8 @@ import {
 } from './compositionState';
 
 export interface WeeklyComposition {
+  snapshot: WeeklyCompositionState;
+  restore: (snapshot: WeeklyCompositionState, comment: string) => void;
   rows: WeeklyOrderRow[];
   decisions: Record<string, WeeklyOrderDecision>;
   setDecision: (requestId: string, patch: Partial<WeeklyOrderDecision>) => void;
@@ -116,6 +118,11 @@ export function useWeeklyComposition(
 
   return {
     ...state,
+    snapshot: state,
+    restore: (snapshot, restoredComment) => {
+      setState(snapshot);
+      setComment(restoredComment);
+    },
     setDecision: (requestId, patch) =>
       setState((previous) => ({
         ...previous,

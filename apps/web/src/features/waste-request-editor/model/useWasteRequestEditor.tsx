@@ -28,7 +28,13 @@ import {
   type WasteRequestUpdatePayload,
 } from '@entities/waste-request';
 import { MOSCOW_TZ } from '@shared/config';
-import { useDeferredOptions } from '@shared/lib';
+import { mayHaveCommittedWrite } from '@shared/api';
+import {
+  objectDraftPayload,
+  storeFormDateFields,
+  useDeferredOptions,
+  useLocalFormDraft,
+} from '@shared/lib';
 import { useFormBlockers, type FilterOption } from '@shared/ui';
 import { DeferredWasteRequestEditor as WasteRequestEditorModal } from '../ui/DeferredWasteRequestEditor';
 import type {
@@ -46,7 +52,7 @@ interface EditorScope {
 /** Own create/edit state and commands; field presentation stays in the feature's UI module. */
 export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorController {
   const { message } = App.useApp();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const qc = useQueryClient();
   const canAssignOperator = can('wasteRequests.assignOperator');
   const [open, setOpen] = useState(false);
@@ -55,6 +61,12 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
   const [removedIds, setRemovedIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [form] = Form.useForm<WasteRequestFormValues>();
+  const draft = useLocalFormDraft({
+    userId: user?.id ?? null,
+    form: 'waste-request',
+    read: () => storeFormDateFields(form.getFieldsValue(true), ['deliveryDate']),
+    parse: objectDraftPayload,
+  });
   // The mounted controller survives closing the lazy editor. Its own PICK observers switch off
   // with the dialog and recheck an old cached choice on the next opening.
   const objects = useDeferredOptions(objectRecordsQuery(true), open, (data) => data.items, 'pick');
@@ -130,6 +142,7 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
     // The site is prefilled only when the role has exactly one: with several, prefilling the first
     // one would create a request for the wrong site (ADR 0039).
     if (sources.soleObjectId) form.setFieldValue('objectId', sources.soleObjectId);
+    draft.begin('create');
     setOpen(true);
   };
 
@@ -250,11 +263,16 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
       return wasteRequestsApi.create(payload);
     },
     onSuccess: () => {
+      if (!record) draft.clear();
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
       setOpen(false);
     },
     onError: (error) => {
+      if (!record && mayHaveCommittedWrite(error))
+        message.warning(
+          'Ответ мог потеряться после создания заявки. Проверьте список перед повторной отправкой.',
+        );
       // A validation error is shown on its field: a generic toast does not say what to fix.
       // deliveryAt is split into date and time in the form, so it maps to the date field.
       if (!blockers.fromApi(error, { deliveryAt: 'deliveryDate' })) {
@@ -267,12 +285,19 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
     actions: { create, edit },
     node: (
       <WasteRequestEditorModal
+        draft={draft}
         blockers={blockers}
         canAssignOperator={canAssignOperator}
         files={files}
         form={form}
-        onCancel={() => setOpen(false)}
-        onFinish={(values) => save.mutate(values)}
+        onCancel={() => {
+          if (!record && draft.active) draft.persist();
+          setOpen(false);
+        }}
+        onFinish={(values) => {
+          if (!record) draft.persist();
+          save.mutate(values);
+        }}
         onRemoveFile={(file) => void removeFile(file)}
         onUpload={(file) => void upload(file)}
         open={open}

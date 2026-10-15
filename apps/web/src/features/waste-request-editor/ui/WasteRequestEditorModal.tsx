@@ -16,8 +16,19 @@ import {
   wasteRequestKeys,
   wasteRequestsApi,
 } from '@entities/waste-request';
-import { withSavedOption } from '@shared/lib';
-import { AutoSelect, FormGrid, FormModal, type FormBlockersApi } from '@shared/ui';
+import {
+  FormDraftAutosave,
+  restoreFormDateFields,
+  withSavedOption,
+  type LocalFormDraftController,
+} from '@shared/lib';
+import {
+  AutoSelect,
+  FormGrid,
+  FormModal,
+  LocalFormDraftNotice,
+  type FormBlockersApi,
+} from '@shared/ui';
 import type { FormInstance } from 'antd';
 import type {
   WasteRequestEditorFile,
@@ -28,6 +39,7 @@ import { WasteRequestEditorRemovalFields } from './WasteRequestEditorRemovalFiel
 import { WasteRequestEditorSchedule } from './WasteRequestEditorSchedule';
 
 interface Props {
+  draft: LocalFormDraftController<Record<string, unknown>>;
   blockers: FormBlockersApi;
   canAssignOperator: boolean;
   files: WasteRequestEditorFile[];
@@ -50,6 +62,7 @@ const requestTypeOptions = REQUEST_TYPES.map((type) => ({
 
 /** Render the editor while preserving the domain-owned pricing and container-group rules. */
 export function WasteRequestEditorModal({
+  draft,
   blockers,
   canAssignOperator,
   files,
@@ -172,182 +185,205 @@ export function WasteRequestEditorModal({
       onCancel={onCancel}
       onSubmit={() => form.submit()}
       confirmLoading={saving}
+      okDisabled={!record && draft.pending.length > 0}
       width={880}
     >
-      <Form form={form} layout="vertical" onFinish={onFinish} {...blockers.formProps}>
-        {/* Fields go in pairs (FormGrid): a narrow modal hid half the form below the fold while
+      {!record && (
+        <>
+          <FormDraftAutosave active={open && !!draft.active} form={form} onSave={draft.persist} />
+          <LocalFormDraftNotice
+            active={!!draft.active}
+            pending={draft.pending}
+            status={draft.status}
+            fileNotice
+            createMayHaveSucceeded
+            onRestore={(candidate) =>
+              form.setFieldsValue(
+                restoreFormDateFields<WasteRequestFormValues>(draft.restore(candidate), [
+                  'deliveryDate',
+                ]),
+              )
+            }
+            onDiscard={draft.discardPending}
+          />
+        </>
+      )}
+      {(record || draft.pending.length === 0) && (
+        <Form form={form} layout="vertical" onFinish={onFinish} {...blockers.formProps}>
+          {/* Fields go in pairs (FormGrid): a narrow modal hid half the form below the fold while
             the right side stayed empty. Phones get one column in the same field order. */}
-        <FormGrid>
-          <Form.Item
-            name="objectId"
-            label="Объект строительства"
-            rules={[{ required: true, message: 'Выберите объект' }]}
-          >
-            <AutoSelect
-              options={sources.objectOptions}
-              loading={sources.objectsLoading}
-              autoSelectSole={sources.objectsCurrent}
-              showSearch
-              optionFilterProp="label"
-              disabled={sources.objectFieldDisabled}
-              onChange={resetSubject}
-            />
-          </Form.Item>
-          <Form.Item
-            name="requestType"
-            label="Тип заявки"
-            rules={[{ required: true, message: 'Выберите тип заявки' }]}
-          >
-            <AutoSelect
-              options={requestTypeOptions}
-              placeholder={objectId ? 'Выберите тип заявки' : 'Сначала выберите объект'}
-              disabled={!objectId}
-              onChange={() =>
-                form.setFieldsValue({
-                  containerTypeId: undefined,
-                  containerGroupKey: undefined,
-                  // The count returns to one container: "3" from the previous request type means
-                  // nothing for the new one, and installation and removal have no count at all.
-                  containersCount: 1,
-                  ownerMismatchReason: undefined,
-                  wasteTypeId: undefined,
-                  volumeM3: undefined,
-                })
-              }
-            />
-          </Form.Item>
-
-          {requestType === 'container_install' && (
+          <FormGrid>
             <Form.Item
-              name="containerTypeId"
-              label="Тип контейнера"
-              rules={[{ required: true, message: 'Выберите тип контейнера' }]}
+              name="objectId"
+              label="Объект строительства"
+              rules={[{ required: true, message: 'Выберите объект' }]}
             >
               <AutoSelect
-                // A type disabled in the directory stays visible on an existing request.
-                options={withSavedOption(sources.containerTypes.cont, savedContainerType)}
-                loading={sources.containerTypes.loading}
-                autoSelectSole={sources.containerTypes.current}
+                options={sources.objectOptions}
+                loading={sources.objectsLoading}
+                autoSelectSole={sources.objectsCurrent}
                 showSearch
                 optionFilterProp="label"
+                disabled={sources.objectFieldDisabled}
+                onChange={resetSubject}
               />
             </Form.Item>
-          )}
+            <Form.Item
+              name="requestType"
+              label="Тип заявки"
+              rules={[{ required: true, message: 'Выберите тип заявки' }]}
+            >
+              <AutoSelect
+                options={requestTypeOptions}
+                placeholder={objectId ? 'Выберите тип заявки' : 'Сначала выберите объект'}
+                disabled={!objectId}
+                onChange={() =>
+                  form.setFieldsValue({
+                    containerTypeId: undefined,
+                    containerGroupKey: undefined,
+                    // The count returns to one container: "3" from the previous request type means
+                    // nothing for the new one, and installation and removal have no count at all.
+                    containersCount: 1,
+                    ownerMismatchReason: undefined,
+                    wasteTypeId: undefined,
+                    volumeM3: undefined,
+                  })
+                }
+              />
+            </Form.Item>
 
-          <WasteRequestEditorRemovalFields
-            form={form}
-            record={record}
-            wasteTypes={sources.wasteTypes}
-          />
-
-          {/* The container is chosen as a presence group, type together with owner (ADR 0054): a
-              site can hold two identical containers from different operators, and a type without
-              an owner does not answer "which one is being removed". */}
-          {subjectField && (
-            <>
+            {requestType === 'container_install' && (
               <Form.Item
-                name="containerGroupKey"
-                label={subjectField.label}
-                rules={[{ required: true, message: subjectField.message }]}
-                extra={groups.length === 0 ? 'На объекте нет контейнеров' : undefined}
+                name="containerTypeId"
+                label="Тип контейнера"
+                rules={[{ required: true, message: 'Выберите тип контейнера' }]}
               >
                 <AutoSelect
-                  options={subjectField.options}
-                  loading={subjectField.loading}
+                  // A type disabled in the directory stays visible on an existing request.
+                  options={withSavedOption(sources.containerTypes.cont, savedContainerType)}
+                  loading={sources.containerTypes.loading}
+                  autoSelectSole={sources.containerTypes.current}
                   showSearch
                   optionFilterProp="label"
-                  placeholder={subjectField.placeholder}
-                  notFoundContent="Нет контейнеров на объекте"
                 />
               </Form.Item>
-              <Form.Item
-                name="containersCount"
-                label={subjectField.countLabel}
-                tooltip="Одной заявкой снимают несколько контейнеров одного типа от одного оператора"
-                rules={[
-                  { required: true, message: 'Укажите количество' },
-                  {
-                    type: 'number',
-                    min: 1,
-                    max: maxContainers,
-                    message: `На объекте ${maxContainers} шт.`,
-                  },
-                ]}
-              >
-                <InputNumber
-                  min={1}
-                  max={maxContainers}
-                  precision={0}
-                  style={{ width: '100%' }}
-                  disabled={!selectedGroup}
-                />
-              </Form.Item>
-            </>
-          )}
+            )}
 
-          {/* The executor is chosen only on an existing request: at creation it is usually not
-              known yet, and an extra field would distract. A new request gets its operator by a
-              separate list action or when it is moved into work. */}
-          {canAssignOperator && record && (
-            <Form.Item
-              name="operatorCounterpartyId"
-              label="Оператор вывоза"
-              tooltip="Контрагент, который выполняет заявку; он увидит её в своём списке"
-              // Who already works on the site is shown where the executor is chosen (ADR 0054): it
-              // answers both "whom to call" and "why not this one".
-              extra={
-                sources.operatorsReady && operatorOptions.length === 0
-                  ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
-                  : presentGroupsHint(groups)
-              }
-            >
-              <Select
-                options={operatorOptions}
-                showSearch
-                allowClear
-                optionFilterProp="label"
-                placeholder="Можно назначить позже"
-              />
-            </Form.Item>
-          )}
+            <WasteRequestEditorRemovalFields
+              form={form}
+              record={record}
+              wasteTypes={sources.wasteTypes}
+            />
 
-          {/* "The remover is not the installer": removal passes with an explained reason, while
-              replacement never passes, because it would change the container owner on the site. */}
-          {ownerVerdict !== 'ok' && (
-            <FormGrid.Full>
-              <div style={{ marginTop: -8, marginBottom: 16 }}>
-                <Typography.Text type="warning">
-                  {`Контейнер установил «${selectedGroup?.ownerName ?? '—'}». `}
-                  {ownerVerdict === 'splitRequired'
-                    ? FOREIGN_CONTAINER_SPLIT_MESSAGE
-                    : 'Назначьте его либо объясните, почему вывозит другой оператор'}
-                </Typography.Text>
-              </div>
-              {ownerVerdict !== 'splitRequired' && (
+            {/* The container is chosen as a presence group, type together with owner (ADR 0054): a
+              site can hold two identical containers from different operators, and a type without
+              an owner does not answer "which one is being removed". */}
+            {subjectField && (
+              <>
                 <Form.Item
-                  name="ownerMismatchReason"
-                  label="Причина вывоза чужого контейнера"
-                  rules={[{ required: true, message: 'Укажите причину' }]}
+                  name="containerGroupKey"
+                  label={subjectField.label}
+                  rules={[{ required: true, message: subjectField.message }]}
+                  extra={groups.length === 0 ? 'На объекте нет контейнеров' : undefined}
                 >
-                  <Input.TextArea
-                    rows={2}
-                    maxLength={500}
-                    placeholder="Например: контейнеры переданы по акту"
+                  <AutoSelect
+                    options={subjectField.options}
+                    loading={subjectField.loading}
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder={subjectField.placeholder}
+                    notFoundContent="Нет контейнеров на объекте"
                   />
                 </Form.Item>
-              )}
-            </FormGrid.Full>
-          )}
+                <Form.Item
+                  name="containersCount"
+                  label={subjectField.countLabel}
+                  tooltip="Одной заявкой снимают несколько контейнеров одного типа от одного оператора"
+                  rules={[
+                    { required: true, message: 'Укажите количество' },
+                    {
+                      type: 'number',
+                      min: 1,
+                      max: maxContainers,
+                      message: `На объекте ${maxContainers} шт.`,
+                    },
+                  ]}
+                >
+                  <InputNumber
+                    min={1}
+                    max={maxContainers}
+                    precision={0}
+                    style={{ width: '100%' }}
+                    disabled={!selectedGroup}
+                  />
+                </Form.Item>
+              </>
+            )}
 
-          <WasteRequestEditorSchedule
-            files={files}
-            onRemoveFile={onRemoveFile}
-            onUpload={onUpload}
-            record={record}
-            uploading={uploading}
-          />
-        </FormGrid>
-      </Form>
+            {/* The executor is chosen only on an existing request: at creation it is usually not
+              known yet, and an extra field would distract. A new request gets its operator by a
+              separate list action or when it is moved into work. */}
+            {canAssignOperator && record && (
+              <Form.Item
+                name="operatorCounterpartyId"
+                label="Оператор вывоза"
+                tooltip="Контрагент, который выполняет заявку; он увидит её в своём списке"
+                // Who already works on the site is shown where the executor is chosen (ADR 0054): it
+                // answers both "whom to call" and "why not this one".
+                extra={
+                  sources.operatorsReady && operatorOptions.length === 0
+                    ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
+                    : presentGroupsHint(groups)
+                }
+              >
+                <Select
+                  options={operatorOptions}
+                  showSearch
+                  allowClear
+                  optionFilterProp="label"
+                  placeholder="Можно назначить позже"
+                />
+              </Form.Item>
+            )}
+
+            {/* "The remover is not the installer": removal passes with an explained reason, while
+              replacement never passes, because it would change the container owner on the site. */}
+            {ownerVerdict !== 'ok' && (
+              <FormGrid.Full>
+                <div style={{ marginTop: -8, marginBottom: 16 }}>
+                  <Typography.Text type="warning">
+                    {`Контейнер установил «${selectedGroup?.ownerName ?? '—'}». `}
+                    {ownerVerdict === 'splitRequired'
+                      ? FOREIGN_CONTAINER_SPLIT_MESSAGE
+                      : 'Назначьте его либо объясните, почему вывозит другой оператор'}
+                  </Typography.Text>
+                </div>
+                {ownerVerdict !== 'splitRequired' && (
+                  <Form.Item
+                    name="ownerMismatchReason"
+                    label="Причина вывоза чужого контейнера"
+                    rules={[{ required: true, message: 'Укажите причину' }]}
+                  >
+                    <Input.TextArea
+                      rows={2}
+                      maxLength={500}
+                      placeholder="Например: контейнеры переданы по акту"
+                    />
+                  </Form.Item>
+                )}
+              </FormGrid.Full>
+            )}
+
+            <WasteRequestEditorSchedule
+              files={files}
+              onRemoveFile={onRemoveFile}
+              onUpload={onUpload}
+              record={record}
+              uploading={uploading}
+            />
+          </FormGrid>
+        </Form>
+      )}
     </FormModal>
   );
 }

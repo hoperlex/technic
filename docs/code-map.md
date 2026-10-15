@@ -18,7 +18,7 @@
 - Web: [waste](../apps/web/src/pages/waste), [waste-request-feed](../apps/web/src/widgets/waste-request-feed), [waste-request-view](../apps/web/src/widgets/waste-request-view), [waste-request-editor](../apps/web/src/features/waste-request-editor), [waste-request-lifecycle](../apps/web/src/features/waste-request-lifecycle), [waste-operator-assignment](../apps/web/src/features/waste-operator-assignment), [waste-request-completion](../apps/web/src/features/waste-request-completion), [waste-request-comment](../apps/web/src/features/waste-request-comment), [waste-ticket-attach](../apps/web/src/features/waste-ticket-attach), [waste-request](../apps/web/src/entities/waste-request)
 - Тесты: `waste-request-*.db.test.ts`, `waste-tickets*.db.test.ts`, `waste-contracts.test.ts`
 - Композиция: [WasteRequestsPage](../apps/web/src/pages/waste/WasteRequestsPage.tsx) держит URL и права вкладок, [WasteRequestsTab](../apps/web/src/pages/waste/WasteRequestsTab.tsx) лениво собирает рабочий список, редактор, lifecycle и карточку.
-- Решения: [ADR 0009](adr/0009-waste-pricing.md), [ADR 0035](adr/0035-waste-fact-by-volume.md), [ADR 0135](adr/0135-waste-request-completed.md)
+- Решения: [ADR 0009](adr/0009-waste-pricing.md), [ADR 0035](adr/0035-waste-fact-by-volume.md), [ADR 0135](adr/0135-waste-request-completed.md), [ADR 0230](adr/0230-request-local-drafts.md)
 
 ## Заказ ТС
 
@@ -30,7 +30,7 @@
 - Web: [vehicle](../apps/web/src/pages/vehicle), [vehicle-request-feed](../apps/web/src/widgets/vehicle-request-feed), [vehicle-request-editor](../apps/web/src/widgets/vehicle-request-editor), [vehicle-request-editor model](../apps/web/src/features/vehicle-request-editor), [vehicle-request-lifecycle](../apps/web/src/widgets/vehicle-request-lifecycle), [vehicle-request-lifecycle model](../apps/web/src/features/vehicle-request-lifecycle), [vehicle-assignment-dialog](../apps/web/src/widgets/vehicle-assignment-dialog), [vehicle-assignment model](../apps/web/src/features/vehicle-assignment), [vehicle-request-view](../apps/web/src/widgets/vehicle-request-view), [vehicle-request-history](../apps/web/src/widgets/vehicle-request-history), [vehicle-request-filters](../apps/web/src/features/vehicle-request-filters), [weekly-request-workspace](../apps/web/src/widgets/weekly-request-workspace), [weekly-request-create](../apps/web/src/features/weekly-request-create), [route-modal-host](../apps/web/src/widgets/route-modal-host), [vehicle-route-windows](../apps/web/src/widgets/vehicle-route-windows), [route-modal state](../apps/web/src/features/route-modal), [vehicle-route-trailer](../apps/web/src/features/vehicle-route-trailer), [backdated-operation](../apps/web/src/features/backdated-operation), [waybill-issue](../apps/web/src/features/waybill-issue), [vehicle-request](../apps/web/src/entities/vehicle-request), [vehicle-route](../apps/web/src/entities/vehicle-route), [weekly-request](../apps/web/src/entities/weekly-request)
 - Общие окна: [route-windows](../apps/web/src/app/route-windows) — app-композиция URL-хоста над заявками, гаражом и журналом листов ([ADR 0120](adr/0120-record-windows-over-page.md)).
 - Тесты: `vehicle-request-*.db.test.ts`, `weekly-*.db.test.ts`, `assignment-*.db.test.ts`
-- Решения: [ADR 0004](adr/0004-vehicle-requests.md), [ADR 0104](adr/0104-vehicle-request-lead-time.md), [ADR 0173](adr/0173-vehicle-request-copy.md), [ADR 0206](adr/0206-vehicle-request-copy-any-status.md), [ADR 0207](adr/0207-vehicle-request-day-batch.md), [ADR 0218](adr/0218-weekly-request-annulment.md), [ADR 0219](adr/0219-weekly-request-return.md), [ADR 0220](adr/0220-weekly-visa-segment-paper.md)
+- Решения: [ADR 0004](adr/0004-vehicle-requests.md), [ADR 0104](adr/0104-vehicle-request-lead-time.md), [ADR 0173](adr/0173-vehicle-request-copy.md), [ADR 0206](adr/0206-vehicle-request-copy-any-status.md), [ADR 0207](adr/0207-vehicle-request-day-batch.md), [ADR 0218](adr/0218-weekly-request-annulment.md), [ADR 0219](adr/0219-weekly-request-return.md), [ADR 0220](adr/0220-weekly-visa-segment-paper.md), [ADR 0230](adr/0230-request-local-drafts.md)
 
 ## Путевые листы и ЭСМ
 
@@ -52,7 +52,7 @@
 - Остальной API: [mech-request-guards.ts](../apps/api/src/services/mech-request-guards.ts), [mech-request-list.ts](../apps/api/src/services/mech-request-list.ts), [mech-request-extension.ts](../apps/api/src/services/mech-request-extension.ts) (the pending request is dropped under the request's lock — by withdrawal, completion and the revoked issue mark)
 - Web: [mech](../apps/web/src/pages/mech), [mech-request](../apps/web/src/entities/mech-request)
 - Тесты: `mech-*.db.test.ts`, `mech-ordering-grant.db.test.ts`
-- Решения: [ADR 0152](adr/0152-mechanization-module.md), [ADR 0171](adr/0171-mechanization-site-approval.md), [ADR 0175](adr/0175-mechanization-assignable-grant.md)
+- Решения: [ADR 0152](adr/0152-mechanization-module.md), [ADR 0171](adr/0171-mechanization-site-approval.md), [ADR 0175](adr/0175-mechanization-assignable-grant.md), [ADR 0230](adr/0230-request-local-drafts.md)
 
 ## Орг.техника и обслуживание
 
@@ -63,7 +63,7 @@
 - Остальной API: [service-request-mail.ts](../apps/api/src/services/service-request-mail.ts), [service-request-mail-audience.ts](../apps/api/src/services/service-request-mail-audience.ts), [service-request-requester-mail.ts](../apps/api/src/services/service-request-requester-mail.ts) (letters to the request author: its own planner and switches, independent of the service letters — ADR 0227), [service-estimate-revision.ts](../apps/api/src/services/service-estimate-revision.ts) (формат действующей ревизии объёма работ и SQL-редакция правила закрывающего документа), [device-snmp](../apps/api/src/services/device-snmp) (опрос аппаратов по сети: BER, клиент SNMP, реестр целей — модуль не знает ни про Fastify, ни про базу и готов к переезду на узел в офисной сети)
 - Web: [service](../apps/web/src/pages/service), [service-request](../apps/web/src/entities/service-request)
 - Тесты: `service-request-*.db.test.ts`, `service-estimate-*.test.ts`, `service-corridors.test.ts`, `office-equipment-*.db.test.ts`
-- Решения: [ADR 0085](adr/0085-office-equipment-module.md), [ADR 0125](adr/0125-service-request-cycle-changes.md), [ADR 0174](adr/0174-service-request-internal-repair-without-estimate.md), [ADR 0205](adr/0205-device-network-poll.md)
+- Решения: [ADR 0085](adr/0085-office-equipment-module.md), [ADR 0125](adr/0125-service-request-cycle-changes.md), [ADR 0174](adr/0174-service-request-internal-repair-without-estimate.md), [ADR 0205](adr/0205-device-network-poll.md), [ADR 0230](adr/0230-request-local-drafts.md)
 
 ## Гараж, показания и ТО
 
@@ -200,9 +200,12 @@
   query freshness and list loading: [query.ts](../apps/web/src/shared/config/query.ts),
   [query.tsx](../apps/web/src/app/providers/query.tsx),
   [listQueryOptions.ts](../apps/web/src/shared/api/listQueryOptions.ts),
-  [useDeferredOptions.ts](../apps/web/src/shared/lib/useDeferredOptions.ts)
+  [useDeferredOptions.ts](../apps/web/src/shared/lib/useDeferredOptions.ts),
+  request drafts: [localFormDraftStore.ts](../apps/web/src/shared/lib/localFormDraftStore.ts),
+  [useLocalFormDraft.tsx](../apps/web/src/shared/lib/useLocalFormDraft.tsx),
+  [LocalFormDraftNotice.tsx](../apps/web/src/shared/ui/LocalFormDraftNotice.tsx)
 - Тесты: `boundaries.test.ts`, `portal-sections.test.ts`, `chunk-recovery.test.tsx`, `app-update-banner.test.tsx`, `*-list.test.tsx`
-- Решения: [ADR 0030](adr/0030-responsive-layout.md), [ADR 0121](adr/0121-portal-sections-registry.md), [ADR 0136](adr/0136-select-popup-width.md), [ADR 0222](adr/0222-frontend-query-freshness-and-render.md), [ADR 0228](adr/0228-frontend-architecture.md)
+- Решения: [ADR 0030](adr/0030-responsive-layout.md), [ADR 0121](adr/0121-portal-sections-registry.md), [ADR 0136](adr/0136-select-popup-width.md), [ADR 0222](adr/0222-frontend-query-freshness-and-render.md), [ADR 0228](adr/0228-frontend-architecture.md), [ADR 0230](adr/0230-request-local-drafts.md)
 
 ## Схема, миграции и выкат
 

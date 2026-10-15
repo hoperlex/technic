@@ -22,6 +22,7 @@ import {
 import { useVehicleClassifications } from '@entities/vehicle-type';
 import { useWeeklyRequestCreate } from '@features/weekly-request-create';
 import { useWeeklyComposition } from './useWeeklyComposition';
+import { useWeeklyCompositionDraft } from './useWeeklyCompositionDraft';
 import { useWeeklyReversal } from './useWeeklyReversal';
 import { hasApiStatus } from './apiError';
 import {
@@ -110,6 +111,13 @@ export function useWeeklyRequestWorkspace() {
     classifications.byKey,
     !suggestionEnabled || suggestionQuery.isFetched,
   );
+  const compositionReady = editable && (!suggestionEnabled || suggestionQuery.isFetched);
+  const compositionDraft = useWeeklyCompositionDraft({
+    request,
+    ready: compositionReady,
+    userId: user?.id ?? null,
+    composition,
+  });
 
   /*
    * Unsaved changes on leaving the page (section 9). Closing the browser tab and the "Back to list"
@@ -187,6 +195,9 @@ export function useWeeklyRequestWorkspace() {
   const { session } = composition;
   const saveComposition = async () => {
     if (!request) throw new Error('Заявка не загружена');
+    if (compositionDraft.pending.length || compositionDraft.reviewNeeded)
+      throw new Error('Сначала восстановите и проверьте черновик');
+    if (composition.dirty) compositionDraft.persist();
     if (!composition.dirty) return { ...request, version: session.version! };
     const saved = await weeklyRequestsApi.update(request.id, {
       items: composition.items,
@@ -217,6 +228,7 @@ export function useWeeklyRequestWorkspace() {
   const saveMutation = useMutation({
     mutationFn: saveComposition,
     onSuccess: () => {
+      compositionDraft.clear();
       clearApplyError();
       message.success('Состав сохранён');
       invalidate();
@@ -234,6 +246,7 @@ export function useWeeklyRequestWorkspace() {
       });
     },
     onSuccess: (result) => {
+      compositionDraft.clear();
       session.accept(result.request.version);
       clearApplyError();
       message.success(
@@ -266,6 +279,7 @@ export function useWeeklyRequestWorkspace() {
       });
     },
     onSuccess: (result, value) => {
+      if (value.approved) compositionDraft.clear();
       session.accept(result.request.version);
       setReasonMode(null);
       setConducting(false);
@@ -296,6 +310,7 @@ export function useWeeklyRequestWorkspace() {
   // left would have to be searched among orders.
   const leave = () => void navigate('/vehicle-requests?tab=requests&kind=weekly');
   const goBack = () => {
+    if (composition.dirty) compositionDraft.persist();
     if (!composition.dirty) return leave();
     modal.confirm({ ...WEEKLY_LEAVE_CONFIRM, onOk: leave });
   };
@@ -325,6 +340,7 @@ export function useWeeklyRequestWorkspace() {
     history: historyQuery.data,
     classifications,
     composition,
+    compositionDraft,
     skipReasons,
     applyError,
     backdate,

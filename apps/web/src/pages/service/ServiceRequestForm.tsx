@@ -11,6 +11,7 @@ import {
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { serviceRequestKeys } from '@entities/service-request';
 import { useAuth } from '@entities/session';
+import { mayHaveCommittedWrite } from '@shared/api';
 import { ServiceRequestCustomerField, useServiceRequestCustomer } from '@features/request-customer';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import {
@@ -31,6 +32,7 @@ import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
 import { useRequesterPlace } from './ServiceRequestRequesterPlace';
 import { reportServiceMail } from './serviceMailNotice';
 import { reportServiceRequestFailure } from './serviceRequestFailure';
+import { useServiceRequestDraft } from './useServiceRequestDraft';
 import { PhoneInput } from '@entities/user-account';
 import { ResponsibleFields } from '@entities/request';
 
@@ -74,6 +76,7 @@ export function ServiceRequestForm({
   const qc = useQueryClient();
   const { can, user } = useAuth();
   const [form] = Form.useForm<Values>();
+  const local = useServiceRequestDraft({ form, userId: user?.id ?? null, open, request, claim });
   const blockers = useFormBlockers(form);
   const attachments = useServiceRequestAttachments();
   const { reset: resetAttachments } = attachments;
@@ -143,6 +146,7 @@ export function ServiceRequestForm({
 
   useEffect(() => {
     if (!open) return;
+    if (local.restored.current && !request) return;
     form.resetFields();
     resetAttachments();
     if (request) {
@@ -193,6 +197,7 @@ export function ServiceRequestForm({
     soleDepartmentKey,
     user?.fullName,
     user?.phone,
+    local.restored,
   ]);
 
   const mutation = useMutation({
@@ -221,6 +226,7 @@ export function ServiceRequestForm({
       });
     },
     onSuccess: (res) => {
+      if (!request) local.draft.clear();
       message.success(request ? 'Заявка сохранена' : 'Заявка заведена');
       // Заявка заведена, но письмо службе не ушло — про это надо сказать сразу: служба читает
       // почту, а не портал, и молча оставить её неоповещённой значит потерять день.
@@ -231,69 +237,83 @@ export function ServiceRequestForm({
     },
     // Отказ разбирает отдельный модуль: кодов четыре, и у каждого своё место на экране; форма
     // передана ему затем, что дубль в парке (Р10) ставит найденную единицу прямо в её поля.
-    onError: (e, values) =>
+    onError: (e, values) => {
+      if (!request && mayHaveCommittedWrite(e))
+        message.warning(
+          'Ответ мог потеряться после создания заявки. Проверьте список перед повторной отправкой.',
+        );
       reportServiceRequestFailure(e, {
         withoutEquipment: !request && !values.officeEquipmentId && !draft,
         blockers,
         message,
         form,
-      }),
+      });
+    },
   });
 
   return (
     <FormModal
       title={request ? `Заявка ${request.displayNumber}` : 'Новая заявка на обслуживание'}
       open={open}
-      onCancel={onClose}
+      onCancel={() => {
+        if (!request && local.draft.active) local.draft.persist();
+        onClose();
+      }}
       onSubmit={() => form.submit()}
       confirmLoading={mutation.isPending}
+      okDisabled={!request && local.draft.pending.length > 0}
       width={620}
     >
-      <Form
-        form={form}
-        layout="vertical"
-        onFinish={(v) => mutation.mutate(v)}
-        {...blockers.formProps}
-      >
-        {/* Вид заявки (Н1) — первым: от него зависит, о чём форма спрашивает дальше. При правке
+      {local.notice}
+      {(request || local.draft.pending.length === 0) && (
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(v) => {
+            if (!request) local.draft.persist();
+            mutation.mutate(v);
+          }}
+          {...blockers.formProps}
+        >
+          {/* Вид заявки (Н1) — первым: от него зависит, о чём форма спрашивает дальше. При правке
             и в обращении по гарантии выбора нет — вид у заявки уже есть и меняться не может. */}
-        {!request && !claim && (
-          <Form.Item name="kind" label="Чем помочь">
-            <Segmented
-              options={SERVICE_REQUEST_KINDS.map((value) => ({
-                value,
-                label: serviceRequestKindLabels[value],
-              }))}
-            />
-          </Form.Item>
-        )}
+          {!request && !claim && (
+            <Form.Item name="kind" label="Чем помочь">
+              <Segmented
+                options={SERVICE_REQUEST_KINDS.map((value) => ({
+                  value,
+                  label: serviceRequestKindLabels[value],
+                }))}
+              />
+            </Form.Item>
+          )}
 
-        <ServiceRequestEquipmentField
-          request={request}
-          claim={!!claim}
-          optional={canSkipEquipment}
-          open={open}
-          {...equipment}
-        />
+          <ServiceRequestEquipmentField
+            request={request}
+            claim={!!claim}
+            optional={canSkipEquipment}
+            open={open}
+            {...equipment}
+          />
 
-        {/* Строк номенклатуры здесь больше нет (Р15): заявитель не выбирает позиции справочника —
+          {/* Строк номенклатуры здесь больше нет (Р15): заявитель не выбирает позиции справочника —
             он говорит словами, чего не хватает, а состав заполняет исполнитель, которому везти. */}
 
-        {/* Гарантия — вопрос ремонта: картридж со своего склада ни по чьей гарантии не выдают.
+          {/* Гарантия — вопрос ремонта: картридж со своего склада ни по чьей гарантии не выдают.
 
             И вопрос КОНКРЕТНОГО аппарата (Р7): обращаются либо по гарантии поставщика на него,
             либо по работе, выполненной на нём же. Без аппарата блока нет вовсе — не «пока не
             сделали», а «не бывает»: схема заведения такую пару отбивает, а форма не должна
             показывать то, чего нельзя ни поставить, ни отправить. */}
-        {!consumable && !noEquipment && (
-          <ServiceRequestWarrantyClaim
-            active={warrantyActive}
-            claim={claim}
-            source={warrantySource}
-          />
-        )}
+          {!consumable && !noEquipment && (
+            <ServiceRequestWarrantyClaim
+              active={warrantyActive}
+              claim={claim}
+              source={warrantySource}
+            />
+          )}
 
-        {/* Главное и единственное поле про суть заявки: строк номенклатуры под ним больше нет
+          {/* Главное и единственное поле про суть заявки: строк номенклатуры под ним больше нет
             (Р15), заявитель отвечает словами.
 
             Подпись общая на оба вида (Р2, просьба 7): заказчик просит единообразия, поэтому
@@ -304,76 +324,77 @@ export function ServiceRequestForm({
 
             Плейсхолдер ниже ветвится по-прежнему, и это не недоделка: он подсказывает, а не
             называет, а пример «закончился чёрный тонер» на заявке про мятую бумагу — просто мимо. */}
-        <Form.Item
-          name="description"
-          label="Описание"
-          rules={[
-            { required: true, message: 'Опишите, о чём заявка' },
-            { min: 5, message: 'Напишите подробнее' },
-          ]}
-        >
-          <Input.TextArea
-            rows={3}
-            maxLength={4000}
-            showCount
-            placeholder={
-              consumable
-                ? 'Например: закончился чёрный тонер, печатать нечем'
-                : 'Например: мнёт бумагу на каждой второй странице'
-            }
-          />
-        </Form.Item>
+          <Form.Item
+            name="description"
+            label="Описание"
+            rules={[
+              { required: true, message: 'Опишите, о чём заявка' },
+              { min: 5, message: 'Напишите подробнее' },
+            ]}
+          >
+            <Input.TextArea
+              rows={3}
+              maxLength={4000}
+              showCount
+              placeholder={
+                consumable
+                  ? 'Например: закончился чёрный тонер, печатать нечем'
+                  : 'Например: мнёт бумагу на каждой второй странице'
+              }
+            />
+          </Form.Item>
 
-        {/* «Желаемый срок» из заявки убран целиком (Р115): срок, который ничего не запирает,
+          {/* «Желаемый срок» из заявки убран целиком (Р115): срок, который ничего не запирает,
             через месяц стоит просроченным у половины заявок. Давность читается возрастом в
             статусе — он и сортируется, и точнее отвечает на вопрос «кто тянет». */}
-        <Form.Item
-          name="customer"
-          label="Для кого заявка"
-          // Пустого состояния у поля нет (Р12а): «от площадки» — такой же выбор, как отдел, а не
-          // незаполненное поле, и уходит он явным `null`. У заявки без аппарата обязательность
-          // держит уже не только форма: заказчик там — единственное, чем заявка попадает в чью-то
-          // область, и ни одного не назвав, её не примет ни схема, ни `CHECK` предмета (Р7).
-          rules={[{ required: true, message: 'Выберите заказчика заявки' }]}
-        >
-          {/* Площадку поле пересобирает само на смене единицы (Р11а, К10): значение — про то,
+          <Form.Item
+            name="customer"
+            label="Для кого заявка"
+            // Пустого состояния у поля нет (Р12а): «от площадки» — такой же выбор, как отдел, а не
+            // незаполненное поле, и уходит он явным `null`. У заявки без аппарата обязательность
+            // держит уже не только форма: заказчик там — единственное, чем заявка попадает в чью-то
+            // область, и ни одного не назвав, её не примет ни схема, ни `CHECK` предмета (Р7).
+            rules={[{ required: true, message: 'Выберите заказчика заявки' }]}
+          >
+            {/* Площадку поле пересобирает само на смене единицы (Р11а, К10): значение — про то,
               где аппарат стоит **сейчас**, и правило это живёт у поля, а не у формы. */}
-          <ServiceRequestCustomerField customer={customer} open={open} />
-        </Form.Item>
+            <ServiceRequestCustomerField customer={customer} open={open} />
+          </Form.Item>
 
-        {/* Заявитель, а не «ответственный»: это тот, к кому мастер придёт и кому позвонят, если
+          {/* Заявитель, а не «ответственный»: это тот, к кому мастер придёт и кому позвонят, если
             аппарата не окажется на месте. Оба поля обязательны и на сервере тоже (Р49). */}
-        <ResponsibleFields
-          nameField="responsibleName"
-          phoneField="responsiblePhone"
-          nameLabel="Кто обращается"
-          phoneLabel="Телефон для связи"
-          phoneInput={PhoneInput}
-        />
-
-        {/* Откуда сам заявитель (Н11) — рядом с его контактом, а не рядом с заказчиком: это два
-            разных вопроса, и путать их значит записывать заявку на чужой отдел. */}
-        {place.field}
-
-        {/* Срочность — своим блоком (Р9, Р56): показ пары и её запертость считаются там же, где
-            она рисуется, а форме остаётся сказать, правка это или заведение. */}
-        <ServiceRequestUrgency editing={!!request} canUrgency={canUrgency} />
-
-        <Form.Item name="comment" label="Что ещё важно знать">
-          <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />
-        </Form.Item>
-
-        {/* Вложения — только при заведении: после него они живут вкладкой «Документы» карточки,
-            где у каждого файла есть вид (акт, счёт, талон). */}
-        {!request && (
-          <ServiceRequestAttachments
-            files={attachments.files}
-            uploading={attachments.uploading}
-            onUpload={attachments.upload}
-            onRemove={attachments.remove}
+          <ResponsibleFields
+            nameField="responsibleName"
+            phoneField="responsiblePhone"
+            nameLabel="Кто обращается"
+            phoneLabel="Телефон для связи"
+            phoneInput={PhoneInput}
           />
-        )}
-      </Form>
+
+          {/* Откуда сам заявитель (Н11) — рядом с его контактом, а не рядом с заказчиком: это два
+            разных вопроса, и путать их значит записывать заявку на чужой отдел. */}
+          {place.field}
+
+          {/* Срочность — своим блоком (Р9, Р56): показ пары и её запертость считаются там же, где
+            она рисуется, а форме остаётся сказать, правка это или заведение. */}
+          <ServiceRequestUrgency editing={!!request} canUrgency={canUrgency} />
+
+          <Form.Item name="comment" label="Что ещё важно знать">
+            <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />
+          </Form.Item>
+
+          {/* Вложения — только при заведении: после него они живут вкладкой «Документы» карточки,
+            где у каждого файла есть вид (акт, счёт, талон). */}
+          {!request && (
+            <ServiceRequestAttachments
+              files={attachments.files}
+              uploading={attachments.uploading}
+              onUpload={attachments.upload}
+              onRemove={attachments.remove}
+            />
+          )}
+        </Form>
+      )}
     </FormModal>
   );
 }

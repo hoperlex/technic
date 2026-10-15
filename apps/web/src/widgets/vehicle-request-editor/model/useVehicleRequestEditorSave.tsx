@@ -26,6 +26,7 @@ import {
   type FormValues,
 } from '@features/vehicle-request-editor';
 import { MOSCOW_TZ } from '@shared/config';
+import { mayHaveCommittedWrite } from '@shared/api';
 import { useEditorTermDoor, type TermStepResult } from './useEditorTermDoor';
 import type { VehicleRequestEditorState } from './useVehicleRequestEditorState';
 
@@ -249,17 +250,24 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
       // data, but the screen is unreliable until refreshed.
       void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
-      state.setOpen(false);
+      state.draft.clear();
+      state.closeSaved();
       warnRouteDateMismatch(saved);
     },
-    onError: (error, { period }) =>
+    onError: (error, { period }) => {
       message.error(
         // The one half-applied state of a split save (see `useEditorTermDoor`): it is named, not
         // hidden — the editor stays open, and the next "Save" sends only the rest.
         period
           ? `Срок работ изменён, но остальные правки не сохранены: ${errorMessage(error)}`
           : errorMessage(error),
-      ),
+      );
+      if (!state.record && mayHaveCommittedWrite(error)) {
+        message.warning(
+          'Ответ сервера мог не дойти. Перед повторной отправкой проверьте список заявок, чтобы не создать дубль.',
+        );
+      }
+    },
   });
 
   const term = useEditorTermDoor({ state, saveRest: (input) => save.mutate(input) });
@@ -310,6 +318,9 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
 
   /** Rules that depend on the request type and cannot be expressed as field rules. */
   const onFinish = (values: FormValues) => {
+    // Keep the last keystroke before the request leaves the browser. A failed network response must
+    // leave a recoverable form even when the autosave timer has not fired yet.
+    state.draft.persist();
     if (values.requestType === 'special_equipment') {
       submit(values);
       return;

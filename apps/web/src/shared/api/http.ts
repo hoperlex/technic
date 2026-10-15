@@ -53,6 +53,11 @@ export function isApiError(e: unknown): e is ApiError {
   return typeof e === 'object' && e !== null && 'code' in e && 'status' in e;
 }
 
+/** A failed response cannot prove that the server did not commit the write. */
+export function mayHaveCommittedWrite(error: unknown): boolean {
+  return !isApiError(error) || error.status >= 500;
+}
+
 export interface RequestOptions {
   method?: string;
   body?: unknown;

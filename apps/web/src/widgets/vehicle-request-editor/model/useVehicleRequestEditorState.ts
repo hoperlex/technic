@@ -3,7 +3,6 @@ import { Form } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { QUERY_PROFILE } from '@shared/config';
 import {
-  allowedVehicleRequestTypes,
   canOrderVehicleRequestType,
   costTargetOf,
   isCargoAmountRequired,
@@ -37,26 +36,9 @@ import { requestTypeChangeHandler } from './requestTypeChange';
 import { useRequestEditorCalendar } from './useRequestEditorCalendar';
 import { useCopyClassificationSync } from './useCopyClassificationSync';
 import { useCopyCustomerSync } from './useCopyCustomerSync';
-
-/**
- * The comment is the only place where the author explains the substance of the order, and the
- * explanation differs: for freight the dispatcher needs the cargo (it decides the vehicle and the
- * loading), for on-site equipment the work awaiting it. So the label is refined by request type and
- * an example sits in the field itself: without it the comment arrives empty or useless ("urgent"),
- * and the details are clarified by phone anyway.
- */
-const COMMENT_HINTS: Record<VehicleRequestType, { label: string; placeholder: string }> = {
-  special_equipment: {
-    label: 'Комментарий (планируемые задачи)',
-    placeholder:
-      'Например: разработка котлована под фундамент, погрузка грунта в самосвалы; заезд с ул. Ленина, работы с 08:00',
-  },
-  freight_transport: {
-    label: 'Комментарий (опишите груз)',
-    placeholder:
-      'Например: плиты перекрытия ПК 60-15, 12 шт, 14 т; погрузка краном поставщика, на объекте нужен манипулятор',
-  },
-};
+import { useVehicleRequestLocalDraft } from './useVehicleRequestLocalDraft';
+import { useVehicleRequestDraftRecovery } from './useVehicleRequestDraftRecovery';
+import { canOrderOptions, COMMENT_HINTS } from './editorPresentation';
 
 export interface VehicleRequestEditorStateInput {
   canChangeStatus: boolean;
@@ -84,8 +66,9 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
    * Failed edits roll back the operation row, so correcting the form keeps the key. The 4-P day
    * batch uses a key per click because each click collects the remaining period (ADR 0207 §11).
    */
-  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  const [operationId, setOperationId] = useState<string>(() => crypto.randomUUID());
   const [form] = Form.useForm<FormValues>();
+  const draft = useVehicleRequestLocalDraft(form, user?.id ?? null);
   const files = useFileEditor();
 
   const copyClassification = useCopyClassificationSync({
@@ -265,14 +248,29 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     changeRequestType(next);
   };
 
+  const recovery = useVehicleRequestDraftRecovery({
+    draft,
+    form,
+    files,
+    classifications: classificationByKey,
+    typesLoading,
+    customer,
+    setRecord,
+    setOperationId,
+    setTripsExpanded,
+  });
+
   const resetWindow = () => {
     form.resetFields();
-    setOperationId(crypto.randomUUID());
+    const nextOperationId = crypto.randomUUID();
+    setOperationId(nextOperationId);
+    recovery.resetReview();
+    return nextOperationId;
   };
   const openCreate = () => {
     setRecord(null);
     setCopy(null);
-    resetWindow();
+    const nextOperationId = resetWindow();
     // Site staff create requests only for their site, department staff only from their department:
     // the customer is filled when the account has a single option, and the field is then locked.
     // The form sets it, not the field: a disabled `AutoSelect` deliberately does not fill itself
@@ -288,15 +286,17 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     form.setFieldsValue({ trips: [blankTrip()] });
     setTripsExpanded(false);
     files.reset([]);
+    draft.begin({ kind: 'create' }, null, nextOperationId);
     setOpen(true);
   };
   const openEdit = (request: VehicleRequestDto) => {
     setRecord(request);
     setCopy(null);
-    resetWindow();
+    const nextOperationId = resetWindow();
     setTripsExpanded(tripsNeedExpanding(request));
     form.setFieldsValue(editFormValues(request));
     files.reset(request.files.map((file): EditorFile => ({ ...file, isNew: false })));
+    draft.begin({ kind: 'edit', sourceId: request.id }, request.version, nextOperationId);
     setOpen(true);
   };
   /**
@@ -309,7 +309,7 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     copyClassification.reset();
     setRecord(null);
     setCopy({ source: request, minDate, today });
-    resetWindow();
+    const nextOperationId = resetWindow();
     setTripsExpanded(tripsNeedExpanding(request));
     form.setFieldsValue(
       copyFormValues(request, {
@@ -321,8 +321,16 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
       }),
     );
     files.reset([]);
+    draft.begin({ kind: 'copy', sourceId: request.id }, null, nextOperationId);
     setOpen(true);
   };
+
+  const close = () => {
+    if (recovery.restoring) return;
+    if (draft.active) draft.persist();
+    setOpen(false);
+  };
+  const closeSaved = () => setOpen(false);
   /**
    * Copy a request (ADR 0173) — any request except an archived one: the action does not look at the
    * source status at all (ADR 0206). It repeats the order, not the record's state — same type, same
@@ -366,13 +374,16 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     openEdit,
     operationId,
     periodHint,
+    draft,
+    close,
+    closeSaved,
+    ...recovery,
     record,
     recordTrips,
     relocationsEditable,
     requestType,
     requestTypeOptions,
     retypeBlocker,
-    setOpen,
     setTripsExpanded,
     suggestObjectIds,
     tripsExpanded,
@@ -381,13 +392,6 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     // chosen automatically before PICK has checked that it remains active.
     typesLoading: typesLoading || (!!copy && !classificationsFresh),
   };
-}
-
-function canOrderOptions(user: Parameters<typeof canOrderVehicleRequestType>[0]) {
-  return allowedVehicleRequestTypes(user).map((value) => ({
-    value,
-    label: vehicleRequestTypeLabels[value],
-  }));
 }
 
 export type VehicleRequestEditorState = ReturnType<typeof useVehicleRequestEditorState>;

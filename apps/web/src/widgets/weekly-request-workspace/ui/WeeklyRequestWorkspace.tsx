@@ -1,6 +1,7 @@
-import { Card, Input, Skeleton } from 'antd';
+import { Alert, Button, Card, Input, Skeleton } from 'antd';
 import { isWeeklyRequestApplied, weeklyWeekEffectiveDate } from '@technic/contracts';
-import { ReasonModal, StaleRecordNotice } from '@shared/ui';
+import { LocalFormDraftAutosave } from '@shared/lib';
+import { LocalFormDraftNotice, ReasonModal, StaleRecordNotice } from '@shared/ui';
 import { useWeeklyRequestWorkspace } from '../model/useWeeklyRequestWorkspace';
 import { weeklyReasonText } from '../model/pageState';
 import { WeeklyRequestActions } from './WeeklyRequestActions';
@@ -23,6 +24,7 @@ export function WeeklyRequestWorkspace() {
     request,
     requestQuery,
     composition,
+    compositionDraft,
     composable,
     editable,
     suggestionQuery,
@@ -37,12 +39,44 @@ export function WeeklyRequestWorkspace() {
   if (!request || !weekState) return <Skeleton active paragraph={{ rows: 8 }} />;
 
   const blockedByWeek = !!weekState.weekBlocker;
+  const waitingForDraft = compositionDraft.pending.length > 0;
+  const draftActive = !!compositionDraft.active && editable;
+  const editReady = editable && !waitingForDraft;
   return (
     <div className="page-layout">
+      <LocalFormDraftAutosave
+        active={draftActive && composition.dirty}
+        signature={JSON.stringify([composition.snapshot, composition.comment])}
+        onSave={compositionDraft.persist}
+      />
       <WeeklyRequestHeader request={request} onBack={workspace.goBack} />
 
       <div className="page-layout__body page-layout__body--scroll" style={{ paddingRight: 4 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {editable && (
+            <LocalFormDraftNotice
+              active={draftActive}
+              pending={compositionDraft.pending}
+              status={compositionDraft.status}
+              onRestore={compositionDraft.restore}
+              onDiscard={compositionDraft.discardPending}
+            />
+          )}
+          {compositionDraft.reviewNeeded && (
+            <Alert
+              type="warning"
+              showIcon
+              title="Серверный состав изменился после сохранения черновика"
+              description={
+                <>
+                  Проверьте все строки и новые позиции. Сохранение станет доступно после сверки.
+                  <div style={{ marginTop: 8 }}>
+                    <Button onClick={compositionDraft.acknowledgeReview}>Состав проверен</Button>
+                  </div>
+                </>
+              }
+            />
+          )}
           <WeeklyRequestBanners
             request={request}
             rejection={workspace.rejection}
@@ -76,7 +110,7 @@ export function WeeklyRequestWorkspace() {
                 skipReasons={workspace.skipReasons}
                 weekStart={request.weekStart}
                 weekEnd={request.weekEnd}
-                editable={editable && !blockedByWeek}
+                editable={editReady && !blockedByWeek}
                 suggestion={suggestionQuery.data}
               />
             </Card>
@@ -90,7 +124,7 @@ export function WeeklyRequestWorkspace() {
                 skipReasons={workspace.skipReasons}
                 weekStart={request.weekStart}
                 weekEnd={request.weekEnd}
-                editable={editable && !blockedByWeek}
+                editable={editReady && !blockedByWeek}
                 groups={classifications.groups}
                 loading={classifications.loading}
                 onAdd={composition.addNewRow}
@@ -118,7 +152,7 @@ export function WeeklyRequestWorkspace() {
             <Input.TextArea
               rows={2}
               maxLength={2000}
-              disabled={!editable}
+              disabled={!editReady}
               placeholder="Что важно знать о неделе"
               value={composition.comment}
               onChange={(event) => composition.setComment(event.target.value)}
@@ -139,7 +173,7 @@ export function WeeklyRequestWorkspace() {
 
       <WeeklyRequestActions
         counts={composition.counts}
-        editable={editable}
+        editable={editReady && !compositionDraft.reviewNeeded}
         isDraft={status === 'draft'}
         approvesOwn={weekState.approvesOwn}
         canApproveWeek={weekState.canApproveWeek}

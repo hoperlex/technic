@@ -26,6 +26,7 @@ export * from './FormModal';
 export * from './ItemList';
 export * from './listControls';
 export * from './ListToolbar';
+export * from './LocalFormDraftNotice';
 export * from './PageTableLayout';
 export * from './PageTabs';
 export * from './PortalLogo';

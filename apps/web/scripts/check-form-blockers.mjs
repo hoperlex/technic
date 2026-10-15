@@ -27,6 +27,16 @@ const SRC = path.resolve(process.cwd(), 'src');
  * — повод решить, чем он на самом деле является, а не привычка.
  */
 const ALLOWED = {
+  // A lost create response is an outcome of the request, not a rejected field. The operator must
+  // inspect the list before retrying because these create endpoints are not uniformly idempotent.
+  'widgets/vehicle-request-editor/model/useVehicleRequestEditorSave.tsx':
+    'uncertain create response: inspect the list before retrying',
+  'features/waste-request-editor/model/useWasteRequestEditor.tsx':
+    'uncertain create response: inspect the list before retrying',
+  'pages/mech/MechRequestForm.tsx':
+    'uncertain create response: inspect the list before retrying',
+  'pages/service/ServiceRequestForm.tsx':
+    'uncertain create response: inspect the list before retrying',
   // Очередь «Письма устройств» (план `docs/office-equipment-mail-telemetry-plan.md`, §10): тост
   // здесь про ИСХОД действия, а не про незаполненное поле. Сервер ответил, что часть писем пачки
   // применить было нечем (снимка нет или он нечитаем), — пометить этим полем нечего, а молчать
