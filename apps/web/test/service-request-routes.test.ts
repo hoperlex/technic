@@ -252,6 +252,12 @@ const bulkStatusCall: PortalCall = {
   run: () => LOOSE.bulkStatus!(BULK_KEY),
 };
 
+// Candidate intake shares the create method but keeps the root route and its own receipt.
+const createCandidateCall: PortalCall = {
+  name: 'serviceRequestsApi.create',
+  run: () => LOOSE.create!({ equipmentCandidate: {} }, FILE_ID),
+};
+
 /** Запрос слайса, живущий мимо объекта API: у кандидатов в исполнители свой `queryOptions`. */
 const candidates: PortalCall = {
   name: 'serviceExecutorCandidatesQuery',
@@ -338,8 +344,16 @@ const DOORS: Record<string, Door> = {
 
   // ── Заведение, правка, удаление ──
   'POST /api/v1/service-requests': {
+    call: createCandidateCall,
+    entry: 'кнопка «Завести заявку» → форма заявки с сообщением об отсутствующем аппарате',
+  },
+  'POST /api/v1/service-requests/_create-with-receipt': {
     call: via('create'),
-    entry: 'кнопка «Завести заявку» → форма заявки',
+    entry: 'кнопка «Завести заявку» → обычная форма заявки',
+  },
+  'POST /api/v1/service-requests/_create-attempts/reconcile': {
+    call: via('reconcileCreate'),
+    entry: 'проверка исхода прошлой отправки в форме заявки',
   },
   'PATCH /api/v1/service-requests/:id': {
     call: via('update'),
@@ -515,7 +529,7 @@ function routeKeyOf(call: RecordedCall): string {
   return `${call.method} /api/v1${path}`;
 }
 
-/** Что ушло в сеть при вызове каждого объявленного звена: имя звена → адреса запросов. */
+/** What each registered invocation sent: route key → actual request paths. */
 const SENT = new Map<string, string[]>();
 
 beforeAll(async () => {
@@ -531,7 +545,7 @@ beforeAll(async () => {
     if (!door.call) continue;
     const before = http.calls.length;
     await door.call.run().catch(() => undefined);
-    SENT.set(door.call.name, http.calls.slice(before).map(routeKeyOf));
+    SENT.set(key, http.calls.slice(before).map(routeKeyOf));
   }
   takeUnmatchedHttp();
 });
@@ -584,7 +598,7 @@ describe('объявленный вход и правда открывает с�
     for (const key of keysWhere((door) => door.call !== null)) {
       const call = DOORS[key]!.call!;
       expect(
-        SENT.get(call.name),
+        SENT.get(key),
         `«${call.name}» записан входом в «${key}», а уходит не туда: реестр разошёлся с клиентом`,
       ).toEqual([key]);
     }

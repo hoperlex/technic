@@ -72,7 +72,8 @@ function renderForm(
     ...equipmentSelectorRoutes([KYOCERA, BROTHER]),
     'GET /objects': () => json(list([NORTH, SOUTH, FOREIGN])),
     'GET /departments': () => json(emptyList()),
-    'POST /service-requests': () => json({ request: serviceRequest(), mail: 'queued' }, 201),
+    'POST /service-requests/_create-with-receipt': () =>
+      json({ request: serviceRequest(), mail: 'queued' }, 201),
     ...over,
   });
   renderWithUser(
@@ -110,7 +111,10 @@ async function submit(): Promise<void> {
 }
 
 function bodyOf(http: HttpMock): Record<string, unknown> {
-  return http.lastCall('POST /service-requests')?.body as Record<string, unknown>;
+  return http.lastCall('POST /service-requests/_create-with-receipt')?.body as Record<
+    string,
+    unknown
+  >;
 }
 
 describe('чекбокс «аппарат стоит на другом объекте» (Р16)', () => {
@@ -122,7 +126,9 @@ describe('чекбокс «аппарат стоит на другом объе�
     expect(screen.queryByLabelText('Где он на самом деле')).toBeNull();
 
     await submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     const body = bodyOf(http);
     // `false`, а не пропуск: умолчание заявки — объект из карточки техники, и сказать это надо
@@ -138,7 +144,9 @@ describe('чекбокс «аппарат стоит на другом объе�
     fireEvent.click(await overrideBox());
     await selectOption('Где он на самом деле', /ЖК Южный/);
     await submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     const body = bodyOf(http);
     expect(body.objectOverridden).toBe(true);
@@ -171,7 +179,9 @@ describe('чекбокс «аппарат стоит на другом объе�
     await waitFor(() => expect(screen.queryByLabelText('Где он на самом деле')).toBeNull());
 
     await submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
     const body = bodyOf(http);
     expect(body.objectOverridden).toBe(false);
     expect('objectId' in body).toBe(false);
@@ -199,7 +209,9 @@ describe('чекбокс «аппарат стоит на другом объе�
     expect(screen.queryByLabelText('Где он на самом деле')).toBeNull();
 
     await submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
     const body = bodyOf(http);
     expect(body.officeEquipmentId).toBe(BROTHER.id);
     expect(body.objectOverridden).toBe(false);

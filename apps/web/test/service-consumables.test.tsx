@@ -213,7 +213,7 @@ function descriptionPlaceholder(): string {
  */
 describe('заведение заявки на расходники (Н1, Р15, Р2)', () => {
   const create = {
-    'POST /service-requests': () =>
+    'POST /service-requests/_create-with-receipt': () =>
       json({ request: consumableRequest('new', [line()]), mail: 'queued' }, 201),
   };
 
@@ -244,8 +244,10 @@ describe('заведение заявки на расходники (Н1, Р15, 
     );
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
-    const body = bodyOf(http, 'POST /service-requests');
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
+    const body = bodyOf(http, 'POST /service-requests/_create-with-receipt');
     expect(body.kind).toBe('consumable');
     // Заявка ушла БЕЗ строк — и это главное отличие от прежней модели: пустой состав здесь
     // законен, его заполнит исполнитель своей ручкой.

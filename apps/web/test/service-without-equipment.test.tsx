@@ -161,7 +161,8 @@ function renderForm(
     ),
     'GET /objects': () => json(list([NORTH, SOUTH, FOREIGN])),
     'GET /departments': () => json(list(DEPARTMENTS)),
-    'POST /service-requests': () => json({ request: serviceRequest(), mail: 'queued' }, 201),
+    'POST /service-requests/_create-with-receipt': () =>
+      json({ request: serviceRequest(), mail: 'queued' }, 201),
     ...routes,
   });
   renderWithUser(<ServiceRequestForm open request={request} onClose={() => {}} />, { user });
@@ -231,7 +232,10 @@ async function submit(): Promise<void> {
 }
 
 function bodyOf(http: HttpMock): Record<string, unknown> {
-  return http.lastCall('POST /service-requests')?.body as Record<string, unknown>;
+  return http.lastCall('POST /service-requests/_create-with-receipt')?.body as Record<
+    string,
+    unknown
+  >;
 }
 
 describe('звёздочка у поля «Какой аппарат» — по праву (Р5)', () => {
@@ -254,7 +258,9 @@ describe('звёздочка у поля «Какой аппарат» — по 
 
     await selectOption('Для кого заявка', NORTH_LABEL);
     await submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
     expect(fieldError('Какой аппарат')).toBeNull();
   });
 });
@@ -277,7 +283,7 @@ describe('заказчик обязателен и собирается по о�
     await submit();
 
     await waitFor(() => expect(fieldError('Для кого заявка')).toBe('Выберите заказчика заявки'));
-    expect(http.countOf('POST /service-requests')).toBe(0);
+    expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(0);
   });
 
   it('роли площадки предлагаются её объекты и не предлагаются отделы', async () => {
@@ -331,7 +337,9 @@ describe('тело запроса: у `objectId` второй смысл (Р6)',
     await selectOption('Для кого заявка', SOUTH_LABEL);
 
     await submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     const body = bodyOf(http);
     // `null`, а не пропуск: «аппарата у заявки нет» — ответ, а не умолчание клиента.
@@ -350,7 +358,9 @@ describe('тело запроса: у `objectId` второй смысл (Р6)',
     await selectOption('Для кого заявка', SNB_LABEL);
 
     await submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     const body = bodyOf(http);
     expect(body.customerDepartmentId).toBe('dep-2');
@@ -398,7 +408,9 @@ describe('две закрытые двери у заявки без аппара
     await selectOption('Для кого заявка', NORTH_LABEL);
 
     await submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     const body = bodyOf(http);
     expect(body.officeEquipmentId).toBeNull();
@@ -416,7 +428,8 @@ describe('разбор отказов сервера', () => {
     renderForm(OPERATOR, {
       // Право могли отозвать между открытием формы и нажатием: список прав портал спрашивает у
       // сервера, но не переспрашивает на каждое действие.
-      'POST /service-requests': () => apiError(403, { code: 'forbidden', message: denial }),
+      'POST /service-requests/_create-with-receipt': () =>
+        apiError(403, { code: 'forbidden', message: denial }),
     });
     await selectOption('Для кого заявка', NORTH_LABEL);
 
@@ -430,7 +443,7 @@ describe('разбор отказов сервера', () => {
   it('422 маршрута встаёт под подбором заказчика: там его и правят', async () => {
     const reason = 'Заявку можно завести только от своего объекта';
     renderForm(OPERATOR, {
-      'POST /service-requests': () =>
+      'POST /service-requests/_create-with-receipt': () =>
         apiError(422, {
           code: 'unprocessable_entity',
           message: reason,
@@ -448,7 +461,7 @@ describe('разбор отказов сервера', () => {
 
   it('400 схемы разбирается по именам полей', async () => {
     renderForm(OPERATOR, {
-      'POST /service-requests': () =>
+      'POST /service-requests/_create-with-receipt': () =>
         apiError(400, {
           code: 'validation_error',
           message: 'Ошибка валидации данных',

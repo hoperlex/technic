@@ -389,7 +389,8 @@ describe('правка без касания поля шлёт прежнего 
  */
 describe('подразделение заявителя (Н11)', () => {
   const create = {
-    'POST /service-requests': () => json({ request: request(), mail: 'queued' }, 201),
+    'POST /service-requests/_create-with-receipt': () =>
+      json({ request: request(), mail: 'queued' }, 201),
   };
 
   it('у двух отделов форма спрашивает свой и шлёт его идентификатором', async () => {
@@ -403,9 +404,11 @@ describe('подразделение заявителя (Н11)', () => {
     await selectOption('Откуда обращаетесь', PTO_LABEL);
 
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
-    const body = bodyOf(http, 'POST /service-requests');
+    const body = bodyOf(http, 'POST /service-requests/_create-with-receipt');
     expect(body.requesterDepartmentId).toBe('dep-1');
     // Площадка не уходит вовсе: подразделение — либо отдел, либо она, и оба сразу сервер отбивает.
     expect('requesterObjectId' in body).toBe(false);
@@ -423,7 +426,8 @@ describe('подразделение заявителя (Н11)', () => {
 
 describe('заведение шлёт осознанное значение (Р12а)', () => {
   const create = {
-    'POST /service-requests': () => json({ request: request(), mail: 'queued' }, 201),
+    'POST /service-requests/_create-with-receipt': () =>
+      json({ request: request(), mail: 'queued' }, 201),
   };
 
   it('заявка от площадки уходит явным `null`', async () => {
@@ -438,9 +442,11 @@ describe('заведение шлёт осознанное значение (Р1
     await selectOption('Откуда обращаетесь', NORTH_LABEL);
 
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
-    const body = bodyOf(http, 'POST /service-requests');
+    const body = bodyOf(http, 'POST /service-requests/_create-with-receipt');
     // `null` здесь значит «заявка от площадки», а не «поле не заполнили»: подсказку по этому
     // ответу сервер не применяет.
     expect('customerDepartmentId' in body).toBe(true);
@@ -458,10 +464,14 @@ describe('заведение шлёт осознанное значение (Р1
     await selectOption('Откуда обращаетесь', NORTH_LABEL);
 
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     // Род и идентификатор берутся из выбранной опции (Р2а): разбор ключа на условном `dep-1` не
     // прошёл бы проверку UUID, и отдел молча уехал бы на сервер площадкой.
-    expect(bodyOf(http, 'POST /service-requests').customerDepartmentId).toBe('dep-1');
+    expect(bodyOf(http, 'POST /service-requests/_create-with-receipt').customerDepartmentId).toBe(
+      'dep-1',
+    );
   });
 });

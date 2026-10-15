@@ -136,7 +136,8 @@ function renderForm(
     ...equipmentSelectorRoutes(options.units ?? [FOREIGN_SITE_UNIT]),
     'GET /objects': () => json(list([NORTH, SOUTH, WEST])),
     'GET /departments': () => json(list([PTO, SNB])),
-    'POST /service-requests': () => json({ request: serviceRequest(), mail: 'queued' }, 201),
+    'POST /service-requests/_create-with-receipt': () =>
+      json({ request: serviceRequest(), mail: 'queued' }, 201),
     ...options.routes,
   });
   renderWithUser(
@@ -171,7 +172,10 @@ function submit(): void {
 }
 
 function bodyOf(http: HttpMock): Record<string, unknown> {
-  return http.lastCall('POST /service-requests')?.body as Record<string, unknown>;
+  return http.lastCall('POST /service-requests/_create-with-receipt')?.body as Record<
+    string,
+    unknown
+  >;
 }
 
 describe('плашка о чужой площадке и чужом отделе (Р4–Р6)', () => {
@@ -223,7 +227,9 @@ describe('объектная ось: заказчик и объект попра
     await waitFor(() => expect(shownCustomer()).toBe(NORTH_LABEL));
 
     submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     const body = bodyOf(http);
     expect(body.officeEquipmentId).toBe('oe-1');
@@ -265,7 +271,9 @@ describe('отдельская ось: заказчик отделом, площ
     expect(screen.queryByRole('checkbox', { name: 'Аппарат стоит на другом объекте' })).toBeNull();
 
     submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     const body = bodyOf(http);
     expect(body.customerDepartmentId).toBe(PTO.id);
@@ -297,7 +305,9 @@ describe('отдельская ось: заказчик отделом, площ
     expect(screen.queryByLabelText('На какой вашей площадке он стоит')).toBeNull();
 
     submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     const body = bodyOf(http);
     // ГЛАВНОЕ: пары нет. Поставленная поправка завела бы в очередь расхождений ИТ-службы строку
@@ -336,7 +346,9 @@ describe('срочность — право, а не украшение (Р9)', 
     await waitFor(() => expect(shownCustomer()).toBe(NORTH_LABEL));
 
     submit();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
 
     const body = bodyOf(http);
     // `false` — не запрос срочности, а её отсутствие, и сервер принимает его всегда; `true` без

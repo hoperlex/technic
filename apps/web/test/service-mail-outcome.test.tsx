@@ -113,7 +113,7 @@ function renderForm(mail: ModuleMailOutcome): HttpMock {
     'GET /office-equipment-types': () => json(list([TYPE])),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
-    'POST /service-requests': () => json({ request: request(), mail }, 201),
+    'POST /service-requests/_create-with-receipt': () => json({ request: request(), mail }, 201),
   });
   renderWithUser(<ServiceRequestForm open request={null} onClose={() => {}} />, { user: OPERATOR });
   return http;
@@ -176,7 +176,9 @@ describe('заведение заявки: письмо службе', () => {
     await submitForm();
 
     expect(await screen.findByText('Заявка заведена')).toBeDefined();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
     // Ни слова про неоповещённого адресата: письмо ушло, и предупреждать не о чем.
     expect(screen.queryByText(/не оповещ/)).toBeNull();
     /*
@@ -204,7 +206,9 @@ describe('заведение заявки: письмо службе', () => {
     await submitForm();
 
     expect(await screen.findByText('Заявка заведена')).toBeDefined();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
     expect(await screen.findByText('Письмо не собралось — сообщите администратору')).toBeDefined();
   });
 
@@ -213,7 +217,9 @@ describe('заведение заявки: письмо службе', () => {
     await submitForm();
 
     expect(await screen.findByText('Заявка заведена')).toBeDefined();
-    await waitFor(() => expect(http.countOf('POST /service-requests')).toBe(1));
+    await waitFor(() =>
+      expect(http.countOf('POST /service-requests/_create-with-receipt')).toBe(1),
+    );
     /*
      * `event_off` молчит наравне с `queued` и `not_needed` (§5.10 плана расширения почты). Письма
      * нет не потому, что что-то не настроено, а потому, что событие выключили намеренно — в
