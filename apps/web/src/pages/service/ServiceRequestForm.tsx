@@ -41,21 +41,11 @@ type Values = ServiceFormValues;
 export type { WarrantyClaimPreset };
 
 /**
- * Форма заявки на обслуживание (§9.3): что сломалось, у какой единицы и с кем связываться.
- *
- * Единица выбирается первой, и под полем сразу видно состояние её гарантии: пока это неизвестно,
- * заказчик не может ответить на главный вопрос — платный это ремонт или гарантийный. Обращение
- * по гарантии — не флажок «гарантийная», а источник: по чьей именно гарантии обращаются (Р26).
- *
- * Правится только «Новая», за которой ещё никто не стоит (`isServiceRequestEditable`, Р14): после
- * назначения за заявкой стоят договорённости с исполнителем, и менять её предмет задним числом
- * нельзя. Технику при правке не меняют вовсе — это другая заявка; вложения после заведения живут
- * вкладкой «Документы» карточки.
- *
- * Позиций расходников форма не спрашивает ни у заведения, ни у правки (Р15): заявитель
- * номенклатуру склада не знает, и его дело — сказать словами, чего не хватает. Состав заполняет
- * исполнитель, окном вкладки «Расходники»; подписи полей — по таблице Р17, вопросами, а не именами
- * реквизитов.
+ * The selected device determines whether a repair can use a specific warranty source (R26).
+ * Only an unassigned New request is editable (R14): later changes would break agreements with
+ * the executor. Changing the device means creating another request, and later attachments belong
+ * in the card's Documents tab. The requester describes consumable needs in words because the
+ * executor, not the requester, knows the stock catalogue (R15).
  */
 export function ServiceRequestForm({
   open,
@@ -64,9 +54,9 @@ export function ServiceRequestForm({
   onClose,
 }: {
   open: boolean;
-  /** `null` — заведение новой заявки. */
+  /** `null` means a new request. */
   request: ServiceRequestDto | null;
-  /** Заявка заводится по гарантии из реестра: техника и источник заданы заранее. */
+  /** Warranty registry intake supplies the device and source. */
   claim?: WarrantyClaimPreset | null;
   onClose: () => void;
 }) {
@@ -82,59 +72,31 @@ export function ServiceRequestForm({
   const chosenKind = Form.useWatch('kind', form);
   const warrantySource = Form.useWatch('warrantySource', form);
 
-  // Выдача и память выбранного живут при самом поле (Ф1): форме нужен ответ, а не его устройство.
+  // The field owns its search and selection memory; the form only needs its selected value.
   const equipment = useServiceRequestEquipment({ open, equipmentId });
   const selected = equipment.selected;
   const warrantyActive = isWarrantyActive(selected?.warrantyUntil);
 
-  /**
-   * Аппарат в форме не назван (Р5, Р7). У заведения это пустое поле, у правки — заявка, у которой
-   * предмета нет вовсе (Р8): технику при правке не меняют, и оба случая отвечают на один вопрос —
-   * показывать ли то, что бывает только у аппарата.
-   */
+  // Device-only controls cannot appear for a device-free request, including an existing one (R7).
   const noEquipment = request ? !request.equipment : !equipmentId;
-  /**
-   * Право заводить заявку без аппарата (Р5). Спрашивается как обычное право: своей двери у него
-   * нет — оно лишь снимает требование аппарата с общего заведения, а отказ по нему даёт маршрут.
-   */
+  // This permission removes the device requirement from the ordinary create route (R5).
   const canSkipEquipment = can('serviceRequests.createWithoutEquipment');
-  /**
-   * Право на срочность (Р9). Спрашивается здесь, а не в блоке пары: по нему форма и показывает
-   * поля, и решает, что отправить, — а два ответа на один вопрос разъехались бы.
-   */
+  // The same urgency permission governs both visibility and the submitted pair (R9).
   const canUrgency = can('serviceRequests.urgency');
-  /** Заявка заводится без аппарата: поле пусто, и оставить его пустым разрешено. */
   const withoutEquipment = !request && noEquipment && canSkipEquipment;
 
-  /**
-   * Заказчик заявки (Р11, Р11а, Р11б, Р12): площадка выбранной сейчас единицы либо отдел, от чьего
-   * имени просят. Состав групп, границу площадки роли отдела, сохранённого заказчика правки и
-   * запертость до выбора техники считает подбор — форме остаётся сказать, какую единицу выбрали
-   * (опция справочника подходит под его тип целиком) и какую заявку правят: при правке единицу не
-   * выбирают вовсе, и оба её снимка берутся из самой заявки.
-   *
-   * У заявки БЕЗ аппарата состав задаёт ось роли (Р6), и подбор считает её сам — форме остаётся
-   * сказать, что аппарата не будет: поле техники пусто, а право оставить его пустым есть.
-   *
-   * У ЗАЯВЛЕННОГО АППАРАТА площадку задаёт само сообщение (план кандидата, Р7): единицы нет, но
-   * место человек уже назвал, а без подстановки поле осталось бы запертым «до выбора техники».
-   */
+  // Customer choices follow the selected device, saved edit snapshot or device-free role scope.
+  // A candidate supplies its declared site before an equipment record exists (R6, R7, R11).
   const draft = Form.useWatch('equipmentCandidate', { form, preserve: true });
   const site = selected ?? draft?.site;
   const customer = useServiceRequestCustomer({ request, equipment: site, withoutEquipment, open });
 
-  // Подразделение заявителя (Н11): поле и тело запроса — из одной оси. Спрашивается только там,
-  // где у учётки не одна привязка; при правке не спрашивается вовсе — оно снято снимком.
+  // Requester place comes from one account axis and is fixed by the snapshot during editing.
   const place = useRequesterPlace({ user: request ? null : user, open });
-  // Оба ключа — скалярами: зависеть от подбора целиком значило бы сбрасывать форму на каждой
-  // перерисовке.
+  // Scalar keys avoid resetting the form whenever the customer picker rerenders.
   const { savedKey, soleDepartmentKey } = customer;
 
-  /**
-   * Вид заявки (Н1). У правки он берётся из самой заявки и не спрашивается: заявка на картридж,
-   * ставшая ремонтной, — это другая заявка, и схема правки вида не принимает вовсе. Обращение по
-   * гарантии — всегда ремонт: гарантии на картридж со своего склада не бывает.
-   */
+  // Editing cannot change request kind; a warranty claim is always a repair, never stock issue.
   const kind: ServiceRequestKind = request
     ? request.kind
     : claim
@@ -149,12 +111,10 @@ export function ServiceRequestForm({
     resetAttachments();
     if (request) {
       form.setFieldsValue({
-        // У заявки без аппарата поле пустое — и остаётся таким: технику при правке не меняют
-        // вовсе (её выбор выключен), а подставить сюда нечего (Р8).
+        // Editing cannot add a device to an originally device-free request (R8).
         officeEquipmentId: request.equipment?.id,
         description: request.description,
-        // Заказчик правки — ключом от подбора (К7): он собран по снимкам самой заявки, а не по
-        // действующему справочнику, и держится в списке, даже выпав из состава поля.
+        // The saved customer snapshot remains selectable after the directory changes.
         customer: savedKey ?? undefined,
         responsibleName: request.responsibleName,
         responsiblePhone: request.responsiblePhone,
@@ -166,23 +126,16 @@ export function ServiceRequestForm({
       return;
     }
     form.setFieldsValue({
-      // Вид по умолчанию — ремонт: он же стоит умолчанием колонки в базе, и «поля нет» читается
-      // сервером так же.
+      // Keep the client default aligned with the DB and create schema default.
       kind: 'repair',
-      // Пара «не тот объект» (Р16) заводится выключенной: умолчание заявки — объект из карточки
-      // техники, и заявленным расхождение становится только нажатием.
+      // Another site must be an explicit override, not the default inferred from the device.
       objectOverridden: false,
-      // Единственный отдел учётки подставляется сам — как и до подбора (ADR 0085 §8). Иначе поле
-      // заполнилось бы площадкой выбранной единицы, и заявка сотрудника отдела о своём же принтере
-      // молча стала бы заявкой от площадки.
+      // Prefer the account's sole department so its printer request does not become a site request.
       customer: soleDepartmentKey ?? undefined,
-      // Заявитель — тот, кто заводит заявку: ФИО и телефон подставляются из его же учётки и
-      // правятся. Поля обязательны (Р49), и заставлять человека набирать собственный номер, зная
-      // его, значило бы разводить прочерки вместо контактов.
+      // Prefill editable contact fields from the author to avoid missing contact data (R49).
       responsibleName: user?.fullName ?? '',
       responsiblePhone: user?.phone ?? '',
-      // Обращение из реестра приходит с готовым источником: заполнять его руками человек и не
-      // смог бы — позиция прошлого ремонта опознаётся идентификатором, которого он не видит.
+      // Warranty intake carries an opaque source ID the requester cannot enter manually.
       ...(claim ? { officeEquipmentId: claim.equipmentId, warrantySource: claim.source } : {}),
     });
   }, [
@@ -202,9 +155,7 @@ export function ServiceRequestForm({
     mutationFn: (values: Values) => {
       if (!request && draft && local.draft.active?.createAttempt)
         throw new LocalCreateAttemptError('Сначала проверьте исход предыдущей отправки');
-      // Обе половины пары, а не одна: у заявки без аппарата заказчиком бывает и площадка, и её
-      // идентификатор уходит тем же `objectId`, которым у заявки с аппаратом называют «не тот
-      // объект» (Р6). Какой из двух смыслов сегодня — знает отправка, и разбирается это там.
+      // Both customer IDs travel together: objectId also represents a device-free site (R6).
       const pair = customer.customerPairOf(values.customer);
       return submitServiceRequest(values, {
         request,
@@ -215,29 +166,22 @@ export function ServiceRequestForm({
         fileIds: attachments.ids,
         equipmentCandidate: draft,
         prepareCreate: local.draft.prepareCreate,
-        /*
-         * Аппарат стоит вне площадок учётки (Р5): объектом заявки станет своя площадка — та, что
-         * выбрана заказчиком, — а не объект карточки. Признак считает сервер и отдаёт проекцией
-         * селектора; форма его только передаёт, потому что собирает тело она.
-         */
+        // An out-of-scope device uses the customer's site, not the device's card site (R5).
         foreignSite: !!selected && !selected.objectInOwnScope,
-        // Пара срочности уходит только с правом (Р9, Р10): при правке — вся пара целиком, при
-        // заведении — сама срочность, которую без права сервер отбивает 403.
+        // The permission also gates urgency in the payload; the server rejects unauthorized create.
         canUrgency,
       });
     },
     onSuccess: (res) => {
       if (!request) local.draft.clear();
       message.success(request ? 'Заявка сохранена' : 'Заявка заведена');
-      // Заявка заведена, но письмо службе не ушло — про это надо сказать сразу: служба читает
-      // почту, а не портал, и молча оставить её неоповещённой значит потерять день.
+      // Warn about failed mail delivery because the service team works from email.
       reportServiceMail(message, res.mail);
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
     },
-    // Отказ разбирает отдельный модуль: кодов четыре, и у каждого своё место на экране; форма
-    // передана ему затем, что дубль в парке (Р10) ставит найденную единицу прямо в её поля.
+    // The failure handler needs the form to place an existing duplicate device in its fields.
     onError: (e, values) => {
       if (!request && !(e instanceof LocalCreateAttemptError) && local.draft.active?.createAttempt)
         message.warning('Исход создания нужно проверить перед исправлением заявки.');
@@ -321,8 +265,7 @@ export function ServiceRequestForm({
           }}
           {...blockers.formProps}
         >
-          {/* Вид заявки (Н1) — первым: от него зависит, о чём форма спрашивает дальше. При правке
-            и в обращении по гарантии выбора нет — вид у заявки уже есть и меняться не может. */}
+          {/* Kind controls later questions; edits and warranty claims have a fixed kind. */}
           {!request && !claim && (
             <Form.Item name="kind" label="Чем помочь">
               <Segmented
@@ -342,15 +285,7 @@ export function ServiceRequestForm({
             {...equipment}
           />
 
-          {/* Строк номенклатуры здесь больше нет (Р15): заявитель не выбирает позиции справочника —
-            он говорит словами, чего не хватает, а состав заполняет исполнитель, которому везти. */}
-
-          {/* Гарантия — вопрос ремонта: картридж со своего склада ни по чьей гарантии не выдают.
-
-            И вопрос КОНКРЕТНОГО аппарата (Р7): обращаются либо по гарантии поставщика на него,
-            либо по работе, выполненной на нём же. Без аппарата блока нет вовсе — не «пока не
-            сделали», а «не бывает»: схема заведения такую пару отбивает, а форма не должна
-            показывать то, чего нельзя ни поставить, ни отправить. */}
+          {/* Warranty claims require a repair on a specific device; the schema rejects other pairs. */}
           {!consumable && !noEquipment && (
             <ServiceRequestWarrantyClaim
               active={warrantyActive}
@@ -359,17 +294,8 @@ export function ServiceRequestForm({
             />
           )}
 
-          {/* Главное и единственное поле про суть заявки: строк номенклатуры под ним больше нет
-            (Р15), заявитель отвечает словами.
-
-            Подпись общая на оба вида (Р2, просьба 7): заказчик просит единообразия, поэтому
-            кинд-зависимые «Что случилось / Что нужно», введённые Р17 ADR 0145 и до прода не
-            доехавшие, отменены — и здесь, и в карточке, и в столбце списка, и в словаре истории.
-            Сообщение обязательности тоже перестало ветвиться: у одного поля один ответ на вопрос
-            «почему не отправляется».
-
-            Плейсхолдер ниже ветвится по-прежнему, и это не недоделка: он подсказывает, а не
-            называет, а пример «закончился чёрный тонер» на заявке про мятую бумагу — просто мимо. */}
+          {/* The shared label and validation replace the kind-specific wording from ADR 0145;
+              the example remains kind-specific to help the requester describe the issue. */}
           <Form.Item
             name="description"
             label="Описание"
@@ -390,25 +316,19 @@ export function ServiceRequestForm({
             />
           </Form.Item>
 
-          {/* «Желаемый срок» из заявки убран целиком (Р115): срок, который ничего не запирает,
-            через месяц стоит просроченным у половины заявок. Давность читается возрастом в
-            статусе — он и сортируется, и точнее отвечает на вопрос «кто тянет». */}
+          {/* Desired due date was removed (R115): it did not constrain work and soon looked overdue;
+              age in the status now carries the useful ordering signal. */}
           <Form.Item
             name="customer"
             label="Для кого заявка"
-            // Пустого состояния у поля нет (Р12а): «от площадки» — такой же выбор, как отдел, а не
-            // незаполненное поле, и уходит он явным `null`. У заявки без аппарата обязательность
-            // держит уже не только форма: заказчик там — единственное, чем заявка попадает в чью-то
-            // область, и ни одного не назвав, её не примет ни схема, ни `CHECK` предмета (Р7).
+            // A device-free request needs this customer to establish its scope (R7, R12a).
             rules={[{ required: true, message: 'Выберите заказчика заявки' }]}
           >
-            {/* Площадку поле пересобирает само на смене единицы (Р11а, К10): значение — про то,
-              где аппарат стоит **сейчас**, и правило это живёт у поля, а не у формы. */}
+            {/* During creation, the picker follows the device's current site when it changes. */}
             <ServiceRequestCustomerField customer={customer} open={open} />
           </Form.Item>
 
-          {/* Заявитель, а не «ответственный»: это тот, к кому мастер придёт и кому позвонят, если
-            аппарата не окажется на месте. Оба поля обязательны и на сервере тоже (Р49). */}
+          {/* The requester contact is required because the technician needs someone to reach. */}
           <ResponsibleFields
             nameField="responsibleName"
             phoneField="responsiblePhone"
@@ -417,20 +337,17 @@ export function ServiceRequestForm({
             phoneInput={PhoneInput}
           />
 
-          {/* Откуда сам заявитель (Н11) — рядом с его контактом, а не рядом с заказчиком: это два
-            разных вопроса, и путать их значит записывать заявку на чужой отдел. */}
+          {/* Requester place differs from the customer department. */}
           {place.field}
 
-          {/* Срочность — своим блоком (Р9, Р56): показ пары и её запертость считаются там же, где
-            она рисуется, а форме остаётся сказать, правка это или заведение. */}
+          {/* The urgency component owns pair visibility and locking (R9, R56). */}
           <ServiceRequestUrgency editing={!!request} canUrgency={canUrgency} />
 
           <Form.Item name="comment" label="Что ещё важно знать">
             <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />
           </Form.Item>
 
-          {/* Вложения — только при заведении: после него они живут вкладкой «Документы» карточки,
-            где у каждого файла есть вид (акт, счёт, талон). */}
+          {/* Later attachments belong in the card's Documents tab with their document kinds. */}
           {!request && (
             <ServiceRequestAttachments
               files={attachments.files}
