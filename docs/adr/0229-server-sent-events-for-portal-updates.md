@@ -1,7 +1,7 @@
 # ADR 0229. Server-sent events for portal updates
 
 - Статус: Принято (14.10.2026) — owner decision S-28 of the survey of 14.10.2026. Nothing is
-  implemented; the stages and the open forks are in the [plan](../realtime-events-plan.md), and the
+  deployed; the stages and the remaining forks are in the [plan](../realtime-events-plan.md), and the
   outcome of the profile A prototype (stage 1) is to be recorded here
 - Домены: каркас-портала, доступ, схема-и-выкат
 - Развивает: [ADR 0222](0222-frontend-query-freshness-and-render.md) — its query roots and freshness
@@ -75,6 +75,11 @@ but cannot cover every server producer.
    query roots a topic invalidates is one table in the portal's app layer, checked against the
    declared roots by the cache check. The server-internal `access` revocation signal is outside the
    client change-topic union and has no query-root mapping. Neither side copies the other's keys.
+
+7. **The Stage 1 rollout choices were accepted on 15.10.2026.** The pilot is office-equipment
+   service requests; database triggers produce the notifications; external counterparties and
+   drivers do not subscribe yet; one master switch controls the stream. Stage 1 is developed on a
+   branch now, with its migration unnumbered until the train can accept it after the R2 deploy.
 
 ## Alternatives
 

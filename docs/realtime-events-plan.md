@@ -1,10 +1,11 @@
 # Plan: portal updates through server-sent change notifications
 
-- Status: edition 1 of 14.10.2026. **A plan is intent, not state** (AGENTS.md): nothing below is
-  implemented. The transport is decided by the owner (survey S-28, 14.10.2026) and recorded in
+- Status: edition 1 of 14.10.2026. **A plan is intent, not state** (AGENTS.md): Stage 1 is being
+  prepared in an isolated branch and nothing is deployed. The transport is decided by the owner
+  (survey S-28, 14.10.2026) and recorded in
   [ADR 0229](adr/0229-server-sent-events-for-portal-updates.md); the forks in
-  [§13](#13-questions-to-the-owner) are open and no stage that depends on one starts before it is
-  answered.
+  [§13](#13-questions-to-the-owner) are tracked there; the owner settled Q1, Q4, Q5, Q7 and Q9
+  on 15.10.2026. Stages depending on the other questions wait for their answers.
 - Source: the draft of 01.10.2026, `.local/plans/realtime-events-plan.md` (outside history, in
   Russian), first re-verified against `origin/main` `805d5902` and reviewed again against local
   `main` `583a0e3b` on 15.10.2026. What the draft got wrong or what changed since is listed in
@@ -577,7 +578,8 @@ everything is additive. A stage that depends on an open question waits for its a
 
 ## 13. Questions to the owner
 
-Each question names its options and a recommendation; none is decided here.
+Each question names its options and a recommendation. The owner accepted Q1(a), Q4(a), Q5(a),
+Q7(a) and Q9(a) on 15.10.2026. Q2, Q3, Q6 and Q8 remain recommendations.
 
 ### Q1. Pilot module
 
@@ -588,6 +590,8 @@ Each question names its options and a recommendation; none is decided here.
 - (c) Garage receipts — the 2 s OCR poll, few users, little to prove about lists.
 
 Recommended: (a).
+
+Owner decision, 15.10.2026: (a).
 
 ### Q2. Behaviour while the stream is unhealthy
 
@@ -624,6 +628,8 @@ Recommended: (b), in stage 5.
 
 Recommended: (a).
 
+Owner decision, 15.10.2026: (a).
+
 ### Q5. Audience of external counterparties and drivers
 
 - (a) **Excluded at first**: operators, lessors, service companies and drivers keep today's
@@ -632,6 +638,8 @@ Recommended: (a).
   rows.
 
 Recommended: (a); revisit together with id-level signals (§7).
+
+Owner decision, 15.10.2026: (a); reconsider only with a scoped signal design.
 
 ### Q6. Latency target and scale
 
@@ -650,6 +658,8 @@ Recommended: (a). The number is a working target, not a measured SLA.
 
 Recommended: (a).
 
+Owner decision, 15.10.2026: (a).
+
 ### Q8. Tables whose rows move
 
 - (a) **Reread in place**, keeping filter, sort, page, selection and scroll; a row may move under
@@ -665,6 +675,8 @@ Recommended: (a) for stage 2; (b) only if users complain.
 - (b) After the release train is merged, as D3 (S-29).
 
 Recommended: (a).
+
+Owner decision, 15.10.2026: (a).
 
 ## 14. Risks and what this plan does not verify
 
