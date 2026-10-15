@@ -1468,6 +1468,23 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   },
 };
 
+// Versioned creation has the same schema and guard as the original route. Reconciliation validates
+// the original body before authentication, then identifies the actor from the receipt without
+// asking for today's create permission. Reuse the bodies so the access sweep reaches those guards.
+for (const kind of ['service', 'mech', 'waste', 'vehicle'] as const) {
+  const base = `POST /api/v1/${kind}-requests` as ManifestRouteKey;
+  const original = FIXTURES[base];
+  if (!original?.payload) throw new Error(`${base}: missing create fixture`);
+  FIXTURES[`POST /api/v1/${kind}-requests/_create-with-receipt`] = original;
+  FIXTURES[`POST /api/v1/${kind}-requests/_create-attempts/reconcile`] = {
+    payload: { originalBody: original.payload },
+  };
+}
+FIXTURES['POST /api/v1/mech-requests/:id/_duplicate-with-receipt'] = { payload: {} };
+FIXTURES['POST /api/v1/mech-requests/:id/_duplicate-attempts/reconcile'] = {
+  payload: { originalBody: {} },
+};
+
 /** Субъект текущего запроса: подменённый `loadPrincipal` собирает из него принципала. */
 interface Subject {
   role: Role;
