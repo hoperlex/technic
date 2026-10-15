@@ -189,121 +189,127 @@ describe.skipIf(!SERVER_URL)('shared request creation receipts', () => {
     ).toEqual({ id, mail: 'queued' });
   });
 
-  it('waits for an in-flight create and reports its committed request', async () => {
-    const key = randomUUID();
-    const id = randomUUID();
-    const fingerprint = service.createAttemptFingerprint({ comment: 'first' });
-    let entered!: () => void;
-    let release!: () => void;
-    const insideCreate = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const heldCreate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const first = service.createRequestOnce({
-      key,
-      kind: 'vehicle',
-      actorUserId: ACTOR,
-      fingerprint,
-      create: async () => {
-        entered();
-        await heldCreate;
-        return { id, metadata: null };
-      },
-      load: async () => ({ id }),
-    });
-    await insideCreate;
-    let barrierSettled = false;
-    const barrier = service.reconcileRequestCreate({
-      key,
-      kind: 'vehicle',
-      actorUserId: ACTOR,
-      fingerprint,
-    });
-    void barrier.then(() => {
-      barrierSettled = true;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    expect(barrierSettled).toBe(false);
-    release();
-    expect((await first).response).toEqual({ id });
-    expect(await barrier).toEqual({ state: 'created', requestId: id });
-  });
+  it.each(['vehicle', 'waste', 'mech', 'service'] as const)(
+    '%s reconciliation waits for an in-flight create and reports its committed request',
+    async (kind) => {
+      const key = randomUUID();
+      const id = randomUUID();
+      const fingerprint = service.createAttemptFingerprint({ comment: 'first' });
+      let entered!: () => void;
+      let release!: () => void;
+      const insideCreate = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const heldCreate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const first = service.createRequestOnce({
+        key,
+        kind,
+        actorUserId: ACTOR,
+        fingerprint,
+        create: async () => {
+          entered();
+          await heldCreate;
+          return { id, metadata: null };
+        },
+        load: async () => ({ id }),
+      });
+      await insideCreate;
+      let barrierSettled = false;
+      const barrier = service.reconcileRequestCreate({
+        key,
+        kind,
+        actorUserId: ACTOR,
+        fingerprint,
+      });
+      void barrier.then(() => {
+        barrierSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(barrierSettled).toBe(false);
+      release();
+      expect((await first).response).toEqual({ id });
+      expect(await barrier).toEqual({ state: 'created', requestId: id });
+    },
+  );
 
-  it('turns a rolled-back or absent create into a durable tombstone with one replacement key', async () => {
-    const key = randomUUID();
-    const fingerprint = service.createAttemptFingerprint({ comment: 'refused' });
-    let entered!: () => void;
-    let release!: () => void;
-    const insideCreate = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const heldCreate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const first = service.createRequestOnce({
-      key,
-      kind: 'vehicle',
-      actorUserId: ACTOR,
-      fingerprint,
-      create: async () => {
-        entered();
-        await heldCreate;
-        throw new Error('validation');
-      },
-      load: async () => null,
-    });
-    await insideCreate;
-    const barrier = service.reconcileRequestCreate({
-      key,
-      kind: 'vehicle',
-      actorUserId: ACTOR,
-      fingerprint,
-    });
-    const firstRefusal = expect(first).rejects.toThrow('validation');
-    release();
-    await firstRefusal;
-    const outcome = await barrier;
-    expect(outcome.state).toBe('not-created');
-    if (outcome.state !== 'not-created') throw new Error('Expected tombstone');
-    expect(
-      await service.reconcileRequestCreate({
+  it.each(['vehicle', 'waste', 'mech', 'service'] as const)(
+    '%s reconciliation turns a refused create into a durable tombstone',
+    async (kind) => {
+      const key = randomUUID();
+      const fingerprint = service.createAttemptFingerprint({ comment: 'refused' });
+      let entered!: () => void;
+      let release!: () => void;
+      const insideCreate = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const heldCreate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const first = service.createRequestOnce({
         key,
-        kind: 'vehicle',
+        kind,
         actorUserId: ACTOR,
         fingerprint,
-      }),
-    ).toEqual(outcome);
-    await expect(
-      service.createRequestOnce({
-        key,
-        kind: 'vehicle',
-        actorUserId: ACTOR,
-        fingerprint,
-        create: async () => ({ id: randomUUID(), metadata: null }),
+        create: async () => {
+          entered();
+          await heldCreate;
+          throw new Error('validation');
+        },
         load: async () => null,
-      }),
-    ).rejects.toMatchObject({ statusCode: 409 });
-    await expect(
-      service.reconcileRequestCreate({
+      });
+      await insideCreate;
+      const barrier = service.reconcileRequestCreate({
         key,
-        kind: 'vehicle',
-        actorUserId: OTHER_ACTOR,
+        kind,
+        actorUserId: ACTOR,
         fingerprint,
-      }),
-    ).rejects.toMatchObject({ statusCode: 409 });
-    const id = randomUUID();
-    const corrected = await service.createRequestOnce({
-      key: outcome.nextOperationId,
-      kind: 'vehicle',
-      actorUserId: ACTOR,
-      fingerprint: service.createAttemptFingerprint({ comment: 'corrected' }),
-      create: async () => ({ id, metadata: null }),
-      load: async () => ({ id }),
-    });
-    expect(corrected.response).toEqual({ id });
-  });
+      });
+      const firstRefusal = expect(first).rejects.toThrow('validation');
+      release();
+      await firstRefusal;
+      const outcome = await barrier;
+      expect(outcome.state).toBe('not-created');
+      if (outcome.state !== 'not-created') throw new Error('Expected tombstone');
+      expect(
+        await service.reconcileRequestCreate({
+          key,
+          kind,
+          actorUserId: ACTOR,
+          fingerprint,
+        }),
+      ).toEqual(outcome);
+      await expect(
+        service.createRequestOnce({
+          key,
+          kind,
+          actorUserId: ACTOR,
+          fingerprint,
+          create: async () => ({ id: randomUUID(), metadata: null }),
+          load: async () => null,
+        }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      await expect(
+        service.reconcileRequestCreate({
+          key,
+          kind,
+          actorUserId: OTHER_ACTOR,
+          fingerprint,
+        }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      const id = randomUUID();
+      const corrected = await service.createRequestOnce({
+        key: outcome.nextOperationId,
+        kind,
+        actorUserId: ACTOR,
+        fingerprint: service.createAttemptFingerprint({ comment: 'corrected' }),
+        create: async () => ({ id, metadata: null }),
+        load: async () => ({ id }),
+      });
+      expect(corrected.response).toEqual({ id });
+    },
+  );
 
   it('gives two restored tabs the same replacement key without ever creating with the original', async () => {
     const key = randomUUID();
