@@ -99,7 +99,11 @@ export function useLocalFormDraft<Payload>({
     const current = activeRef.current;
     if (!current) throw new LocalCreateAttemptError('Черновик недоступен — откройте форму заново');
     const key = current.createAttempt?.key ?? newIdempotencyKey();
-    const submittedBody = current.createAttempt ? (current.createAttempt.body as Body) : body;
+    // Form libraries may mutate nested values after a send; the retry must keep the bytes represented
+    // by the first persisted JSON body, including file IDs and trip rows.
+    const submittedBody = current.createAttempt
+      ? (current.createAttempt.body as Body)
+      : (JSON.parse(JSON.stringify(body)) as Body);
     const next = {
       ...current,
       savedAt: Date.now(),
@@ -145,10 +149,25 @@ export function useLocalFormDraft<Payload>({
   };
 
   const clear = () => {
-    if (activeRef.current) removeLocalFormDraft(activeRef.current.id);
+    const current = activeRef.current;
+    let removed = true;
+    if (current?.createAttempt) {
+      // A successful response settles every restored fork of this attempt. Leaving the source
+      // behind would reopen it as an undiscardable pending send on the next form opening.
+      const found = listLocalFormDrafts(current.userId, form, current.target, parseRef.current);
+      removed = found.available;
+      if (found.available) {
+        for (const candidate of found.drafts) {
+          if (candidate.createAttempt?.key === current.createAttempt.key) {
+            removed = removeLocalFormDraft(candidate.id) && removed;
+          }
+        }
+      }
+    }
+    if (current) removed = removeLocalFormDraft(current.id) && removed;
     activate(null);
     setPending([]);
-    setStatus({ available: true, savedAt: null });
+    setStatus({ available: removed, savedAt: null });
   };
 
   return {

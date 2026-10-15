@@ -65,6 +65,64 @@ describe('ordinary request creation attempt', () => {
     }).toThrow('Не удалось сохранить попытку');
   });
 
+  it('keeps nested fields and file IDs from the first send when form values mutate in place', () => {
+    const draft = renderHook(() =>
+      useLocalFormDraft({
+        userId: 'operator',
+        form: 'vehicle-request',
+        read: () => ({ comment: 'draft' }),
+        parse: objectDraftPayload,
+      }),
+    );
+    act(() => draft.result.current.begin('create'));
+    const body = { trips: [{ destination: 'First' }], fileIds: ['uploaded-first'] };
+    let first!: { body: typeof body; key: string };
+    act(() => {
+      first = draft.result.current.prepareCreate(body);
+    });
+    body.trips[0]!.destination = 'Changed';
+    body.fileIds.push('uploaded-later');
+    let retry!: typeof first;
+    act(() => {
+      retry = draft.result.current.prepareCreate(body);
+    });
+    expect(retry.key).toBe(first.key);
+    expect(retry.body).toEqual({
+      trips: [{ destination: 'First' }],
+      fileIds: ['uploaded-first'],
+    });
+    expect(
+      listLocalFormDrafts('operator', 'vehicle-request', 'create', objectDraftPayload).drafts[0]
+        ?.createAttempt?.body,
+    ).toEqual(retry.body);
+  });
+
+  it('clears the original attempted draft after a restored retry succeeds', () => {
+    const props = {
+      userId: 'operator',
+      form: 'service-request',
+      read: () => ({ comment: 'draft' }),
+      parse: objectDraftPayload,
+    };
+    const original = renderHook(() => useLocalFormDraft(props));
+    act(() => original.result.current.begin('create'));
+    act(() => original.result.current.prepareCreate({ comment: 'first', fileIds: ['file-1'] }));
+    const source = listLocalFormDrafts('operator', 'service-request', 'create', objectDraftPayload)
+      .drafts[0]!;
+    original.unmount();
+
+    const restored = renderHook(() => useLocalFormDraft(props));
+    act(() => restored.result.current.begin('create'));
+    act(() => restored.result.current.restore(source));
+    expect(
+      listLocalFormDrafts('operator', 'service-request', 'create', objectDraftPayload).drafts,
+    ).toHaveLength(2);
+    act(() => restored.result.current.clear());
+    expect(
+      listLocalFormDrafts('operator', 'service-request', 'create', objectDraftPayload).drafts,
+    ).toEqual([]);
+  });
+
   it('does not allow discarding an attempted pending draft before reconciliation', () => {
     const onDiscard = vi.fn();
     render(

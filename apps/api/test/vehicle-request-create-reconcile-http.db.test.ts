@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 import type { buildApp } from '../src/app';
@@ -26,6 +26,7 @@ let authorization = '';
 let objectId = '';
 let vehicleTypeId = '';
 let vehicleCategoryId: string | null = null;
+let mechModelId = '';
 
 function body(dateFrom: string): Record<string, unknown> {
   return {
@@ -127,6 +128,11 @@ beforeAll(async () => {
     vehicleTypeId = types.rows[0]?.type_id ?? '';
     vehicleCategoryId = types.rows[0]?.category_id ?? null;
     if (!objectId || !vehicleTypeId) throw new Error('Seeded object and vehicle type are required');
+    const models = await references.query<{ id: string }>(
+      'SELECT id FROM mech_models WHERE is_active ORDER BY id LIMIT 1',
+    );
+    mechModelId = models.rows[0]?.id ?? '';
+    if (!mechModelId) throw new Error('Seeded mechanization model is required');
   } finally {
     await references.end();
   }
@@ -253,4 +259,222 @@ describe.skipIf(!SERVER_URL)('Vehicle Request receipt HTTP protocol', () => {
     });
     expect(corrected.statusCode, corrected.body).toBe(201);
   });
+
+  it('keeps the first attempt after a 422 retry and replays it across Moscow midnight', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-15T20:59:00.000Z'));
+    const blocker = new pg.Client({ connectionString: DB_URL!.toString() });
+    await blocker.connect();
+    let first: Promise<Awaited<ReturnType<NonNullable<typeof app>['inject']>>> | null = null;
+    try {
+      const login = await app!.inject({
+        method: 'POST',
+        url: '/api/v1/auth/login',
+        payload: { email: EMAIL, password: PASSWORD },
+      });
+      expect(login.statusCode, login.body).toBe(200);
+      const actorHeaders = {
+        authorization: `Bearer ${login.json().accessToken}`,
+        'idempotency-key': randomUUID(),
+      };
+      const submitted = body('2026-10-15');
+      await blocker.query('BEGIN');
+      await blocker.query('LOCK TABLE vehicle_requests IN ACCESS EXCLUSIVE MODE');
+      first = app!
+        .inject({ method: 'POST', url: KEYED, headers: actorHeaders, payload: submitted })
+        .then((response) => response);
+      let waiting = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        await blocker.query('SELECT pg_stat_clear_snapshot()');
+        const result = await blocker.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'
+               AND query LIKE '%vehicle_requests%' AND pid <> pg_backend_pid()`,
+        );
+        if (result.rows[0]?.n) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(waiting, 'the first POST must reach its insert before midnight').toBe(true);
+      vi.setSystemTime(new Date('2026-10-15T21:01:00.000Z'));
+      const refused = await app!.inject({
+        method: 'POST',
+        url: KEYED,
+        headers: actorHeaders,
+        payload: { ...submitted, responsiblePhone: null },
+      });
+      expect([400, 422], refused.body).toContain(refused.statusCode);
+      await blocker.query('ROLLBACK');
+      const created = await first;
+      expect(created.statusCode, created.body).toBe(201);
+      const repeated = await app!.inject({
+        method: 'POST',
+        url: KEYED,
+        headers: actorHeaders,
+        payload: submitted,
+      });
+      expect(repeated.statusCode, repeated.body).toBe(200);
+      expect(repeated.json()).toEqual(created.json());
+      const newAttempt = await app!.inject({
+        method: 'POST',
+        url: KEYED,
+        headers: { ...actorHeaders, 'idempotency-key': randomUUID() },
+        payload: submitted,
+      });
+      expect([400, 422], newAttempt.body).toContain(newAttempt.statusCode);
+    } finally {
+      await blocker.query('ROLLBACK');
+      await blocker.end();
+      await first?.catch(() => undefined);
+      vi.useRealTimers();
+    }
+  });
+});
+
+const ordinaryScenarios = [
+  {
+    kind: 'waste',
+    url: '/api/v1/waste-requests',
+    table: 'waste_requests',
+    payload: () => ({
+      objectId,
+      requestType: 'metal_removal',
+      deliveryAt: `${shiftDateKey(moscowDateKeyOf(new Date()), 3)}T00:00:00+03:00`,
+      deliveryTimeUnspecified: true,
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      comment: 'first',
+    }),
+    idOf: (value: { id: string }) => value.id,
+  },
+  {
+    kind: 'mech',
+    url: '/api/v1/mech-requests',
+    table: 'mech_requests',
+    payload: () => ({
+      objectId,
+      mechModelId,
+      plannedFrom: shiftDateKey(moscowDateKeyOf(new Date()), 3),
+      plannedTo: shiftDateKey(moscowDateKeyOf(new Date()), 4),
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      comment: 'first',
+    }),
+    idOf: (value: { id: string }) => value.id,
+  },
+  {
+    kind: 'service',
+    url: '/api/v1/service-requests',
+    table: 'service_requests',
+    payload: () => ({
+      officeEquipmentId: null,
+      objectId,
+      description: 'Проверка повторного создания заявки',
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      comment: 'first',
+    }),
+    idOf: (value: { request: { id: string } }) => value.request.id,
+  },
+] as const;
+
+describe.skipIf(!SERVER_URL)('ordinary request receipt HTTP replays', () => {
+  it.each(ordinaryScenarios)(
+    '$kind: concurrent requests, lost response, and changed body',
+    async (scenario) => {
+      const key = randomUUID();
+      const payload = scenario.payload();
+      const send = (bodyToSend: Record<string, unknown>) =>
+        app!.inject({
+          method: 'POST',
+          url: scenario.url,
+          headers: headers(key),
+          payload: bodyToSend,
+        });
+      const [left, right] = await Promise.all([send(payload), send(payload)]);
+      expect([left.statusCode, right.statusCode].sort(), `${left.body}\n${right.body}`).toEqual([
+        200, 201,
+      ]);
+      const created = left.statusCode === 201 ? left : right;
+      const replayed = left.statusCode === 200 ? left : right;
+      expect(replayed.json()).toEqual(created.json());
+      const id = scenario.idOf(created.json());
+
+      // The client may never receive the first response; only its key and body survive.
+      const afterLostResponse = await send(payload);
+      expect(afterLostResponse.statusCode, afterLostResponse.body).toBe(200);
+      expect(afterLostResponse.json()).toEqual(created.json());
+      const changed = await send({ ...payload, comment: 'edited after first send' });
+      expect(changed.statusCode, changed.body).toBe(409);
+      const client = new pg.Client({ connectionString: DB_URL!.toString() });
+      await client.connect();
+      try {
+        const count = await client.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${scenario.table} WHERE id = $1`,
+          [id],
+        );
+        expect(count.rows[0]?.n).toBe(1);
+      } finally {
+        await client.end();
+      }
+    },
+  );
+
+  it.each(ordinaryScenarios)(
+    '$kind: rejected retry while the first HTTP request is in flight',
+    async (scenario) => {
+      const key = randomUUID();
+      const payload = scenario.payload();
+      const blocker = new pg.Client({ connectionString: DB_URL!.toString() });
+      await blocker.connect();
+      let first: Promise<Awaited<ReturnType<NonNullable<typeof app>['inject']>>> | null = null;
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query('LOCK TABLE request_create_attempts IN ACCESS EXCLUSIVE MODE');
+        first = app!
+          .inject({ method: 'POST', url: scenario.url, headers: headers(key), payload })
+          .then((response) => response);
+        let waiting = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          await blocker.query('SELECT pg_stat_clear_snapshot()');
+          const result = await blocker.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'
+               AND query LIKE '%request_create_attempts%' AND pid <> pg_backend_pid()`,
+          );
+          if (result.rows[0]?.n) {
+            waiting = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(waiting, 'the first HTTP request must be blocked inside the receipt path').toBe(
+          true,
+        );
+        const refused = await app!.inject({
+          method: 'POST',
+          url: scenario.url,
+          headers: headers(key),
+          payload: { ...payload, responsiblePhone: null },
+        });
+        expect([400, 422], refused.body).toContain(refused.statusCode);
+      } finally {
+        await blocker.query('ROLLBACK');
+        await blocker.end();
+        await first?.catch(() => undefined);
+      }
+      const created = await first!;
+      expect(created.statusCode, created.body).toBe(201);
+      const retry = await app!.inject({
+        method: 'POST',
+        url: scenario.url,
+        headers: headers(key),
+        payload,
+      });
+      expect(retry.statusCode, retry.body).toBe(200);
+      expect(retry.json()).toEqual(created.json());
+    },
+  );
 });
