@@ -29,6 +29,12 @@ export function isBackdatedCreateAttempt(attempt: VehicleCreateAttempt | undefin
   );
 }
 
+export function isLegacyOrdinaryCreateAttempt(
+  attempt: VehicleCreateAttempt | undefined,
+): attempt is VehicleCreateAttempt & { protocol?: undefined } {
+  return !!attempt && !attempt.protocol && !isBackdatedCreateAttempt(attempt);
+}
+
 type StoredValues = Omit<
   FormValues,
   'requestType' | 'classificationKey' | 'dateFrom' | 'dateTo' | 'scheduledDate'
@@ -51,6 +57,7 @@ export interface VehicleRequestLocalDraft {
   values: StoredValues;
   createAttempt?: VehicleCreateAttempt;
   nextCreateKey?: string;
+  previousCreateKeys?: string[];
 }
 
 function storedDate(value: FormValues['dateFrom']): string | null | undefined {
@@ -91,6 +98,7 @@ interface Payload {
   values: StoredValues;
   createAttempt?: VehicleCreateAttempt;
   nextCreateKey?: string;
+  previousCreateKeys?: string[];
 }
 
 function parsePayload(value: unknown): Payload | null {
@@ -117,7 +125,10 @@ function parsePayload(value: unknown): Payload | null {
         typeof draft.createAttempt.body !== 'object' ||
         (draft.createAttempt.protocol !== undefined &&
           !['receipt-v1', 'correction-v1'].includes(draft.createAttempt.protocol)))) ||
-    (draft.nextCreateKey !== undefined && typeof draft.nextCreateKey !== 'string')
+    (draft.nextCreateKey !== undefined && typeof draft.nextCreateKey !== 'string') ||
+    (draft.previousCreateKeys !== undefined &&
+      (!Array.isArray(draft.previousCreateKeys) ||
+        draft.previousCreateKeys.some((key) => typeof key !== 'string')))
   )
     return null;
   return draft as Payload;
@@ -166,6 +177,7 @@ export function writeLocalDraft(draft: VehicleRequestLocalDraft): boolean {
       values: draft.values,
       createAttempt: draft.createAttempt,
       nextCreateKey: draft.nextCreateKey,
+      previousCreateKeys: draft.previousCreateKeys,
     },
   });
 }

@@ -39,6 +39,7 @@ export function useVehicleRequestEditor({
           onFinish={save.onFinish}
           onReconcile={() => void save.reconcileAttempt()}
           onResetBackdated={save.confirmBackdatedReset}
+          onResetLegacy={save.confirmLegacyOrdinaryReset}
           reconciling={save.reconcilePending}
           confirmLoading={save.confirmLoading}
         />

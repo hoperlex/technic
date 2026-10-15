@@ -1,9 +1,14 @@
-import { act, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { Form } from 'antd';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CreateVehicleRequestInput, VehicleRequestDto } from '@technic/contracts';
 import { vehicleRequestsApi } from '@entities/vehicle-request';
-import type { FormValues } from '@features/vehicle-request-editor';
+import {
+  draftValues,
+  newDraftId,
+  writeLocalDraft,
+  type FormValues,
+} from '@features/vehicle-request-editor';
 import { useVehicleRequestEditorSave } from '../src/widgets/vehicle-request-editor/model/useVehicleRequestEditorSave';
 import { useVehicleRequestLocalDraft } from '../src/widgets/vehicle-request-editor/model/useVehicleRequestLocalDraft';
 import type { VehicleRequestEditorState } from '../src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState';
@@ -24,9 +29,23 @@ const body = {
   fileIds: [key],
 } satisfies CreateVehicleRequestInput;
 
-function mountAttempt() {
+function mountAttempt(legacy = false) {
   const openCreated = vi.fn();
   const closeSaved = vi.fn();
+  const source = legacy
+    ? {
+        schema: 1 as const,
+        id: newDraftId(),
+        userId,
+        target: { kind: 'create' as const },
+        baseVersion: null,
+        operationId: key,
+        savedAt: Date.now(),
+        values: draftValues({} as FormValues),
+        createAttempt: { key, body },
+      }
+    : null;
+  if (source) expect(writeLocalDraft(source)).toBe(true);
   let current: {
     draft: ReturnType<typeof useVehicleRequestLocalDraft>;
     save: ReturnType<typeof useVehicleRequestEditorSave>;
@@ -45,6 +64,8 @@ function mountAttempt() {
       customer: { customerPairOf: () => ({ objectId: userId, departmentId: null }) },
       editor: { newFileIds: () => [] },
       closeSaved,
+      resetLegacyOrdinaryAttempt: (attemptKey: string) =>
+        draft.resetLegacyOrdinaryAttempt(attemptKey, nextKey),
     } as unknown as VehicleRequestEditorState;
     current = {
       draft,
@@ -56,7 +77,8 @@ function mountAttempt() {
   const view = () => current!;
   act(() => {
     view().draft.begin({ kind: 'create' }, null, key);
-    view().draft.prepareCreate(body);
+    if (source) view().draft.restore(source, null);
+    else view().draft.prepareCreate(body);
   });
   return { view, openCreated, closeSaved };
 }
@@ -115,5 +137,21 @@ describe('Vehicle Request create reconciliation', () => {
     expect(get).toHaveBeenCalledWith(requestId);
     expect(closeSaved).toHaveBeenCalledOnce();
     expect(view().draft.active).toBeNull();
+  });
+
+  it('requires an explicit warning confirmation before replacing an old root-route key', async () => {
+    const create = vi.spyOn(vehicleRequestsApi, 'createWithReceipt');
+    const { view } = mountAttempt(true);
+
+    act(() => view().save.confirmLegacyOrdinaryReset());
+    expect(view().draft.active?.createAttempt?.key).toBe(key);
+    expect(await screen.findByText(/Старая версия API могла проигнорировать ключ/)).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Я проверил список — начать новую попытку' }),
+    );
+
+    await waitFor(() => expect(view().draft.active?.createAttempt).toBeUndefined());
+    expect(view().draft.active?.nextCreateKey).toBe(nextKey);
+    expect(create).not.toHaveBeenCalled();
   });
 });

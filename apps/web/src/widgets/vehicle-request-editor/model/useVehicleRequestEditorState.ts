@@ -274,6 +274,8 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     if (outcome === 'resolved') setOperationId(nextOperationId);
     return outcome;
   };
+  const resetLegacyOrdinaryAttempt = (key: string) =>
+    draft.resetLegacyOrdinaryAttempt(key, crypto.randomUUID());
   const openCreate = () => {
     setRecord(null);
     setCopy(null);
@@ -388,6 +390,7 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
     record,
     recordTrips,
     resetBackdatedAttempt,
+    resetLegacyOrdinaryAttempt,
     relocationsEditable,
     requestType,
     requestTypeOptions,

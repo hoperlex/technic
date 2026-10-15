@@ -5,6 +5,7 @@ import { LocalCreateAttemptError, newIdempotencyKey } from '@shared/lib';
 import {
   draftValues,
   isBackdatedCreateAttempt,
+  isLegacyOrdinaryCreateAttempt,
   listLocalDrafts,
   newDraftId,
   removeLocalDraft,
@@ -25,6 +26,7 @@ export interface ActiveDraft {
   operationId: string;
   createAttempt?: VehicleCreateAttempt;
   nextCreateKey?: string;
+  previousCreateKeys?: string[];
 }
 
 export interface DraftStatus {
@@ -79,7 +81,7 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
     const frozen = current.createAttempt;
     // An unmarked ordinary attempt may have reached an old API that ignored its header. The new
     // barrier cannot prove that old request absent, so it must never claim this key as its own.
-    if (frozen && !frozen.protocol && !frozen.body.operationId && !frozen.body.backdateReason) {
+    if (isLegacyOrdinaryCreateAttempt(frozen)) {
       throw new LocalCreateAttemptError(
         `Старая попытка ${frozen.key} требует ручной проверки заявки; повтор через новую сверку недоступен.`,
       );
@@ -134,7 +136,12 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
     const savedAt = Date.now();
     // One localStorage value changes from frozen original body to a server-minted replacement key.
     // A failed write leaves both the original body and key intact for another reconciliation.
-    const next = { ...current, createAttempt: undefined, nextCreateKey: nextKey };
+    const next = {
+      ...current,
+      createAttempt: undefined,
+      nextCreateKey: nextKey,
+      previousCreateKeys: [...new Set([...(current.previousCreateKeys ?? []), originalKey])],
+    };
     if (
       !writeLocalDraft({
         ...next,
@@ -166,6 +173,39 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
       operationId,
       createAttempt: undefined,
       nextCreateKey: nextKey,
+      previousCreateKeys: [...new Set([...(current.previousCreateKeys ?? []), originalKey])],
+    };
+    if (
+      !writeLocalDraft({
+        ...next,
+        schema: 1,
+        savedAt,
+        values: draftValues(form.getFieldsValue(true)),
+      })
+    ) {
+      setStatus({ savedAt: null, available: false });
+      return 'storage-error' as const;
+    }
+    activate(next);
+    setStatus({ savedAt, available: true });
+    return 'resolved' as const;
+  };
+
+  const resetLegacyOrdinaryAttempt = (originalKey: string, nextKey: string) => {
+    const current = activeRef.current;
+    if (
+      current?.createAttempt?.key !== originalKey ||
+      !isLegacyOrdinaryCreateAttempt(current.createAttempt)
+    )
+      return 'stale' as const;
+    const savedAt = Date.now();
+    // A root-route request might still commit. Only an explicit operator decision retires its
+    // local key; the first body remains in sibling envelopes until confirmed creation cleans up.
+    const next = {
+      ...current,
+      createAttempt: undefined,
+      nextCreateKey: nextKey,
+      previousCreateKeys: [...new Set([...(current.previousCreateKeys ?? []), originalKey])],
     };
     if (
       !writeLocalDraft({
@@ -208,6 +248,7 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
       operationId: candidate.operationId,
       createAttempt: candidate.createAttempt,
       nextCreateKey: candidate.nextCreateKey,
+      previousCreateKeys: candidate.previousCreateKeys,
     };
     const savedAt = Date.now();
     const ok = writeLocalDraft({ ...next, schema: 1, savedAt, values: draftValues(values) });
@@ -225,7 +266,11 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
       // Restoring forks the envelope so another live tab cannot lose its recovery point. Once the
       // server confirms creation, every local fork of that same command must be removed or the
       // original will resurface as an unresolvable attempted draft on the next opening.
-      const siblings = current.createAttempt
+      const keys = new Set([
+        ...(current.previousCreateKeys ?? []),
+        ...(current.createAttempt ? [current.createAttempt.key] : []),
+      ]);
+      const siblings = keys.size
         ? listLocalDrafts(current.userId, current.target)
         : { drafts: [], available: true };
       if (!siblings.available) {
@@ -235,7 +280,10 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
       const relatedIds = siblings.drafts
         .filter(
           (draft) =>
-            draft.id !== current.id && draft.createAttempt?.key === current.createAttempt?.key,
+            draft.id !== current.id &&
+            ((!!draft.createAttempt && keys.has(draft.createAttempt.key)) ||
+              (!!draft.nextCreateKey && keys.has(draft.nextCreateKey)) ||
+              !!draft.previousCreateKeys?.some((key) => keys.has(key))),
         )
         .map((draft) => draft.id);
       for (const id of [...relatedIds, current.id]) {
@@ -260,6 +308,7 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
     prepareCreate,
     acceptNotCreated,
     resetBackdatedAttempt,
+    resetLegacyOrdinaryAttempt,
     restore,
     status,
   };

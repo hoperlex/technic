@@ -3,7 +3,13 @@ import { Form } from 'antd';
 import dayjs from 'dayjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CreateVehicleRequestInput } from '@technic/contracts';
-import { listLocalDrafts, type FormValues } from '@features/vehicle-request-editor';
+import {
+  draftValues,
+  listLocalDrafts,
+  newDraftId,
+  writeLocalDraft,
+  type FormValues,
+} from '@features/vehicle-request-editor';
 import { useVehicleRequestLocalDraft } from '../src/widgets/vehicle-request-editor/model/useVehicleRequestLocalDraft';
 
 const userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -109,18 +115,24 @@ describe('Vehicle Request reconciliation draft', () => {
     )!;
     expect(fork.createAttempt).toBeUndefined();
     expect(fork.nextCreateKey).toBe(replacementKey);
+    expect(fork.previousCreateKeys).toEqual([sent.key]);
     expect(fork.values.trips).toHaveLength(2);
     expect(first.result.current.draft.active?.createAttempt).toEqual(sent);
 
+    const third = renderHook(useTab);
+    act(() => third.result.current.draft.begin({ kind: 'create' }, null, crypto.randomUUID()));
+    act(() => third.result.current.draft.restore(fork, null));
     let corrected!: typeof sent;
     act(() => {
-      corrected = second.result.current.draft.prepareCreate({
+      corrected = third.result.current.draft.prepareCreate({
         ...originalBody,
         comment: 'corrected after proof',
       });
     });
     expect(corrected.key).toBe(replacementKey);
     expect(corrected.body.comment).toBe('corrected after proof');
+    act(() => expect(third.result.current.draft.clear()).toBe(true));
+    expect(listLocalDrafts(userId, { kind: 'create' }).drafts).toHaveLength(0);
   });
 
   it('keeps the frozen original when the atomic release cannot be stored', () => {
@@ -229,5 +241,105 @@ describe('Vehicle Request reconciliation draft', () => {
     expect(next.key).toBe(nextKey);
     expect(next.body.operationId).toBe(nextOperationId);
     expect(next.protocol).toBe('correction-v1');
+  });
+
+  it('clears the restored backdated source after a manual reset and a new confirmed create', () => {
+    const first = renderHook(useTab);
+    act(() => first.result.current.draft.begin({ kind: 'create' }, null, originalKey));
+    let old!: ReturnType<typeof first.result.current.draft.prepareCreate>;
+    act(() => {
+      old = first.result.current.draft.prepareCreate({
+        ...originalBody,
+        operationId: originalKey,
+        backdateReason: 'Correction',
+      });
+    });
+    const source = listLocalDrafts(userId, { kind: 'create' }).drafts[0]!;
+    const second = renderHook(useTab);
+    act(() => second.result.current.draft.begin({ kind: 'create' }, null, crypto.randomUUID()));
+    act(() => second.result.current.draft.restore(source, null));
+    const nextOperationId = crypto.randomUUID();
+    act(() => {
+      expect(
+        second.result.current.draft.resetBackdatedAttempt(old.key, nextOperationId, replacementKey),
+      ).toBe('resolved');
+    });
+    expect(second.result.current.draft.active?.previousCreateKeys).toEqual([old.key]);
+    act(() => {
+      second.result.current.draft.prepareCreate({
+        ...originalBody,
+        operationId: nextOperationId,
+        backdateReason: 'Correction',
+      });
+    });
+    act(() => expect(second.result.current.draft.clear()).toBe(true));
+    expect(listLocalDrafts(userId, { kind: 'create' }).drafts).toHaveLength(0);
+  });
+
+  it('retains a legacy source until an explicit reset, then cleans it after a new create', () => {
+    const oldAttempt = { key: originalKey, body: originalBody };
+    expect(
+      writeLocalDraft({
+        schema: 1,
+        id: newDraftId(),
+        userId,
+        target: { kind: 'create' },
+        baseVersion: null,
+        operationId: originalKey,
+        savedAt: Date.now(),
+        values: draftValues(changedValues),
+        createAttempt: oldAttempt,
+      }),
+    ).toBe(true);
+    const source = listLocalDrafts(userId, { kind: 'create' }).drafts[0]!;
+    const second = renderHook(useTab);
+    act(() => second.result.current.draft.begin({ kind: 'create' }, null, crypto.randomUUID()));
+    act(() => second.result.current.draft.restore(source, null));
+    expect(() => second.result.current.draft.prepareCreate(originalBody)).toThrow();
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    act(() => {
+      expect(
+        second.result.current.draft.resetLegacyOrdinaryAttempt(originalKey, replacementKey),
+      ).toBe('resolved');
+    });
+    expect(setItem).toHaveBeenCalledTimes(1);
+    expect(second.result.current.draft.active?.previousCreateKeys).toEqual([originalKey]);
+    expect(listLocalDrafts(userId, { kind: 'create' }).drafts).toHaveLength(2);
+    let next!: ReturnType<typeof second.result.current.draft.prepareCreate>;
+    act(() => {
+      next = second.result.current.draft.prepareCreate({ ...originalBody, comment: 'reviewed' });
+    });
+    expect(next).toMatchObject({ key: replacementKey, protocol: 'receipt-v1' });
+    act(() => expect(second.result.current.draft.clear()).toBe(true));
+    expect(listLocalDrafts(userId, { kind: 'create' }).drafts).toHaveLength(0);
+  });
+
+  it('keeps a legacy attempt frozen when its manual replacement key cannot be stored', () => {
+    const source = {
+      schema: 1 as const,
+      id: newDraftId(),
+      userId,
+      target: { kind: 'create' as const },
+      baseVersion: null,
+      operationId: originalKey,
+      savedAt: Date.now(),
+      values: draftValues(changedValues),
+      createAttempt: { key: originalKey, body: originalBody },
+    };
+    expect(writeLocalDraft(source)).toBe(true);
+    const tab = renderHook(useTab);
+    act(() => tab.result.current.draft.begin(source.target, null, crypto.randomUUID()));
+    act(() => tab.result.current.draft.restore(source, null));
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota');
+    });
+    act(() => {
+      expect(tab.result.current.draft.resetLegacyOrdinaryAttempt(originalKey, replacementKey)).toBe(
+        'storage-error',
+      );
+    });
+    expect(tab.result.current.draft.active?.createAttempt).toEqual(source.createAttempt);
+    expect(tab.result.current.draft.active?.nextCreateKey).toBeUndefined();
+    expect(tab.result.current.draft.status.available).toBe(false);
   });
 });

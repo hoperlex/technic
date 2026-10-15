@@ -26,6 +26,7 @@ export type { VehiclePeriodCommand } from './model/types';
 export {
   draftValues,
   isBackdatedCreateAttempt,
+  isLegacyOrdinaryCreateAttempt,
   listLocalDrafts,
   newDraftId,
   removeLocalDraft,

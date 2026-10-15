@@ -1,6 +1,10 @@
 import { lazy } from 'react';
 import { Alert, Button } from 'antd';
-import { isBackdatedCreateAttempt, type FormValues } from '@features/vehicle-request-editor';
+import {
+  isBackdatedCreateAttempt,
+  isLegacyOrdinaryCreateAttempt,
+  type FormValues,
+} from '@features/vehicle-request-editor';
 import { FormDraftAutosave } from '@shared/lib';
 import { AsyncContent, FormModal, LocalFormDraftNotice } from '@shared/ui';
 import type { VehicleRequestEditorState } from '../model/useVehicleRequestEditorState';
@@ -16,6 +20,7 @@ interface Props {
   onFinish: (values: FormValues) => void;
   onReconcile: () => void;
   onResetBackdated: () => void;
+  onResetLegacy: () => void;
   reconciling: boolean;
   state: VehicleRequestEditorState;
 }
@@ -26,6 +31,7 @@ export function VehicleRequestEditorDialog({
   onFinish,
   onReconcile,
   onResetBackdated,
+  onResetLegacy,
   reconciling,
   state,
 }: Props) {
@@ -58,8 +64,8 @@ export function VehicleRequestEditorDialog({
         status={draft.status}
         attemptKey={attempt?.key}
         attemptHelp={
-          attempt && !attempt.protocol && !attempt.body.operationId && !attempt.body.backdateReason
-            ? `Попытка ${attempt.key} отправлена старой версией портала. Её исход нужно проверить в реестре или поддержке; новая сверка для неё недоступна.`
+          isLegacyOrdinaryCreateAttempt(attempt)
+            ? `Попытка ${attempt.key} отправлена старой версией портала. Новая сверка для неё недоступна; сначала проверьте реестр, затем при необходимости начните новую попытку вручную.`
             : attempt?.protocol === 'receipt-v1'
               ? `Исходное тело и файлы сохранены с кодом ${attempt.key}. Сверка определит, создана ли заявка; отказ 400/422 сам по себе этого не доказывает.`
               : undefined
@@ -81,6 +87,19 @@ export function VehicleRequestEditorDialog({
           title="Отправка задним числом требует ручной проверки"
           description={
             <Button size="small" onClick={onResetBackdated}>
+              Проверил список — начать новую попытку
+            </Button>
+          }
+        />
+      )}
+      {isLegacyOrdinaryCreateAttempt(attempt) && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          title="Старая отправка требует ручной проверки"
+          description={
+            <Button size="small" onClick={onResetLegacy}>
               Проверил список — начать новую попытку
             </Button>
           }

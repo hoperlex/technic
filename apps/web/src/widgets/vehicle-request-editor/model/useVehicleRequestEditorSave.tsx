@@ -24,6 +24,7 @@ import { waybillKeys } from '@entities/waybill';
 import {
   editTripBody,
   isBackdatedCreateAttempt,
+  isLegacyOrdinaryCreateAttempt,
   newTripBody,
   retypeErases,
   type FormValues,
@@ -129,6 +130,34 @@ export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: I
         const outcome = state.resetBackdatedAttempt(attempt.key);
         if (outcome === 'storage-error') {
           message.error('Новые ключи не сохранились на устройстве. Прежняя попытка оставлена.');
+        } else if (outcome === 'stale') {
+          message.warning('Попытка уже изменилась. Проверьте черновик.');
+        } else {
+          message.success('Новая попытка подготовлена. Проверьте поля перед сохранением.');
+        }
+      },
+    });
+  };
+
+  const confirmLegacyOrdinaryReset = () => {
+    const attempt = state.draft.active?.createAttempt;
+    if (state.record || !isLegacyOrdinaryCreateAttempt(attempt)) return;
+    modal.confirm({
+      title: 'Начать новую попытку после старой отправки?',
+      content: (
+        <>
+          Сначала проверьте список заявок. Старая версия API могла проигнорировать ключ, а первый
+          запрос может завершиться позже. Новая отправка тогда создаст дубль. Поля и ездки останутся
+          в форме; новый запрос автоматически не отправится.
+        </>
+      ),
+      okText: 'Я проверил список — начать новую попытку',
+      okButtonProps: { danger: true },
+      cancelText: 'Оставить прежнюю попытку',
+      onOk: () => {
+        const outcome = state.resetLegacyOrdinaryAttempt(attempt.key);
+        if (outcome === 'storage-error') {
+          message.error('Новый ключ не сохранился на устройстве. Прежняя попытка оставлена.');
         } else if (outcome === 'stale') {
           message.warning('Попытка уже изменилась. Проверьте черновик.');
         } else {
@@ -349,7 +378,11 @@ export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: I
       // data, but the screen is unreliable until refreshed.
       void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
-      state.draft.clear();
+      if (!state.draft.clear()) {
+        message.warning(
+          'Заявка сохранена, но связанные черновики не удалось удалить с устройства.',
+        );
+      }
       state.closeSaved();
       warnRouteDateMismatch(saved);
     },
@@ -460,5 +493,6 @@ export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: I
     reconcileAttempt,
     reconcilePending,
     confirmBackdatedReset,
+    confirmLegacyOrdinaryReset,
   };
 }
