@@ -119,7 +119,7 @@ function renderTab(over: RouteMap = {}): HttpMock {
     'GET /warehouses': () => json(list([WAREHOUSE])),
     'GET /vehicle-classifications': () => json(list([DUMP])),
     'GET /vehicles': () => json(emptyList()),
-    'POST /vehicle-requests': ({ body }) =>
+    'POST /vehicle-requests/_create-with-receipt': ({ body }) =>
       json({ ...DEPARTMENT_FREIGHT, ...(body as object) }, 201),
     ...over,
   });
@@ -237,8 +237,13 @@ describe('форма: заказчиком становится подразде
 
     fireEvent.click(screen.getByText('Сохранить'));
 
-    await waitFor(() => expect(http.countOf('POST /vehicle-requests')).toBe(1));
-    const body = http.lastCall('POST /vehicle-requests')!.body as Record<string, unknown>;
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/_create-with-receipt')).toBe(1),
+    );
+    const body = http.lastCall('POST /vehicle-requests/_create-with-receipt')!.body as Record<
+      string,
+      unknown
+    >;
     // Заказчик — ровно одна половина пары: обе сразу не примет ни CHECK, ни схема запроса.
     expect(body.departmentId).toBe('dep-1');
     expect(body.objectId).toBeUndefined();

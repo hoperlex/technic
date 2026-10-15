@@ -131,7 +131,8 @@ function renderTab(
           }),
         ]),
       ),
-    'POST /vehicle-requests': ({ body }) => json({ ...freightRequest(), ...(body as object) }, 201),
+    'POST /vehicle-requests/_create-with-receipt': ({ body }) =>
+      json({ ...freightRequest(), ...(body as object) }, 201),
     ...over,
   });
   // Кто смотрит, задаёт и подсказки: у штаба они от своей площадки, у диспетчера своих
@@ -294,8 +295,13 @@ describe('адресное поле: выбор из справочника (ADR
     }
 
     fireEvent.click(screen.getByText('Сохранить'));
-    await waitFor(() => expect(http.countOf('POST /vehicle-requests')).toBe(1));
-    const body = http.lastCall('POST /vehicle-requests')!.body as Record<string, unknown>;
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/_create-with-receipt')).toBe(1),
+    );
+    const body = http.lastCall('POST /vehicle-requests/_create-with-receipt')!.body as Record<
+      string,
+      unknown
+    >;
     // Адреса уехали с заявки на ездку (Р2): у заведённой их ровно одна, и пара с метаданными
     // приходит в ней. Верификация проверяется тем же: строка и метаданные ходят вместе.
     const [trip] = body.trips as Record<string, unknown>[];

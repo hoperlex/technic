@@ -261,7 +261,8 @@ const CARD_ROUTES: RouteMap = {
     }),
 };
 
-const CREATE = 'POST /vehicle-requests';
+const CREATE_PATH = '/vehicle-requests/_create-with-receipt';
+const CREATE = `POST ${CREATE_PATH}`;
 
 function renderTab(
   items: VehicleRequestDto[] = [SPECIAL],
@@ -388,12 +389,11 @@ function staleClassifierCache(queryClient: QueryClient, single = false) {
   );
 }
 
-/**
- * Запросы, адресованные **конкретной** заявке и что-то в ней меняющие. Копия не шлёт ни одного: ни
- * правки, ни смены статуса, ни назначения — иначе повтор заказа менял бы ход исходной работы.
- */
+/** A copy creates one new order; writes to an existing request would alter the source. */
 function writesToRequests(http: HttpMock): RecordedCall[] {
-  return http.calls.filter((c) => c.method !== 'GET' && c.path.startsWith('/vehicle-requests/'));
+  return http.calls.filter(
+    (c) => c.method !== 'GET' && c.path.startsWith('/vehicle-requests/') && c.path !== CREATE_PATH,
+  );
 }
 
 describe('копия заявки на технику', () => {
