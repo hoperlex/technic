@@ -3,6 +3,7 @@ import {
   serviceRequestBulkOperationLabels,
   serviceRequestStatusLabels,
   type AuthUser,
+  type Permission,
   type ServiceRequestBulkBody,
   type ServiceRequestBulkOperation,
   type ServiceRequestDto,
@@ -126,6 +127,7 @@ export function serviceBulkCommands(
   selected: ServiceRequestDto[],
   actionsFor: (request: ServiceRequestDto) => ServiceMenuItem[],
   user: AuthUser | null,
+  can: (permission: Permission) => boolean,
 ): ServiceBulkCommand[] {
   const perRow = selected.map((request) => ({ request, items: bulkItemsOf(request, actionsFor) }));
   const order: ServiceBulkUiOperation[] = [];
@@ -136,7 +138,7 @@ export function serviceBulkCommands(
   const commands: ServiceBulkCommand[] = [];
   for (const operation of order) {
     // Право операции — свойство субъекта, а не строки (Р5): его нет — команды нет вовсе.
-    if (!canRunServiceBulkOperation(user, operation)) continue;
+    if (!canRunServiceBulkOperation(user, operation, can)) continue;
     const rows: ServiceRequestDto[] = [];
     const skipped: ServiceBulkSkipped[] = [];
     let danger = false;
@@ -167,9 +169,10 @@ export function serviceBulkRefusal(
   request: ServiceRequestDto,
   actionsFor: (request: ServiceRequestDto) => ServiceMenuItem[],
   user: AuthUser | null,
+  can: (permission: Permission) => boolean,
 ): string | null {
   for (const [operation, item] of bulkItemsOf(request, actionsFor)) {
-    if (!item.disabled && canRunServiceBulkOperation(user, operation)) return null;
+    if (!item.disabled && canRunServiceBulkOperation(user, operation, can)) return null;
   }
   return 'Массовых действий по этой заявке нет';
 }

@@ -34,7 +34,7 @@ import { useAuth } from '@entities/session';
  * «как называется предмет», и вместе они перерастают порог длины файла.
  */
 export function ServiceRequestSubjectName({ request }: { request: ServiceRequestDto }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const check = serviceRequestSubjectCheck(request);
   return (
     <>
@@ -56,7 +56,7 @@ export function ServiceRequestSubjectName({ request }: { request: ServiceRequest
           <Alert type="error" showIcon title={subjectCheckNotice(check)} />
         ) : (
           <ServiceHint
-            coordinator={canCoordinateServiceRequests(user)}
+            coordinator={canCoordinateServiceRequests(user, can)}
             level="info"
             title={subjectCheckNotice(check)}
           />

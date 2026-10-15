@@ -10,6 +10,16 @@ import {
   ADMIN_GRANTS,
   can as matrixCan,
   canApproveMechRequest,
+  allowedStatusTransitions,
+  allowedVehicleRequestTransitions,
+  allowedServiceStatusTransitions,
+  attachableServiceFileKinds,
+  canCoordinateServiceRequests,
+  canOpenServiceEstimateDispute,
+  canResolveServiceEstimateDispute,
+  canRunServiceBulkOperation,
+  canUseServiceBulk,
+  isWaitingOn,
   MODULE_GRANTS,
   PERMISSIONS,
   permissionsFor,
@@ -26,6 +36,8 @@ import { vehicleRequestDateRules } from '@entities/vehicle-request';
 import { mechMenuItems } from '../src/pages/mech/mechRequestMenu';
 import { serviceGridView } from '../src/pages/service/serviceRequestGrid';
 import { serviceRequestExtraItems } from '../src/pages/service/serviceRequestExtras';
+import { serviceRequestMenuItems } from '../src/pages/service/serviceRequestMenu';
+import { serviceStatusLine } from '@entities/service-request';
 import type {
   ServiceMenuContext,
   ServiceRequestModals,
@@ -50,7 +62,7 @@ import { assignedServiceRequest, serviceRequest, SERVICE_COUNTERPARTY } from './
  * config) and that every exception still has its reason.
  *
  * THE EQUALITY. For every access profile — role × counterparty type, role × add-on, role × catalogue
- * grant — what the touched screens show with the portal's `can` over the shipped list equals what
+ * grant — what the touched screens and predicates show with the portal's `can` over the shipped list equals what
  * the server's oracle answers: the same contract predicates with their default, the matrix over the
  * full principal. The list itself is pinned to that matrix by guard G1
  * (`apps/api/test/auth-session-permissions.test.ts`); this file pins the portal's side.
@@ -60,7 +72,7 @@ import { assignedServiceRequest, serviceRequest, SERVICE_COUNTERPARTY } from './
  * an account the matrix CANNOT read — every grant permission stripped from the subject, the list
  * still carrying them, exactly a set assembled in production and unknown to the matrix — and adds
  * one permission at a time. A screen that asks the matrix anywhere answers differently there, and a
- * sensitivity check proves the sweep would see it for every screen.
+ * sensitivity check proves the sweep would see it for the sampled screens.
  */
 
 // ── The guard ──────────────────────────────────────────────────────────────────────────────────
@@ -294,45 +306,34 @@ const MECH_REQUESTS: readonly MechRequestDto[] = [
 
 const noop = () => {};
 
-/**
- * The mechanization row menu (`mechRequestMenu.tsx`) and its visa predicate.
- *
- * The blind sweep leaves the status corridor out (`status:*` items, `allowedStatusTransitions`):
- * it is one of the contract predicates that still take the subject and read the matrix inside the
- * contracts — the residual ADR 0223 names. A matrix-blind account answers it differently by
- * construction; on the shipped account it agrees because the session carries the whole subject
- * beside the list, and that is guard G1's half, not this file's.
- */
-const mechMenu = (corridor: boolean) =>
-  function mechMenu(user: AuthUser, can: Can): unknown {
-    return MECH_REQUESTS.map((request) => ({
-      visa: canApproveMechRequest(user, request, can),
-      items: mechMenuItems(request, {
-        user,
-        can,
-        open: {
-          takeInWork: noop,
-          editDeal: noop,
-          issue: noop,
-          revokeIssue: noop,
-          extend: noop,
-          decideExtension: noop,
-          complete: noop,
-          cancel: noop,
-          rollbackToNew: noop,
-        },
-        run: {
-          rollback: noop,
-          setApproval: noop,
-          duplicate: noop,
-          remove: noop,
-          withdrawExtension: noop,
-        },
-      })
-        .map((item) => item.key)
-        .filter((key) => corridor || !key.startsWith('status:')),
-    }));
-  };
+/** The mechanization menu, including the status corridor supplied by the session list. */
+function mechMenu(user: AuthUser, can: Can): unknown {
+  return MECH_REQUESTS.map((request) => ({
+    visa: canApproveMechRequest(user, request, can),
+    items: mechMenuItems(request, {
+      user,
+      can,
+      open: {
+        takeInWork: noop,
+        editDeal: noop,
+        issue: noop,
+        revokeIssue: noop,
+        extend: noop,
+        decideExtension: noop,
+        complete: noop,
+        cancel: noop,
+        rollbackToNew: noop,
+      },
+      run: {
+        rollback: noop,
+        setApproval: noop,
+        duplicate: noop,
+        remove: noop,
+        withdrawExtension: noop,
+      },
+    }).map((item) => item.key),
+  }));
+}
 
 /** The office equipment list's column set (`serviceGridView`). */
 function serviceGrid(user: AuthUser, can: Can): unknown {
@@ -378,23 +379,91 @@ function serviceExtras(user: AuthUser, can: Can): unknown {
   );
 }
 
+/** The service menu and the contract predicates that other portal surfaces ask directly. */
+function serviceMenu(user: AuthUser, can: Can): unknown {
+  return SERVICE_REQUESTS.map((request) =>
+    serviceRequestMenuItems(request, { user, can, modals: NO_MODALS, run: NO_RUN }).map(
+      (item) => item.key,
+    ),
+  );
+}
+
+function remainingPredicates(user: AuthUser, can: Can): unknown {
+  const request = assignedServiceRequest({ status: 'in_work' });
+  const assignment = serviceExecutorAssignment(request, user);
+  return {
+    waste: allowedStatusTransitions('done', user, 'waste', can),
+    vehicle: allowedVehicleRequestTransitions('new', user, true, can),
+    service: allowedServiceStatusTransitions(request.status, user, assignment, can),
+    bulk: canUseServiceBulk(user, can),
+    bulkOperations: [
+      'cancel',
+      'accept',
+      'hold',
+      'resume',
+      'urgency_on',
+      'assign',
+      'start',
+      'archive',
+    ].map((operation) =>
+      canRunServiceBulkOperation(
+        user,
+        operation as Parameters<typeof canRunServiceBulkOperation>[1],
+        can,
+      ),
+    ),
+    documents: attachableServiceFileKinds(
+      request.status,
+      request.audience,
+      user,
+      assignment,
+      serviceActionRow(request),
+      can,
+    ),
+    coordinator: canCoordinateServiceRequests(user, can),
+    dispute: [
+      canOpenServiceEstimateDispute(
+        { ...serviceActionRow(request), status: 'in_work' },
+        user,
+        { exemptionApplied: true, disputeOpen: false },
+        can,
+      ),
+      canResolveServiceEstimateDispute(
+        { ...serviceActionRow(request), status: 'on_hold' },
+        user,
+        { disputeOpen: true },
+        can,
+      ),
+    ],
+    waiting: ['it', 'approval', 'operator'].map((side) =>
+      isWaitingOn(user, side as Parameters<typeof isWaitingOn>[1], can),
+    ),
+    statusLine: serviceStatusLine(request, user, can),
+  };
+}
+
 type Screen = (user: AuthUser, can: Can) => unknown;
-type ScreenName = 'calendar' | 'mechMenu' | 'serviceGrid' | 'serviceExtras';
+type ScreenName =
+  'calendar' | 'mechMenu' | 'serviceGrid' | 'serviceExtras' | 'serviceMenu' | 'remainingPredicates';
 const SCREEN_NAMES: readonly ScreenName[] = [
   'calendar',
   'mechMenu',
   'serviceGrid',
   'serviceExtras',
+  'serviceMenu',
+  'remainingPredicates',
 ];
 /** As production ships the account: every item, the corridor included. */
 const SHIPPED_SCREENS: Record<ScreenName, Screen> = {
   calendar,
-  mechMenu: mechMenu(true),
+  mechMenu,
   serviceGrid,
   serviceExtras,
+  serviceMenu,
+  remainingPredicates,
 };
-/** On a matrix-blind account: everything that asks the portal's oracle, nothing that cannot. */
-const BLIND_SCREENS: Record<ScreenName, Screen> = { ...SHIPPED_SCREENS, mechMenu: mechMenu(false) };
+/** On a matrix-blind account every screen must ask the list, including transition corridors. */
+const BLIND_SCREENS: Record<ScreenName, Screen> = SHIPPED_SCREENS;
 
 beforeAll(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -404,6 +473,12 @@ afterAll(() => {
 });
 
 describe('the portal answers what the server answers, profile by profile (ADR 0223)', () => {
+  it('server callers retain the matrix default for bulk gates', () => {
+    const admin = shipped({ role: 'admin' });
+    expect(canUseServiceBulk(admin)).toBe(true);
+    expect(canRunServiceBulkOperation(admin, 'cancel')).toBe(true);
+  });
+
   it('the sweep covers every access profile and the catalogue grants', () => {
     expect(SUBJECTS.length).toBeGreaterThan(ACCESS_PROFILES.length);
   });

@@ -73,7 +73,7 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
       // Подсказок на телефоне нет, поэтому состояние выносится строкой — той же, что во второй
       // строке столбца на десктопе. Текстом, а не ссылкой (Р117): тап по карточке открывает
       // карточку, и второй смысл у того же жеста спорил бы с первым — действия здесь в шите.
-      (r) => serviceStatusLine(r, opts.user)?.text ?? null,
+      (r) => serviceStatusLine(r, opts.user, opts.can)?.text ?? null,
     ],
     onOpen: opts.onOpen,
     actions: (r) => [

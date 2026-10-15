@@ -142,6 +142,7 @@ export interface ServiceGridOptions {
    * рано или поздно разошёлся бы с текстом — заметная строка «Ждёт оператора» у того, кого и ждут.
    */
   user: AuthUser | null;
+  can: (permission: Permission) => boolean;
   actions: (request: ServiceRequestDto) => ServiceMenuItem[];
   /**
    * Строки текущей страницы — набору колонок, а не только таблице (ADR 0160, Р11): показывать ли
@@ -221,6 +222,7 @@ export function serviceRequestColumns(
           items={opts.actions(r)}
           pending={opts.pendingId === r.id}
           user={opts.user}
+          can={opts.can}
         />
       ),
     },

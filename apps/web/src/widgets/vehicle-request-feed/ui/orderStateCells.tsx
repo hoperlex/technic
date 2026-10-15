@@ -41,13 +41,13 @@ export function StatusCell({
   pending: boolean;
   onChange: (status: RequestStatus) => void;
 }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const isMobile = useIsMobile();
   const [sheetOpen, setSheetOpen] = useState(false);
   // The contracts predicate is the single source for role/status transitions and the approval gate:
   // the linear cycle is for request-managing roles, rolling back closed requests is admin-only, and
   // "В работе" before approval is offered to nobody because the server would reject it.
-  const transitions = user ? allowedVehicleRequestTransitions(status, user, approved) : [];
+  const transitions = user ? allowedVehicleRequestTransitions(status, user, approved, can) : [];
   const plain = <Tag color={requestStatusColors[status]}>{requestStatusLabels[status]}</Tag>;
   // Mobile cards print the cancellation reason as a line (ADR 0030) because a tooltip does not open
   // on tap.

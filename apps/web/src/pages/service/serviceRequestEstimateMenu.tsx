@@ -119,7 +119,7 @@ export function serviceEstimateMenuItems(
    * У расходников объёма работ нет вовсе: картридж берут со своего склада, согласовывать по нему
    * нечего и не у кого, — и вид заявки предикат проверяет сам.
    */
-  if (canSubmitServiceEstimate(row, ctx.user, assignment)) {
+  if (canSubmitServiceEstimate(row, ctx.user, assignment, ctx.can)) {
     const documentEnabled = hasFeature(ctx.user, 'service_estimate_document_mode');
     const automaticallyApproved =
       documentEnabled &&
@@ -154,7 +154,7 @@ export function serviceEstimateMenuItems(
    * Сторону согласующего считает предикат: право «Ведения» либо поимённое назначение (Р3). Оператор
    * подрядчика исключён им же — подпись под собственным счётом не согласование, а его копия.
    */
-  if (canApproveServiceEstimate(row, ctx.user, assignment)) {
+  if (canApproveServiceEstimate(row, ctx.user, assignment, ctx.can)) {
     items.push({
       key: 'approve',
       label: 'Согласовать объём работ',
@@ -180,7 +180,7 @@ export function serviceEstimateMenuItems(
    * ЛИБО непогашенное предъявление; прежнего «согласование есть» после Р9 мало, иначе отозвать
    * собственное предъявление было бы нечем.
    */
-  if (canReopenServiceEstimate(row, ctx.user, assignment)) {
+  if (canReopenServiceEstimate(row, ctx.user, assignment, ctx.can)) {
     items.push({
       key: 'reopen',
       label: 'Вернуть объём в правку',
@@ -202,7 +202,7 @@ export function serviceEstimateMenuItems(
    * вовсе динамическая: куда вернётся заявка, решает матрица «откуда открыт × исход» на сервере.
    */
   const disputeFacts = serviceEstimateDisputeFacts(request);
-  if (canOpenServiceEstimateDispute(row, ctx.user, disputeFacts)) {
+  if (canOpenServiceEstimateDispute(row, ctx.user, disputeFacts, ctx.can)) {
     items.push({
       key: 'estimate-dispute',
       label: 'Оспорить освобождение',
@@ -211,7 +211,7 @@ export function serviceEstimateMenuItems(
       onClick: () => ctx.modals.ask(prompts.openEstimateDispute),
     });
   }
-  if (canResolveServiceEstimateDispute(row, ctx.user, disputeFacts)) {
+  if (canResolveServiceEstimateDispute(row, ctx.user, disputeFacts, ctx.can)) {
     items.push({
       key: 'estimate-dispute-resolve',
       label: 'Разрешить спор',

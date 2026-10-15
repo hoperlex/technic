@@ -3,6 +3,7 @@ import { Button, Dropdown, Space, Typography } from 'antd';
 import { DownOutlined, LoadingOutlined } from '@ant-design/icons';
 import {
   serviceRequestStatusLabels,
+  type Permission,
   type AuthUser,
   type ServiceRequestDto,
 } from '@technic/contracts';
@@ -178,13 +179,15 @@ export function ServiceStatusLineCell({
   items,
   pending,
   user,
+  can,
 }: {
   request: ServiceRequestDto;
   items: ServiceMenuItem[];
   pending: boolean;
   user: AuthUser | null;
+  can: (permission: Permission) => boolean;
 }) {
-  const line = serviceStatusLine(request, user);
+  const line = serviceStatusLine(request, user, can);
   /*
    * Главный шаг состояния — то самое действие, к которому зовёт подпись «Вам: …» (Р117). Берётся
    * из УЖЕ полученного набора (признак `primary` у пункта), а не отдельным обработчиком снаружи:

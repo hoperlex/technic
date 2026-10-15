@@ -2,6 +2,7 @@ import { Button, Space, Tag, Tooltip, Typography } from 'antd';
 import { UserSwitchOutlined } from '@ant-design/icons';
 import {
   type AccessSubject,
+  type Permission,
   serviceRequestKindLabels,
   type ServiceRequestDto,
   serviceRequestStatusLabels,
@@ -35,6 +36,7 @@ import { ResponsibleValue } from '@entities/user-account';
 export function serviceRequestViewFields({
   request,
   user,
+  can,
   onAssign,
   onMoveEquipment,
   statusItems,
@@ -43,6 +45,7 @@ export function serviceRequestViewFields({
   request: ServiceRequestDto;
   /** Смотрящий: от него зависит только лицо подписи состояния — «Вам: …» либо «Ждёт …». */
   user: AccessSubject | null | undefined;
+  can: (permission: Permission) => boolean;
   /**
    * Открыть окно исполнителей (ADR 0140). Не задан — состав правит кто-то другой либо не тот
    * статус: право и коридор здесь не считаются вовсе, обработчик приходит готовым пунктом
@@ -62,7 +65,7 @@ export function serviceRequestViewFields({
   statusPending?: boolean;
 }): ViewField[] {
   // Подпись — та же, что во второй строке столбца (Р100); у отложенной её разбирает строка ниже.
-  const statusLine = request.status !== 'on_hold' ? serviceStatusLine(request, user) : null;
+  const statusLine = request.status !== 'on_hold' ? serviceStatusLine(request, user, can) : null;
   // Площадка заявки; `null` — её нет вовсе, и от этого зависит и подпись строки, и её состав (Р8).
   const objectLabel = serviceRequestObjectLabel(request);
 

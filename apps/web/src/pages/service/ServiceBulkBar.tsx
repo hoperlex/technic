@@ -85,7 +85,7 @@ export function useServiceBulk(
   grid: ServiceBulkGrid,
   query: Record<string, unknown>,
 ): SelectionConfig<ServiceRequestDto> | undefined {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const scope = listScopeKey(query);
   const [keys, setKeys] = useState<string[]>([]);
   const [frozen, setFrozen] = useState<string | null>(null);
@@ -117,10 +117,10 @@ export function useServiceBulk(
 
   // Допуск к массовому режиму — продуктовое ограничение поверх прав (Р5): у заявителя есть
   // `serviceRequests.delete` на свою новую заявку, но массового интерфейса он не получает.
-  if (!canUseServiceBulk(user)) return undefined;
+  if (!canUseServiceBulk(user, can)) return undefined;
 
   const selected = grid.requests.filter((row) => keys.includes(row.id));
-  const commands = serviceBulkCommands(selected, grid.actions, user);
+  const commands = serviceBulkCommands(selected, grid.actions, user, can);
 
   const close = (used: boolean) => {
     setTarget(null);
@@ -135,7 +135,7 @@ export function useServiceBulk(
     onChange: setKeys,
     scopeKey: frozen ?? scope,
     maxSelected: SERVICE_REQUEST_BULK_LIMIT,
-    disabled: (request) => serviceBulkRefusal(request, grid.actions, user),
+    disabled: (request) => serviceBulkRefusal(request, grid.actions, user, can),
     bar: () => (
       <>
         <BulkBar

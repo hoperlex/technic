@@ -122,7 +122,7 @@ export function ServiceAcceptModal({
    * `AuthContext` не видит, и правило «кому положены пояснения» живёт единственной функцией
    * контрактов — своя формула здесь разошлась бы с соседними экранами молча.
    */
-  const coordinator = canCoordinateServiceRequests(user);
+  const coordinator = canCoordinateServiceRequests(user, can);
 
   return (
     <FormModal

@@ -98,7 +98,7 @@ export function serviceRequestMenuItems(
    * снятый исполнитель потерял бы единственный вход в переписку по заявке, которую видит.
    */
   const mayAct = mayActOnServiceRequest(request, ctx.user);
-  const allowed = allowedServiceStatusTransitions(request.status, ctx.user, assignment);
+  const allowed = allowedServiceStatusTransitions(request.status, ctx.user, assignment, ctx.can);
   const has = (status: (typeof allowed)[number]) => allowed.includes(status);
   const items: ServiceMenuItem[] = [];
   const ask = ctx.modals.ask;
@@ -112,7 +112,7 @@ export function serviceRequestMenuItems(
    * предъявлением: прежде его держал статус «Смета на согласовании», и, сняв статус, мы потеряли бы
    * запрет молча.
    */
-  if (mayAct && canAssignServiceExecutors(row, ctx.user)) {
+  if (mayAct && canAssignServiceExecutors(row, ctx.user, ctx.can)) {
     // Первое назначение — главный шаг «Новой»; дальше это уже переназначение, то есть разбор
     // ошибки, а не ожидаемый ход. Признак читается по составу исполнителей, а не по статусу (Р11):
     // статус с ним лишь СОВПАДАЛ, и совпадать больше нечему.
@@ -145,7 +145,7 @@ export function serviceRequestMenuItems(
    * Пункт остаётся в меню и после того, как действие вышло быстрой кнопкой в строку списка и в
    * шапку карточки: убери мы его, действие пропало бы на телефоне, где меню открывается шитом.
    */
-  if (mayAct && canStartServiceWork(row, ctx.user, assignment)) {
+  if (mayAct && canStartServiceWork(row, ctx.user, assignment, ctx.can)) {
     items.push({
       key: 'start',
       label: 'Принять в работу',
@@ -162,7 +162,7 @@ export function serviceRequestMenuItems(
    * отличает и отличать не должен: кого снимать — свою строку или всю компанию — решает ручка, а
    * «остался ли кто-то ещё» отвечает уже очередь.
    */
-  if (mayAct && canDeclineServiceRequest(row, ctx.user, assignment)) {
+  if (mayAct && canDeclineServiceRequest(row, ctx.user, assignment, ctx.can)) {
     items.push({
       key: 'decline',
       label: 'Отказаться от заявки',
@@ -279,7 +279,7 @@ export function serviceRequestMenuItems(
     mayAct &&
     request.status === 'in_work' &&
     has('new') &&
-    holdsServiceStatusRight(ctx.user, 'new')
+    holdsServiceStatusRight(ctx.user, 'new', ctx.can)
   ) {
     items.push({
       key: 'rollback-start',
@@ -326,7 +326,7 @@ export function serviceRequestMenuItems(
   const holdMode: HoldMode | null = !mayAct
     ? null
     : request.status === 'on_hold'
-      ? canResumeService(ctx.user)
+      ? canResumeService(ctx.user, ctx.can)
         ? 'resume'
         : null
       : has('on_hold')

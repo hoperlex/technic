@@ -1,9 +1,9 @@
 # ADR 0223. The portal asks the server's permission list, never the contracts matrix
 
 - Статус: Реализовано (12.10.2026, roadmap item Q6). The three checks ask the server's list, a
-  lint rule keeps the matrix readers out of `apps/web/src`, and a per-profile test pins the touched
-  screens to the server's answer; contract predicates that ask the matrix inside the contracts
-  remain and are named in [Implementation](#implementation-12102026)
+  lint rule keeps direct matrix readers out of `apps/web/src`, and a per-profile test pins the
+  touched screens to the server's answer; the internal predicate readers named in the initial
+  [Implementation](#implementation-12102026) were converged in the [follow-up](#follow-up-15102026)
 - Домены: доступ, каркас-портала
 - Изменяет: [ADR 0021](0021-permissions-model.md) (decision 2) — the portal no longer hides what
   is unavailable «по той же таблице»: it hides it by the list the server computed from that table
@@ -83,10 +83,8 @@ matrix. Three places still ask the matrix with the session user:
   The render harness already builds the context with the same `permissionChecks`
   (`apps/web/test/render.tsx`), so a fixture with a role and no list reads as «no permission».
 - Contract predicates that ask the matrix inside the contracts over the subject they are handed
-  stay matrix readers in the portal until they take `has` (see
-  [Implementation](#implementation-12102026)). Their answer is the server's only because the
-  session ships the whole subject beside the list; that is guard G1's half, and new code passes
-  `can` instead of relying on it.
+  were matrix readers in the initial portal implementation; the
+  [follow-up](#follow-up-15102026) passes `can` to them as well.
 
 ## Rejected alternatives
 
@@ -145,7 +143,7 @@ over the shipped subject is the list. What the portal does with it is pinned by
   over the shipped subject would differ on every one of the four screens. Reverting any of the
   four places to the matrix fails this sweep (checked by hand on each).
 
-**What is left.** About seventeen contract predicates the portal calls with the session user still
+**Residual after the initial Q6 wave.** About seventeen contract predicates the portal calls with the session user still
 ask the matrix inside the contracts: the status corridors (`allowedStatusTransitions`,
 `allowedVehicleRequestTransitions`, `allowedServiceStatusTransitions`), the office equipment action
 predicates (`canStartServiceWork`, `canAssignServiceExecutors`, `canDeclineServiceRequest`,
@@ -155,3 +153,18 @@ imports of a matrix reader, so the guard does not see them, and the blind sweep 
 mechanization corridor (`status:*` items) out. They agree with the server because the session
 builder ships the whole subject beside the list (guard G1), and each moves to `has` the same way
 when its screen is next touched.
+
+## Follow-up (15.10.2026)
+
+The residual matrix reads identified above now receive the portal's `can` over
+`AuthUser.permissions`: the request status corridors, service request action and estimate
+predicates, bulk admission and operation rights, document kinds, coordinator hints, and
+waiting-on labels and badge. The contract predicates still own the status and scenario rules;
+`has` defaults to the matrix for API callers. The portal supplies `can` at every session-user
+call site, including nested predicates such as `canHoldService`, `isServiceExecutor`, and
+`canAttachServiceFileSide`. The matrix-blind sweep in `permission-oracle.test.ts` now covers the
+mechanization corridor and the additional service request surfaces.
+
+Server-only predicates such as `serviceRequestAudienceOf` continue to use the matrix over the
+server principal. A future portal call to one of those functions must pass the server-list
+membership before it is used for permission-dependent availability.

@@ -63,7 +63,7 @@ export function EstimateEditorModal({
   assignment?: ServiceExecutorAssignment;
   onClose: () => void;
 }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const breakdown = intent === 'breakdown';
   const directDocument = intent === 'document' || intent === 'work_done';
   const workDone = intent === 'work_done';
@@ -81,7 +81,7 @@ export function EstimateEditorModal({
    * Who gets the explanations (R11): the caller computes it, not `ServiceHint` — the entity layer
    * does not see `AuthContext`, and the rule lives as the one contracts function.
    */
-  const coordinator = canCoordinateServiceRequests(user);
+  const coordinator = canCoordinateServiceRequests(user, can);
   const warrantyMode = !!request?.warrantyClaim && !breakdown;
   const { locked, mode, rows, issue, pending } = editor;
   const { className: blockersClass, ...blockersHandlers } = editor.blockers;

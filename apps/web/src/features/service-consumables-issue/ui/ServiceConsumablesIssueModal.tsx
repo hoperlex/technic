@@ -46,14 +46,14 @@ export function ServiceConsumablesIssueModal({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const qc = useQueryClient();
   /*
    * Кому положены пояснения (Р11). Признак считает вызывающий: `entities` не видит `AuthContext`
    * (линт границ), а правило «кому положены пояснения» живёт единственной функцией контрактов —
    * своя формула на месте разошлась бы с соседними экранами молча.
    */
-  const coordinator = canCoordinateServiceRequests(user);
+  const coordinator = canCoordinateServiceRequests(user, can);
   const [rows, setRows] = useState<ConsumableFactRow[]>([]);
   /** Отказ сервера строкой в окне: по нехватке остатка факт правят здесь же, не закрывая окно. */
   const [failure, setFailure] = useState<string | null>(null);

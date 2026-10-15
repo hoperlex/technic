@@ -923,8 +923,9 @@ export function allowedVehicleRequestTransitions(
   from: RequestStatus,
   subject: AccessSubject,
   approved: boolean,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): RequestStatus[] {
-  const transitions = allowedStatusTransitions(from, subject, 'vehicle');
+  const transitions = allowedStatusTransitions(from, subject, 'vehicle', has);
   return approved ? transitions : transitions.filter((to) => !transitionRequiresApproval(to));
 }
 

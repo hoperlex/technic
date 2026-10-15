@@ -85,14 +85,14 @@ export function WasteStatusCell({
   pending: boolean;
   onChange: (request: WasteRequestDto, status: RequestStatus) => void;
 }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const isMobile = useIsMobile();
   const [sheetOpen, setSheetOpen] = useState(false);
 
   // Contract predicates keep the role-specific transition corridor identical to the API: the linear
   // cycle for everyone, rollbacks for the admin only, and an external executor has its own
   // corridor (closing a request taken into work).
-  const transitions = user ? allowedStatusTransitions(request.status, user, 'waste') : [];
+  const transitions = user ? allowedStatusTransitions(request.status, user, 'waste', can) : [];
   const tag = (
     <Tag color={requestStatusColors[request.status]} style={{ marginInlineEnd: 0 }}>
       {requestStatusLabels[request.status]}

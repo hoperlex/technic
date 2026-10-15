@@ -93,6 +93,7 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
     user,
     serviceExecutorAssignment(request, user),
     serviceActionRow(request),
+    can,
   );
 
   /*
@@ -131,7 +132,7 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
    * пояснения» обязано меняться в одном месте, иначе половина подсказок вернулась бы тем, у кого
    * их убирали.
    */
-  const coordinator = canCoordinateServiceRequests(user);
+  const coordinator = canCoordinateServiceRequests(user, can);
 
   // Снятие документа после приёмки — только у распорядителя файлов: заявка закрыта, и подшитая
   // бумага из неё не исчезает по решению стороны (Р29).

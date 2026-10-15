@@ -101,7 +101,7 @@ export function ServiceRequestViewModal({
    */
   modals?: ReactNode;
 }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const isMobile = useIsMobile();
   const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -184,6 +184,7 @@ export function ServiceRequestViewModal({
     ? serviceRequestViewFields({
         request,
         user,
+        can,
         onAssign: assign?.onClick,
         onMoveEquipment: moveEquipment?.onClick,
         // Тег статуса в поле «Статус» — тот же вход в ход заявки, что и в строке списка (ADR

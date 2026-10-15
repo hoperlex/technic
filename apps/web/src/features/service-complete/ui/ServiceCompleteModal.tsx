@@ -77,7 +77,7 @@ export function ServiceCompleteModal({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const qc = useQueryClient();
   const [form] = Form.useForm<CompleteFormValues>();
   const { className: blockersClass, ...blockersHandlers } = useFormBlockers(form).formProps;
@@ -93,7 +93,7 @@ export function ServiceCompleteModal({
    * service. Asked through ONE contracts function rather than a `can(...)` in place: eleven places
    * ask this question, and spread over calls it would have moved only halfway.
    */
-  const coordinator = canCoordinateServiceRequests(user);
+  const coordinator = canCoordinateServiceRequests(user, can);
 
   /** The state the window opens with; the form resets to it whenever another request arrives. */
   const initial = useMemo(() => (request ? completeFormValues(request, dayjs()) : null), [request]);

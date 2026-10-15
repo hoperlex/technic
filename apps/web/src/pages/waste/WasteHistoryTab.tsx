@@ -41,7 +41,7 @@ const DATE = 'YYYY-MM-DD';
  * числе: по ней ещё разбирают талоны, и итога у неё пока не бывает.
  */
 export function WasteHistoryTab() {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const { message } = App.useApp();
   const qc = useQueryClient();
   const { soleObjectId, limitObjectOptions } = usePlaceObjectScope();
@@ -153,7 +153,10 @@ export function WasteHistoryTab() {
   const rollbackHandler = (
     r: WasteRequestDto | null,
   ): ((r: WasteRequestDto) => void) | undefined =>
-    r && user && !r.deletedAt && allowedStatusTransitions(r.status, user, 'waste').includes('done')
+    r &&
+    user &&
+    !r.deletedAt &&
+    allowedStatusTransitions(r.status, user, 'waste', can).includes('done')
       ? (target) => rollbackMut.mutate(target)
       : undefined;
 

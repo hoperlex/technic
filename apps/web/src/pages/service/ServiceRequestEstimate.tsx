@@ -93,7 +93,7 @@ export function ServiceRequestEstimate({
    * подписывать некому, и «ждём решения» на нём было бы обещанием шага, которого нет.
    */
   const pending = serviceRequestHasEffectivePendingEstimate(row);
-  const coordinator = canCoordinateServiceRequests(user);
+  const coordinator = canCoordinateServiceRequests(user, can);
   /*
    * Объём работ подан документом (Р2): строк у такой ревизии нет вовсе, и суммы тоже — она придёт
    * разбором счёта. Формат берётся из карточки; второго мнения (например, «строк ноль — значит

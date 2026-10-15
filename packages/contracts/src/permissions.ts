@@ -2207,8 +2207,8 @@ const REQUEST_STATUS_PERMISSION: Record<RequestModule, Permission> = {
  * модуль открыл бы исполнителю ходы, о которых не спрашивали. Роль без контрагента (`operator` без
  * типа) прав статуса не имеет вовсе — и своего коридора ей этот гейт не открывает.
  */
-function canChangeAnyRequestStatus(subject: AccessSubject): boolean {
-  return REQUEST_MODULES.some((module) => can(subject, REQUEST_STATUS_PERMISSION[module]));
+function canChangeAnyRequestStatus(has: (permission: Permission) => boolean): boolean {
+  return REQUEST_MODULES.some((module) => has(REQUEST_STATUS_PERMISSION[module]));
 }
 
 /**
@@ -2237,14 +2237,15 @@ function cycleTransitions(
   from: RequestStatus,
   subject: AccessSubject,
   module: RequestModule,
+  has: (permission: Permission) => boolean,
 ): RequestStatus[] {
   const ownCorridor = subject.role ? ROLE_STATUS_TRANSITIONS[subject.role] : undefined;
   // Свой коридор заменяет общий целиком — вместе с вопросом о праве: у исполнителя оно приходит
   // типом контрагента, и модуль ему выбирает заявка, а не право (см. `canChangeAnyRequestStatus`).
-  if (ownCorridor) return canChangeAnyRequestStatus(subject) ? corridorFrom(ownCorridor, from) : [];
-  if (!can(subject, REQUEST_STATUS_PERMISSION[module])) return [];
+  if (ownCorridor) return canChangeAnyRequestStatus(has) ? corridorFrom(ownCorridor, from) : [];
+  if (!has(REQUEST_STATUS_PERMISSION[module])) return [];
   const forward = corridorFrom(requestStatusTransitions[module], from);
-  return can(subject, 'requests.rollbackStatus')
+  return has('requests.rollbackStatus')
     ? [...forward, ...corridorFrom(requestStatusRollbacks[module], from)]
     : forward;
 }
@@ -2266,10 +2267,11 @@ export function allowedStatusTransitions(
   from: RequestStatus,
   subject: AccessSubject,
   module: RequestModule,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): RequestStatus[] {
-  const cycle = cycleTransitions(from, subject, module).filter((s) => s !== 'completed');
+  const cycle = cycleTransitions(from, subject, module, has).filter((s) => s !== 'completed');
   if (module !== 'waste' || from !== 'done') return cycle;
-  return can(subject, 'wasteRequests.ticketReview') ? [...cycle, 'completed'] : cycle;
+  return has('wasteRequests.ticketReview') ? [...cycle, 'completed'] : cycle;
 }
 
 export function canTransitionStatus(
@@ -2277,6 +2279,7 @@ export function canTransitionStatus(
   to: RequestStatus,
   subject: AccessSubject,
   module: RequestModule,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
-  return allowedStatusTransitions(from, subject, module).includes(to);
+  return allowedStatusTransitions(from, subject, module, has).includes(to);
 }

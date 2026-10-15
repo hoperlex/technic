@@ -134,13 +134,11 @@ export function mechMenuItems(
    * from it separately: the corridor answers «what follows what», and only the row knows «may this
    * request move from here».
    *
-   * The corridor still reads the contracts matrix over `user` (`allowedStatusTransitions` asks
-   * `mechRequests.status` and `requests.rollbackStatus` inside the contracts): it is one of the
-   * shared predicates ADR 0223 names as the remaining matrix readers. Its answer is the server's
-   * only because the session ships the whole subject beside the list (guard G1,
-   * `apps/api/test/auth-session-permissions.test.ts`), until the corridor takes `has` as well.
+   * Its permission checks use `can` over the server's session list. The contract still owns
+   * the corridor; a matrix recomputation here could expose a move the running API refuses during
+   * a rolling deployment (ADR 0223).
    */
-  const transitions = user ? allowedStatusTransitions(request.status, user, 'mech') : [];
+  const transitions = user ? allowedStatusTransitions(request.status, user, 'mech', can) : [];
   for (const to of transitions) {
     if (mechTransitionBlocker(request, to)) continue;
     const key = `${request.status}>${to}`;

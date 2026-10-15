@@ -1,5 +1,6 @@
 import {
   type AccessSubject,
+  type Permission,
   isServiceRequestClosed,
   isWaitingOn,
   type ServiceRequestDto,
@@ -94,6 +95,7 @@ export function serviceStatusLine(
     | 'estimateFormat'
   >,
   subject: AccessSubject | null | undefined,
+  can: (permission: Permission) => boolean,
 ): ServiceStatusLine | null {
   if (isServiceRequestClosed(request.status)) return null;
 
@@ -106,7 +108,7 @@ export function serviceStatusLine(
     };
   }
 
-  const mine = isWaitingOn(subject, request.waitingOn);
+  const mine = isWaitingOn(subject, request.waitingOn, can);
 
   /*
    * Предъявленная работа без единой закрывающей бумаги — это и есть очередь «Ожидаются документы»,

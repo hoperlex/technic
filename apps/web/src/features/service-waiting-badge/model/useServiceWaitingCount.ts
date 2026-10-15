@@ -22,7 +22,7 @@ import { useAuth } from '@entities/session';
 export function useServiceWaitingCount(): number {
   const { user, can } = useAuth();
   const inServiceLoop =
-    SERVICE_WAITING_ON.some((side) => isWaitingOn(user, side)) ||
+    SERVICE_WAITING_ON.some((side) => isWaitingOn(user, side, can)) ||
     /*
      * Поимённый исполнитель — вторым слагаемым, потому что по субъекту он не виден и виден быть не
      * может: «я в списке назначенных» — свойство заявки, а не учётки, и в очередь он попадает

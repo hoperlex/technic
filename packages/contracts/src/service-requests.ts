@@ -482,6 +482,7 @@ export function allowedServiceStatusTransitions(
   from: ServiceRequestStatus,
   subject: AccessSubject | null | undefined,
   assignment?: ServiceExecutorAssignment | null,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): ServiceRequestStatus[] {
   if (!subject) return [];
   // Сторона подрядчика отвечает **вместо** остальных, а не вместе с ними: право
@@ -493,15 +494,15 @@ export function allowedServiceStatusTransitions(
   }
   const allowed = new Set<ServiceRequestStatus>();
   if (
-    isServiceExecutor(subject, assignment ?? NOT_ASSIGNED) ||
-    can(subject, 'serviceRequests.estimate')
+    isServiceExecutor(subject, assignment ?? NOT_ASSIGNED, has) ||
+    has('serviceRequests.estimate')
   ) {
     for (const to of SERVICE_EXECUTOR_TRANSITIONS[from]) allowed.add(to);
   }
-  if (can(subject, 'serviceRequests.assign')) {
+  if (has('serviceRequests.assign')) {
     for (const to of SERVICE_ASSIGNER_TRANSITIONS[from]) allowed.add(to);
   }
-  if (canHoldService(subject)) {
+  if (canHoldService(subject, has)) {
     for (const to of SERVICE_HOLD_TRANSITIONS[from]) allowed.add(to);
   }
   // Cancel is a right of its own (workflow-fixes plan Р2). It stands after the hold and before the
@@ -509,16 +510,16 @@ export function allowedServiceStatusTransitions(
   // cancelling arcs only, the holder of `status` gets the same and the acceptance besides (the
   // `Set` makes the overlap harmless). The contractor never reaches the branch: his side answers
   // above, instead of the others.
-  if (can(subject, 'serviceRequests.cancel')) {
+  if (has('serviceRequests.cancel')) {
     for (const to of SERVICE_CANCEL_TRANSITIONS[from]) allowed.add(to);
   }
-  if (can(subject, 'serviceRequests.status')) {
+  if (has('serviceRequests.status')) {
     for (const to of SERVICE_OPERATOR_TRANSITIONS[from]) allowed.add(to);
   }
   // Откаты спрашиваются парой прав, а не одним `requests.rollbackStatus`: оно есть и у диспетчера,
   // который заявок оргтехники не ведёт вовсе, — а «отмотать статус назад» это всё-таки ход по
   // модулю, и без права хода в нём он означал бы стороннее вмешательство в чужой цикл.
-  if (can(subject, 'requests.rollbackStatus') && can(subject, 'serviceRequests.status')) {
+  if (has('requests.rollbackStatus') && has('serviceRequests.status')) {
     for (const to of SERVICE_ADMIN_ROLLBACKS[from]) allowed.add(to);
   }
   return [...allowed];
@@ -529,8 +530,9 @@ export function canTransitionServiceStatus(
   to: ServiceRequestStatus,
   subject: AccessSubject | null | undefined,
   assignment?: ServiceExecutorAssignment | null,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
-  return allowedServiceStatusTransitions(from, subject, assignment).includes(to);
+  return allowedServiceStatusTransitions(from, subject, assignment, has).includes(to);
 }
 
 /**
@@ -549,10 +551,11 @@ export function canTransitionServiceStatus(
 export function holdsServiceStatusRight(
   subject: AccessSubject | null | undefined,
   to: ServiceRequestStatus,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!subject) return false;
-  if (can(subject, 'serviceRequests.status')) return true;
-  return to === 'cancelled' && can(subject, 'serviceRequests.cancel');
+  if (has('serviceRequests.status')) return true;
+  return to === 'cancelled' && has('serviceRequests.cancel');
 }
 
 /**
@@ -565,10 +568,13 @@ export function holdsServiceStatusRight(
  * держит и отпускает заявку тот, кто её ведёт, — иначе «ждём запчасть» становилось бы решением
  * подрядчика.
  */
-export function canHoldService(subject: AccessSubject | null | undefined): boolean {
+export function canHoldService(
+  subject: AccessSubject | null | undefined,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
+): boolean {
   if (!subject) return false;
   if (actsForCounterparty(subject, 'service')) return false;
-  return can(subject, 'serviceRequests.hold') || can(subject, 'serviceRequests.status');
+  return has('serviceRequests.hold') || has('serviceRequests.status');
 }
 
 /**
@@ -579,8 +585,11 @@ export function canHoldService(subject: AccessSubject | null | undefined): boole
  * Условие то же, что у заморозки, и считается той же функцией: заморозка, из которой возвращает не
  * тот, кто её ставил, означала бы заявку, отпущенную мимо человека, знающего причину.
  */
-export function canResumeService(subject: AccessSubject | null | undefined): boolean {
-  return canHoldService(subject);
+export function canResumeService(
+  subject: AccessSubject | null | undefined,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
+): boolean {
+  return canHoldService(subject, has);
 }
 
 /**
@@ -1343,11 +1352,12 @@ export function canAssignServiceExecutors(
     'kind' | 'status' | 'serviceCounterpartyId' | 'estimatePendingRevision'
   >,
   subject: AccessSubject | null | undefined,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!subject) return false;
   if (row.status !== 'new' && row.status !== 'in_work') return false;
   if (serviceRequestHasEffectivePendingEstimate(row)) return false;
-  return can(subject, 'serviceRequests.assign');
+  return has('serviceRequests.assign');
 }
 
 /**
@@ -1364,6 +1374,7 @@ export function canDeclineServiceRequest(
   row: Pick<ServiceActionRequest, 'status' | 'serviceCounterpartyId' | 'executorCount'>,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (row.status !== 'new') return false;
   /*
@@ -1385,7 +1396,7 @@ export function canDeclineServiceRequest(
    * пункт меню пропадает у той же заявки, у которой сервер отвечает отказом.
    */
   if (!serviceHasExecutors(row)) return false;
-  return actsAsServiceExecutor(subject, assignment);
+  return actsAsServiceExecutor(subject, assignment, has);
 }
 
 /**
@@ -1414,10 +1425,11 @@ export function canStartServiceWork(
   row: Pick<ServiceActionRequest, 'status' | 'serviceCounterpartyId' | 'executorCount'>,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (row.status !== 'new') return false;
   if (!serviceHasExecutors(row)) return false;
-  return actsAsServiceExecutor(subject, assignment);
+  return actsAsServiceExecutor(subject, assignment, has);
 }
 
 /**
@@ -1444,11 +1456,12 @@ export function canSubmitServiceEstimate(
   >,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!serviceRequestNeedsEstimate(row)) return false;
   if (row.status !== 'in_work') return false;
   if (serviceEstimatePending(row)) return false;
-  return actsAsEstimateAuthor(subject, assignment);
+  return actsAsEstimateAuthor(subject, assignment, has);
 }
 
 /**
@@ -1580,6 +1593,7 @@ export function canOpenServiceEstimateDispute(
   row: Pick<ServiceActionRequest, 'kind' | 'status' | 'serviceCounterpartyId'>,
   subject: AccessSubject | null | undefined,
   facts: ServiceEstimateDisputeFacts,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!subject) return false;
   if (!serviceRequestNeedsEstimate(row)) return false;
@@ -1587,7 +1601,7 @@ export function canOpenServiceEstimateDispute(
   if (!facts.exemptionApplied) return false;
   if (facts.disputeOpen) return false;
   if (actsForCounterparty(subject, 'service')) return false;
-  return can(subject, 'serviceRequests.assign');
+  return has('serviceRequests.assign');
 }
 
 /**
@@ -1603,13 +1617,14 @@ export function canResolveServiceEstimateDispute(
   row: Pick<ServiceActionRequest, 'kind' | 'status' | 'serviceCounterpartyId'>,
   subject: AccessSubject | null | undefined,
   facts: Pick<ServiceEstimateDisputeFacts, 'disputeOpen'>,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!subject) return false;
   if (!serviceRequestNeedsEstimate(row)) return false;
   if (row.status !== 'on_hold') return false;
   if (!facts.disputeOpen) return false;
   if (actsForCounterparty(subject, 'service')) return false;
-  return can(subject, 'serviceRequests.assign');
+  return has('serviceRequests.assign');
 }
 
 /**
@@ -1645,13 +1660,14 @@ export function canApproveServiceEstimate(
   >,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!subject) return false;
   if (!serviceRequestNeedsEstimate(row)) return false;
   if (!allowsEstimateApprovalInStatus(row)) return false;
   if (!serviceEstimatePending(row)) return false;
   if (actsForCounterparty(subject, 'service')) return false;
-  return isWaitingOn(subject, 'approval') || isServiceExecutor(subject, assignment);
+  return isWaitingOn(subject, 'approval', has) || isServiceExecutor(subject, assignment, has);
 }
 
 /**
@@ -1717,11 +1733,12 @@ export function canReopenServiceEstimate(
   >,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!serviceRequestNeedsEstimate(row)) return false;
   if (row.status !== 'in_work') return false;
   if (!serviceEstimatePending(row) && row.approvedEstimateRevision === null) return false;
-  return actsAsEstimateAuthor(subject, assignment);
+  return actsAsEstimateAuthor(subject, assignment, has);
 }
 
 /**
@@ -1741,8 +1758,11 @@ export function canReopenServiceEstimate(
  * Действия эта функция не открывает НИ ОДНОГО и открывать не должна: она отвечает про подачу
  * текста, а не про права. Всё, что решает доступ, спрашивает свой предикат выше.
  */
-export function canCoordinateServiceRequests(subject: AccessSubject | null | undefined): boolean {
-  return can(subject, 'serviceRequests.assign');
+export function canCoordinateServiceRequests(
+  subject: AccessSubject | null | undefined,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
+): boolean {
+  return has('serviceRequests.assign');
 }
 
 // ── Кого ждут ──
@@ -1895,6 +1915,7 @@ export function serviceWaitingOn(status: ServiceRequestStatus): ServiceWaitingOn
 export function isWaitingOn(
   subject: AccessSubject | null | undefined,
   waiting: ServiceWaitingOn,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   // Отложенная не в очереди «Ждут меня» и не в бейдже раздела (Р111): оператор вернётся к ней
   // сам, когда решится причина, а до тех пор она стояла бы первой строкой у всех, кого «ждёт».
@@ -1904,7 +1925,7 @@ export function isWaitingOn(
   // `service_request_executors` (волна В3). Здесь остаётся сторона подрядчика, которую видно по
   // самому субъекту.
   if (waiting === 'service') return actsForCounterparty(subject, 'service');
-  if (waiting === 'it') return can(subject, 'serviceRequests.approveIt');
+  if (waiting === 'it') return has('serviceRequests.approveIt');
   /*
    * Согласование объёма работ (Р3). Своей веткой, а не строкой в `operator`, потому что сторона
    * `operator` определяется правом РАСПРЕДЕЛЕНИЯ (`assign` ниже), а согласует по ответу В2
@@ -1922,9 +1943,9 @@ export function isWaitingOn(
    */
   if (waiting === 'approval') {
     if (actsForCounterparty(subject, 'service')) return false;
-    return can(subject, 'serviceRequests.approveEstimate');
+    return has('serviceRequests.approveEstimate');
   }
-  return can(subject, 'serviceRequests.assign');
+  return has('serviceRequests.assign');
 }
 
 // ── Номер заявки ──
@@ -3537,18 +3558,21 @@ export interface ServiceRequestBulkStatusDto {
  * Ту же функцию спрашивает портал, решая, показывать ли полосу выбора: разойдись они, чекбоксы
  * вели бы в 403.
  */
-export function canUseServiceBulk(subject: AccessSubject | null | undefined): boolean {
+export function canUseServiceBulk(
+  subject: AccessSubject | null | undefined,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
+): boolean {
   if (!subject) return false;
   return (
-    can(subject, 'serviceRequests.assign') ||
-    can(subject, 'serviceRequests.status') ||
-    can(subject, 'serviceRequests.execute') ||
-    can(subject, 'serviceRequests.hold') ||
+    has('serviceRequests.assign') ||
+    has('serviceRequests.status') ||
+    has('serviceRequests.execute') ||
+    has('serviceRequests.hold') ||
     // Cancel is a right of its own (workflow-fixes plan Р2) and the top gate of the batch together
     // with the route guard: without this line a holder of the cancel alone would not pass the
     // admission, while the IT service would be let through «on the side» by its `assign` and `hold`.
-    can(subject, 'serviceRequests.cancel') ||
-    can(subject, 'serviceRequests.urgency')
+    has('serviceRequests.cancel') ||
+    has('serviceRequests.urgency')
   );
 }
 
@@ -3570,27 +3594,28 @@ export function canUseServiceBulk(subject: AccessSubject | null | undefined): bo
 export function canRunServiceBulkOperation(
   subject: AccessSubject | null | undefined,
   operation: ServiceRequestBulkOperation,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!subject) return false;
   switch (operation) {
     case 'cancel':
       // `status` or the cancel right of its own (workflow-fixes plan Р2): the corridor answers «what exactly».
-      return can(subject, 'serviceRequests.status') || can(subject, 'serviceRequests.cancel');
+      return has('serviceRequests.status') || has('serviceRequests.cancel');
     case 'accept':
-      return can(subject, 'serviceRequests.status');
+      return has('serviceRequests.status');
     case 'hold':
-      return canHoldService(subject);
+      return canHoldService(subject, has);
     case 'resume':
-      return canResumeService(subject);
+      return canResumeService(subject, has);
     case 'urgency_on':
     case 'urgency_off':
-      return can(subject, 'serviceRequests.urgency');
+      return has('serviceRequests.urgency');
     case 'assign':
-      return can(subject, 'serviceRequests.assign');
+      return has('serviceRequests.assign');
     case 'start':
-      return can(subject, 'serviceRequests.status') || can(subject, 'serviceRequests.execute');
+      return has('serviceRequests.status') || has('serviceRequests.execute');
     case 'archive':
-      return can(subject, 'serviceRequests.delete');
+      return has('serviceRequests.delete');
   }
 }
 
@@ -5096,6 +5121,7 @@ export function canAttachServiceFileSide(
   kind: ServiceFileKind,
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (!subject) return false;
   return SERVICE_FILE_KIND_POLICY[kind].attachedBySide.some((side) => {
@@ -5103,11 +5129,11 @@ export function canAttachServiceFileSide(
       case 'any':
         return true;
       case 'executor':
-        return actsAsServiceExecutor(subject, assignment);
+        return actsAsServiceExecutor(subject, assignment, has);
       case 'estimate_author':
-        return actsAsEstimateAuthor(subject, assignment);
+        return actsAsEstimateAuthor(subject, assignment, has);
       case 'operator':
-        return can(subject, 'serviceRequests.status');
+        return has('serviceRequests.status');
     }
   });
 }
@@ -5144,12 +5170,13 @@ export function canAttachServiceFile(
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
   request: { kind: ServiceRequestKind; serviceCounterpartyId: string | null },
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): boolean {
   if (kind === 'estimate' && !serviceRequestNeedsEstimate(request)) return false;
   return (
     isServiceFileKindAttachable(kind, audience) &&
     SERVICE_FILE_KIND_POLICY[kind].statuses.includes(status) &&
-    canAttachServiceFileSide(kind, subject, assignment)
+    canAttachServiceFileSide(kind, subject, assignment, has)
   );
 }
 
@@ -5173,9 +5200,10 @@ export function attachableServiceFileKinds(
   subject: AccessSubject | null | undefined,
   assignment: ServiceExecutorAssignment,
   request: { kind: ServiceRequestKind; serviceCounterpartyId: string | null },
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
 ): readonly ServiceFileKind[] {
   return SERVICE_FILE_KINDS.filter((kind) =>
-    canAttachServiceFile(kind, status, audience, subject, assignment, request),
+    canAttachServiceFile(kind, status, audience, subject, assignment, request, has),
   );
 }
 
