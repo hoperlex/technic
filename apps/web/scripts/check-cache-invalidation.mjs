@@ -20,23 +20,23 @@
  * `server-read-root-missed` follows route SQL and checks indirect writes against the owning root
  * of each changed table.
  *
- * ЧЕМ ОПРАВДАНО МОЛЧАНИЕ. Первая очередь была 28 мест, и ни одно не оказалось дефектом — это были
- * четыре разных вида законного молчания, и каждый пришлось назвать, иначе правило сняли бы целиком:
+ * WHY SILENCE CAN BE VALID. The first queue had 28 sites and none was a defect. They represented
+ * four distinct kinds of valid silence; each needed a name or the rule would have been removed:
  *
- *   — ДВЕРЬ ПРЕДПРОСМОТРА (`*Preview`) — чтение, которому нужно тело запроса; она ничего не пишет;
- *   — ФАЙЛОВОЕ ХРАНИЛИЩЕ (`filesApi.upload`/`remove`) стоит вне агрегатов: до сохранения формы файл
- *     ничей и живёт в состоянии экрана;
- *   — ОБНОВЛЕНИЕ ОТДАНО НАВЕРХ (`onChanged()`, `onSaved?.()`) — гасит вызывающий, из другого файла;
- *     это отдельный признак, а не `unresolved`: правило 2 к такой мутации по-прежнему применяется;
- *   — ПОМОЩНИК ЧУЖОЙ МУТАЦИИ (`mutationFn: saveComposition`, `await runLinearSwitch(…)`) — шаг, а не
- *     точка: кэш гасится там, где шаг заканчивается.
+ *   — PREVIEW DOORS (`*Preview`) read with a request body but write nothing;
+ *   — FILE STORAGE (`filesApi.upload`/`remove`) sits outside an aggregate: until the form is saved,
+ *     the file has no owner and lives in screen state;
+ *   — DELEGATED INVALIDATION (`onChanged()`, `onSaved?.()`) is done by the caller in another file.
+ *     This is distinct from `unresolved`; rule 2 still applies to the mutation;
+ *   — HELPERS FOR ANOTHER MUTATION (`mutationFn: saveComposition`, `await runLinearSwitch(…)`) are
+ *     steps rather than completion points; the cache is refreshed where the whole action ends.
  *
- * Пятый вид не выводится из кода никак — «эта запись не меняет ничего видимого». Он объявляется
- * маркером в комментарии рядом с мутацией (`cache-invalidation: none — причина`, см.
- * `declaresNoCacheEffect`), и единственное такое место сегодня — смена пароля учётки.
+ * A fifth kind cannot be inferred from code: a write changes nothing visible. A marker next to the
+ * mutation declares it (`cache-invalidation: none — reason`; see `declaresNoCacheEffect`). The only
+ * current instance is an account password change.
  *
- * Дефект в очереди всё-таки нашёлся, но не в ней: отладочная отправка письма заводит строку журнала
- * и не гасила его корень — рядом, соседней вкладкой того же раздела.
+ * The queue did reveal a nearby defect: sending a test email creates a log row but had not
+ * invalidated the log root in the neighbouring tab.
  *
  * A DELEGATED WRITE cannot be inferred from the `mutationFn` body either: a shared hook receives
  * `run` or `purge`, while only its caller knows the concrete API handle. Such a site must carry a
@@ -54,21 +54,18 @@
  * manual review. A callback-owned invalidation remains outside a mutation's local obligation.
  *
  * OTHER LIMITS:
- *   — Корень — ПЕРВЫЙ сегмент ключа, и только он. Гашение `vehicleKeys.list(params)` здесь
- *     считается гашением `vehicles`: сравнивать ключи целиком значило бы знать аргументы семейств,
- *     а они — значения времени выполнения. Проверка поэтому оптимистична и пропускает «погасил
- *     соседнюю страницу того же корня».
- *   — Имена разрешаются плоскими портальными таблицами, а не обходом импортов (баррели слайсов
- *     сделали бы это графом модулей). Имя, объявленное дважды с разным смыслом, помечается
- *     конфликтом, и каждое его употребление уходит в `unresolved` — вместо того чтобы молча взять
- *     первый смысл.
- *   — `setQueryData` считается эффектом кэша наравне с гашением: правка строки на месте — законный
- *     способ, и требовать поверх неё `invalidateQueries` проверка не вправе.
- *   — Свой корень записи у слайса с НЕСКОЛЬКИМИ корнями (8 слайсов из 40: у рассылок их семь, у
- *     типов техники шесть) из кода не выводится: «погаси хоть один свой корень» там не значит
- *     ничего. Его называет автор маркером `cache-home: <корень> — причина` у объекта ручек или у
- *     ручки (`declaredHome`), и правило 2 проверяет запись по нему. Запись без маркера видна полем
- *     `homeAmbiguous` в карте и не проходит бюджет `home-ambiguous`.
+ *   — A root is only the FIRST key segment. Invalidating `vehicleKeys.list(params)` counts as
+ *     invalidating `vehicles`: comparing full keys would require runtime family arguments. The
+ *     check is therefore optimistic and misses an invalidation of the wrong page in one root.
+ *   — Names resolve through flat portal tables rather than import traversal, which slice barrels
+ *     would turn into a module graph. A name declared twice with different meanings is a conflict;
+ *     every use becomes `unresolved` instead of silently taking the first meaning.
+ *   — `setQueryData` counts as a cache effect just like invalidation: an in-place row update is
+ *     valid, and the check must not demand `invalidateQueries` on top of it.
+ *   — A slice with MULTIPLE roots cannot infer its own write root from code; “invalidate any of my
+ *     roots” would prove nothing. The author names the root with a `cache-home: <root> — reason`
+ *     marker by the handle object or handle (`declaredHome`), and rule 2 checks against it. An
+ *     unmarked write appears under `homeAmbiguous` in the map and fails the `home-ambiguous` budget.
  *
  * THE PATH TABLE answers "which slice owns this API path", the question a handle name cannot
  * answer for a read that bypasses the handles: `apiFetch('/counterparties')` in the service-request
@@ -100,15 +97,14 @@
  * collapse, or a new shape the scan cannot read, turns the run red instead of quietly shrinking what
  * the rules see.
  *
- * ГДЕ ЖИВЁТ. Рядом с `lib/source-scan.mjs` и на его частях: разборщик, таблица локальных имён и, что
- * важнее всего, три набора, называющие ТОЧКИ ВХОДА В КЭШ. Второй список этих точек — та самая
- * рассинхронизация, ради предотвращения которой `source-scan` и выделен в модуль.
+ * WHERE IT LIVES. This check uses the parser, local-name table and, most critically, the three
+ * cache-entry sets in `lib/source-scan.mjs`. A second list of those entry points would recreate
+ * the divergence that extracting `source-scan` was meant to prevent.
  *
- * В `pretest` СТОИТ ПОСЛЕДНЕЙ, и место в цепочке выбрано, а не досталось. Цепочка через `&&`: любая
- * красная проверка молча не пускает следующие за ней, поэтому новая встаёт в конец — заглушить она
- * не может никого. Первый день она прожила вне цепочки вовсе (очередь из 28 мест была красной), и
- * своя команда `check:cache-invalidation` осталась: секунда прогона, запускать отдельно дешевле, чем
- * ждать бюджеты и раскладку.
+ * WHY IT RUNS LAST IN `pretest`. The chain uses `&&`, so a failing check prevents later checks
+ * from running. Adding this one last cannot hide another failure. It ran outside the chain on its
+ * first day while the 28-site queue was red; its separate `check:cache-invalidation` command stays
+ * because one second alone is cheaper than waiting for the budget and layout checks.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
