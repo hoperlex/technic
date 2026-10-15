@@ -136,7 +136,7 @@ export function useLocalFormDraft<Payload>({
     )
       return false;
     const { createAttempt: _attempt, ...remaining } = current;
-    const next = { ...remaining, savedAt: Date.now(), nextCreateKey: nextKey };
+    const next = { ...remaining, savedAt: Date.now(), payload: readRef.current(), nextCreateKey: nextKey };
     if (!writeLocalFormDraft(next)) {
       setStatus({ available: false, savedAt: null });
       return false;
@@ -157,7 +157,12 @@ export function useLocalFormDraft<Payload>({
     if (!current?.createAttempt || current.createAttempt.protocol === 'receipt-v1') return false;
     const oldKey = current.createAttempt.key;
     const { createAttempt: _attempt, ...remaining } = current;
-    const next = { ...remaining, savedAt: Date.now(), nextCreateKey: newIdempotencyKey() };
+    const next = {
+      ...remaining,
+      savedAt: Date.now(),
+      payload: readRef.current(),
+      nextCreateKey: newIdempotencyKey(),
+    };
     if (!writeLocalFormDraft(next)) {
       setStatus({ available: false, savedAt: null });
       return false;

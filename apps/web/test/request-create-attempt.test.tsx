@@ -129,7 +129,9 @@ describe('ordinary request creation attempt', () => {
     });
     expect(retry).toEqual(first);
     const replacement = crypto.randomUUID();
+    current = { comment: 'edited immediately before reconciliation' };
     act(() => expect(draft.result.current.releaseCreateAttempt(first.key, replacement)).toBe(true));
+    expect(draft.result.current.active?.payload).toEqual(current);
     let corrected!: typeof first;
     act(() => {
       corrected = draft.result.current.prepareCreate({ comment: 'corrected' });
@@ -142,10 +144,11 @@ describe('ordinary request creation attempt', () => {
   });
 
   it('does not retry or reconcile an unmarked draft from the old root POST protocol', () => {
+    let visible = { comment: 'draft' };
     const props = {
       userId: 'operator',
       form: 'waste-request',
-      read: () => ({ comment: 'draft' }),
+      read: () => visible,
       parse: objectDraftPayload,
     };
     const original = renderHook(() => useLocalFormDraft(props));
@@ -171,8 +174,9 @@ describe('ordinary request creation attempt', () => {
     render(<RequestCreateAttemptNotice pending legacy checking={false} onCheck={vi.fn()} />);
     expect(screen.getByText(/Проверьте заявку в списке вручную/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Проверить создание' })).toBeNull();
+    visible = { comment: 'edited immediately before reset' };
     act(() => expect(restored.result.current.resetLegacyCreateAttempt()).toBe(true));
-    expect(restored.result.current.active?.payload).toEqual({ comment: 'draft' });
+    expect(restored.result.current.active?.payload).toEqual(visible);
     expect(restored.result.current.active?.createAttempt).toBeUndefined();
     let next!: { key: string; body: { comment: string } };
     act(() => {
