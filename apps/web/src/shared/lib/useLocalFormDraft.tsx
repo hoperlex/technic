@@ -139,6 +139,7 @@ export function useLocalFormDraft<Payload>({
       savedAt: Date.now(),
       payload: readRef.current(),
       nextCreateKey: nextKey,
+      previousCreateKeys: [...new Set([...(current.previousCreateKeys ?? []), key])],
     };
     if (!writeLocalFormDraft(next)) {
       setStatus({ available: false, savedAt: null });
@@ -165,6 +166,7 @@ export function useLocalFormDraft<Payload>({
       savedAt: Date.now(),
       payload: readRef.current(),
       nextCreateKey: newIdempotencyKey(),
+      previousCreateKeys: [...new Set([...(current.previousCreateKeys ?? []), oldKey])],
     };
     if (!writeLocalFormDraft(next)) {
       setStatus({ available: false, savedAt: null });
@@ -172,16 +174,16 @@ export function useLocalFormDraft<Payload>({
     }
     activate(next);
     const found = listLocalFormDrafts(current.userId, form, current.target, parseRef.current);
-    let removed = found.available;
     if (found.available) {
       for (const copy of found.drafts) {
         if (copy.id !== next.id && copy.createAttempt?.key === oldKey) {
-          removed = removeLocalFormDraft(copy.id) && removed;
+          removeLocalFormDraft(copy.id);
         }
       }
     }
-    setStatus({ available: removed, savedAt: removed ? next.savedAt : null });
-    return removed;
+    // The persisted lineage lets a later successful create remove copies missed by this best-effort pass.
+    setStatus({ available: true, savedAt: next.savedAt });
+    return true;
   };
   const restore = (candidate: LocalFormDraft<Payload>): Payload => {
     const next = { ...candidate, id: newLocalFormDraftId(), savedAt: Date.now() };
@@ -213,22 +215,34 @@ export function useLocalFormDraft<Payload>({
   const clear = () => {
     const current = activeRef.current;
     let removed = true;
-    if (current?.createAttempt) {
-      // A successful response settles every restored fork of this attempt. Leaving the source
-      // behind would reopen it as an undiscardable pending send on the next form opening.
+    const relatedKeys = new Set([
+      ...(current?.previousCreateKeys ?? []),
+      ...(current?.createAttempt ? [current.createAttempt.key] : []),
+      ...(current?.nextCreateKey ? [current.nextCreateKey] : []),
+    ]);
+    if (current && relatedKeys.size > 0) {
+      // A confirmed new create also settles restored copies of earlier attempts. The current
+      // envelope retains their keys until sibling cleanup succeeds, even across failed removals.
       const found = listLocalFormDrafts(current.userId, form, current.target, parseRef.current);
       removed = found.available;
       if (found.available) {
-        for (const candidate of found.drafts) {
-          if (candidate.createAttempt?.key === current.createAttempt.key) {
-            removed = removeLocalFormDraft(candidate.id) && removed;
+        for (const copy of found.drafts) {
+          if (
+            copy.id !== current.id &&
+            (relatedKeys.has(copy.createAttempt?.key ?? '') ||
+              relatedKeys.has(copy.nextCreateKey ?? '') ||
+              copy.previousCreateKeys?.some((key) => relatedKeys.has(key)))
+          ) {
+            removed = removeLocalFormDraft(copy.id) && removed;
           }
         }
       }
     }
-    if (current) removed = removeLocalFormDraft(current.id) && removed;
-    activate(null);
-    setPending([]);
+    if (current && removed) removed = removeLocalFormDraft(current.id);
+    if (removed) {
+      activate(null);
+      setPending([]);
+    }
     setStatus({ available: removed, savedAt: null });
   };
 

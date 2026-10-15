@@ -11,6 +11,7 @@ export interface LocalFormDraft<Payload> {
   payload: Payload;
   createAttempt?: { key: string; body: unknown; protocol?: 'receipt-v1' };
   nextCreateKey?: string;
+  previousCreateKeys?: string[];
 }
 
 export function newLocalFormDraftId(): string {
@@ -45,6 +46,12 @@ function parseEnvelope(raw: string | null): LocalFormDraft<unknown> | null {
     )
       return null;
     if (draft.nextCreateKey !== undefined && typeof draft.nextCreateKey !== 'string') return null;
+    if (
+      draft.previousCreateKeys !== undefined &&
+      (!Array.isArray(draft.previousCreateKeys) ||
+        !draft.previousCreateKeys.every((key) => typeof key === 'string'))
+    )
+      return null;
     return draft as LocalFormDraft<unknown>;
   } catch {
     return null;

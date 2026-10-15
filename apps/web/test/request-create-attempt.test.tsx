@@ -9,6 +9,14 @@ beforeEach(() => {
 });
 
 describe('ordinary request creation attempt', () => {
+  const failRemovalOf = (id: string) => {
+    const original = Storage.prototype.removeItem;
+    return vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (this: Storage, key) {
+      if (key.endsWith(id)) throw new Error('storage temporarily unavailable');
+      original.call(this, key);
+    });
+  };
+
   it('persists the exact first body and key through editing and restoration', () => {
     let current = { comment: 'first' };
     const props = {
@@ -245,5 +253,81 @@ describe('ordinary request creation attempt', () => {
     });
     expect(next.key).not.toBe(legacy.createAttempt.key);
     expect(next.body).toEqual({ comment: 'new send' });
+  });
+
+  it('clears a restored source after a replacement-key create despite an earlier removal failure', () => {
+    const props = {
+      userId: 'operator',
+      form: 'mech-request',
+      read: () => ({ comment: 'visible edit' }),
+      parse: objectDraftPayload,
+    };
+    const original = renderHook(() => useLocalFormDraft(props));
+    act(() => original.result.current.begin('create'));
+    let first!: { key: string; body: { comment: string } };
+    act(() => {
+      first = original.result.current.prepareCreate({ comment: 'first send' });
+    });
+    const source = listLocalFormDrafts('operator', 'mech-request', 'create', objectDraftPayload)
+      .drafts[0]!;
+    original.unmount();
+
+    const restored = renderHook(() => useLocalFormDraft(props));
+    act(() => restored.result.current.begin('create'));
+    act(() => restored.result.current.restore(source));
+    const removal = failRemovalOf(source.id);
+    const replacement = crypto.randomUUID();
+    act(() =>
+      expect(restored.result.current.releaseCreateAttempt(first.key, replacement)).toBe(true),
+    );
+    expect(restored.result.current.active?.previousCreateKeys).toContain(first.key);
+    const released = restored.result.current.active!;
+    restored.unmount();
+    const nextTab = renderHook(() => useLocalFormDraft(props));
+    act(() => nextTab.result.current.begin('create'));
+    act(() => nextTab.result.current.restore(released));
+    expect(nextTab.result.current.active?.previousCreateKeys).toContain(first.key);
+    act(() => nextTab.result.current.prepareCreate({ comment: 'new send' }));
+    act(() => nextTab.result.current.clear());
+    expect(nextTab.result.current.active).not.toBeNull();
+    expect(nextTab.result.current.status.available).toBe(false);
+    removal.mockRestore();
+    act(() => nextTab.result.current.clear());
+    expect(
+      listLocalFormDrafts('operator', 'mech-request', 'create', objectDraftPayload).drafts,
+    ).toEqual([]);
+  });
+
+  it('clears a legacy restored source after manual reset and a new create', () => {
+    const props = {
+      userId: 'operator',
+      form: 'service-request',
+      read: () => ({ comment: 'visible edit' }),
+      parse: objectDraftPayload,
+    };
+    const original = renderHook(() => useLocalFormDraft(props));
+    act(() => original.result.current.begin('create'));
+    act(() => original.result.current.prepareCreate({ comment: 'first send' }));
+    const saved = listLocalFormDrafts('operator', 'service-request', 'create', objectDraftPayload)
+      .drafts[0]!;
+    const legacy = {
+      ...saved,
+      createAttempt: { key: saved.createAttempt!.key, body: saved.createAttempt!.body },
+    };
+    localStorage.setItem(`technic:form-draft:v1:${saved.id}`, JSON.stringify(legacy));
+    original.unmount();
+
+    const restored = renderHook(() => useLocalFormDraft(props));
+    act(() => restored.result.current.begin('create'));
+    act(() => restored.result.current.restore(legacy));
+    const removal = failRemovalOf(saved.id);
+    act(() => expect(restored.result.current.resetLegacyCreateAttempt()).toBe(true));
+    expect(restored.result.current.active?.previousCreateKeys).toContain(legacy.createAttempt.key);
+    removal.mockRestore();
+    act(() => restored.result.current.prepareCreate({ comment: 'new send' }));
+    act(() => restored.result.current.clear());
+    expect(
+      listLocalFormDrafts('operator', 'service-request', 'create', objectDraftPayload).drafts,
+    ).toEqual([]);
   });
 });
