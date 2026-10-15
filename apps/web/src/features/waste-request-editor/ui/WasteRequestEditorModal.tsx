@@ -89,10 +89,7 @@ export function WasteRequestEditorModal({
   const operatorId = Form.useWatch('operatorCounterpartyId', form);
   const groupKey = Form.useWatch('containerGroupKey', form);
 
-  // The saved container type is kept selectable the same way as the saved waste type: the
-  // directory entry may have been disabled (installation), or the container may have been removed
-  // from the site by another request (replacement and removal). The edit field is required, and
-  // without this it would open empty on a request whose subject was chosen long ago.
+  // Keep saved container types selectable after deactivation or removal from the site.
   const savedContainerType = { id: record?.containerTypeId, name: record?.containerTypeName };
   // Executor options follow the selected site: a different site means a different list.
   const operatorOptions = sources.operatorOptionsFor(objectId, {
@@ -100,11 +97,9 @@ export function WasteRequestEditorModal({
     name: record?.operatorName ?? null,
   });
 
-  // The editor has no completion fact: it is submitted when the request is closed and corrected by
-  // a repeated completion (ADR 0035), where the price-list estimate is in front of the user.
+  // Completion facts belong to the closing action, where the estimate is visible (ADR 0035).
 
-  // What stands on the site and whose it is (ADR 0054): presence groups. They are the choice for
-  // replacement and removal, the cap on the count and the "whom to call" hint.
+  // Presence groups determine the subject, count cap and operator hint (ADR 0054).
   const { data: presentGroups, isLoading: presentLoading } = useQuery({
     queryKey: wasteRequestKeys.presentGroups(objectId),
     queryFn: () => wasteRequestsApi.presentGroups(objectId),
@@ -175,8 +170,7 @@ export function WasteRequestEditorModal({
       )
     : 'ok';
 
-  // A site change resets the container: the directory type and the presence group both depend on
-  // the site.
+  // Container type and presence group both depend on the site.
   const resetSubject = () =>
     form.setFieldsValue({
       containerTypeId: undefined,

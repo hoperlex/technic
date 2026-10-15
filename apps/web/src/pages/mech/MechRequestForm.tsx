@@ -42,17 +42,9 @@ interface Values {
 }
 
 /**
- * Форма заявки на аренду механизации: что нужно, куда, на какой срок и к кому везти.
- *
- * Что из полей правится сейчас, решает **барьер состояния** (`mechEditScope`, Р19), а не статус «на
- * глаз»: у «Новой» правится всё, у взятой в работу — только контакт, комментарий и вложения, у
- * закрытой — комментарий и вложения. Срок, модель, площадка и заявитель после «Новой» неизменяемы
- * для всех, включая администратора: за ними стоит договорённость с арендодателем, и двигать её
- * обязано продление со своей причиной и своим событием истории, а не штатная форма.
- *
- * Барьер роли (Б2) тем же не заменяется: площадка и отдел правят заявку только в «Новой», и решает
- * это меню действий — форму им попросту не открыть. Здесь остаётся ответ на «что вообще можно
- * менять у записи в таком состоянии», одинаковый для всех ролей.
+ * The state gate controls editable fields for every role. Once a rental leaves New, its subject
+ * belongs to the supplier agreement; only extension may change the term. The action menu enforces
+ * the separate role gate before opening this form (ADR 0152).
  */
 export function MechRequestForm({
   open,
@@ -60,7 +52,7 @@ export function MechRequestForm({
   onClose,
 }: {
   open: boolean;
-  /** `null` — заведение новой заявки. */
+  /** A null request opens the create form. */
   request: MechRequestDto | null;
   onClose: () => void;
 }) {
@@ -79,10 +71,7 @@ export function MechRequestForm({
   const attachments = useMechAttachments(request, open);
   const customerKey = Form.useWatch('customer', form);
 
-  /**
-   * Models fit in one locally searched response (ADR 0156). An edited request keeps its saved
-   * model label even after deactivation; otherwise an unchanged edit would display a raw ID.
-   */
+  // Keep a deactivated model's saved label selectable during edits (ADR 0156).
   const {
     options: modelOptions,
     loading: modelsLoading,
@@ -93,10 +82,7 @@ export function MechRequestForm({
     name: request?.mechModelName,
   });
 
-  /*
-   * Барьер состояния: `all` — «Новая», `contact` — взятая в работу, `comment` — закрытая. У
-   * заведения барьера нет вовсе: заявки ещё не существует, и запрещать в ней нечего.
-   */
+  // A new request has no state gate; edits use the contract predicate (ADR 0152).
   const scope = request ? mechEditScope(request) : 'all';
   const lockedSubject = scope !== 'all';
   const lockedContact = scope === 'comment';
@@ -115,14 +101,11 @@ export function MechRequestForm({
     form.resetFields();
     if (request) {
       form.setFieldsValue({
-        // Заявитель — ключом от подбора (К7): он собран по снимкам самой заявки, а не по
-        // действующему справочнику, и держится в списке, даже выпав из состава поля.
+        // The saved requester key remains selectable after its directory entry changes.
         customer: savedKey ?? undefined,
-        // Площадка ставится всегда, а показывается только у заявки отдела: у заявки площадки поле
-        // не рисуется вовсе, и лишнее значение в форме до тела запроса не доедет.
+        // Only department requests render the site field; the body builder filters it otherwise.
         placeObjectId: request.objectId,
-        // Ссылки может не быть у заявки, заведённой до справочника: поле останется пустым, и
-        // сохранение потребует назвать модель — иначе строгий выбор обходился бы правкой.
+        // Legacy requests without a model link must choose one before saving.
         mechModelId: request.mechModelId ?? undefined,
         plannedFrom: dayjs(request.plannedFrom),
         plannedTo: dayjs(request.plannedTo),
@@ -165,11 +148,7 @@ export function MechRequestForm({
       };
       const comment = values.comment?.trim() ?? '';
       if (request) {
-        /*
-         * Тело правки собирается по барьеру, а не «всё, что в форме»: у взятой в работу заявки
-         * поля срока и предмета заперты, и прислать их значило бы отказ сервера на значения,
-         * которые человек и не трогал.
-         */
+        // Sending locked fields would reject an otherwise valid contact or comment edit.
         return mechRequestsApi.update(request.id, {
           ...(scope === 'all' && pair
             ? {
@@ -242,8 +221,7 @@ export function MechRequestForm({
   });
 
   const submit = (values: Values) => {
-    // Заявитель вне состава поля наружу не уходит вовсе: иначе портал отправил бы заказчика,
-    // которого сам же не предлагал, и заявка ушла бы без площадки.
+    // Do not submit a requester that is outside the offered scope or lacks a required site.
     if (!requester.bodyOf(values.customer, values.placeObjectId)) {
       blockers.raise({
         customer: 'Выберите заявителя',
@@ -317,7 +295,7 @@ export function MechRequestForm({
           {...blockers.formProps}
         >
           {lockedSubject && (
-            // Почему половина полей заперта — сказано до попытки, а не отказом после нажатия.
+            // Explain the state gate before submit rather than waiting for an API rejection.
             <Alert
               type="info"
               showIcon
@@ -333,9 +311,7 @@ export function MechRequestForm({
 
           {requester.fields}
 
-          {/* Модель — строго из справочника (ADR 0156): свободной строки у поля больше нет. Нужной
-            позиции в списке не нашлось — её заводит держатель справочников на своей вкладке, и
-            ярлыка «завести прямо отсюда» первым выпуском намеренно нет. */}
+          {/* A model must come from the directory, not free text (ADR 0156). */}
           <Form.Item
             name="mechModelId"
             label="Модель"
@@ -371,11 +347,7 @@ export function MechRequestForm({
             dependencies={['plannedFrom']}
             rules={[
               { required: true, message: 'Укажите дату возврата' },
-              /*
-               * Порядок дат проверяется и здесь, и схемой контрактов, и сервером. Здесь — потому
-               * что это единственное место, где человек видит обе даты сразу: отказ сервера пришёл
-               * бы после нажатия и без указания, какую из них править.
-               */
+              // Validate here too, where the user sees both dates together.
               ({ getFieldValue }) => ({
                 validator: (_r, value: Dayjs | null | undefined) => {
                   const from = getFieldValue('plannedFrom') as Dayjs | undefined;
@@ -394,9 +366,7 @@ export function MechRequestForm({
             />
           </Form.Item>
 
-          {/* Ответственный — тот, к кому арендодатель везёт технику: адрес отвечает «куда», а этот
-            контакт — «к кому и кому звонить, если на месте никого». Правится, пока заявка не
-            закрыта: у закрытой принимать технику уже некому, и правка переписывала бы историю. */}
+          {/* The receiving contact is locked after completion to preserve the rental history. */}
           <ResponsibleFields
             nameField="responsibleName"
             phoneField="responsiblePhone"
@@ -415,8 +385,7 @@ export function MechRequestForm({
             <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />
           </Form.Item>
 
-          {/* Вложения правятся в любом состоянии, кроме архива (Р14, Р19): счёт и акт приходят
-            позже самой аренды, и подшить их надо к той же заявке. */}
+          {/* Bills and acceptance acts may arrive after completion, so attachments stay editable. */}
           <MechRequestAttachments attachments={attachments} disabled={scope === 'none'} />
         </Form>
       )}
