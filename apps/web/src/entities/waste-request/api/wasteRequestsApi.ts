@@ -11,6 +11,7 @@ import type {
   WasteStatsDto,
 } from '@technic/contracts';
 import { apiFetch, type Query } from '@shared/api';
+import type { RequestCreateReconciliation } from '@shared/lib';
 
 /**
  * Ручки заявок «Вывоз мусора» (ADR 0010, ADR 0035, ADR 0054): установка, замена и снятие
@@ -104,10 +105,19 @@ export const wasteRequestsApi = {
   /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0012). */
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/waste-requests/${id}/history`),
   create: (body: WasteRequestPayload, idempotencyKey?: string) =>
-    apiFetch<WasteRequestDto>('/waste-requests', {
+    apiFetch<WasteRequestDto>(
+      idempotencyKey ? '/waste-requests/_create-with-receipt' : '/waste-requests',
+      {
+        method: 'POST',
+        body,
+        ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+      },
+    ),
+  reconcileCreate: (body: WasteRequestPayload, idempotencyKey: string) =>
+    apiFetch<RequestCreateReconciliation>('/waste-requests/_create-attempts/reconcile', {
       method: 'POST',
-      body,
-      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+      body: { originalBody: body },
+      headers: { 'Idempotency-Key': idempotencyKey },
     }),
   update: (id: string, body: WasteRequestUpdatePayload) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}`, { method: 'PATCH', body }),

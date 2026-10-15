@@ -63,11 +63,23 @@ export const vehicleRequestLifecycle = {
   get: (id: string) => apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`),
   /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0015). */
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/vehicle-requests/${id}/history`),
-  create: (body: CreateVehicleRequestInput, idempotencyKey?: string) =>
-    apiFetch<VehicleRequestDto>('/vehicle-requests', {
+  /** A cached new client must get 404 from an old API instead of an unreceipted create. */
+  createWithReceipt: (body: CreateVehicleRequestInput, idempotencyKey: string) =>
+    apiFetch<VehicleRequestDto>('/vehicle-requests/_create-with-receipt', {
       method: 'POST',
       body,
-      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+      headers: { 'Idempotency-Key': idempotencyKey },
+    }),
+  /** Backdated creation belongs to its correction operation ID and the legacy root route. */
+  createCorrection: (body: CreateVehicleRequestInput) =>
+    apiFetch<VehicleRequestDto>('/vehicle-requests', { method: 'POST', body }),
+  reconcileCreateAttempt: (originalBody: CreateVehicleRequestInput, key: string) =>
+    apiFetch<
+      { state: 'created'; requestId: string } | { state: 'not-created'; nextOperationId: string }
+    >('/vehicle-requests/_create-attempts/reconcile', {
+      method: 'POST',
+      body: { originalBody },
+      headers: { 'Idempotency-Key': key },
     }),
   update: (id: string, body: UpdateVehicleRequestInput) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`, { method: 'PATCH', body }),

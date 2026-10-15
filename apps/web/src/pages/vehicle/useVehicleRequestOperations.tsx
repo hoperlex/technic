@@ -70,6 +70,7 @@ export function useVehicleRequestOperations() {
   };
 
   const requestEditor = useVehicleRequestEditor({
+    openCreated: setViewRecord,
     openRoute,
     renderPeriodModal: (props) => <VehiclePeriodModal {...props} />,
   });

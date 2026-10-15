@@ -12,6 +12,29 @@ const FORM = 'vehicle-request';
 
 export type DraftTarget = { kind: 'create' } | { kind: 'copy' | 'edit'; sourceId: string };
 
+export type VehicleCreateProtocol = 'receipt-v1' | 'correction-v1';
+export interface VehicleCreateAttempt {
+  key: string;
+  body: CreateVehicleRequestInput;
+  /** Missing on drafts written before the versioned receipt route existed. */
+  protocol?: VehicleCreateProtocol;
+}
+
+export function isBackdatedCreateAttempt(attempt: VehicleCreateAttempt | undefined): boolean {
+  if (!attempt || attempt.protocol === 'receipt-v1') return false;
+  return (
+    attempt.protocol === 'correction-v1' ||
+    !!attempt.body.operationId ||
+    !!attempt.body.backdateReason
+  );
+}
+
+export function isLegacyOrdinaryCreateAttempt(
+  attempt: VehicleCreateAttempt | undefined,
+): attempt is VehicleCreateAttempt & { protocol?: undefined } {
+  return !!attempt && !attempt.protocol && !isBackdatedCreateAttempt(attempt);
+}
+
 type StoredValues = Omit<
   FormValues,
   'requestType' | 'classificationKey' | 'dateFrom' | 'dateTo' | 'scheduledDate'
@@ -32,7 +55,9 @@ export interface VehicleRequestLocalDraft {
   operationId: string;
   savedAt: number;
   values: StoredValues;
-  createAttempt?: { key: string; body: CreateVehicleRequestInput };
+  createAttempt?: VehicleCreateAttempt;
+  nextCreateKey?: string;
+  previousCreateKeys?: string[];
 }
 
 function storedDate(value: FormValues['dateFrom']): string | null | undefined {
@@ -71,7 +96,9 @@ interface Payload {
   baseVersion: number | null;
   operationId: string;
   values: StoredValues;
-  createAttempt?: { key: string; body: CreateVehicleRequestInput };
+  createAttempt?: VehicleCreateAttempt;
+  nextCreateKey?: string;
+  previousCreateKeys?: string[];
 }
 
 function parsePayload(value: unknown): Payload | null {
@@ -95,7 +122,13 @@ function parsePayload(value: unknown): Payload | null {
       (!draft.createAttempt ||
         typeof draft.createAttempt.key !== 'string' ||
         !draft.createAttempt.body ||
-        typeof draft.createAttempt.body !== 'object'))
+        typeof draft.createAttempt.body !== 'object' ||
+        (draft.createAttempt.protocol !== undefined &&
+          !['receipt-v1', 'correction-v1'].includes(draft.createAttempt.protocol)))) ||
+    (draft.nextCreateKey !== undefined && typeof draft.nextCreateKey !== 'string') ||
+    (draft.previousCreateKeys !== undefined &&
+      (!Array.isArray(draft.previousCreateKeys) ||
+        draft.previousCreateKeys.some((key) => typeof key !== 'string')))
   )
     return null;
   return draft as Payload;
@@ -143,6 +176,8 @@ export function writeLocalDraft(draft: VehicleRequestLocalDraft): boolean {
       operationId: draft.operationId,
       values: draft.values,
       createAttempt: draft.createAttempt,
+      nextCreateKey: draft.nextCreateKey,
+      previousCreateKeys: draft.previousCreateKeys,
     },
   });
 }

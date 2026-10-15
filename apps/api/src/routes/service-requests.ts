@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
@@ -161,6 +161,7 @@ import {
   createAttemptFingerprint,
   createAttemptKey,
   createRequestOnce,
+  reconcileRequestCreate,
   replayRequestCreate,
 } from '../services/request-create-attempt';
 import {
@@ -4369,11 +4370,41 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * должна остаться рассказом о том, что чинили тогда, и не переехать в чужую область (Р5, Р10).
    */
   r.post(
-    '/',
-    { ...canCreate, schema: { body: createServiceRequestSchema } },
-    async (req, reply) => {
+    '/_create-attempts/reconcile',
+    {
+      preHandler: [app.authenticate],
+      schema: { body: z.object({ originalBody: createServiceRequestSchema }).strict() },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const key = createAttemptKey(req.headers['idempotency-key']);
+      if (!key) throw err.unprocessable('Передайте ключ исходной попытки');
+      if (req.body.originalBody.equipmentCandidate) {
+        throw err.unprocessable('Сообщение о технике сверяется по отдельному ключу приёма');
+      }
+      return reconcileRequestCreate({
+        key,
+        kind: 'service',
+        actorUserId: p.id,
+        fingerprint: createAttemptFingerprint(req.body.originalBody),
+      });
+    },
+  );
+
+  const createHandler = {
+    handle: async (
+      req: FastifyRequest<{ Body: z.infer<typeof createServiceRequestSchema> }>,
+      reply: FastifyReply,
+      receiptRequired: boolean,
+    ) => {
       const p = requirePrincipal(req);
       const body = req.body;
+      if (receiptRequired) {
+        if (body.equipmentCandidate)
+          throw err.unprocessable('Сообщение о технике создаётся через основной маршрут');
+        if (!createAttemptKey(req.headers['idempotency-key']))
+          throw err.unprocessable('Передайте ключ создания заявки');
+      }
 
       /**
        * ИДЕМПОТЕНТНОСТЬ — ТОЛЬКО У ВЕТКИ КАНДИДАТА и ДО всякой работы (план кандидатов, §8).
@@ -4443,7 +4474,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           createFingerprint!,
           loadCreated,
         );
-        if (previous) return previous;
+        if (previous) {
+          reply.code(200);
+          return previous;
+        }
       }
 
       /**
@@ -4698,12 +4732,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             fingerprint: createFingerprint!,
             create: async (tx) => {
               freshCreated = await createInTransaction(tx);
-              return { id: freshCreated.id, metadata: freshCreated.mail?.outcome ?? 'not_needed' };
+              return {
+                id: freshCreated.id,
+                metadata: freshCreated.mail?.outcome ?? 'not_needed',
+              };
             },
             load: loadCreated,
           })
         : null;
-      if (keyed?.repeated) return keyed.response;
+      if (keyed?.repeated) {
+        reply.code(200);
+        return keyed.response;
+      }
       const created = keyed
         ? freshCreated!
         : await db.transaction(createInTransaction).catch(async (e: unknown) => {
@@ -4797,6 +4837,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         ...(created.candidateMail ? { candidateMail: created.candidateMail.outcome } : {}),
       };
     },
+  };
+  r.post('/', { ...canCreate, schema: { body: createServiceRequestSchema } }, (req, reply) =>
+    createHandler.handle(req, reply, false),
+  );
+  r.post(
+    '/_create-with-receipt',
+    { ...canCreate, schema: { body: createServiceRequestSchema } },
+    (req, reply) => createHandler.handle(req, reply, true),
   );
 
   // ── Заведение пары «кандидат + заявка» (план кандидатов, Р2, Р7, §8) ──

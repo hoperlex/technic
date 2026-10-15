@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { App, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -8,6 +9,7 @@ import {
   parseVehicleClassificationKey,
   routeDateMismatch,
   type VehicleRequestDto,
+  type CreateVehicleRequestInput,
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
 import { garageKeys } from '@entities/garage';
@@ -21,6 +23,8 @@ import { vehicleRouteKeys, vehicleRouteLink } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import {
   editTripBody,
+  isBackdatedCreateAttempt,
+  isLegacyOrdinaryCreateAttempt,
   newTripBody,
   retypeErases,
   type FormValues,
@@ -32,15 +36,136 @@ import { useEditorTermDoor, type TermStepResult } from './useEditorTermDoor';
 import type { VehicleRequestEditorState } from './useVehicleRequestEditorState';
 
 interface Input {
+  openCreated: (request: VehicleRequestDto) => void;
   openRoute: (routeId: string) => void;
   state: VehicleRequestEditorState;
 }
 
-export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
+export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: Input) {
   const { message, modal } = App.useApp();
+  const [reconcilePending, setReconcilePending] = useState(false);
   const { can } = useAuth();
   const qc = useQueryClient();
   const canApprove = can('vehicleRequests.approve');
+
+  const sendCreate = (body: CreateVehicleRequestInput) => {
+    const attempt = state.draft.prepareCreate(body);
+    return attempt.protocol === 'correction-v1'
+      ? vehicleRequestsApi.createCorrection(attempt.body)
+      : vehicleRequestsApi.createWithReceipt(attempt.body, attempt.key);
+  };
+
+  const reconcileAttempt = async () => {
+    const attempt = state.draft.active?.createAttempt;
+    if (state.record || attempt?.protocol !== 'receipt-v1' || reconcilePending) return;
+    setReconcilePending(true);
+    try {
+      const outcome = await vehicleRequestsApi.reconcileCreateAttempt(attempt.body, attempt.key);
+      if (outcome.state === 'not-created') {
+        const applied = state.draft.acceptNotCreated(attempt.key, outcome.nextOperationId);
+        if (applied === 'storage-error') {
+          message.error(
+            'Сверка завершилась, но новый ключ не сохранился на устройстве. Повторите сверку.',
+          );
+        } else if (applied === 'stale') {
+          message.warning(
+            'Попытка в этом окне уже изменилась. Проверьте черновик перед сохранением.',
+          );
+        } else {
+          message.success(
+            'Заявка по прежней попытке не создана. Исправьте поля и сохраните снова.',
+          );
+        }
+        return;
+      }
+
+      // Receipt ownership proves creation, but reading the card must still use current permissions.
+      let request: VehicleRequestDto | null = null;
+      try {
+        request = await vehicleRequestsApi.get(outcome.requestId);
+      } catch {
+        // A revoked read grant does not turn a committed create into a failed attempt.
+      }
+      if (!state.draft.clear()) {
+        message.warning('Заявка создана, но черновик не удалось удалить с устройства.');
+      }
+      state.closeSaved();
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
+      if (request) {
+        openCreated(request);
+      } else {
+        modal.info({
+          title: 'Заявка создана',
+          content: (
+            <>
+              Не удалось открыть карточку с текущими правами или соединением. ID заявки:{' '}
+              <Typography.Text copyable>{outcome.requestId}</Typography.Text>
+            </>
+          ),
+        });
+      }
+    } catch (error) {
+      message.error(`Не удалось сверить исходную отправку: ${errorMessage(error)}. Ключ сохранён.`);
+    } finally {
+      setReconcilePending(false);
+    }
+  };
+
+  const confirmBackdatedReset = () => {
+    const attempt = state.draft.active?.createAttempt;
+    if (state.record || !attempt || !isBackdatedCreateAttempt(attempt)) return;
+    modal.confirm({
+      title: 'Начать новую попытку заведения задним числом?',
+      content: (
+        <>
+          Сначала проверьте список заявок. Первый запрос может завершиться позже даже после отказа
+          или потери ответа. Новая отправка с другим ключом тогда создаст дубль. Поля и ездки
+          останутся в форме; новый запрос автоматически не отправится.
+        </>
+      ),
+      okText: 'Я проверил список — начать новую попытку',
+      okButtonProps: { danger: true },
+      cancelText: 'Оставить прежнюю попытку',
+      onOk: () => {
+        const outcome = state.resetBackdatedAttempt(attempt.key);
+        if (outcome === 'storage-error') {
+          message.error('Новые ключи не сохранились на устройстве. Прежняя попытка оставлена.');
+        } else if (outcome === 'stale') {
+          message.warning('Попытка уже изменилась. Проверьте черновик.');
+        } else {
+          message.success('Новая попытка подготовлена. Проверьте поля перед сохранением.');
+        }
+      },
+    });
+  };
+
+  const confirmLegacyOrdinaryReset = () => {
+    const attempt = state.draft.active?.createAttempt;
+    if (state.record || !isLegacyOrdinaryCreateAttempt(attempt)) return;
+    modal.confirm({
+      title: 'Начать новую попытку после старой отправки?',
+      content: (
+        <>
+          Сначала проверьте список заявок. Старая версия API могла проигнорировать ключ, а первый
+          запрос может завершиться позже. Новая отправка тогда создаст дубль. Поля и ездки останутся
+          в форме; новый запрос автоматически не отправится.
+        </>
+      ),
+      okText: 'Я проверил список — начать новую попытку',
+      okButtonProps: { danger: true },
+      cancelText: 'Оставить прежнюю попытку',
+      onOk: () => {
+        const outcome = state.resetLegacyOrdinaryAttempt(attempt.key);
+        if (outcome === 'storage-error') {
+          message.error('Новый ключ не сохранился на устройстве. Прежняя попытка оставлена.');
+        } else if (outcome === 'stale') {
+          message.warning('Попытка уже изменилась. Проверьте черновик.');
+        } else {
+          message.success('Новая попытка подготовлена. Проверьте поля перед сохранением.');
+        }
+      },
+    });
+  };
 
   /**
    * The request was moved to another date while it sits in the previous day's route.
@@ -150,8 +275,7 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
             ...term,
             fileIds: state.editor.newFileIds(),
           };
-          const attempt = state.draft.prepareCreate(body);
-          return vehicleRequestsApi.create(attempt.body, attempt.key);
+          return sendCreate(body);
         }
         if (retyping) {
           return vehicleRequestsApi.changeRequestType(state.record.id, {
@@ -217,8 +341,7 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
           trips: created,
           fileIds: state.editor.newFileIds(),
         };
-        const attempt = state.draft.prepareCreate(body);
-        return vehicleRequestsApi.create(attempt.body, attempt.key);
+        return sendCreate(body);
       }
       if (retyping) {
         return vehicleRequestsApi.changeRequestType(state.record.id, {
@@ -255,7 +378,11 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
       // data, but the screen is unreliable until refreshed.
       void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
-      state.draft.clear();
+      if (!state.draft.clear()) {
+        message.warning(
+          'Заявка сохранена, но связанные черновики не удалось удалить с устройства.',
+        );
+      }
       state.closeSaved();
       warnRouteDateMismatch(saved);
     },
@@ -267,13 +394,11 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
           ? `Срок работ изменён, но остальные правки не сохранены: ${errorMessage(error)}`
           : errorMessage(error),
       );
-      if (
-        !state.record &&
-        !(error instanceof LocalCreateAttemptError) &&
-        mayHaveCommittedWrite(error)
-      ) {
+      if (!state.record && !(error instanceof LocalCreateAttemptError)) {
         message.warning(
-          'Ответ сервера мог не дойти. Перед повторной отправкой проверьте список заявок, чтобы не создать дубль.',
+          mayHaveCommittedWrite(error)
+            ? 'Ответ сервера мог не дойти. Сверьте исходную отправку по сохранённому ключу.'
+            : 'Отказ повторной отправки не доказывает, что первая заявка не создана. Сверьте исходную попытку.',
         );
       }
     },
@@ -327,6 +452,10 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
 
   /** Rules that depend on the request type and cannot be expressed as field rules. */
   const onFinish = (values: FormValues) => {
+    if (state.reviewRequired) {
+      message.warning('Сначала подтвердите проверку восстановленных полей и ездок.');
+      return;
+    }
     // Keep the last keystroke before the request leaves the browser. A failed network response must
     // leave a recoverable form even when the autosave timer has not fired yet.
     state.draft.persist();
@@ -361,5 +490,9 @@ export function useVehicleRequestEditorSave({ openRoute, state }: Input) {
     confirmLoading: save.isPending || term.pending,
     onFinish,
     periodModalProps: term.periodModalProps,
+    reconcileAttempt,
+    reconcilePending,
+    confirmBackdatedReset,
+    confirmLegacyOrdinaryReset,
   };
 }

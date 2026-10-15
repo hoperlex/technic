@@ -32,6 +32,7 @@ export * from './PageTabs';
 export * from './PortalLogo';
 export * from './recordSession';
 export * from './ReasonModal';
+export * from './RequestCreateAttemptNotice';
 export * from './SortSheet';
 export * from './SummaryBar';
 export * from './UserAvatar';

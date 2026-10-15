@@ -24,6 +24,8 @@ export interface LocalFormDraftController<Payload> {
   pending: LocalFormDraft<Payload>[];
   persist: () => boolean;
   prepareCreate: <Body>(body: Body) => { body: Body; key: string };
+  releaseCreateAttempt: (key: string, nextKey: string) => boolean;
+  resetLegacyCreateAttempt: () => boolean;
   restore: (candidate: LocalFormDraft<Payload>) => Payload;
   status: LocalDraftStatus;
 }
@@ -98,7 +100,12 @@ export function useLocalFormDraft<Payload>({
   const prepareCreate = <Body,>(body: Body): { body: Body; key: string } => {
     const current = activeRef.current;
     if (!current) throw new LocalCreateAttemptError('Черновик недоступен — откройте форму заново');
-    const key = current.createAttempt?.key ?? newIdempotencyKey();
+    if (current.createAttempt && current.createAttempt.protocol !== 'receipt-v1') {
+      throw new LocalCreateAttemptError(
+        'Исход старой отправки нельзя проверить автоматически. Сверьте заявку в списке вручную.',
+      );
+    }
+    const key = current.createAttempt?.key ?? current.nextCreateKey ?? newIdempotencyKey();
     // Form libraries may mutate nested values after a send; the retry must keep the bytes represented
     // by the first persisted JSON body, including file IDs and trip rows.
     const submittedBody = current.createAttempt
@@ -108,7 +115,8 @@ export function useLocalFormDraft<Payload>({
       ...current,
       savedAt: Date.now(),
       payload: readRef.current(),
-      createAttempt: { key, body: submittedBody },
+      createAttempt: { key, body: submittedBody, protocol: 'receipt-v1' as const },
+      nextCreateKey: undefined,
     };
     if (!writeLocalFormDraft(next)) {
       setStatus({ available: false, savedAt: null });
@@ -121,6 +129,62 @@ export function useLocalFormDraft<Payload>({
     return { body: submittedBody, key };
   };
 
+  const releaseCreateAttempt = (key: string, nextKey: string): boolean => {
+    const current = activeRef.current;
+    if (current?.createAttempt?.protocol !== 'receipt-v1' || current.createAttempt.key !== key)
+      return false;
+    const { createAttempt: _attempt, ...remaining } = current;
+    const next = {
+      ...remaining,
+      savedAt: Date.now(),
+      payload: readRef.current(),
+      nextCreateKey: nextKey,
+      previousCreateKeys: [...new Set([...(current.previousCreateKeys ?? []), key])],
+    };
+    if (!writeLocalFormDraft(next)) {
+      setStatus({ available: false, savedAt: null });
+      return false;
+    }
+    activate(next);
+    setStatus({ available: true, savedAt: next.savedAt });
+    if (userId && context.current) {
+      const copies = listLocalFormDrafts(userId, form, context.current, parseRef.current).drafts;
+      for (const copy of copies) {
+        if (copy.id !== next.id && copy.createAttempt?.key === key) removeLocalFormDraft(copy.id);
+      }
+    }
+    return true;
+  };
+
+  const resetLegacyCreateAttempt = (): boolean => {
+    const current = activeRef.current;
+    if (!current?.createAttempt || current.createAttempt.protocol === 'receipt-v1') return false;
+    const oldKey = current.createAttempt.key;
+    const { createAttempt: _attempt, ...remaining } = current;
+    const next = {
+      ...remaining,
+      savedAt: Date.now(),
+      payload: readRef.current(),
+      nextCreateKey: newIdempotencyKey(),
+      previousCreateKeys: [...new Set([...(current.previousCreateKeys ?? []), oldKey])],
+    };
+    if (!writeLocalFormDraft(next)) {
+      setStatus({ available: false, savedAt: null });
+      return false;
+    }
+    activate(next);
+    const found = listLocalFormDrafts(current.userId, form, current.target, parseRef.current);
+    if (found.available) {
+      for (const copy of found.drafts) {
+        if (copy.id !== next.id && copy.createAttempt?.key === oldKey) {
+          removeLocalFormDraft(copy.id);
+        }
+      }
+    }
+    // The persisted lineage lets a later successful create remove copies missed by this best-effort pass.
+    setStatus({ available: true, savedAt: next.savedAt });
+    return true;
+  };
   const restore = (candidate: LocalFormDraft<Payload>): Payload => {
     const next = { ...candidate, id: newLocalFormDraftId(), savedAt: Date.now() };
     const ok = writeLocalFormDraft(next);
@@ -151,22 +215,34 @@ export function useLocalFormDraft<Payload>({
   const clear = () => {
     const current = activeRef.current;
     let removed = true;
-    if (current?.createAttempt) {
-      // A successful response settles every restored fork of this attempt. Leaving the source
-      // behind would reopen it as an undiscardable pending send on the next form opening.
+    const relatedKeys = new Set([
+      ...(current?.previousCreateKeys ?? []),
+      ...(current?.createAttempt ? [current.createAttempt.key] : []),
+      ...(current?.nextCreateKey ? [current.nextCreateKey] : []),
+    ]);
+    if (current && relatedKeys.size > 0) {
+      // A confirmed new create also settles restored copies of earlier attempts. The current
+      // envelope retains their keys until sibling cleanup succeeds, even across failed removals.
       const found = listLocalFormDrafts(current.userId, form, current.target, parseRef.current);
       removed = found.available;
       if (found.available) {
-        for (const candidate of found.drafts) {
-          if (candidate.createAttempt?.key === current.createAttempt.key) {
-            removed = removeLocalFormDraft(candidate.id) && removed;
+        for (const copy of found.drafts) {
+          if (
+            copy.id !== current.id &&
+            (relatedKeys.has(copy.createAttempt?.key ?? '') ||
+              relatedKeys.has(copy.nextCreateKey ?? '') ||
+              copy.previousCreateKeys?.some((key) => relatedKeys.has(key)))
+          ) {
+            removed = removeLocalFormDraft(copy.id) && removed;
           }
         }
       }
     }
-    if (current) removed = removeLocalFormDraft(current.id) && removed;
-    activate(null);
-    setPending([]);
+    if (current && removed) removed = removeLocalFormDraft(current.id);
+    if (removed) {
+      activate(null);
+      setPending([]);
+    }
     setStatus({ available: removed, savedAt: null });
   };
 
@@ -178,6 +254,8 @@ export function useLocalFormDraft<Payload>({
     pending,
     persist,
     prepareCreate,
+    releaseCreateAttempt,
+    resetLegacyCreateAttempt,
     restore,
     status,
   };

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
@@ -124,6 +124,7 @@ import {
   createAttemptFingerprint,
   createAttemptKey,
   createRequestOnce,
+  reconcileRequestCreate,
   replayRequestCreate,
 } from '../services/request-create-attempt';
 import { wasteTicketChecks } from '../services/waste-ticket-checks';
@@ -1365,7 +1366,30 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     });
   });
 
-  r.post('/', { ...canCreate, schema: { body: replayBodySchema } }, async (req, reply) => {
+  r.post(
+    '/_create-attempts/reconcile',
+    {
+      preHandler: [app.authenticate],
+      schema: { body: z.object({ originalBody: replayBodySchema }).strict() },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const key = createAttemptKey(req.headers['idempotency-key']);
+      if (!key) throw err.unprocessable('Передайте ключ исходной попытки');
+      return reconcileRequestCreate({
+        key,
+        kind: 'waste',
+        actorUserId: p.id,
+        fingerprint: createAttemptFingerprint(req.body.originalBody),
+      });
+    },
+  );
+
+  const createHandler = async (
+    req: FastifyRequest<{ Body: z.infer<typeof createWasteRequestSchema> }>,
+    reply: FastifyReply,
+    receiptRequired: boolean,
+  ) => {
     const p = requirePrincipal(req);
     const body = req.body;
     assertPlaceObjectScope(p, body.objectId, WASTE_SCOPE_LABEL);
@@ -1377,6 +1401,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       assertCan(p, 'wasteRequests.assignOperator', ASSIGN_OPERATOR_DENIED);
     }
     const createKey = createAttemptKey(req.headers['idempotency-key']);
+    if (receiptRequired && !createKey) throw err.unprocessable('Передайте ключ создания заявки');
     const fingerprint = createKey ? createAttemptFingerprint(body) : null;
     if (createKey && fingerprint) {
       const replay = await replayRequestCreate(
@@ -1475,7 +1500,15 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     if (!outcome?.repeated) await writeOwnerMismatchAudit(p.id, dto, mismatchReason);
     reply.code(outcome?.repeated ? 200 : 201);
     return dto;
-  });
+  };
+  r.post('/', { ...canCreate, schema: { body: replayBodySchema } }, (req, reply) =>
+    createHandler(req, reply, false),
+  );
+  r.post(
+    '/_create-with-receipt',
+    { ...canCreate, schema: { body: replayBodySchema } },
+    (req, reply) => createHandler(req, reply, true),
+  );
 
   r.patch(
     '/:id',

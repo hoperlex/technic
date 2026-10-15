@@ -104,6 +104,7 @@ import {
   createAttemptFingerprint,
   createAttemptKey,
   createRequestOnce,
+  reconcileRequestCreate,
   replayRequestCreate,
   type CreateTx,
 } from '../services/request-create-attempt';
@@ -571,28 +572,53 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     return { dto, repeated: outcome?.repeated ?? false };
   };
 
-  r.post('/', { ...canCreate, schema: { body: createMechRequestSchema } }, async (req, reply) => {
-    const p = requirePrincipal(req);
-    const body = req.body;
-    const result = await createRequest(
-      p,
-      {
-        objectId: body.objectId,
-        departmentId: body.departmentId ?? null,
-        mechModelId: body.mechModelId,
-        plannedFrom: body.plannedFrom,
-        plannedTo: body.plannedTo,
-        responsibleName: body.responsibleName,
-        responsiblePhone: body.responsiblePhone,
-        comment: body.comment,
-        fileIds: body.fileIds,
-      },
-      undefined,
-      createAttemptKey(req.headers['idempotency-key']),
-    );
-    reply.code(result.repeated ? 200 : 201);
-    return result.dto;
+  const createInputOf = (body: z.infer<typeof createMechRequestSchema>) => ({
+    objectId: body.objectId,
+    departmentId: body.departmentId ?? null,
+    mechModelId: body.mechModelId,
+    plannedFrom: body.plannedFrom,
+    plannedTo: body.plannedTo,
+    responsibleName: body.responsibleName,
+    responsiblePhone: body.responsiblePhone,
+    comment: body.comment,
+    fileIds: body.fileIds,
   });
+  r.post(
+    '/_create-attempts/reconcile',
+    {
+      preHandler: [app.authenticate],
+      schema: { body: z.object({ originalBody: createMechRequestSchema }).strict() },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const key = createAttemptKey(req.headers['idempotency-key']);
+      if (!key) throw err.unprocessable('Передайте ключ исходной попытки');
+      return reconcileRequestCreate({
+        key,
+        kind: 'mech',
+        actorUserId: p.id,
+        fingerprint: createAttemptFingerprint(createInputOf(req.body.originalBody)),
+      });
+    },
+  );
+
+  const registerCreate = (receiptRequired: boolean) =>
+    r.post(
+      receiptRequired ? '/_create-with-receipt' : '/',
+      { ...canCreate, schema: { body: createMechRequestSchema } },
+      async (req, reply) => {
+        const p = requirePrincipal(req);
+        const body = req.body;
+        const createKey = createAttemptKey(req.headers['idempotency-key']);
+        if (receiptRequired && !createKey)
+          throw err.unprocessable('Передайте ключ создания заявки');
+        const result = await createRequest(p, createInputOf(body), undefined, createKey);
+        reply.code(result.repeated ? 200 : 201);
+        return result.dto;
+      },
+    );
+  registerCreate(false);
+  registerCreate(true);
 
   /**
    * «Дублировать» (Р3): ставка задаётся за час или смену ЕДИНИЦЫ, две единицы возвращают в разные

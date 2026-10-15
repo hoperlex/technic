@@ -69,6 +69,9 @@ const SELF_SERVICE_ROUTES = new Set([
   '/api/v1/auth/change-password',
   // Reconciliation binds the original actor in its receipt even if create permission was revoked.
   '/api/v1/vehicle-requests/_create-attempts/reconcile',
+  '/api/v1/waste-requests/_create-attempts/reconcile',
+  '/api/v1/mech-requests/_create-attempts/reconcile',
+  '/api/v1/service-requests/_create-attempts/reconcile',
 ]);
 
 /**
@@ -192,16 +195,29 @@ beforeAll(async () => {
 
 describe('авторизация маршрутов', () => {
   it('receipt creation has a separate route while reconciliation only needs the signed-in actor', () => {
-    const create = routes.find(
-      (r) => r.key === 'POST /api/v1/vehicle-requests/_create-with-receipt',
-    );
-    const reconcile = routes.find(
-      (r) => r.key === 'POST /api/v1/vehicle-requests/_create-attempts/reconcile',
-    );
-    expect(create?.requiresLogin).toBe(true);
-    expect(permissionsOf(create!)).toContain('vehicleRequests.create');
-    expect(reconcile?.requiresLogin).toBe(true);
-    expect(permissionsOf(reconcile!)).toEqual([]);
+    for (const [kind, permission] of [
+      ['vehicle', 'vehicleRequests.create'],
+      ['waste', 'wasteRequests.create'],
+      ['mech', 'mechRequests.create'],
+      ['service', 'serviceRequests.create'],
+    ]) {
+      const prefix =
+        kind === 'vehicle'
+          ? 'vehicle-requests'
+          : kind === 'waste'
+            ? 'waste-requests'
+            : kind === 'mech'
+              ? 'mech-requests'
+              : 'service-requests';
+      const create = routes.find((r) => r.key === `POST /api/v1/${prefix}/_create-with-receipt`);
+      const reconcile = routes.find(
+        (r) => r.key === `POST /api/v1/${prefix}/_create-attempts/reconcile`,
+      );
+      expect(create?.requiresLogin).toBe(true);
+      expect(permissionsOf(create!)).toContain(permission);
+      expect(reconcile?.requiresLogin).toBe(true);
+      expect(permissionsOf(reconcile!)).toEqual([]);
+    }
   });
 
   it('маршруты собраны из приложения, а не перечислены в тесте', () => {

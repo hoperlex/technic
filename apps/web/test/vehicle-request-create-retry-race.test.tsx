@@ -29,7 +29,7 @@ describe('vehicle request create retry race', () => {
     const firstResponse = new Promise<VehicleRequestDto>((resolve) => {
       finishFirst = resolve;
     });
-    const create = vi.spyOn(vehicleRequestsApi, 'create');
+    const create = vi.spyOn(vehicleRequestsApi, 'createWithReceipt');
     create.mockImplementationOnce(() => firstResponse);
     create.mockRejectedValueOnce({ status: 422, message: 'Дата в прошлом' });
 
@@ -52,7 +52,10 @@ describe('vehicle request create retry race', () => {
         editor: { newFileIds: () => [] },
         closeSaved: vi.fn(),
       } as unknown as VehicleRequestEditorState;
-      current = { draft, save: useVehicleRequestEditorSave({ openRoute: vi.fn(), state }) };
+      current = {
+        draft,
+        save: useVehicleRequestEditorSave({ openCreated: vi.fn(), openRoute: vi.fn(), state }),
+      };
       return null;
     }
     renderWithUser(<Harness />);
@@ -79,10 +82,13 @@ describe('vehicle request create retry race', () => {
     expect(create.mock.calls[1]).toEqual(create.mock.calls[0]);
     expect(current!.draft.active).toMatchObject({
       operationId,
-      createAttempt: { body: { comment: 'Исходное тело' } },
+      createAttempt: { protocol: 'receipt-v1', body: { comment: 'Исходное тело' } },
     });
 
     // The first POST is still permitted to finish after the apparent refusal of the retry.
-    finishFirst({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' } as VehicleRequestDto);
+    await act(async () => {
+      finishFirst({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' } as VehicleRequestDto);
+      await firstResponse;
+    });
   });
 });
