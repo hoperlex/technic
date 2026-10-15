@@ -28,7 +28,6 @@ import {
   type WasteRequestUpdatePayload,
 } from '@entities/waste-request';
 import { MOSCOW_TZ } from '@shared/config';
-import { mayHaveCommittedWrite } from '@shared/api';
 import {
   LocalCreateAttemptError,
   objectDraftPayload,
@@ -271,16 +270,41 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
       setOpen(false);
     },
     onError: (error) => {
-      if (!record && !(error instanceof LocalCreateAttemptError) && mayHaveCommittedWrite(error))
-        message.warning(
-          'Ответ мог потеряться после создания заявки. Проверьте список перед повторной отправкой.',
-        );
+      if (!record && !(error instanceof LocalCreateAttemptError) && draft.active?.createAttempt)
+        message.warning('Исход создания нужно проверить перед исправлением заявки.');
       // A validation error is shown on its field: a generic toast does not say what to fix.
       // deliveryAt is split into date and time in the form, so it maps to the date field.
       if (!blockers.fromApi(error, { deliveryAt: 'deliveryDate' })) {
         message.error(errorMessage(error));
       }
     },
+  });
+
+  const reconcile = useMutation({
+    mutationFn: async () => {
+      const attempt = draft.active?.createAttempt;
+      if (!attempt) throw new LocalCreateAttemptError('Нет попытки создания для проверки');
+      if (attempt.protocol !== 'receipt-v1')
+        throw new LocalCreateAttemptError('Проверьте исход старой отправки в списке заявок вручную');
+      const result = await wasteRequestsApi.reconcileCreate(
+        attempt.body as WasteRequestPayload,
+        attempt.key,
+      );
+      return { key: attempt.key, result };
+    },
+    onSuccess: ({ key, result }) => {
+      if (result.state === 'created') {
+        draft.clear();
+        void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
+        message.success('Заявка создана');
+        setOpen(false);
+        return;
+      }
+      if (draft.releaseCreateAttempt(key, result.nextOperationId))
+        message.info('Создание не произошло. Исправьте форму и отправьте её заново.');
+      else message.error('Не удалось сохранить результат проверки на этом устройстве');
+    },
+    onError: (error) => message.error(errorMessage(error)),
   });
 
   return {
@@ -301,9 +325,16 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
           save.mutate(values);
         }}
         onRemoveFile={(file) => void removeFile(file)}
+        onReconcile={() => reconcile.mutate()}
+        onLegacyReset={() => {
+          if (draft.resetLegacyCreateAttempt())
+            message.info('Старая попытка сброшена. Перед отправкой проверьте данные заявки.');
+          else message.error('Не удалось сохранить сброс попытки на этом устройстве');
+        }}
         onUpload={(file) => void upload(file)}
         open={open}
         record={record}
+        reconciling={reconcile.isPending || save.isPending}
         saving={save.isPending}
         sources={sources}
         uploading={uploading}

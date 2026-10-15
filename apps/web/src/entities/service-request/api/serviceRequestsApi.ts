@@ -36,6 +36,7 @@ import {
   type ListResult,
   type Query,
 } from '@shared/api';
+import type { RequestCreateReconciliation } from '@shared/lib';
 
 const PATH = '/service-requests';
 
@@ -94,10 +95,19 @@ export const serviceRequestsApi = {
    * выродилась бы в украшение (тот же довод, что у заведения плановой закупки).
    */
   create: (body: CreateServiceRequestInput, idempotencyKey?: string) =>
-    apiFetch<ServiceRequestWithMailDto>(PATH, {
+    apiFetch<ServiceRequestWithMailDto>(
+      idempotencyKey && !body.equipmentCandidate ? `${PATH}/_create-with-receipt` : PATH,
+      {
+        method: 'POST',
+        body,
+        ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+      },
+    ),
+  reconcileCreate: (body: CreateServiceRequestInput, idempotencyKey: string) =>
+    apiFetch<RequestCreateReconciliation>(`${PATH}/_create-attempts/reconcile`, {
       method: 'POST',
-      body,
-      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+      body: { originalBody: body },
+      headers: { 'Idempotency-Key': idempotencyKey },
     }),
   ...createRemoveApi<{ ok: boolean }>(PATH),
 

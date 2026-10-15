@@ -22,6 +22,7 @@ import {
   type ListResult,
   type Query,
 } from '@shared/api';
+import type { RequestCreateReconciliation } from '@shared/lib';
 
 const PATH = '/mech-requests';
 
@@ -39,10 +40,16 @@ export const mechRequestsApi = {
   ...createGetApi<MechRequestDto>(PATH),
   ...createWriteApi<MechRequestDto, CreateMechRequestInput, UpdateMechRequestInput>(PATH),
   create: (body: CreateMechRequestInput, idempotencyKey?: string) =>
-    apiFetch<MechRequestDto>(PATH, {
+    apiFetch<MechRequestDto>(idempotencyKey ? `${PATH}/_create-with-receipt` : PATH, {
       method: 'POST',
       body,
       ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    }),
+  reconcileCreate: (body: CreateMechRequestInput, idempotencyKey: string) =>
+    apiFetch<RequestCreateReconciliation>(`${PATH}/_create-attempts/reconcile`, {
+      method: 'POST',
+      body: { originalBody: body },
+      headers: { 'Idempotency-Key': idempotencyKey },
     }),
 
   /**

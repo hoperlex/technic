@@ -63,18 +63,19 @@ export function LocalFormDraftNotice<
                 </Button>
               </Space>
             ))}
+            {pending.some((candidate) => candidate.createAttempt) && (
+              <Typography.Text>
+                Сначала восстановите и проверьте исход отправки. Черновик с непроверенной попыткой
+                нельзя удалить для новой заявки.
+              </Typography.Text>
+            )}
             <Button
               size="small"
-              disabled={pending.some((candidate) => !!candidate.createAttempt)}
+              disabled={pending.some((candidate) => candidate.createAttempt)}
               onClick={onDiscard}
             >
               Удалить черновики и начать заново
             </Button>
-            {pending.some((candidate) => !!candidate.createAttempt) && (
-              <Typography.Text type="secondary">
-                Восстановите отправленную попытку. До сверки с реестром не создавайте вторую заявку.
-              </Typography.Text>
-            )}
           </Space>
         }
       />

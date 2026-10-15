@@ -6,8 +6,13 @@ import { mechEditScope, type MechRequestDto } from '@technic/contracts';
 import { mechModelOptionsQuery } from '@entities/mech-model';
 import { mechFailureText, mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
 import { useAuth } from '@entities/session';
-import { mayHaveCommittedWrite } from '@shared/api';
-import { AutoSelect, FormModal, LocalFormDraftNotice, useFormBlockers } from '@shared/ui';
+import {
+  AutoSelect,
+  FormModal,
+  LocalFormDraftNotice,
+  RequestCreateAttemptNotice,
+  useFormBlockers,
+} from '@shared/ui';
 import {
   FormDraftAutosave,
   LocalCreateAttemptError,
@@ -201,12 +206,37 @@ export function MechRequestForm({
       onClose();
     },
     onError: (e) => {
-      if (!request && !(e instanceof LocalCreateAttemptError) && mayHaveCommittedWrite(e))
-        message.warning(
-          'Ответ мог потеряться после создания заявки. Проверьте список перед повторной отправкой.',
-        );
+      if (!request && !(e instanceof LocalCreateAttemptError) && draft.active?.createAttempt)
+        message.warning('Исход создания нужно проверить перед исправлением заявки.');
       if (!blockers.fromApi(e)) message.error(mechFailureText(e));
     },
+  });
+
+  const reconcile = useMutation({
+    mutationFn: async () => {
+      const attempt = draft.active?.createAttempt;
+      if (!attempt) throw new LocalCreateAttemptError('Нет попытки создания для проверки');
+      if (attempt.protocol !== 'receipt-v1')
+        throw new LocalCreateAttemptError('Проверьте исход старой отправки в списке заявок вручную');
+      const result = await mechRequestsApi.reconcileCreate(
+        attempt.body as Parameters<typeof mechRequestsApi.create>[0],
+        attempt.key,
+      );
+      return { key: attempt.key, result };
+    },
+    onSuccess: ({ key, result }) => {
+      if (result.state === 'created') {
+        draft.clear();
+        void qc.invalidateQueries({ queryKey: mechRequestKeys.root });
+        message.success('Заявка создана');
+        onClose();
+        return;
+      }
+      if (draft.releaseCreateAttempt(key, result.nextOperationId))
+        message.info('Создание не произошло. Исправьте форму и отправьте её заново.');
+      else message.error('Не удалось сохранить результат проверки на этом устройстве');
+    },
+    onError: (e) => message.error(mechFailureText(e)),
   });
 
   const submit = (values: Values) => {
@@ -258,6 +288,17 @@ export function MechRequestForm({
               );
             }}
             onDiscard={draft.discardPending}
+          />
+          <RequestCreateAttemptNotice
+            pending={!!draft.active?.createAttempt}
+            legacy={!!draft.active?.createAttempt && draft.active.createAttempt.protocol !== 'receipt-v1'}
+            checking={reconcile.isPending || mutation.isPending}
+            onCheck={() => reconcile.mutate()}
+            onLegacyReset={() => {
+              if (draft.resetLegacyCreateAttempt())
+                message.info('Старая попытка сброшена. Перед отправкой проверьте данные заявки.');
+              else message.error('Не удалось сохранить сброс попытки на этом устройстве');
+            }}
           />
         </>
       )}

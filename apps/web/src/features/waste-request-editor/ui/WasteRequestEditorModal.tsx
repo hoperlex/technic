@@ -27,6 +27,7 @@ import {
   FormGrid,
   FormModal,
   LocalFormDraftNotice,
+  RequestCreateAttemptNotice,
   type FormBlockersApi,
 } from '@shared/ui';
 import type { FormInstance } from 'antd';
@@ -47,9 +48,12 @@ interface Props {
   onCancel: () => void;
   onFinish: (values: WasteRequestFormValues) => void;
   onRemoveFile: (file: WasteRequestEditorFile) => void;
+  onReconcile: () => void;
+  onLegacyReset: () => void;
   onUpload: (file: File) => void;
   open: boolean;
   record: WasteRequestDto | null;
+  reconciling: boolean;
   saving: boolean;
   sources: WasteRequestEditorSources;
   uploading: boolean;
@@ -70,9 +74,12 @@ export function WasteRequestEditorModal({
   onCancel,
   onFinish,
   onRemoveFile,
+  onReconcile,
+  onLegacyReset,
   onUpload,
   open,
   record,
+  reconciling,
   saving,
   sources,
   uploading,
@@ -206,6 +213,13 @@ export function WasteRequestEditorModal({
               )
             }
             onDiscard={draft.discardPending}
+          />
+          <RequestCreateAttemptNotice
+            pending={!!draft.active?.createAttempt}
+            legacy={!!draft.active?.createAttempt && draft.active.createAttempt.protocol !== 'receipt-v1'}
+            checking={reconciling}
+            onCheck={onReconcile}
+            onLegacyReset={onLegacyReset}
           />
         </>
       )}

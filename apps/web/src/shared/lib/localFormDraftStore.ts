@@ -9,7 +9,8 @@ export interface LocalFormDraft<Payload> {
   target: string;
   savedAt: number;
   payload: Payload;
-  createAttempt?: { key: string; body: unknown };
+  createAttempt?: { key: string; body: unknown; protocol?: 'receipt-v1' };
+  nextCreateKey?: string;
 }
 
 export function newLocalFormDraftId(): string {
@@ -37,10 +38,13 @@ function parseEnvelope(raw: string | null): LocalFormDraft<unknown> | null {
       draft.createAttempt !== undefined &&
       (!draft.createAttempt ||
         typeof draft.createAttempt.key !== 'string' ||
+        (draft.createAttempt.protocol !== undefined &&
+          draft.createAttempt.protocol !== 'receipt-v1') ||
         !draft.createAttempt.body ||
         typeof draft.createAttempt.body !== 'object')
     )
       return null;
+    if (draft.nextCreateKey !== undefined && typeof draft.nextCreateKey !== 'string') return null;
     return draft as LocalFormDraft<unknown>;
   } catch {
     return null;

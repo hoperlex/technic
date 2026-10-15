@@ -9,9 +9,9 @@ import {
   type ServiceRequestKind,
 } from '@technic/contracts';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import { serviceRequestKeys } from '@entities/service-request';
+import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { useAuth } from '@entities/session';
-import { mayHaveCommittedWrite } from '@shared/api';
+import { RequestCreateAttemptNotice } from '@shared/ui';
 import { LocalCreateAttemptError } from '@shared/lib';
 import { ServiceRequestCustomerField, useServiceRequestCustomer } from '@features/request-customer';
 import { FormModal, useFormBlockers } from '@shared/ui';
@@ -200,6 +200,8 @@ export function ServiceRequestForm({
 
   const mutation = useMutation({
     mutationFn: (values: Values) => {
+      if (!request && draft && local.draft.active?.createAttempt)
+        throw new LocalCreateAttemptError('Сначала проверьте исход предыдущей отправки');
       // Обе половины пары, а не одна: у заявки без аппарата заказчиком бывает и площадка, и её
       // идентификатор уходит тем же `objectId`, которым у заявки с аппаратом называют «не тот
       // объект» (Р6). Какой из двух смыслов сегодня — знает отправка, и разбирается это там.
@@ -237,10 +239,8 @@ export function ServiceRequestForm({
     // Отказ разбирает отдельный модуль: кодов четыре, и у каждого своё место на экране; форма
     // передана ему затем, что дубль в парке (Р10) ставит найденную единицу прямо в её поля.
     onError: (e, values) => {
-      if (!request && !(e instanceof LocalCreateAttemptError) && mayHaveCommittedWrite(e))
-        message.warning(
-          'Ответ мог потеряться после создания заявки. Проверьте список перед повторной отправкой.',
-        );
+      if (!request && !(e instanceof LocalCreateAttemptError) && local.draft.active?.createAttempt)
+        message.warning('Исход создания нужно проверить перед исправлением заявки.');
       reportServiceRequestFailure(e, {
         withoutEquipment: !request && !values.officeEquipmentId && !draft,
         blockers,
@@ -248,6 +248,35 @@ export function ServiceRequestForm({
         form,
       });
     },
+  });
+
+  const reconcile = useMutation({
+    mutationFn: async () => {
+      const attempt = local.draft.active?.createAttempt;
+      if (!attempt) throw new LocalCreateAttemptError('Нет попытки создания для проверки');
+      if (attempt.protocol !== 'receipt-v1')
+        throw new LocalCreateAttemptError('Проверьте исход старой отправки в списке заявок вручную');
+      const result = await serviceRequestsApi.reconcileCreate(
+        attempt.body as Parameters<typeof serviceRequestsApi.create>[0],
+        attempt.key,
+      );
+      return { key: attempt.key, result };
+    },
+    onSuccess: ({ key, result }) => {
+      if (result.state === 'created') {
+        local.draft.clear();
+        void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+        void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+        message.success('Заявка создана');
+        onClose();
+        return;
+      }
+      if (local.draft.releaseCreateAttempt(key, result.nextOperationId))
+        message.info('Создание не произошло. Исправьте форму и отправьте её заново.');
+      else message.error('Не удалось сохранить результат проверки на этом устройстве');
+    },
+    onError: (e) =>
+      reportServiceRequestFailure(e, { withoutEquipment: false, blockers, message, form }),
   });
 
   return (
@@ -264,6 +293,19 @@ export function ServiceRequestForm({
       width={620}
     >
       {local.notice}
+      {!request && (
+        <RequestCreateAttemptNotice
+          pending={!!local.draft.active?.createAttempt}
+          legacy={!!local.draft.active?.createAttempt && local.draft.active.createAttempt.protocol !== 'receipt-v1'}
+          checking={reconcile.isPending || mutation.isPending}
+          onCheck={() => reconcile.mutate()}
+          onLegacyReset={() => {
+            if (local.draft.resetLegacyCreateAttempt())
+              message.info('Старая попытка сброшена. Перед отправкой проверьте данные заявки.');
+            else message.error('Не удалось сохранить сброс попытки на этом устройстве');
+          }}
+        />
+      )}
       {(request || local.draft.pending.length === 0) && (
         <Form
           form={form}
