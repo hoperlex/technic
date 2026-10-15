@@ -12,38 +12,30 @@ import { objectRecordsQuery } from '../src/entities/object';
 import { expectModalClosed } from './antd';
 
 /**
- * Заведение заявки на вывоз мусора — сквозь весь экран: список, кнопка, форма, сохранение.
+ * Waste Removal creation crosses the full page: list, create action, form, and save.
  *
- * Проверяется поток, а не разметка: какой запрос ушёл на сервер и с каким телом, что список
- * перезапрошен после сохранения и что окно закрылось. Расположение полей рефакторинг меняет
- * свободно, а тело `POST /waste-requests` — это договор с API, и разойтись с ним нельзя.
+ * The test protects the HTTP body and route, list refresh, and modal close. Layout can change,
+ * but the versioned receipt route must keep the submitted body after a lost response.
  *
- * Сеть подменена целиком (`mockHttp`), поэтому видно и лишнее: запрос, которого экран делать не
- * должен, падает сообщением «Нет мока для ...», а не проходит незамеченным.
+ * The network mock rejects every unexpected request, including a fallback to the root create route.
  */
 
-// Сценарий ведёт весь экран — список, форму, сохранение: пяти секунд по умолчанию ему хватает не
-// всегда, а упавший по таймауту тест читается как поломка портала.
-
-/** День доставки — от «сегодня по МСК»: тем же правилом форма запирает прошедшие даты. */
+/** Use the same Moscow date floor as the form so the test remains valid across days. */
 const DELIVERY_DAY = dayjs(minRequestDateKey()).add(3, 'day').format('YYYY-MM-DD');
-/** Ожидаемый `deliveryAt`: дата и время собираются в МСК — в этом же поясе их читает сервер. */
+/** The server reads the submitted delivery time in Moscow time. */
 const EXPECTED_DELIVERY_AT = dayjs.tz(`${DELIVERY_DAY} 09:30`, 'Europe/Moscow').toISOString();
 
 /**
- * Справочники отдаются по два значения: с единственным вариантом `AutoSelect` заполнил бы поле
- * сам (в этом его работа), и тест перестал бы проверять выбор человека.
+ * Two choices prevent AutoSelect from filling a field without user input.
  */
 function setup(over: RouteMap = {}, queryClient?: QueryClient) {
   const http = mockHttp({
     'GET /waste-requests': () => json(list<WasteRequestDto>([])),
     'GET /waste-requests/summary': () => json(wasteSummary()),
-    // Баннер состояния распознавания (ADR 0114, Р29) спрашивает подсистему на каждом экране
-    // разбора: молчащее распознавание неотличимо от «талоны в порядке». Здесь оно исправно.
+    // The recognition health banner polls on this screen; an unmocked request would hide failures.
     'GET /waste-requests/ticket-recognition/health': () =>
       json({ state: 'ok', since: null, code: '', attempts: 0, failed: 0, waiting: 0 }),
-    // Присутствие контейнеров на площадке (ADR 0054) спрашивается на любой выбор объекта, даже
-    // когда заявка вывоза о контейнерах не говорит.
+    // Site selection queries present container groups even for requests without containers.
     'GET /waste-requests/present-groups': () => json([]),
     'GET /objects': () =>
       json(
@@ -61,8 +53,7 @@ function setup(over: RouteMap = {}, queryClient?: QueryClient) {
     'GET /waste-types': () =>
       json(list([wasteType(), wasteType({ id: 'wt-2', name: 'Грунт', sortOrder: 2 })])),
     'GET /counterparties': () => json(list([operator()])),
-    // Цена — предпросмотром в форме (ADR 0009): заявку она не задерживает, но запрос уходит по
-    // выбору типа мусора, и без мока экран сорвался бы на нём.
+    // Tariff preview queries on waste type selection, although it does not block creation.
     'GET /waste-tariffs/resolve': () =>
       json({
         tariff: {
@@ -79,7 +70,7 @@ function setup(over: RouteMap = {}, queryClient?: QueryClient) {
           matchedBy: 'container_kind' as const,
         },
       }),
-    'POST /waste-requests': ({ body }) =>
+    'POST /waste-requests/_create-with-receipt': ({ body }) =>
       json(wasteRequest({ ...(body as Partial<WasteRequestDto>), id: 'wr-new' }), 201),
     ...over,
   });
@@ -88,13 +79,10 @@ function setup(over: RouteMap = {}, queryClient?: QueryClient) {
 }
 
 /**
- * Выбор в `AutoSelect`: список живёт в портале, поэтому поле ищется по id, а вариант — в
- * выпадашке именно этого поля (`<id>_list`). Поиск по всему документу брал бы варианты соседнего
- * списка: закрытая выпадашка остаётся в разметке, и «выбор» уходил бы в неё.
+ * AutoSelect leaves closed dropdowns in the DOM, so search within this field's dropdown.
  */
 async function pickOption(fieldId: string, text: string) {
-  // Поле ждём отпертым: тип заявки открывается только после выбора объекта, и щелчок по
-  // запертому полю прошёл бы вхолостую.
+  // Request type unlocks only after object selection; clicking earlier would be ignored.
   const input = await waitFor(() => {
     const el = document.querySelector<HTMLInputElement>(`#${fieldId}`);
     expect(el?.disabled).toBe(false);
@@ -113,12 +101,12 @@ async function pickOption(fieldId: string, text: string) {
   fireEvent.click(option);
 }
 
-/** antd связывает подпись с полем через `for`/`id` — ищем так же, как читает человек. */
+/** Ant Design connects labels to fields through for/id. */
 function fill(label: string, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
-/** Обязательный минимум заявки на вывоз: объект, тип, что и сколько вывозим, когда и к кому. */
+/** Fill the required site, type, volume, schedule, and contact. */
 async function fillRequestForm() {
   await pickOption('objectId', 'ЖК Южный');
   await pickOption('requestType', 'Вывоз мусора (разовый объём)');
@@ -126,15 +114,12 @@ async function fillRequestForm() {
 
   fill('Объём, м³', '20');
 
-  // Дату форма подставляет сама (сегодня по МСК) — переставляем, чтобы в теле запроса было видно
-  // выбранное человеком, а не совпавшее с умолчанием.
+  // Choose a nondefault date to verify the submitted value.
   const date = screen.getByLabelText('Дата доставки');
   fireEvent.change(date, { target: { value: dayjs(DELIVERY_DAY).format('DD.MM.YYYY') } });
   fireEvent.keyDown(date, { key: 'Enter', keyCode: 13 });
 
-  // Время необязательно, но вместе с датой оно и составляет `deliveryAt`: без него проверять
-  // сборку срока в МСК было бы не на чем. Поле ищется по подсказке внутри: `TimeInput` не
-  // принимает `id` от `Form.Item`, и подпись «Время» ни с чем в разметке не связана.
+  // TimeInput has no Form.Item id, so use its placeholder to verify Moscow time conversion.
   const time = screen.getByPlaceholderText('чч:мм');
   fireEvent.change(time, { target: { value: '09:30' } });
   fireEvent.blur(time);
@@ -142,8 +127,6 @@ async function fillRequestForm() {
   fill('Ответственный на площадке', 'Петров Пётр');
   fill('Контактный телефон', '+7 926 123-45-67');
 }
-
-/** Окно с таким заголовком; заголовок ищется по тексту — так его видит и человек. */
 
 describe('заведение заявки на вывоз мусора', () => {
   it('does not auto-select a sole site from stale PICK data', async () => {
@@ -172,7 +155,7 @@ describe('заведение заявки на вывоз мусора', () => {
     respond(json(list([])));
     await waitFor(() => expect(queryClient.getQueryData(queryKey)).toEqual(list([])));
     expect(chosenSite()).toBeNull();
-    expect(http.countOf('POST /waste-requests')).toBe(0);
+    expect(http.countOf('POST /waste-requests/_create-with-receipt')).toBe(0);
   });
 
   it('уходит одним POST с предметом заявки, сроком в МСК и контактом площадки', async () => {
@@ -185,28 +168,29 @@ describe('заведение заявки на вывоз мусора', () => {
     await fillRequestForm();
     fireEvent.click(screen.getByText('Сохранить'));
 
-    await waitFor(() => expect(http.countOf('POST /waste-requests')).toBe(1));
-    const body = http.lastCall('POST /waste-requests')?.body as Record<string, unknown>;
+    await waitFor(() => expect(http.countOf('POST /waste-requests/_create-with-receipt')).toBe(1));
+    const body = http.lastCall('POST /waste-requests/_create-with-receipt')?.body as Record<
+      string,
+      unknown
+    >;
     expect(body).toMatchObject({
       objectId: 'obj-2',
       requestType: 'waste_removal',
-      // Тип мусора и объём — весь предмет заявки на вывоз (ADR 0019).
+      // Waste type and volume define this request's subject (ADR 0019).
       wasteTypeId: 'wt-2',
       volumeM3: 20,
       deliveryAt: EXPECTED_DELIVERY_AT,
       deliveryTimeUnspecified: false,
-      // Оператор приезжает к человеку, а не к адресу (миграция 0062).
+      // The operator needs a person to meet at the site (migration 0062).
       responsibleName: 'Петров Пётр',
-      // Маска съедает скобки и пробелы: в заявку уходят те же десять цифр, что хранит база
-      // (ADR 0066).
+      // The mask sends the ten digits stored in the database (ADR 0066).
       responsiblePhone: '9261234567',
     });
-    // Техники у вывоза нет вовсе (ADR 0022), исполнителя новой заявке не назначают (ADR 0010) —
-    // и в запросе этих полей быть не должно: сервер обнулил бы их молча.
+    // The server would silently clear vehicle and operator fields on new removal requests.
     expect(body).not.toHaveProperty('containerTypeId');
     expect(body).not.toHaveProperty('operatorCounterpartyId');
-    // Заявка заводится одним запросом: второй POST означал бы двойное нажатие «Сохранить».
-    expect(http.countOf('POST /waste-requests')).toBe(1);
+    // A second POST would mean the save action submitted twice.
+    expect(http.countOf('POST /waste-requests/_create-with-receipt')).toBe(1);
   });
 
   it('после сохранения список перезапрашивается, а окно закрывается', async () => {
@@ -219,8 +203,7 @@ describe('заведение заявки на вывоз мусора', () => {
     await fillRequestForm();
     fireEvent.click(screen.getByText('Сохранить'));
 
-    // Заведённая заявка обязана появиться в списке сама: перезапрос — единственное, что об этом
-    // заботится, и без него человек увидел бы прежний список и завёл бы заявку второй раз.
+    // Refetch keeps the saved request visible and prevents a second creation from a stale list.
     await waitFor(() => expect(http.countOf('GET /waste-requests')).toBe(2));
     expect(await screen.findByText('Сохранено')).toBeDefined();
     await expectModalClosed('Новая заявка');
@@ -237,8 +220,7 @@ describe('заведение заявки на вывоз мусора', () => {
 
     expect(await screen.findByText('Выберите объект')).toBeDefined();
     expect(screen.getByText('Выберите тип заявки')).toBeDefined();
-    // Запроса нет вовсе: незаполненную заявку сервер отверг бы, но узнать об этом человек должен
-    // на форме, а не тостом после круга по сети.
-    expect(http.countOf('POST /waste-requests')).toBe(0);
+    // The form reports missing fields before any request reaches the server.
+    expect(http.countOf('POST /waste-requests/_create-with-receipt')).toBe(0);
   });
 });

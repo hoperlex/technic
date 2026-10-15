@@ -9,27 +9,23 @@ import { objectDto, operator, wasteRequest, wasteSummary, wasteType } from './fa
 import { WasteRequestsPage } from '../src/pages/waste';
 
 /**
- * Вывоз металлолома (ADR 0067) — самый короткий тип заявки в модуле: ни контейнера, ни типа
- * мусора, ни объёма, ни цены. Заводится объектом, сроком и контактом площадки, а закрывается
- * весом в тоннах.
+ * Metal removal (ADR 0067) has no container, waste type, volume, or price. Creation needs a
+ * site, schedule, and contact; completion records weight in tons.
  *
- * Проверяется то, что отличает этот тип от соседних, и ровно на границах, где отличие живёт:
- * какие поля форма спрашивает, что уходит в теле запроса и в чём заявку закрывают. Полей у типа
- * нет — значит проверять надо именно их отсутствие: лишнее поле здесь не украшение, а вопрос,
- * на который заявке нечем ответить.
+ * The assertions cover the fields this type omits, the versioned create body, and completion.
  */
 
 const DELIVERY_DAY = dayjs(minRequestDateKey()).add(2, 'day').format('YYYY-MM-DD');
 const EXPECTED_DELIVERY_AT = dayjs.tz(`${DELIVERY_DAY} 08:00`, 'Europe/Moscow').toISOString();
 
-/** Заявка на металлолом, взятая в работу: её и закрывают весом. */
+/** An active metal removal request can be completed by weight. */
 const IN_WORK = wasteRequest({
   id: 'wr-9',
   displayNumber: 'М-129',
   requestType: 'metal_removal',
   status: 'confirmed',
   version: 3,
-  // Предмета у типа нет вовсе — ни тарификации, ни контейнера (ADR 0067).
+  // This type has neither pricing nor containers (ADR 0067).
   containerTypeId: null,
   containerTypeName: null,
   wasteTypeId: null,
@@ -45,8 +41,7 @@ function setup(requests: WasteRequestDto[] = []) {
   const http = mockHttp({
     'GET /waste-requests': () => json(list(requests)),
     'GET /waste-requests/summary': () => json(wasteSummary({ confirmed: requests.length })),
-    // Баннер состояния распознавания (ADR 0114, Р29) спрашивает подсистему на каждом экране
-    // разбора: молчащее распознавание неотличимо от «талоны в порядке». Здесь оно исправно.
+    // The recognition health banner polls on this screen; an unmocked request would hide failures.
     'GET /waste-requests/ticket-recognition/health': () =>
       json({ state: 'ok', since: null, code: '', attempts: 0, failed: 0, waiting: 0 }),
     'GET /waste-requests/present-groups': () => json([]),
@@ -55,14 +50,14 @@ function setup(requests: WasteRequestDto[] = []) {
     'GET /container-types': () => json(list([])),
     'GET /waste-types': () => json(list([wasteType()])),
     'GET /counterparties': () => json(list([operator()])),
-    'POST /waste-requests': ({ body }) =>
+    'POST /waste-requests/_create-with-receipt': ({ body }) =>
       json(wasteRequest({ ...(body as Partial<WasteRequestDto>), id: 'wr-new' }), 201),
   });
   renderWithUser(<WasteRequestsPage />);
   return http;
 }
 
-/** Выбор в `AutoSelect`: список живёт в портале, поэтому вариант ищется в выпадашке своего поля. */
+/** Search within this AutoSelect field so a closed neighboring dropdown cannot supply the option. */
 async function pickOption(fieldId: string, text: string) {
   const input = await waitFor(() => {
     const el = document.querySelector<HTMLInputElement>(`#${fieldId}`);
@@ -86,7 +81,7 @@ function fill(label: string, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
-/** Переход по статусу из строки списка — тег статуса с выпадающим списком переходов. */
+/** Status transitions are selected from the row's dropdown. */
 async function chooseTransition(label: string) {
   fireEvent.click(screen.getByLabelText('Изменить статус'));
   const item = await waitFor(() => {
@@ -110,8 +105,7 @@ describe('заведение заявки на вывоз металлолома
     await pickOption('objectId', 'ЖК Южный');
     await pickOption('requestType', 'Вывоз металлолома');
 
-    // Полей предмета у типа нет: их присутствие означало бы вопрос, на который заявке нечем
-    // ответить, а сервер присланное всё равно обнулит (CHECK миграции 0091).
+    // The server would clear these subject fields, and migration 0091 rejects them.
     await waitFor(() => expect(document.querySelector('#wasteTypeId')).toBeNull());
     expect(document.querySelector('#volumeM3')).toBeNull();
     expect(document.querySelector('#containerTypeId')).toBeNull();
@@ -139,18 +133,20 @@ describe('заведение заявки на вывоз металлолома
 
     fireEvent.click(screen.getByText('Сохранить'));
 
-    await waitFor(() => expect(http.countOf('POST /waste-requests')).toBe(1));
-    const body = http.lastCall('POST /waste-requests')?.body as Record<string, unknown>;
+    await waitFor(() => expect(http.countOf('POST /waste-requests/_create-with-receipt')).toBe(1));
+    const body = http.lastCall('POST /waste-requests/_create-with-receipt')?.body as Record<
+      string,
+      unknown
+    >;
     expect(body).toMatchObject({
       objectId: 'obj-2',
       requestType: 'metal_removal',
       deliveryAt: EXPECTED_DELIVERY_AT,
       responsibleName: 'Петров Пётр',
-      // Маска съедает скобки и пробелы: в заявку уходят те же десять цифр, что хранит база
-      // (ADR 0066).
+      // The mask sends the ten digits stored in the database (ADR 0066).
       responsiblePhone: '9261234567',
     });
-    // Ни типа мусора, ни объёма, ни контейнера: сервер их обнулил бы, а CHECK в БД — отверг.
+    // The database check rejects subject fields that this request type cannot have.
     expect(body.wasteTypeId).toBeUndefined();
     expect(body.volumeM3).toBeUndefined();
     expect(body.containerTypeId).toBeUndefined();
@@ -165,13 +161,12 @@ describe('закрытие заявки на вывоз металлолома',
     await chooseTransition('Выполнена');
     expect(await screen.findByText('Выполнение заявки')).toBeDefined();
 
-    // Вес — единственная величина закрытия (ADR 0067). Расчёта по прайсу здесь нет и быть не
-    // может: цена задана в ₽/м³ на пару «тип мусора × техника», а у лома нет ни того, ни другого.
+    // Weight is the only completion amount; per-volume pricing cannot apply (ADR 0067).
     expect(screen.getByLabelText('Сдано металлолома, т')).toBeDefined();
     expect(screen.queryByLabelText('Вывезено, м³')).toBeNull();
     expect(screen.queryByLabelText('Стоимость, ₽')).toBeNull();
 
-    // Талон обязателен у любого типа (ADR 0020) — металлолом закрывается приёмо-сдаточным актом.
+    // The acceptance certificate serves as the mandatory ticket (ADR 0020).
     expect(screen.getByText('Талон обязателен: без него заявка не закрывается')).toBeDefined();
   });
 
@@ -193,7 +188,7 @@ describe('закрытие заявки на вывоз металлолома',
     ]);
     expect(await screen.findByText('М-129')).toBeDefined();
 
-    // Предмета у заявки нет, и без сданного веса строка списка не отвечала бы, чем она кончилась.
+    // The row needs completed weight because this request has no other subject amount.
     expect(await screen.findByText('сдано 3.2 т')).toBeDefined();
   });
 });
