@@ -157,7 +157,9 @@ describe('ordinary request creation attempt', () => {
     act(() => draft.result.current.begin('create'));
     const body = { fileIds: ['first'], trips: [{ address: 'first' }] };
     let first!: { body: typeof body; key: string };
-    act(() => { first = draft.result.current.prepareCreate(body); });
+    act(() => {
+      first = draft.result.current.prepareCreate(body);
+    });
     body.fileIds[0] = 'changed';
     body.trips[0]!.address = 'changed';
     expect(first.body).toEqual({ fileIds: ['first'], trips: [{ address: 'first' }] });
@@ -227,8 +229,9 @@ describe('ordinary request creation attempt', () => {
     expect(() => {
       act(() => restored.result.current.prepareCreate({ comment: 'retry' }));
     }).toThrow('Сверьте заявку в списке вручную');
-    expect(restored.result.current.releaseCreateAttempt(legacy.createAttempt.key, crypto.randomUUID()))
-      .toBe(false);
+    expect(
+      restored.result.current.releaseCreateAttempt(legacy.createAttempt.key, crypto.randomUUID()),
+    ).toBe(false);
     render(<RequestCreateAttemptNotice pending legacy checking={false} onCheck={vi.fn()} />);
     expect(screen.getByText(/Проверьте заявку в списке вручную/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Проверить создание' })).toBeNull();

@@ -131,13 +131,15 @@ export function useLocalFormDraft<Payload>({
 
   const releaseCreateAttempt = (key: string, nextKey: string): boolean => {
     const current = activeRef.current;
-    if (
-      current?.createAttempt?.protocol !== 'receipt-v1' ||
-      current.createAttempt.key !== key
-    )
+    if (current?.createAttempt?.protocol !== 'receipt-v1' || current.createAttempt.key !== key)
       return false;
     const { createAttempt: _attempt, ...remaining } = current;
-    const next = { ...remaining, savedAt: Date.now(), payload: readRef.current(), nextCreateKey: nextKey };
+    const next = {
+      ...remaining,
+      savedAt: Date.now(),
+      payload: readRef.current(),
+      nextCreateKey: nextKey,
+    };
     if (!writeLocalFormDraft(next)) {
       setStatus({ available: false, savedAt: null });
       return false;

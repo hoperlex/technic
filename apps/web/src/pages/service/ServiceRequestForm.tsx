@@ -255,7 +255,9 @@ export function ServiceRequestForm({
       const attempt = local.draft.active?.createAttempt;
       if (!attempt) throw new LocalCreateAttemptError('Нет попытки создания для проверки');
       if (attempt.protocol !== 'receipt-v1')
-        throw new LocalCreateAttemptError('Проверьте исход старой отправки в списке заявок вручную');
+        throw new LocalCreateAttemptError(
+          'Проверьте исход старой отправки в списке заявок вручную',
+        );
       const result = await serviceRequestsApi.reconcileCreate(
         attempt.body as Parameters<typeof serviceRequestsApi.create>[0],
         attempt.key,
@@ -296,7 +298,10 @@ export function ServiceRequestForm({
       {!request && (
         <RequestCreateAttemptNotice
           pending={!!local.draft.active?.createAttempt}
-          legacy={!!local.draft.active?.createAttempt && local.draft.active.createAttempt.protocol !== 'receipt-v1'}
+          legacy={
+            !!local.draft.active?.createAttempt &&
+            local.draft.active.createAttempt.protocol !== 'receipt-v1'
+          }
           checking={reconcile.isPending || mutation.isPending}
           onCheck={() => reconcile.mutate()}
           onLegacyReset={() => {

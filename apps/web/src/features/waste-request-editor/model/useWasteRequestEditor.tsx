@@ -285,7 +285,9 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
       const attempt = draft.active?.createAttempt;
       if (!attempt) throw new LocalCreateAttemptError('Нет попытки создания для проверки');
       if (attempt.protocol !== 'receipt-v1')
-        throw new LocalCreateAttemptError('Проверьте исход старой отправки в списке заявок вручную');
+        throw new LocalCreateAttemptError(
+          'Проверьте исход старой отправки в списке заявок вручную',
+        );
       const result = await wasteRequestsApi.reconcileCreate(
         attempt.body as WasteRequestPayload,
         attempt.key,

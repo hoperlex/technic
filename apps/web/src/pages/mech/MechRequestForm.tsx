@@ -217,7 +217,9 @@ export function MechRequestForm({
       const attempt = draft.active?.createAttempt;
       if (!attempt) throw new LocalCreateAttemptError('Нет попытки создания для проверки');
       if (attempt.protocol !== 'receipt-v1')
-        throw new LocalCreateAttemptError('Проверьте исход старой отправки в списке заявок вручную');
+        throw new LocalCreateAttemptError(
+          'Проверьте исход старой отправки в списке заявок вручную',
+        );
       const result = await mechRequestsApi.reconcileCreate(
         attempt.body as Parameters<typeof mechRequestsApi.create>[0],
         attempt.key,
@@ -291,7 +293,9 @@ export function MechRequestForm({
           />
           <RequestCreateAttemptNotice
             pending={!!draft.active?.createAttempt}
-            legacy={!!draft.active?.createAttempt && draft.active.createAttempt.protocol !== 'receipt-v1'}
+            legacy={
+              !!draft.active?.createAttempt && draft.active.createAttempt.protocol !== 'receipt-v1'
+            }
             checking={reconcile.isPending || mutation.isPending}
             onCheck={() => reconcile.mutate()}
             onLegacyReset={() => {
