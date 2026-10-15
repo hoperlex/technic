@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   assignWasteOperatorSchema,
   checkContainerOwner,
   containerOwnerMismatch,
   createWasteRequestSchema,
+  createWasteRequestStableSchema,
   MAX_CONTAINERS_PER_REQUEST,
   presentGroupLabel,
   usesContainerGroup,
@@ -48,6 +49,33 @@ function removal(over: Record<string, unknown> = {}) {
     ...over,
   };
 }
+
+describe('receipt replay across Moscow midnight', () => {
+  it('accepts the original structure while rejecting the same date for a new request', () => {
+    const submitted = removal({
+      requestType: 'metal_removal',
+      containerTypeId: undefined,
+      containerOwnerCounterpartyId: undefined,
+      deliveryAt: '2026-10-14T21:00:00.000Z',
+      deliveryTimeUnspecified: true,
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-15T20:59:59.000Z'));
+      expect(createWasteRequestSchema.safeParse(submitted).success).toBe(true);
+      vi.setSystemTime(new Date('2026-10-15T21:00:01.000Z'));
+      expect(createWasteRequestStableSchema.safeParse(submitted).success).toBe(true);
+      const fresh = createWasteRequestSchema.safeParse(submitted);
+      expect(fresh.success).toBe(false);
+      if (!fresh.success) expect(fresh.error.issues[0]?.path).toEqual(['deliveryAt']);
+      expect(
+        createWasteRequestStableSchema.safeParse({ ...submitted, responsibleName: '' }).success,
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('у каких операций есть владелец и количество', () => {
   it('только замена и снятие — установка привозит свой контейнер, вывоз их не касается', () => {

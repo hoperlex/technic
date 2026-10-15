@@ -23,6 +23,7 @@ import {
   CLOSED_WASTE_STATUSES,
   type CompleteWasteRequestInput,
   createWasteRequestSchema,
+  createWasteRequestStableSchema as replayBodySchema,
   FACT_UNIT_MISMATCH_MESSAGE,
   factVolumeOf,
   factWeightOf,
@@ -1364,7 +1365,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     });
   });
 
-  r.post('/', { ...canCreate, schema: { body: createWasteRequestSchema } }, async (req, reply) => {
+  r.post('/', { ...canCreate, schema: { body: replayBodySchema } }, async (req, reply) => {
     const p = requirePrincipal(req);
     const body = req.body;
     assertPlaceObjectScope(p, body.objectId, WASTE_SCOPE_LABEL);
@@ -1389,6 +1390,15 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         reply.code(200);
         return replay;
       }
+    }
+    // A committed request can be replayed after its delivery day becomes past; a new request cannot.
+    const checked = createWasteRequestSchema.safeParse(body);
+    if (!checked.success) {
+      throw err.validation(
+        Object.fromEntries(
+          checked.error.issues.map((issue) => [issue.path.join('.') || 'root', issue.message]),
+        ),
+      );
     }
     // Подтверждённый вывоз чужого контейнера — своё событие истории, и пишется оно после
     // фиксации заявки: причина известна внутри транзакции, а номер заявки — только после неё.

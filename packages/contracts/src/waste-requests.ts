@@ -548,7 +548,7 @@ export const ownerMismatchReasonSchema = z
  * Тип мусора, объём и цена есть только у вывоза мусора (ADR 0019). Кросс-полевые требования
  * проверяет superRefine; тариф и сумму считает сервер — кратность объёма известна только ему.
  */
-export const createWasteRequestSchema = z
+export const createWasteRequestStableSchema = z
   .object({
     objectId: uuidSchema,
     requestType: requestTypeSchema,
@@ -582,10 +582,6 @@ export const createWasteRequestSchema = z
   .superRefine((v, ctx) => {
     if (!v.deliveryTimeUnspecified && !isWithinWorkTimeAt(v.deliveryAt)) {
       ctx.addIssue({ code: 'custom', path: ['deliveryAt'], message: WORK_TIME_MESSAGE });
-    }
-    // Новую заявку заводят не раньше чем на сегодня (по МСК); правка даты этим не связана.
-    if (!isAllowedRequestDateAt(v.deliveryAt)) {
-      ctx.addIssue({ code: 'custom', path: ['deliveryAt'], message: MIN_REQUEST_DATE_MESSAGE });
     }
     if (v.requestType === 'container_install' && !v.containerTypeId) {
       ctx.addIssue({
@@ -639,6 +635,12 @@ export const createWasteRequestSchema = z
       }
     }
   });
+/** A receipt replay keeps its original date after Moscow midnight; only a new command uses today's gate. */
+export const createWasteRequestSchema = createWasteRequestStableSchema.superRefine((v, ctx) => {
+  if (!isAllowedRequestDateAt(v.deliveryAt)) {
+    ctx.addIssue({ code: 'custom', path: ['deliveryAt'], message: MIN_REQUEST_DATE_MESSAGE });
+  }
+});
 export type CreateWasteRequestInput = z.infer<typeof createWasteRequestSchema>;
 
 // Признак «время не задано» передаётся вместе с `deliveryAt`: клиент шлёт оба поля разом,
