@@ -151,11 +151,10 @@ export async function waybillRequirementByType(
 }
 
 /**
- * Бланк рейса. Правило чистое и живёт в контрактах (`routeWaybillForm`) — здесь только чтение
- * того, чего оно требует: принадлежности машины и бланка, закреплённого за её типом.
- *
- * У перегона тип не спрашивают вовсе: экскаватор идёт по дорогам общего пользования как
- * транспортное средство, и документ у этой поездки один — 4-П.
+ * The route's form comes from the contract; this reader supplies ownership and the stored type
+ * code. The Drizzle column is typed narrowly, but the old CHECK still permits 'esm2' (ADR 0128).
+ * The contract therefore checks the runtime value before any issue path takes a number.
+ * Relocation uses 4-P regardless of the type.
  */
 export async function routeWaybillFormFor(
   tx: Reader,

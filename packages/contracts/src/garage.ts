@@ -10,7 +10,7 @@ import type { RoutePurpose } from './vehicle-routes';
 import { routeWaybillForm } from './vehicle-routes';
 import type { VehicleOwnership, VehicleStatus } from './vehicles';
 import type { TypeWaybillFormCode, WaybillFormCode, WaybillStatus } from './waybills';
-import { isTypeWaybillFormCode, WAYBILL_FORM_CODES, waybillFormCodeSchema } from './waybills';
+import { WAYBILL_FORM_CODES, waybillFormCodeSchema } from './waybills';
 
 /**
  * Гараж: чем заняты собственная техника и водители в конкретный день.
@@ -237,20 +237,11 @@ export type GarageBusyEntry = GarageRouteBusy | GarageSpecialBusy | GarageEsm2Bu
  */
 export function busyWaybillForm(entry: GarageBusyEntry): WaybillFormCode | null {
   if (entry.kind === 'route') {
-    const { formCode } = routeWaybillForm({
+    return routeWaybillForm({
       purpose: entry.purpose,
       ownership: entry.vehicleOwnership,
       formCode: entry.vehicleWaybillFormCode,
-    });
-    /*
-     * A freight route answers its type's form, and a type carries only 4-P or form No. 3
-     * (ADR 0065, ADR 0128). Until the pending CHECK ships, a type may still hold 'esm2' in the
-     * database: such a route has no settled form. Answering 'esm2' would show an ordinary route
-     * under the weekly-sheet filter, and '4p' would guess what the owner has not decided yet. The
-     * SQL writings of this rule (`routeFormSettledSql` in the API) drop the same routes, and the
-     * garage parity test holds the two together.
-     */
-    return formCode !== null && isTypeWaybillFormCode(formCode) ? formCode : null;
+    }).formCode;
   }
   return entry.vehicleOwnership === 'own' ? 'esm2' : null;
 }

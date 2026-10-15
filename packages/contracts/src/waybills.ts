@@ -100,21 +100,20 @@ export const waybillFormShortLabels: Record<WaybillFormCode, string> = {
 // ── На какой рейс выписывается лист (ADR 0037 п. 1, ADR 0041) ──
 
 export interface WaybillRequirementInput {
-  /** Тип заявки: лист выписывается только на грузоперевозку. */
+  /** Only a freight request has a route sheet. */
   requestType: VehicleRequestType;
-  /** Принадлежность машины: на арендную лист выписывает арендодатель. */
+  /** A rental vehicle's sheet belongs to its lessor. */
   ownership: VehicleOwnership;
-  /** Бланк, закреплённый за типом ТС (`vehicle_types.waybill_form_code`). Пустым не бывает. */
+  /** Stored vehicle type form; old databases may still hold 'esm2' until the pending CHECK. */
   formCode: WaybillFormCode;
 }
 
 export interface WaybillRequirement {
-  /** Бланк, по которому выписывается лист; `null` — на этот рейс лист не выписывается. */
+  /** Issuable route form; `null` means the route cannot issue a sheet. */
   formCode: WaybillFormCode | null;
   /**
-   * Почему не выписывается — это показывают человеку вместо отсутствующего блока. `null` при
-   * пустом `formCode` означает другое: заявка такого вида путевого листа не знает вовсе, и
-   * говорить не о чем — ни блока, ни объяснения (ADR 0041).
+   * Shown when issuance is blocked. A null reason with null form means the request has no route
+   * sheet by its kind, so no issue control or explanation is shown (ADR 0041).
    */
   reason: string | null;
 }
@@ -123,20 +122,26 @@ export interface WaybillRequirement {
 export const RENTAL_WAYBILL_REASON = 'Путевой лист на арендную технику выписывает арендодатель';
 
 /**
- * Нужен ли на этот рейс путевой лист.
+ * A legacy type may still store 'esm2' until the pending CHECK ships (ADR 0128). The owner must
+ * choose its route form; silently turning it into 4-P would issue the wrong controlled document.
+ */
+export const UNSETTLED_TYPE_WAYBILL_REASON =
+  'У типа ТС сохранён бланк ЭСМ-2, который нельзя выписать на рейс. Выберите для типа 4-П или форму № 3';
+
+/**
+ * Whether a freight request needs a route sheet (ADR 0041, ADR 0065). An on-site equipment
+ * request has no route sheet; a rental vehicle's sheet belongs to its lessor.
  *
- * Отказов осталось два, и оба — не про тип техники (ADR 0065). Первый: заказ техники на объект
- * листа не знает вовсе — там нет ни рейса, ни маршрута, ни груза, и объяснять в форме нечего
- * (ADR 0041). Второй: арендную машину ведёт арендодатель, и об этом сказать надо.
- *
- * Третьего отказа — «у типа не заведён бланк» — больше не существует: у собственной техники лист
- * есть всегда, а тип отвечает лишь на вопрос, каким бланком (миграция 0094). Прежнее пустое
- * значение означало не решение, а незаполненную колонку, и молча отключало документ у каждого
- * типа, заведённого через справочник.
+ * An own vehicle normally carries 4-P or form No. 3. Until the pending CHECK ships, an old type
+ * may still store 'esm2' (ADR 0128); a freight request must not advertise a weekly sheet as its
+ * route form or silently choose another form for the owner.
  */
 export function waybillRequirement(input: WaybillRequirementInput): WaybillRequirement {
   if (input.requestType !== 'freight_transport') return { formCode: null, reason: null };
   if (input.ownership !== 'own') return { formCode: null, reason: RENTAL_WAYBILL_REASON };
+  if (!isTypeWaybillFormCode(input.formCode)) {
+    return { formCode: null, reason: UNSETTLED_TYPE_WAYBILL_REASON };
+  }
   return { formCode: input.formCode, reason: null };
 }
 

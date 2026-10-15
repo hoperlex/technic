@@ -282,9 +282,31 @@ own database: the gap before it, the guard naming two types, the narrowed CHECK 
 `driverDayFormsSql` (`services/garage.ts`) and `onSiteDayFormsSql` (`routes/vehicle-requests.ts`),
 took `vehicle_types.waybill_form_code` as stored, so a type with `esm2` still reached the form
 filters through them. Narrowed in the C10c reader fix (2026-10-15): both ask `routeFormSettledSql` — a freight route
-counts only when its type carries one of `TYPE_WAYBILL_FORM_CODES` — and `busyWaybillForm` in the
+counts only when its type carries one of `TYPE_WAYBILL_FORM_CODES` — and `routeWaybillForm` in the
 contracts answers `null` for the same route (`isTypeWaybillFormCode`), so the garage parity test
 still holds the two writings together. Such a route is dropped from every form filter rather than
 read as 4-П: which form the type gets stays the owner's decision. It is still a work of the day —
 the driver and the vehicle stay busy. Until the CHECK ships, the narrow types are a promise kept by
 every writer and by these readers, not by the database; the CHECK turns it into a constraint.
+
+## Implemented 2026-10-15: an unresolved type cannot issue a route sheet
+
+The early C10c filter fix left another reader of the raw column: `routeWaybillFormFor` and the
+route DTO called `routeWaybillForm` with the stored value. A freight route whose type still held
+`esm2` therefore advertised a weekly sheet. An issue attempt got as far as the insert, where
+`waybills_form_source_check` rejects an ESM-2 sheet linked to a route.
+
+`routeWaybillForm` now accepts only `TYPE_WAYBILL_FORM_CODES` for freight. The freight request
+requirement uses the same guard and reason, so the form leading into a route does not advertise an
+ESM-2 sheet either. A route on an unresolved type still exists and remains busy, but its DTO has
+`formCode: null`; the shared issue context returns a named 422 before it asks for a series or
+takes a number. Relocation stays 4-P regardless of that type's stored form. The DB regression
+creates a legacy type under the old CHECK and verifies the DTO, the 422, the absence of a sheet,
+and no burned number. The owner still chooses 4-P or form No. 3 before the pending CHECK is
+promoted; no value is rewritten or guessed by this code.
+
+The shared contract guard and its refusal text add 134–221 gzip bytes to measured portal entry
+and route closures. `apps/web/bundle-budget.json` records those exact deterministic
+`BUILD_ID=quality-check` measurements; the largest change is the office equipment route at
+221 bytes. The issue rule belongs in the shared contract so the route DTO, request form, and
+server door cannot disagree.

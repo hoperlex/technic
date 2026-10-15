@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   moscowDateKeyOf,
   WAYBILL_ACK_REQUIRED_CODE,
+  UNSETTLED_TYPE_WAYBILL_REASON,
   type WaybillAckRequiredDetails,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -60,6 +61,7 @@ const PASSWORD = 'db-test-password-123';
 const PERSON_MARK = 'ТЕСТОВЫЕ ДАННЫЕ: рукопожатие выписки';
 /** Уникальный хвост прогона: люди ищутся по нему, а база переживает прогоны. */
 const RUN = Date.now().toString(36);
+const LEGACY_TYPE_CODE = `c10c_issue_${RUN}`;
 
 /**
  * Реквизиты удостоверения документированного водителя. Выдуманные, как и СНИЛС: репозиторий
@@ -252,12 +254,15 @@ async function login(): Promise<{ authorization: string }> {
 }
 
 /** Пустой рейс на названного водителя: машина, дата и человек — всё, чего лист требует. */
-async function emptyRoute(driverPersonId: string): Promise<{ id: string; version: number }> {
+async function emptyRoute(
+  driverPersonId: string,
+  vehicleId: string = ctx.vehicleId,
+): Promise<{ id: string; version: number }> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-routes',
     headers: ctx.admin,
-    payload: { vehicleId: ctx.vehicleId, routeDate: ctx.routeDate, driverPersonId },
+    payload: { vehicleId, routeDate: ctx.routeDate, driverPersonId },
   });
   expect(created.statusCode, created.body).toBe(201);
   const route = created.json();
@@ -422,10 +427,49 @@ describe.skipIf(!DB_URL)(
         await ctx.db.execute(
           sql`DELETE FROM vehicle_routes WHERE driver_person_id IN (${ourPersons})`,
         );
+        // This file's legacy type and vehicle exist only for the route-form refusal case.
+        await ctx.db.execute(sql`
+          DELETE FROM vehicles
+          WHERE vehicle_type_id IN (SELECT id FROM vehicle_types WHERE code = ${LEGACY_TYPE_CODE})`);
+        await ctx.db.execute(sql`DELETE FROM vehicle_types WHERE code = ${LEGACY_TYPE_CODE}`);
         await ctx.db.execute(sql`DELETE FROM persons WHERE comment = ${PERSON_MARK}`);
       }
       await ctx?.app.close();
       await ctx?.closeDb();
+    });
+
+    it('legacy esm2 on a type is shown as nonissuable and refuses before a number is taken', async () => {
+      /*
+       * The old vehicle_types CHECK still permits esm2. A fresh type and vehicle keep this case
+       * independent of the seeded fleet and of other DB files sharing the test database.
+       */
+      const type = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO vehicle_types (kind_id, code, name, waybill_form_code)
+        SELECT vt.kind_id, ${LEGACY_TYPE_CODE}, 'Legacy ESM-2 route type', 'esm2'
+          FROM vehicles v JOIN vehicle_types vt ON vt.id = v.vehicle_type_id
+         WHERE v.id = ${ctx.vehicleId}
+        RETURNING id`);
+      const vehicle = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO vehicles (vehicle_type_id, ownership, status)
+        VALUES (${type.rows[0]!.id}, 'own', 'active') RETURNING id`);
+      const route = await emptyRoute(ctx.documentedPersonId, vehicle.rows[0]!.id);
+
+      const read = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/vehicle-routes/${route.id}`,
+        headers: ctx.admin,
+      });
+      expect(read.statusCode, read.body).toBe(200);
+      expect(read.json().formCode).toBeNull();
+
+      const refused = await issueCountingNumbers(route.id, { version: route.version });
+      expect(refused.res.statusCode, refused.res.body).toBe(422);
+      expect(refused.res.json()).toMatchObject({
+        code: 'unprocessable_entity',
+        message: UNSETTLED_TYPE_WAYBILL_REASON,
+      });
+      expect(await waybillsOf(route.id)).toHaveLength(0);
+      expect(refused.burned, 'the refusal cannot consume a controlled form number').toBe(0);
     });
 
     it('предупреждения останавливают выписку: 409 со списком, и номер бланка цел', async () => {

@@ -14,7 +14,12 @@ import type { TrailerHitchPosition } from './vehicle-trailers';
 // компиляцией, поэтому во время выполнения этого ребра не существует вовсе.
 import type { WaybillWarning } from './waybill-task-rows';
 import type { WaybillFormCode, WaybillRequirement, WaybillStatus } from './waybills';
-import { correctionFloorDateKey, RENTAL_WAYBILL_REASON } from './waybills';
+import {
+  correctionFloorDateKey,
+  isTypeWaybillFormCode,
+  RENTAL_WAYBILL_REASON,
+  UNSETTLED_TYPE_WAYBILL_REASON,
+} from './waybills';
 import { WAYBILL_CORRECTION_DAYS } from './time';
 
 // ── Маршрут: рейс одной машины на одну дату (план `docs/vehicle-routes-plan.md`) ──
@@ -569,26 +574,26 @@ export function routeDateMismatch(
 }
 
 /**
- * Бланк, по которому выписывается лист этого рейса.
+ * The route's issue form: freight uses its vehicle type, while relocation always uses 4-P
+ * (ADR 0037, ADR 0065). A rental vehicle's document belongs to its lessor.
  *
- * У грузового рейса его выбирает тип машины (ADR 0037 п. 1) — самосвалу 4-П, легковой форма № 3.
- * У перегона бланк всегда 4-П, независимо от типа: экскаватор идёт по дорогам общего пользования
- * как транспортное средство, и документ у этой поездки один.
- *
- * Отказ здесь один — принадлежность: на арендную машину лист выписывает арендодатель, и перегон
- * арендной техники его же забота. Прежний второй отказ («у типа не заведён бланк») снят вместе с
- * пустым значением колонки: бланк есть у каждого типа, по умолчанию 4-П (ADR 0065).
+ * Until the pending CHECK ships, an old type may still hold 'esm2' in the database (ADR 0128).
+ * Such a freight route has no issuable form; guessing 4-P would change the controlled document.
+ * The refusal is named for the person who maintains the type, while relocation remains 4-P.
  */
 export function routeWaybillForm(input: {
   purpose: RoutePurpose;
   ownership: VehicleOwnership;
-  /** Бланк, закреплённый за типом ТС; решает только грузовой рейс. */
+  /** The stored type form affects freight only; relocation always uses 4-P. */
   formCode: WaybillFormCode;
 }): WaybillRequirement {
   if (input.ownership !== 'own') {
     return { formCode: null, reason: RENTAL_WAYBILL_REASON };
   }
   if (isRelocationPurpose(input.purpose)) return { formCode: '4p', reason: null };
+  if (!isTypeWaybillFormCode(input.formCode)) {
+    return { formCode: null, reason: UNSETTLED_TYPE_WAYBILL_REASON };
+  }
   return { formCode: input.formCode, reason: null };
 }
 

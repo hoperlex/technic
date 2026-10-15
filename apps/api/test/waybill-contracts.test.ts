@@ -23,6 +23,7 @@ import {
   TYPE_WAYBILL_FORM_CODES,
   typeWaybillFormCodeSchema,
   typeWaybillFormOf,
+  UNSETTLED_TYPE_WAYBILL_REASON,
   WAYBILL_FORM_CODES,
   WAYBILL_STATUSES,
   waybillDisplayNumber,
@@ -160,6 +161,16 @@ describe('на какой рейс выписывается путевой ли�
     });
   });
 
+  it('legacy esm2 on a freight type is not advertised as a route sheet', () => {
+    expect(
+      waybillRequirement({
+        requestType: 'freight_transport',
+        ownership: 'own',
+        formCode: 'esm2',
+      }),
+    ).toEqual({ formCode: null, reason: UNSETTLED_TYPE_WAYBILL_REASON });
+  });
+
   it('заказ техники на объект — не выписывается и не объясняется: у заявки нет рейса', () => {
     expect(waybillRequirement({ requestType: 'special_equipment', ...dumpTruck })).toEqual({
       formCode: null,
@@ -189,11 +200,7 @@ describe('на какой рейс выписывается путевой ли�
     expect(rental.reason).toContain('арендодатель');
   });
 
-  /**
-   * Отказа «у типа не заведён бланк» больше нет (ADR 0065): у собственной техники лист есть
-   * всегда, а тип отвечает только на вопрос, каким бланком. Прежнее пустое значение колонки
-   * молча отключало документ у каждого типа, заведённого через справочник.
-   */
+  /** Current type forms remain issuable for own vehicles. */
   it('собственная техника получает бланк своего типа — отказать тут больше нечему', () => {
     for (const formCode of ['4p', 'leg3'] as const) {
       const own = waybillRequirement({

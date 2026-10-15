@@ -20,6 +20,7 @@ import {
   ROUTE_REQUEST_CAPACITY,
   parseVehicleRouteNumberSearch,
   updateVehicleRouteSchema,
+  UNSETTLED_TYPE_WAYBILL_REASON,
   CARGO_NOTE_LIMIT,
   routeCargoLabel,
   routeCargoWithNote,
@@ -752,10 +753,7 @@ describe('схемы коррекции рейса', () => {
   });
 });
 
-/**
- * Бланк рейса (`routeWaybillForm`). У грузового его выбирает тип машины, у перегона он всегда
- * 4-П: экскаватор идёт по дорогам как транспортное средство, и документ у этой поездки один.
- */
+/** Freight uses its vehicle type's route form; relocation always uses 4-P (ADR 0065, ADR 0128). */
 describe('бланк рейса', () => {
   const own = { ownership: 'own' as const };
 
@@ -773,6 +771,17 @@ describe('бланк рейса', () => {
         reason: null,
       });
     }
+  });
+
+  it('legacy esm2 on a type cannot become a freight sheet; relocation stays 4-P', () => {
+    expect(routeWaybillForm({ ...own, purpose: 'freight', formCode: 'esm2' })).toEqual({
+      formCode: null,
+      reason: UNSETTLED_TYPE_WAYBILL_REASON,
+    });
+    expect(routeWaybillForm({ ...own, purpose: 'delivery', formCode: 'esm2' })).toEqual({
+      formCode: '4p',
+      reason: null,
+    });
   });
 
   it('на арендную технику лист выписывает арендодатель — и перегон её тоже его', () => {
