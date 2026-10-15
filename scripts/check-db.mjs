@@ -100,23 +100,22 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   });
 }
 
-// --- заходы vitest ---------------------------------------------------------
+// --- Vitest passes ---------------------------------------------------------
 
 const reportDir = mkdtempSync(join(tmpdir(), 'technic-check-db-'));
 
 /**
- * Один заход vitest. Кроме обычного вывода просит машинный отчёт: имена упавших файлов нужны
- * второму заходу точными, а разбирать человеческий вывод — способ однажды повторить не то.
+ * One Vitest pass. The machine report identifies failed files for a precise serial retry;
+ * scraping human output could silently select the wrong files.
  *
- * ВАЖНО про фильтр: позиционный аргумент vitest — ПОДСТРОКА ПУТИ, а не маска. `db.test` отбирает
- * весь набор, а маска-глоб (две звёздочки, слэш, звёздочка, `.db.test.ts`) не нашла бы ни одного
- * файла — заход оказался бы пустым и зелёным, то есть ворота молча пропустили бы всё.
+ * A positional Vitest filter is a path substring, not a glob. `db.test` selects the full suite;
+ * a glob would select no files and could let the gate pass without running anything.
  */
 function vitestPass(pkg, filters, workers) {
-  // Имя пакета идёт в имя файла отчёта, а в нём есть `@` и слэш — иначе vitest завёл бы
-  // в каталоге отчётов подкаталог `@technic`, чего никто не просил.
+  // Package names contain a slash; keep report files directly in the temporary directory.
   const slug = pkg.replace(/[^a-z0-9]+/gi, '-');
   const jsonFile = join(reportDir, `${slug}-${workers}-${Date.now()}.json`);
+  const unhandledFile = join(reportDir, `${slug}-${workers}-${Date.now()}-unhandled.json`);
   const res = spawnSync(
     'pnpm',
     [
@@ -127,25 +126,31 @@ function vitestPass(pkg, filters, workers) {
       'run',
       ...filters,
       `--maxWorkers=${workers}`,
-      // При точечном фильтре пустой заход — норма: файл может лежать только в одном из пакетов.
-      // Полный набор такого допуска не получает: пустой заход там означал бы, что фильтр набора
-      // сломан, и ворота молча пропустили бы всё.
+      // A focused file may exist in only one package. A full run must never accept zero tests.
       ...(partial ? ['--passWithNoTests'] : []),
       '--reporter=default',
       '--reporter=json',
+      `--reporter=${fileURLToPath(new URL('./db-unhandled-reporter.mjs', import.meta.url))}`,
       `--outputFile.json=${jsonFile}`,
     ],
     {
       cwd: ROOT,
       stdio: 'inherit',
-      env: { ...process.env, TEST_DATABASE_URL: targetUrl.toString() },
+      env: {
+        ...process.env,
+        TEST_DATABASE_URL: targetUrl.toString(),
+        TECHNIC_DB_UNHANDLED_REPORT: unhandledFile,
+      },
     },
   );
 
   let failed = [];
   let files = 0;
+  let reportError = null;
+  let unhandled = [];
   try {
     const report = JSON.parse(readFileSync(jsonFile, 'utf8'));
+    if (!Array.isArray(report.testResults)) throw new Error('invalid Vitest JSON report');
     files = (report.testResults ?? []).length;
     failed = (report.testResults ?? [])
       .filter((file) => file.status === 'failed')
@@ -154,21 +159,41 @@ function vitestPass(pkg, filters, workers) {
         const cut = name.indexOf('/test/');
         return cut > 0 ? name.slice(cut + 1) : name;
       });
-  } catch {
-    failed = [];
+  } catch (error) {
+    reportError = `Vitest JSON report unavailable: ${error.message}`;
   }
 
-  return { ok: (res.status ?? -1) === 0, files, failed: [...new Set(failed)] };
+  try {
+    unhandled = JSON.parse(readFileSync(unhandledFile, 'utf8'));
+    if (!Array.isArray(unhandled)) throw new Error('invalid unhandled-error report');
+  } catch (error) {
+    reportError = `Vitest unhandled-error report unavailable: ${error.message}`;
+  }
+
+  return {
+    ok: (res.status ?? -1) === 0 && reportError === null && unhandled.length === 0,
+    files,
+    failed: [...new Set(failed)],
+    unhandled,
+    reportError,
+  };
 }
 
 /**
- * Набор одного пакета целиком: заход в три работника, затем одиночный повтор упавших.
- * Возвращает `{ ok, note }`, где `note` — то, что человек прочитает в итоге.
+ * Run one package with three workers, then retry failed files serially. An unhandled error has
+ * no reliable file attribution, so retrying only failed files cannot clear that first pass.
  */
 function suite(pkg, title) {
   say();
   say(`── ${title}: заход 1 из 2 (--maxWorkers=3) ────────────────────────────`);
   const first = vitestPass(pkg, partial ? filters : ['db.test'], 3);
+  if (first.unhandled.length > 0) {
+    return {
+      ok: false,
+      note: `необработанные ошибки (${first.unhandled.length}) в первом заходе; повтор красных файлов не доказывает зелёный набор: ${first.unhandled.map((error) => error.code ?? error.message).join(', ')}`,
+    };
+  }
+  if (first.reportError) return { ok: false, note: first.reportError };
   if (first.ok) {
     return {
       ok: true,
@@ -181,10 +206,8 @@ function suite(pkg, title) {
   }
 
   if (first.failed.length === 0) {
-    // Падение без единого красного файла — это необработанные исключения (например, обрыв
-    // соединений при сносе базы) либо отказ самого vitest. Повторять нечего, и списать на
-    // конкуренцию такое нельзя: vitest честно предупреждает, что тесты могли стать
-    // ложноположительными.
+    // A failed process with no failed file may have crashed outside a test; there is no safe
+    // subset to retry and no proof that the passing tests were unaffected.
     return {
       ok: false,
       note: 'прогон упал без красных файлов — смотрите необработанные исключения выше',
@@ -195,6 +218,13 @@ function suite(pkg, title) {
   say(`── ${title}: заход 2 из 2 (--maxWorkers=1, только упавшие) ────────────`);
   say(`   повторяются: ${first.failed.join(', ')}`);
   const second = vitestPass(pkg, first.failed, 1);
+  if (second.unhandled.length > 0) {
+    return {
+      ok: false,
+      note: `необработанные ошибки (${second.unhandled.length}) при одиночном повторе: ${second.unhandled.map((error) => error.code ?? error.message).join(', ')}`,
+    };
+  }
+  if (second.reportError) return { ok: false, note: second.reportError };
   if (second.ok) {
     return {
       ok: true,

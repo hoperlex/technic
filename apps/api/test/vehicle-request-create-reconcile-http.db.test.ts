@@ -155,7 +155,20 @@ afterAll(async () => {
   const admin = new pg.Client({ connectionString: ADMIN_URL.toString() });
   await admin.connect();
   try {
-    await admin.query('DROP DATABASE ' + DB_NAME + ' WITH (FORCE)');
+    // pg-pool can resolve end() before its clients finish disconnecting. This database belongs
+    // only to this file, so a remaining session is a cleanup failure, not a reason to kill it.
+    let remaining = 0;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const result = await admin.query<{ count: number }>(
+        'SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname = $1',
+        [DB_NAME],
+      );
+      remaining = result.rows[0]?.count ?? 0;
+      if (remaining === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(remaining, 'all connections to the receipt test database must close').toBe(0);
+    await admin.query('DROP DATABASE ' + DB_NAME);
   } finally {
     await admin.end();
   }
