@@ -94,15 +94,16 @@ export const serviceRequestsApi = {
    * обязан нести тот же ключ. Роди его этот метод — каждое нажатие получало бы свой, и защита
    * выродилась бы в украшение (тот же довод, что у заведения плановой закупки).
    */
-  create: (body: CreateServiceRequestInput, idempotencyKey?: string) =>
-    apiFetch<ServiceRequestWithMailDto>(
-      idempotencyKey && !body.equipmentCandidate ? `${PATH}/_create-with-receipt` : PATH,
-      {
-        method: 'POST',
-        body,
-        ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
-      },
-    ),
+  create: (body: CreateServiceRequestInput, idempotencyKey?: string) => {
+    const options = {
+      method: 'POST',
+      body,
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    } as const;
+    return idempotencyKey && !body.equipmentCandidate
+      ? apiFetch<ServiceRequestWithMailDto>(`${PATH}/_create-with-receipt`, options)
+      : apiFetch<ServiceRequestWithMailDto>(PATH, options);
+  },
   reconcileCreate: (body: CreateServiceRequestInput, idempotencyKey: string) =>
     apiFetch<RequestCreateReconciliation>(`${PATH}/_create-attempts/reconcile`, {
       method: 'POST',

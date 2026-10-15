@@ -39,12 +39,16 @@ export const mechRequestsApi = {
   ...createListApi<MechRequestDto>(PATH),
   ...createGetApi<MechRequestDto>(PATH),
   ...createWriteApi<MechRequestDto, CreateMechRequestInput, UpdateMechRequestInput>(PATH),
-  create: (body: CreateMechRequestInput, idempotencyKey?: string) =>
-    apiFetch<MechRequestDto>(idempotencyKey ? `${PATH}/_create-with-receipt` : PATH, {
+  create: (body: CreateMechRequestInput, idempotencyKey?: string) => {
+    const options = {
       method: 'POST',
       body,
       ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
-    }),
+    } as const;
+    return idempotencyKey
+      ? apiFetch<MechRequestDto>(`${PATH}/_create-with-receipt`, options)
+      : apiFetch<MechRequestDto>(PATH, options);
+  },
   reconcileCreate: (body: CreateMechRequestInput, idempotencyKey: string) =>
     apiFetch<RequestCreateReconciliation>(`${PATH}/_create-attempts/reconcile`, {
       method: 'POST',
