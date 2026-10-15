@@ -62,7 +62,8 @@ export function PageTableLayout({ title, filters, extra, toolbar, mobile, childr
     <div className="page-layout">
       {left || extra ? (
         <div
-          className={left ? 'page-layout__header' : 'page-layout__header page-layout__header--end'}
+          className="page-layout__header"
+          style={{ justifyContent: left ? 'space-between' : 'flex-end' }}
         >
           {left}
           {extra ? <div>{extra}</div> : null}

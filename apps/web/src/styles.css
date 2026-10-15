@@ -101,13 +101,8 @@ body,
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--gap-sm);
   flex-wrap: wrap;
-}
-/* A header holding only the action keeps it at the right edge. */
-.page-layout__header--end {
-  justify-content: flex-end;
 }
 /* There may be many filters: the block takes the free width and wraps them onto rows, while the
    action on the right stays in place. */
