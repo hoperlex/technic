@@ -927,6 +927,16 @@ closer: the anchor is the moment of the transition.
 
 ### Разовый шаг: сверка перевода ролей (этапы 8 и 9, ADR 0113)
 
+**Which CLI still exists after migrations 0363/0364.** `backfill:grants` and
+`check:mailing-audience` were one-off checks and left the API package with the tables they compared.
+Do not run a CLI from the previous image against the new schema during the migration-before-restart
+window: its copy can still query `user_role_addons` or `mailing_schedule_roles`. The current
+`check:role-migration` is different: it reads `users`, `user_role_migration` and the grant tables,
+and is still available in `apps/api/package.json`. Run it from the **new, healthy API container after
+the restart**, and again before the migrate release. A successful old-image check in the deployment
+window is not a readiness result for the new release. The prepared R1g snapshot guard will make the
+pre-migrate check an in-transaction migration gate when that separate release is numbered.
+
 Упраздняемые роли переводятся тремя релизами каждая (план §13.2): **prepare** выдаёт замещающие
 наборы держателям старой роли и закрывает вход в неё, **migrate** переводит учётки одним `UPDATE`,
 **cleanup** убирает роль из кода. Выкачен пока prepare — миграции `0154` (снимок
@@ -949,13 +959,14 @@ docker compose -f deploy/docker-compose.yml -p technic exec technic-api \
 
 Виды отказа и решение по каждому:
 
-- **снимка нет** — учётка заведена на старой роли после наката prepare (окно деплоя) либо роль
-  правили в базе руками. Перевод идёт по снимку и такую учётку пропустит, а роль к тому времени
-  уже никого не пустит. Лечится повторным накатом посевных запросов `0155`/`0156` — они
-  идемпотентны (`ON CONFLICT DO NOTHING`) и добирают только недостающее;
-- **права теряются** — взведённое назначение отозвали в реестре выдач. Вернуть выдачей набора не
-  выйдет: старой роли набор не совместим намеренно (иначе визу объекта можно было бы выдать
-  рядовому штабу), поэтому лечится тем же повторным накатом посева;
+- **Missing snapshot:** an account was created on a retiring role after prepare, or its role was
+  edited directly in the database. The transfer only visits snapshots. Repeat the idempotent seed
+  statements in `0155`/`0156` for that account; if it also lacks `mech_ordering`, repeat section 6
+  of `0290` after the snapshot exists. `db:migrate` skips already applied files.
+- **Lost permissions:** an armed assignment was revoked or never seeded. The registry cannot issue
+  its replacement to the old role, because that grant is intentionally compatible only with the
+  target role. Repeat the relevant seed statements in `0155`/`0156` and section 6 of `0290` for
+  `mech_ordering`, then rerun the check.
 - **права появляются сверх объявленного** — расширение, которого заказчик не решал: разбирать до
   перевода. Объявленное расширение (комендант получает оргтехнику, решение №1) отказом не
   считается и печатается отдельной строкой с числом учёток;
@@ -1023,15 +1034,16 @@ docker compose -f deploy/docker-compose.yml -p technic exec technic-api \
 устарел», молча дёргает `/refresh` и повторяет запрос — по одному лишнему обмену на переведённую
 учётку. Без этого бывший комендант не увидел бы оргтехнику до истечения токена.
 
-**Миграция роняет деплой, если на упраздняемой роли кто-то остался** (предохранитель после
-`UPDATE`, прецедент — `0074`). Пройти мимо перевода может только учётка без снимка, заведённая в
-минуты между накатом prepare и перезапуском. Лечение — повторный накат посевных запросов
-`0155`/`0156` (идемпотентны, `ON CONFLICT DO NOTHING`), затем повторный деплой. Миграции катятся до
-перезапуска, поэтому отказ оставляет работать прежнюю версию на прежней схеме — то самое состояние,
-из которого шаг повторяют.
+**The migrate SQL stops the deploy if anyone remains on a retiring role** (the guard after
+`UPDATE`). An account without a snapshot can be missed. Repeat the idempotent seed statements from
+`0155`/`0156` and section 6 of `0290` for `mech_ordering`, then rerun the deploy. `db:migrate` does
+not rerun applied files for you. Because the SQL runs before the restart, a refusal leaves the old
+application serving on its existing schema prefix; follow the migration failure procedure above.
 
-**Проверка после выката** — та же сверка плюс витрина «Права»: у каждой переведённой учётки набор
-прав тот же, что был вчера, кроме объявленного расширения.
+**After the migrate release**, inspect `user_role_migration.migrated_at` and the grant registry for
+the transferred accounts. `check:role-migration` only checks accounts **still** on retiring roles:
+an exit code of 0 after they have moved does not prove that their permissions stayed equal. Keep the
+pre-migrate result as the evidence for that comparison.
 
 **Откат migrate** — тем же снимком и так же условно:
 
