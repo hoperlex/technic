@@ -20,7 +20,7 @@
         },
         {
           "source": "src/features/waste-ticket-review/ui/BlindCheckQueue.tsx",
-          "gzip": 604295
+          "gzip": 604391
         },
         {
           "source": "src/pages/waste/WasteArchiveTab.tsx",
@@ -82,7 +82,7 @@
     },
     "mechanization": {
       "source": "src/pages/mech/MechRequestsPage.tsx",
-      "gzip": 616524
+      "gzip": 619151
     },
     "office-equipment": {
       "source": "src/pages/service/ServiceRequestsPage.tsx",
