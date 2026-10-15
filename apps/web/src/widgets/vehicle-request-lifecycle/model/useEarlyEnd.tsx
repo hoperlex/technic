@@ -16,6 +16,7 @@ import {
   vehicleRequestsApi,
 } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { ReasonModal } from '@shared/ui';
 import type { VehicleEarlyEndApproveModalProps } from './types';
 
@@ -56,6 +57,7 @@ export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
     void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     void qc.invalidateQueries({ queryKey: waybillKeys.root });
     void qc.invalidateQueries({ queryKey: garageKeys.root });
+    void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
   };
 
   const request = useMutation({

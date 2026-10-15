@@ -10,6 +10,7 @@ import {
   vehicleTypesApi,
 } from '@entities/vehicle-type';
 import { vehicleKeys } from '@entities/vehicle';
+import { trailerKeys } from '@entities/vehicle-trailer';
 import { fuelNormKeys } from '@entities/fuel-norm';
 
 export interface VehicleClassificationLifecycleController {
@@ -46,6 +47,7 @@ export function useVehicleClassificationLifecycle(): VehicleClassificationLifecy
       void queryClient.invalidateQueries({ queryKey: vehicleCategoryKeys.root });
       // Vehicle rows and fuel-norm labels carry type and category activity and names.
       void queryClient.invalidateQueries({ queryKey: vehicleKeys.root });
+      void queryClient.invalidateQueries({ queryKey: trailerKeys.root });
       void queryClient.invalidateQueries({ queryKey: fuelNormKeys.root });
     },
     onError: (error) => message.error(errorMessage(error)),

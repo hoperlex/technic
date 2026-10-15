@@ -17,6 +17,8 @@
  * mutation; blaming application code for scanner uncertainty would get the check disabled. The last
  * two rules prevent that uncertainty from making the check green. `opaque-marker-excuses-nothing`
  * catches an `opaque` marker left on a mutation the scan now reads in full.
+ * `server-read-root-missed` follows route SQL and checks indirect writes against the owning root
+ * of each changed table.
  *
  * ЧЕМ ОПРАВДАНО МОЛЧАНИЕ. Первая очередь была 28 мест, и ни одно не оказалось дефектом — это были
  * четыре разных вида законного молчания, и каждый пришлось назвать, иначе правило сняли бы целиком:
@@ -42,14 +44,16 @@
  * normal empty-invalidation rule continues to apply; it removes only the uncertainty about whether
  * the function writes at all.
  *
- * ЧЕГО ПРОВЕРКА НЕ УМЕЕТ, и это главная часть шапки:
+ * SERVER EFFECTS. A second pass follows a registered API route into local and relative helpers,
+ * finds Drizzle table writes, and links them to query roots whose GET route reads that table.
+ * It uses the existing API path and read inventory; there is no parallel route or root registry.
+ * Only the table that owns a resource path by its schema name is used as a read carrier. A broad
+ * join, file store, or audit table cannot claim every root that happens to query it. This catches
+ * `PATCH /vehicles/:id` releasing `vehicleTrailers` and requiring `vehicle-trailers` invalidation.
+ * Raw SQL, database triggers, dynamic routes, and non-conventional resource names still need
+ * manual review. A callback-owned invalidation remains outside a mutation's local obligation.
  *
- *   — Она не знает, что меняет СЕРВЕР. Три дефекта, из-за которых она написана, выведены чтением
- *     серверных ручек, и ни одно правило здесь их бы не нашло: у портала нет знания «PATCH
- *     /vehicles/:id освобождает прицепы». Найти их машинно можно только сопоставив таблицы,
- *     которые пишет маршрут, с корнями, чьи запросы их читают, — это отдельный шаг, и он не сделан.
- *     `home-root-missed` ловит соседний класс — «вспомнил о кэше и не дошёл до себя», — и на нём
- *     сразу нашёлся четвёртый дефект того же рода (подтверждение талонов).
+ * OTHER LIMITS:
  *   — Корень — ПЕРВЫЙ сегмент ключа, и только он. Гашение `vehicleKeys.list(params)` здесь
  *     считается гашением `vehicles`: сравнивать ключи целиком значило бы знать аргументы семейств,
  *     а они — значения времени выполнения. Проверка поэтому оптимистична и пропускает «погасил
@@ -118,11 +122,13 @@ import {
   KEY_LIST_PROPS,
   KEY_FIRST_ARG_CALLS,
 } from './lib/source-scan.mjs';
+import { serverRouteEffects } from './lib/server-route-effects.mjs';
 
 const WEB = path.resolve(process.cwd());
 const SRC = path.join(WEB, 'src');
 const MAP_FILE = path.join(WEB, 'cache-invalidation-map.json');
 const BUDGET_FILE = path.join(WEB, 'cache-budget.json');
+const API_ROOT = path.resolve(WEB, '../api/src');
 
 /** Layers a mutation may live in. `shared` is excluded: it knows no domain and owns no key. */
 const LAYERS = ['entities', 'features', 'widgets', 'pages'];
@@ -2274,6 +2280,95 @@ function scanDirectWrites(ctx, mutationFnRanges) {
 
 const CACHE_MENTION = new RegExp([...KEY_FIRST_ARG_CALLS, ...KEY_LIST_PROPS].join('|'));
 
+/** Parameter names do not matter; literal path segments and the verb do. */
+function sameRoute(a, b) {
+  const left = a.split('/').filter(Boolean);
+  const right = b.split('/').filter(Boolean);
+  return (
+    left.length === right.length &&
+    left.every((part, i) => part.startsWith(':') || right[i].startsWith(':') || part === right[i])
+  );
+}
+
+const tablePath = (table) => `/${table.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+
+function serverReadRootEffects(routes, handleRequests, reads) {
+  const readRootsByTable = new Map();
+  for (const read of reads) {
+    if (!read.key.root || read.key.why) continue;
+    const paths = [
+      ...read.handles.flatMap(({ handle }) => handleRequests[handle] ?? []),
+      ...read.paths.filter((p) => p.path).map((p) => `${p.verb} ${p.path}`),
+    ];
+    for (const request of paths) {
+      const [verb, path] = request.split(' ');
+      if (verb !== 'GET') continue;
+      for (const route of routes)
+        if (route.method === 'GET' && sameRoute(path, route.path)) {
+          const resource = `/${route.path.split('/').filter(Boolean)[0]}`;
+          const homeTables = new Set(
+            routes.filter((r) => r.method === 'GET' && r.path === resource).flatMap((r) => r.reads),
+          );
+          for (const table of route.reads.filter(
+            (name) => homeTables.has(name) && resource === tablePath(name),
+          )) {
+            if (!readRootsByTable.has(table)) readRootsByTable.set(table, new Set());
+            readRootsByTable.get(table).add(read.key.root);
+          }
+        }
+    }
+  }
+  return readRootsByTable;
+}
+
+function attachServerEffects(map) {
+  const server = serverRouteEffects(API_ROOT);
+  if (!server.available) return { available: false, routes: [], readRootsByTable: {} };
+  const readRoots = serverReadRootEffects(
+    server.routes,
+    map.apiPaths.handles,
+    map.readInventory.reads,
+  );
+  for (const mutation of map.mutations) {
+    const required = new Map();
+    for (const write of mutation.writes) {
+      const [handle, verb] = write.split(' ');
+      for (const request of map.apiPaths.handles[handle] ?? []) {
+        const [requestVerb, requestPath] = request.split(' ');
+        if (requestVerb !== verb) continue;
+        for (const route of server.routes)
+          if (route.method === verb && sameRoute(requestPath, route.path)) {
+            const resource = `/${route.path.split('/').filter(Boolean)[0]}`;
+            const homeTables = new Set(
+              server.routes
+                .filter((r) => r.method === 'GET' && r.path === resource)
+                .flatMap((r) => r.reads),
+            );
+            for (const table of route.writes.filter((name) => !homeTables.has(name)))
+              for (const root of readRoots.get(table) ?? []) {
+                if (!required.has(root)) required.set(root, new Set());
+                required.get(root).add(table);
+              }
+          }
+      }
+    }
+    mutation.serverReadRoots = Object.fromEntries(
+      [...required]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([root, tables]) => [root, [...tables].sort()]),
+    );
+  }
+  return {
+    available: true,
+    routes: server.routes,
+    readRootsByTable: Object.fromEntries(
+      [...readRoots]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([table, roots]) => [table, [...roots].sort()]),
+    ),
+  };
+}
+
 function buildMap() {
   const files = walkTs(SRC);
   const keys = makeRegistry();
@@ -2525,7 +2620,7 @@ function buildMap() {
       a.file.localeCompare(b.file) || a.why.localeCompare(b.why) || a.form.localeCompare(b.form),
   );
 
-  return {
+  const map = {
     roots: Object.fromEntries([...rootOwners.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
     mutations,
     unresolved: classifiedUnresolved,
@@ -2541,6 +2636,8 @@ function buildMap() {
     apiPaths: describeApiPaths(pathTable, handleRequests, outsideCalls),
     readInventory: scanReads(readFiles, keys, keyFamilies, api, objects, pathTable),
   };
+  map.serverEffects = attachServerEffects(map);
+  return map;
 }
 
 function countBy(items, of) {
@@ -2652,6 +2749,21 @@ function ruleHomeRootMissed(map) {
       at: `${m.file}:${m.line}`,
       what: `${m.name} гасит ${m.invalidates.join(', ')}, но не свой корень (${m.homeRoots.join(' | ')}) при записи через ${m.writes.join(', ')}`,
     }));
+}
+
+/** A route's SQL write owes every root whose GET route reads the changed table. */
+function ruleServerReadRootMissed(map) {
+  if (!map.serverEffects.available) return [];
+  return map.mutations.flatMap((m) =>
+    Object.entries(m.serverReadRoots ?? {})
+      .filter(([root]) => !m.wholeCache && m.handsUp.length === 0 && !m.invalidates.includes(root))
+      .map(([root, tables]) => ({
+        rule: 'server-read-root-missed',
+        id: `${m.file}|${m.name}|${root}`,
+        at: `${m.file}:${m.line}`,
+        what: `${m.name} меняет ${tables.join(', ')}, которые читает корень ${root}`,
+      })),
+  );
 }
 
 /**
@@ -2883,7 +2995,7 @@ function homeAmbiguousFindings(map) {
  * same colour as one that understood more. A relaxation is an entry added by hand, where review
  * sees it.
  */
-const BUDGET_RULES = [...READ_RULES, 'unresolved', 'home-ambiguous'];
+const BUDGET_RULES = [...READ_RULES, 'unresolved', 'home-ambiguous', 'server-read-root-missed'];
 
 function checkBudget(findings) {
   const budget = existsSync(BUDGET_FILE) ? JSON.parse(readFileSync(BUDGET_FILE, 'utf8')) : {};
@@ -2934,6 +3046,7 @@ const budgetErrors = checkBudget([
   ...readFindings,
   ...unresolvedFindings(map),
   ...homeAmbiguousFindings(map),
+  ...ruleServerReadRootMissed(map),
 ]);
 
 const t = map.totals;
@@ -2955,6 +3068,10 @@ console.log(
     `Чтения: ${r.reads}; ключ до семейства ${r.keyResolved}; ручка или прямой путь ${r.withHandleOrPath}.`,
   );
 }
+if (map.serverEffects.available)
+  console.log(
+    `Сервер: маршрутов ${map.serverEffects.routes.length}; основных таблиц чтения ${Object.keys(map.serverEffects.readRootsByTable).length}.`,
+  );
 console.log(`Карта: ${path.relative(WEB, MAP_FILE)}`);
 
 // `unresolved` is printed on EVERY run, green or red. A static check of invalidations fails quietly

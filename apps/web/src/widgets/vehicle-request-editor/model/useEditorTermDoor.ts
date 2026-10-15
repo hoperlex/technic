@@ -11,6 +11,7 @@ import {
   type VehicleRequestPeriodResultDto,
 } from '@entities/vehicle-request';
 import { waybillKeys } from '@entities/waybill';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { recheckReasonOf } from '@features/vehicle-assignment';
 import {
   silentTermApplyBody,
@@ -141,6 +142,7 @@ export function useEditorTermDoor({ state, saveRest }: Input) {
       void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       void qc.invalidateQueries({ queryKey: waybillKeys.root });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
+      void qc.invalidateQueries({ queryKey: vehicleRouteKeys.root });
       afterApplied(pending.values, outcome.result);
     },
     onError: (error, pending) => {

@@ -10,6 +10,7 @@ import {
 import { garageKeys } from '@entities/garage';
 import { useAuth } from '@entities/session';
 import { vehicleRequestKeys } from '@entities/vehicle-request';
+import { vehicleRouteKeys } from '@entities/vehicle-route';
 import { waybillKeys } from '@entities/waybill';
 import {
   weeklyBackdateAccess,
@@ -130,6 +131,7 @@ export function useWeeklyRequestWorkspace() {
     void queryClient.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     void queryClient.invalidateQueries({ queryKey: waybillKeys.root });
     void queryClient.invalidateQueries({ queryKey: garageKeys.root });
+    void queryClient.invalidateQueries({ queryKey: vehicleRouteKeys.root });
   };
   // A successful action clears the previous refusal's explanations: they were about the old
   // composition.

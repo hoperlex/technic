@@ -133,5 +133,19 @@ those writes too (99 mutations, previously reported as `homeAmbiguous`). The bud
 `apps/web/cache-budget.json`, renamed from `cache-read-budget.json`. Next to the four read rules it
 holds two named lists, `unresolved` and `home-ambiguous`, both empty; a new entry or a stale one
 fails the run. The new rule `opaque-marker-excuses-nothing` fails a `cache-invalidation: opaque`
-marker left on a mutation the check now reads in full. Mapping server tables to query roots is
-still not done; it waits for the realtime-events decision.
+marker left on a mutation the check now reads in full.
+
+## Server route effects (15.10.2026)
+
+The check now follows registered API routes into local and relative service functions and reads
+their Drizzle `insert`/`update`/`delete` and `from` calls. It joins each writer to query roots
+through the existing API path and read inventories. A table is treated as a root's primary data
+only where its schema symbol matches the resource path by name. This keeps shared `files`, audit
+and lookup tables from invalidating unrelated roots. `PATCH /vehicles/:id` consequently requires
+`vehicle-trailers`: its service updates `vehicleTrailers`, which `GET /vehicle-trailers` reads.
+
+Seven previously missing invalidations were added for trailer and route changes. The three
+`route-prefill` findings from weekly request actions remain a named budget exception: that read
+has ten-second freshness and the write receives a 409 when its version is stale. The route effect
+rule does not cover raw SQL, database triggers, dynamic route paths, or resources whose path does
+not follow the schema symbol. Those paths still require review when changed.
