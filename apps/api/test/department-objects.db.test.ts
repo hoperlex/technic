@@ -5,8 +5,7 @@ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DepartmentDto } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
-// Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
-// окружение, — конфиг проверяет его при импорте и без него падает.
+// Config reads the environment at import time, so runtime imports wait until setup.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 import type * as SchemaNs from '../src/db/schema';
@@ -50,12 +49,21 @@ import type * as TokensNs from '../src/auth/tokens';
  * Без `TEST_DATABASE_URL` файл пропускается — как и остальные `*.db.test.ts`.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+const SOURCE_URL = process.env.TEST_DATABASE_URL;
+const DB_NAME = SOURCE_URL
+  ? `${new URL(SOURCE_URL).pathname.slice(1)}_depobj_${randomUUID().replaceAll('-', '').slice(0, 8)}`
+  : null;
+const DB_URL = DB_NAME ? new URL(`/${DB_NAME}`, SOURCE_URL).toString() : undefined;
+const ADMIN_URL = SOURCE_URL ? new URL('/postgres', SOURCE_URL).toString() : undefined;
 
-/** Метка своих строк: уборка идёт по ней, а не «по последним записям» — база общая на все файлы. */
+if (DB_NAME && !/^[a-z][a-z0-9_]{0,62}$/.test(DB_NAME)) {
+  throw new Error(`Invalid isolated test database name: ${DB_NAME}`);
+}
+
+/** Stable fixture identifiers help assertions distinguish their own rows. */
 const EMAIL_PREFIX = 'db-department-objects';
 const CODE_PREFIX = 'DEPTOBJ';
-/** Хвост прогона: код объекта и адрес учётки уникальны, и два прогона не должны спорить. */
+/** Keep fixture identifiers unique even when two runs target the same cluster. */
 const RUN = `${Date.now().toString(36)}${randomUUID().slice(0, 4)}`.replace(/[^a-z0-9]/gu, '');
 
 interface Ctx {
@@ -102,32 +110,25 @@ async function migrate(databaseUrl: string): Promise<void> {
   const client = new pg.Client({ connectionString: databaseUrl });
   await client.connect();
   try {
+    for (const extension of ['citext', 'pg_trgm', 'pgcrypto']) {
+      await client.query(`CREATE EXTENSION IF NOT EXISTS ${extension}`);
+    }
     await applyMigrations(client);
   } finally {
     await client.end();
   }
 }
 
-/**
- * Уборка своих строк — и перед прогоном тоже: упавший прогон обязан убираться следующим, а не
- * копить отделы в общей базе. Порядок задан ссылками: события журнала (`entity_id` текстовый, ни
- * каскада, ни ключа), потом учётки (за ними каскадом уходят привязки и refresh-сессии), потом
- * отделы (за ними — набор площадок), и только в конце объекты: их держит `RESTRICT`.
- */
-async function cleanup(db: typeof AppDb): Promise<void> {
-  const codeLike = `${CODE_PREFIX}-%`;
-  const emailLike = `${EMAIL_PREFIX}%`;
-  await db.execute(sql`
-    DELETE FROM audit_log
-    WHERE (entity_type = 'department'
-             AND entity_id IN (SELECT id::text FROM departments WHERE code LIKE ${codeLike}))
-       OR (entity_type = 'construction_object'
-             AND entity_id IN (SELECT id::text FROM construction_objects WHERE code LIKE ${codeLike}))
-       OR (entity_type = 'user'
-             AND entity_id IN (SELECT id::text FROM users WHERE email LIKE ${emailLike}))`);
-  await db.execute(sql`DELETE FROM users WHERE email LIKE ${emailLike}`);
-  await db.execute(sql`DELETE FROM departments WHERE code LIKE ${codeLike}`);
-  await db.execute(sql`DELETE FROM construction_objects WHERE code LIKE ${codeLike}`);
+/** Other DB files pick the first object, so this suite must own its whole database. */
+async function manageTestDatabase(action: 'create' | 'drop'): Promise<void> {
+  const admin = new pg.Client({ connectionString: ADMIN_URL! });
+  await admin.connect();
+  try {
+    if (action === 'create') await admin.query(`CREATE DATABASE "${DB_NAME}"`);
+    else await admin.query(`DROP DATABASE IF EXISTS "${DB_NAME}"`);
+  } finally {
+    await admin.end();
+  }
 }
 
 // ── Подопытные ──
@@ -366,6 +367,7 @@ function refresh(token: string) {
 
 describe.skipIf(!DB_URL)('площадки отдела множеством (ADR 0144, живая схема)', () => {
   beforeAll(async () => {
+    await manageTestDatabase('create');
     prepareEnv(DB_URL!);
     await migrate(DB_URL!);
 
@@ -399,16 +401,19 @@ describe.skipIf(!DB_URL)('площадки отдела множеством (AD
       closeSide: () => sidePool.end(),
       adminId: '',
     };
-    await cleanup(db);
     ctx.adminId = await newUser('admin', 'admin');
   }, 180_000);
 
   afterAll(async () => {
-    if (!ctx) return;
-    await cleanup(ctx.db);
-    await ctx.app.close();
-    await ctx.closeSide();
-    await ctx.closeDb();
+    try {
+      if (ctx) {
+        await ctx.app.close();
+        await ctx.closeSide();
+        await ctx.closeDb();
+      }
+    } finally {
+      await manageTestDatabase('drop');
+    }
   });
 
   /** Набор площадок отдела так, как его ставит портал, — единственным писателем. */

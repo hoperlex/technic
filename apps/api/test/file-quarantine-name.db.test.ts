@@ -1,10 +1,8 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyMigrations } from '../src/db/migration-journal';
-// Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
-// окружение, — конфиг проверяет его при импорте и без него падает.
+// Config reads the environment at import time, so runtime imports wait until setup.
 import type { db as AppDb } from '../src/db/client';
 import type * as SchemaNs from '../src/db/schema';
 import type { buildApp } from '../src/app';
@@ -53,19 +51,22 @@ import type { buildApp } from '../src/app';
  * опирается ни одно утверждение.
  */
 
-const DB_URL = process.env.TEST_DATABASE_URL;
+const SOURCE_URL = process.env.TEST_DATABASE_URL;
+const DB_NAME = SOURCE_URL
+  ? `${new URL(SOURCE_URL).pathname.slice(1)}_qname_${randomUUID().replaceAll('-', '').slice(0, 8)}`
+  : null;
+const DB_URL = DB_NAME ? new URL(`/${DB_NAME}`, SOURCE_URL).toString() : undefined;
+const ADMIN_URL = SOURCE_URL ? new URL('/postgres', SOURCE_URL).toString() : undefined;
+
+if (DB_NAME && !/^[a-z][a-z0-9_]{0,62}$/.test(DB_NAME)) {
+  throw new Error(`Invalid isolated test database name: ${DB_NAME}`);
+}
 
 const ADMIN_EMAIL = 'db-quarantine-name-admin@example.invalid';
 const ADMIN_PASSWORD = 'db-test-password-123';
-/** Метка своих заявок: база у db-тестов общая и переживает повторный запуск. */
+/** Identifies the requests created by this suite in its assertions. */
 const MARK = 'ТЕСТОВЫЕ ДАННЫЕ: карантин и имя вложения';
-/**
- * Префикс ключей объектов: по нему уборка находит своё, включая оставленное падением.
- *
- * Префиксы и адреса НАМЕРЕННО свои, не пересекающиеся с соседними файлами про карантин: база общая,
- * прогоны идут параллельно, и уборка соседа по своему `LIKE` унесла бы учётку этого файла посреди
- * его подготовки.
- */
+/** Prefixes keep fixture file keys recognizable in responses and job payloads. */
 const KEY_PREFIX = 'db-quarantine-name/';
 const OBJECT_CODE = 'QNM-TEST';
 
@@ -105,31 +106,25 @@ async function migrate(databaseUrl: string): Promise<void> {
   const client = new pg.Client({ connectionString: databaseUrl });
   await client.connect();
   try {
+    for (const extension of ['citext', 'pg_trgm', 'pgcrypto']) {
+      await client.query(`CREATE EXTENSION IF NOT EXISTS ${extension}`);
+    }
     await applyMigrations(client);
   } finally {
     await client.end();
   }
 }
 
-/**
- * Уборка своих строк — и ПЕРЕД прогоном тоже: упавшая подготовка оставляет мусор, а база общая.
- * Порядок задан внешними ключами: заявки (за ними каскадом связи файлов), файлы, журнал, учётка и
- * только в конце площадка — её держит `RESTRICT`.
- */
-async function cleanup(db: typeof AppDb): Promise<void> {
-  const admin = sql`(SELECT id FROM users WHERE email = ${ADMIN_EMAIL})`;
-  await db.execute(sql`
-    DELETE FROM jobs
-     WHERE type = 'delete_s3_object' AND payload->>'objectKey' LIKE ${`${KEY_PREFIX}%`}`);
-  await db.execute(sql`DELETE FROM waste_requests WHERE created_by IN ${admin}`);
-  await db.execute(sql`DELETE FROM mech_requests WHERE created_by IN ${admin}`);
-  // Заявки оргтехники — до файлов и до площадки: связи вложений уходят каскадом за заявкой, а
-  // площадку держит `RESTRICT` со снимка.
-  await db.execute(sql`DELETE FROM service_requests WHERE created_by IN ${admin}`);
-  await db.execute(sql`DELETE FROM files WHERE object_key LIKE ${`${KEY_PREFIX}%`}`);
-  await db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN ${admin}`);
-  await db.execute(sql`DELETE FROM users WHERE email = ${ADMIN_EMAIL}`);
-  await db.execute(sql`DELETE FROM construction_objects WHERE code = ${OBJECT_CODE}`);
+/** Other DB files can attach requests to the first object, so this suite owns its database. */
+async function manageTestDatabase(action: 'create' | 'drop'): Promise<void> {
+  const admin = new pg.Client({ connectionString: ADMIN_URL! });
+  await admin.connect();
+  try {
+    if (action === 'create') await admin.query(`CREATE DATABASE "${DB_NAME}"`);
+    else await admin.query(`DROP DATABASE IF EXISTS "${DB_NAME}"`);
+  } finally {
+    await admin.end();
+  }
 }
 
 // ── Фикстуры ──
@@ -298,14 +293,12 @@ function expectVisible(list: SeenFile[], file: TestFile): void {
 
 describe.skipIf(!DB_URL)('карантин: имя вложения наружу не уходит (Р6, п. 4)', () => {
   beforeAll(async () => {
+    await manageTestDatabase('create');
     prepareEnv(DB_URL!);
     await migrate(DB_URL!);
 
     const { db, closeDb } = await import('../src/db/client');
     const schema = await import('../src/db/schema');
-    // Сперва уборка: упавший прогон оставляет учётку и площадку, а имена у них те же.
-    await cleanup(db);
-
     const { hashPassword } = await import('../src/auth/password');
     const [admin] = await db
       .insert(schema.users)
@@ -320,8 +313,8 @@ describe.skipIf(!DB_URL)('карантин: имя вложения наружу
       })
       .returning({ id: schema.users.id });
 
-    // Площадка СВОЯ, а не «первая попавшаяся»: чужую у соседнего файла уносит его `afterAll`
-    // посреди прогона — так уже падала пара db-тестов.
+    // The request must reference the fixture object; querying the first object would make
+    // assertions depend on database insertion order.
     const [object] = await db
       .insert(schema.constructionObjects)
       .values({
@@ -352,10 +345,14 @@ describe.skipIf(!DB_URL)('карантин: имя вложения наружу
   }, 180_000);
 
   afterAll(async () => {
-    if (!ctx) return;
-    await cleanup(ctx.db);
-    await ctx.app.close();
-    await ctx.closeDb();
+    try {
+      if (ctx) {
+        await ctx.app.close();
+        await ctx.closeDb();
+      }
+    } finally {
+      await manageTestDatabase('drop');
+    }
   });
 
   // ──────────────────────────────────────────────────────────────────────────────────────────
