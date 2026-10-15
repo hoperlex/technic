@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
@@ -23,6 +23,7 @@ import {
   createAttemptFingerprint,
   createAttemptKey,
   createRequestOnce,
+  reconcileRequestCreate,
   replayRequestCreate,
 } from '../services/request-create-attempt';
 import { alias, unionAll } from 'drizzle-orm/pg-core';
@@ -4605,9 +4606,32 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
   // ── Создание ──
   r.post(
-    '/',
-    { ...canCreate, schema: { body: createVehicleRequestStableSchema } },
-    async (req, reply) => {
+    '/_create-attempts/reconcile',
+    {
+      preHandler: [app.authenticate],
+      schema: { body: z.object({ originalBody: createVehicleRequestStableSchema }).strict() },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const key = createAttemptKey(req.headers['idempotency-key']);
+      if (!key) throw err.unprocessable('Передайте ключ исходной попытки');
+      const originalBody = req.body.originalBody;
+      // The correction journal, not the ordinary receipt table, owns backdated creation.
+      if (originalBody.operationId || originalBody.backdateReason) {
+        throw err.unprocessable('Заявка с исправлением даты сверяется по журналу коррекций');
+      }
+      return reconcileRequestCreate({
+        key,
+        kind: 'vehicle',
+        actorUserId: p.id,
+        fingerprint: createAttemptFingerprint(originalBody),
+      });
+    },
+  );
+
+  const createVehicleHandler =
+    (receiptRequired: boolean) =>
+    async (req: FastifyRequest<{ Body: CreateVehicleRequestInput }>, reply: FastifyReply) => {
       const p = requirePrincipal(req);
       const body = req.body;
       // Коридор типов (ADR 0040, ADR 0201) — до области: «вам такой заказ не положен» точнее, чем
@@ -4617,6 +4641,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const customer = customerOf(body);
       assertRequestScope(p, customer);
       const createKey = createAttemptKey(req.headers['idempotency-key']);
+      if (receiptRequired && !createKey) {
+        throw err.unprocessable('Передайте ключ создания заявки');
+      }
+      if (receiptRequired && (body.operationId || body.backdateReason)) {
+        throw err.unprocessable('Заявка с исправлением даты создаётся через основной маршрут');
+      }
       const createFingerprint = createKey ? createAttemptFingerprint(body) : null;
       if (createKey && createFingerprint) {
         const replay = await replayRequestCreate(
@@ -4631,7 +4661,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           return replay;
         }
       }
-      // A receipt can survive a calendar change; new commands still pass the full date gate.
+      // A receipt may survive Moscow midnight. New commands still pass the full date gate before
+      // any database mutation, while an exact replay returns its saved response first.
       const checked = createVehicleRequestSchema.safeParse(body);
       if (!checked.success) {
         throw err.validation(
@@ -4851,7 +4882,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       }
       reply.code(!backdated && repeated ? 200 : 201);
       return createdDto ?? (await getDto(createdId))!;
-    },
+    };
+  r.post(
+    '/',
+    { ...canCreate, schema: { body: createVehicleRequestStableSchema } },
+    createVehicleHandler(false),
+  );
+  // Old APIs have no exact POST route here, so a cached keyed client fails closed after rollback.
+  r.post(
+    '/_create-with-receipt',
+    { ...canCreate, schema: { body: createVehicleRequestStableSchema } },
+    createVehicleHandler(true),
   );
 
   // ── Обновление ──

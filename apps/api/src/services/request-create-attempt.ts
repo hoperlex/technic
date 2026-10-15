@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/client';
@@ -90,6 +90,46 @@ export async function replayRequestCreate<Response, Metadata = never>(
   if (!row) return null;
   assertSameAttempt(row, kind, actorUserId, fingerprint);
   return finishReceipt(key, load);
+}
+
+export type CreateReconciliation =
+  { state: 'created'; requestId: string } | { state: 'not-created'; nextOperationId: string };
+
+/**
+ * A committed null request ID is a tombstone. The create path never commits its reservation before
+ * filling the ID, so competing INSERTs serialize every in-flight create against this barrier.
+ * The replacement key is stored once: two restored tabs cannot mint two new create identities.
+ */
+export async function reconcileRequestCreate(args: {
+  key: string;
+  kind: RequestCreateKind;
+  actorUserId: string;
+  fingerprint: string;
+}): Promise<CreateReconciliation> {
+  return db.transaction(async (tx) => {
+    const nextOperationId = randomUUID();
+    const [claimed] = await tx
+      .insert(requestCreateAttempts)
+      .values({
+        key: args.key,
+        kind: args.kind,
+        actorUserId: args.actorUserId,
+        fingerprint: args.fingerprint,
+        nextKey: nextOperationId,
+      })
+      .onConflictDoNothing({ target: requestCreateAttempts.key })
+      .returning({ key: requestCreateAttempts.key });
+    if (claimed) return { state: 'not-created', nextOperationId };
+    const [prior] = await tx
+      .select()
+      .from(requestCreateAttempts)
+      .where(eq(requestCreateAttempts.key, args.key));
+    if (!prior) throw err.conflict('Ключ занят незавершённой операцией');
+    assertSameAttempt(prior, args.kind, args.actorUserId, args.fingerprint);
+    if (prior.requestId) return { state: 'created', requestId: prior.requestId };
+    if (prior.nextKey) return { state: 'not-created', nextOperationId: prior.nextKey };
+    throw err.conflict('Исход попытки создания пока не установлен');
+  });
 }
 
 /** Reservation, request and response metadata commit as one transaction. */

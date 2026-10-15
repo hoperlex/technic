@@ -6579,6 +6579,7 @@ export const requestCreateAttempts = pgTable(
       .references(() => users.id, { onDelete: 'restrict' }),
     fingerprint: text('fingerprint').notNull(),
     requestId: uuid('request_id'),
+    nextKey: uuid('next_key').unique(),
     metadata: jsonb('metadata').$type<unknown>(),
     response: jsonb('response').$type<unknown>(),
     createdAt: createdAt(),
@@ -6595,6 +6596,10 @@ export const requestCreateAttempts = pgTable(
     responseLinked: check(
       'request_create_attempts_response_check',
       sql`${t.response} IS NULL OR ${t.requestId} IS NOT NULL`,
+    ),
+    tombstoneExclusive: check(
+      'request_create_attempts_tombstone_check',
+      sql`${t.nextKey} IS NULL OR (${t.requestId} IS NULL AND ${t.metadata} IS NULL AND ${t.response} IS NULL)`,
     ),
   }),
 );

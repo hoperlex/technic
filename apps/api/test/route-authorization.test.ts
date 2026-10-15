@@ -64,7 +64,12 @@ const INTERNAL_ROUTES = new Set([
 ]);
 
 /** Маршруты «про себя»: доступны любому вошедшему независимо от роли. */
-const SELF_SERVICE_ROUTES = new Set(['/api/v1/auth/me', '/api/v1/auth/change-password']);
+const SELF_SERVICE_ROUTES = new Set([
+  '/api/v1/auth/me',
+  '/api/v1/auth/change-password',
+  // Reconciliation binds the original actor in its receipt even if create permission was revoked.
+  '/api/v1/vehicle-requests/_create-attempts/reconcile',
+]);
 
 /**
  * Маршруты «про сам портал»: тоже без права, но по другой причине. Журнал обновлений (ADR 0077) и
@@ -186,6 +191,19 @@ beforeAll(async () => {
 }, 30_000);
 
 describe('авторизация маршрутов', () => {
+  it('receipt creation has a separate route while reconciliation only needs the signed-in actor', () => {
+    const create = routes.find(
+      (r) => r.key === 'POST /api/v1/vehicle-requests/_create-with-receipt',
+    );
+    const reconcile = routes.find(
+      (r) => r.key === 'POST /api/v1/vehicle-requests/_create-attempts/reconcile',
+    );
+    expect(create?.requiresLogin).toBe(true);
+    expect(permissionsOf(create!)).toContain('vehicleRequests.create');
+    expect(reconcile?.requiresLogin).toBe(true);
+    expect(permissionsOf(reconcile!)).toEqual([]);
+  });
+
   it('маршруты собраны из приложения, а не перечислены в тесте', () => {
     expect(routes.length).toBeGreaterThan(40);
   });
