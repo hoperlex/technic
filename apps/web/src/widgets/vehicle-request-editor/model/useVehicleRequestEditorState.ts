@@ -1,7 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Form } from 'antd';
-import { useQuery } from '@tanstack/react-query';
-import { QUERY_PROFILE } from '@shared/config';
 import {
   canOrderVehicleRequestType,
   costTargetOf,
@@ -13,7 +11,6 @@ import {
   type VehicleRequestType,
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
-import { departmentPlatformQuery } from '@entities/department';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { canCopyVehicleRequest } from '@entities/vehicle-request';
 import {
@@ -38,6 +35,7 @@ import { useCopyClassificationSync } from './useCopyClassificationSync';
 import { useCopyCustomerSync } from './useCopyCustomerSync';
 import { useVehicleRequestLocalDraft } from './useVehicleRequestLocalDraft';
 import { useVehicleRequestDraftRecovery } from './useVehicleRequestDraftRecovery';
+import { useSuggestedRequestObjectIds } from './useSuggestedRequestObjectIds';
 import { canOrderOptions, COMMENT_HINTS } from './editorPresentation';
 
 export interface VehicleRequestEditorStateInput {
@@ -129,20 +127,12 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
    * address hint, not a scope — the object directory defines the list, these rows only reorder it,
    * and the field component itself rejects entries without an address.
    */
-  const formCustomer = customer.customerPairOf(Form.useWatch('customerKey', form));
-  const { data: departmentPlatforms } = useQuery({
-    ...departmentPlatformQuery(),
-    ...QUERY_PROFILE.PICK,
-    enabled: open,
+  const suggestObjectIds = useSuggestedRequestObjectIds({
+    form,
+    customer,
+    ownPlaceObjectIds,
+    open,
   });
-  const suggestObjectIds = useMemo(() => {
-    const departmentObjectIds = formCustomer.departmentId
-      ? (departmentPlatforms?.get(formCustomer.departmentId) ?? [])
-      : [];
-    // Account sites from the place axis, not direct objects (ADR 0201): a department role has none.
-    const ids = [formCustomer.objectId, ...departmentObjectIds, ...ownPlaceObjectIds];
-    return [...new Set(ids.filter((id): id is string => !!id))];
-  }, [formCustomer.objectId, formCustomer.departmentId, departmentPlatforms, ownPlaceObjectIds]);
 
   // The edited request's type stays in the list even if the role cannot order it (ADR 0040):
   // `AutoSelect` has no other way to label a value outside its options — it would show the code.
