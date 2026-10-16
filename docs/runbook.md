@@ -26,6 +26,24 @@ deploy-auto --cutover       # необратимый выкат с остано�
 deploy-auto --cutover-revert # откат незавершённого cutover, пока граница не записана
 ```
 
+### Receipt-backed request creation after an incomplete release
+
+If Vehicle, Waste Removal, Mechanization or Service Request creation and its "Check creation"
+action both return 500, find the API log line by the response's request ID. PostgreSQL error
+`42P01` for `request_create_attempts` identifies a missing receipt table. Check the actual release
+and migration journal with `deploy-auto --status`, then check the table through the portal database
+connection with `SELECT to_regclass('public.request_create_attempts');`. Do not infer production
+state from a local checkout.
+
+The repair release must contain the numbered
+[`0384_request_create_idempotency.sql`](../apps/api/drizzle/0384_request_create_idempotency.sql)
+migration. A normal `deploy-auto` applies it before restarting the API; `--skip-migrate` cannot repair
+this failure. Preserve browser drafts and their original attempt keys until the API returns a
+reconciliation result, and check the request list before starting any new attempt. The migration is
+additive, but its `10s` lock timeout can refuse a blocked window; inspect the blocker and rerun the
+normal deploy rather than starting code against an unknown schema. If the table already exists,
+diagnose the actual log error before changing the database.
+
 **Client floor preflight (ADR 0226).** Right after the build every deploy compares the floor the
 release requires (`REQUIRED_CLIENT_FLOOR` of the candidate image) with `MIN_CLIENT_CONTRACT` in
 `prod.env` and refuses before any change if the API would not start with it. What the refusal says

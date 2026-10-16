@@ -32,7 +32,7 @@ beforeAll(async () => {
     await client.query('INSERT INTO users (id) VALUES ($1), ($2)', [ACTOR, OTHER_ACTOR]);
     await client.query(
       readFileSync(
-        new URL('../drizzle/pending/request-create-idempotency.sql', import.meta.url),
+        new URL('../drizzle/0384_request_create_idempotency.sql', import.meta.url),
         'utf8',
       ),
     );

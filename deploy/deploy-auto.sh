@@ -2896,6 +2896,20 @@ if [ -z "${AUTO_REEXECED:-}" ] && [ "$SCRIPT_REL" != "$SCRIPT" ] \
     "$SCRIPT" "$@"
 fi
 
+# The receipt routes can pass health while every create fails if their table's SQL sits in
+# drizzle/pending. Require exactly one numbered DDL in the candidate before any new image starts;
+# the migration runner below then checks and applies that file before replacing the old API.
+if git_c cat-file -e 'HEAD:apps/api/src/services/request-create-attempt.ts' 2>/dev/null; then
+  receipt_ddl="$(git_c grep -l -F 'CREATE TABLE request_create_attempts' HEAD -- apps/api/drizzle || true)"
+  numbered_receipt_ddl="$(printf '%s\n' "$receipt_ddl" \
+    | grep -E '^HEAD:apps/api/drizzle/[0-9]{4}_[a-z0-9_]+\.sql$' || true)"
+  if [ -z "$numbered_receipt_ddl" ] || [ "$receipt_ddl" != "$numbered_receipt_ddl" ] \
+     || [[ "$numbered_receipt_ddl" == *$'\n'* ]]; then
+    REASON='код квитанций заявок требует одну нумерованную миграцию CREATE TABLE request_create_attempts; SQL в pending не накатывается — выпуск остановлен до сборки'
+    fail "$REASON"
+  fi
+fi
+
 COMMIT_SHA="$(git_c rev-parse --short HEAD)"
 # Экспорт ДО любого compose-вызова: иначе ${TAG:-latest} подставит СТАРЫЙ образ.
 export TAG="$COMMIT_SHA"

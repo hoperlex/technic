@@ -1,5 +1,4 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
@@ -94,12 +93,7 @@ beforeAll(async () => {
       "SELECT to_regclass('public.request_create_attempts')::text AS name",
     );
     if (!receipt.rows[0]?.name)
-      await client.query(
-        readFileSync(
-          new URL('../drizzle/pending/request-create-idempotency.sql', import.meta.url),
-          'utf8',
-        ),
-      );
+      throw new Error('Numbered migrations must install request_create_attempts');
     objectId =
       (
         await client.query<{ id: string }>(
