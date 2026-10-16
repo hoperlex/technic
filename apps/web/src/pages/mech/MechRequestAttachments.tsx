@@ -4,8 +4,9 @@ import { UploadOutlined } from '@ant-design/icons';
 import type { FileDto, MechRequestDto } from '@technic/contracts';
 import { mechFailureText } from '@entities/mech-request';
 import { FileLinkList, filesApi } from '@entities/file';
+import { isFileInPendingCreate, PENDING_CREATE_FILE_MESSAGE } from '@shared/lib';
 
-/** Файл, загруженный формой прямо сейчас: он ничей, пока заявка его не забрала. */
+/** A completed upload remains unowned until a request accepts its ID. */
 interface UploadedFile {
   id: string;
   filename: string;
@@ -14,36 +15,33 @@ interface UploadedFile {
 }
 
 export interface MechAttachments {
-  /** Что показать списком: уже прикреплённое минус снятое плюс только что загруженное. */
+  /** Existing attachments after local removals, plus completed uploads. */
   shown: (FileDto | UploadedFile)[];
   uploading: boolean;
   upload: (file: File) => Promise<void>;
   remove: (file: { id: string }) => void;
-  /** Идентификаторы для тела заведения. */
+  /** Completed uploads claimed by the create command. */
   ids: string[];
-  /** Пара списков для тела правки: что прибавилось и что сняли. */
+  /** Attachment changes committed by an edit. */
   patch: { addFileIds: string[]; removeFileIds: string[] };
 }
 
 /**
- * Вложения заявки на аренду (Р14): фото площадки, счёт, акт приёма-передачи.
- *
- * Хуком, а не состоянием формы: файл уходит на сервер **до** заявки и до неё же остаётся ничьим —
- * это своя маленькая жизнь со своим отказом («не загрузилось») и своей уборкой.
- *
- * Снятие вложения различается по тому, чей файл. Только что загруженный и передуманный сносится
- * сразу: заявки, к которой он привязан, нет, и в хранилище копился бы мусор. Уже прикреплённый
- * снимается **правкой заявки** — списком `removeFileIds`, — и удаляет его сервер отложенно
- * (`scheduleFilesDeletion`): человек мог снять его по ошибке и приложить обратно. Снести его
- * отсюда напрямую было бы прямой дырой: связь осталась бы, а файла нет.
+ * A completed upload can be cleaned up immediately until an uncertain create refers to its ID.
+ * Existing attachments are detached through request editing so their links and delayed deletion
+ * stay consistent; deleting them directly would leave a broken request link.
  */
-export function useMechAttachments(request: MechRequestDto | null, open: boolean): MechAttachments {
+export function useMechAttachments(
+  request: MechRequestDto | null,
+  open: boolean,
+  attempt?: { body: unknown },
+): MechAttachments {
   const { message } = App.useApp();
   const [added, setAdded] = useState<UploadedFile[]>([]);
   const [removed, setRemoved] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
 
-  // Окно переоткрывают на соседней заявке: набор прошлой к ней отношения не имеет.
+  // Reopening another request must not inherit the previous opening's file changes.
   useEffect(() => {
     if (!open) return;
     setAdded([]);
@@ -71,15 +69,19 @@ export function useMechAttachments(request: MechRequestDto | null, open: boolean
   const remove = useCallback(
     (file: { id: string }) => {
       const id = file.id;
+      // A pending receipt may still claim its original file ID even after the form has changed.
+      if (!request && isFileInPendingCreate(attempt, id)) {
+        message.warning(PENDING_CREATE_FILE_MESSAGE);
+        return;
+      }
       if (added.some((f) => f.id === id)) {
         setAdded((prev) => prev.filter((f) => f.id !== id));
-        // Файл ещё ничей: заявки, к которой он привязан, нет — сносим его сразу.
         void filesApi.remove(id).catch(() => undefined);
         return;
       }
       setRemoved((prev) => (prev.includes(id) ? prev : [...prev, id]));
     },
-    [added],
+    [added, attempt, message, request],
   );
 
   const shown = useMemo(
@@ -97,19 +99,13 @@ export function useMechAttachments(request: MechRequestDto | null, open: boolean
   };
 }
 
-/**
- * Вложения в форме: кнопка загрузки и список того, что уже приложено.
- *
- * Показывается и при заведении, и при правке — в отличие от соседних модулей, где вложения живут
- * отдельной вкладкой карточки. Причина в том, что видов у файла здесь нет: акт и счёт приходят
- * позже и подшиваются той же правкой, а разделять их на «фото» и «документ» никто не просил.
- */
+/** Mechanization uses the same attachment field for creation and later invoices or acceptance acts. */
 export function MechRequestAttachments({
   attachments,
   disabled,
 }: {
   attachments: MechAttachments;
-  /** Правка закрыта состоянием записи: список остаётся видимым, кнопки снятия нет. */
+  /** A closed edit scope still shows files without offering removal. */
   disabled?: boolean;
 }) {
   return (

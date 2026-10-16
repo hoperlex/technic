@@ -3,8 +3,9 @@ import { App, Button, Typography, Upload } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { FileLinkList, filesApi } from '@entities/file';
 import { serviceRequestErrorMessage as errorMessage } from '@entities/service-request';
+import { isFileInPendingCreate, PENDING_CREATE_FILE_MESSAGE } from '@shared/lib';
 
-/** Файл, уже загруженный формой: он ничей, пока заявка не заведена. */
+/** A completed upload remains unowned until a request accepts its ID. */
 export interface UploadedFile {
   id: string;
   filename: string;
@@ -13,15 +14,8 @@ export interface UploadedFile {
 }
 
 /**
- * Фото, счета и прочие вложения при заведении заявки (план модернизации, Р50).
- *
- * Обязательным вложение не делается: «не включается» и «не видит сеть» не фотографируются, и
- * требование обернулось бы снимком стены ради кнопки «Отправить». Отдельного вида файла у фото
- * тоже нет — вид заводится тогда, когда по нему собирают срез (акт и счёт собирают очередь
- * «Ожидаются документы»), а среза «заявки без фото» никто не спрашивал.
- *
- * Файлы загружаются до создания заявки и до неё же остаются ничьими: снятый файл сносится сразу,
- * иначе в хранилище копится мусор от передуманных заявок.
+ * Attachments are optional because many service problems have nothing useful to photograph.
+ * An unowned upload is deleted when removed, except while an uncertain create still refers to it.
  */
 export function ServiceRequestAttachments({
   files,
@@ -36,10 +30,7 @@ export function ServiceRequestAttachments({
 }) {
   return (
     <div>
-      {/* «Фото и документы», а не прежнее «Фото неисправности» (Р2, просьба 7): подпись висит
-          над одной и той же кнопкой у обоих видов заявки, и на расходниках слово «неисправность»
-          было не про что. Заодно снимается и намёк, что сюда носят только фотографии: вложением
-          приходит и счёт от сервиса, и скан гарантийного талона. */}
+      {/* Repair and consumables share this field, and invoices and warranty scans belong here too. */}
       <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
         Фото и документы
       </Typography.Text>
@@ -62,20 +53,13 @@ export function ServiceRequestAttachments({
   );
 }
 
-/**
- * Вложения формы заявки: загрузка, снятие и список идентификаторов для тела запроса.
- *
- * Хуком, а не состоянием формы: файл уходит на сервер **до** заявки и до неё же остаётся ничьим —
- * это своя маленькая жизнь со своим отказом («не загрузилось») и своей уборкой (снятый файл
- * сносится сразу, иначе в хранилище копится мусор от передуманных заявок). Форме от неё нужны три
- * значения и две функции, и держать их у себя она не обязана.
- */
-export function useServiceRequestAttachments(): {
+/** Uploads have their own failure and cleanup cycle before the request owns them. */
+export function useServiceRequestAttachments(attempt?: { body: unknown }): {
   files: UploadedFile[];
   uploading: boolean;
   upload: (file: File) => Promise<void>;
   remove: (file: UploadedFile) => void;
-  /** Идентификаторы для тела заведения: заявка забирает файлы себе. */
+  /** The create command claims these completed uploads. */
   ids: string[];
   reset: () => void;
 } {
@@ -101,12 +85,19 @@ export function useServiceRequestAttachments(): {
     [message],
   );
 
-  const remove = useCallback((file: UploadedFile) => {
-    const id = file.id;
-    setFiles((prev) => prev.filter((f) => f.id !== id));
-    // Файл ещё ничей: заявки, к которой он привязан, нет — сносим его сразу.
-    void filesApi.remove(id).catch(() => undefined);
-  }, []);
+  const remove = useCallback(
+    (file: UploadedFile) => {
+      const id = file.id;
+      // A pending receipt may still claim its original file ID even after the form has changed.
+      if (isFileInPendingCreate(attempt, id)) {
+        message.warning(PENDING_CREATE_FILE_MESSAGE);
+        return;
+      }
+      setFiles((prev) => prev.filter((f) => f.id !== id));
+      void filesApi.remove(id).catch(() => undefined);
+    },
+    [attempt, message],
+  );
 
   return {
     files,

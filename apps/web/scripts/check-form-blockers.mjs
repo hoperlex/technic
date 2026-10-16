@@ -37,6 +37,14 @@ const ALLOWED = {
     'uncertain create response: inspect the list before retrying',
   'pages/service/ServiceRequestForm.tsx':
     'uncertain create response: inspect the list before retrying',
+  // The file belongs to an uncertain create body, so removing it could invalidate an in-flight
+  // request. The refusal is about the remove action rather than a missing form field.
+  'widgets/vehicle-request-editor/model/useFileEditor.ts':
+    'file removal blocked until the original create attempt is reconciled',
+  'pages/mech/MechRequestAttachments.tsx':
+    'file removal blocked until the original create attempt is reconciled',
+  'pages/service/ServiceRequestAttachments.tsx':
+    'file removal blocked until the original create attempt is reconciled',
   // Очередь «Письма устройств» (план `docs/office-equipment-mail-telemetry-plan.md`, §10): тост
   // здесь про ИСХОД действия, а не про незаполненное поле. Сервер ответил, что часть писем пачки
   // применить было нечем (снимка нет или он нечитаем), — пометить этим полем нечего, а молчать

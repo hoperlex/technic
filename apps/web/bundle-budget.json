@@ -20,7 +20,7 @@
         },
         {
           "source": "src/features/waste-ticket-review/ui/BlindCheckQueue.tsx",
-          "gzip": 604391
+          "gzip": 604440
         },
         {
           "source": "src/pages/waste/WasteArchiveTab.tsx",
@@ -50,7 +50,7 @@
         },
         {
           "source": "src/pages/vehicle/VehicleRequestsArchiveTab.tsx",
-          "gzip": 581678
+          "gzip": 581712
         }
       ]
     },
@@ -82,19 +82,19 @@
     },
     "mechanization": {
       "source": "src/pages/mech/MechRequestsPage.tsx",
-      "gzip": 619151
+      "gzip": 619525
     },
     "office-equipment": {
       "source": "src/pages/service/ServiceRequestsPage.tsx",
-      "gzip": 671666,
+      "gzip": 671720,
       "tabs": [
         {
           "source": "src/pages/service/RequestsTab.tsx",
-          "gzip": 671666
+          "gzip": 671720
         },
         {
           "source": "src/pages/service/WarrantiesTab.tsx",
-          "gzip": 608666
+          "gzip": 608750
         },
         {
           "source": "src/pages/service/ArchiveTab.tsx",
@@ -112,7 +112,7 @@
     },
     "directories": {
       "source": "src/pages/directories/DirectoriesPage.tsx",
-      "gzip": 619308,
+      "gzip": 619338,
       "tabs": [
         {
           "source": "src/pages/directories/ObjectsTab.tsx",
@@ -144,7 +144,7 @@
         },
         {
           "source": "src/pages/directories/VehicleTypesTab.tsx",
-          "gzip": 599553
+          "gzip": 599578
         },
         {
           "source": "src/pages/directories/VehicleSpecsTab.tsx",
@@ -152,7 +152,7 @@
         },
         {
           "source": "src/pages/directories/VehiclesTab.tsx",
-          "gzip": 619308
+          "gzip": 619338
         },
         {
           "source": "src/pages/directories/TrailersTab.tsx",

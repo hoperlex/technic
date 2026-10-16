@@ -66,7 +66,7 @@ export function ServiceRequestForm({
   const [form] = Form.useForm<Values>();
   const local = useServiceRequestDraft({ form, userId: user?.id ?? null, open, request, claim });
   const blockers = useFormBlockers(form);
-  const attachments = useServiceRequestAttachments();
+  const attachments = useServiceRequestAttachments(local.draft.active?.createAttempt);
   const { reset: resetAttachments } = attachments;
   const equipmentId = Form.useWatch('officeEquipmentId', form);
   const chosenKind = Form.useWatch('kind', form);

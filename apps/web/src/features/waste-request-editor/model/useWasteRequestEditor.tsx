@@ -30,7 +30,9 @@ import {
 import { MOSCOW_TZ } from '@shared/config';
 import {
   LocalCreateAttemptError,
+  isFileInPendingCreate,
   objectDraftPayload,
+  PENDING_CREATE_FILE_MESSAGE,
   storeFormDateFields,
   useDeferredOptions,
   useLocalFormDraft,
@@ -192,6 +194,10 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
   };
 
   const removeFile = async (file: WasteRequestEditorFile) => {
+    if (!record && isFileInPendingCreate(draft.active?.createAttempt, file.id)) {
+      message.warning(PENDING_CREATE_FILE_MESSAGE);
+      return;
+    }
     if (file.isNew) await filesApi.remove(file.id).catch(() => {});
     else setRemovedIds((previous) => [...previous, file.id]);
     setFiles((previous) => previous.filter((item) => item.id !== file.id));

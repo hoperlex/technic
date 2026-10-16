@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { App } from 'antd';
 import { filesApi } from '@entities/file';
-import { errorMessage } from '@shared/lib';
+import { errorMessage, isFileInPendingCreate, PENDING_CREATE_FILE_MESSAGE } from '@shared/lib';
 
 const FILE_MAX_COUNT = 20;
 const FILE_MAX_SIZE = 52_428_800;
@@ -16,7 +16,7 @@ export interface EditorFile {
 }
 
 /** Tracks uploaded and detached files until the request command commits their identifiers. */
-export function useFileEditor() {
+export function useFileEditor(attempt?: { body: unknown }) {
   const { message } = App.useApp();
   const [files, setFiles] = useState<EditorFile[]>([]);
   const [removedIds, setRemovedIds] = useState<string[]>([]);
@@ -55,6 +55,10 @@ export function useFileEditor() {
     }
   };
   const remove = (id: string) => {
+    if (isFileInPendingCreate(attempt, id)) {
+      message.warning(PENDING_CREATE_FILE_MESSAGE);
+      return;
+    }
     const file = files.find((item) => item.id === id);
     setFiles((current) => current.filter((item) => item.id !== id));
     if (!file) return;

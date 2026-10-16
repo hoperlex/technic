@@ -67,7 +67,7 @@ export function useVehicleRequestEditorState({ canChangeStatus }: VehicleRequest
   const [operationId, setOperationId] = useState<string>(() => crypto.randomUUID());
   const [form] = Form.useForm<FormValues>();
   const draft = useVehicleRequestLocalDraft(form, user?.id ?? null);
-  const files = useFileEditor();
+  const files = useFileEditor(draft.active?.createAttempt);
 
   const copyClassification = useCopyClassificationSync({
     open,

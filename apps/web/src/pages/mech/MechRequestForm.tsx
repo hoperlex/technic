@@ -68,7 +68,7 @@ export function MechRequestForm({
     parse: objectDraftPayload,
   });
   const blockers = useFormBlockers(form);
-  const attachments = useMechAttachments(request, open);
+  const attachments = useMechAttachments(request, open, draft.active?.createAttempt);
   const customerKey = Form.useWatch('customer', form);
 
   // Keep a deactivated model's saved label selectable during edits (ADR 0156).
