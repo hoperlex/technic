@@ -1,5 +1,11 @@
 # План доработок фронтенда
 
+**Status on 19.10.2026: history, closed together with the [FSD plan](frontend-fsd-plan.md).** Its
+barriers Б3–Б5 are held by lint and the quality budget: `src/api` was removed on 23.09.2026, raw
+query keys reached zero on 29.09, and `features` boundaries are part of `boundaries/dependencies`.
+Р3 became `check-cache-invalidation.mjs`, and Р5 and Р7 became stage 3. The state of the code is
+in [ADR 0228](adr/0228-frontend-architecture.md).
+
 Заменяет незавершённые части [этапа 2](frontend-fsd-stage-2.md) и пересматривает
 [общий план](frontend-fsd-plan.md), приостановленный 05.08.2026.
 

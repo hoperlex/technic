@@ -1,13 +1,19 @@
 # План рефакторинга фронтенда: FSD, переиспользование, запросы
 
-**Статус на 06.08.2026: приостановлен после этапа 1 и семи слайсов этапа 2.** Действующий план
-работ — [frontend-followup-plan.md](frontend-followup-plan.md): окна сверки больше не нужны, и
-продолжать переезд очередью слайсов смысла нет — оставшееся делается попутно с задачами. Этот
-документ сохраняется как обоснование принятых решений (границы слоёв, ключи запросов, устройство
-`shared` и `entities`) — они остаются в силе.
+**Status on 19.10.2026: closed.** Stages 0–3 and 5–7 are done, stage 6 in a narrowed scope; stage 4
+was closed as a stage, and its remainder is debt in
+[ADR 0228](adr/0228-frontend-architecture.md#what-remains). §7.3 gives the outcome of each stage
+and §3 the outcome of the reuse abstractions. Today's code is described by ADR 0228 (layers, slice
+entries, file length) and [ADR 0222](adr/0222-frontend-query-freshness-and-render.md) (queries and
+render); where this plan disagrees with them, they win. The plan stays as the reasoning behind
+decisions still in force — layer boundaries, query keys, the structure of `shared` and `entities`.
+The metrics (§1), the move map (§2.1) and the work scheme (§7.1–7.2, §11) describe the tree of
+31.07.2026.
 
-Исходный статус: согласован по ключевым решениям 31.07.2026, доработан по замечаниям ревью того же
-дня (журнал — §10). Затрагивает только `apps/web`; контракты (`packages/contracts`) и API не меняются.
+History: approved on 31.07.2026 and revised after review the same day (§10); suspended on
+06.08.2026 after stage 1 and seven slices of stage 2; continued through the
+[follow-up plan](frontend-followup-plan.md) and [stage 3](frontend-fsd-stage-3.md). Only
+`apps/web` was affected; the contracts (`packages/contracts`) and the API did not change.
 
 ## 1. Диагноз: что именно болит
 
@@ -142,6 +148,17 @@ src/
 4. **Правило коммита**: перемещение файла и изменение его содержимого — разные коммиты.
 
 ## 3. Переиспользование: какие абстракции вводим
+
+**Outcome (19.10.2026).** §3.1 and §3.2 are in the code: capability factories in
+`shared/api/resource.ts`, a key per request in `entities/<e>/api/keys.ts`. §3.4 and §3.5 are
+rejected because their goals were reached without the hooks. List state, retained lists and
+debounced search come from `useListParams`, `listQueryOptions` and `DeferredSearchInput`
+(ADR 0222). Complete invalidation is held by `scripts/check-cache-invalidation.mjs` in `pretest`,
+which checks every mutation, not only those routed through a hook; a hook would now remove only a
+one-line `onError`. §3.6 is dropped as unnecessary. §3.3 is a separate task: one desktop renderer
+of `FilterDefinition` in `shared/ui` instead of three local copies, and one declaration for lists
+with plain controls; lists whose filters depend on each other or live in column headers keep two
+declarations.
 
 Каждая — ответ на конкретную копипасту, а не «на будущее».
 
@@ -463,9 +480,9 @@ Batch-ручку справочников на API (`GET /dictionaries?for=...`)
 | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | 0    | **Подробный план этапа снят из дерева 14.09.2026, он остаётся в истории git.** Алиасы и плагины линта с фикстурами границ; HTTP-моки и общий рендер для тестов; 6 сценарных тестов + счётчик запросов первого экрана; перевод семи старых тестов с моков `resources`; точечные исправления (очистка кэша при смене учётки, `StatusCell` из тела компонента); baseline в `docs/reports/`; черновик ADR                                                                                     | 3 дня   |
 | 1    | **Подробный план этапа снят из дерева 14.09.2026, он остаётся в истории git.** `shared`: транспорт и сессия (`http`/`session` с проверкой поколения), `config`, `lib`, 14 компонентов ui; границы сегментов и запрет deep import; кодмод импортов и заглушки. Очистка кэша остаётся ответственностью `AuthContext`                                                                                                                                                                        | 1,5 дня |
-| 2    | **Подробно — [frontend-fsd-stage-2.md](frontend-fsd-stage-2.md).** `entities`: разрез `resources.ts` на 16 слайсов (+`session` из `auth.ts` = 17 с API, всего 19 со слайсами без API), ключи вместо 137 строковых литералов, `queryOptions` с вариантами, черновик матрицы инвалидаций, доменные поля и ячейки                                                                                                                                                                            | 4 дня   |
-| 3    | Справочные вкладки: `useResourceList`, `useCrudMutations`, единое описание фильтров                                                                                                                                                                                                                                                                                                                                                                                                       | 2 дня   |
-| 4    | `features` + `widgets` + `pages` для заявок (самые горячие файлы — последними)                                                                                                                                                                                                                                                                                                                                                                                                            | 3 дня   |
+| 2    | Done by 29.09.2026: `entities` slices replaced `api/resources.ts` (detailed plan — [frontend-fsd-stage-2.md](frontend-fsd-stage-2.md)); `src/api` was removed on 23.09 (`1a994e69`), raw query keys reached zero on 29.09 (`25e77764`), and `check-stage2-layout.mjs` keeps the legacy tree gone                                                                                                                                                                                          | 4 дня   |
+| 3    | Redefined by [frontend-fsd-stage-3.md](frontend-fsd-stage-3.md) as page and widget slices, the cut of monoliths and lazy loading; pushed on 06.10.2026. The directory hooks of §3.4–3.5 were not built and are rejected; unified filters (§3.3) are a separate task                                                                                                                                                                                                                       | 2 дня   |
+| 4    | Closed as a stage on 19.10.2026 without completion. Request features and widgets moved during stage 3, but 63 files under `pages/` still call `useMutation`; that remainder is debt in [ADR 0228](adr/0228-frontend-architecture.md#what-remains) and moves along with tasks                                                                                                                                                                                                              | 3 дня   |
 | 5    | Queries and render: completed on the Stage 5 integration branch; freshness profiles, deferred dictionaries, debounced search, retained lists, form protection and stable cell observers are recorded in [ADR 0222](adr/0222-frontend-query-freshness-and-render.md). Route and heavy-pane `lazy` work belongs to Stage 3. Four existing invalidation paths were adjusted. No `memo(DataTable)` change was retained.                                                                       | 1,5 дня |
 | 6    | Styles: done on 14.10.2026 (roadmap Q12) in the narrowed scope of the roadmap default "tokens only, no file split" — §6 item 4 is not done. `:root` tokens in `styles.css` (spacing, radii, text and brand colours, the mobile bar height, stacking) repeat the antd theme's values, and `test/style-tokens.test.ts` holds them equal to it; the table page's layout is the `page-layout*` classes. Value-preserving: with the tokens substituted the built CSS equals the previous build | 0,5 дня |
 | 7    | Closing: done on 12.10.2026 — boundaries are `error`, `max-lines` is `error`, no stubs remain, the README names the six layers, the draft ADR is numbered and in the code map: [ADR 0228](adr/0228-frontend-architecture.md)                                                                                                                                                                                                                                                              | 0,5 дня |
@@ -564,6 +581,12 @@ Batch-ручку справочников на API (`GET /dictionaries?for=...`)
 (`ls docs/adr | grep -E '^[0-9]{4}-' | sort -V | tail -1`; простой `tail -1` вернул бы сам
 черновик), с проверкой, что такого файла ещё нет. Numbered on 12.10.2026 at stage 7:
 [ADR 0228](adr/0228-frontend-architecture.md).
+
+**19.10.2026, reconciliation with the code:** the plan is closed. §3.4 and §3.5 are rejected —
+their goals are held by `useListParams`, `listQueryOptions`, `DeferredSearchInput` and the cache
+invalidation check; §3.6 is dropped as unnecessary; §3.3 stays as a separate task in a narrowed
+scope (one renderer, one declaration only for lists with plain controls); the remainder of stage 4
+is debt in ADR 0228. The header and §7.3 were brought to the state of the code.
 
 ## 11. Обоснование схемы работ
 
