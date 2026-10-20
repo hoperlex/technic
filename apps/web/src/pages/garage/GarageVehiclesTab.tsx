@@ -67,7 +67,7 @@ export function GarageVehiclesTab({
     // Свободные первыми: порядок задан явно, иначе первый запрос ушёл бы с общим для списков
     // «по убыванию» и открывал бы день с недоступных машин.
     { sortBy: 'state', sortOrder: 'asc' },
-    { searchKeys: ['label'] },
+    { searchKeys: ['registrationNumber'] },
   );
 
   const applyFilter = (patch: Partial<typeof params>) =>

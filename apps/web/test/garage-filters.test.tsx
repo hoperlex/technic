@@ -170,6 +170,22 @@ describe('гараж: отбор по площадке и бланку', () => {
 
     await waitFor(() => expect(http.lastCall(route)?.query.get('search')).toBe(term));
   });
+  it('поиск в заголовке «Техника» передаёт текст в запрос среза', async () => {
+    const { http } = renderPage('vehicles');
+    await waitFor(() => expect(http.lastCall('GET /garage/vehicles')).toBeTruthy());
+    const heading = [...document.querySelectorAll<HTMLElement>('th')].find((node) =>
+      node.textContent?.includes('Техника'),
+    );
+    expect(heading).toBeTruthy();
+    fireEvent.click(heading!.querySelector('.ant-table-filter-trigger')!);
+    const input = await screen.findByPlaceholderText('Поиск');
+    fireEvent.change(input, { target: { value: 'КамАЗ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Найти' }));
+
+    await waitFor(() =>
+      expect(http.lastCall('GET /garage/vehicles')?.query.get('search')).toBe('КамАЗ'),
+    );
+  });
   it('вкладка водителей шлёт площадки и бланки набором — и тем же набором считает сводку', async () => {
     const { http } = renderPage('vehicles');
 
