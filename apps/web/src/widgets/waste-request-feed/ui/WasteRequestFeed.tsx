@@ -39,6 +39,11 @@ export function WasteRequestFeed({
         </Space>
       }
       mobile={{
+        search: {
+          value: state.list.search,
+          placeholder: 'Комментарий или объект',
+          onChange: state.list.onSearchChange,
+        },
         filters: wasteRequestFeedMobileFilters(state.filterOptions),
         sort: {
           // Captions where the column header is two-line markup.

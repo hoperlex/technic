@@ -198,6 +198,24 @@ function search(value: string) {
 }
 
 describe('лента «Заказ автотехники»: недельная заявка строкой списка', () => {
+  it('на телефоне ищет ленту по комментарию и заказчику', async () => {
+    const http = mockHttp({
+      'GET /vehicle-requests/feed': () => json(vehicleFeed([ORDER], [WEEKLY])),
+      'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: 1 })),
+      'GET /objects': () => json(list([objectDto()])),
+      'GET /departments': () => json(emptyList()),
+      'GET /vehicle-classifications': () => json(list([classification()])),
+      'GET /vehicles': () => json(list([OWN_VEHICLE, RENTAL_VEHICLE])),
+    });
+    renderWithUser(<VehicleRequestsTab />, { user: SHTAB, viewport: MOBILE_VIEWPORT });
+    const input = await screen.findByPlaceholderText('Комментарий, объект или отдел');
+    fireEvent.change(input, { target: { value: 'площадка' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/feed')?.query.get('search')).toBe('площадка'),
+    );
+  });
   it('заказы и недельные заявки приходят одним запросом и стоят в одной таблице', async () => {
     const http = renderTab();
 

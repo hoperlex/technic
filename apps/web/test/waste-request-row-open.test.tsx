@@ -6,6 +6,7 @@ import { renderWithUser } from './render';
 import { list } from './factories/common';
 import { objectDto, operator, wasteRequest, wasteSummary, wasteType } from './factories/waste';
 import { WasteRequestsPage } from '../src/pages/waste';
+import { MOBILE_VIEWPORT } from './viewport';
 
 /**
  * Строка списка заявок на вывоз: открытие карточки кликом и свёрнутый комментарий.
@@ -33,7 +34,7 @@ const REQUEST = wasteRequest({
   operatorComment: 'будем после 15:00',
 });
 
-function renderPage(over: RouteMap = {}): HttpMock {
+function renderPage(over: RouteMap = {}, mobile = false): HttpMock {
   const http = mockHttp({
     'GET /waste-requests': () => json(list([REQUEST])),
     'GET /waste-requests/summary': () => json(wasteSummary({ confirmed: 1 })),
@@ -51,7 +52,7 @@ function renderPage(over: RouteMap = {}): HttpMock {
     ...over,
   });
 
-  renderWithUser(<WasteRequestsPage />);
+  renderWithUser(<WasteRequestsPage />, { viewport: mobile ? MOBILE_VIEWPORT : undefined });
   return http;
 }
 
@@ -65,6 +66,16 @@ function cardOf(displayNumber: string): HTMLElement | undefined {
 const row = () => document.querySelector<HTMLElement>('.ant-table-tbody tr.ant-table-row')!;
 
 describe('строка списка заявок на вывоз', () => {
+  it('на телефоне ищет заявки по обоим комментариям и объекту', async () => {
+    const http = renderPage({}, true);
+    const input = await screen.findByPlaceholderText('Комментарий или объект');
+    fireEvent.change(input, { target: { value: 'ворота' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() =>
+      expect(http.lastCall('GET /waste-requests')?.query.get('search')).toBe('ворота'),
+    );
+  });
   it('открывает карточку кликом по ячейке без активного содержимого', async () => {
     renderPage();
     fireEvent.click(await screen.findByText('ЖК Северный'));

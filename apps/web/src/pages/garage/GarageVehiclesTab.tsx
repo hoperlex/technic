@@ -141,6 +141,11 @@ export function GarageVehiclesTab({
     <PageTableLayout
       filters={filters}
       mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Госномер, марка или гаражный номер',
+          onChange: (search) => setParams((p) => ({ ...p, search, page: 1 })),
+        },
         filters: mobileFilters,
         sort: {
           options: sortOptionsFrom(columns, {

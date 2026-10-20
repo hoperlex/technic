@@ -224,6 +224,16 @@ function renderTab(viewport?: Viewport, slice: VehicleOnSiteListDto = list): Htt
 }
 
 describe('вкладка «На объекте»', () => {
+  it('на телефоне ищет по объекту и комментарию', async () => {
+    const http = renderTab(MOBILE_VIEWPORT);
+    const input = await screen.findByPlaceholderText('Объект или комментарий');
+    fireEvent.change(input, { target: { value: 'котлован' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/on-site')?.query.get('search')).toBe('котлован'),
+    );
+  });
   it('строка отвечает, что за машина стоит и что для неё значит сегодня', async () => {
     renderTab();
 

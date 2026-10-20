@@ -173,6 +173,11 @@ export function VehicleRequestsOnSiteTab() {
         ) : null
       }
       mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Объект или комментарий',
+          onChange: (search) => setParams((p) => ({ ...p, search, page: 1 })),
+        },
         filters: mobileFilters,
         sort: {
           options: sortOptionsFrom(columns, { num: 'Номер заявки', term: 'Срок работ' }),

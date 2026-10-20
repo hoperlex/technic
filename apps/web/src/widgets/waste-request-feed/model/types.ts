@@ -95,9 +95,11 @@ export interface WasteRequestFeedSources {
 
 export interface WasteRequestFeedList {
   onChange: (change: TableChange) => void;
+  onSearchChange: (search: string | undefined) => void;
   onSortChange: (sortBy: string | undefined, sortOrder: 'asc' | 'desc') => void;
   page: number;
   pageSize: number;
+  search?: string;
   sortBy?: string;
   sortOrder: 'asc' | 'desc';
 }

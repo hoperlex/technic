@@ -15,6 +15,7 @@ import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
 import { GaragePage } from '../src/pages/garage';
 import { AsyncContent } from '@shared/ui';
+import { MOBILE_VIEWPORT } from './viewport';
 
 /**
  * Отбор среза дня по площадке и по бланку работы дня (план «Срезы дня», Р6–Р8, Р20).
@@ -82,7 +83,7 @@ const driverSummary: GarageDriversSummaryDto = {
 /** Смотрит администратор: объектной области у него нет, и в списке стоят все площадки. */
 const admin = authUser({ role: 'admin' });
 
-function renderPage(tab: 'vehicles' | 'drivers') {
+function renderPage(tab: 'vehicles' | 'drivers', mobile = false) {
   const http = mockHttp({
     'GET /garage/vehicles': () => json(vehicleList),
     'GET /garage/vehicles/summary': () => json(vehicleSummary),
@@ -103,7 +104,11 @@ function renderPage(tab: 'vehicles' | 'drivers') {
     <AsyncContent>
       <GaragePage />
     </AsyncContent>,
-    { user: admin, route: `/garage?tab=${tab}&date=${ON_DATE}` },
+    {
+      user: admin,
+      route: `/garage?tab=${tab}&date=${ON_DATE}`,
+      viewport: mobile ? MOBILE_VIEWPORT : undefined,
+    },
   );
   return { ...rendered, http };
 }
@@ -154,6 +159,17 @@ function cacheKeys(queryClient: QueryClient, family: string): unknown[][] {
 }
 
 describe('гараж: отбор по площадке и бланку', () => {
+  it.each([
+    ['vehicles', 'Госномер, марка или гаражный номер', 'КамАЗ', 'GET /garage/vehicles'],
+    ['drivers', 'ФИО или табельный номер', 'Иванов', 'GET /garage/drivers'],
+  ] as const)('на телефоне ищет %s по срезу', async (tab, placeholder, term, route) => {
+    const { http } = renderPage(tab, true);
+    const input = await screen.findByPlaceholderText(placeholder);
+    fireEvent.change(input, { target: { value: term } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() => expect(http.lastCall(route)?.query.get('search')).toBe(term));
+  });
   it('вкладка водителей шлёт площадки и бланки набором — и тем же набором считает сводку', async () => {
     const { http } = renderPage('vehicles');
 

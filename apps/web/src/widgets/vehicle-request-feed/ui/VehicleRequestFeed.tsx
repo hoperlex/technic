@@ -70,6 +70,11 @@ export function VehicleRequestFeed({
         ) : null
       }
       mobile={{
+        search: {
+          value: list.search,
+          placeholder: 'Комментарий, объект или отдел',
+          onChange: list.onSearchChange,
+        },
         filters: vehicleRequestFeedMobileFilters(filters),
         sort: {
           options: sortOptionsFrom(columns, { num: 'Номер документа' }),
