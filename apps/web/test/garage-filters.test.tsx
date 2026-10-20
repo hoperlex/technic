@@ -173,8 +173,9 @@ describe('гараж: отбор по площадке и бланку', () => {
   it('поиск в заголовке «Техника» передаёт текст в запрос среза', async () => {
     const { http } = renderPage('vehicles');
     await waitFor(() => expect(http.lastCall('GET /garage/vehicles')).toBeTruthy());
-    const heading = [...document.querySelectorAll<HTMLElement>('th')].find((node) =>
-      node.textContent?.includes('Техника'),
+    const heading = [...document.querySelectorAll<HTMLElement>('th')].find(
+      (node) =>
+        node.textContent?.includes('Техника') && node.querySelector('.ant-table-filter-trigger'),
     );
     expect(heading).toBeTruthy();
     fireEvent.click(heading!.querySelector('.ant-table-filter-trigger')!);

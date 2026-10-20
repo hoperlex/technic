@@ -213,6 +213,7 @@ describe('журнал изменений учётных записей', () => 
     const selector = row!.querySelector('.ant-select-selector')!;
     fireEvent.mouseDown(selector);
     const action = auditActionLabels['user.update'];
+    fireEvent.change(row!.querySelector('input')!, { target: { value: action } });
     fireEvent.click(
       await screen.findByText(action, { selector: '.ant-select-item-option-content' }),
     );
