@@ -67,7 +67,17 @@ export function useDriverRegistry() {
   const setJobTitle = (jobTitle: string | undefined) =>
     setParams((current) => ({ ...current, jobTitle, categoryId: undefined, page: 1 }));
   const setCategory = (categoryId: string | undefined) =>
-    setParams((current) => ({ ...current, categoryId, page: 1 }));
+    setParams((current) => ({
+      ...current,
+      // The phone sheet can submit a new title and a category from the previously applied
+      // title's dictionary together. Their letters overlap, but their IDs are not interchangeable.
+      categoryId:
+        (current.jobTitle ? requiredCredentialType(current.jobTitle) : 'driver_license') ===
+        filterType
+          ? categoryId
+          : undefined,
+      page: 1,
+    }));
 
   return {
     ...list,

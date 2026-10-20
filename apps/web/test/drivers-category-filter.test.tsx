@@ -5,6 +5,7 @@ import { DriversTab } from '../src/pages/directories/DriversTab';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
+import { MOBILE_VIEWPORT } from './viewport';
 
 /**
  * Категории прав в справочнике водителей (ADR 0055).
@@ -103,6 +104,53 @@ async function pickCategory(label: string) {
 }
 
 describe('справочник водителей: категории прав', () => {
+  it('на телефоне не сохраняет категорию прежнего удостоверения при смене должности в одной шторке', async () => {
+    const http = mockHttp({
+      'GET /drivers': () => json(list([driver()])),
+      'GET /drivers/license-categories': ({ query }) =>
+        json(
+          query.get('type') === 'tractor_license'
+            ? [{ id: 'tractor-c', code: 'c', name: 'C', description: 'Трактор' }]
+            : CATEGORIES,
+        ),
+      'GET /drivers/job-titles': () =>
+        json([
+          { jobTitle: 'Водитель', credentialTypeCode: 'driver_license', count: 1 },
+          { jobTitle: 'Машинист экскаватора', credentialTypeCode: 'tractor_license', count: 1 },
+        ]),
+    });
+    renderWithUser(<DriversTab />, { viewport: MOBILE_VIEWPORT });
+    await waitFor(() => expect(http.countOf('GET /drivers')).toBe(1));
+
+    const selectInSheet = async (label: string, option: string) => {
+      const row = [...document.querySelectorAll<HTMLElement>('.filter-sheet__row')].find((node) =>
+        node.querySelector('.filter-sheet__label')?.textContent?.startsWith(label),
+      );
+      expect(row, label).toBeTruthy();
+      fireEvent.mouseDown(row!.querySelector('.ant-select-selector')!);
+      fireEvent.click(
+        await screen.findByText(option, { selector: '.ant-select-item-option-content' }),
+      );
+    };
+
+    fireEvent.click(screen.getByRole('button', { name: /Фильтры/ }));
+    await selectInSheet('Должность', 'Водитель');
+    fireEvent.click(screen.getByRole('button', { name: 'Применить' }));
+    await waitFor(() =>
+      expect(http.lastCall('GET /drivers')?.query.get('jobTitle')).toBe('Водитель'),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Фильтры/ }));
+    await selectInSheet('Должность', 'Машинист экскаватора');
+    // The still-open sheet offers the applied title's category dictionary.
+    await selectInSheet('Категория', 'C — Грузовые свыше 3,5 т');
+    fireEvent.click(screen.getByRole('button', { name: 'Применить' }));
+
+    await waitFor(() =>
+      expect(http.lastCall('GET /drivers')?.query.get('jobTitle')).toBe('Машинист экскаватора'),
+    );
+    expect(http.lastCall('GET /drivers')?.query.has('categoryId')).toBe(false);
+  });
   it('показывает категории отдельной колонкой', async () => {
     mockDirectory();
     renderWithUser(<DriversTab />);
