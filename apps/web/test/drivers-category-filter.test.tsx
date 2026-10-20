@@ -127,10 +127,14 @@ describe('справочник водителей: категории прав',
         node.querySelector('.filter-sheet__label')?.textContent?.startsWith(label),
       );
       expect(row, label).toBeTruthy();
-      fireEvent.mouseDown(row!.querySelector('.ant-select-selector')!);
-      fireEvent.click(
-        await screen.findByText(option, { selector: '.ant-select-item-option-content' }),
-      );
+      fireEvent.mouseDown(row!.querySelector('.ant-select-content')!);
+      await waitFor(() => {
+        const match = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find(
+          (node) => node.textContent?.startsWith(option),
+        );
+        expect(match, option).toBeTruthy();
+        fireEvent.click(match!);
+      });
     };
 
     fireEvent.click(screen.getByRole('button', { name: /Фильтры/ }));

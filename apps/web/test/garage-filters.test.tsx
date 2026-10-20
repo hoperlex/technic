@@ -181,7 +181,7 @@ describe('гараж: отбор по площадке и бланку', () => {
     fireEvent.click(heading!.querySelector('.ant-table-filter-trigger')!);
     const input = await screen.findByPlaceholderText('Поиск');
     fireEvent.change(input, { target: { value: 'КамАЗ' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Найти' }));
+    fireEvent.click(screen.getByRole('button', { name: /Найти/ }));
 
     await waitFor(() =>
       expect(http.lastCall('GET /garage/vehicles')?.query.get('search')).toBe('КамАЗ'),

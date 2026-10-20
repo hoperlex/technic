@@ -210,7 +210,7 @@ describe('журнал изменений учётных записей', () => 
       (node) => node.querySelector('.filter-sheet__label')?.textContent === 'Действия',
     );
     expect(row).toBeTruthy();
-    const selector = row!.querySelector('.ant-select-selector')!;
+    const selector = row!.querySelector('.ant-select-content')!;
     fireEvent.mouseDown(selector);
     const action = auditActionLabels['user.update'];
     fireEvent.change(row!.querySelector('input')!, { target: { value: action } });
