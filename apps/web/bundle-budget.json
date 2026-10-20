@@ -20,7 +20,7 @@
         },
         {
           "source": "src/features/waste-ticket-review/ui/BlindCheckQueue.tsx",
-          "gzip": 604440
+          "gzip": 604441
         },
         {
           "source": "src/pages/waste/WasteArchiveTab.tsx",
@@ -112,7 +112,7 @@
     },
     "directories": {
       "source": "src/pages/directories/DirectoriesPage.tsx",
-      "gzip": 619338,
+      "gzip": 619341,
       "tabs": [
         {
           "source": "src/pages/directories/ObjectsTab.tsx",
@@ -144,7 +144,7 @@
         },
         {
           "source": "src/pages/directories/VehicleTypesTab.tsx",
-          "gzip": 599578
+          "gzip": 599581
         },
         {
           "source": "src/pages/directories/VehicleSpecsTab.tsx",
@@ -152,7 +152,7 @@
         },
         {
           "source": "src/pages/directories/VehiclesTab.tsx",
-          "gzip": 619338
+          "gzip": 619341
         },
         {
           "source": "src/pages/directories/TrailersTab.tsx",
@@ -198,9 +198,7 @@
         },
         {
           "source": "src/widgets/user-audit/ui/UsersAuditTab.tsx",
-          "with": [
-            "src/pages/admin/UsersTab.tsx"
-          ],
+          "with": ["src/pages/admin/UsersTab.tsx"],
           "gzip": 609246
         }
       ]
