@@ -255,6 +255,15 @@ export function useUserAuditFilters({ params, apply, target, onTargetChange }: A
       onChange: (from, to) => apply({ from, to }),
     },
     {
+      kind: 'multiSelect',
+      key: 'actions',
+      label: 'Действия',
+      value: selectedActions,
+      options: actionOptions,
+      placeholder: 'Все действия',
+      onChange: (v) => apply({ actions: v.length > 0 ? v.join(',') : undefined }),
+    },
+    {
       kind: 'select',
       key: 'actorUserId',
       label: 'Администратор',

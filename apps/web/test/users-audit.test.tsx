@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type { AuditEntryDto, UserDto } from '@technic/contracts';
+import { auditActionLabels, type AuditEntryDto, type UserDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { UsersTab } from '../src/pages/admin/UsersTab';
+import { MOBILE_VIEWPORT } from './viewport';
 
 /**
  * Подвкладка «Аудит» во вкладке «Пользователи» (ADR 0088).
@@ -93,7 +94,11 @@ const ARCHIVED = entry({ id: 'a-2', action: 'user.delete', createdAt: '2026-08-0
 const AUDIT = 'GET /audit';
 const USER_CARD = 'GET /users/:id';
 
-function renderTab(role: 'admin' | 'manager' = 'admin', over: RouteMap = {}): HttpMock {
+function renderTab(
+  role: 'admin' | 'manager' = 'admin',
+  over: RouteMap = {},
+  mobile = false,
+): HttpMock {
   const http = mockHttp({
     'GET /users': () => json(list([EMPLOYEE])),
     'GET /users/pending-count': () => json({ count: 0 }),
@@ -105,7 +110,10 @@ function renderTab(role: 'admin' | 'manager' = 'admin', over: RouteMap = {}): Ht
     [AUDIT]: () => json(list([ROLE_CHANGE, ARCHIVED])),
     ...over,
   });
-  renderWithUser(<UsersTab />, { user: authUser({ role }) });
+  renderWithUser(<UsersTab />, {
+    user: authUser({ role }),
+    viewport: mobile ? MOBILE_VIEWPORT : undefined,
+  });
   return http;
 }
 
@@ -192,6 +200,26 @@ function typeRange(from: string, to: string): void {
 }
 
 describe('журнал изменений учётных записей', () => {
+  it('на телефоне отбирает журнал по действию', async () => {
+    const http = renderTab('admin', {}, true);
+    openTab('Аудит');
+    await waitFor(() => expect(http.countOf(AUDIT)).toBe(1));
+
+    fireEvent.click(screen.getByRole('button', { name: /Фильтры/ }));
+    const row = [...document.querySelectorAll<HTMLElement>('.filter-sheet__row')].find(
+      (node) => node.querySelector('.filter-sheet__label')?.textContent === 'Действия',
+    );
+    expect(row).toBeTruthy();
+    const selector = row!.querySelector('.ant-select-selector')!;
+    fireEvent.mouseDown(selector);
+    const action = auditActionLabels['user.update'];
+    fireEvent.click(
+      await screen.findByText(action, { selector: '.ant-select-item-option-content' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Применить' }));
+
+    await waitFor(() => expect(http.lastCall(AUDIT)?.query.get('actions')).toBe('user.update'));
+  });
   it('изменения читаются значениями, а кода действия в строке нет', async () => {
     // Ради этого описатель и живёт в контрактах: заголовок называет затронутое, а под ним стоят
     // пары «было → стало». «user.update» человеку не говорит ничего, а «изменена» — почти ничего.
