@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { DataTable, PageTableLayout, type CardConfig, type TableChange } from '../src/shared/ui';
 import { FilterSheet } from '../src/shared/ui';
 import { DeferredSearchInput, ListToolbar } from '../src/shared/ui';
@@ -288,6 +288,53 @@ describe('шит фильтров', () => {
     fireEvent.click(screen.getByText('Сбросить'));
     fireEvent.click(screen.getByText('Применить'));
     expect(onTypes).toHaveBeenCalledWith([]);
+  });
+
+  it('preserves a mandatory period when optional filters are reset', () => {
+    const onRange = vi.fn();
+    openSheet([
+      {
+        kind: 'dateRange',
+        key: 'range',
+        label: 'Период рейсов',
+        from: '2026-10-10',
+        to: '2026-10-12',
+        required: true,
+        onChange: onRange,
+      },
+    ]);
+
+    expect(document.querySelector('.ant-picker-clear')).toBeNull();
+    fireEvent.click(screen.getByText('Сбросить'));
+    expect(
+      [...document.querySelectorAll<HTMLInputElement>('.ant-picker-input input')].map(
+        (input) => input.value,
+      ),
+    ).toEqual(['10.10.2026', '12.10.2026']);
+    fireEvent.click(screen.getByText('Применить'));
+    expect(onRange).not.toHaveBeenCalled();
+  });
+
+  it('applies a changed mandatory period from the phone calendar', async () => {
+    const onRange = vi.fn();
+    openSheet([
+      {
+        kind: 'dateRange',
+        key: 'range',
+        label: 'Период рейсов',
+        from: '2026-10-10',
+        to: '2026-10-12',
+        required: true,
+        onChange: onRange,
+      },
+    ]);
+    fireEvent.click(document.querySelector('.ant-picker-input input')!);
+    await waitFor(() => expect(document.querySelector('.ant-picker-dropdown')).toBeTruthy());
+    fireEvent.click(document.querySelector('.ant-picker-cell[title="2026-10-14"]')!);
+    fireEvent.click(document.querySelector('.ant-picker-cell[title="2026-10-16"]')!);
+    fireEvent.click(screen.getByText('Сбросить'));
+    fireEvent.click(screen.getByText('Применить'));
+    expect(onRange).toHaveBeenCalledWith('2026-10-14', '2026-10-16');
   });
 
   it('счётчик фильтров считает непустой набор один раз, а пустой не считает', () => {

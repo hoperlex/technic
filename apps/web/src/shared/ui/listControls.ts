@@ -62,9 +62,11 @@ export type FilterDefinition =
     })
   | (FilterBase & {
       kind: 'dateRange';
-      /** Границы в формате `YYYY-MM-DD`; любая может быть не задана. */
+      /** Boundaries use `YYYY-MM-DD`; either may be absent unless the period is required. */
       from: string | undefined;
       to: string | undefined;
+      /** Mandatory periods survive Reset and cannot be cleared in the sheet. */
+      required?: boolean;
       onChange: (from: string | undefined, to: string | undefined) => void;
     })
   | (FilterBase & {
@@ -74,9 +76,20 @@ export type FilterDefinition =
       onChange: (value: boolean) => void;
     });
 
-/** Значение фильтра в черновике шита: до нажатия «Применить» в параметры списка оно не уходит. */
+/** A sheet draft stays outside list parameters until Apply. */
 export type FilterDraftValue =
   string | string[] | boolean | undefined | { from?: string; to?: string };
+
+export type FilterDraft = Record<string, FilterDraftValue>;
+
+export interface FilterDraftControls {
+  /** Dependent fields must be described from the unsubmitted phone choices. */
+  deriveFilters?: (draft: FilterDraft) => FilterDefinition[];
+  onDraftChange?: (draft: FilterDraft, key: string) => FilterDraft;
+  /** Apply related parameters in one state update; other filters keep their own callbacks. */
+  onApplyDraft?: (draft: FilterDraft) => void;
+  managedKeys?: readonly string[];
+}
 
 export interface SortOption {
   /** Ключ колонки — он же поле сортировки на сервере. */
@@ -104,6 +117,7 @@ export interface MobileSearchControl {
 export interface MobileListControls {
   search?: MobileSearchControl;
   filters?: FilterDefinition[];
+  filterDraftControls?: FilterDraftControls;
   sort?: {
     options: SortOption[];
     sortBy: string | undefined;

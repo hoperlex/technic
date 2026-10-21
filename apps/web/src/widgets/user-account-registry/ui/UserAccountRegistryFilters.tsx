@@ -1,6 +1,6 @@
 import { Badge, Checkbox, DatePicker, Input, Segmented, Select, Space } from 'antd';
 import dayjs from 'dayjs';
-import type { FilterDefinition } from '@shared/ui';
+import type { FilterDefinition, FilterDraftControls } from '@shared/ui';
 import type { UserAccountRegistryModel } from '../model/useUserAccountRegistry';
 
 /** The same filters as descriptors, for the phone sheet (ADR 0030). */
@@ -88,6 +88,36 @@ export function registryMobileFilters(model: UserAccountRegistryModel): FilterDe
         ]
       : []),
   ];
+}
+
+export function registryFilterDraftControls(model: UserAccountRegistryModel): FilterDraftControls {
+  const requestedRole: FilterDefinition = {
+    kind: 'select',
+    key: 'requestedRole',
+    label: 'Пожелание при регистрации',
+    value: model.params.requestedRole,
+    options: model.requestedRoleOptions,
+    placeholder: 'Любое пожелание',
+    onChange: (value) => model.applyFilter({ requestedRole: value }),
+  };
+  return {
+    deriveFilters: (draft) =>
+      registryMobileFilters(model)
+        .filter((filter) => filter.key !== 'requestedRole')
+        .flatMap((filter) =>
+          filter.key === 'pending' && draft.pending === true ? [filter, requestedRole] : [filter],
+        ),
+    onDraftChange: (draft, key) =>
+      key === 'pending' && draft.pending !== true ? { ...draft, requestedRole: undefined } : draft,
+    managedKeys: ['pending', 'requestedRole'],
+    onApplyDraft: (draft) => {
+      const pending = draft.pending === true;
+      const requestedRole = pending ? (draft.requestedRole as string | undefined) : undefined;
+      if (model.showPending !== pending || model.params.requestedRole !== requestedRole) {
+        model.applyFilter({ pending: pending ? 'true' : undefined, requestedRole });
+      }
+    },
+  };
 }
 
 /** Desktop controls mirror the mobile filter sheet one for one. */

@@ -6,6 +6,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
 import { VehicleRoutesModal } from '@widgets/vehicle-route-windows';
+import { MOBILE_VIEWPORT } from './viewport';
 
 /**
  * Фильтры списка маршрутов: полоса полей над таблицей, а не выпадашки в заголовках столбцов.
@@ -70,7 +71,7 @@ const ROUTE: VehicleRouteDto = {
   version: 1,
 };
 
-function renderList() {
+function renderList(mobile = false) {
   const http = mockHttp({
     'GET /vehicle-routes': () => json(list([ROUTE])),
     'GET /vehicles': () => json(list([VEHICLE])),
@@ -80,7 +81,7 @@ function renderList() {
     // `focusToken` — счётчик просьб встать на конкретный день; здесь его не шлют, и список
     // открывается сегодняшним, как при обычном нажатии «Маршруты».
     <VehicleRoutesModal open onClose={() => {}} focusToken={0} onChanged={() => {}} />,
-    { user: authUser({ role: 'admin' }) },
+    { user: authUser({ role: 'admin' }), viewport: mobile ? MOBILE_VIEWPORT : undefined },
   );
   return http;
 }
@@ -108,6 +109,20 @@ async function pickFilter(placeholder: string, option: string | RegExp) {
 }
 
 describe('маршруты: фильтры панелью над таблицей', () => {
+  it('keeps the mandatory phone period on Reset', async () => {
+    const http = renderList(true);
+    await waitFor(() => expect(http.countOf('GET /vehicle-routes')).toBe(1));
+    const before = http.lastCall('GET /vehicle-routes')!.query;
+    fireEvent.click(screen.getByRole('button', { name: /Фильтры/ }));
+    expect(document.querySelector('.ant-picker-clear')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Сбросить' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Применить' }));
+    expect(http.countOf('GET /vehicle-routes')).toBe(1);
+    const after = http.lastCall('GET /vehicle-routes')!.query;
+    expect(after.get('dateFrom')).toBe(before.get('dateFrom'));
+    expect(after.get('dateTo')).toBe(before.get('dateTo'));
+  });
+
   it('в заголовках столбцов фильтров не осталось', async () => {
     renderList();
     await screen.findByText('Р-12');

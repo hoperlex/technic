@@ -217,6 +217,7 @@ export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onCha
       from: range[0].format(DATE),
       to: range[1].format(DATE),
       isActive: false,
+      required: true,
       onChange: (from, to) => {
         setRange([from ? dayjs(from) : dayjs(), to ? dayjs(to) : dayjs()]);
         applyFilter({});

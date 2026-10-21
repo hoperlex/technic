@@ -82,7 +82,7 @@ export function VehicleRequestHistory({
       objectId: customerDefaults.objectId,
       departmentId: customerDefaults.departmentId,
     },
-    { searchKeys: ['comment'] },
+    { searchKeys: [] },
   );
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((previous) => ({ ...previous, ...patch, page: 1 }));

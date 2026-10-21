@@ -146,14 +146,14 @@ describe('справочник водителей: категории прав',
 
     fireEvent.click(screen.getByRole('button', { name: /Фильтры/ }));
     await selectInSheet('Должность', 'Машинист экскаватора');
-    // The still-open sheet offers the applied title's category dictionary.
-    await selectInSheet('Категория', 'C — Грузовые свыше 3,5 т');
+    // The category selector follows the draft title before Apply and offers that credential kind.
+    await selectInSheet('Категория', 'C — Трактор');
     fireEvent.click(screen.getByRole('button', { name: 'Применить' }));
 
     await waitFor(() =>
       expect(http.lastCall('GET /drivers')?.query.get('jobTitle')).toBe('Машинист экскаватора'),
     );
-    expect(http.lastCall('GET /drivers')?.query.has('categoryId')).toBe(false);
+    expect(http.lastCall('GET /drivers')?.query.get('categoryId')).toBe('tractor-c');
   });
   it('показывает категории отдельной колонкой', async () => {
     mockDirectory();

@@ -109,6 +109,7 @@ function renderTab(
   over: RouteMap = {},
   user = SHTAB,
   route = '/vehicle-requests',
+  mobile = false,
 ): HttpMock & { queryClient: QueryClient } {
   const http = mockHttp({
     'GET /vehicle-requests/feed': () => json(vehicleFeed([ORDER], [WEEKLY])),
@@ -129,7 +130,7 @@ function renderTab(
       />
       <LocationProbe />
     </>,
-    { user, route },
+    { user, route, viewport: mobile ? MOBILE_VIEWPORT : undefined },
   );
   return { ...http, queryClient };
 }
@@ -309,6 +310,25 @@ describe('лента «Заказ автотехники»: недельная �
       expect(call.query.get('weekStart')).toBeNull();
     });
     expect(screen.queryByText('Все недели')).toBeNull();
+  });
+
+  it('shows the week as soon as the weekly kind is chosen in the phone sheet', async () => {
+    const http = renderTab({}, SHTAB, '/vehicle-requests', true);
+    await waitFor(() => expect(http.countOf('GET /vehicle-requests/feed')).toBe(1));
+    fireEvent.click(screen.getByRole('button', { name: /Фильтры/ }));
+    const row = (label: string) =>
+      [...document.querySelectorAll<HTMLElement>('.filter-sheet__row')].find(
+        (node) => node.querySelector('.filter-sheet__label')?.textContent === label,
+      );
+    expect(row('Неделя')).toBeUndefined();
+    fireEvent.mouseDown(row('Тип заявки')!.querySelector('.ant-select-content')!);
+    fireEvent.click(await screen.findByText('Недельная заявка'));
+    expect(row('Неделя')).toBeDefined();
+    expect(http.countOf('GET /vehicle-requests/feed')).toBe(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Применить' }));
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/feed')?.query.get('kind')).toBe('weekly'),
+    );
   });
 
   it('поиск по номеру уходит парой «вид документа + номер»', async () => {

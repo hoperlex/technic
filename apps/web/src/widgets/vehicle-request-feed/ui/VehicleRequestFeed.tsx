@@ -5,7 +5,11 @@ import { DataTable, PageTableLayout, sortOptionsFrom, SummaryBar, TabsExtra } fr
 import type { VehicleRequestFeedProps, VehicleRequestFeedRow } from '../model/types';
 import { vehicleRequestFeedCard } from './feedCard';
 import { vehicleRequestFeedColumns } from './feedColumns';
-import { VehicleRequestFeedFilterBar, vehicleRequestFeedMobileFilters } from './feedFilters';
+import {
+  VehicleRequestFeedFilterBar,
+  vehicleRequestFeedMobileFilters,
+  vehicleRequestFeedDraftControls,
+} from './feedFilters';
 
 /**
  * DataTable distinguishes rows by one field name, while the discriminated union has no common id
@@ -76,6 +80,7 @@ export function VehicleRequestFeed({
           onChange: list.onSearchChange,
         },
         filters: vehicleRequestFeedMobileFilters(filters),
+        filterDraftControls: vehicleRequestFeedDraftControls(filters),
         sort: {
           options: sortOptionsFrom(columns, { num: 'Номер документа' }),
           sortBy: list.sortBy,

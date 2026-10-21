@@ -51,7 +51,7 @@ export function WasteArchiveTab() {
 
   const { params, setParams, setSort, onTableChange } = useListParams<{ num?: number }>(
     {},
-    { searchKeys: ['comment'] },
+    { searchKeys: [] },
   );
   const [numInput, setNumInput] = useState('');
   const applyNumFilter = (raw: string) => {

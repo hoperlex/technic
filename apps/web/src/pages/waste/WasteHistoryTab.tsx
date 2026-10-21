@@ -61,7 +61,7 @@ export function WasteHistoryTab() {
     // Умолчание — единственный объект учётки (ADR 0039): сервер и без фильтра отдаёт только свои
     // заявки, а журнал не заставляет выбирать предрешённое.
     { objectId: soleObjectId ?? undefined },
-    { searchKeys: ['comment'] },
+    { searchKeys: [] },
   );
 
   const applyFilter = (patch: Partial<typeof params>) =>

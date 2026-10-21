@@ -2,6 +2,7 @@ import { listQueryOptions } from '@shared/api';
 import { useQuery } from '@tanstack/react-query';
 import {
   CREDENTIAL_TYPE_CODES,
+  type CredentialTypeCode,
   DRIVER_DOCUMENT_SETS,
   type DriverDocumentSet,
   driverDocumentSetLabels,
@@ -53,7 +54,13 @@ export function useDriverRegistry() {
   // a filter it is the driver license, as the directory always opened: it is about drivers, and the
   // second column pair is visible anyway.
   const filterType = params.jobTitle ? requiredCredentialType(params.jobTitle) : 'driver_license';
-  const filterCategoryOptions = useLicenseCategoryOptions(filterType);
+  const driverCategories = useLicenseCategoryOptions('driver_license');
+  const tractorCategories = useLicenseCategoryOptions('tractor_license');
+  const categoryOptionsByType: Record<CredentialTypeCode, typeof driverCategories> = {
+    driver_license: driverCategories,
+    tractor_license: tractorCategories,
+  };
+  const filterCategoryOptions = categoryOptionsByType[filterType];
   // Without a filter both kinds are shown — the directory is opened precisely to see who lacks
   // what. With a job title only its own kind: driver-license columns of excavator operators are empty in
   // every row and only waste width (ADR 0095).
@@ -87,6 +94,7 @@ export function useDriverRegistry() {
       label: driverDocumentSetLabels[value],
     })),
     filterCategoryOptions,
+    categoryOptionsByType,
     filterType,
     isFetching,
     // The count is not decoration: the same title spelled differently in the staff import shows up

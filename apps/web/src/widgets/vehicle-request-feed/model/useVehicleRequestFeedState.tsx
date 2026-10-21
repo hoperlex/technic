@@ -186,6 +186,12 @@ export function useVehicleRequestFeedState() {
     num: params.num,
     onApprovalChange: (value) => applyFilter({ approved: value }),
     onDocumentTypeChange: applyDocumentType,
+    onDocumentFiltersChange: (value, weekStart) =>
+      applyFilter(
+        value === 'weekly'
+          ? { kind: 'weekly', requestType: undefined, weekStart }
+          : { kind: undefined, requestType: value, weekStart: undefined },
+      ),
     onNumberSearch: applyNumberSearch,
     onStatusChange: (value) => applyFilter({ status: value }),
     onWeekStartChange: (value) => applyFilter({ weekStart: value }),

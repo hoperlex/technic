@@ -62,6 +62,7 @@ export function VehicleRegistry(actions: VehicleRegistryActions) {
           onChange: (search) => model.setParams((current) => ({ ...current, search, page: 1 })),
         },
         filters: model.mobileFilters,
+        filterDraftControls: model.filterDraftControls,
         sort: {
           options: sortOptionsFrom(columns),
           sortBy: model.params.sortBy,

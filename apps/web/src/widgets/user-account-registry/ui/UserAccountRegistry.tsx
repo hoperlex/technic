@@ -3,7 +3,11 @@ import { PlusOutlined } from '@ant-design/icons';
 import type { UserAccountDto } from '@technic/contracts';
 import { DataTable, PageTableLayout, sortOptionsFrom, type ActionSheetItem } from '@shared/ui';
 import { useUserAccountRegistry } from '../model/useUserAccountRegistry';
-import { registryMobileFilters, UserAccountRegistryFilters } from './UserAccountRegistryFilters';
+import {
+  registryMobileFilters,
+  registryFilterDraftControls,
+  UserAccountRegistryFilters,
+} from './UserAccountRegistryFilters';
 import { userAccountRegistryCard } from './registryCard';
 import { userAccountRegistryColumns, type ArchivedRowAction } from './registryColumns';
 
@@ -32,6 +36,7 @@ export function UserAccountRegistry({ create, edit, actionsFor, archivedActionsF
           onChange: (search) => model.applyFilter({ search }),
         },
         filters: registryMobileFilters(model),
+        filterDraftControls: registryFilterDraftControls(model),
         sort: {
           options: sortOptionsFrom(columns, { fullName: 'ФИО' }),
           sortBy: model.params.sortBy,

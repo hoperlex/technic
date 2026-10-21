@@ -4,9 +4,10 @@ import {
   type VehicleOwnership,
   vehicleOwnershipLabels,
   type VehicleStatus,
+  isRentalStatus,
 } from '@technic/contracts';
 import type { BaseParams } from '@shared/lib';
-import type { FilterDefinition } from '@shared/ui';
+import type { FilterDefinition, FilterDraftControls } from '@shared/ui';
 
 /**
  * Fleet filters: ownership, type, lessor, status, search and archive.
@@ -133,6 +134,16 @@ export function useVehicleFilters({
    * segment but a select with an empty “all” value on phones, where three full-width buttons would
    * consume an entire row for one choice.
    */
+  const lessorMobileFilter: FilterDefinition = {
+    kind: 'select',
+    key: 'lessorId',
+    label: 'Арендодатель',
+    value: params.lessorId,
+    options: lessorOptions,
+    placeholder: 'Все арендодатели',
+    loading: lessorsLoading,
+    onChange: (v) => setParams((p) => ({ ...p, lessorId: v, page: 1 })),
+  };
   const mobileFilters: FilterDefinition[] = [
     {
       kind: 'select',
@@ -162,20 +173,7 @@ export function useVehicleFilters({
       placeholder: 'Все типы',
       onChange: (v) => setParams((p) => ({ ...p, vehicleTypeId: v, page: 1 })),
     },
-    ...(ownershipFilter === 'rental'
-      ? [
-          {
-            kind: 'select' as const,
-            key: 'lessorId',
-            label: 'Арендодатель',
-            value: params.lessorId,
-            options: lessorOptions,
-            placeholder: 'Все арендодатели',
-            loading: lessorsLoading,
-            onChange: (v: string | undefined) => setParams((p) => ({ ...p, lessorId: v, page: 1 })),
-          },
-        ]
-      : []),
+    ...(ownershipFilter === 'rental' ? [lessorMobileFilter] : []),
     {
       kind: 'select',
       key: 'status',
@@ -196,5 +194,57 @@ export function useVehicleFilters({
     },
   ];
 
-  return { filters, mobileFilters };
+  const filterDraftControls: FilterDraftControls = {
+    deriveFilters: (draft) => {
+      const rental = draft.ownership === 'rental';
+      return mobileFilters
+        .filter((filter) => filter.key !== 'lessorId')
+        .flatMap((filter) =>
+          filter.key === 'status' && filter.kind === 'select'
+            ? [
+                ...(rental ? [lessorMobileFilter] : []),
+                {
+                  ...filter,
+                  options: rental ? rentalStatusOptions : statusOptions,
+                },
+              ]
+            : [filter],
+        );
+    },
+    onDraftChange: (draft, key) => {
+      if (key !== 'ownership') return draft;
+      const rental = draft.ownership === 'rental';
+      const status = draft.status as VehicleStatus | undefined;
+      return {
+        ...draft,
+        lessorId: rental ? draft.lessorId : undefined,
+        status: rental && status && !isRentalStatus(status) ? undefined : status,
+      };
+    },
+    managedKeys: ['ownership', 'vehicleTypeId', 'lessorId', 'status', 'includeDeleted'],
+    onApplyDraft: (draft) =>
+      setParams((current) => {
+        const ownership = draft.ownership as VehicleOwnership | undefined;
+        const vehicleTypeId = draft.vehicleTypeId as string | undefined;
+        const lessorId =
+          ownership === 'rental' ? (draft.lessorId as string | undefined) : undefined;
+        const selectedStatus = draft.status as VehicleStatus | undefined;
+        const status =
+          ownership === 'rental' && selectedStatus && !isRentalStatus(selectedStatus)
+            ? undefined
+            : selectedStatus;
+        const includeDeleted = draft.includeDeleted === true ? 'true' : undefined;
+        if (
+          current.ownership === ownership &&
+          current.vehicleTypeId === vehicleTypeId &&
+          current.lessorId === lessorId &&
+          current.status === status &&
+          current.includeDeleted === includeDeleted
+        )
+          return current;
+        return { ...current, ownership, vehicleTypeId, lessorId, status, includeDeleted, page: 1 };
+      }),
+  };
+
+  return { filters, mobileFilters, filterDraftControls };
 }

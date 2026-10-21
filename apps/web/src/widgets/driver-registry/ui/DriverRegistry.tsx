@@ -17,12 +17,13 @@ export function DriverRegistry({ canSeeArchive, ...actions }: Props) {
   const model = useDriverRegistry();
   const columns = driverRegistryColumns(model, actions);
   const card = driverRegistryCard(model, actions);
-  const { filters, mobileFilters } = useDriverRegistryFilters({
+  const { filters, mobileFilters, filterDraftControls } = useDriverRegistryFilters({
     params: model.params,
     setParams: model.setParams,
     documentSetOptions: model.documentSetOptions,
     jobTitleOptions: model.jobTitleOptions,
     filterCategoryOptions: model.filterCategoryOptions,
+    categoryOptionsByType: model.categoryOptionsByType,
     filterType: model.filterType,
     canSeeArchive,
     setDocuments: model.setDocuments,
@@ -43,6 +44,7 @@ export function DriverRegistry({ canSeeArchive, ...actions }: Props) {
           onChange: (search) => model.setParams((current) => ({ ...current, search, page: 1 })),
         },
         filters: mobileFilters,
+        filterDraftControls,
         sort: {
           options: sortOptionsFrom(columns),
           sortBy: model.params.sortBy,

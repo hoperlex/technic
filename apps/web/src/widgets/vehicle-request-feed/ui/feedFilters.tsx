@@ -1,6 +1,6 @@
 import { Input, Select, Space } from 'antd';
 import { REQUEST_STATUSES, requestStatusLabels, type RequestStatus } from '@technic/contracts';
-import type { FilterDefinition } from '@shared/ui';
+import type { FilterDefinition, FilterDraftControls } from '@shared/ui';
 import type { VehicleRequestFeedFilters as FeedFilters } from '../model/types';
 
 const approvalOptions = [
@@ -73,7 +73,16 @@ export function VehicleRequestFeedFilterBar({ filters }: { filters: FeedFilters 
   );
 }
 
-/** The same filters as definitions for the phone filter sheet (ADR 0030). */
+const weekMobileFilter = (filters: FeedFilters): FilterDefinition => ({
+  kind: 'select',
+  key: 'weekStart',
+  label: 'Неделя',
+  value: filters.weekStart,
+  options: filters.weekOptions,
+  placeholder: 'Все недели',
+  onChange: filters.onWeekStartChange,
+});
+
 export function vehicleRequestFeedMobileFilters(filters: FeedFilters): FilterDefinition[] {
   return [
     {
@@ -87,19 +96,7 @@ export function vehicleRequestFeedMobileFilters(filters: FeedFilters): FilterDef
     },
     // Week only for the selected document kind, as in the desktop bar: an order has no week, and
     // a set week filter would cut off every order.
-    ...(filters.kind === 'weekly'
-      ? [
-          {
-            kind: 'select',
-            key: 'weekStart',
-            label: 'Неделя',
-            value: filters.weekStart,
-            options: filters.weekOptions,
-            placeholder: 'Все недели',
-            onChange: filters.onWeekStartChange,
-          } as const,
-        ]
-      : []),
+    ...(filters.kind === 'weekly' ? [weekMobileFilter(filters)] : []),
     {
       kind: 'select',
       key: 'status',
@@ -132,4 +129,29 @@ export function vehicleRequestFeedMobileFilters(filters: FeedFilters): FilterDef
       onChange: (value) => filters.onNumberSearch(value ?? ''),
     },
   ];
+}
+
+export function vehicleRequestFeedDraftControls(filters: FeedFilters): FilterDraftControls {
+  return {
+    deriveFilters: (draft) =>
+      vehicleRequestFeedMobileFilters(filters)
+        .filter((filter) => filter.key !== 'weekStart')
+        .flatMap((filter) =>
+          filter.key === 'requestType' && draft.requestType === 'weekly'
+            ? [filter, weekMobileFilter(filters)]
+            : [filter],
+        ),
+    onDraftChange: (draft, key) =>
+      key === 'requestType' && draft.requestType !== 'weekly'
+        ? { ...draft, weekStart: undefined }
+        : draft,
+    managedKeys: ['requestType', 'weekStart'],
+    onApplyDraft: (draft) => {
+      const value = draft.requestType as string | undefined;
+      const weekStart = value === 'weekly' ? (draft.weekStart as string | undefined) : undefined;
+      if (filters.documentTypeValue !== value || filters.weekStart !== weekStart) {
+        filters.onDocumentFiltersChange(value, weekStart);
+      }
+    },
+  };
 }

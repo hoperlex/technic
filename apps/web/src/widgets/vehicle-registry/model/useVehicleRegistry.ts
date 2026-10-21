@@ -44,7 +44,7 @@ export function useVehicleRegistry() {
     label: lessor.name,
   }));
 
-  const { filters, mobileFilters } = useVehicleFilters({
+  const { filters, mobileFilters, filterDraftControls } = useVehicleFilters({
     params,
     setParams,
     typeOptions,
@@ -66,5 +66,6 @@ export function useVehicleRegistry() {
     showRentalColumns: ownershipFilter !== 'own',
     filters,
     mobileFilters,
+    filterDraftControls,
   };
 }

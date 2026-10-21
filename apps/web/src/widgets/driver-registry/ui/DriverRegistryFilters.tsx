@@ -4,8 +4,9 @@ import {
   type CredentialTypeCode,
   credentialTypeShortLabels,
   type DriverDocumentSet,
+  requiredCredentialType,
 } from '@technic/contracts';
-import type { FilterDefinition } from '@shared/ui';
+import type { FilterDefinition, FilterDraftControls } from '@shared/ui';
 
 /**
  * Driver registry filters: document completeness, job title, category and archive.
@@ -34,6 +35,7 @@ export interface DriverFiltersDeps<P extends DriverFilterParams> {
   documentSetOptions: Option[];
   jobTitleOptions: Option[];
   filterCategoryOptions: Option[];
+  categoryOptionsByType: Record<CredentialTypeCode, Option[]>;
   /** The job title selects the credential dictionary named in the category label. */
   filterType: CredentialTypeCode;
   canSeeArchive: boolean;
@@ -48,6 +50,7 @@ export function useDriverRegistryFilters<P extends DriverFilterParams>({
   documentSetOptions,
   jobTitleOptions,
   filterCategoryOptions,
+  categoryOptionsByType,
   filterType,
   canSeeArchive,
   setDocuments,
@@ -157,5 +160,45 @@ export function useDriverRegistryFilters<P extends DriverFilterParams>({
         ]
       : []),
   ];
-  return { filters, mobileFilters };
+  const filterDraftControls: FilterDraftControls = {
+    deriveFilters: (draft) => {
+      const title = draft.jobTitle as string | undefined;
+      const type = title ? requiredCredentialType(title) : 'driver_license';
+      return mobileFilters.map((filter) =>
+        filter.key === 'categoryId' && filter.kind === 'select'
+          ? {
+              ...filter,
+              label: `Категория ${credentialTypeShortLabels[type]}`,
+              options: categoryOptionsByType[type],
+            }
+          : filter,
+      );
+    },
+    onDraftChange: (draft, key) =>
+      key === 'jobTitle' ? { ...draft, categoryId: undefined } : draft,
+    managedKeys: ['documents', 'jobTitle', 'categoryId', 'includeDeleted'],
+    onApplyDraft: (draft) =>
+      setParams((current) => {
+        const jobTitle = draft.jobTitle as string | undefined;
+        const type = jobTitle ? requiredCredentialType(jobTitle) : 'driver_license';
+        const category = draft.categoryId as string | undefined;
+        const documents = draft.documents as DriverDocumentSet | undefined;
+        const includeDeleted = draft.includeDeleted === true ? 'true' : undefined;
+        // A category already applied by the server remains valid while its dictionary refreshes.
+        const categoryId =
+          (jobTitle === current.jobTitle && category === current.categoryId) ||
+          categoryOptionsByType[type].some((option) => option.value === category)
+            ? category
+            : undefined;
+        if (
+          current.documents === documents &&
+          current.jobTitle === jobTitle &&
+          current.categoryId === categoryId &&
+          current.includeDeleted === includeDeleted
+        )
+          return current;
+        return { ...current, documents, jobTitle, categoryId, includeDeleted, page: 1 };
+      }),
+  };
+  return { filters, mobileFilters, filterDraftControls };
 }

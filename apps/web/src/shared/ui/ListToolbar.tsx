@@ -11,7 +11,13 @@ import { activeFilterCount, type MobileListControls } from './listControls';
  * ADR 0042). Its card layout has no column headers, and the filter sheet hides active values;
  * the badge makes the narrowed list understandable without opening the sheet.
  */
-export function ListToolbar({ search, filters, sort, secondaryActions }: MobileListControls) {
+export function ListToolbar({
+  search,
+  filters,
+  filterDraftControls,
+  sort,
+  secondaryActions,
+}: MobileListControls) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const count = activeFilterCount(filters);
@@ -47,7 +53,12 @@ export function ListToolbar({ search, filters, sort, secondaryActions }: MobileL
       )}
 
       {!!filters?.length && (
-        <FilterSheet open={filtersOpen} onClose={() => setFiltersOpen(false)} filters={filters} />
+        <FilterSheet
+          open={filtersOpen}
+          onClose={() => setFiltersOpen(false)}
+          filters={filters}
+          draftControls={filterDraftControls}
+        />
       )}
       {sort && (
         <SortSheet

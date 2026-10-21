@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, DatePicker, Drawer, Input, Select, Switch, Typography } from 'antd';
 import dayjs from 'dayjs';
-import type { FilterDefinition, FilterDraftValue } from './listControls';
+import type {
+  FilterDefinition,
+  FilterDraft,
+  FilterDraftControls,
+  FilterDraftValue,
+} from './listControls';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   filters: FilterDefinition[];
+  draftControls?: FilterDraftControls;
 }
 
 const DATE_FORMAT = 'DD.MM.YYYY';
@@ -17,8 +23,8 @@ const DATE_FORMAT = 'DD.MM.YYYY';
  */
 const SHEET_MAX_TAGS = 4;
 
-function draftOf(filters: FilterDefinition[]): Record<string, FilterDraftValue> {
-  const draft: Record<string, FilterDraftValue> = {};
+function draftOf(filters: FilterDefinition[]): FilterDraft {
+  const draft: FilterDraft = {};
   for (const filter of filters) {
     draft[filter.key] =
       filter.kind === 'dateRange' ? { from: filter.from, to: filter.to } : filter.value;
@@ -26,7 +32,6 @@ function draftOf(filters: FilterDefinition[]): Record<string, FilterDraftValue> 
   return draft;
 }
 
-/** The draft value that the reset action restores. */
 function emptyValue(filter: FilterDefinition): FilterDraftValue {
   if (filter.kind === 'dateRange') return {};
   if (filter.kind === 'toggle') return false;
@@ -50,8 +55,8 @@ function sameSelection(a: string[], b: string[]): boolean {
  * The draft is essential here: the list is covered by the sheet, so each choice would otherwise
  * reload an invisible list. Apply sends the accumulated changes once; cancel discards them.
  */
-export function FilterSheet({ open, onClose, filters }: Props) {
-  const [draft, setDraft] = useState<Record<string, FilterDraftValue>>({});
+export function FilterSheet({ open, onClose, filters, draftControls }: Props) {
+  const [draft, setDraft] = useState<FilterDraft>({});
   // Descriptors are rebuilt on each page render. A ref keeps an in-progress draft from being
   // overwritten before Apply.
   const filtersRef = useRef(filters);
@@ -65,12 +70,18 @@ export function FilterSheet({ open, onClose, filters }: Props) {
     }
   }, [open]);
 
+  const visibleFilters = draftControls?.deriveFilters?.(draft) ?? filters;
   const set = (key: string, value: FilterDraftValue) =>
-    setDraft((prev) => ({ ...prev, [key]: value }));
+    setDraft((prev) => {
+      const next = { ...prev, [key]: value };
+      return draftControls?.onDraftChange?.(next, key) ?? next;
+    });
 
   /** Unchanged values must not reset the list page. */
   const apply = () => {
+    draftControls?.onApplyDraft?.(draft);
     for (const filter of filtersRef.current) {
+      if (draftControls?.managedKeys?.includes(filter.key)) continue;
       const next = draft[filter.key];
       if (filter.kind === 'dateRange') {
         const range = (next ?? {}) as { from?: string; to?: string };
@@ -95,16 +106,19 @@ export function FilterSheet({ open, onClose, filters }: Props) {
     onClose();
   };
 
-  /** Reset clears only the draft; a role-locked site remains selected. */
+  /** Mandatory route periods and locked sites must survive clearing optional filters. */
   const reset = () => {
-    const cleared: Record<string, FilterDraftValue> = {};
+    const cleared: FilterDraft = {};
     for (const filter of filtersRef.current) {
       if (filter.disabled) {
         cleared[filter.key] =
           filter.kind === 'dateRange' ? { from: filter.from, to: filter.to } : filter.value;
         continue;
       }
-      cleared[filter.key] = emptyValue(filter);
+      cleared[filter.key] =
+        filter.kind === 'dateRange' && filter.required
+          ? (draft[filter.key] ?? draftOf([filter])[filter.key])
+          : emptyValue(filter);
     }
     setDraft(cleared);
   };
@@ -129,7 +143,7 @@ export function FilterSheet({ open, onClose, filters }: Props) {
       }
     >
       <div className="filter-sheet">
-        {filters.map((filter) => (
+        {visibleFilters.map((filter) => (
           <div key={filter.key} className="filter-sheet__row">
             <Typography.Text type="secondary" className="filter-sheet__label">
               {filter.label}
@@ -186,7 +200,8 @@ export function FilterSheet({ open, onClose, filters }: Props) {
                 style={{ width: '100%' }}
                 format={DATE_FORMAT}
                 inputReadOnly
-                allowEmpty={[true, true]}
+                allowClear={!filter.required}
+                allowEmpty={filter.required ? [false, false] : [true, true]}
                 disabled={filter.disabled}
                 value={(() => {
                   const range = (draft[filter.key] ?? {}) as { from?: string; to?: string };

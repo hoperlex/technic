@@ -59,7 +59,7 @@ export function VehicleRequestsArchiveTab() {
     /** Заказчик заявки (ADR 0040): подбор «Объект/отдел» заполняет ровно один из двух. */
     objectId?: string;
     departmentId?: string;
-  }>({}, { searchKeys: ['comment'] });
+  }>({}, { searchKeys: [] });
   const [numInput, setNumInput] = useState('');
   const applyNumFilter = (raw: string) => {
     setNumInput(raw);

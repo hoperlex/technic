@@ -75,6 +75,7 @@ export interface VehicleRequestFeedFilters {
   num?: number;
   onApprovalChange: (value: string | undefined) => void;
   onDocumentTypeChange: (value: string | undefined) => void;
+  onDocumentFiltersChange: (value: string | undefined, weekStart: string | undefined) => void;
   onNumberSearch: (value: string) => void;
   onStatusChange: (value: RequestStatus | undefined) => void;
   onWeekStartChange: (value: string | undefined) => void;
