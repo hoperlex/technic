@@ -210,6 +210,9 @@ const ENTRIES: Record<string, EntryRow> = {
    * transitions from the full action set — so every menu may strike them.
    */
   complete: { label: 'Закрыть работы', ...TAG_ONLY },
+  // The operator override stays a named menu action; the generic status tag must never
+  // bypass the closing-document gate without opening its explicit reason form.
+  forceComplete: { label: 'Принудительно закрыть без документа' },
   accept: { label: 'Принять работу', ...TAG_ONLY },
   rework: { label: 'Вернуть на доработку', ...TAG_ONLY },
   'rollback-start': { label: 'Вернуть в «Новую»', ...TAG_ONLY },
