@@ -190,6 +190,8 @@ interface RouteFixture {
   query?: string;
   /** Тело запроса; у `POST`/`PATCH`/`PUT` по умолчанию `{}`. */
   payload?: unknown;
+  /** Permission-specific body fields when an `anyOf` permission opens a distinct operation. */
+  anyOfPayloadPatch?: Partial<Record<Permission, Record<string, unknown>>>;
   /** Значения параметров пути, если значение по умолчанию схему не проходит. */
   params?: Record<string, string>;
   /**
@@ -700,6 +702,7 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
    */
   'PATCH /api/v1/service-requests/:id/complete': {
     payload: { completedOn: FUTURE_DATE, items: [], version: 1 },
+    anyOfPayloadPatch: { 'serviceRequests.status': { forceWithoutDocument: true } },
     selfRefusal: CORRIDOR_REFUSAL,
   },
   /*
@@ -1675,12 +1678,15 @@ function variantsOf(key: ManifestRouteKey, condition: AccessCondition): Variant[
   // оно, а не сосед по выбору.
   if (condition.kind === 'anyOf') {
     const payload = requestOf(key).payload;
-    return condition.anyOf.map((permission) => ({
-      label: `только ${permission}`,
-      payload,
-      required: [permission],
-      conditional: [],
-    }));
+    return condition.anyOf.map((permission) => {
+      const patch = FIXTURES[key]?.anyOfPayloadPatch?.[permission];
+      return {
+        label: `только ${permission}`,
+        payload: patch ? { ...(payload as Record<string, unknown>), ...patch } : payload,
+        required: [permission],
+        conditional: [],
+      };
+    });
   }
   // Условие ПО ЭФФЕКТУ (`effectConditionalPermissions`): перебор проверяет только базовую
   // половину, и большего он проверить не может по построению — эффект телом запроса не

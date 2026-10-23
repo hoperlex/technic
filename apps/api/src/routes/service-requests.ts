@@ -8465,6 +8465,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
+      // Status opens only the explicit override. Preserve the ordinary route guard's refusal for
+      // status-only subjects, before the executor-side corridor can answer with a different reason.
+      if (
+        !body.forceWithoutDocument &&
+        !can(p, 'serviceRequests.estimate') &&
+        !can(p, 'serviceRequests.execute')
+      ) {
+        throw err.forbidden('Объём работ ведёт исполнитель');
+      }
       if (!body.forceWithoutDocument) assertSideAllowed(p, req.params.id, 'done', ['in_work']);
       const row = await requireEditable(p, req.params.id);
       if (body.forceWithoutDocument && !canForceCompleteServiceWithoutDocument(row, p)) {
