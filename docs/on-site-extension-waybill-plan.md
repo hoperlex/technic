@@ -76,16 +76,49 @@ Run the read-only audit against the active portal database and record:
 If either order is effectively linear or NZ-497 did not apply its extension row, the proposed
 cause is disproved; trace the recorded issuer and the active release before changing policy.
 
+## Immediate UI procedure
+
+This procedure can be carried out by an authorized dispatcher without direct database access, but
+the form and status of each numbered sheet must be checked in the UI. The screenshots alone do not
+prove that a specific number is ESM-2 or that every day still needs 4-P.
+
+1. Open each order's **Дни работ** tab and inspect the week beginning 26 October and the total
+   planned-day count. **Распланировать период** walks the *entire order term*, not the displayed
+   week. Use it only when every unplanned day in that term should be added with the selected driver;
+   keep **Выписать путевые листы по заведённым рейсам** checked. If earlier gaps must stay open or
+   drivers differ by day, use the individual day action for the extension dates. Read the batch's
+   per-day report, including skipped/failed days and remaining portions; one run handles at most
+   50 unplanned days.
+2. For a day already attached to a route but lacking a 4-P, the batch skips that day. Open the
+   day's route and use **Выписать лист** there. Check the issued sheet's form: route paper comes
+   from the vehicle type and can differ from 4-P.
+3. Once the required 4-P are issued, open the **Путевые листы** journal. Search the numbers
+   displayed on the order or filter by form ESM-2 and period. Confirm each candidate's form, order, status,
+   period and whether the paper has already been used or signed. Cancel only unnecessary issued
+   ESM-2, with a reason, using the journal's **Аннулировать** action. A user needs `waybills.cancel`;
+   cancelling after the document's last day additionally needs the established correction right.
+   The cancelled number remains in the journal and is never reused.
+4. Recheck every required day and the journal. Cancelling ESM-2 does not immediately call the
+   reconciler, but another term or assignment change under the current `auto` mode can recreate
+   missing future ESM-2. Until the policy change ships, repeat this review after each extension.
+   Do not cancel a worked, signed, or physically distributed sheet blindly; use the existing
+   controlled-document correction procedure with the people who hold the paper.
+
+The 4-P batch is safe to run before ESM-2 cancellation: ADR 0207 explicitly allows both documents
+on one work day, and its DB test preserves the existing ESM-2. This ordering avoids a paperless
+interval if day planning reports a conflict or a missing driver.
+
 ## Proposed change
 
 1. Add an explicit **paper workflow for this on-site order**, separate from `is_linear` and the
-   vehicle type's route form. The default for existing orders reproduces their present effective
-   behavior. The selectable daily workflow suppresses *new automatic* ESM-2 weeks while retaining
-   the reconciliation of already issued ESM-2. The weekly workflow continues to issue ESM-2. Do not
-   infer this selection from earlier 4-P: ADR 0207 intentionally permits both documents. Store the
-   selection on the order so that a later type-directory edit cannot change the decision silently.
+   vehicle type's route form. Use `NULL` as a legacy fallback for existing orders and old writers:
+   their effective behavior stays unchanged. An explicit `daily_4p` choice suppresses *new
+   automatic* ESM-2 weeks while retaining the reconciliation of already issued ESM-2. An explicit
+   `weekly_esm2` choice keeps automatic ESM-2. Do not infer this selection from earlier 4-P: ADR
+   0207 intentionally permits both documents. Store the selection on the order so that a later
+   type-directory edit cannot change the decision silently.
 2. Let a dispatcher with the existing issue rights select the workflow in the order's work setup
-   and change it for a future interval through a guarded action. The site manager's weekly visa
+   and change it for future issuance through a guarded action. The site manager's weekly visa
    still approves dates; it cannot choose a driver or issue route sheets. Show the selected workflow
    and the expected document effect in the term and weekly-visa previews. A change after documents
    have been issued must name the affected sheets and refuse or require the existing cancellation /
@@ -93,8 +126,10 @@ cause is disproved; trace the recorded issuer and the active release before chan
 3. Make `esm2Mode`, the weekly sweep, the history segment planner and all relevant previews read
    the same explicit selection. Reuse the existing `on_demand` reconciliation behavior for the
    daily workflow so old ESM-2 remains governed by term and assignment changes, but new weeks are
-   not created automatically. Keep route form selection with `routeWaybillForm`; it should remain
-   4-P for these tractors if their vehicle types say `4p`.
+   not created automatically. An explicit `daily_4p` choice also blocks *new manual* ESM-2 issue;
+   otherwise the daily label would permit contradictory paper. Legacy linear orders keep their
+   present manual ESM-2 behavior. Keep route form selection with `routeWaybillForm`; it should
+   remain 4-P for these tractors if their vehicle types say `4p`.
 4. After a successful extension, display unplanned days and offer the existing day batch from the
    card. It asks for one driver per portion, uses the history-selected vehicle of **each day**,
    checks route conflicts and licence requirements, issues at most 50 days per portion, and reports
@@ -112,10 +147,9 @@ cause is disproved; trace the recorded issuer and the active release before chan
 
 ## Implementation and verification sequence
 
-- Record the policy and transition rules in a new ADR that updates ADR 0100 and ADR 0207. Define
-  the distinction between “daily workflow” and an optional manually issued ESM-2 before changing
-  the contract. Decide whether manual ESM-2 stays available; the existing `on_demand` semantics
-  permit it.
+- Record the policy and transition rules in a new ADR that updates ADR 0100 and ADR 0207. Specify
+  that explicit `daily_4p` forbids new manual ESM-2 while previously issued ESM-2 stays in the
+  normal reconciliation/cancellation flow. Preserve legacy linear manual issue without override.
 - Add a migration that is safe while the old API still runs before restart. A nullable override
   with a legacy fallback is one option: existing orders and old writers keep their old behavior;
   new readers honor the explicit choice. Do not reuse `is_linear_frozen`: it also controls fleet
