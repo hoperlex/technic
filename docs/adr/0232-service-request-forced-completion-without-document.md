@@ -4,7 +4,7 @@
 - Домены: оргтехника, доступ
 - Изменяет: [ADR 0174](0174-service-request-internal-repair-without-estimate.md) (the closing-document gate for a contractor repair has an explicit operator override)
 - Связано: [ADR 0125](0125-service-request-cycle-changes.md) (document and acceptance history), [ADR 0208](0208-service-work-completed-document-flow.md) (the work-completion step remains separate from acceptance)
-- Область: [contract](../../packages/contracts/src/service-requests.ts), [API route](../../apps/api/src/routes/service-requests.ts), [permission manifest](../../apps/api/src/lib/access-manifest.ts), [side manifest](../../apps/api/src/lib/service-access-manifest.ts), [actions](../../apps/web/src/pages/service/serviceRequestMenu.tsx), [completion form](../../apps/web/src/features/service-complete/ui/ServiceCompleteModal.tsx)
+- Область: [contract](../../packages/contracts/src/service-requests.ts), [API route](../../apps/api/src/routes/service-requests.ts), [permission manifest](../../apps/api/src/lib/access-manifest.ts), [side manifest](../../apps/api/src/lib/service-access-manifest.ts), [actions](../../apps/web/src/pages/service/serviceRequestMenu.tsx), [completion form](../../apps/web/src/features/service-complete/ui/ServiceCompleteModal.tsx), [bundle budget](../../apps/web/bundle-budget.json)
 
 ## Context
 
@@ -20,3 +20,5 @@ The transition from `in_work` to `done` requires closing evidence for a contract
 ## Verification
 
 The API scenario covers a contractor's refusal, an empty reason's refusal and the operator's successful completion without a file. Portal tests cover visibility by role and the explicit payload from the form.
+
+The shared contract predicate and portal form increase measured first-screen route closures by 13–370 gzip bytes. `apps/web/bundle-budget.json` records only the exceeded deterministic `BUILD_ID=quality-check` measurements as the new limits; the largest increase is the office-equipment request route at 370 bytes.
