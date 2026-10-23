@@ -7,6 +7,7 @@ import {
   attachableServiceFileKinds,
   attachServiceFilesSchema,
   canAttachServiceFile,
+  canForceCompleteServiceWithoutDocument,
   completeServiceRequestSchema,
   createServiceRequestSchema,
   declineServiceRequestSchema,
@@ -865,6 +866,30 @@ describe('документы заявки', () => {
     ).toBe(false);
     // Два вида и обе подписи — на случай, если словарь видов начнёт расти молча.
     expect(Object.keys(serviceRequestKindLabels).sort()).toEqual(['consumable', 'repair']);
+  });
+
+  it('the document override belongs to the office-equipment operator, not the contractor or requester', () => {
+    const repair = { kind: 'repair', serviceCounterpartyId: UUID } as const;
+    const status = () => true;
+    expect(canForceCompleteServiceWithoutDocument(repair, { role: 'admin' }, status)).toBe(true);
+    expect(canForceCompleteServiceWithoutDocument(repair, { role: 'manager' }, status)).toBe(true);
+    expect(canForceCompleteServiceWithoutDocument(repair, { role: 'manager' }, () => false)).toBe(
+      false,
+    );
+    expect(
+      canForceCompleteServiceWithoutDocument(
+        repair,
+        { role: 'operator', counterpartyType: 'service' },
+        status,
+      ),
+    ).toBe(false);
+    expect(
+      canForceCompleteServiceWithoutDocument(
+        { kind: 'repair', serviceCounterpartyId: null },
+        { role: 'admin' },
+        status,
+      ),
+    ).toBe(false);
   });
 
   /**

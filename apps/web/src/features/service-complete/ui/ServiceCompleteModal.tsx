@@ -70,10 +70,12 @@ const keepDate = (date: Dayjs | null, previous: Dayjs) => date ?? previous;
  */
 export function ServiceCompleteModal({
   request,
+  forceWithoutDocument = false,
   onClose,
 }: {
   /** `null` — the window is closed. It opens in status «В работе». */
   request: ServiceRequestDto | null;
+  forceWithoutDocument?: boolean;
   onClose: () => void;
 }) {
   const { message } = App.useApp();
@@ -151,7 +153,10 @@ export function ServiceCompleteModal({
   const finish = () => {
     if (!request || !mode) return;
     const state = form.getFieldsValue(true) as CompleteFormValues;
-    mutation.mutate(completeBody(state, mode, request.version));
+    mutation.mutate({
+      ...completeBody(state, mode, request.version),
+      ...(forceWithoutDocument ? { forceWithoutDocument: true } : {}),
+    });
   };
 
   return (
@@ -160,14 +165,20 @@ export function ServiceCompleteModal({
         mode === 'supplied'
           ? `Перевод в «Решена» ${request?.displayNumber ?? ''}`.trim()
           : request
-            ? `Закрытие работ ${request.displayNumber}`
+            ? `${forceWithoutDocument ? 'Принудительное закрытие' : 'Закрытие работ'} ${request.displayNumber}`
             : 'Закрытие работ'
       }
       open={!!request}
       onCancel={onClose}
       onSubmit={() => form.submit()}
       confirmLoading={mutation.isPending}
-      okText={mode === 'supplied' ? 'Перевести в «Решена»' : 'Закрыть работы'}
+      okText={
+        forceWithoutDocument
+          ? 'Закрыть без документа'
+          : mode === 'supplied'
+            ? 'Перевести в «Решена»'
+            : 'Закрыть работы'
+      }
       width={720}
     >
       {request && values && (
@@ -183,6 +194,14 @@ export function ServiceCompleteModal({
             style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
           >
             <ServiceRequestContext request={request} />
+            {forceWithoutDocument && (
+              <Alert
+                type="warning"
+                showIcon
+                title="Заявка перейдёт в «Решена» без закрывающего документа"
+                description="Укажите причину. Действие и его автор сохранятся в истории. После этого примите работу отдельным действием."
+              />
+            )}
             {/*
              * Explanations go only to whoever coordinates requests (R11, E4). The executor and the
              * contractor's operator know the form, and the blue bars were asked away exactly for
@@ -260,17 +279,39 @@ export function ServiceCompleteModal({
              * not become required: the customer asked for a date and an OPTIONAL comment, and an
              * invented requirement would make people type «сделал» for the sake of the button.
              */}
-            <Form.Item name="comment" noStyle>
+            <Form.Item
+              name="comment"
+              noStyle
+              rules={
+                forceWithoutDocument
+                  ? [
+                      {
+                        required: true,
+                        whitespace: true,
+                        message: 'Укажите причину закрытия без документа',
+                      },
+                    ]
+                  : undefined
+              }
+            >
               <Input.TextArea
                 rows={2}
                 maxLength={1000}
-                aria-label={mode === 'inHouse' ? 'Что сделали' : 'Комментарий'}
+                aria-label={
+                  forceWithoutDocument
+                    ? 'Причина закрытия без документа'
+                    : mode === 'inHouse'
+                      ? 'Что сделали'
+                      : 'Комментарий'
+                }
                 placeholder={
-                  mode === 'inHouse'
-                    ? 'Что сделали — необязательно: например, заменили ролик подачи'
-                    : mode === 'supplied'
-                      ? 'Комментарий — необязательно'
-                      : 'Комментарий: что сделали и чего не понадобилось'
+                  forceWithoutDocument
+                    ? 'Почему закрываем без документа'
+                    : mode === 'inHouse'
+                      ? 'Что сделали — необязательно: например, заменили ролик подачи'
+                      : mode === 'supplied'
+                        ? 'Комментарий — необязательно'
+                        : 'Комментарий: что сделали и чего не понадобилось'
                 }
               />
             </Form.Item>

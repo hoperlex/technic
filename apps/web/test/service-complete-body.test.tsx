@@ -87,7 +87,7 @@ function consumableLine(over: Partial<ServiceRequestConsumableDto>): ServiceRequ
 }
 
 /** Renders the window and records every raw body sent to the close-works route. */
-function renderComplete(request: ServiceRequestDto): string[] {
+function renderComplete(request: ServiceRequestDto, forceWithoutDocument = false): string[] {
   mockHttp({ [ROUTE]: () => json(request) });
   const raw: string[] = [];
   const routed = globalThis.fetch;
@@ -100,9 +100,16 @@ function renderComplete(request: ServiceRequestDto): string[] {
     }
     return routed(input, init);
   }) as typeof globalThis.fetch;
-  renderWithUser(<ServiceCompleteModal request={request} onClose={() => {}} />, {
-    user: serviceOperator(),
-  });
+  renderWithUser(
+    <ServiceCompleteModal
+      request={request}
+      forceWithoutDocument={forceWithoutDocument}
+      onClose={() => {}}
+    />,
+    {
+      user: serviceOperator(),
+    },
+  );
   return raw;
 }
 
@@ -123,6 +130,22 @@ function typeDate(input: HTMLElement, text: string): void {
 const field = (label: string) => screen.getByLabelText(label) as HTMLInputElement;
 
 describe('close-works body: contractor repair with rows', () => {
+  it('requires a reason and sends an explicit override for forced closing', async () => {
+    const raw = renderComplete(itemsRequest({ files: [] }), true);
+    await screen.findByLabelText('Причина закрытия без документа');
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть без документа' }));
+    expect(raw).toHaveLength(0);
+    fireEvent.change(field('Причина закрытия без документа'), {
+      target: { value: 'Акт не предоставлен' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть без документа' }));
+    await waitFor(() => expect(raw).toHaveLength(1));
+    expect(JSON.parse(raw[0]!)).toMatchObject({
+      forceWithoutDocument: true,
+      comment: 'Акт не предоставлен',
+    });
+  });
+
   it('defaults: every row performed with the agreed quantity, nothing else', async () => {
     const raw = renderComplete(itemsRequest());
     await screen.findByLabelText('Фактическое количество: Ролик подачи');

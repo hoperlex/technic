@@ -1028,8 +1028,8 @@ export const ACCESS_MANIFEST = {
   },
   'PATCH /api/v1/service-requests/:id/complete': {
     kind: 'anyOf',
-    anyOf: ['serviceRequests.estimate', 'serviceRequests.execute'],
-    why: 'работа исполнителя: у стороны — право на объём работ, у поимённого — назначение',
+    anyOf: ['serviceRequests.estimate', 'serviceRequests.execute', 'serviceRequests.status'],
+    why: 'ordinary completion belongs to the executor; status permits only the explicit document override after a row-level check',
   },
   // Состав заявки на расходники заполняет ИСПОЛНИТЕЛЬ, а не заявитель (план упрощения цикла, Р15):
   // заявитель говорит словами («закончился чёрный тонер»), номенклатуру подбирает тот, кто повезёт.

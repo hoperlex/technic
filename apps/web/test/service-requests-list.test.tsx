@@ -102,6 +102,22 @@ const statusLink = (text: string): HTMLElement | null =>
   screen.getByText(text).closest('a') as HTMLElement | null;
 
 describe('список заявок на обслуживание: колонки по ролям', () => {
+  it('the office-equipment operator sees the explicit document override only for a contractor repair', async () => {
+    renderTab(OPERATOR, [
+      serviceRequest({ status: 'in_work', service: { id: 'cp-1', name: 'КопиЛайт' }, files: [] }),
+    ]);
+    await screen.findByText('СО-14');
+    expect(await rowActionLabels()).toContain('Принудительно закрыть без документа');
+  });
+
+  it('the contractor cannot force completion without its closing document', async () => {
+    renderTab(EXECUTOR, [
+      serviceRequest({ status: 'in_work', service: { id: 'cp-1', name: 'КопиЛайт' }, files: [] }),
+    ]);
+    await screen.findByText('СО-14');
+    expect(await rowActionLabels()).not.toContain('Принудительно закрыть без документа');
+  });
+
   it('оператор видит исполнителя, документы и один столбец состояния', async () => {
     renderTab(OPERATOR, [serviceRequest()]);
     expect(await screen.findByText('СО-14')).toBeDefined();

@@ -427,7 +427,7 @@ const DOORS: Record<string, Door> = {
   },
   'PATCH /api/v1/service-requests/:id/complete': {
     call: via('complete'),
-    entry: 'пункт «Закрыть работы» → окно закрытия',
+    entry: 'пункт «Закрыть работы» или «Принудительно закрыть без документа» → окно закрытия',
   },
   // ── Ходы «Ведения» ──
   'PATCH /api/v1/service-requests/:id/accept': {

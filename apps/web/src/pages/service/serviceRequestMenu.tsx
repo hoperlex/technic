@@ -11,6 +11,7 @@ import {
 import {
   allowedServiceStatusTransitions,
   canAssignServiceExecutors,
+  canForceCompleteServiceWithoutDocument,
   canStartServiceWork,
   canDeclineServiceRequest,
   canResumeService,
@@ -220,6 +221,24 @@ export function serviceRequestMenuItems(
         ? 'Сначала подшейте акт, счёт или гарантийный талон — без документа заявка не уходит в «Решена»'
         : undefined,
       onClick: () => ctx.modals.complete(request),
+    });
+  }
+
+  if (
+    mayAct &&
+    request.status === 'in_work' &&
+    canForceCompleteServiceWithoutDocument(
+      { kind: request.kind, serviceCounterpartyId: request.service?.id ?? null },
+      ctx.user,
+      ctx.can,
+    ) &&
+    !hasServiceClosingDocument(request, request.estimateFormat ?? null)
+  ) {
+    items.push({
+      key: 'forceComplete',
+      label: 'Принудительно закрыть без документа',
+      icon: <CheckCircleOutlined />,
+      onClick: () => ctx.modals.complete(request, true),
     });
   }
 

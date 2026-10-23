@@ -102,6 +102,7 @@ import {
   serviceConsumablesHiddenFrom,
   serviceConsumablesHiddenFromContractors,
   serviceRequestConsumablesAreOurs,
+  canForceCompleteServiceWithoutDocument,
   serviceRequestHasEffectivePendingEstimate,
   serviceRequestNeedsClosingDocument,
   serviceRequestNeedsEstimate,
@@ -8448,12 +8449,38 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    */
   r.patch(
     '/:id/complete',
-    { ...canEstimate, schema: { params: idParams, body: completeServiceRequestSchema } },
+    {
+      // The operator enters this route only with an explicit override. The locked-row check below
+      // keeps `status` from becoming an executor permission for ordinary completion.
+      preHandler: [
+        app.authenticate,
+        app.requireAnyPermission([
+          'serviceRequests.estimate',
+          'serviceRequests.execute',
+          'serviceRequests.status',
+        ]),
+      ],
+      schema: { params: idParams, body: completeServiceRequestSchema },
+    },
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, req.params.id, 'done', ['in_work']);
+      if (!body.forceWithoutDocument) assertSideAllowed(p, req.params.id, 'done', ['in_work']);
       const row = await requireEditable(p, req.params.id);
+      if (body.forceWithoutDocument && !canForceCompleteServiceWithoutDocument(row, p)) {
+        throw serviceDenied.side(
+          'Принудительное закрытие ремонта доступно только ведущему оргтехнику',
+          row.id,
+        );
+      }
+      if (body.forceWithoutDocument && !body.comment.trim()) {
+        throw err.unprocessable('Укажите причину закрытия без документа', {
+          comment: 'Укажите причину',
+        });
+      }
+      const completionComment = body.forceWithoutDocument
+        ? `Принудительно закрыто без документа. Причина: ${body.comment}`
+        : body.comment;
       // Дата выполнения не бывает в будущем: от неё отсчитываются гарантии, и «закрыто 2027-м»
       // сдвинуло бы их на годы вперёд — портал перестал бы отвечать, действует гарантия или нет.
       // Проверка здесь, а не в схеме: «сегодня» знает сервер, и календарные сутки у него московские.
@@ -8482,8 +8509,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         /**
          * Планка закрывающего документа переехала сюда с приёмки (Н8): за работу внешнего сервиса
          * платят, и бумага — основание платежа. Свой сисадмин и замена картриджа закрываются без
-         * неё — правило живёт **одной функцией контрактов**, потому что спрашивают его четверо:
-         * этот переход, отбор пачки автозакрытия, портал неактивной кнопкой и текст отказа.
+         * неё — правило живёт **одной функцией контрактов**, потому что спрашивают его этот переход,
+         * отбор пачки автозакрытия, портал и текст отказа. Явный операторский обход проверяется
+         * отдельным контрактным предикатом и записывается в историю с причиной.
          *
          * Проверка внутри транзакции и после блокировки строки (Р112): между чтением и `COMMIT`
          * документ успевают снять, и `EXISTS`, посчитанный до неё, ничего не гарантирует.
@@ -8497,8 +8525,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
          * спрашивается по строке, перечитанной под блокировкой, и по назначению, прочитанному
          * внутри той же транзакции.
          *
-         * Предварительный отсев чужой стороны остаётся до чтения записи (`assertSideAllowed`):
-         * оператору подрядчика «шаг исполнителя» отвечают прямо, а не 404 чужой заявки.
+         * Ordinary completion rejects the wrong side before reading the request
+         * (`assertSideAllowed`). An explicit operator override uses the coordinator predicate
+         * below and does not turn the ordinary executor step into an operator step.
          */
         /*
          * ЗАКРЫТИЕ РАБОТ ПРИ ОТКРЫТОМ СПОРЕ НЕВОЗМОЖНО, и отдельной проверки здесь нет намеренно
@@ -8509,13 +8538,26 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
          * вместе с коридором молча — и тогда проверку надо ставить тут же, строкой спора
          * (`openDisputeOf`), как она стоит в приёмке.
          */
-        assertTransition(
-          p,
-          locked.id,
-          locked.status,
-          'done',
-          await executorAssignment(p, locked, tx),
-        );
+        if (body.forceWithoutDocument) {
+          // The override is a coordinator decision about evidence, not a replacement for the
+          // estimate or completion facts checked below. Recheck it after the row lock so a changed
+          // contractor assignment cannot turn a stale form into a different kind of completion.
+          if (!canForceCompleteServiceWithoutDocument(locked, p)) {
+            throw serviceDenied.side(
+              'Принудительное закрытие ремонта доступно только ведущему оргтехнику',
+              locked.id,
+            );
+          }
+          if (locked.status !== 'in_work') throw err.conflict('Заявка уже не в работе');
+        } else {
+          assertTransition(
+            p,
+            locked.id,
+            locked.status,
+            'done',
+            await executorAssignment(p, locked, tx),
+          );
+        }
 
         /**
          * ЗАКРЫТИЕ ДЕЛИТСЯ НА ТРИ ВЕТКИ (Р6 плана
@@ -8570,7 +8612,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             to: 'done',
             version: body.version,
             actor: p,
-            comment: body.comment,
+            comment: completionComment,
             patch: {
               completedAt: moscowInstantOf(body.completedOn, '00:00'),
               /**
@@ -8659,7 +8701,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
               ),
             )
             .limit(1);
-          if (!closing) {
+          if (closing && body.forceWithoutDocument) {
+            throw err.unprocessable(
+              'Закрывающий документ уже подшит — закройте работы обычным способом',
+            );
+          }
+          // Only the explicit, authorised path may record completion without evidence. It must
+          // also be genuinely missing, so the transition history never claims a false bypass.
+          if (!closing && !body.forceWithoutDocument) {
             // Отказ называет ТЕ бумаги, которые закроют ИМЕННО ЭТУ заявку: перечень наследия у
             // документной подачи (Э4) был бы прямой неправдой — человек принёс бы счёт, уже
             // лежащий в заявке основанием, и получил бы тот же отказ второй раз.
@@ -8721,7 +8770,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             to: 'done',
             version: body.version,
             actor: p,
-            comment: body.comment,
+            comment: completionComment,
             patch: {
               completedAt: moscowInstantOf(body.completedOn, '00:00'),
               /**
@@ -8870,7 +8919,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           to: 'done',
           version: body.version,
           actor: p,
-          comment: body.comment,
+          comment: completionComment,
           patch: {
             completedAt: moscowInstantOf(body.completedOn, '00:00'),
             // Итога по акту у расходников не бывает: сметы нет, платить не за что, и «0,00 ₽» в
@@ -8909,9 +8958,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           outcome.mode === 'internal'
             ? { completedOn: body.completedOn }
             : outcome.mode === 'document'
-              ? { revision: row.estimateRevision, completedOn: body.completedOn }
+              ? {
+                  revision: row.estimateRevision,
+                  completedOn: body.completedOn,
+                  ...(body.forceWithoutDocument ? { forceWithoutDocument: true } : {}),
+                }
               : {
                   revision: row.estimateRevision,
+                  ...(body.forceWithoutDocument ? { forceWithoutDocument: true } : {}),
                   total: outcome.total,
                   works: outcome.works,
                   adjustment: body.adjustmentAmount ?? null,

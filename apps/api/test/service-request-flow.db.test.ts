@@ -2180,6 +2180,19 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     state.attachedActId = actFile;
 
     const before = await card(state.main.id);
+    const unnecessaryOverride = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.main.id}/complete`,
+      ctx.operator.auth,
+      {
+        completedOn: TODAY,
+        items: before.items.map((item) => ({ id: item.id, performed: true })),
+        comment: 'Attempt to bypass an existing act',
+        forceWithoutDocument: true,
+        version: before.version,
+      },
+    );
+    expect(unnecessaryOverride.statusCode, unnecessaryOverride.body).toBe(422);
     const res = await inject(
       'PATCH',
       `/api/v1/service-requests/${state.main.id}/complete`,
@@ -5827,5 +5840,52 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       );
       expect(cancelled.statusCode, cancelled.body).toBe(200);
     }, 60_000);
+  });
+
+  it('operator explicitly closes a contractor repair without a document; contractor cannot use the override', async () => {
+    const request = await requestIn('in_work', 'Force close without closing evidence');
+    const before = await card(request.id);
+    const body = {
+      completedOn: TODAY,
+      items: before.items.map((item) => ({ id: item.id, performed: true })),
+      comment: 'The service company did not provide an act',
+      forceWithoutDocument: true,
+      version: before.version,
+    };
+    const denied = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/complete`,
+      ctx.service.auth,
+      body,
+    );
+    expect(denied.statusCode, denied.body).toBe(403);
+    expect((await card(request.id)).status).toBe('in_work');
+
+    const missingReason = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/complete`,
+      ctx.operator.auth,
+      { ...body, comment: ' ' },
+    );
+    expect(missingReason.statusCode, missingReason.body).toBe(422);
+
+    const closed = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/complete`,
+      ctx.operator.auth,
+      body,
+    );
+    expect(closed.statusCode, closed.body).toBe(200);
+    expect((closed.json() as ServiceRequestDto).status).toBe('done');
+    expect((await card(request.id)).files).toHaveLength(0);
+
+    const accepted = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${request.id}/accept`,
+      ctx.operator.auth,
+      { version: await version(request.id) },
+    );
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect((accepted.json() as ServiceRequestDto).status).toBe('accepted');
   });
 });

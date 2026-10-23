@@ -63,7 +63,7 @@
 - Остальной API: [service-request-mail.ts](../apps/api/src/services/service-request-mail.ts), [service-request-mail-audience.ts](../apps/api/src/services/service-request-mail-audience.ts), [service-request-requester-mail.ts](../apps/api/src/services/service-request-requester-mail.ts) (letters to the request author: its own planner and switches, independent of the service letters — ADR 0227), [service-estimate-revision.ts](../apps/api/src/services/service-estimate-revision.ts) (формат действующей ревизии объёма работ и SQL-редакция правила закрывающего документа), [device-snmp](../apps/api/src/services/device-snmp) (опрос аппаратов по сети: BER, клиент SNMP, реестр целей — модуль не знает ни про Fastify, ни про базу и готов к переезду на узел в офисной сети)
 - Web: [service](../apps/web/src/pages/service), [service-request](../apps/web/src/entities/service-request)
 - Тесты: `service-request-*.db.test.ts`, `service-estimate-*.test.ts`, `service-corridors.test.ts`, `office-equipment-*.db.test.ts`
-- Решения: [ADR 0085](adr/0085-office-equipment-module.md), [ADR 0125](adr/0125-service-request-cycle-changes.md), [ADR 0174](adr/0174-service-request-internal-repair-without-estimate.md), [ADR 0205](adr/0205-device-network-poll.md), [ADR 0230](adr/0230-request-local-drafts.md)
+- Решения: [ADR 0085](adr/0085-office-equipment-module.md), [ADR 0125](adr/0125-service-request-cycle-changes.md), [ADR 0174](adr/0174-service-request-internal-repair-without-estimate.md), [ADR 0205](adr/0205-device-network-poll.md), [ADR 0230](adr/0230-request-local-drafts.md), [ADR 0232](adr/0232-service-request-forced-completion-without-document.md)
 
 ## Гараж, показания и ТО
 

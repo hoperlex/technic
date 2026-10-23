@@ -51,7 +51,7 @@ export interface ServiceRequestModals {
    * работ: у обоих видов заявки исполнитель отвечает на один вопрос, «что по ней пойдёт».
    */
   consumables: (request: ServiceRequestDto) => void;
-  complete: (request: ServiceRequestDto) => void;
+  complete: (request: ServiceRequestDto, forceWithoutDocument?: boolean) => void;
   /** Правка факта выдачи расходников (Р6): склад двигает она, а не смена статуса. */
   issue: (request: ServiceRequestDto) => void;
   accept: (request: ServiceRequestDto, mode: AcceptMode) => void;
@@ -140,7 +140,10 @@ export function useServiceRequestModals(): ServiceRequestModals {
   const [approvalTarget, setApprovalTarget] = useState<ServiceRequestDto | null>(null);
   const [disputeTarget, setDisputeTarget] = useState<ServiceRequestDto | null>(null);
   const [consumablesTarget, setConsumablesTarget] = useState<ServiceRequestDto | null>(null);
-  const [completeTarget, setCompleteTarget] = useState<ServiceRequestDto | null>(null);
+  const [completeTarget, setCompleteTarget] = useState<{
+    request: ServiceRequestDto;
+    forceWithoutDocument: boolean;
+  } | null>(null);
   const [issueTarget, setIssueTarget] = useState<ServiceRequestDto | null>(null);
   const [acceptTarget, setAcceptTarget] = useState<{
     request: ServiceRequestDto;
@@ -194,7 +197,8 @@ export function useServiceRequestModals(): ServiceRequestModals {
     approval: setApprovalTarget,
     disputeResolution: setDisputeTarget,
     consumables: setConsumablesTarget,
-    complete: setCompleteTarget,
+    complete: (request, forceWithoutDocument = false) =>
+      setCompleteTarget({ request, forceWithoutDocument }),
     issue: setIssueTarget,
     accept: (request, mode) => setAcceptTarget({ request, mode }),
     cancel: setCancelTarget,
@@ -248,7 +252,11 @@ export function useServiceRequestModals(): ServiceRequestModals {
           />
         )}
         {completeTarget && (
-          <ServiceCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
+          <ServiceCompleteModal
+            request={completeTarget.request}
+            forceWithoutDocument={completeTarget.forceWithoutDocument}
+            onClose={() => setCompleteTarget(null)}
+          />
         )}
         {issueTarget && (
           <ServiceConsumablesIssueModal

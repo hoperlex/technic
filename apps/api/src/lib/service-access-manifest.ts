@@ -74,10 +74,9 @@ export type ServiceSide =
   /** Заказчик: заводит, правит и удаляет свою заявку (`SERVICE_REQUEST_CUSTOMER_PERMISSIONS`). */
   | 'customer'
   /**
-   * Сторону задаёт САМА КОМАНДА, а не ручка: у пакетного маршрута девять вариантов операции, и у
-   * каждого сторона своя — отмену и приёмку держит «Ведение», назначение — распределяющий, «принять
-   * в работу» — назначенный исполнитель. Спрашивается она построчно, тем же шагом, что и у
-   * одиночной ручки (план массовых действий, Р2).
+   * The body determines the side. A bulk route has several operations; completion has an explicit
+   * document override reserved for the operator while its ordinary path belongs to the executor.
+   * Each path checks its side again after locking the request row.
    *
    * Это НЕ `'any'`: там сторона не спрашивается вовсе, здесь — спрашивается всегда, просто разная.
    * Объявить такую дверь `'any'` значило бы записать в манифест «стороны нет» ровно у той ручки,
@@ -474,13 +473,11 @@ export const SERVICE_ACCESS_MANIFEST = {
     side: 'executor',
     state: 'statusList',
   },
-  // Закрытие работ: дуга `in_work → done` есть только у стороны исполнителя, и спрашивают её
-  // `assertSideAllowed` до чтения строки и `assertTransition` с признаками назначения — после.
-  // Названа дуга, а не равенство ревизий и не планка закрывающего документа: те две проверки
-  // записаны в теле условиями без имени, а коридор отвечает и «из какого состояния», и «чей ход».
+  // Ordinary completion checks the executor corridor. An explicit document override asks the
+  // operator predicate instead; both paths retain the same visibility and locked-row checks.
   'PATCH /api/v1/service-requests/:id/complete': {
     scope: 'visibility',
-    side: 'executor',
+    side: 'byOperation',
     state: 'assertTransition',
   },
 

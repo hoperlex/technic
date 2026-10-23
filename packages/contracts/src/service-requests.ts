@@ -3222,6 +3222,8 @@ export type ResolveServiceEstimateDisputeInput = z.infer<
  */
 export const completeServiceRequestSchema = z.object({
   completedOn: dateOnlySchema,
+  /** An explicit operator override; an absent field preserves the ordinary document gate. */
+  forceWithoutDocument: z.boolean().optional(),
   items: z
     .array(
       z.object({
@@ -3781,28 +3783,34 @@ export function hasServiceClosingDocument(
 }
 
 /**
- * Кому закрывающий документ обязателен (Н8). Одно место правила на весь модуль: до этой правки оно
- * было сформулировано трижды и по-разному, а спрашивают его четверо — переход в «Решена», отбор
- * пачки автозакрытия, портал неактивной кнопкой и текст отказа.
+ * Contractor repairs require payment evidence before ordinary completion (N8). In-house repairs
+ * and consumables do not. The explicit coordinator override has its own predicate below; keeping
+ * this ordinary requirement intact also keeps auto-close, portal actions and refusal text aligned.
  *
- * Планка стоит **только внешнему сервису**: за его работу платят, и бумага — основание платежа
- * (В7). Свой сисадмин и замена картриджа закрываются без неё.
- *
- * Вид в условии не лишний, хотя заявка на расходники сервису сегодня не назначается: правило,
- * опирающееся на одного исполнителя, начнёт требовать акт в тот день, когда картриджи повезёт
- * подрядчик, — и никто не вспомнит, что это было не задумано. Условие обязано отказывать по той
- * причине, по которой его писали.
- *
- * Вход — пара «вид + исполнитель-контрагент», а не `ServiceRequestDto`: тот же вопрос задают по
- * строке БД (сервер — до того, как карточка собрана, и в отборе пачки) и по карточке (портал), и
- * общего типа у них нет.
+ * The kind matters even though contractors do not currently receive consumables requests: a
+ * future contractor delivery must not silently acquire a repair-document requirement. This pair
+ * works for both database rows and portal DTOs without making either representation authoritative.
  */
 export function serviceRequestNeedsClosingDocument(request: {
   kind: ServiceRequestKind;
-  /** Исполнитель-контрагент; `null` — заявку ведёт свой сотрудник, и платить по ней некому. */
+  /** A null counterparty means an in-house executor, with no external service payment. */
   serviceCounterpartyId: string | null;
 }): boolean {
   return request.kind === 'repair' && request.serviceCounterpartyId !== null;
+}
+
+/** A coordinator may take responsibility for a contractor repair without closing evidence. */
+export function canForceCompleteServiceWithoutDocument(
+  request: { kind: ServiceRequestKind; serviceCounterpartyId: string | null },
+  subject: AccessSubject | null | undefined,
+  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
+): boolean {
+  return (
+    !!subject &&
+    !actsForCounterparty(subject, 'service') &&
+    has('serviceRequests.status') &&
+    serviceRequestNeedsClosingDocument(request)
+  );
 }
 
 /**
