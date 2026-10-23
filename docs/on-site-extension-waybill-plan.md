@@ -26,6 +26,39 @@ This is the behavior accepted by ADR 0207: a nonlinear order can have both weekl
 does not establish an order's intended future paper policy. The current model has no explicit
 per-order selection for “continue with daily 4-P on extension.”
 
+## Exact code workflow
+
+1. A weekly request reaches `pending` with an `extend` row naming the source order and new end
+   date. `POST /weekly-vehicle-requests/:id/approval` calls `applyWeeklyRequest` in the visa's
+   transaction. A submitter who may approve their own future week takes the same apply path while
+   submitting it. The service locks the week and orders, checks every row, and skips an inapplicable
+   extension rather than changing that order.
+2. An applicable row calls `extendSpecialEquipmentPeriod`. In `read_mode = history`, the service
+   first computes `planWeeklyExtension` through the shared `shortenTermPlan`; in `legacy`, it uses
+   the weekly sweep. `buildEsm2SyncPlan` reads the *ordered* type's effective linearity
+   (`coalesce(is_linear_frozen, vehicle_types.is_linear)`) and `esm2Mode` returns `auto` for an own,
+   nonlinear on-site order in work or done. Neither branch asks whether route days or 4-P already
+   exist.
+3. `extendSpecialEquipmentPeriod` writes `date_to`, then `afterWorkPeriodChanged` applies the ESM-2
+   plan or sweep. In `auto`, the requested documents come from the extended term; `esm2Periods`
+   splits it at the nearest week or month end. Thus 26 October–1 November 2026 yields sheets for
+   26–31 October and 1 November. The days sync only removes invalid days when shortening a term;
+   extension creates no route days and never calls the day batch.
+4. Daily paper is a separate `POST /vehicle-requests/:id/days/batch`, called after work entry if
+   its checkbox was selected, or later from **Work days → Plan the period**. It walks unplanned
+   dates, resolves the vehicle from assignment history per day when history is authoritative,
+   asks for one driver for the portion, creates/joins a route and optionally issues its route form.
+   The route form comes from the assigned vehicle's type (`4p` for these vehicles only if the type
+   actually stores `4p`). It commits each day separately and reports skips. The day-batch DB test
+   explicitly asserts that the already issued weekly ESM-2 remains beside its newly issued 4-P.
+
+The missing rule is therefore the order's **future paper intent**, not a wrong date split in the
+assignment-history slice. History determines *which vehicle and machinist* a weekly sheet names;
+it does not decide whether the work should have weekly or daily paper. An extension exposes that
+gap because the ESM-2 path is automatic while the 4-P path is a separate dispatcher action. A guard
+based on “any 4-P already exists” would fail on initial work entry (ESM-2 runs before the separate
+batch request) and misclassify orders where both document types are intentional.
+
 ## Database confirmation gate
 
 Run the read-only audit against the active portal database and record:
