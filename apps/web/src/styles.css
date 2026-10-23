@@ -324,6 +324,11 @@ body,
   padding: var(--gap-xs) 0;
 }
 
+/* The menu's line height otherwise places this wrapped count below its blue peer. */
+.ant-layout-sider .ant-menu-item [title='Требуют решения'] {
+  display: inline-flex;
+}
+
 /* Collapsed navigation: item icons with a round highlight of the active one (matching the
    avatar). */
 .sider-mini-nav {

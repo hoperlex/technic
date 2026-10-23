@@ -143,12 +143,8 @@ export function AppLayout() {
     );
 
   /**
-   * Те же два счётчика для РАЗВЁРНУТОГО меню — строкой, у правого края пункта, а не на иконке.
-   * От иконки до подписи десять пикселей, и двузначное число в них не помещается: на приёмке
-   * золотой «12» лежал на первой букве «Орг.техники», а синий закрывал правый край самой иконки.
-   * У правого края строки места хватает обоим, и оба остаются ЧИСЛАМИ: точка отвечала бы
-   * «где-то что-то есть» там, где спрашивают «сколько». На свёрнутой панели и на телефоне подписи
-   * рядом с иконкой нет вовсе — там счётчики остаются на иконке (`serviceMenuIcon`).
+   * The expanded menu places both numeric counters at the row's trailing edge, where double-digit
+   * values cannot overlap the label or icon. Collapsed and mobile navigation keep them on the icon.
    */
   const serviceCounters =
     waitingServiceCount > 0 || unreadChatCount > 0 ? (
