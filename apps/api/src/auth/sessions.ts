@@ -179,8 +179,9 @@ export async function rotateRefreshSession(
     };
   });
 
-  // Наружу сигнатура прежняя: 401 по-прежнему приходит из `rotateRefreshSession`, и вызывающая
-  // сторона (`POST /auth/refresh`) о двух исходах не знает — она чистит cookie на любом отказе.
+  // The signature outside is unchanged: the 401 still comes from `rotateRefreshSession`, and the
+  // caller (`POST /auth/refresh`) does not know about the two outcomes. It drops the cookie on any
+  // refusal of the token, and only on that: a database failure is not a refusal.
   if (outcome.kind === 'reused') {
     throw err.unauthorized('Повторное использование refresh-токена — сессии отозваны');
   }

@@ -63,6 +63,13 @@ const rawSchema = z.object({
   DATABASE_MIGRATION_URL: z.string().optional(),
   PGSSLROOTCERT: z.string().optional(),
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+  // Pool limits (`db/bounded-pool.ts`): without them node-postgres waits forever, and a pool held by
+  // half-open sockets hung login and readiness for twenty minutes on 26.10.2026. The worker reads
+  // the same three names. The query deadline caps every query of the API, so a report that
+  // legitimately runs longer needs this raised in prod.env, not a new release.
+  DB_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+  DB_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  DB_QUERY_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
 
   JWT_PRIVATE_KEY_PEM: z.string().optional(),
   JWT_PUBLIC_KEY_PEM: z.string().min(1),
@@ -582,6 +589,9 @@ function loadConfig() {
       migrationUrl: env.DATABASE_MIGRATION_URL ?? env.DATABASE_URL,
       sslCa,
       poolMax: env.DB_POOL_MAX,
+      connectTimeoutMs: env.DB_CONNECT_TIMEOUT_MS,
+      idleTimeoutMs: env.DB_IDLE_TIMEOUT_MS,
+      queryTimeoutMs: env.DB_QUERY_TIMEOUT_MS,
     },
     auth: {
       privateKeyPem: resolvePem(env.JWT_PRIVATE_KEY_PEM),

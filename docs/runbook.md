@@ -1361,6 +1361,50 @@ docker compose -f deploy/docker-compose.yml -p technic up -d --force-recreate te
 Open tabs need no action. People who still hold a refresh cookie are let in by their next reload;
 the rest sign in once.
 
+## Database drop: API and worker recover on their own (ADR 0233)
+
+Before 26.10.2026 a short drop of the managed cluster could leave `technic-api` hanging with a
+healthy cluster behind it: login, refresh and `/health/ready` never answered, Docker showed
+`unhealthy` and did nothing more, and only a manual restart helped. Now every database wait has a
+deadline, a dead client leaves the pool, and a process that still does not recover exits so that
+`restart: unless-stopped` starts a fresh one.
+
+What a drop looks like now:
+
+- for up to the query deadline (15 s) requests answer `503 db_unavailable` with `Retry-After: 5`;
+  each one leaves a `PostgreSQL недоступен` line in the API log;
+- an idle connection that broke leaves `Простаивающее соединение с PostgreSQL оборвалось`;
+- a process that exits for a restart leaves one `fatal` line, `Пул PostgreSQL не выдаёт
+  соединения…` (callers waited and the pool stayed silent for twice the query deadline; API and
+  worker) or `Проверка готовности не проходит…` (three failed readiness checks over at least a
+  minute; API only);
+- in the browser a page reload during the burst shows the login form, but the refresh cookie
+  survives: a reload after recovery restores the session.
+
+Check:
+
+```bash
+docker ps --filter name=technic- --format '{{.Names}}\t{{.Status}}'
+docker inspect -f '{{.Name}} restarts={{.RestartCount}} started={{.State.StartedAt}}' technic-api technic-worker
+docker logs --since 1h technic-api 2>&1 | grep -E 'PostgreSQL недоступен|оборвалось|для перезапуска' | tail -20
+```
+
+A restart count that keeps growing means the cluster itself does not accept sessions (between
+restarts nginx answers 502): check the cluster in the Yandex Cloud console. Nothing has to be done in
+the portal; the API comes back within about a minute after the cluster does.
+
+The deadlines live in `/etc/technic-portal/prod.env` and are shared by both containers:
+`DB_CONNECT_TIMEOUT_MS` (5000), `DB_IDLE_TIMEOUT_MS` (30000), `DB_QUERY_TIMEOUT_MS` (15000). A query
+that legitimately runs longer fails with 503; raise the deadline there and recreate the containers,
+because a restart does not reread `env_file`:
+
+```bash
+docker compose -f deploy/docker-compose.yml -p technic up -d --force-recreate technic-api technic-worker
+```
+
+A one-off maintenance script with long queries takes its own value for one run, for example
+`docker compose -p technic run --rm -e DB_QUERY_TIMEOUT_MS=600000 …`.
+
 ## Backup / restore
 
 - **PostgreSQL**: автобэкапы + PITR в Yandex Managed; периодически проверять restore.

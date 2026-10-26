@@ -2,6 +2,10 @@ import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 import { hasZodFastifySchemaValidationErrors } from 'fastify-type-provider-zod';
 import { config } from '../config';
 import { AppError } from './errors';
+import { isDbUnavailable } from './pg-error';
+
+/** A failover of the managed cluster takes seconds; the pool's own deadlines are 5 and 15 s. */
+const DB_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
 
 export function errorHandler(
   error: FastifyError,
@@ -49,6 +53,22 @@ export function errorHandler(
       code: 'validation_error',
       message: 'Ошибка валидации данных',
       fields,
+      requestId,
+    });
+  }
+
+  /*
+   * The database did not answer or could not be reached: a failover, a dropped connection, a pool
+   * deadline. Repeating the request can succeed, so the answer is 503 with `Retry-After`, not a 500
+   * that reads as a bug in the screen. The code differs from the maintenance gate's on purpose: the
+   * portal closes itself only on `maintenance_mode`, and a few seconds of failover must not do that.
+   */
+  if (isDbUnavailable(error)) {
+    req.log.warn({ err: error }, 'PostgreSQL недоступен');
+    reply.header('Retry-After', String(DB_UNAVAILABLE_RETRY_AFTER_SECONDS));
+    return reply.code(503).send({
+      code: 'db_unavailable',
+      message: 'База данных временно недоступна. Повторите через несколько секунд.',
       requestId,
     });
   }

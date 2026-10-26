@@ -1,10 +1,29 @@
 import { buildApp } from './app';
 import { startCaptchaCanary, stopCaptchaCanary } from './auth/captcha';
 import { assertSigningKey, config } from './config';
-import { closeDb, pingDb } from './db/client';
+import { watchPoolStall } from './db/bounded-pool';
+import { closeDb, pingDb, pool } from './db/client';
 import { assertMigrationsApplied } from './db/migration-check';
 import { assertStockFrozenEmpty } from './db/stock-frozen';
+import { armReadinessWatch, readinessStreak } from './lib/readiness-watch';
 import { logger } from './logger';
+
+/**
+ * Three failed checks over at least a minute: with Docker's 30-second interval that is the third
+ * check in a row. A managed cluster's failover takes seconds, so a streak this long means the
+ * process, not the cluster, is what does not recover.
+ */
+const READINESS_LOST_FAILURES = 3;
+const READINESS_LOST_SPAN_MS = 60_000;
+
+/**
+ * Exit so that Docker starts a fresh process (`restart: unless-stopped`). No graceful close: it
+ * would wait for the very requests that are stuck.
+ */
+function exitForRestart(details: object, message: string): void {
+  logger.fatal(details, message);
+  process.exit(1);
+}
 
 async function main(): Promise<void> {
   assertSigningKey(config); // startup check: приватный ключ обязателен для api
@@ -42,6 +61,28 @@ async function main(): Promise<void> {
   const app = await buildApp();
   await app.listen({ host: config.host, port: config.port });
   logger.info(`API слушает на ${config.host}:${config.port} (${config.env})`);
+
+  // Armed after `listen`: a database that fails before the port opens is a failed start above.
+  // Twice the query deadline, because that deadline frees stuck clients by itself.
+  watchPoolStall(pool, {
+    stallMs: 2 * config.db.queryTimeoutMs,
+    onStall: (stall) =>
+      exitForRestart(
+        stall,
+        'Пул PostgreSQL не выдаёт соединения: процесс завершается для перезапуска',
+      ),
+  });
+  armReadinessWatch(
+    readinessStreak({
+      minFailures: READINESS_LOST_FAILURES,
+      minSpanMs: READINESS_LOST_SPAN_MS,
+      onLost: (streak) =>
+        exitForRestart(
+          streak,
+          'Проверка готовности не проходит: процесс завершается для перезапуска',
+        ),
+    }),
+  );
 
   // Canary SmartCaptcha (`docs/smart-captcha-plan.md` §7–§8): сразу после старта и дальше раз в
   // час. Шлёт заведомо мусорный токен и ждёт отказа — в ограниченном режиме (неактивный платёжный

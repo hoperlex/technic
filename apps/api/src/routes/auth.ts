@@ -18,7 +18,7 @@ import {
 import { config } from '../config';
 import { db } from '../db/client';
 import { counterparties, persons, users } from '../db/schema';
-import { err } from '../lib/errors';
+import { AppError, err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import {
   assertCookieOrigin,
@@ -565,7 +565,14 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     try {
       rotated = await rotateRefreshSession(raw, ctx(req));
     } catch (e) {
-      clearRefreshCookie(reply);
+      /*
+       * Only the server's verdict on the token drops the cookie. A failure on the way to it (the
+       * database did not answer, the rotation rolled back) leaves the token exactly as valid as it
+       * was, and dropping the cookie then logged out everyone who reloaded a page during a failover.
+       * A deadline during COMMIT is the one ambiguous case: if the rotation did land, the kept token
+       * reads as reuse on the next refresh and ends the session, which is no worse than before.
+       */
+      if (e instanceof AppError) clearRefreshCookie(reply);
       throw e;
     }
     const principal = await loadPrincipal(rotated.userId);

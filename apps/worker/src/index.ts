@@ -1,9 +1,9 @@
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import pg from 'pg';
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { pino } from 'pino';
+import { createBoundedPool, watchPoolStall } from './db-pool';
 import { archiveUnverifiedRegistrations, purgeExpiredRegistrations } from './retention';
 import { PermanentMailError } from './mail-transport';
 import { RateLimiter } from './mail-rate';
@@ -196,10 +196,31 @@ const ca = caPath ? readFileSync(caPath, 'utf8') : undefined;
 const dbUrl = new URL(required('DATABASE_URL'));
 dbUrl.searchParams.delete('sslmode');
 
-const pool = new pg.Pool({
+// The three limits share their names and defaults with the API (`apps/api/src/config.ts`): both
+// containers read one prod.env.
+const DB_QUERY_TIMEOUT_MS = Number(process.env.DB_QUERY_TIMEOUT_MS ?? 15_000);
+
+const pool = createBoundedPool({
   connectionString: dbUrl.toString(),
   ssl: ca ? { ca, rejectUnauthorized: true } : false,
   max: Number(process.env.WORKER_DB_POOL_MAX ?? 4),
+  connectTimeoutMs: Number(process.env.DB_CONNECT_TIMEOUT_MS ?? 5_000),
+  idleTimeoutMs: Number(process.env.DB_IDLE_TIMEOUT_MS ?? 30_000),
+  queryTimeoutMs: DB_QUERY_TIMEOUT_MS,
+  onIdleError: (err) => logger.warn({ err }, 'Простаивающее соединение с PostgreSQL оборвалось'),
+});
+
+/*
+ * No healthcheck watches the worker, so a stalled pool is noticed only here. The exit hands the
+ * restart to Docker (`unless-stopped`); held jobs return to the queue when their lease expires.
+ * Twice the query deadline, because that deadline frees stuck clients by itself.
+ */
+watchPoolStall(pool, {
+  stallMs: 2 * DB_QUERY_TIMEOUT_MS,
+  onStall: (stall) => {
+    logger.fatal(stall, 'Пул PostgreSQL не выдаёт соединения: worker завершается для перезапуска');
+    process.exit(1);
+  },
 });
 
 const s3 = new S3Client({

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { pingDb } from '../db/client';
+import { noteReadiness } from '../lib/readiness-watch';
 import { collectMetrics } from '../services/metrics';
 
 export default async function healthRoutes(app: FastifyInstance): Promise<void> {
@@ -8,8 +9,10 @@ export default async function healthRoutes(app: FastifyInstance): Promise<void> 
   app.get('/health/ready', async (_req, reply) => {
     try {
       await pingDb();
+      noteReadiness(true);
       return { status: 'ready' };
     } catch {
+      noteReadiness(false);
       reply.code(503);
       return { status: 'not_ready' };
     }

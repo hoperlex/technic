@@ -6,7 +6,7 @@
 
 Как читать строку: номер · заголовок · статус · «изменён/отменён» следующими решениями (в скобках — граница, если решение правится не целиком) · миграции · пути, названные областью. **⛔ стоит только у решения, которое само объявило себя отменённым или заменённым.** Входящая связь показывает, кто его правил, но насколько — знает лишь текст самого решения: ADR 0141 отменяет приём ADR 0053 в модуле оргтехники, а в вывозе мусора тот приём работает.
 
-Решений: 232. Доменов: 16.
+Решений: 233. Доменов: 16.
 
 ## ⚠ Номера, занятые дважды
 
@@ -252,7 +252,7 @@
 - [0216](0216-auto-part-receipt-warehouse.md) — Склад автозапчастей — партии из чеков, применение — отдельным документом · код: `packages/contracts/src/auto-part-receipts.ts`, `apps/api/src/db/schema.ts`, `apps/api/src/services/auto-part-receipts.ts`, `apps/api/src/services/auto-part-receipts-read.ts`, `apps/api/src/routes/auto-part-receipts.ts`, `apps/web/src/entities/auto-part-receipt/api/autoPartReceiptApi.ts`
 - [0217](0217-manager-auto-part-receipts.md) — Менеджер ведёт чеки автозапчастей · код: `packages/contracts/src/permissions.ts`, `apps/web/src/pages/garage/AutoPartReceiptsTab.tsx`, `apps/api/test/permissions.test.ts`, `apps/api/test/auto-part-receipts.db.test.ts`, `apps/web/test/garage-receipt-windows.test.tsx`
 
-## доступ (31)
+## доступ (32)
 
 - [0021](0021-permissions-model.md) — Единая модель прав: матрица разрешений вместо списков ролей · изменён 0085, 0102, 0160, 0223 (decision 2) · код: `packages/contracts/src/permissions.ts`, `apps/api/src/auth/plugin.ts`, `apps/api/src/lib/access.ts`, `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/app/routing/ProtectedRoute.tsx`, `apps/web/src/components/AppLayout.tsx`, `apps/api/test/route-authorization.test.ts`
 - [0033](0033-observer-role.md) — Роль «Наблюдатель» — сквозной просмотр заявок без права что-либо менять · код: `packages/contracts/src/permissions.ts`, `apps/api/drizzle/0054_observer_role.sql`, `apps/api/test/permissions.test.ts`, `apps/api/test/access-matrix.test.ts`
@@ -285,6 +285,7 @@
 - [0223](0223-portal-permission-oracle.md) — The portal asks the server's permission list, never the contracts matrix · реализовано · код: `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/entities/office-equipment-candidate/model/intake.ts`, `apps/web/src/entities/vehicle-request/model/dateRules.ts`, `apps/web/src/pages/mech/mechRequestMenu.tsx`, `apps/web/src/pages/service/serviceRequestGrid.tsx`, `apps/web/src/pages/service/serviceRequestExtras.tsx`, `apps/web/src/pages/service/serviceRequestModals.tsx`, `packages/contracts/src/permissions.ts`, `packages/contracts/src/mech-requests.ts`, `packages/contracts/src/vehicle-requests.ts`, `packages/contracts/src/service-requests.ts`, `eslint.config.mjs`, `apps/web/test/permission-oracle.test.ts`
 - [0229](0229-server-sent-events-for-portal-updates.md) — Server-sent events for portal updates · код: `apps/web/src/shared/api/session.ts`, `apps/web/src/shared/api/http.ts`, `apps/web/src/shared/config/query.ts`, `apps/web/quality-budget.json`, `apps/api/src/auth/plugin.ts`, `packages/contracts/src/feature-flags.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/technic.conf`
 - [0232](0232-service-request-forced-completion-without-document.md) — Office-equipment operators can complete contractor repairs without closing evidence · код: `packages/contracts/src/service-requests.ts`, `apps/api/src/routes/service-requests.ts`, `apps/api/src/lib/access-manifest.ts`, `apps/api/src/lib/service-access-manifest.ts`, `apps/web/src/pages/service/serviceRequestMenu.tsx`, `apps/web/src/features/service-complete/ui/ServiceCompleteModal.tsx`, `apps/web/bundle-budget.json`
+- [0233](0233-database-pool-deadlines-and-self-restart.md) — Database pool deadlines, dropping dead clients and restarting a stuck process · код: `apps/api/src/db/bounded-pool.ts`, `apps/api/src/db/client.ts`, `apps/api/src/lib/pg-error.ts`, `apps/api/src/lib/error-handler.ts`, `apps/api/src/lib/readiness-watch.ts`, `apps/api/src/server.ts`, `apps/api/src/routes/auth.ts`, `apps/api/src/config.ts`, `apps/worker/src/db-pool.ts`, `apps/worker/src/index.ts`
 
 ## учётки-и-аудит (11)
 
@@ -336,7 +337,7 @@
 - [0229](0229-server-sent-events-for-portal-updates.md) — Server-sent events for portal updates · код: `apps/web/src/shared/api/session.ts`, `apps/web/src/shared/api/http.ts`, `apps/web/src/shared/config/query.ts`, `apps/web/quality-budget.json`, `apps/api/src/auth/plugin.ts`, `packages/contracts/src/feature-flags.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/technic.conf`
 - [0230](0230-request-local-drafts.md) — Request forms keep local drafts across a lost connection · код: `apps/web/src/shared/lib/localFormDraftStore.ts`, `apps/web/src/shared/lib/useLocalFormDraft.tsx`, `apps/web/src/shared/lib/localFormDraftDates.ts`, `apps/web/src/shared/ui/LocalFormDraftNotice.tsx`, `apps/web/src/features/vehicle-request-editor/model/localDraft.ts`, `apps/web/src/widgets/vehicle-request-editor/model/useVehicleRequestDraftRecovery.ts`, `apps/web/src/features/waste-request-editor/model/useWasteRequestEditor.tsx`, `apps/web/src/pages/mech/MechRequestForm.tsx`, `apps/web/src/pages/service/ServiceRequestForm.tsx`, `apps/web/src/features/weekly-request-create/model/useWeeklyRequestCreate.tsx`, `apps/web/src/widgets/weekly-request-workspace/model/useWeeklyCompositionDraft.ts`
 
-## схема-и-выкат (13)
+## схема-и-выкат (14)
 
 - [0077](0077-release-notes.md) — Журнал обновлений: выпуск как логический блок, а не отрезок календаря · изменён 0191 · код: `apps/web/src/shared/lib/useVersionCheck.ts`, `apps/web/src/components/AppUpdateBanner.tsx`, `packages/contracts/src/releases.ts`, `apps/api/src/routes/releases.ts`
 - [0157](0157-maintenance-mode.md) — Портал закрывается на окно работ переменной окружения, а токены гасятся эпохой по `iat` · код: `apps/api/src/lib/maintenance.ts`, `apps/api/src/config.ts`, `apps/api/src/app.ts`, `apps/api/src/auth/tokens.ts`, `apps/api/src/auth/plugin.ts`, `apps/web/src/shared/api/maintenance.ts`, `apps/web/src/app/MaintenanceBoundary.tsx`, `apps/web/src/shared/api/http.ts`, `apps/web/src/main.tsx`, `apps/web/src/entities/session/model/authContext.tsx`, `apps/web/src/shared/api/clientContract.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/maintenance.html`, `deploy/Dockerfile.web`, `deploy/docker-compose.yml`, `deploy/docker-compose.stand.yml`, `deploy/deploy-auto.sh`
@@ -351,6 +352,7 @@
 - [0226](0226-client-floor-seven-and-deploy-preflight.md) — Client floor 7 in one raise for every floor-gated debt, and deploy-auto compares floors before migrations · код: `apps/api/src/lib/client-floor.ts`, `apps/api/scripts/client-floor-check.ts`, `apps/api/src/config.ts`, `apps/api/package.json`, `apps/web/src/shared/api/clientContract.ts`, `deploy/deploy-auto.sh`, `apps/api/test/client-floor-preflight.test.ts`
 - [0229](0229-server-sent-events-for-portal-updates.md) — Server-sent events for portal updates · код: `apps/web/src/shared/api/session.ts`, `apps/web/src/shared/api/http.ts`, `apps/web/src/shared/config/query.ts`, `apps/web/quality-budget.json`, `apps/api/src/auth/plugin.ts`, `packages/contracts/src/feature-flags.ts`, `deploy/nginx/spa.conf`, `deploy/nginx/technic.conf`
 - [0231](0231-request-create-receipts.md) — Durable receipts for ordinary request creation · код: `apps/api/src/services/request-create-attempt.ts`, `apps/api/drizzle/0384_request_create_idempotency.sql`, `apps/web/src/shared/lib/localFormDraftStore.ts`, `apps/api/src/routes/vehicle-requests.ts`, `packages/contracts/src/vehicle-requests.ts`, `apps/api/src/routes/waste-requests.ts`, `apps/api/src/routes/mech-requests.ts`, `apps/api/src/routes/service-requests.ts`
+- [0233](0233-database-pool-deadlines-and-self-restart.md) — Database pool deadlines, dropping dead clients and restarting a stuck process · код: `apps/api/src/db/bounded-pool.ts`, `apps/api/src/db/client.ts`, `apps/api/src/lib/pg-error.ts`, `apps/api/src/lib/error-handler.ts`, `apps/api/src/lib/readiness-watch.ts`, `apps/api/src/server.ts`, `apps/api/src/routes/auth.ts`, `apps/api/src/config.ts`, `apps/worker/src/db-pool.ts`, `apps/worker/src/index.ts`
 
 ## качество (8)
 

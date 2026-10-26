@@ -215,10 +215,10 @@
 - Источник истины: [schema.ts](../apps/api/src/db/schema.ts), [drizzle](../apps/api/drizzle), [releases.ts](../packages/contracts/src/releases.ts)
 - Разделы портала: —
 - API-маршруты: [health.ts](../apps/api/src/routes/health.ts), [releases.ts](../apps/api/src/routes/releases.ts)
-- Остальной API: [maintenance.ts](../apps/api/src/lib/maintenance.ts), [client-floor.ts](../apps/api/src/lib/client-floor.ts) (the client floor a release requires; asked by the API at startup and by `deploy-auto` before migrations), [scripts](../apps/api/scripts)
+- Остальной API: [maintenance.ts](../apps/api/src/lib/maintenance.ts), [client-floor.ts](../apps/api/src/lib/client-floor.ts) (the client floor a release requires; asked by the API at startup and by `deploy-auto` before migrations), [bounded-pool.ts](../apps/api/src/db/bounded-pool.ts) and [readiness-watch.ts](../apps/api/src/lib/readiness-watch.ts) (pool deadlines and the exits that hand a stuck process to Docker; the worker's copy is [db-pool.ts](../apps/worker/src/db-pool.ts)), [scripts](../apps/api/scripts)
 - Web: [release](../apps/web/src/entities/release)
 - Тесты: `releases-*.db.test.ts`, `maintenance-*.db.test.ts`, `migrations-*.db.test.ts`
-- Решения: [ADR 0077](adr/0077-release-notes.md), [ADR 0113](adr/0113-role-migration-prepare.md), [ADR 0157](adr/0157-maintenance-mode.md), [ADR 0226](adr/0226-client-floor-seven-and-deploy-preflight.md)
+- Решения: [ADR 0077](adr/0077-release-notes.md), [ADR 0113](adr/0113-role-migration-prepare.md), [ADR 0157](adr/0157-maintenance-mode.md), [ADR 0226](adr/0226-client-floor-seven-and-deploy-preflight.md), [ADR 0233](adr/0233-database-pool-deadlines-and-self-restart.md)
 
 ## Ворота качества и проверки документации
 
