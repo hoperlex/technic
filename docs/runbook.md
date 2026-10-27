@@ -1654,6 +1654,32 @@ psql "$DATABASE_URL" -c "select id, type, attempts, locked_by, locked_until
 Строки с `locked_until` в прошлом означают, что воркер их не довёл: следующий такт вернёт их в
 очередь. Если такие строки копятся, смотрите не на них, а на воркер — перезапускается ли он.
 
+## Worker loop watchdog: the worker exits when its loop stops moving
+
+Every job, mail tick, mailbox tick and cleanup pass of `technic-worker` runs in one sequential loop.
+One call that never returns stops all of them while the container stays `Up`: on 22.10.2026 the
+queue stood for four days that way. The worker now marks each step it enters (each job of a batch,
+each tick, the cleanup) and exits with code 1 when no step has been entered for
+`WORKER_LOOP_STALL_MS` (default **1800000**, 30 minutes; below 10 minutes or garbage falls back to
+the default with a warning). Docker restarts it; jobs it held return to the queue when their lease
+expires, spending an attempt (see the section above).
+
+The exit leaves one line in the worker log:
+
+```text
+{"level":60,"phase":"job","detail":{"jobId":"…","type":"…"},"silentMs":1800412,"msg":"Цикл worker не продвигается: worker завершается для перезапуска"}
+```
+
+`phase` is where it hung: `job` (with the job's id and type), `jobs` (claiming or reclaiming),
+`mailings`, `device-mail`, `service-auto-close`, `cleanup`. One such line is a recovered hang. The
+same phase again after every restart is a defect in that step: the job row ends in `dead` after its
+attempts, a tick repeats on every start. Raise `WORKER_LOOP_STALL_MS` only when a legitimate step
+really takes longer: the longest known one is a five-page ticket, about a quarter of an hour.
+
+The exit cures the hang only if it ends the container. Whether it does on prod is not yet
+confirmed (`docker inspect -f '{{.RestartCount}} {{.State.StartedAt}}' technic-worker`, see
+ADR 0233, consequences).
+
 ## Распознавание талонов вывоза (ADR 0114)
 
 Модуль читает сканы контрольных талонов моделью через LLM-прокси заказчика и сверяет прочитанное с
