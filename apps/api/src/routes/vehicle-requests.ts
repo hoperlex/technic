@@ -8409,8 +8409,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     assertArchiveVisible(p, request.deletedAt, 'Заявка не найдена');
     assertRequestScope(p, request);
     assertLessorScope(p, request.assignment?.lessorId ?? null);
-    // У грузоперевозки смен нет вовсе: у неё не период работ, а момент подачи. Пустая таблица, а
-    // не 422 — карточка спрашивает смены у любой заявки, и отказ ей пришлось бы обходить.
+    // A freight request has no shifts at all: it has a moment of delivery, not a term of work. An
+    // empty table, not a 422 — the card asks every request for shifts and would have to work
+    // around a refusal.
     if (request.requestType !== 'special_equipment') {
       return { items: [], onDate: moscowDateKeyOf(new Date()) } satisfies VehicleRequestShiftsDto;
     }
@@ -8453,8 +8454,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         await requireOpenDoor(tx, 'history_free');
         await lockRequestRow(tx, request.id);
         const state = await loadShiftDoorState(tx, request.id, date);
-        // Принятый день не переписывается: иначе часы менялись бы под уже поставленной подписью.
-        // Снять подпись может тот же круг, кто её ставил, — и это отдельное, видимое действие.
+        // A signed day is not rewritten: the hours would change under a signature already given.
+        // The circle that signs can take the sign-off back, and that is a separate, visible action.
         if (state.row?.approvedAt) {
           throw err.unprocessable(
             `Смена за ${dateKeyRu(date)} согласована — сначала снимите согласование`,
@@ -8534,8 +8535,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const { date } = req.params;
       const { approved, expectedDriverFingerprint } = req.body;
       const request = await requireShiftEditableRequest(p, req.params.id, date);
-      // Право на маршруте общее, а подтверждает заказчик этой заявки — как виза руководителя
-      // строительства проверяется по объекту, а не по одному лишь праву.
+      // The route's right is shared, but the sign-off belongs to this request's customer — like the
+      // construction manager's approval, it is checked by the object, not by the right alone.
       assertShiftApprover(p, request);
 
       /** The shift after the change; `null` — no change: already signed (or already revoked). */
@@ -8580,8 +8581,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         await markAssignmentHistoryDirty(tx, request.id);
         return { shift: (await loadShiftRow(tx, request.id, date))!, fromDriver };
       });
-      // Событие пишется только за состоявшуюся правку — как и прежде: повторное нажатие той же
-      // кнопки журнал не пополняет.
+      // An event is written only for a change that happened: pressing the same button again adds
+      // nothing to the journal.
       if (after) {
         await writeAudit({
           actorUserId: p.id,

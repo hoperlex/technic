@@ -316,11 +316,12 @@ async function waybillsOfRoutes(
 }
 
 /**
- * Таблица дней заказа: дни срока целиком, включая те, на которые ещё никого не назначили.
+ * The order's days table: every day of the term, including those nobody is assigned to yet.
  *
- * Дни считает правило контрактов (`linearDaysOf`) — оно же приклеивает к сроку распланированное и
- * помечает дни, оставшиеся за сроком: их держит замороженный лист, и прятать выданную бумагу
- * нельзя.
+ * The days are counted by the contracts' rule (`linearDaysOf`), which also attaches the planned
+ * days to the term and marks those left outside it: a frozen waybill holds them, and issued paper
+ * must not be hidden. The hours of a day are the shift table's effective day inside the term
+ * (driver readings included, readings-shifts-merge plan §6.7) and the physical row outside it.
  */
 export async function loadRequestDays(
   reader: Reader,
@@ -348,19 +349,19 @@ export async function loadRequestDays(
   );
 
   /*
-   * Дни выводятся из срока у любого заказа техники на объект — линейность на это не влияет:
-   * 4-П на весь период выписывают и нелинейному заказу, а значит дни срока у него законны. Пустой
-   * срок остаётся у грузоперевозки: у неё момент подачи, а не отрезок календаря, и дней не бывает
-   * вовсе (`linearDaysBlocker`) — построить ей таблицу по сроку значило бы предложить действие,
-   * которое сервер отклонит.
+   * Days come from the term for any on-site equipment order — linearity does not matter: a 4-П for
+   * the whole period is issued to a non-linear order too, so its term days are legitimate. An
+   * empty term stays with a freight request: it has a moment of delivery, not a span of the
+   * calendar, and has no days at all (`linearDaysBlocker`) — a table by term would offer an action
+   * the server refuses.
    *
-   * Подставить сюда пустой срок заказу, у которого он есть, нельзя ещё и потому, что тогда всё
-   * распланированное уходит в `outOfTerm`: день внутри собственного срока показался бы «за сроком»,
-   * а рядом стоящая сверка считает такие дни обречёнными.
+   * An empty term cannot be passed for an order that has one for another reason as well: every
+   * planned day would go to `outOfTerm`, a day inside its own term would look "outside", and the
+   * reconciliation next door treats such days as doomed.
    *
-   * Распланированное при этом показывается всегда — даже у отменённой заявки и у заказа,
-   * переведённого на арендную машину: снятые дни исчезнут сами (сверка), а оставшийся в выданном
-   * бланке день обязан быть виден.
+   * Planned days are shown always — even for a cancelled order and one moved to a rented vehicle:
+   * detached days disappear by themselves (reconciliation), and a day left in an issued blank must
+   * stay visible.
    */
   const term =
     request.requestType === 'special_equipment' ? request : { dateFrom: undefined, dateTo: null };
@@ -394,8 +395,8 @@ export async function loadRequestDays(
               source: shiftSourceOf(shift)!,
             }
           : null,
-      // Машина дня против машины назначения (ADR 0100 §4): расхождение помечается, а не
-      // отклоняется — на разные дни выходят разные единицы.
+      // The day's vehicle against the assignment's (ADR 0100 §4): a difference is marked, not
+      // refused — different units come out on different days.
       otherVehicle: !!request.vehicleId && row.vehicleId !== request.vehicleId,
     };
   });

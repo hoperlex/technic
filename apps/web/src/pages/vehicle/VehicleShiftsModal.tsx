@@ -80,8 +80,8 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
   const items = useMemo(() => data?.items ?? [], [data]);
   const onDate = data?.onDate;
 
-  // Сводка в строке списка меняется вместе со сменами: от неё зависят и запрет закрытия, и
-  // доступность смены машины — поэтому обновляются оба запроса, а не только таблица.
+  // The list row's summary changes with the shifts: the closing warning and the reassignment lock
+  // depend on it — so both reads are refreshed, not only the table.
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
   };
@@ -143,7 +143,7 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
   const patch = (date: string, shift: VehicleRequestShiftDto, patchValue: Partial<Draft>) =>
     setDrafts((d) => ({ ...d, [date]: { ...draftOf(shift), ...d[date], ...patchValue } }));
 
-  /** Значение поля: сначала черновик, затем сохранённое. */
+  /** A field's value: the draft first, then what is saved (or what the form started from). */
   const valueOf = (shift: VehicleRequestShiftDto): Draft => drafts[shift.date] ?? draftOf(shift);
 
   /**
@@ -327,7 +327,7 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
     },
   ];
 
-  /** Строку правят, пока день доступен, подписи под ним нет и есть право на правку. */
+  /** A row is edited while its day is open, it is unsigned and the account may edit. */
   function editableOn(s: VehicleRequestShiftDto): boolean {
     if (!canEdit || !request || !onDate) return false;
     if (s.approvedAt) return false;
