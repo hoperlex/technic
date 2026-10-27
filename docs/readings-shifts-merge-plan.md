@@ -81,6 +81,8 @@ lessor's invoice includes delivery and minimum rental, and the completion must m
   closing a reading on a driver's behalf; a `no_data` reading needs none. ADR 0163 permits an
   interim submission with morning fuel or other partial values. The final action enforces time;
   an unfinished item stays visibly incomplete and cannot be accepted as a finished `v3` reading.
+  The owner answered "mandatory for a driver"; "at finish" is the review's refinement for interim
+  submits and how "finish" is detected is open (Q9).
 - **D6. Route time is split by stops.** The segment "from the previous departure (the arrival for
   stop 1) to the departure from this stop" belongs to the requests that have a role at this stop; a
   shared stop is split equally. Per-request sums add up to the shift.
@@ -124,15 +126,23 @@ hold the route item, and its reading is still the vehicle's work for this reques
 
 Several items on one day (a vehicle swapped mid-day, two items of one vehicle) sum; that matches
 ADR 0184's "one row per day with the summed hours". Match the source's actual vehicle and day to
-the item snapshot and expose the reading module's source discrepancy as non-clean; use that module's
-rule rather than a second definition. Extract the source check into a shared server helper if its
-current service boundary prevents reuse. Request membership of a route is deliberately read live in
-stage 1: `driver_daily_report_items` has the route ID but no request snapshot, and
-`detachRequest` can change `vehicle_route_requests` after a reading was sent. A composition
-correction can therefore move an **unsigned** effective day between requests. It must refresh the
-card and invalidate the driver's approval fingerprint; a signed row stays the accepted snapshot
-and follows the existing route-correction revocation rules (ADR 0210). Do not describe the stage 1
-join as historical attribution. Stage 2 snapshots request roles for the timed freight allocation.
+the item snapshot through the reading module's discrepancy rule (`computeDiscrepancies` in
+`readings.ts`), not a second definition; extract it into a shared server helper, since today it is
+private to the report service. Its result is per kind and carries `resolved`, and the day uses both:
+
+- an **unresolved** `vehicle`, `date` or `source_state` discrepancy makes the day non-clean;
+- a `driver` discrepancy is shown but does not block: the counter belongs to the vehicle, and the
+  garage counts "the vehicle's shift, not the person's" (`EXPECTED_ROUTE_FILTER`); an ESM-2 reissued
+  to a substitute machinist is the ordinary case;
+- a discrepancy resolved in the garage (`accepted_as_is` whose fingerprint still matches) is clean.
+  Otherwise a day the dispatcher already accepted would stay manual forever;
+- `missing_source` describes a source without an item and never applies to an existing reading. Request membership of a route is deliberately read live in
+  stage 1: `driver_daily_report_items` has the route ID but no request snapshot, and
+  `detachRequest` can change `vehicle_route_requests` after a reading was sent. A composition
+  correction can therefore move an **unsigned** effective day between requests. It must refresh the
+  card and invalidate the driver's approval fingerprint; a signed row stays the accepted snapshot
+  and follows the existing route-correction revocation rules (ADR 0210). Do not describe the stage 1
+  join as historical attribution. Stage 2 snapshots request roles for the timed freight allocation.
 
 ### 6.2 The driver's day numbers and when they are clean
 
@@ -140,12 +150,18 @@ Per item: hours = `engine_hours − previous.engine_hours` when the reading is `
 exist and the engine-hour anomaly is not `counter_reset`. Refuelling = `fuel_filled_liters`.
 
 The day is **clean** when every submitted reading for this request day has hours, every predecessor
-snapshot is from `D` or `D − 1`, no source discrepancy exists, and the day's sum lies in
+snapshot is from `D` or `D − 1`, no blocking discrepancy exists (§6.1), and the day's sum lies in
 `0..MAX_MACHINE_HOURS`. A first snapshot, a `no_data` reading, a missing engine-hour value, a reset
-or a source discrepancy is non-clean. Otherwise the day carries the sum it has, the oldest known
-predecessor date (`since`) and any reason; it never replaces the site's numbers. Preserve `null`
-fuel as "not recorded", distinct from numeric zero; do not label it "not refuelled". Sum only
-recorded refill values and show incomplete fuel separately rather than claiming a complete total.
+or a blocking discrepancy is non-clean. Otherwise the day carries the sum it has, the oldest known
+predecessor date (`since`) and any reason; it never replaces the site's numbers.
+
+An empty refill reads as "not refuelled", exactly as the readings module reads it: the month
+aggregate (`coalesce(fuel_filled_liters, 0)`, with the comment "пустая заправка означает «не
+заправляли», а не «неизвестно»" in `readings-aggregate.ts`) and the readings book
+(`readings-admin-export.ts`) both do. The driver form has no way to say "unknown" apart from empty,
+so a second reading of the same `null` here would put the request card and the garage at odds and
+mark every day without a refill as incomplete. Refuelling is the sum of recorded liters; it does not
+affect cleanliness.
 
 This is not the garage's continuity rule (Р13а: no missing _expected_ shift between the snapshots). It
 is a narrower rule about one click, D3, and the plan keeps it that way on purpose: a Monday after a
@@ -161,27 +177,38 @@ whether that cost is acceptable.
 | unsigned, driver not clean or none, row exists | the row              | the row         | `site`   |
 | nothing                                        | empty                | empty           | `null`   |
 
-The refuelling text from the driver is `"<liters> л"` when all contributing readings recorded a
-refill value. Zero is `"0 л"`; a missing value stays visibly unknown. A signed row keeps the text
-that was accepted.
+The refuelling text from the driver is `"<liters> л"` for a positive sum and `''` when nothing was
+refilled — the same "not refuelled" the site writes as an empty field today. A signed row keeps the
+text that was accepted.
 
 ### 6.4 Contracts
 
-- `VehicleRequestShiftDto` gains `source?: 'site' | 'driver' | null` and
-  `driver?: ShiftDriverDayDto | null` with `machineHours | null`, `refuelLiters | null`, `clean`,
-  `fuelComplete`, `since | null`, `noDataReason`, `comment`, `driverNames`, `reportStates`, and
-  `sourceDiscrepancy`. Both optional: a portal
-  newer than the server falls back to `filledAt ? 'site' : null`.
+- `VehicleRequestShiftDto` gains `source?: 'site' | 'driver' | null`, the driver's day numbers
+  (`machineHours | null`, `refuelLiters | null`, `clean`, `since | null`) and `fingerprint` (below).
+  Both optional: a portal newer than the server falls back to `filledAt ? 'site' : null`.
+- **Who sees what (Q8, an access-model change).** Readings are behind `vehicleReadings.read`
+  (`routes/vehicle-readings.ts`); the shift table is read by everyone who can read the request — the
+  site, the requester and, through `assertLessorScope`, a lessor. D1 needs the day's effective
+  numbers and the "по водителю" mark in that table: the site signs them. The diagnostic block —
+  driver names, the reading comment, the `no_data` reason, report states and discrepancy kinds —
+  goes into an optional `driver` object that the server fills only for a principal with
+  `vehicleReadings.read`. This is the proposal; the owner decides it in Q8 and the decision is
+  recorded in `docs/access-model.md`, since access is a protected area.
 - `shiftSourceOf(shift)` — that fallback, in one place; `isShiftFilled(shift)` = a source exists.
   The approve checkbox, the "not filled" tag and `unapprovedPastShiftDays` ask it instead of
   `filledAt`.
-- `refuelLabel(liters, complete)` — the one way a driver's liters become the refuel text; unknown
-  is never converted to zero.
-- The approval body optionally carries an `expectedDriverFingerprint`. It is required when the
-  effective source is `driver` and includes the candidate reading IDs, versions, predecessor IDs,
-  report states, source mapping and the displayed hours/refuelling. An old tab can still approve a
-  site-only row; if a clean driver reading has since overlaid that row, its old body gets 409 and a
-  refresh prompt rather than signing unseen numbers.
+- `refuelLabel(liters)` — the one way a driver's liters become the refuel text (§6.3).
+- The approval and save bodies optionally carry an `expectedDriverFingerprint`. It is required when
+  the effective source is `driver` and covers what is being signed: the candidate reading IDs and
+  their `version`, the predecessor reading IDs, the source mapping and the computed hours and
+  refuelling. Report state is **not** part of it: a dispatcher accepting the report in the garage
+  changes no number, and including it would answer the site's click with 409 for nothing. An old
+  tab can still approve a site-only row; if a clean driver reading has since overlaid that row, its
+  old body gets 409 and a reload prompt rather than signing unseen numbers.
+- Both bodies are `.strict()` today (`approveVehicleRequestShiftSchema`,
+  `saveVehicleRequestShiftSchema`). The portal sends the new key **only on a `driver` day**. An old
+  server never reports `source`, so during a rollback window the new portal falls back to `site` and
+  never sends a key that server would reject with 400.
 
 ### 6.5 Server
 
@@ -225,23 +252,34 @@ that was accepted.
 - Shift window `VehicleShiftsModal`: a `driver` day locks hours and refuelling ("по показаниям
   водителя — исправляют в гараже") and leaves time and comment editable; "Approve" is enabled on it.
   Initialize the form by `source`, not today's `filledAt` gate; send the approval/save fingerprint
-  and refresh the day on 409. A non-clean driver day may prefill the form with its partial sum when
-  it fits `0..24`, but labels it incomplete and requires an explicit manual save before approval.
+  on a `driver` day only (§6.4) and refresh the day on 409. A non-clean driver day may prefill the
+  form with its partial sum when it fits `0..24`, but labels it incomplete and requires an explicit
+  manual save before approval.
 - The linear days table shows the effective hours through the stage 0 reader.
+- **Cache.** The effective day now depends on readings, and no garage mutation invalidates request
+  data today (no `vehicleRequestKeys` in `entities/vehicle-reading` or `pages/garage`). Every
+  portal mutation that changes a reading or its attribution — staff entry and edit, acceptance,
+  rebase, discrepancy resolution, shift reordering, anomaly confirmation — invalidates
+  `vehicleRequestKeys.shifts` (or the root), declared to the cache check (`apps/web/cache-budget.json`)
+  the way ADR 0222 requires. The driver's own submission happens on another device; the request
+  card refetches when opened, and live push belongs to the realtime events plan, not here.
 
 ### 6.8 Tests
 
 - Contracts: `shiftSourceOf`, `isShiftFilled`, `refuelLabel`.
 - DB (`vehicle-request-shifts.db.test.ts` or a new `shift-driver-days.db.test.ts`): ESM-2 reading →
   day `driver`; route item of a day route → day `driver`; predecessor two days back → not clean with
-  `since`; first snapshot, `no_data`, missing engine hours, source discrepancy and `counter_reset`
-  → not clean; `voided` report → ignored; `null` refuel distinct from zero; unsigned site row
-  replaced; signed row frozen with a difference; approve on a driver day writes the row and signs;
-  old-tab approval and stale fingerprint → 409; zero hours without any comment → 422; term edit not
-  refused by a driver-only day; DELETE of a driver-only day → 404; an out-of-term frozen route day
-  retains its physical shift row.
-- Web: `vehicle-shifts-modal.test.tsx` (locked inputs, approve enabled, conflict refresh),
-  `vehicle-shifts-tab.test.tsx`.
+  `since`; first snapshot, `no_data`, missing engine hours, an unresolved vehicle/date/source-state
+  discrepancy and `counter_reset` → not clean; a `driver` discrepancy and a resolved one → clean;
+  `voided` report → ignored; `null` refuel → not refuelled, matching the garage aggregate; unsigned
+  site row replaced; signed row frozen with a difference; approve on a driver day writes the row and
+  signs; old-tab approval and stale fingerprint → 409; report acceptance between load and click →
+  no 409; zero hours without any comment → 422; term edit not refused by a driver-only day; DELETE
+  of a driver-only day → 404; an out-of-term frozen route day retains its physical shift row; a
+  principal without `vehicleReadings.read` gets the numbers and the mark but no `driver` block.
+- Web: `vehicle-shifts-modal.test.tsx` (locked inputs, approve enabled, conflict refresh, no
+  fingerprint key on a `site` day), `vehicle-shifts-tab.test.tsx`, and a "mutation → refetch of the
+  carrier" test for a garage reading edit refreshing the request shifts (the ADR 0222 pattern).
 
 ### 6.9 Records
 
@@ -267,7 +305,10 @@ Migration, contracts, the cabinet, the readings service and the garage.
   Non-first stops never have arrival. A finished route's scalar start/end are derived from the
   complete points; before finish, `started_at` may hold the first arrival and `ended_at` is null.
 - New table `vehicle_reading_point_requests`: `(reading_id, position, request_id)` as its key,
-  referencing the reading point and the request. It snapshots the **distinct** request IDs served
+  referencing the reading point and the request; the delete rule of the request reference is stated
+  in the migration and checked against `directory-purge.ts`, which deletes requests with their
+  dependants (a `RESTRICT` would make a purge fail on a historical reading). It snapshots the
+  **distinct** request IDs served
   at each stop when its point set is first captured. Later time edits retain the saved associations;
   only an explicit rebase captures a new set. Two trips of one request at one stop give that request
   one share. Stage 3 allocates from this snapshot, not from mutable live roles.
@@ -286,12 +327,12 @@ Additive only (nullable columns and new tables): old code running during the win
 ### 7.2 Contracts
 
 - `readingValuesSchema` gains optional keys `startedAt`, `endedAt` and `points: [{ position,
-  routePointId, arrivedAt?, departedAt? }]` (`routePointId` may be null for a saved historical stop).
+routePointId, arrivedAt?, departedAt? }]` (`routePointId` may be null for a saved historical stop).
   Absent key = keep, explicit `null` = clear for the scalar pair or the whole point set, and an
   array = replace the whole point set — the precedent of the fuel levels (ADR 0163, Р13). A reading
   is sent whole, and an old tab that does not know the keys
   must not erase them. The submit fingerprint is computed after parsing and skips `undefined`, so a
-  retried pre-release request keeps its fingerprint. Read and validate the *resolved* saved values
+  retried pre-release request keeps its fingerprint. Read and validate the _resolved_ saved values
   after applying absent/null/replace, not only the incoming fragment.
 - `ReportItemSubmit` gains optional `finishTime` with no schema default: absent means keep the
   existing finish state, `true` finishes after validation, and an explicit staff correction may
@@ -301,9 +342,15 @@ Additive only (nullable columns and new tables): old code running during the win
 - Time order, in one contract function shared by the cabinet and the server: an ESM-2 end earlier
   than the start is the next day (the shift rule of ADR 0184); departures follow the route order,
   each not earlier than the previous one, with at most one midnight wrap and no more than 24 hours
-  from first arrival to last departure. Equal start/end clock times mean zero elapsed time when no
-  earlier point established a midnight wrap; an ESM-2 with equal times likewise means zero, never
-  an implicit 24-hour shift. Reject malformed `HH:mm`, missing positions and extra points. On first
+  from first arrival to last departure. One duration rule, not two: the contracts already read a
+  start/end pair through `shiftSpanHours`, which gives **24 h** for equal clock times
+  (`vehicle-request-shifts.ts`: `end > start ? end − start : end + 24·60 − start`), and the site's
+  shift window uses it today. A route's elapsed time is the sum of its consecutive steps: an equal
+  next time is a zero step, a smaller one is the single allowed midnight wrap. For the ESM-2 pair the
+  driver's input refuses equal start and end ("начало и конец смены совпадают") instead of
+  re-interpreting them, so `shiftSpanHours` stays the only interpreter of a pair. Changing it to
+  "equal means zero" would also change the site's hint and needs its own decision. Reject malformed
+  `HH:mm`, missing positions and extra points. On first
   capture, compare the submitted point IDs and order with the live route under its lock. After route
   points have been rebuilt, staff may correct times against the **saved** point and request
   snapshot; do not require deleted live
@@ -399,21 +446,22 @@ No migration.
 
 ## 10. Release and compatibility
 
-| Stage | Migration | Main portal floor | Driver cabinet    | Notes                                                                                                                                                                           |
-| ----- | --------- | ----------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0     | no        | no                | no                | no behavior change                                                                                                                                                              |
+| Stage | Migration | Main portal floor | Driver cabinet    | Notes                                                                                                                                                                                              |
+| ----- | --------- | ----------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | no        | no                | no                | no behavior change                                                                                                                                                                                 |
 | 1     | no        | no                | no                | an old tab cannot approve a driver-only day; if its site row is overlaid by driver data, approval or save returns 409 and asks for refresh; a new portal on an old server falls back to `filledAt` |
-| 2     | additive  | no                | draft format `v3` | `v2` reports opened before the release finish or replay under the stored format; new reports require `v3`, and their finish action requires times                                |
-| 3     | no        | no                | no                | completion prefill is a portal default, the server does not require it                                                                                                          |
+| 2     | additive  | no                | draft format `v3` | `v2` reports opened before the release finish or replay under the stored format; new reports require `v3`, and their finish action requires times                                                  |
+| 3     | no        | no                | no                | completion prefill is a portal default, the server does not require it                                                                                                                             |
 
 Stages ship separately; stage 1 does not wait for stage 2.
 
 ## 11. Order of work
 
 Each stage is its own session and commit series, per [agent-sessions.md](agent-sessions.md): stage 0
-and 1 together (one release), then stage 2 after Q1 and Q2 are closed, then stage 3 after Q7 is
-closed. Stage 4 only after Q3–Q5. Q6 is a request to reconsider D3, not a hidden gate for stage 1;
-D3 remains the adopted rule unless the owner changes it.
+and 1 together (one release) after Q8 is closed, then stage 2 after Q1, Q2 and Q9 are closed,
+then stage 3 after Q7 is closed. Stage 4 only after Q3–Q5. Q6 is a request to reconsider D3, not a
+hidden gate for stage 1; D3 remains the adopted rule unless the owner changes it. Q8 gates stage 1
+because it changes who can read reading-derived data: an access change is never made by default.
 
 ## 12. Open questions
 
@@ -430,6 +478,19 @@ D3 remains the adopted rule unless the owner changes it.
 - **Q6.** D3 makes every day after a day without a reading a manual one. Acceptable, or should the
   one-click rule follow the garage's continuity (expected shifts) instead?
 - **Q7.** Rounding of freight hours in the completion: two decimals, quarter hours, or whole hours?
+- **Q8.** Access: may everyone who reads a request (site, requester, lessor) see the day's
+  reading-derived hours and refuelling in its shift table, with the diagnostic `driver` block
+  (names, comment, `no_data` reason, report state) only for `vehicleReadings.read`, as §6.4
+  proposes? Or should the driver's numbers be visible only to those who already read readings —
+  which would leave the site signing a day it cannot see?
+- **Q9.** How a driver "finishes" a shift in stage 2. As written (§7.1–§7.3): an explicit finish
+  action, a `time_finalized_at` column, an optional `finishTime` flag and an acceptance refusal for
+  unfinished `v3` items. Simpler alternative: derive "finished" from the end-of-shift values the
+  cabinet already watches (`ended` in `DriverReadingFields.tsx`, ADR 0163 Р8: odometer, engine
+  hours or end fuel). A submit that carries any of them must carry the end time (ESM-2) or every
+  departure (route); any submit carries the start time or the first arrival. No new column, flag or
+  acceptance gate; a morning-only interim reading still lacks engine hours and is therefore already
+  non-clean for §6.2. The `draft_format` gate of §7.3 is needed either way.
 
 ## 13. Out of scope
 
