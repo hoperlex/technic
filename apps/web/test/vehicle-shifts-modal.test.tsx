@@ -250,6 +250,19 @@ describe('окно смен на вкладке «На объекте»', () => 
     expect(await screen.findByText('Смена за 04.08.2026 удалена')).toBeDefined();
   });
 
+  it('a site day sends no driver fingerprint: an older server would reject the key', async () => {
+    const http = renderWindow();
+
+    const unsigned = await rowOf('2026-08-04');
+    fireEvent.click(within(unsigned).getByRole('checkbox'));
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/r1/shifts/:date/approval')).toBe(1),
+    );
+    expect(
+      http.lastCall('POST /vehicle-requests/r1/shifts/:date/approval')?.body,
+    ).not.toHaveProperty('expectedDriverFingerprint');
+  });
+
   it('without the rights the window only reads', async () => {
     renderWindow({ canEdit: false, canApprove: false });
 
@@ -258,5 +271,137 @@ describe('окно смен на вкладке «На объекте»', () => 
     expect(within(today).queryByTitle('Сохранить смену')).toBeNull();
     for (const box of screen.getAllByRole('checkbox')) expect(isDisabled(box)).toBe(true);
     expect(screen.queryByTitle('Удалить смену')).toBeNull();
+  });
+});
+
+/**
+ * Driver days (readings-shifts-merge plan §6.7): the day's hours and refuelling come from the
+ * driver's readings. The window locks them — they are corrected in the garage — leaves time and
+ * comment to the site, signs the day in one click with the fingerprint of the numbers shown, and on
+ * a 409 reloads the day instead of retrying what the person saw.
+ */
+describe('окно смен: день по показаниям водителя', () => {
+  const driverDay = shift(ON_DATE, {
+    source: 'driver',
+    machineHours: 8.5,
+    refuel: '120 л',
+    driverDay: {
+      machineHours: 8.5,
+      refuelLiters: 120,
+      clean: true,
+      since: null,
+      fingerprint: 'v1:seen',
+    },
+  });
+  /** A day the driver cannot sign in one click: a gap since 01.08 — the form starts from 23 h. */
+  const gapDay = shift('2026-08-04', {
+    source: null,
+    driverDay: {
+      machineHours: 23,
+      refuelLiters: 0,
+      clean: false,
+      since: '2026-08-01',
+      fingerprint: 'v1:gap',
+    },
+  });
+  const driverShifts: VehicleRequestShiftsDto = {
+    onDate: ON_DATE,
+    items: [shifts.items[0]!, gapDay, driverDay, shift('2026-08-06')],
+  };
+
+  function renderDriverWindow() {
+    const http = mockHttp({
+      'GET /vehicle-requests/r1/shifts': () => json(driverShifts),
+      'PUT /vehicle-requests/r1/shifts/:date': () => json(driverShifts),
+      'POST /vehicle-requests/r1/shifts/:date/approval': () => json(driverShifts),
+    });
+    renderWithUser(<VehicleShiftsModal request={request} canEdit canApprove onClose={() => {}} />);
+    return http;
+  }
+
+  it('locks hours and refuelling, keeps time and comment, and signs in one click', async () => {
+    const http = renderDriverWindow();
+
+    const today = await rowOf(ON_DATE);
+    expect(within(today).getByText('по водителю')).toBeDefined();
+    expect(within(today).getByText('по показаниям водителя — исправляют в гараже')).toBeDefined();
+    expect(isDisabled(within(today).getByRole('spinbutton'))).toBe(true);
+    const [start, end, refuel, comment] = within(today).getAllByRole('textbox');
+    expect(isDisabled(refuel!)).toBe(true);
+    expect(isDisabled(start!)).toBe(false);
+    expect(isDisabled(comment!)).toBe(false);
+
+    // No site row stands behind the day, yet it has numbers to sign.
+    const box = within(today).getByRole('checkbox');
+    expect(isDisabled(box)).toBe(false);
+    fireEvent.click(box);
+    await waitFor(() =>
+      expect(http.lastCall('POST /vehicle-requests/r1/shifts/:date/approval')?.body).toEqual({
+        approved: true,
+        expectedDriverFingerprint: 'v1:seen',
+      }),
+    );
+
+    // The site's time goes with the driver's numbers and the same fingerprint.
+    fireEvent.change(start!, { target: { value: '08:00' } });
+    fireEvent.blur(start!);
+    fireEvent.change(end!, { target: { value: '17:00' } });
+    fireEvent.blur(end!);
+    fireEvent.click(within(today).getByTitle('Сохранить смену').closest('button')!);
+    await waitFor(() =>
+      expect(http.lastCall('PUT /vehicle-requests/r1/shifts/:date')?.body).toEqual({
+        startedAt: '08:00',
+        endedAt: '17:00',
+        machineHours: 8.5,
+        refuel: '120 л',
+        comment: '',
+        expectedDriverFingerprint: 'v1:seen',
+      }),
+    );
+  });
+
+  it('a non-clean day starts from the partial sum, is labelled and signed only after a save', async () => {
+    const http = renderDriverWindow();
+
+    const gap = await rowOf('2026-08-04');
+    expect(within(gap).getByText('водитель: 23 ч с 01.08')).toBeDefined();
+    expect(within(gap).getByText('неполные данные водителя — проверьте и сохраните')).toBeDefined();
+    expect((within(gap).getByRole('spinbutton') as HTMLInputElement).value).toBe('23.00');
+    // Nothing is filled yet: the sign-off waits for a conscious save.
+    expect(isDisabled(within(gap).getByRole('checkbox'))).toBe(true);
+
+    const save = within(gap).getByTitle('Сохранить смену').closest('button')!;
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(http.lastCall('PUT /vehicle-requests/r1/shifts/:date')?.body).toEqual({
+        startedAt: null,
+        endedAt: null,
+        machineHours: 23,
+        refuel: '',
+        comment: '',
+      }),
+    );
+  });
+
+  it('a 409 reloads the day instead of retrying what the person saw', async () => {
+    const http = renderDriverWindow();
+    http.use({
+      'POST /vehicle-requests/r1/shifts/:date/approval': () =>
+        apiError(409, {
+          code: 'version_conflict',
+          message: 'Показания водителя за 05.08.2026 изменились — обновите смены и проверьте часы',
+        }),
+    });
+
+    const today = await rowOf(ON_DATE);
+    await waitFor(() => expect(http.countOf('GET /vehicle-requests/r1/shifts')).toBe(1));
+    fireEvent.click(within(today).getByRole('checkbox'));
+    expect(
+      await screen.findByText(
+        'Показания водителя за 05.08.2026 изменились — обновите смены и проверьте часы',
+      ),
+    ).toBeDefined();
+    await waitFor(() => expect(http.countOf('GET /vehicle-requests/r1/shifts')).toBe(2));
   });
 });

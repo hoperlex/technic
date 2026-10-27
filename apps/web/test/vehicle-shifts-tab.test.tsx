@@ -57,12 +57,12 @@ const shifts: VehicleRequestShiftsDto = {
   ],
 };
 
-function renderCard(dto: VehicleRequestDto = request) {
+function renderCard(dto: VehicleRequestDto = request, table: VehicleRequestShiftsDto = shifts) {
   mockHttp({
     'GET /vehicle-requests/r1/history': () => json([]),
     'GET /vehicle-requests/r1/waybills': () => json([]),
     'GET /vehicle-requests/r1/relocations': () => json([]),
-    'GET /vehicle-requests/r1/shifts': () => json(shifts),
+    'GET /vehicle-requests/r1/shifts': () => json(table),
   });
   return renderWithUser(<VehicleRequestViewModal request={dto} onClose={() => {}} />, {
     user: authUser({ role: 'dispatcher' }),
@@ -114,5 +114,103 @@ describe('вкладка «Смены» в карточке заявки', () =>
 
     expect(await screen.findByText('Грузоперевозка')).toBeDefined();
     expect(screen.queryByRole('tab', { name: 'Смены' })).toBeNull();
+  });
+
+  /**
+   * The driver's readings as the day's numbers (readings-shifts-merge plan §6.7): a driver day
+   * shows its hours with the mark and, for `vehicleReadings.read`, the report state; a non-clean
+   * one shows what the readings have under a dash; a signed day whose readings changed since shows
+   * the difference next to the signed hours — never a silent rewrite.
+   */
+  it('показывает день водителя, неполный день и расхождение под подписью', async () => {
+    const [signed, idle] = shifts.items;
+    const driverShifts: VehicleRequestShiftsDto = {
+      onDate: '2026-08-06',
+      items: [
+        {
+          ...signed!,
+          source: 'site',
+          driverDay: {
+            machineHours: 12,
+            refuelLiters: 120,
+            clean: true,
+            since: null,
+            fingerprint: 'v1:a',
+          },
+        },
+        {
+          ...idle!,
+          comment: '',
+          filledBy: null,
+          filledByName: null,
+          filledAt: null,
+          source: null,
+          driverDay: {
+            machineHours: 23,
+            refuelLiters: 0,
+            clean: false,
+            since: '2026-08-01',
+            fingerprint: 'v1:b',
+          },
+        },
+        {
+          date: '2026-08-05',
+          startedAt: null,
+          endedAt: null,
+          machineHours: 7.5,
+          refuel: '60 л',
+          comment: '',
+          filledBy: null,
+          filledByName: null,
+          filledAt: null,
+          approvedBy: null,
+          approvedByName: null,
+          approvedAt: null,
+          source: 'driver',
+          driverDay: {
+            machineHours: 7.5,
+            refuelLiters: 60,
+            clean: true,
+            since: null,
+            fingerprint: 'v1:c',
+          },
+          driver: {
+            issues: [],
+            readings: [
+              {
+                readingId: 'rd-1',
+                personName: 'Машинистов И. П.',
+                reportState: 'accepted',
+                sourceKind: 'esm2',
+                sourceLabel: 'ЭСМ-2 № 0012',
+                kind: 'values',
+                machineHours: 7.5,
+                refuelLiters: 60,
+                previousDate: '2026-08-04',
+                noDataReason: '',
+                comment: '',
+                discrepancies: [],
+              },
+            ],
+          },
+        },
+      ],
+    };
+    renderCard({ ...request, dateTo: '2026-08-05' }, driverShifts);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Смены' }));
+
+    expect(await screen.findByText('7,5 ч')).toBeDefined();
+    expect(screen.getByText('по водителю')).toBeDefined();
+    expect(screen.getByText('отчёт: принят')).toBeDefined();
+    expect(screen.getByText('60 л')).toBeDefined();
+    // A driver day has numbers to sign: it waits for the sign-off, it is not "unfilled".
+    expect(screen.getAllByText('ждёт согласования')).toHaveLength(1);
+    expect(screen.getByText('не заполнена')).toBeDefined();
+    // The non-clean day: a dash and what the readings have.
+    expect(screen.getByText('водитель: 23 ч с 01.08')).toBeDefined();
+    // The signed day keeps its 11,5 h; the readings now say 12 h.
+    expect(screen.getByText('11,5 ч')).toBeDefined();
+    expect(screen.getByText('водитель сейчас: 12 ч')).toBeDefined();
   });
 });
