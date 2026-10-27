@@ -529,6 +529,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
   // ── mention: упоминание кода формы, права или комментария ──
 
   {
+    file: 'shift-driver-days.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'pure driver-day rule (ADR 0184): `esm2` is a source kind of a fixture reading and `ЭСМ-2 № 0012` its label; no sheet, no period',
+  },
+  {
     file: 'access-conditions.test.ts',
     klass: 'mention',
     status: 'done',

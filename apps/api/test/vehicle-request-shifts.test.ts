@@ -6,7 +6,9 @@ import {
   canEditShiftDay,
   canReassignVehicle,
   isShiftDayInTerm,
+  isShiftFilled,
   pastShiftDaysCount,
+  refuelLabel,
   saveVehicleRequestShiftSchema,
   SHIFT_IDLE_COMMENT_MESSAGE,
   shiftDayBlocker,
@@ -14,6 +16,7 @@ import {
   shiftDaysOf,
   shiftsBlocker,
   shiftsCompletionWarning,
+  shiftSourceOf,
   shiftSpanHours,
   unapprovedPastShiftDays,
   onSitePresence,
@@ -306,6 +309,65 @@ describe('тело смены', () => {
     expect(approveVehicleRequestShiftSchema.parse({ approved: false })).toEqual({
       approved: false,
     });
+  });
+
+  it('the driver fingerprint is an optional key of both strict bodies', () => {
+    expect(
+      approveVehicleRequestShiftSchema.parse({ approved: true, expectedDriverFingerprint: 'v1:a' }),
+    ).toEqual({ approved: true, expectedDriverFingerprint: 'v1:a' });
+    expect(
+      approveVehicleRequestShiftSchema.safeParse({ approved: true, expectedDriverFingerprint: '' })
+        .success,
+    ).toBe(false);
+    // Still strict: any other unknown key is refused, as an old server refuses this one.
+    expect(approveVehicleRequestShiftSchema.safeParse({ approved: true, other: 1 }).success).toBe(
+      false,
+    );
+    expect(
+      saveVehicleRequestShiftSchema.parse({ machineHours: 8, expectedDriverFingerprint: 'v1:a' })
+        .expectedDriverFingerprint,
+    ).toBe('v1:a');
+  });
+
+  it('an idle driver day may leave the reason to the door: the driver comment can carry it', () => {
+    expect(saveVehicleRequestShiftSchema.safeParse({ machineHours: 0 }).success).toBe(false);
+    expect(
+      saveVehicleRequestShiftSchema.safeParse({
+        machineHours: 0,
+        expectedDriverFingerprint: 'v1:a',
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe('источник дня (план слияния смен и показаний, §6.4)', () => {
+  /** A day the site never wrote: the row of the table without a row in the database. */
+  const unwritten = (): VehicleRequestShiftDto =>
+    shift({ filledAt: null, filledBy: null, filledByName: null });
+
+  it('shiftSourceOf trusts the server and falls back to filledAt for an older one', () => {
+    // An older server sends no `source`: a written row is the site's, an unwritten day is nothing.
+    expect(shiftSourceOf(shift())).toBe('site');
+    expect(shiftSourceOf(unwritten())).toBeNull();
+    // A newer one answers itself, and a driver day has no site row behind it.
+    expect(shiftSourceOf({ ...unwritten(), source: 'driver' })).toBe('driver');
+    expect(shiftSourceOf({ ...shift(), source: null })).toBeNull();
+    expect(shiftSourceOf({ ...shift(), source: 'site' })).toBe('site');
+  });
+
+  it('isShiftFilled is "a source exists": a driver-only day has numbers to sign', () => {
+    expect(isShiftFilled(unwritten())).toBe(false);
+    expect(isShiftFilled({ ...unwritten(), source: 'driver' })).toBe(true);
+    expect(isShiftFilled(shift())).toBe(true);
+    expect(isShiftFilled({ ...unwritten(), source: null })).toBe(false);
+  });
+
+  it('refuelLabel: liters as the site writes them, nothing refilled as an empty field', () => {
+    expect(refuelLabel(120)).toBe('120 л');
+    expect(refuelLabel(80.5)).toBe('80,5 л');
+    expect(refuelLabel(0)).toBe('');
+    expect(refuelLabel(null)).toBe('');
+    expect(refuelLabel(undefined)).toBe('');
   });
 });
 
