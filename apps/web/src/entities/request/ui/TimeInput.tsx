@@ -15,6 +15,8 @@ interface TimeInputProps {
   onChange?: (value: string | undefined) => void;
   placeholder?: string;
   disabled?: boolean;
+  /** Set by `Form.Item`: it ties the item's label to the input (`htmlFor`). */
+  id?: string;
 }
 
 /**
@@ -25,7 +27,13 @@ interface TimeInputProps {
  * печатает, «730» ещё может стать «7300», и ранняя нормализация ломала бы набор. Незаполненные
  * знаки добиваются нулями — см. `normalizeTimeInput` в контрактах (там же тесты).
  */
-export function TimeInput({ value, onChange, placeholder = 'чч:мм', disabled }: TimeInputProps) {
+export function TimeInput({
+  value,
+  onChange,
+  placeholder = 'чч:мм',
+  disabled,
+  id,
+}: TimeInputProps) {
   const [text, setText] = useState(value ?? '');
 
   // Внешние изменения (сброс формы, загрузка заявки в редактирование) перебивают локальный текст.
@@ -51,6 +59,7 @@ export function TimeInput({ value, onChange, placeholder = 'чч:мм', disabled
 
   return (
     <Input
+      id={id}
       value={text}
       onChange={(e) => handleChange(e.target.value)}
       onBlur={handleBlur}

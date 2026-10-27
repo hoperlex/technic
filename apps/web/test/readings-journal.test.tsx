@@ -229,6 +229,7 @@ describe('журнал показаний машины', () => {
     expect(screen.getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
       'День',
       'Смена',
+      'Время',
       'Одометр',
       'Моточасы',
       'Топливо на начало',
@@ -243,9 +244,9 @@ describe('журнал показаний машины', () => {
     // (Р1): разность соседних уровней и была бы расходом, а его считает сверка с нормой (ADR 0194)
     // — в сводке и карточке, где рядом стоит норма.
     const cells = cellsOf('Р-1');
-    expect(cells[4]).toBe('120,0 л');
-    expect(cells[5]).toBe('80,0 л');
-    expect(cells[6]).toBe('60,5 л');
+    expect(cells[5]).toBe('120,0 л');
+    expect(cells[6]).toBe('80,0 л');
+    expect(cells[7]).toBe('60,5 л');
     expect(cells.some((text) => text.includes('прирост'))).toBe(false);
   });
 
@@ -265,7 +266,79 @@ describe('журнал показаний машины', () => {
     // Ноль в баке — это утверждение о машине («бак пуст»), которого никто не делал: литров просто
     // не передали, и прочерк — единственный честный ответ.
     const cells = cellsOf('Р-1');
-    expect(cells.slice(4, 7)).toEqual(['—', '—', '—']);
+    expect(cells.slice(5, 8)).toEqual(['—', '—', '—']);
     expect(cells.some((text) => text.includes('0,0 л'))).toBe(false);
+  });
+
+  /**
+   * Shift and stop times (ADR 0234, plan §7.5): a column of their own after the source, and three
+   * kinds of "no time" told apart — a legacy `v2` reading never asked, a `v3` shift still open,
+   * and a staff entry without times (D5).
+   */
+  it('показывает время смены и остановок и различает три вида «времени нет»', async () => {
+    const timed = (over: Partial<VehicleReadingDto>): VehicleReadingDto => ({
+      ...FUEL_READING,
+      ...over,
+    });
+    renderRows([
+      row(1, {
+        draftFormat: 'v3',
+        sourceKind: 'esm2',
+        reading: timed({ startedAt: '20:00', endedAt: '08:00' }),
+      }),
+      row(2, {
+        draftFormat: 'v3',
+        reading: timed({
+          startedAt: '07:40',
+          endedAt: '11:50',
+          points: [
+            {
+              position: 1,
+              routePointId: null,
+              location: 'Карьер',
+              arrivedAt: '07:40',
+              departedAt: '08:30',
+            },
+            {
+              position: 2,
+              routePointId: null,
+              location: 'ул. Строителей',
+              arrivedAt: null,
+              departedAt: '10:05',
+            },
+            {
+              position: 3,
+              routePointId: null,
+              location: 'Склад 4',
+              arrivedAt: null,
+              departedAt: '11:50',
+            },
+          ],
+        }),
+      }),
+      row(3, { draftFormat: 'v3', sourceKind: 'esm2', reading: timed({ startedAt: '08:00' }) }),
+      row(4, { draftFormat: 'v2', sourceKind: 'esm2', reading: FUEL_READING }),
+      row(5, {
+        draftFormat: 'v3',
+        sourceKind: 'esm2',
+        reading: { ...FUEL_READING, source: 'staff' },
+      }),
+      row(6, { draftFormat: 'v3', reading: FUEL_READING }),
+    ]);
+    expect(await screen.findByText('Р-1')).toBeDefined();
+
+    // A night shift reads by the one rule of a pair (`shiftSpanMinutes`): the end is the next day.
+    expect(cellsOf('Р-1')[2]).toBe('20:00–08:0012 ч 00 мин');
+    expect(cellsOf('Р-2')[2]).toBe(
+      '07:40–11:504 ч 10 мин' +
+        '1. Карьер — 07:40–08:30' +
+        '2. ул. Строителей — убытие 10:05' +
+        '3. Склад 4 — убытие 11:50',
+    );
+    expect(cellsOf('Р-3')[2]).toBe('08:00–…смена не закончена');
+    expect(cellsOf('Р-4')[2]).toBe('до учёта времени');
+    expect(cellsOf('Р-5')[2]).toBe('время не указано');
+    // A route without stops is a relocation: it records no time (D8), and nothing is missing.
+    expect(cellsOf('Р-6')[2]).toBe('—');
   });
 });

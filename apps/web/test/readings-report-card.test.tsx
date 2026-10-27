@@ -583,6 +583,10 @@ describe('карточка отчёта дня: внесение за работ
             fuelStartLiters: null,
             fuelFilledLiters: null,
             fuelEndLiters: null,
+            // The ESM-2 pair goes by the same contract: shown, so an empty field is an explicit
+            // `null` (ADR 0234); for staff it stays optional (D5).
+            startedAt: null,
+            endedAt: null,
             comment: '',
           },
         },
@@ -641,6 +645,8 @@ describe('карточка отчёта дня: внесение за работ
             fuelStartLiters: 46.5,
             fuelFilledLiters: null,
             fuelEndLiters: 30,
+            startedAt: null,
+            endedAt: null,
             comment: '',
           },
         },
@@ -776,5 +782,90 @@ describe('карточка отчёта дня: день, которого не�
     expect(await screen.findByText('Отчёт — Сидоров С. С., 14.08.2026')).toBeDefined();
     // Реестр перечитан: виртуальная строка стала строкой отчёта (Р19).
     await waitFor(() => expect(http.countOf(INTAKE)).toBe(2));
+  });
+});
+
+/**
+ * Shift and stop times in the staff entry (ADR 0234, plan §7.5, owner decision D5): the driver's
+ * fields, all optional — staff entering a day on a driver's behalf may not know the times — with the
+ * contract's shape and order rule under the fields.
+ */
+describe('карточка отчёта дня: время смены при внесении за работника', () => {
+  it('ЭСМ-2: время необязательно, набранное уходит парой, конец без начала не уходит', async () => {
+    const http = renderGarage(intakeRoute('&report=r-1'), { [SUBMIT]: () => json(reportDto()) });
+    expect(await screen.findByText('Отчёт — Петров П. П., 14.08.2026')).toBeDefined();
+
+    await openForm('Внести показание — ЭСМ-2 № 000123');
+    fireEvent.change(field('ЭСМ-2 № 000123', 'Моточасы на конец смены'), {
+      target: { value: '812' },
+    });
+    fireEvent.change(field('ЭСМ-2 № 000123', 'Время окончания смены'), {
+      target: { value: '20:00' },
+    });
+    fireEvent.click(saveButton('ЭСМ-2 № 000123'));
+    expect(
+      await within(form('ЭСМ-2 № 000123')).findByText('Укажите время начала смены'),
+    ).toBeDefined();
+    expect(http.countOf(SUBMIT)).toBe(0);
+
+    fireEvent.change(field('ЭСМ-2 № 000123', 'Время начала смены'), {
+      target: { value: '08:00' },
+    });
+    fireEvent.click(saveButton('ЭСМ-2 № 000123'));
+    await waitFor(() => expect(http.countOf(SUBMIT)).toBe(1));
+    const body = http.lastCall(SUBMIT)!.body as { items: { reading: unknown }[] };
+    expect(body.items[0]!.reading).toMatchObject({
+      engineHours: 812,
+      startedAt: '08:00',
+      endedAt: '20:00',
+    });
+  });
+
+  it('рейс: правят время сохранённых остановок по их позиции', async () => {
+    const routed: VehicleReadingDto = {
+      ...FUEL_READING,
+      startedAt: '07:40',
+      endedAt: '10:05',
+      points: [
+        {
+          position: 1,
+          routePointId: null,
+          location: 'Карьер',
+          arrivedAt: '07:40',
+          departedAt: '08:30',
+        },
+        {
+          position: 2,
+          routePointId: null,
+          location: 'Склад',
+          arrivedAt: null,
+          departedAt: '10:05',
+        },
+      ],
+    };
+    const http = renderGarage(intakeRoute('&report=r-1'), {
+      [REPORT]: () => json(oneItem(routed)),
+      [SUBMIT]: () => json(reportDto()),
+    });
+    expect(await screen.findByText('Отчёт — Петров П. П., 14.08.2026')).toBeDefined();
+
+    await openForm('Поправить показание — Р-142');
+    expect(field('Р-142', '1. Карьер — прибытие').value).toBe('07:40');
+    expect(field('Р-142', '2. Склад — убытие').value).toBe('10:05');
+
+    fireEvent.change(field('Р-142', '2. Склад — убытие'), { target: { value: '10:20' } });
+    fireEvent.change(field('Р-142', 'Причина правки'), { target: { value: 'по путевому листу' } });
+    fireEvent.click(saveButton('Р-142'));
+
+    await waitFor(() => expect(http.countOf(SUBMIT)).toBe(1));
+    const body = http.lastCall(SUBMIT)!.body as { items: { reading: unknown }[] };
+    // Saved stops are addressed by position; a rebuilt-away point keeps its `null` reference.
+    expect(body.items[0]!.reading).toMatchObject({
+      points: [
+        { position: 1, routePointId: null, arrivedAt: '07:40', departedAt: '08:30' },
+        { position: 2, routePointId: null, arrivedAt: null, departedAt: '10:20' },
+      ],
+    });
+    expect(body.items[0]!.reading).not.toHaveProperty('startedAt');
   });
 });
