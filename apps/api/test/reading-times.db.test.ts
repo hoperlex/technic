@@ -915,6 +915,62 @@ describe.skipIf(!DB_URL)('время смены и остановок (жива�
     expect(captured.items[0]).not.toHaveProperty('stops');
   });
 
+  /**
+   * The report names the live stops of all its route items in one read (`loadReadingStopsByRoute`),
+   * and every item still gets exactly what its own route answers alone (`loadReadingStops`): the
+   * routes are grouped, never mixed, and a relocation keeps its empty set.
+   */
+  it('две строки рейса и перегон в одном отчёте — у каждой строки остановки своего рейса', async () => {
+    const person = await makeDriver('Двурейсов');
+    const first = await makeVehicle();
+    const second = await makeVehicle();
+    const third = await makeVehicle();
+    const one = await makeStopRoute({
+      vehicleId: first,
+      personId: person,
+      requestIds: [
+        await makeFreightRequest([
+          { from: 'г Москва, ул Первая, д 1', to: 'г Москва, ул Вторая, д 2' },
+        ]),
+      ],
+    });
+    const two = await makeStopRoute({
+      vehicleId: second,
+      personId: person,
+      requestIds: [
+        await makeFreightRequest([
+          { from: 'г Москва, ул Третья, д 3', to: 'г Москва, ул Четвёртая, д 4' },
+          { from: 'г Москва, ул Третья, д 3', to: 'г Москва, ул Пятая, д 5' },
+        ]),
+      ],
+    });
+    await makeRelocation(third, person);
+
+    const opened = await ctx.readings.openReport(person, ctx.today, ctx.userId);
+    const itemOf = (vehicle: string) => opened.items.find((item) => item.vehicleId === vehicle)!;
+    const alone = async (route: string) =>
+      (await stopsOf(route)).map(({ routePointId, location }) => ({ routePointId, location }));
+    expect(itemOf(first).stops).toEqual(await alone(one));
+    expect(itemOf(second).stops).toEqual(await alone(two));
+    expect(itemOf(second).stops!.length).toBeGreaterThan(itemOf(first).stops!.length);
+    expect(itemOf(third).stops).toEqual([]);
+
+    // Saved stops take one item out of the read; the other keeps naming its own live route.
+    const ids = itemOf(first).stops!.map((stop) => stop.routePointId);
+    const sent = await submit(person, opened.version, [
+      line(itemOf(first).id, {
+        fuelStartLiters: 30,
+        points: wirePoints(ids, [
+          ['08:00', null],
+          [null, null],
+        ]),
+      }),
+    ]);
+    const after = (vehicle: string) => sent.items.find((item) => item.vehicleId === vehicle)!;
+    expect(after(first)).not.toHaveProperty('stops');
+    expect(after(second).stops).toEqual(await alone(two));
+  });
+
   it('через полночь рейс переходит один раз; второй переход — отказ', async () => {
     const person = await makeDriver('Ночной');
     const vehicle = await makeVehicle();

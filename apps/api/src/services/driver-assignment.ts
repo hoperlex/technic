@@ -33,7 +33,7 @@ import {
   waybillSeries,
 } from '../db/schema';
 import { daysBetween, type Tx } from './readings-chain';
-import { loadRoutePoints } from './route-points';
+import { loadRoutePoints, loadRoutePointsByRoute } from './route-points';
 import { loadRouteDtos, routeQuery } from './vehicle-routes';
 
 /**
@@ -328,21 +328,43 @@ export interface ReadingStop {
  * (`lockSources`), so the set cannot be rebuilt between this read and the snapshot written from it.
  */
 export async function loadReadingStops(reader: Reader, routeId: string): Promise<ReadingStop[]> {
-  const points = await loadRoutePoints(reader, routeId);
+  return (await loadReadingStopsByRoute(reader, [routeId])).get(routeId) ?? [];
+}
+
+/**
+ * The same stops for several routes at once — two queries for any number of them, for a reader
+ * that names the live stops of every route item of a report (`buildReportDto`). Every route keeps
+ * the answer `loadReadingStops` gives it alone; a route without stops maps to `[]`.
+ */
+export async function loadReadingStopsByRoute(
+  reader: Reader,
+  routeIds: readonly string[],
+): Promise<Map<string, ReadingStop[]>> {
+  const pointsByRoute = await loadRoutePointsByRoute(reader, routeIds);
   const served = await servedRequests(
     reader,
-    points.flatMap((point) => point.actions.map((action) => action.ref.requestId)),
+    [...pointsByRoute.values()].flatMap((points) =>
+      points.flatMap((point) => point.actions.map((action) => action.ref.requestId)),
+    ),
   );
-  return points.flatMap((point) => {
-    const requestIds = [
-      ...new Set(
-        point.actions.map((action) => action.ref.requestId).filter((id) => served.has(id)),
-      ),
-    ];
-    return requestIds.length === 0
-      ? []
-      : [{ routePointId: point.id, location: point.location, requestIds }];
-  });
+  const result = new Map<string, ReadingStop[]>();
+  for (const routeId of new Set(routeIds)) {
+    const points = pointsByRoute.get(routeId) ?? [];
+    result.set(
+      routeId,
+      points.flatMap((point) => {
+        const requestIds = [
+          ...new Set(
+            point.actions.map((action) => action.ref.requestId).filter((id) => served.has(id)),
+          ),
+        ];
+        return requestIds.length === 0
+          ? []
+          : [{ routePointId: point.id, location: point.location, requestIds }];
+      }),
+    );
+  }
+  return result;
 }
 
 /**

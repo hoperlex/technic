@@ -60,7 +60,7 @@ import {
 } from './reading-times';
 // Задание дня собирает общий слой (Р12): кабинет и рассылка обязаны видеть один и тот же день, и
 // второй сборки «что у человека сегодня» в портале быть не должно.
-import { loadDayEntries, loadReadingStops } from './driver-assignment';
+import { loadDayEntries, loadReadingStopsByRoute } from './driver-assignment';
 import {
   applyReportChange,
   confirmAnomalies,
@@ -1915,21 +1915,28 @@ async function buildReportDto(
         .where(eq(users.id, report.acceptedBy))
     : [];
 
-  // The stops a route item's first capture is compared with, read by the very function the time
-  // rule asks (`routeHasStops`). The cabinet shows these instead of its task's: the task drops a
-  // route without a valid waybill or under a weekly ESM-2, a submitted report keeps the item, and
-  // the server would ask for an arrival the form had no field for.
-  const liveStops = new Map<string, ReportItemStopDto[]>();
-  for (const item of state.items) {
-    if (item.sourceKind !== 'route') continue;
+  // The stops a route item's first capture is compared with, read by the very rule the time rule
+  // asks (`routeHasStops`), for every such item of the report in one read. The cabinet and the
+  // garage form show these instead of the task's: the task drops a route without a valid waybill
+  // or under a weekly ESM-2, a submitted report keeps the item, and the server would ask for an
+  // arrival the form had no field for.
+  const capturing = state.items.filter((item) => {
+    if (item.sourceKind !== 'route') return false;
     const reading = state.readings.get(item.id);
-    if (reading && (points.get(reading.id)?.length ?? 0) > 0) continue;
-    const stops = item.routeId === null ? [] : await loadReadingStops(tx, item.routeId);
-    liveStops.set(
+    return !reading || (points.get(reading.id)?.length ?? 0) === 0;
+  });
+  const stopsByRoute = await loadReadingStopsByRoute(
+    tx,
+    capturing.flatMap((item) => (item.routeId === null ? [] : [item.routeId])),
+  );
+  const liveStops = new Map<string, ReportItemStopDto[]>(
+    capturing.map((item) => [
       item.id,
-      stops.map(({ routePointId, location }) => ({ routePointId, location })),
-    );
-  }
+      (item.routeId === null ? [] : (stopsByRoute.get(item.routeId) ?? [])).map(
+        ({ routePointId, location }) => ({ routePointId, location }),
+      ),
+    ]),
+  );
 
   const items: ReportItemDto[] = state.items.map((item) => {
     const ref = itemRef(item);

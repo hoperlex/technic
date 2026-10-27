@@ -190,11 +190,13 @@ const pointColumns = {
  * она осталась после сбоя, карточка обязана её показать — иначе позиции в портале разойдутся с
  * позициями в базе, и человек не поймёт, откуда дыра в нумерации. Чистит такие `cleanupRoutePoints`.
  */
-function selectPointRows(reader: Reader, routeId: string) {
+function selectPointRows(reader: Reader, routeIds: readonly string[]) {
   return (
     reader
       .select({
         ...pointColumns,
+        // The route of the point: several routes are read in one query and grouped by it.
+        routeId: vehicleRoutePoints.routeId,
         role: vehicleRoutePointTrips.role,
         // Порядок роли на своей точке: им же различаются строки задания, стоящие на одной паре
         // точек (Р11, третий ключ сортировки), и упорядочены ответственные внутри вида роли (Р11а).
@@ -249,7 +251,7 @@ function selectPointRows(reader: Reader, routeId: string) {
         specialEquipmentRequestDetails,
         eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
       )
-      .where(eq(vehicleRoutePoints.routeId, routeId))
+      .where(inArray(vehicleRoutePoints.routeId, [...routeIds]))
       // Порядок выборки — порядок карточки и бумаги целиком: точки по объезду, роли внутри точки по
       // своей позиции. «Как вернул SQL» здесь не годится дважды: по ролям читают, что на остановке
       // делают первым, и по ним же различаются строки задания одной пары точек (Р11).
@@ -340,8 +342,33 @@ export async function loadRoutePoints(
   reader: Reader,
   routeId: string,
 ): Promise<VehicleRoutePointDto[]> {
-  const rows = await selectPointRows(reader, routeId);
+  return (await loadRoutePointsByRoute(reader, [routeId])).get(routeId) ?? [];
+}
 
+/**
+ * The points of several routes in one query, by route. Every route is assembled on its own rows
+ * (`routePointsOf`), so the answer for a route is the one `loadRoutePoints` gives it alone: the
+ * pairs of a trip are looked up within its route only. A route without points is absent.
+ */
+export async function loadRoutePointsByRoute(
+  reader: Reader,
+  routeIds: readonly string[],
+): Promise<Map<string, VehicleRoutePointDto[]>> {
+  const ids = [...new Set(routeIds)];
+  const result = new Map<string, VehicleRoutePointDto[]>();
+  if (ids.length === 0) return result;
+  const byRoute = new Map<string, PointRow[]>();
+  // Grouping keeps the query's order inside a route: points by position, roles by their own.
+  for (const row of await selectPointRows(reader, ids)) {
+    const list = byRoute.get(row.routeId) ?? [];
+    list.push(row);
+    byRoute.set(row.routeId, list);
+  }
+  for (const [routeId, rows] of byRoute) result.set(routeId, routePointsOf(rows));
+  return result;
+}
+
+function routePointsOf(rows: readonly PointRow[]): VehicleRoutePointDto[] {
   const pairs = new Map<string, { load: number | null; unload: number | null }>();
   for (const row of rows) {
     if (!row.tripId || row.tripDeletedAt) continue;
