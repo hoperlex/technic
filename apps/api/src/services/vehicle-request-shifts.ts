@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNotNull, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
+  driverDayInterval,
   pastShiftDaysCount,
   refuelLabel,
   type RequestStatus,
@@ -156,15 +157,19 @@ export interface ShiftReadOptions {
 }
 
 /**
- * The effective day (readings-shifts-merge plan §6.3), one rule for the shift table and the linear
- * days table:
+ * The effective day (readings-shifts-merge plan §6.3 and §8), one rule for the shift table and the
+ * linear days table:
  *
- * | day                             | hours, refuelling | time, comment   | source   |
- * | ------------------------------- | ----------------- | --------------- | -------- |
- * | signed                          | the row (frozen)  | the row         | `site`   |
- * | unsigned, driver clean          | driver            | the row, if any | `driver` |
- * | unsigned, driver not clean, row | the row           | the row         | `site`   |
- * | nothing                         | empty             | empty           | `null`   |
+ * | day                      | hours, refuelling | time                   | comment | source   |
+ * | ------------------------ | ----------------- | ---------------------- | ------- | -------- |
+ * | signed                   | the row (frozen)  | the row (frozen)       | the row | `site`   |
+ * | unsigned, driver clean   | driver            | driver's interval, row | the row | `driver` |
+ * | unsigned, not clean, row | the row           | the row                | the row | `site`   |
+ * | nothing                  | empty             | empty                  | empty   | `null`   |
+ *
+ * The driver's time is taken only on a clean day and only as ONE interval (`driverDayTime`); a day
+ * whose readings do not fold into one keeps the site's time and shows the intervals instead. The
+ * portal locks the time inputs by the same pair of conditions (`isShiftTimeFromDriver`).
  *
  * The driver's numbers ride along on every day that has them: under a signed day they show a later
  * reading edit as a difference instead of rewriting the signature (D4).
@@ -183,6 +188,7 @@ export function effectiveShift(
   if (driverDay?.clean && driverDay.machineHours !== null) {
     return {
       ...(row ?? emptyShift(date)),
+      ...driverDayInterval(driverDay),
       machineHours: driverDay.machineHours,
       refuel: refuelLabel(driverDay.refuelLiters),
       source: 'driver',
@@ -314,18 +320,20 @@ export function driverDayComment(day: DriverShiftDay, siteComment: string, date:
 }
 
 /**
- * The row a driver day is written as: the server-computed hours and refuelling, the site's time and
- * comment. Neither door takes the numbers from the body — a stale tab could otherwise bring back
- * numbers of a report voided or rebased meanwhile.
+ * The row a driver day is written as: the server-computed hours and refuelling, the driver's single
+ * interval when the readings give one (plan §8), else the site's time, and the site's comment.
+ * Neither door takes the driver's part from the body — a stale tab could otherwise bring back
+ * numbers or times of a report voided or rebased meanwhile; the fingerprint covers the interval.
  */
 export function driverShiftInput(
   day: DriverShiftDay,
   site: { startedAt: string | null; endedAt: string | null; comment: string },
   date: string,
 ): SaveVehicleRequestShiftInput {
+  const time = driverDayInterval(day) ?? { startedAt: site.startedAt, endedAt: site.endedAt };
   return {
-    startedAt: site.startedAt,
-    endedAt: site.endedAt,
+    startedAt: time.startedAt,
+    endedAt: time.endedAt,
     machineHours: day.machineHours!,
     refuel: refuelLabel(day.refuelLiters),
     comment: driverDayComment(day, site.comment, date),

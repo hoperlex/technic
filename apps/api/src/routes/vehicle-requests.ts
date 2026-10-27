@@ -8462,7 +8462,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           );
         }
         // On a clean driver day the numbers are the server's, never the body's: a stale site's
-        // hours must not come back after a driver report is voided or rebased (plan §6.5).
+        // hours must not come back after a driver report is voided or rebased (plan §6.5). The
+        // body's time is taken only where the readings give no single interval (plan §8).
         const input =
           assertDriverHandshake(state, req.body.expectedDriverFingerprint, date) === 'driver'
             ? driverShiftInput(
@@ -8555,7 +8556,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         if (!approved && !row) throw notFilled();
         if (!!row?.approvedAt === approved) return null;
         // One click on a driver day (D1): the row is written from the numbers computed in this
-        // very transaction, keeping the site's time and comment, and signed right after — a
+        // very transaction — with the driver's single interval when the readings give one (plan
+        // §8), else the site's time — keeping the site's comment, and signed right after: a
         // signature always stands under a row, so a later reading edit is a visible difference.
         const fromDriver =
           approved && assertDriverHandshake(state, expectedDriverFingerprint, date) === 'driver';

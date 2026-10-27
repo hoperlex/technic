@@ -1,6 +1,7 @@
 import { and, between, eq, inArray, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
+  driverDayTime,
   MAX_MACHINE_HOURS,
   shiftDateKey,
   SUBMITTED_REPORT_STATES,
@@ -10,11 +11,13 @@ import {
   type ReadingAnomaly,
   type ReadingKind,
   type ReadingSourceKind,
+  type ReadingTimes,
   type ShiftDriverDayDto,
   type ShiftDriverDiagnosticsDto,
 } from '@technic/contracts';
 import { driverDailyReportItems, driverDailyReports, persons, vehicleReadings } from '../db/schema';
 import { sha256hex } from '../lib/crypto';
+import { clockTime, loadReadingPoints } from './reading-points';
 import {
   findDiscrepancies,
   itemRef,
@@ -68,6 +71,11 @@ export interface DriverShiftReading {
   noDataReason: string;
   comment: string;
   discrepancies: { kind: DiscrepancyKind; resolved: boolean }[];
+  /**
+   * The reading's shift time (ADR 0234): an ESM-2 pair, or a route's pair derived from its stops
+   * together with the stops — a route's duration is read by its steps, never from the pair alone.
+   */
+  times: ReadingTimes;
 }
 
 /** The driver's day: its public numbers (D10), the issues and the readings behind them. */
@@ -125,6 +133,7 @@ function dayFingerprint(
   readings: readonly DriverShiftReading[],
   machineHours: number | null,
   refuelLiters: number | null,
+  time: { startedAt: string | null; endedAt: string | null },
 ): string {
   const parts = [...readings]
     .sort((a, b) => a.readingId.localeCompare(b.readingId))
@@ -134,6 +143,11 @@ function dayFingerprint(
       ),
     );
   parts.push(`hours:${machineHours ?? ''}`, `refuel:${refuelLiters ?? ''}`);
+  // The driver's interval is signed with the numbers (plan §8). Appended only when there is one, so
+  // a day without driver times keeps the fingerprint an open tab of stage 1 already holds.
+  if (time.startedAt !== null && time.endedAt !== null) {
+    parts.push(`time:${time.startedAt}-${time.endedAt}`);
+  }
   return `v1:${sha256hex(parts.join('\u0002'))}`;
 }
 
@@ -170,13 +184,20 @@ export function driverShiftDayOf(
     issues.add('out_of_range');
   }
   const refuelLiters = refuelTenths === null ? null : refuelTenths / 10;
+  // The time does not decide cleanliness: a clean day without one interval keeps the site's time
+  // (plan §8), it does not stop being signable by its numbers.
+  const time = driverDayTime(readings.map((r) => ({ sourceKind: r.sourceKind, times: r.times })));
   return {
     date,
     machineHours,
     refuelLiters,
     clean: readings.length > 0 && issues.size === 0,
     since,
-    fingerprint: dayFingerprint(readings, machineHours, refuelLiters),
+    fingerprint: dayFingerprint(readings, machineHours, refuelLiters, time),
+    startedAt: time.startedAt,
+    endedAt: time.endedAt,
+    intervals: time.intervals,
+    timeIssue: time.issue,
     issues: [...issues],
     readings: [...readings],
     comment: readings.map((r) => r.comment.trim()).find((c) => c !== '') ?? '',
@@ -191,6 +212,10 @@ export function driverDayDto(day: DriverShiftDay): ShiftDriverDayDto {
     clean: day.clean,
     since: day.since,
     fingerprint: day.fingerprint,
+    startedAt: day.startedAt ?? null,
+    endedAt: day.endedAt ?? null,
+    intervals: day.intervals ?? [],
+    timeIssue: day.timeIssue ?? null,
   };
 }
 
@@ -257,6 +282,8 @@ export async function loadDriverShiftDays(
       fuelFilledLiters: vehicleReadings.fuelFilledLiters,
       noDataReason: vehicleReadings.noDataReason,
       comment: vehicleReadings.comment,
+      startedAt: vehicleReadings.startedAt,
+      endedAt: vehicleReadings.endedAt,
       previousId: vehicleReadings.previousEngineHoursId,
       previousEngineHours: previous.engineHours,
       previousDate: previous.reportDate,
@@ -316,6 +343,12 @@ export async function loadDriverShiftDays(
     reader,
     items.map((item) => item.reportId),
   );
+  // A route's duration is the sum of its steps (ADR 0234), so its stops come along; an ESM-2 pair
+  // is read by `shiftSpanMinutes` and needs nothing more.
+  const points = await loadReadingPoints(
+    reader,
+    rows.filter((row) => row.sourceKind === 'route').map((row) => row.readingId),
+  );
   const discrepanciesByItem = new Map<string, { kind: DiscrepancyKind; resolved: boolean }[]>();
   for (const item of items) {
     // No day refs: `missing_source` never applies to an item that exists (§6.1).
@@ -351,6 +384,15 @@ export async function loadDriverShiftDays(
       noDataReason: row.noDataReason,
       comment: row.comment,
       discrepancies: discrepanciesByItem.get(row.itemId) ?? [],
+      times: {
+        startedAt: clockTime(row.startedAt),
+        endedAt: clockTime(row.endedAt),
+        points: (points.get(row.readingId) ?? []).map(({ position, arrivedAt, departedAt }) => ({
+          position,
+          arrivedAt,
+          departedAt,
+        })),
+      },
     };
     const list = byDate.get(row.reportDate);
     if (list) list.push(reading);

@@ -35,6 +35,7 @@ function reading(over: Partial<DriverShiftReading> = {}): DriverShiftReading {
     noDataReason: '',
     comment: '',
     discrepancies: [],
+    times: { startedAt: null, endedAt: null, points: [] },
     ...over,
   };
 }
@@ -155,6 +156,23 @@ describe('день водителя', () => {
     }
   });
 
+  it('the driver interval is part of the day and of what is signed; a day without one keeps its fingerprint', () => {
+    const untimed = driverShiftDayOf(DAY, [reading()]);
+    expect(untimed).toMatchObject({ startedAt: null, endedAt: null, timeIssue: 'incomplete' });
+    const timed = driverShiftDayOf(DAY, [
+      reading({ times: { startedAt: '08:00', endedAt: '17:00', points: [] } }),
+    ]);
+    expect(timed).toMatchObject({ startedAt: '08:00', endedAt: '17:00', timeIssue: null });
+    expect(timed.fingerprint).not.toBe(untimed.fingerprint);
+    // A clean day stays clean without a time: the time decides only what is shown and written.
+    expect(untimed.clean).toBe(true);
+    // A day without driver times hashes exactly as before stage 3, so an open tab is not refused.
+    expect(untimed.fingerprint).toBe(
+      driverShiftDayOf(DAY, [reading({ times: { startedAt: '08:00', endedAt: null, points: [] } })])
+        .fingerprint,
+    );
+  });
+
   it('the public part carries numbers only; the diagnostics carry names, comments and states', () => {
     const day = driverShiftDayOf(DAY, [
       reading({
@@ -162,12 +180,17 @@ describe('день водителя', () => {
         discrepancies: [{ kind: 'driver', resolved: false }],
       }),
     ]);
+    // The shift time is a number of the day too (plan §8): everyone who reads the request sees it.
     expect(Object.keys(driverDayDto(day)).sort()).toEqual([
       'clean',
+      'endedAt',
       'fingerprint',
+      'intervals',
       'machineHours',
       'refuelLiters',
       'since',
+      'startedAt',
+      'timeIssue',
     ]);
     expect(driverDiagnosticsDto(day).readings[0]).toMatchObject({
       personName: 'Машинистов Иван Петрович',
