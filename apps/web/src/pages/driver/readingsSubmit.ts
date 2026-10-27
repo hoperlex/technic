@@ -1,5 +1,7 @@
 import {
   readingInputSchema,
+  reportRequiresDriverTimes,
+  type DriverAssignmentEntry,
   type DriverPreviousReading,
   type DriverReportDto,
   type ReadingInput,
@@ -11,6 +13,8 @@ import { errorMessage } from '@shared/lib';
 import { parseReadingNumber, readingWarnings } from '@entities/vehicle-reading';
 import type { DraftItem } from './api';
 import { emptyItem, sourceKey } from './readingsDraft';
+import { stopsOf, type ShownStop } from './readingStops';
+import { buildTimes, timeFields } from './readingsTimes';
 
 /**
  * Тело отправки показаний: что уходит на сервер и что вместо этого показывается отказом на блоке
@@ -32,10 +36,16 @@ import { emptyItem, sourceKey } from './readingsDraft';
 type BuiltItem =
   { submit: ReportItemSubmit } | { errors: Record<string, string> } | { skip: 'closed' | 'blank' };
 
-/** Сообщения схемы — по именам полей блока: их и подсвечивает форма. */
+/**
+ * Сообщения схемы — по именам полей блока: их и подсвечивает форма. A refusal about the stop set
+ * as a whole stands under the route block: no single field is named by it.
+ */
 function issueMessages(issues: readonly { path: PropertyKey[]; message: string }[]) {
   const result: Record<string, string> = {};
-  for (const issue of issues) result[String(issue.path[0] ?? 'form')] = issue.message;
+  for (const issue of issues) {
+    const key = String(issue.path[0] ?? 'form');
+    result[key === 'points' ? timeFields.route : key] = issue.message;
+  }
   return result;
 }
 
@@ -74,6 +84,8 @@ function buildItem(
   item: ReportItemDto,
   value: DraftItem,
   previous: DriverPreviousReading | null,
+  stops: readonly ShownStop[],
+  timesRequired: boolean,
 ): BuiltItem {
   const numbers = {
     odometerKm: parseReadingNumber(value.odometerKm),
@@ -82,9 +94,14 @@ function buildItem(
     fuelFilledLiters: parseReadingNumber(value.fuelFilledLiters),
     fuelEndLiters: parseReadingNumber(value.fuelEndLiters),
   };
+  // Time refusals stand next to the number refusals, not after them: a driver fixing an odometer
+  // typo should not learn only on the next tap that the end time is missing too (ADR 0234, D11).
+  const times = buildTimes({ item, value, stops, required: timesRequired, numbers });
   const broken = Object.entries(numbers).filter(([, v]) => v === 'invalid');
-  if (broken.length > 0)
-    return { errors: Object.fromEntries(broken.map(([field]) => [field, 'Введите число'])) };
+  if (broken.length > 0) {
+    const refused = Object.fromEntries(broken.map(([field]) => [field, 'Введите число']));
+    return { errors: { ...times.errors, ...refused } };
+  }
 
   /*
    * «Ни одного числа» — не то же самое, что «блок пуст»: комментарий и файл пустотой не считаются
@@ -103,27 +120,37 @@ function buildItem(
   // доходит: её сохранённый комментарий приезжает в поля вместе с показанием, и по общему правилу
   // она перестала бы считаться пустой — то есть один чужой блок снова держал бы весь день.
   // Водитель эту строку не редактирует; набранное же в ней число уедет как обычное показание.
-  if (item.reading?.kind === 'no_data' && noNumbers) return { skip: 'closed' };
+  if (item.reading?.kind === 'no_data' && noNumbers && !times.typed) return { skip: 'closed' };
 
   // Новая строка, в которой не тронуто ничего, — это «сюда ещё не дошли», а не команда. Условие
   // проверяет отсутствие сохранённого показания, а не его пустоту: `values` с числами в базе,
   // очищенный на экране, выглядит отсюда так же — и обязан дойти до схемы (см. заголовок).
-  if (!item.reading && noNumbers && !value.comment.trim() && value.files.length === 0)
-    return { skip: 'blank' };
+  // A typed time is input too: alone it does not make a reading (ADR 0234), so it goes on to the
+  // schema and comes back as "fill in at least one value" instead of vanishing as a blank row.
+  const untouched = noNumbers && !times.typed && !value.comment.trim() && value.files.length === 0;
+  if (!item.reading && untouched) return { skip: 'blank' };
 
   // Грубое (вне абсолютных границ) отправку не пропускает вовсе: подтверждать опечатку в разряде
   // бессмысленно — её подтвердят так же, как набрали. Мягкое снимается галочкой: странное число
   // бывает правдой (Р6).
   const warnings = readingWarnings(numbers, previous);
   const hard = warnings.filter((w) => w.hard);
-  if (hard.length > 0) return { errors: Object.fromEntries(hard.map((w) => [w.field, w.text])) };
+  if (hard.length > 0) {
+    return {
+      errors: { ...times.errors, ...Object.fromEntries(hard.map((w) => [w.field, w.text])) },
+    };
+  }
   const soft = warnings.filter((w) => !w.hard);
-  if (soft.length > 0 && !value.confirmAnomaly)
-    return { errors: { [soft[0]!.field]: 'Подтвердите значение галочкой «Всё верно»' } };
+  if (soft.length > 0 && !value.confirmAnomaly) {
+    const confirm = 'Подтвердите значение галочкой «Всё верно»';
+    return { errors: { ...times.errors, [soft[0]!.field]: confirm } };
+  }
+  if (Object.keys(times.errors).length > 0) return { errors: times.errors };
 
   const parsed = readingInputSchema.safeParse({
     kind: 'values',
     ...numbers,
+    ...times.keys,
     comment: value.comment,
   });
   if (!parsed.success) return { errors: issueMessages(parsed.error.issues) };
@@ -156,13 +183,18 @@ export interface SubmitBody {
 export function buildSubmitBody(
   report: DriverReportDto,
   values: Record<string, DraftItem>,
-  previousOf: (item: ReportItemDto) => DriverPreviousReading | null,
+  entryOf: (item: ReportItemDto) => DriverAssignmentEntry | null,
 ): SubmitBody {
   const items: ReportItemSubmit[] = [];
   const errors: Record<string, Record<string, string>> = {};
+  // The rule follows the report's stored format, not this build (ADR 0234, decision 6).
+  const timesRequired = reportRequiresDriverTimes(report.draftFormat);
   let blank = false;
   for (const item of report.items) {
-    const built = buildItem(item, values[sourceKey(item)] ?? emptyItem(), previousOf(item));
+    const entry = entryOf(item);
+    const value = values[sourceKey(item)] ?? emptyItem();
+    const stops = stopsOf(item, entry);
+    const built = buildItem(item, value, entry?.previous ?? null, stops, timesRequired);
     if ('submit' in built) items.push(built.submit);
     else if ('errors' in built) errors[item.id] = built.errors;
     else if (built.skip === 'blank') blank = true;

@@ -157,13 +157,16 @@ const draftItem = (patch: Partial<DraftItem> = {}): DraftItem => ({
   fuelStartLiters: '',
   fuelFilledLiters: '',
   fuelEndLiters: '',
+  startedAt: '',
+  endedAt: '',
+  stops: {},
   comment: '',
   files: [],
   confirmAnomaly: false,
   ...patch,
 });
 
-const V2_PREFIX = `technic:driver-draft-v2:${driver.id}:${today}:`;
+const DRAFT_PREFIX = `technic:driver-draft-v3:${driver.id}:${today}:`;
 
 /**
  * Ветка черновика соседней загрузки страницы — ячейка хранилища, написанная руками. Своя ветка у
@@ -173,7 +176,7 @@ const V2_PREFIX = `technic:driver-draft-v2:${driver.id}:${today}:`;
 function putBranch(branch: string, entries: Record<string, DraftItem>): void {
   const savedAt = Date.now();
   localStorage.setItem(
-    `${V2_PREFIX}${branch}`,
+    `${DRAFT_PREFIX}${branch}`,
     JSON.stringify({
       savedAt,
       entries: Object.fromEntries(
@@ -854,15 +857,22 @@ describe('кабинет водителя: передача показаний',
       confirmOdometerAnomaly: true,
     });
   });
-  it('открытие отчёта объявляет формат черновика заголовком', async () => {
-    const { sent } = renderCabinet([routeItem]);
+  it('открытие и отправка отчёта объявляют формат черновика заголовком', async () => {
+    const { http, sent } = renderCabinet([routeItem]);
     await waitForBlocks();
 
     // Р13: граница, за которой перестают рождаться записи прежнего формата, проводится здесь —
     // ключи черновика делаются из `itemId`, а `itemId` приходит только из `open`. Сборке, которая
     // формат не объявила, сервер отвечает `client_outdated`.
     const openRequest = sent.filter((r) => r.path.endsWith('/open')).at(-1);
-    expect(openRequest?.headers['x-driver-draft-format']).toBe('v2');
+    expect(openRequest?.headers['x-driver-draft-format']).toBe('v3');
+
+    // ADR 0234: submit declares it too — the server refuses a `v3` report to a build that does not.
+    type(field(blockOf(routeItem.id), 'Одометр'), '145320');
+    await submitSheet();
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    const submitRequest = sent.filter((r) => r.path.endsWith('/submit')).at(-1);
+    expect(submitRequest?.headers['x-driver-draft-format']).toBe('v3');
   });
 
   it('вторая отправка сразу за первой уходит с версией из ответа и новым ключом', async () => {

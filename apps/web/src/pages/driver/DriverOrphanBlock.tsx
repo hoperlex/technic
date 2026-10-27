@@ -3,6 +3,7 @@ import { Alert, Button, Radio, Space, Typography } from 'antd';
 import { ViewModal } from '@shared/ui';
 import { formatDateTime } from '@shared/lib';
 import type { DraftItem } from './api';
+import { stopTimesText } from './readingStops';
 
 /**
  * Блок «Введено, но не привязано к строке» (план кабинета водителя, Р14).
@@ -42,6 +43,11 @@ const FIELDS: { label: string; text: (item: DraftItem) => string }[] = [
   { label: 'Топливо на начало', text: (item) => withUnit(item.fuelStartLiters, 'л') },
   { label: 'Заправлено', text: (item) => withUnit(item.fuelFilledLiters, 'л') },
   { label: 'Топливо на конец', text: (item) => withUnit(item.fuelEndLiters, 'л') },
+  // Times (ADR 0234) move with the rest of the record, so they are shown with the rest. The stops
+  // read without numbers: the record has lost its row, and with it the route it was typed against.
+  { label: 'Время начала', text: (item) => item.startedAt || DASH },
+  { label: 'Время окончания', text: (item) => item.endedAt || DASH },
+  { label: 'Время по точкам', text: (item) => stopTimesText(item, []).join(', ') || DASH },
   { label: 'Комментарий', text: (item) => item.comment || DASH },
   { label: 'Файлы', text: (item) => (item.files.length > 0 ? String(item.files.length) : DASH) },
 ];

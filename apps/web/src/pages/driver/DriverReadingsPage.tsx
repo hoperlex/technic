@@ -10,15 +10,14 @@ import { useAuth } from '@entities/session';
 import { DayFailure, DayFooter, DayLine, DayNotice, DayRows, OrphanList } from './DriverDayView';
 import { type TransferMode } from './DriverOrphanBlock';
 import { useDriverDate } from './DriverLayout';
-import { useAssignment, useAutoOpen, useDayState, usePreviousOf, useReadGate } from './dayState';
+import { useAssignment, useAutoOpen, useDayState, useEntryOf, useReadGate } from './dayState';
 import { useKeyboardInset } from './keyboardInset';
 import { driverCabinetApi, driverCabinetKeys } from '@entities/driver-cabinet';
 import { newIdempotencyKey, type DraftItem } from './api';
 import { refreshAfterSubmit } from './submitRefresh';
 import {
   bodyFingerprint,
-  draftPrefix,
-  legacyDraftKey,
+  isDayDraftKey,
   pendingAttempt,
   readDraft,
   writeDraft,
@@ -37,6 +36,7 @@ import {
   type Orphan,
 } from './readingsDraft';
 import { buildSubmitBody, submitFailure } from './readingsSubmit';
+import { stopsOf } from './readingStops';
 import { driverContentStyle } from './theme';
 
 /**
@@ -104,7 +104,7 @@ export function DriverReadingsPage() {
   const opening = useAutoOpen(date, day, assignment.data, gate);
   const draftUse = day?.draft ?? 'none'; // как обойтись с локальным введённым (Р10)
 
-  const previousOf = usePreviousOf(assignment.data);
+  const entryOf = useEntryOf(assignment.data);
 
   // Показанное — производное от отчёта и черновика, а не третье состояние рядом с ними.
   const values = useMemo(
@@ -118,8 +118,9 @@ export function DriverReadingsPage() {
   );
   /** Введённое, но не переданное: пометкой рядом со своим блоком, а не вместо чисел учёта (Р10). */
   const pending = useMemo(
-    () => pendingRows(report, draftUse === 'aside' ? draft.items : {}),
-    [report, draft, draftUse],
+    () =>
+      pendingRows(report, draftUse === 'aside' ? draft.items : {}, (i) => stopsOf(i, entryOf(i))),
+    [report, draft, draftUse, entryOf],
   );
 
   /**
@@ -150,14 +151,11 @@ export function DriverReadingsPage() {
    * происхождения уже после того, как чужая ветка легла в хранилище.
    */
   useEffect(() => {
-    const prefix = draftPrefix(userId, date);
-    // Запись прежнего формата, изменённая старой вкладкой, обязана показаться снова (Р11б), а её
-    // ключ под этот префикс не подходит: он намеренно другой — потому и спрашивается у хранилища.
-    const legacy = legacyDraftKey(userId, date);
-    const mine = (key: string) => key.startsWith(prefix) || key === legacy;
+    // Записи прежних форматов, изменённые старой вкладкой, обязаны показаться снова (Р11б): их
+    // ключи намеренно другие — потому и спрашиваются у хранилища (`isDayDraftKey`).
     const onStorage = (event: StorageEvent) => {
       // `key === null` — хранилище вычистили целиком: выход из учётной записи в соседней вкладке.
-      if (event.key !== null && !mine(event.key)) return;
+      if (event.key !== null && !isDayDraftKey(userId, date, event.key)) return;
       setDraft(readDraft(userId, date));
     };
     window.addEventListener('storage', onStorage);
@@ -252,7 +250,7 @@ export function DriverReadingsPage() {
      */
     const view = readDraft(userId, date);
     const sending = seedValues(report, draftUse === 'edit' ? view.items : {});
-    const { items, errors: refused, emptyOpenDay } = buildSubmitBody(report, sending, previousOf);
+    const { items, errors: refused, emptyOpenDay } = buildSubmitBody(report, sending, entryOf);
     setErrors(refused);
     const firstBad = report.items.find((item) => refused[item.id]);
     // Ставится и снимается одним значением: иначе строка подвала пережила бы день, в котором уже
@@ -324,6 +322,8 @@ export function DriverReadingsPage() {
         await gate
           .run(async () => queryClient.setQueryData(reportKey, await driverCabinetApi.report(date)))
           .catch(() => queryClient.invalidateQueries({ queryKey: reportKey }));
+        // A stop set changed under the form is a 409 too (ADR 0234): the task is re-read with it.
+        void queryClient.invalidateQueries({ queryKey: driverCabinetKeys.assignment(date) });
       }
     } finally {
       setSubmitting(false);
@@ -369,7 +369,7 @@ export function DriverReadingsPage() {
             <DayRows
               report={report}
               values={values}
-              previousOf={previousOf}
+              entryOf={entryOf}
               errors={errors}
               uploadingId={uploadingId}
               // Читающий режим — свойство блока, а не подвала (Р10): иначе водитель правит

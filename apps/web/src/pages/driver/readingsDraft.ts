@@ -1,7 +1,8 @@
-import type { DriverReportDto } from '@technic/contracts';
-import type { DraftFile, DraftItem } from './api';
+import type { DriverReportDto, ReportItemDto, VehicleReadingDto } from '@technic/contracts';
+import type { DraftFile, DraftItem, DraftStopTimes } from './api';
 import type { DraftChange, DraftPatch, DraftView } from './draftStore';
 import type { TransferTarget } from './DriverOrphanBlock';
+import { stopKey, stopTimesText, type ShownStop } from './readingStops';
 
 /**
  * Черновик глазами формы показаний: чем строка адресуется, что показать в полях и что делать с
@@ -21,6 +22,9 @@ export const emptyItem = (): DraftItem => ({
   fuelStartLiters: '',
   fuelFilledLiters: '',
   fuelEndLiters: '',
+  startedAt: '',
+  endedAt: '',
+  stops: {},
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -39,6 +43,27 @@ export const sourceKey = (entry: { sourceKind: string; sourceId: string }): stri
 
 /** Число из уже сохранённого показания — обратно в строку поля. */
 const show = (value: number | null): string => (value === null ? '' : String(value));
+
+/**
+ * Saved times back into the fields (ADR 0234). The scalar pair is typed only on an ESM-2 item: on a
+ * route it is derived from the stops, and putting it into the draft would only make the row look
+ * filled with something the driver never typed.
+ */
+function savedTimes(item: ReportItemDto, reading: VehicleReadingDto) {
+  const stops: Record<string, DraftStopTimes> = {};
+  for (const point of reading.points) {
+    stops[stopKey(point)] = {
+      arrivedAt: point.arrivedAt ?? '',
+      departedAt: point.departedAt ?? '',
+    };
+  }
+  const esm2 = item.sourceKind === 'esm2';
+  return {
+    startedAt: esm2 ? (reading.startedAt ?? '') : '',
+    endedAt: esm2 ? (reading.endedAt ?? '') : '',
+    stops,
+  };
+}
 
 /**
  * Что показать в блоках: сохранённое сервером, поверх — незавершённый черновик. Черновик главнее
@@ -60,6 +85,7 @@ export function seedValues(
           fuelStartLiters: show(reading.fuelStartLiters),
           fuelFilledLiters: show(reading.fuelFilledLiters),
           fuelEndLiters: show(reading.fuelEndLiters),
+          ...savedTimes(item, reading),
           comment: reading.comment,
           // Уже привязанные файлы сюда не попадают: отправка принимает только непривязанные
           // (Р18), и повтор их идентификаторов был бы отказом сервера.
@@ -124,7 +150,8 @@ export function orphansOf(report: DriverReportDto | null, draft: DraftView): Orp
  *
  * Перечислены все пять чисел, и это не полнота ради полноты: по этому же признаку запись попадает в
  * список непереданного и предъявляется как непривязанная. Забудь здесь остаток — и запись, в которой
- * человек ввёл только его, считалась бы пустой: молча не показанной и молча затёртой переносом.
+ * человек ввёл только его, считалась бы пустой: молча не показанной и молча затёртой переносом. The
+ * times count for the same reason: a morning start typed alone is the driver's input too.
  */
 const filled = (item: DraftItem): boolean =>
   Boolean(
@@ -133,8 +160,12 @@ const filled = (item: DraftItem): boolean =>
     item.fuelStartLiters ||
     item.fuelFilledLiters ||
     item.fuelEndLiters ||
+    item.startedAt ||
+    item.endedAt ||
     item.comment,
-  ) || item.files.length > 0;
+  ) ||
+  item.files.length > 0 ||
+  Object.values(item.stops).some((times) => times.arrivedAt || times.departedAt);
 
 /**
  * Куда переносить разрешено (Р14а п. 1). Цель — только строка, открытую правку которой водитель
@@ -209,8 +240,11 @@ export interface PendingRow {
  * Топливо идёт в порядке смены — начало, заправлено, конец, — тем же, что в форме: строку эту
  * диктуют диспетчеру вслух, и переставленные числа он запишет в том порядке, в каком услышал.
  */
-function pendingText(item: DraftItem): string {
+function pendingText(item: DraftItem, stops: readonly ShownStop[]): string {
   const parts: string[] = [];
+  if (item.startedAt) parts.push(`начало ${item.startedAt}`);
+  if (item.endedAt) parts.push(`окончание ${item.endedAt}`);
+  parts.push(...stopTimesText(item, stops));
   if (item.odometerKm) parts.push(`одометр ${item.odometerKm} км`);
   if (item.engineHours) parts.push(`моточасы ${item.engineHours} ч`);
   if (item.fuelStartLiters) parts.push(`топливо на начало ${item.fuelStartLiters} л`);
@@ -224,12 +258,13 @@ function pendingText(item: DraftItem): string {
 export function pendingRows(
   report: DriverReportDto | null,
   draft: DraftView['items'],
+  stopsOf: (item: ReportItemDto) => ShownStop[],
 ): Map<string, PendingRow> {
   const rows = (report?.items ?? []).flatMap((item) => {
     const row = draft[sourceKey(item)];
-    return row && filled(row.item)
-      ? [[item.id, { itemId: item.id, text: pendingText(row.item), savedAt: row.savedAt }] as const]
-      : [];
+    if (!row || !filled(row.item)) return [];
+    const text = pendingText(row.item, stopsOf(item));
+    return [[item.id, { itemId: item.id, text, savedAt: row.savedAt }] as const];
   });
   return new Map(rows);
 }

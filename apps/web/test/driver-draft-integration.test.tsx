@@ -49,7 +49,7 @@ const driver = authUser({
 });
 
 const V1_KEY = `technic:driver-draft:${driver.id}:${today}`;
-const V2_PREFIX = `technic:driver-draft-v2:${driver.id}:${today}:`;
+const DRAFT_PREFIX = `technic:driver-draft-v3:${driver.id}:${today}:`;
 
 const routeItem: ReportItemDto = {
   id: 'item-route',
@@ -82,6 +82,9 @@ const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
   fuelStartLiters: '',
   fuelFilledLiters: '',
   fuelEndLiters: '',
+  startedAt: '',
+  endedAt: '',
+  stops: {},
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -184,7 +187,7 @@ function putV1(items: Record<string, Partial<DraftItem>>): void {
 function putBranch(branch: string, entries: Record<string, DraftItem>, counter = 1): void {
   const savedAt = Date.now();
   localStorage.setItem(
-    `${V2_PREFIX}${branch}`,
+    `${DRAFT_PREFIX}${branch}`,
     JSON.stringify({
       savedAt,
       entries: Object.fromEntries(
@@ -201,7 +204,7 @@ function putBranch(branch: string, entries: Record<string, DraftItem>, counter =
 
 /** Событие приходит только соседним вкладкам того же происхождения — свою запись оно не сопровождает. */
 function fireStorage(branch: string): void {
-  window.dispatchEvent(new StorageEvent('storage', { key: `${V2_PREFIX}${branch}` }));
+  window.dispatchEvent(new StorageEvent('storage', { key: `${DRAFT_PREFIX}${branch}` }));
 }
 
 // ── Рендер кабинета ──
@@ -439,7 +442,7 @@ describe('кабинет водителя: черновик по источни�
     // Источник погашен надгробием, а не вычеркнут: ячейка соседней ветки на месте, и вернуть из неё
     // строку слияние уже не может (Р11г).
     expect(view.items['route:route-gone']).toBeUndefined();
-    expect(localStorage.getItem(`${V2_PREFIX}aaaa`)).toContain('route-gone');
+    expect(localStorage.getItem(`${DRAFT_PREFIX}aaaa`)).toContain('route-gone');
   });
 
   it('в дне без открытой правки переносить некуда, и блок остаётся', async () => {

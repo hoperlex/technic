@@ -26,10 +26,10 @@ export const driverCabinetApi = {
    * Открытие отчёта: сервер заводит черновик и строки ожидания по источникам дня и возвращает их
    * с идентификаторами. До этого записывать некуда — `itemId` появляется только здесь.
    *
-   * Формат черновика объявляется заголовком, и это единственная ручка, где он нужен (Р13): ключи
-   * записей черновика рождаются из `itemId`, а `itemId` приходит только отсюда. Сборке, не умеющей
-   * нынешний формат, сервер отвечает отказом `client_outdated` — так поток новых записей прежнего
-   * формата и прекращается.
+   * Формат черновика объявляется заголовком (Р13): ключи записей черновика рождаются из `itemId`,
+   * а `itemId` приходит только отсюда. Сборке, не умеющей нынешний формат, сервер отвечает отказом
+   * `client_outdated` — так поток новых записей прежнего формата и прекращается. Submit declares
+   * it as well (below).
    */
   open: (date: string) =>
     apiFetch<DriverReportDto>(`/driver/reports/${date}/open`, {
@@ -40,11 +40,18 @@ export const driverCabinetApi = {
    * Отправка. Ключ идемпотентности — заголовком: плохая связь не должна порождать ни дублей, ни
    * потерянных отправок, а повтор того же ключа с другим телом сервер обязан отличить от повтора
    * той же попытки (Р25).
+   *
+   * The draft format goes here too (ADR 0234): the server compares it with the report's STORED
+   * format after the idempotency lookup, and refuses a `v3` report to a build that declares nothing
+   * — that build knows no shift times and would submit a day without them.
    */
   submit: (date: string, body: ReportSubmitBody, idempotencyKey: string) =>
     apiFetch<DriverReportDto>(`/driver/reports/${date}/submit`, {
       method: 'POST',
       body,
-      headers: { 'Idempotency-Key': idempotencyKey },
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+        [DRIVER_DRAFT_FORMAT_HEADER]: DRIVER_DRAFT_FORMAT,
+      },
     }),
 };

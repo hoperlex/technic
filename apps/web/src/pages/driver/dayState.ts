@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DRIVER_SUBMIT_PAST_DAYS,
   type DriverAssignmentDto,
-  type DriverPreviousReading,
+  type DriverAssignmentEntry,
   type DriverReportDto,
   type ReportItemDto,
 } from '@technic/contracts';
@@ -170,18 +170,19 @@ export function useAssignment(date: string, enabled: boolean) {
 }
 
 /**
- * Предыдущий снимок счётчиков по строке отчёта. Живёт он в задании, а не в отчёте, и сопоставляется
- * источником, а не `itemId`: в задании тот появляется только после открытия отчёта. Живёт рядом с
- * самим заданием по той же причине — читается оно одним ответом на всю страницу.
+ * Строка задания по строке отчёта: предыдущий снимок счётчиков и остановки рейса (ADR 0234) живут в
+ * задании, а не в отчёте, и сопоставляются источником, а не `itemId`: в задании тот появляется
+ * только после открытия отчёта. Живёт рядом с самим заданием по той же причине — читается оно одним
+ * ответом на всю страницу.
  */
-export function usePreviousOf(
+export function useEntryOf(
   assignment: DriverAssignmentDto | undefined,
-): (item: ReportItemDto) => DriverPreviousReading | null {
-  const previous = useMemo(
-    () => new Map((assignment?.entries ?? []).map((entry) => [sourceKey(entry), entry.previous])),
+): (item: ReportItemDto) => DriverAssignmentEntry | null {
+  const entries = useMemo(
+    () => new Map((assignment?.entries ?? []).map((entry) => [sourceKey(entry), entry])),
     [assignment],
   );
-  return (item) => previous.get(sourceKey(item)) ?? null;
+  return useCallback((item) => entries.get(sourceKey(item)) ?? null, [entries]);
 }
 
 /**

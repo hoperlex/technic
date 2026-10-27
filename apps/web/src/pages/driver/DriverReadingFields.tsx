@@ -1,8 +1,12 @@
-import type { FocusEvent, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Input, Typography } from 'antd';
-import type { DriverPreviousReading } from '@technic/contracts';
-import { previousHintText, type ReadingField } from '@entities/vehicle-reading';
+import { shiftSpanMinutes, type DriverPreviousReading } from '@technic/contracts';
+import { formatDuration, previousHintText, type ReadingField } from '@entities/vehicle-reading';
 import type { DraftItem } from './api';
+import { fieldLabelStyle, hintStyle, keepVisible } from './readingFieldStyles';
+import { TimeField } from './DriverTimeField';
+import { parseTime } from './readingStops';
+import { timeFields } from './readingsTimes';
 
 /**
  * Числовые поля показания и их раскладка по ходу смены (ADR 0163, Р7).
@@ -17,34 +21,15 @@ import type { DraftItem } from './api';
  * оформление: два поля с подписью «Топливо» различаются только ими. Без заголовков подписи
  * пришлось бы удлинять («Топливо на начало смены»), и в кабине, на ходу, два длинных похожих
  * заголовка читаются как одно и то же поле (Р7).
+ *
+ * An ESM-2 item also records its shift time here (ADR 0234, D9 variant A): «Время начала» opens the
+ * start group, «Время окончания» the end group, because the time is taken at the same moment as the
+ * numbers next to it. A route's times are per stop and live in the route block above the counters
+ * ([DriverRouteTimes](DriverRouteTimes.tsx)); a relocation has none (D8).
  */
-
-/**
- * Подсказка под полем и текст отказа (план типографики, Р4). `0.9em`, а не прежние `0.85`: строку
- * «предыдущее: 145 320 (10.08)» водитель СВЕРЯЕТ с набранным, стоя у машины, — она мельче
- * набранного намеренно, но читаться обязана без прищура.
- */
-export const hintStyle = { fontSize: '0.9em' } as const;
-
-/**
- * Подпись поля — заголовок поля, а не примечание к нему: базовым размером кабинета и обычным
- * цветом (Р4). Серым и мельче основного текста, как было, она читалась как сноска к чужому полю —
- * а это единственное, что называет вводимое число.
- */
-export const fieldLabelStyle = { display: 'inline-block', marginBottom: 2 } as const;
 
 /** Заголовок группы — тоже заголовок, и жирный отличает его от подписи поля под ним. */
 const groupTitleStyle = { display: 'block' } as const;
-
-/**
- * Экранная клавиатура перекрывает поле, к которому её и вызвали. Браузер прокручивает к нему сам
- * не всегда и не сразу, поэтому доводим сами — с задержкой, за которую клавиатура успевает
- * появиться и сжать окно.
- */
-export function keepVisible(event: FocusEvent<HTMLElement>): void {
-  const target = event.currentTarget;
-  setTimeout(() => target.scrollIntoView({ block: 'center', behavior: 'smooth' }), 300);
-}
 
 /**
  * Запятая нормализуется в точку прямо на вводе: на телефоне десятичный разделитель зависит от
@@ -147,7 +132,25 @@ export interface ReadingFieldsProps {
   hardOf: (field: ReadingField) => string | undefined;
   /** Читающий режим гасит все пять полей разом: выключать их поимённо — забыть шестое (Р10). */
   disabled: boolean;
+  /** An ESM-2 item: the shift pair is typed here. A route keeps its times in the route block. */
+  timed: boolean;
   onChange: (patch: Partial<DraftItem>) => void;
+}
+
+/**
+ * «смена 12 ч 00 мин» under the end time, read by `shiftSpanMinutes` — the one reading of a pair
+ * the site's shift window uses too. An end earlier than the start is the next day, and the hint
+ * says so, since that is the one case a typo and a night shift look alike. Equal times get no
+ * hint: the submit refuses them («начало и конец смены совпадают»).
+ */
+function spanHint(startedAt: string, endedAt: string): string | undefined {
+  const start = parseTime(startedAt);
+  const end = parseTime(endedAt);
+  if (!start || !end || start === 'invalid' || end === 'invalid' || start === end) return undefined;
+  const minutes = shiftSpanMinutes(start, end);
+  if (minutes === null) return undefined;
+  const night = end < start ? ' · ночная — конец раньше начала' : '';
+  return `смена ${formatDuration(minutes)}${night}`;
 }
 
 export function ReadingFields({
@@ -156,6 +159,7 @@ export function ReadingFields({
   errors,
   hardOf,
   disabled,
+  timed,
   onChange,
 }: ReadingFieldsProps) {
   /*
@@ -167,12 +171,21 @@ export function ReadingFields({
    * котором сняли хотя бы один вечерний счётчик, недосданным больше не считается — что снимать
    * дальше, решает машина, а не портал.
    */
-  const started = Boolean(value.fuelStartLiters || value.fuelFilledLiters);
+  const started = Boolean(value.fuelStartLiters || value.fuelFilledLiters || value.startedAt);
   const ended = Boolean(value.odometerKm || value.engineHours || value.fuelEndLiters);
 
   return (
     <>
       <FieldGroup title="Начало смены">
+        {timed && (
+          <TimeField
+            label="Время начала"
+            value={value.startedAt}
+            error={errors[timeFields.startedAt]}
+            disabled={disabled}
+            onChange={(next) => onChange({ startedAt: next })}
+          />
+        )}
         {/* Остаток в баке — уровень, а не поток: за период он не суммируется, и подсказки
             «предыдущий остаток» под ним нет намеренно (Р9). Сравнение остатков между сменами —
             это уже расход, а его портал не считает. */}
@@ -202,6 +215,16 @@ export function ReadingFields({
       </FieldGroup>
 
       <FieldGroup title="Конец смены">
+        {timed && (
+          <TimeField
+            label="Время окончания"
+            value={value.endedAt}
+            hint={spanHint(value.startedAt, value.endedAt)}
+            error={errors[timeFields.endedAt]}
+            disabled={disabled}
+            onChange={(next) => onChange({ endedAt: next })}
+          />
+        )}
         {/* Показание счётчика НА КОНЕЦ СМЕНЫ, а не работа за смену: хранится снимок, разности
             считает сервер — вычитать в уме водителю не за чем (ADR 0103). Теперь это сказано
             заголовком группы, и подписи полей коротки настолько, что читаются на ходу. */}

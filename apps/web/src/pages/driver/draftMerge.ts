@@ -1,7 +1,7 @@
-import type { DraftItem } from './api';
+import type { DraftItem, DraftStopTimes } from './api';
 
 /**
- * Логические часы, разбор ветки и слияние — машинерия черновика показаний `v2`
+ * Логические часы, разбор ветки и слияние — машинерия черновика показаний `v3` (formerly `v2`)
  * ([draftStore.ts](draftStore.ts), Р11в и Р11г плана кабинета водителя).
  *
  * Отдельным модулем не по смыслу, а по размеру: вместе с хранилищем они перевалили бы за 400
@@ -16,12 +16,23 @@ import type { DraftItem } from './api';
  * `startsWith` своего, и `…-v2:` под него не подходит ни в уборке по TTL, ни в очистке при выходе
  * (Р11б). Оба живут здесь, рядом со слиянием, а не в хранилище: по ним же сходятся ячейки, которые
  * слияние и складывает.
+ *
+ * `v3` (ADR 0234) got its own prefix for the same reason `v2` did. A `v2` build still open in a tab
+ * reads every branch through its own normalizer, which drops the time keys, and consolidates the
+ * result back with the ORIGINAL clocks: with one shared prefix its copy would tie with ours and win
+ * the merge by storage order, erasing typed times without a trace. Under `v3` the old build sees
+ * nothing of ours, and `v2` branches become read-only input here (`draftLegacy.ts`).
  */
-export const PREFIX = 'technic:driver-draft-v2:';
+export const PREFIX = 'technic:driver-draft-v3:';
+export const V2_PREFIX = 'technic:driver-draft-v2:';
 export const V1_PREFIX = 'technic:driver-draft:';
 
 /** Общее начало ключей дня: им же событие `storage` узнаёт, что перерисовывать (Р11в). */
 export const draftPrefix = (userId: string, date: string): string => `${PREFIX}${userId}:${date}:`;
+
+/** The same for the `v2` branches of the day: read-only here, but an old tab may still write them. */
+export const v2DraftPrefix = (userId: string, date: string): string =>
+  `${V2_PREFIX}${userId}:${date}:`;
 
 /**
  * Ключ ячейки прежнего формата. Нужен наружу ради того же события `storage`: запись, изменённую
@@ -85,6 +96,8 @@ export interface Branch {
 /** Попыток дня хранится несколько, но не все подряд: день, отправленный двадцать раз, не нужен. */
 const MAX_ATTEMPTS = 10;
 
+const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+
 const isClock = (value: unknown): value is DraftClock =>
   typeof value === 'object' &&
   value !== null &&
@@ -107,10 +120,12 @@ const isClock = (value: unknown): value is DraftClock =>
  * Побочный эффект приведения безвреден и ожидаем: канонический вид старой ветки от него меняется,
  * `sameContent` признаёт её отличной от слияния, и консолидация один раз перепишет её полной
  * формой (Р11в). Дефект здесь только кажущийся — переписывание однократно и само себя гасит.
+ *
+ * The inputs are three since `v3`: its own branches, the read-only `v2` branches and `v1` cells
+ * (`draftLegacy.ts`) — still through this one normalizer.
  */
 export function normalizeItem(raw: unknown): DraftItem {
   const item = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<DraftItem>;
-  const text = (value: unknown): string => (typeof value === 'string' ? value : '');
   return {
     odometerKm: text(item.odometerKm),
     engineHours: text(item.engineHours),
@@ -118,10 +133,27 @@ export function normalizeItem(raw: unknown): DraftItem {
     fuelStartLiters: text(item.fuelStartLiters),
     fuelFilledLiters: text(item.fuelFilledLiters),
     fuelEndLiters: text(item.fuelEndLiters),
+    // Times (ADR 0234): a `v2` record has none of these keys and reads as "nothing recorded".
+    startedAt: text(item.startedAt),
+    endedAt: text(item.endedAt),
+    stops: normalizeStops(item.stops),
     comment: text(item.comment),
     files: Array.isArray(item.files) ? item.files : [],
     confirmAnomaly: item.confirmAnomaly === true,
   };
+}
+
+/** Stop times by key; a malformed entry reads as empty times rather than breaking the block. */
+function normalizeStops(raw: unknown): Record<string, DraftStopTimes> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
+  const stops: Record<string, DraftStopTimes> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const times = (typeof value === 'object' && value !== null ? value : {}) as Partial<
+      Record<keyof DraftStopTimes, unknown>
+    >;
+    stops[key] = { arrivedAt: text(times.arrivedAt), departedAt: text(times.departedAt) };
+  }
+  return stops;
 }
 
 /** Чужая или испорченная ячейка читается как «ветки нет»: угадывать её содержимое нечем. */

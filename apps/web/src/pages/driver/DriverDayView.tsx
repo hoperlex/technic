@@ -1,6 +1,6 @@
 import { Link } from 'react-router';
 import { Alert, Button, Typography } from 'antd';
-import type { DriverPreviousReading, DriverReportDto, ReportItemDto } from '@technic/contracts';
+import type { DriverAssignmentEntry, DriverReportDto, ReportItemDto } from '@technic/contracts';
 import { formatDateTime } from '@shared/lib';
 import type { DraftItem } from './api';
 import { CONTENT_WIDTH } from './DriverLayout';
@@ -9,6 +9,7 @@ import { ReadingBlock } from './DriverReadingBlock';
 import type { DayState } from './dayState';
 import type { Orphan, PendingRow } from './readingsDraft';
 import { emptyItem, sourceKey } from './readingsDraft';
+import { stopsOf } from './readingStops';
 
 /**
  * Матрица состояний дня на экране (план `docs/driver-readings-first-plan.md`, Р3, Р4, Р10).
@@ -143,7 +144,7 @@ export function PendingMark({ row }: { row: PendingRow }) {
 export function DayRows({
   report,
   values,
-  previousOf,
+  entryOf,
   errors,
   uploadingId,
   readOnly,
@@ -155,7 +156,8 @@ export function DayRows({
   report: DriverReportDto;
   /** Показанное — производное от отчёта и черновика, а не третье состояние рядом с ними. */
   values: Record<string, DraftItem>;
-  previousOf: (item: ReportItemDto) => DriverPreviousReading | null;
+  /** The task row of an item: its previous counters and, on a route, its stops (ADR 0234). */
+  entryOf: (item: ReportItemDto) => DriverAssignmentEntry | null;
   errors: Record<string, Record<string, string>>;
   uploadingId: string | null;
   readOnly: boolean;
@@ -177,12 +179,14 @@ export function DayRows({
         ];
   return report.items.flatMap((item) => {
     const mark = pending.get(item.id);
+    const entry = entryOf(item);
     return [
       <ReadingBlock
         key={item.id}
         item={item}
         value={values[sourceKey(item)] ?? emptyItem()}
-        previous={previousOf(item)}
+        previous={entry?.previous ?? null}
+        stops={stopsOf(item, entry)}
         errors={errors[item.id] ?? {}}
         uploading={uploadingId === item.id}
         readOnly={readOnly}

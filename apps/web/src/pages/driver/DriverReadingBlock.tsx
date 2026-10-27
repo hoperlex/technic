@@ -9,7 +9,10 @@ import {
 import { parseReadingNumber, readingWarnings, type ReadingField } from '@entities/vehicle-reading';
 import { FileLinkList } from '@entities/file';
 import type { DraftItem } from './api';
-import { ReadingFields, fieldLabelStyle, hintStyle, keepVisible } from './DriverReadingFields';
+import { ReadingFields } from './DriverReadingFields';
+import { RouteTimes } from './DriverRouteTimes';
+import { fieldLabelStyle, hintStyle, keepVisible } from './readingFieldStyles';
+import type { ShownStop } from './readingStops';
 
 /**
  * Блок передачи показаний по одной строке ожидания (ADR 0103, Р14).
@@ -71,6 +74,8 @@ export interface ReadingBlockProps {
   value: DraftItem;
   /** Предыдущий снимок счётчиков этой машины; `null` — начало ряда, сравнивать не с чем. */
   previous: DriverPreviousReading | null;
+  /** Stops of a route item (`stopsOf`); empty for an ESM-2 item and a relocation. */
+  stops: readonly ShownStop[];
   /** Ошибки по именам полей схемы: их же именами их и подсвечивает форма. */
   errors: Record<string, string>;
   uploading: boolean;
@@ -92,6 +97,7 @@ export function ReadingBlock({
   item,
   value,
   previous,
+  stops,
   errors,
   uploading,
   readOnly = false,
@@ -204,12 +210,31 @@ export function ReadingBlock({
       {/* Пять чисел тремя группами по ходу смены (Р7). Ввод уходит наружу той же запертой
           дверью, что и остальное: `edit` молчит в читающем дне, а `disabled` гасит все пять полей
           разом — выключать их поимённо значило бы однажды забыть шестое. */}
+      {/* The route's stops above the counters (ADR 0234, D9): the day is filled against the task,
+          stop by stop, and the counters close it. */}
+      {stops.length > 0 && (
+        <RouteTimes
+          stops={stops}
+          value={value.stops}
+          errors={errors}
+          disabled={readOnly}
+          onChange={(key, patch) =>
+            edit({
+              stops: {
+                ...value.stops,
+                [key]: { arrivedAt: '', departedAt: '', ...value.stops[key], ...patch },
+              },
+            })
+          }
+        />
+      )}
       <ReadingFields
         value={value}
         previous={previous}
         errors={errors}
         hardOf={hardOf}
         disabled={readOnly}
+        timed={item.sourceKind === 'esm2'}
         onChange={edit}
       />
 

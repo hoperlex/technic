@@ -43,6 +43,18 @@ export interface DraftItem {
   fuelStartLiters: string;
   fuelFilledLiters: string;
   fuelEndLiters: string;
+  /**
+   * The ESM-2 shift pair as typed (ADR 0234): `HH:mm`, or a half-typed «73» the field normalizes on
+   * blur — a string for the same reason the numbers are strings. Empty means "not recorded".
+   */
+  startedAt: string;
+  endedAt: string;
+  /**
+   * Stop times of a route item by stop key (`stopKey`: the live route point id, or the saved stop's
+   * position when its point was rebuilt away). By key, not by order: a route rebuilt between typing
+   * and sending must not move a typed time onto another stop.
+   */
+  stops: Record<string, DraftStopTimes>;
   comment: string;
   files: DraftFile[];
   /**
@@ -51,6 +63,12 @@ export interface DraftItem {
    * «цифра верная» относится к ним же.
    */
   confirmAnomaly: boolean;
+}
+
+/** Times typed at one stop. Only stop 1 has an arrival; its key stays empty elsewhere (D6). */
+export interface DraftStopTimes {
+  arrivedAt: string;
+  departedAt: string;
 }
 
 /**

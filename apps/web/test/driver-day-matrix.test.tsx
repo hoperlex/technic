@@ -51,7 +51,7 @@ const driver = authUser({
   fullName: 'Водителев Виктор Иванович',
 });
 
-const V2_PREFIX = `technic:driver-draft-v2:${driver.id}:${today}:`;
+const DRAFT_PREFIX = `technic:driver-draft-v3:${driver.id}:${today}:`;
 
 const routeItem: ReportItemDto = {
   id: 'item-route',
@@ -100,6 +100,9 @@ const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
   fuelStartLiters: '',
   fuelFilledLiters: '',
   fuelEndLiters: '',
+  startedAt: '',
+  endedAt: '',
+  stops: {},
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -113,7 +116,7 @@ const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
 function putBranch(branch: string, entries: Record<string, DraftItem>): void {
   const savedAt = Date.now();
   localStorage.setItem(
-    `${V2_PREFIX}${branch}`,
+    `${DRAFT_PREFIX}${branch}`,
     JSON.stringify({
       savedAt,
       entries: Object.fromEntries(

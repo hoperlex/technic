@@ -8,12 +8,13 @@ import {
   legacyDraftKey,
   mergeBranches,
   nextAttemptClock,
-  normalizeItem,
   orderAttempts,
   parseBranch,
   PREFIX,
   sameContent,
   V1_PREFIX,
+  V2_PREFIX,
+  v2DraftPrefix,
   type Branch,
   type BranchState,
   type DraftClock,
@@ -21,10 +22,13 @@ import {
   type DraftRow,
   type SubmitAttempt,
 } from './draftMerge';
+import { adoptV2, legacySavedAt, readLegacy, TTL_MS, type LegacyRecord } from './draftLegacy';
 
 /**
- * Черновик показаний версии 2: адресуется источником, пишется ветками, сливается при чтении
- * (план кабинета водителя — Р11, Р11б, Р11в, Р11г, Р12а, Р14).
+ * Черновик показаний: адресуется источником, пишется ветками, сливается при чтении (план кабинета
+ * водителя — Р11, Р11б, Р11в, Р11г, Р12а, Р14). The format is `v3` since ADR 0234: the `v2`
+ * machinery under its own prefix, with the shift and stop times; older formats are read-only input
+ * (`draftLegacy.ts`).
  *
  * Три решения, из которых следует всё остальное.
  *
@@ -43,17 +47,10 @@ import {
  * следующем слиянии, поэтому удаление — такая же версия строки, как значение (Р11г).
  */
 
-export type { DraftClock, DraftEntry, DraftFile, DraftItem, DraftRow, SubmitAttempt };
+export type { DraftClock, DraftEntry, DraftFile, DraftItem, DraftRow, LegacyRecord, SubmitAttempt };
+export { legacyFingerprint } from './draftLegacy';
 
 // ── Что видит страница ──
-
-/** Запись прежнего формата, ещё не учтённая: показывается блоком и переезжает нажатием (Р14). */
-export interface LegacyRecord {
-  itemId: string;
-  item: DraftItem;
-  fingerprint: string;
-  savedAt: number;
-}
 
 export interface DraftView {
   /** Строки по ключу `sourceKind:sourceId`: он переживает пересоздание строки ожидания (Р11). */
@@ -100,8 +97,6 @@ export type WriteResult = { ok: true } | { ok: false; error: unknown };
 
 // ── Ключи и ветка ──
 
-const TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
 /**
  * Ветка этого документа — случайное значение, рождённое загрузкой модуля и живущее только в
  * памяти. `sessionStorage` для этого не годится, и это не осторожность, а буква стандарта: при
@@ -124,8 +119,20 @@ export { draftPrefix, legacyDraftKey } from './draftMerge';
 
 const ownKey = (userId: string, date: string): string => `${draftPrefix(userId, date)}${BRANCH}`;
 
-function readBranches(userId: string, date: string): Branch[] {
-  const prefix = draftPrefix(userId, date);
+/**
+ * Whether a storage key belongs to the day's draft in any format: the `storage` event redraws the
+ * form by it (Р11в). The `v2` branches and the `v1` cell are included on purpose — an old tab still
+ * writes them, and what it writes must show up here (Р11б).
+ */
+export function isDayDraftKey(userId: string, date: string, key: string): boolean {
+  return (
+    key.startsWith(draftPrefix(userId, date)) ||
+    key.startsWith(v2DraftPrefix(userId, date)) ||
+    key === legacyDraftKey(userId, date)
+  );
+}
+
+function readBranches(prefix: string): Branch[] {
   const branches: Branch[] = [];
   for (const key of Object.keys(localStorage)) {
     if (!key.startsWith(prefix)) continue;
@@ -135,11 +142,22 @@ function readBranches(userId: string, date: string): Branch[] {
   return branches;
 }
 
+/**
+ * The day as both reading and writing see it: the merged `v3` branches with the `v2` rows taken over
+ * (`adoptV2`). One loader for both, so that a write never builds on a state the screen did not show.
+ */
+function loadDay(userId: string, date: string) {
+  const branches = readBranches(draftPrefix(userId, date));
+  const old = mergeBranches(readBranches(v2DraftPrefix(userId, date)));
+  const { state, records } = adoptV2(mergeBranches(branches), old, BRANCH);
+  return { branches, merged: state, records, oldJournal: old.legacy };
+}
+
 // ── Чтение ──
 
 export function readDraft(userId: string, date: string): DraftView {
-  const branches = readBranches(userId, date);
-  const merged = mergeBranches(branches);
+  const { branches, merged, records, oldJournal } = loadDay(userId, date);
+  // Adopted rows are written here, with their marks, by the same consolidation as everything else.
   consolidate(userId, date, branches, merged);
   const items: Record<string, DraftRow> = {};
   for (const [key, entry] of Object.entries(merged.entries)) {
@@ -149,7 +167,7 @@ export function readDraft(userId: string, date: string): DraftView {
   return {
     items,
     savedAt: merged.savedAt || null,
-    legacy: readLegacy(userId, date, merged.legacy),
+    legacy: [...readLegacy(userId, date, new Set([...merged.legacy, ...oldJournal])), ...records],
     attempts: merged.attempts,
   };
 }
@@ -175,47 +193,13 @@ function consolidate(
   write(key, { ...merged, savedAt: Date.now() });
 }
 
-/**
- * Записи прежнего формата — только чтение. Учтённые те, чей отпечаток содержимого лежит в журнале;
- * разошёлся отпечаток — старая вкладка переписала запись, и это новая правка человека, а не
- * воскресший призрак (Р11б).
- */
-function readLegacy(userId: string, date: string, handled: readonly string[]): LegacyRecord[] {
-  const raw = localStorage.getItem(legacyDraftKey(userId, date));
-  if (!raw) return [];
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  const draft = value as { savedAt?: unknown; items?: unknown } | null;
-  const savedAt = typeof draft?.savedAt === 'number' ? draft.savedAt : 0;
-  const items = draft?.items;
-  // Просроченный черновик не показывается даже до уборки: неделю назад введённые показания
-  // относятся уже не к тому счётчику, что человек видит перед собой.
-  if (!items || typeof items !== 'object' || Date.now() - savedAt > TTL_MS) return [];
-  const seen = new Set(handled);
-  const records: LegacyRecord[] = [];
-  for (const [itemId, rawItem] of Object.entries(items)) {
-    // Тем же нормализатором, что и ветки `v2`: старый формат знал виды показаний и поля, которых
-    // больше нет, а новых не знал вовсе — недостающее читается пустым, лишнее не смотрится. Двух
-    // приведений на два входа хранилища быть не должно: они разойдутся на первом же новом поле.
-    const item = normalizeItem(rawItem);
-    const mark = legacyFingerprint(itemId, item);
-    if (!seen.has(mark)) records.push({ itemId, item, fingerprint: mark, savedAt });
-  }
-  return records;
-}
-
 // ── Запись ──
 
 export function writeDraft(userId: string, date: string, patch: DraftPatch): WriteResult {
   // Ветки перечитываются здесь и сейчас, а не берутся из снимка страницы: между отрисовкой и этой
   // записью соседняя вкладка могла поднять счётчик — и версия, выданная по устаревшему снимку,
   // проиграла бы слияние собственной правке. Замороженная браузером вкладка — тот же случай.
-  const branches = readBranches(userId, date);
-  const merged = mergeBranches(branches);
+  const { merged } = loadDay(userId, date);
   const now = Date.now();
   const entries = { ...merged.entries };
   for (const change of patch.items ?? []) {
@@ -282,29 +266,6 @@ export function bodyFingerprint(items: ReportSubmitBody['items']): string {
   return fingerprint([...items].sort((a, b) => (a.itemId < b.itemId ? -1 : 1)));
 }
 
-/**
- * Отпечаток записи `v1`. Идентификатор строки входит в него намеренно: две записи, совпавшие
- * содержимым до последнего пробела, гасились бы одной пометкой.
- *
- * **Остатков топлива здесь нет, и это не забытая строка.** Формат `v1` перестал записываться до
- * того, как остатки появились: у всякой его записи оба поля — пустая строка, приведённая
- * нормализатором, то есть одна и та же константа у всех. Различать они не могут ничего, а вот смена
- * формулы стоила бы дорого и сразу: отпечаток изменился бы у всех записей `v1` разом, и уже
- * разобранная запись всплыла бы у водителя ещё раз как непривязанная. Перечисление здесь описывает
- * не `DraftItem`, а то, чем записи прежнего формата **отличаются друг от друга**.
- */
-export function legacyFingerprint(itemId: string, item: DraftItem): string {
-  return fingerprint([
-    itemId,
-    item.odometerKm,
-    item.engineHours,
-    item.fuelFilledLiters,
-    item.comment,
-    item.files.map((file) => file.id),
-    item.confirmAnomaly,
-  ]);
-}
-
 // ── Уборка ──
 
 /**
@@ -323,19 +284,35 @@ export function pruneDrafts(): void {
     if (savedAt === null || now - savedAt > TTL_MS) localStorage.removeItem(key);
     else legacyDays.add(key.slice(V1_PREFIX.length));
   }
+  // `v2` before `v3`, by the same rule one step later: a `v3` journal holds the marks of adopted
+  // `v2` rows, and it stays while the day still has `v2` branches that would otherwise come back.
+  const v2Days = pruneBranches(V2_PREFIX, now, (day) => legacyDays.has(day));
+  pruneBranches(PREFIX, now, (day) => legacyDays.has(day) || v2Days.has(day));
+}
+
+/**
+ * TTL sweep of the branches under one prefix. `journalNeeded` says whether the day still has older
+ * records that a branch's journal keeps handled. Returns the days that keep branches.
+ */
+function pruneBranches(
+  prefix: string,
+  now: number,
+  journalNeeded: (day: string) => boolean,
+): Set<string> {
   const branches: { key: string; day: string; state: BranchState }[] = [];
   for (const key of Object.keys(localStorage)) {
-    if (!key.startsWith(PREFIX)) continue;
+    if (!key.startsWith(prefix)) continue;
     const state = parseBranch(localStorage.getItem(key));
     if (!state) localStorage.removeItem(key);
-    else branches.push({ key, day: key.slice(PREFIX.length, key.lastIndexOf(':')), state });
+    else branches.push({ key, day: key.slice(prefix.length, key.lastIndexOf(':')), state });
   }
   const doomed = new Set(
     branches
       .filter(({ state }) => now - state.savedAt > TTL_MS)
       // Журнал переживает опустевший черновик: отправка, вычистившая последнюю строку, стёрла бы
-      // вместе с ней и память о том, что `v1` уже учтён, — и блок воскрес бы следующим чтением.
-      .filter(({ state, day }) => state.legacy.length === 0 || !legacyDays.has(day))
+      // вместе с ней и память о том, что старая запись уже учтена, — и блок воскрес бы следующим
+      // чтением.
+      .filter(({ state, day }) => state.legacy.length === 0 || !journalNeeded(day))
       .map(({ key }) => key),
   );
   /*
@@ -352,6 +329,7 @@ export function pruneDrafts(): void {
     for (const { key } of rescued) doomed.delete(key);
   }
   for (const key of doomed) localStorage.removeItem(key);
+  return new Set(branches.filter(({ key }) => !doomed.has(key)).map(({ day }) => day));
 }
 
 /**
@@ -372,22 +350,14 @@ function gates(state: BranchState, kept: readonly { state: BranchState }[]): boo
   return false;
 }
 
-function legacySavedAt(raw: string | null): number | null {
-  try {
-    const value = JSON.parse(raw ?? '') as { savedAt?: unknown } | null;
-    return typeof value?.savedAt === 'number' ? value.savedAt : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Выход из учётной записи чистит оба префикса: на общем телефоне чужие показания не должны
- * пережить смену человека (Р11б).
+ * Выход из учётной записи чистит все префиксы: на общем телефоне чужие показания не должны
+ * пережить смену человека (Р11б). The old build clears only its own, so ours clears all three.
  */
 export function clearUserDrafts(userId: string): void {
+  const prefixes = [V1_PREFIX, V2_PREFIX, PREFIX].map((prefix) => `${prefix}${userId}:`);
   for (const key of Object.keys(localStorage)) {
-    if (key.startsWith(`${V1_PREFIX}${userId}:`) || key.startsWith(`${PREFIX}${userId}:`)) {
+    if (prefixes.some((prefix) => key.startsWith(prefix))) {
       localStorage.removeItem(key);
     }
   }

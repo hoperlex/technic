@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { uuidSchema } from './common';
-import type { ReadingSourceKind } from './driver-cabinet';
+import type { DriverReportFormat, ReadingSourceKind } from './driver-cabinet';
 import { TIME_FORMAT_MESSAGE, TIME_PATTERN, timeToMinutes } from './time';
 import { shiftSpanMinutes } from './vehicle-request-shifts';
 
@@ -328,6 +328,16 @@ export function driverReadingTimeIssues(params: {
     }
   }
   return issues;
+}
+
+/**
+ * Whether the driver's time rule (`driverReadingTimeIssues`) applies to a report: every format from
+ * `v3` on, while a `v2` report opened before the release finishes under the rules it was opened with
+ * (ADR 0234, decision 6). The cabinet previews the rule by the report's STORED format, not by its
+ * own build: a new build finishing an old `v2` report must not refuse what the server accepts.
+ */
+export function reportRequiresDriverTimes(format: DriverReportFormat): boolean {
+  return format !== 'v2';
 }
 
 /** Route time split by request (D6): seconds per request id, or why it cannot be split. */

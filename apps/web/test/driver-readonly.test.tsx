@@ -49,6 +49,9 @@ const draft = (patch: Partial<DraftItem> = {}): DraftItem => ({
   fuelStartLiters: '',
   fuelFilledLiters: '',
   fuelEndLiters: '',
+  startedAt: '',
+  endedAt: '',
+  stops: {},
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -150,6 +153,7 @@ function renderBlock(readOnly: boolean) {
       item={routeItem}
       value={draft({ odometerKm: '145320', files: [photoFile] })}
       previous={null}
+      stops={[]}
       errors={{}}
       uploading={false}
       readOnly={readOnly}

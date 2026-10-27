@@ -5,7 +5,8 @@ import type { DraftItem } from '../src/pages/driver/api';
 import type * as draftStore from '../src/pages/driver/draftStore';
 
 /**
- * Хранилище черновика показаний `v2` (план кабинета водителя — Р11–Р11г, Р12а, Р14).
+ * Хранилище черновика показаний `v3` (план кабинета водителя — Р11–Р11г, Р12а, Р14; ADR 0234 for
+ * the times and the read-only `v2` branches).
  *
  * Проверяется не «сохранилось и прочиталось», а совместная жизнь писателей: две вкладки новой
  * сборки, вкладка сборки прежней и вкладка, которую браузер заморозил на час. Каждый случай здесь
@@ -40,6 +41,9 @@ const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
   fuelStartLiters: '',
   fuelFilledLiters: '',
   fuelEndLiters: '',
+  startedAt: '',
+  endedAt: '',
+  stops: {},
   comment: '',
   files: [],
   confirmAnomaly: false,
@@ -47,7 +51,9 @@ const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
 });
 
 const v1Key = `technic:driver-draft:${USER}:${DAY}`;
-const dayPrefix = `technic:driver-draft-v2:${USER}:${DAY}:`;
+const dayPrefix = `technic:driver-draft-v3:${USER}:${DAY}:`;
+/** Branches of the previous format (`v2`, before ADR 0234): read-only input for this build. */
+const v2Prefix = `technic:driver-draft-v2:${USER}:${DAY}:`;
 const branchKey = (tab: Tab): string => `${dayPrefix}${tab.draftBranch()}`;
 const keys = (): string[] => Object.keys(localStorage);
 const snapshot = (): Record<string, string> =>
@@ -697,5 +703,146 @@ describe('черновик показаний: уборка', () => {
     // собой, — держать их незачем.
     expect(keys()).not.toContain(branchKey(stale));
     expect(fresh.readDraft(USER, DAY).items).toEqual({});
+  });
+});
+
+/**
+ * A branch of the `v2` build, written by hand: that build is a different module, and a cell it
+ * wrote is exactly what it is — no time keys at all, the clock of the old tab.
+ */
+function putV2(branch: string, entries: Record<string, Partial<DraftItem> | null>, counter = 1) {
+  const savedAt = Date.now();
+  const plain = (raw: Partial<DraftItem>) => {
+    const { startedAt: _s, endedAt: _e, stops: _p, ...rest } = item(raw);
+    return rest;
+  };
+  localStorage.setItem(
+    `${v2Prefix}${branch}`,
+    JSON.stringify({
+      savedAt,
+      entries: Object.fromEntries(
+        Object.entries(entries).map(([key, raw]) => [
+          key,
+          { clock: { counter, branch }, savedAt, item: raw === null ? null : plain(raw) },
+        ]),
+      ),
+      legacy: [],
+      attempts: [],
+    }),
+  );
+}
+
+describe('черновик показаний v3: время и ветки прежнего формата (ADR 0234)', () => {
+  it('время смены и остановок переживает перезагрузку', async () => {
+    const tab = await openTab();
+    const timed = item({
+      startedAt: '08:00',
+      endedAt: '20:00',
+      stops: { 'point-1': { arrivedAt: '07:40', departedAt: '08:30' } },
+    });
+    tab.writeDraft(USER, DAY, { items: [{ key: ROUTE, item: timed }] });
+    // Own prefix: a `v2` build still open in a tab never sees, and so never rewrites, this cell.
+    expect(keys()).toEqual([branchKey(tab)]);
+    expect(branchKey(tab).startsWith('technic:driver-draft-v2:')).toBe(false);
+
+    const reloaded = await openTab();
+    expect(reloaded.readDraft(USER, DAY).items[ROUTE]?.item).toEqual(timed);
+  });
+
+  it('строка v2 перенимается, если в v3 по её ключу нет ничего, а ячейка v2 не трогается', async () => {
+    putV2('old-tab', { [ROUTE]: { odometerKm: '145320' } });
+    const before = localStorage.getItem(`${v2Prefix}old-tab`);
+    const tab = await openTab();
+
+    const view = tab.readDraft(USER, DAY);
+    // Same address in both formats (the source key): the row is the driver's, typed yesterday.
+    expect(view.items[ROUTE]?.item).toMatchObject({ odometerKm: '145320', startedAt: '' });
+    expect(view.legacy).toHaveLength(0);
+    // Taken over once, with its mark in the same branch write; the old cell is read-only.
+    expect(localStorage.getItem(`${v2Prefix}old-tab`)).toBe(before);
+    expect(localStorage.getItem(branchKey(tab))).toContain('145320');
+
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    tab.readDraft(USER, DAY);
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
+  it('отправленная перенятая строка не возвращается из ячейки v2', async () => {
+    putV2('old-tab', { [ROUTE]: { odometerKm: '145320' } });
+    const tab = await openTab();
+    const row = tab.readDraft(USER, DAY).items[ROUTE];
+
+    tab.writeDraft(USER, DAY, { items: [{ key: ROUTE, item: null, ifClock: row?.clock }] });
+
+    // The tombstone of the sent row hides it; the `v2` copy is handled by its mark, not re-adopted.
+    const view = tab.readDraft(USER, DAY);
+    expect(view.items[ROUTE]).toBeUndefined();
+    expect(view.legacy).toHaveLength(0);
+  });
+
+  it('поздняя правка старой вкладки по занятому ключу предъявляется блоком, а не подмешивается', async () => {
+    putV2('old-tab', { [ROUTE]: { odometerKm: '100' } });
+    const tab = await openTab();
+    tab.readDraft(USER, DAY);
+    tab.writeDraft(USER, DAY, {
+      items: [{ key: ROUTE, item: item({ odometerKm: '100', startedAt: '08:00' }) }],
+    });
+
+    // The old tab keeps typing into its own cell: a newer version of the same row.
+    putV2('old-tab', { [ROUTE]: { odometerKm: '200' } }, 2);
+    const view = tab.readDraft(USER, DAY);
+
+    // The `v3` row keeps its time — the old build's copy cannot overwrite it — and the old edit is
+    // the person's input too: shown as an unmatched record for the person to place.
+    expect(view.items[ROUTE]?.item).toMatchObject({ odometerKm: '100', startedAt: '08:00' });
+    expect(view.legacy).toHaveLength(1);
+    expect(view.legacy[0]).toMatchObject({ itemId: ROUTE, item: { odometerKm: '200' } });
+
+    // Placing it (or dismissing it) journals its mark, and it does not come back.
+    tab.writeDraft(USER, DAY, { legacy: [view.legacy[0]!.fingerprint] });
+    expect(tab.readDraft(USER, DAY).legacy).toHaveLength(0);
+  });
+
+  it('надгробие v2 не перенимается: строку уже передала старая сборка', async () => {
+    putV2('old-tab', { [ROUTE]: null });
+    const tab = await openTab();
+    const view = tab.readDraft(USER, DAY);
+    expect(view.items).toEqual({});
+    expect(view.legacy).toHaveLength(0);
+  });
+
+  it('событие storage узнаёт ключи дня во всех трёх форматах', async () => {
+    const tab = await openTab();
+    expect(tab.isDayDraftKey(USER, DAY, branchKey(tab))).toBe(true);
+    expect(tab.isDayDraftKey(USER, DAY, `${v2Prefix}old-tab`)).toBe(true);
+    expect(tab.isDayDraftKey(USER, DAY, v1Key)).toBe(true);
+    expect(tab.isDayDraftKey(USER, '2026-08-19', `${v2Prefix}old-tab`)).toBe(false);
+  });
+
+  it('журнал v3 держится, пока у дня есть ветки v2, и уходит вместе с ними', async () => {
+    putV2('old-tab', { [ROUTE]: { odometerKm: '145320' } });
+    const tab = await openTab();
+    const row = tab.readDraft(USER, DAY).items[ROUTE];
+    tab.writeDraft(USER, DAY, { items: [{ key: ROUTE, item: null, ifClock: row?.clock }] });
+    age(branchKey(tab), 8);
+
+    // Without the journal the `v2` row would be adopted again — a sent number back in the form.
+    tab.pruneDrafts();
+    expect(keys()).toContain(branchKey(tab));
+    expect(tab.readDraft(USER, DAY).items[ROUTE]).toBeUndefined();
+
+    age(`${v2Prefix}old-tab`, 8);
+    age(branchKey(tab), 8);
+    tab.pruneDrafts();
+    expect(keys()).toEqual([]);
+  });
+
+  it('выход из учётной записи чистит и v2, и v3', async () => {
+    putV2('old-tab', { [ROUTE]: { odometerKm: '145320' } });
+    const tab = await openTab();
+    tab.writeDraft(USER, DAY, { items: [{ key: WEEK, item: item({ startedAt: '08:00' }) }] });
+
+    tab.clearUserDrafts(USER);
+    expect(keys()).toEqual([]);
   });
 });
