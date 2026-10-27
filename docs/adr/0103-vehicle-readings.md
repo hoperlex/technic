@@ -10,8 +10,10 @@
   [ADR 0037](0037-freight-transport-waybill.md) (лист как документ и снимок значений),
   [ADR 0060](0060-esm2-weekly-waybill.md) (недельный ЭСМ-2),
   [ADR 0082](0082-route-edit-and-date-move.md) (перенос рейса на другую дату),
-  [ADR 0100](0100-linear-vehicle-days.md) (день линейного заказа — это рейс), миграции `0132`,
-  `0133`, план [docs/driver-portal-plan.md](../driver-portal-plan.md)
+  [ADR 0100](0100-linear-vehicle-days.md) (день линейного заказа — это рейс),
+  [ADR 0184](0184-vehicle-request-shifts.md) (since 2026-10-27 the request shift table reads the
+  submitted readings as the day's numbers, section «Driver readings as the day's numbers»), миграции
+  `0132`, `0133`, план [docs/driver-portal-plan.md](../driver-portal-plan.md)
 
 ## Контекст
 

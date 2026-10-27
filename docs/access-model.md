@@ -1040,6 +1040,28 @@ return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
 Чего карантин не обещает: уже выданная подписанная ссылка на скачивание работает до истечения своего
 срока (умолчание — две минуты), отзыва таких ссылок в системе нет.
 
+### 9.3. Driver readings in the request shift table (D10, 27.10.2026)
+
+The shift table of a special-equipment request reads the driver's submitted readings as the day's
+numbers ([ADR 0184](adr/0184-vehicle-request-shifts.md), section «Driver readings as the day's
+numbers»; [plan](readings-shifts-merge-plan.md) D1, D10). Readings themselves live behind
+`vehicleReadings.read`, while the shift table is read by everyone who can read the request — the
+site, the requester and, through `assertLessorScope`, a lessor. The owner split the data by
+purpose (survey of 27.10.2026, Q8):
+
+- **Numbers to every reader of the request.** The day's effective hours and refuelling, the
+  «по водителю» mark (`source`) and the driver's numbers of the day (`driverDay`: hours, liters, the
+  clean flag, «since» and the fingerprint the doors check) come with `GET /vehicle-requests/:id/shifts`
+  and with every shift door's answer, under the request's own scope. The site signs these numbers;
+  hiding them from it would have it sign a day it cannot see.
+- **Diagnostics by right.** Driver names, the reading comment, the `no_data` reason, report states,
+  discrepancy kinds and the reasons a day is not clean go into the `driver` block, which the server
+  fills only for a principal with `vehicleReadings.read` (`shiftsResponse` asks `can`). Without the
+  right the key is absent, not empty: the portal shows the mark and the numbers and nothing else.
+
+No new permission was added, and no role gained one: the change widens what an existing reader of
+the request sees, and it is recorded here because access is a protected area.
+
 ## 10. Портал: права приходят с сервера
 
 | Уровень                 | Файл                                                      | Механизм                                                                                                                                          |

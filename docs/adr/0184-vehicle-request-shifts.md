@@ -45,7 +45,19 @@
   (`assertTermKeepsFilledShifts`), [assignment-period.ts](../../apps/api/src/services/assignment-period.ts)
   (the term command asks it in its plan), tests
   [vehicle-request-shifts.db.test.ts](../../apps/api/test/vehicle-request-shifts.db.test.ts) and
-  [vehicle-shifts-modal.test.tsx](../../apps/web/test/vehicle-shifts-modal.test.tsx)
+  [vehicle-shifts-modal.test.tsx](../../apps/web/test/vehicle-shifts-modal.test.tsx); driver
+  readings as the day's numbers of 2026-10-27 —
+  [shift-driver-days.ts](../../apps/api/src/services/shift-driver-days.ts) (the driver day and its
+  rule), [readings-discrepancies.ts](../../apps/api/src/services/readings-discrepancies.ts) (the
+  discrepancy rule shared with the garage),
+  [shiftDriverNote.tsx](../../apps/web/src/entities/vehicle-request/ui/shiftDriverNote.tsx),
+  [shiftDraft.ts](../../apps/web/src/pages/vehicle/shiftDraft.ts), tests
+  [shift-driver-days.test.ts](../../apps/api/test/shift-driver-days.test.ts),
+  [shift-driver-days.db.test.ts](../../apps/api/test/shift-driver-days.db.test.ts),
+  [vehicle-shifts-tab.test.tsx](../../apps/web/test/vehicle-shifts-tab.test.tsx),
+  [readings-request-shifts-carrier.test.tsx](../../apps/web/test/readings-request-shifts-carrier.test.tsx)
+- Связано: [ADR 0103](0103-vehicle-readings.md) (since 2026-10-27 a request day reads the driver's
+  submitted readings, section «Driver readings as the day's numbers»)
 - Решение вырастает из: [ADR 0029](0029-vehicle-request-completion.md) (факт выполнения — итог, к
   которому смены становятся основанием), [0036](0036-vehicle-on-site.md) (срез «На объекте» и
   серверное «сегодня»), [0044](0044-vehicle-request-early-end.md) (приём «своего права не заводим»
@@ -101,6 +113,11 @@
 что заявка не уходит из среза. Список дней считает чистая функция `shiftDaysOf` из срока заявки, и
 данные подтягиваются к дням, а не наоборот; `filled_by NOT NULL` делает «строка есть» синонимом
 «день заполнен».
+
+_Changed 2026-10-27 (section «Driver readings as the day's numbers» below):_ a day can now have
+numbers without a row — the driver's clean readings. "A row exists" still means "the site wrote
+something" (the term refusal and DELETE ask exactly that); "the day is filled" means "the day has a
+source", `isShiftFilled` in the contracts.
 
 **4. Заполняет тот, кто ведёт заявку; подписывает тот, кто мог бы её завести.** Заполнение — право
 `vehicleRequests.update` плюс область заявки. Подпись — `canConfirmShifts`: право
@@ -180,6 +197,9 @@ _Изменено [ADR 0210](0210-assignment-correction-shift-approvals-by-day.m
 не имеет, — диспетчер при разборе счёта и арендодатель при споре о часах. Вкладок у карточки две
 только у заказа спецтехники: у грузоперевозки не период работ, а момент подачи, и подтверждать там
 нечего.
+
+_Changed 2026-10-27:_ a day signed from the driver's readings adds «по показаниям водителя» to its
+line — in a dispute about hours the signature is read together with where its numbers came from.
 
 ## Отвергнутые варианты
 
@@ -314,3 +334,76 @@ and pass once the day's shift is deleted; the same file proves the "On site" fil
 debt, in the list and in the summary's `shiftsPending`. `vehicle-shifts-modal.test.tsx` covers the
 shift window: a future day inactive in the server's words, a signed day read-only, zero hours asking
 for a reason, a sign-off needing a filled day and the right.
+
+## Driver readings as the day's numbers (2026-10-27)
+
+The shift table was built when the portal held no driver data: the site typed a day's machine
+hours and refuelling by hand. Since [ADR 0103](0103-vehicle-readings.md) the driver submits the
+same day as counter snapshots, and the request showed the copy typed by hand. The owner closed the
+forks by surveys of 27 October ([readings-shifts-merge-plan.md](../readings-shifts-merge-plan.md),
+D1–D4 and D10); this section records stages 0 and 1 of that plan. Times stay the site's until
+stage 2.
+
+- **A request day is a view, not a second store (D1).** Nothing is copied when a driver submits:
+  the table reads, for every day of the term, the readings of reports in a submitted state
+  (`SUBMITTED_REPORT_STATES` in the contracts, D2 — accepted or not, never `voided`) whose item is an
+  ESM-2 issued for the request or a route serving it on that day (`vehicle_route_requests.work_date`).
+  Both branches, not only the expected one: a route suppressed under a weekly ESM-2 may still hold
+  an item composed before the suppression. Route membership is read live — the item has no request
+  snapshot — so a composition correction can move an unsigned day between requests; the
+  fingerprint below then changes, and a signed row stays the accepted snapshot (ADR 0210).
+  Copying was rejected: a second store to keep in sync with edits, rebases and voids, and every
+  submitted day would start refusing term edits.
+- **One click only for a clean day (D3).** Hours of a reading are the delta to its engine-hour
+  predecessor along the existing chain (`previous_engine_hours_id`), unless the counter was reset.
+  A day is clean when every reading has hours, every predecessor is from the same or the previous
+  day, no blocking discrepancy exists and the sum lies in 0–24 h. A first snapshot, `no_data`, a
+  missing counter, a reset, a gap or a blocking discrepancy keep the day manual: it shows what it
+  has («водитель: 23 ч с 14.08») and the site saves the form consciously before signing. The
+  discrepancy rule is the garage's own, extracted into `readings-discrepancies.ts` rather than
+  copied: an unresolved `vehicle`, `date` or `source_state` discrepancy blocks; `driver` does not —
+  the counter is the vehicle's, as the garage counts the vehicle's shift, not the person's; a
+  discrepancy resolved in the garage is clean. An empty refill is "not refuelled", as the month
+  aggregate and the readings book read it, and refuelling never affects cleanliness.
+- **The effective day (D4).** A signed day is the row, frozen; an unsigned clean driver day takes
+  the driver's hours and refuelling («<liters> л», or empty for nothing refilled) and keeps the
+  site's time and comment; otherwise the row, or nothing. The driver's numbers ride along on every
+  day that has them, so a reading edited after the signature shows as a difference next to the
+  signed hours instead of rewriting them. The linear days table reads the same effective day inside
+  the term and only the physical row on a planned day outside it that an issued route still holds.
+- **The doors decide by the row and by a handshake.** Signing a driver day writes its row from the
+  numbers computed in the same transaction, under the request lock the door already holds, then
+  signs it. Saving a clean driver day writes the server's numbers with the site's time and comment,
+  never the body's — a stale tab must not bring back numbers of a report voided or rebased
+  meanwhile. Both bodies name the driver numbers the person saw (`expectedDriverFingerprint`: the
+  readings with their versions, their predecessors and sources, and the computed numbers; not the
+  report state, so a dispatcher accepting the report between load and click is not a conflict). A
+  missing or stale fingerprint on a driver day, or any fingerprint on another day, is a 409 with a
+  reload. The portal sends the key only on a driver day: the bodies are strict, and an older server
+  never reports a source. An idle driver day takes the site's comment, else the driver's reading
+  comment, else a 422 asking for one. DELETE addresses only the site's row: a driver-only day
+  answers 404. Revoking a sign-off is unchanged.
+- **Who sees what (D10, [access-model.md](../access-model.md) §9.3).** Everyone who reads the
+  request sees the day's effective numbers and the «по водителю» mark — the site signs them. Driver
+  names, the reading comment, the `no_data` reason, report states and discrepancy kinds come in the
+  `driver` block only for `vehicleReadings.read`.
+- **What does not change.** The term refusal of the section above counts rows: a day filled by the
+  driver alone does not lock a term edit — the reason copying was rejected. The summary, the
+  sign-off debt and the "On site" filter count signatures; the completion prefill sums signed rows,
+  which now carry the driver's numbers when signed from them. The summary book and the garage
+  occupancy still read rows (plan stage 4, open questions Q3 and Q4).
+- **Release.** No migration and no client floor. An old tab shows a driver-only day as unfilled and
+  cannot sign it; a site row overlaid by a driver day answers its old body with 409. A new portal
+  on an old server falls back to `filledAt` (`shiftSourceOf`). Every garage action that changes a
+  reading, its attribution or its report state invalidates the vehicle-request cache root, so a
+  request card opened over the garage refetches; the driver's own submission happens on another
+  device and is seen when the card is opened.
+
+**Tests.** `shift-driver-days.test.ts` holds the day's rule; `shift-driver-days.db.test.ts` proves
+on the live schema both source branches, the gap and its «since», first snapshot, `no_data`, a
+reset, blocking and non-blocking discrepancies, a voided report, the one-click sign-off with its
+history line, the old-tab and stale-fingerprint 409s, acceptance between load and click, the idle
+422, DELETE of a driver-only day, the term refusal counting rows, the linear days table and the
+diagnostics only for `vehicleReadings.read`. `vehicle-shifts-modal.test.tsx` and
+`vehicle-shifts-tab.test.tsx` cover the window and the card; `readings-request-shifts-carrier.test.tsx`
+proves that a garage reading edit and an acceptance refresh the request shifts.
