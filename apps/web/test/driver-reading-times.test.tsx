@@ -171,11 +171,15 @@ interface SentRequest {
   headers: Record<string, string>;
 }
 
-function renderCabinet(items: ReportItemDto[], draftFormat: DriverReportFormat = 'v3') {
+function renderCabinet(
+  items: ReportItemDto[],
+  draftFormat: DriverReportFormat = 'v3',
+  overrides: Partial<DriverReportDto> = {},
+) {
   const http = mockHttp({
     'GET /driver/assignment': () => json(assignmentOf(items)),
     'GET /driver/reports/:date': () => json(null),
-    'POST /driver/reports/:date/open': () => json(reportOf(items, draftFormat)),
+    'POST /driver/reports/:date/open': () => json(reportOf(items, draftFormat, overrides)),
     'POST /driver/reports/:date/submit': () =>
       json(reportOf(items, draftFormat, { state: 'submitted', version: 4 })),
   });
@@ -446,6 +450,70 @@ describe('кабинет водителя: время смены и остано
         { position: 3, routePointId: RP4, arrivedAt: null, departedAt: '11:50' },
       ],
     });
+  });
+
+  it('строка персонала без времени уходит как есть и день не держит; правка водителя — его слово', async () => {
+    // Staff entered this vehicle's numbers in the garage without times (D5 allows it).
+    const staffReading: VehicleReadingDto = {
+      id: 'reading-staff',
+      itemId: 'item-esm2-staff',
+      kind: 'values',
+      odometerKm: 2000,
+      engineHours: 310.5,
+      fuelStartLiters: null,
+      fuelFilledLiters: null,
+      fuelEndLiters: null,
+      startedAt: null,
+      endedAt: null,
+      points: [],
+      noDataReason: '',
+      comment: '',
+      source: 'staff',
+      recordedAt: `${today}T09:00:00.000Z`,
+      odometerAnomaly: null,
+      engineHoursAnomaly: null,
+      odometerDelta: null,
+      engineHoursDelta: null,
+      fileIds: [],
+    };
+    const staffItem: ReportItemDto = {
+      ...esm2Item,
+      id: 'item-esm2-staff',
+      sourceId: 'wb-2',
+      sourceLabel: 'ЭСМ-2 № 000319',
+      vehicleId: 'v-3',
+      vehicleLabel: 'Hitachi ZX200 · Е321КХ77',
+      reading: staffReading,
+    };
+    const { http } = renderCabinet([staffItem, esm2Item], 'v3', { state: 'submitted' });
+    await waitForBlocks();
+
+    const own = blockOf(esm2Item.id);
+    type(field(own, 'Время начала'), '08:00');
+    type(field(own, 'Одометр'), '18252');
+    type(field(own, 'Время окончания'), '17:00');
+    await submitSheet();
+
+    // The staff line goes back as saved and does not ask the driver for times it never had.
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    const sentItems = submitBody(http).items;
+    expect(sentItems.find((line) => line.itemId === staffItem.id)?.reading).toMatchObject({
+      odometerKm: 2000,
+      engineHours: 310.5,
+      startedAt: null,
+      endedAt: null,
+    });
+    expect(sentItems.find((line) => line.itemId === esm2Item.id)?.reading).toMatchObject({
+      startedAt: '08:00',
+      endedAt: '17:00',
+    });
+
+    // Changed by the driver, the line is his word: the same rule as on the server.
+    const staffBlock = blockOf(staffItem.id);
+    type(field(staffBlock, 'Одометр'), '2001');
+    await submitSheet();
+    expect(await within(staffBlock).findByText('Укажите время начала смены')).toBeDefined();
+    expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1);
   });
 
   it('отчёт v2 доезжает без времени: правило читает формат отчёта, а не сборки', async () => {

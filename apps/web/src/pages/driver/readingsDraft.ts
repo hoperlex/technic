@@ -66,6 +66,33 @@ function savedTimes(item: ReportItemDto, reading: VehicleReadingDto) {
 }
 
 /**
+ * The saved reading of a row as its fields show it, or `null` without one. The submit compares a
+ * block with it to tell the driver's own word from a line resent unchanged
+ * (`lineRequiresDriverTimes`), so both read the saved reading by this one function.
+ */
+export function savedItem(item: ReportItemDto): DraftItem | null {
+  const reading = item.reading;
+  if (!reading) return null;
+  // Строка, закрытая персоналом видом `no_data`, приходит без чисел — и поля остаются пустыми:
+  // причину её закрытия водитель читает, но не редактирует (Р4).
+  return {
+    odometerKm: show(reading.odometerKm),
+    engineHours: show(reading.engineHours),
+    fuelStartLiters: show(reading.fuelStartLiters),
+    fuelFilledLiters: show(reading.fuelFilledLiters),
+    fuelEndLiters: show(reading.fuelEndLiters),
+    ...savedTimes(item, reading),
+    comment: reading.comment,
+    // Уже привязанные файлы сюда не попадают: отправка принимает только непривязанные
+    // (Р18), и повтор их идентификаторов был бы отказом сервера.
+    files: [],
+    // Подтверждение не наследуется от прошлой отправки: подтверждают показанную аномалию,
+    // а показывают её заново — вместе с числами, к которым она относится.
+    confirmAnomaly: false,
+  };
+}
+
+/**
  * Что показать в блоках: сохранённое сервером, поверх — незавершённый черновик. Черновик главнее
  * намеренно: он новее отправленного и содержит именно то, что не доехало.
  */
@@ -75,28 +102,8 @@ export function seedValues(
 ): Record<string, DraftItem> {
   const values: Record<string, DraftItem> = {};
   for (const item of report.items) {
-    const reading = item.reading;
-    // Строка, закрытая персоналом видом `no_data`, приходит без чисел — и поля остаются пустыми:
-    // причину её закрытия водитель читает, но не редактирует (Р4).
-    const base: DraftItem = reading
-      ? {
-          odometerKm: show(reading.odometerKm),
-          engineHours: show(reading.engineHours),
-          fuelStartLiters: show(reading.fuelStartLiters),
-          fuelFilledLiters: show(reading.fuelFilledLiters),
-          fuelEndLiters: show(reading.fuelEndLiters),
-          ...savedTimes(item, reading),
-          comment: reading.comment,
-          // Уже привязанные файлы сюда не попадают: отправка принимает только непривязанные
-          // (Р18), и повтор их идентификаторов был бы отказом сервера.
-          files: [],
-          // Подтверждение не наследуется от прошлой отправки: подтверждают показанную аномалию,
-          // а показывают её заново — вместе с числами, к которым она относится.
-          confirmAnomaly: false,
-        }
-      : emptyItem();
     const key = sourceKey(item);
-    values[key] = draft[key]?.item ?? base;
+    values[key] = draft[key]?.item ?? savedItem(item) ?? emptyItem();
   }
   return values;
 }

@@ -63,7 +63,7 @@ export function buildTimes(params: {
   item: ReportItemDto;
   value: DraftItem;
   stops: readonly ShownStop[];
-  /** The report's format asks the driver for times (`reportRequiresDriverTimes`). */
+  /** The driver's rule judges this line (`lineRequiresDriverTimes`: format and change). */
   required: boolean;
   numbers: Numbers;
 }): BuiltTimes {

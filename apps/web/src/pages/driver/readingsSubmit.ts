@@ -1,6 +1,6 @@
 import {
+  lineRequiresDriverTimes,
   readingInputSchema,
-  reportRequiresDriverTimes,
   type DriverAssignmentEntry,
   type DriverPreviousReading,
   type DriverReportDto,
@@ -12,8 +12,8 @@ import { isApiError } from '@shared/api';
 import { errorMessage } from '@shared/lib';
 import { parseReadingNumber, readingWarnings } from '@entities/vehicle-reading';
 import type { DraftItem } from './api';
-import { emptyItem, sourceKey } from './readingsDraft';
-import { stopsOf, type ShownStop } from './readingStops';
+import { emptyItem, savedItem, sourceKey } from './readingsDraft';
+import { parseTime, stopPointTimes, stopsOf, type ShownStop } from './readingStops';
 import { buildTimes, timeFields } from './readingsTimes';
 
 /**
@@ -157,6 +157,44 @@ function buildItem(
   return { submit: submitItem(item.id, parsed.data, value) };
 }
 
+const NUMBER_FIELDS = [
+  'odometerKm',
+  'engineHours',
+  'fuelStartLiters',
+  'fuelFilledLiters',
+  'fuelEndLiters',
+] as const;
+
+/**
+ * Whether the block says something other than its saved reading — the cabinet's preview of the
+ * readings service's content comparison, which decides whether the driver's time rule judges the
+ * line at all (`lineRequiresDriverTimes`). A staff entry without times resent untouched must not
+ * hold the day here either, or the phone would refuse what the server accepts.
+ *
+ * Read as the server stores it: numbers to the column's tenth, times and stops as the rules read
+ * them, the comment trimmed as the schema trims it. Files never count — they move no content
+ * version (Р22). A block without a saved reading, or over a staff `no_data` one, is always the
+ * driver's word.
+ */
+function blockChanged(item: ReportItemDto, value: DraftItem, stops: readonly ShownStop[]): boolean {
+  const saved = savedItem(item);
+  if (!saved || item.reading?.kind !== 'values') return true;
+  const tenths = (raw: string) => {
+    const number = parseReadingNumber(raw);
+    return typeof number === 'number' ? Math.round(number * 10) : number;
+  };
+  if (NUMBER_FIELDS.some((field) => tenths(value[field]) !== tenths(saved[field]))) return true;
+  if (value.comment.trim() !== saved.comment.trim()) return true;
+  if (item.sourceKind === 'esm2') {
+    return (
+      parseTime(value.startedAt) !== parseTime(saved.startedAt) ||
+      parseTime(value.endedAt) !== parseTime(saved.endedAt)
+    );
+  }
+  const typed = stopPointTimes(stops, value.stops);
+  return JSON.stringify(typed) !== JSON.stringify(stopPointTimes(stops, saved.stops));
+}
+
 /**
  * Тело отправки по всем строкам отчёта — и отказы по блокам, если хоть один не прошёл. Отказы
  * возвращаются вместе со строками, а не вместо них: страница подсвечивает блок и приводит к
@@ -187,13 +225,17 @@ export function buildSubmitBody(
 ): SubmitBody {
   const items: ReportItemSubmit[] = [];
   const errors: Record<string, Record<string, string>> = {};
-  // The rule follows the report's stored format, not this build (ADR 0234, decision 6).
-  const timesRequired = reportRequiresDriverTimes(report.draftFormat);
   let blank = false;
   for (const item of report.items) {
     const entry = entryOf(item);
     const value = values[sourceKey(item)] ?? emptyItem();
     const stops = stopsOf(item, entry);
+    // The rule follows the report's stored format, not this build (ADR 0234, decision 6), and
+    // judges only the lines the driver changes.
+    const timesRequired = lineRequiresDriverTimes(
+      report.draftFormat,
+      blockChanged(item, value, stops),
+    );
     const built = buildItem(item, value, entry?.previous ?? null, stops, timesRequired);
     if ('submit' in built) items.push(built.submit);
     else if ('errors' in built) errors[item.id] = built.errors;

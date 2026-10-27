@@ -560,6 +560,66 @@ describe.skipIf(!DB_URL)('время смены и остановок (жива�
     expect(sent.items[0]!.reading).toMatchObject({ odometerKm: 2000, startedAt: null });
   });
 
+  /**
+   * The cabinet sends back every block that has a reading. A staff entry without times (D5) resent
+   * as saved is not the driver's word and must not hold his day; the same line changed by him is.
+   */
+  it('строка персонала без времени, присланная водителем без правки, день не держит', async () => {
+    const person = await makeDriver('Смешанов');
+    const staffVehicle = await makeVehicle();
+    const ownVehicle = await makeVehicle();
+    await makeEsm2(staffVehicle, person);
+    await makeEsm2(ownVehicle, person);
+    const opened = await ctx.readings.openReport(person, ctx.today, ctx.userId, { mode: 'staff' });
+    expect(opened.draftFormat).toBe(DRIVER_DRAFT_FORMAT);
+    const staffItem = opened.items.find((item) => item.vehicleId === staffVehicle)!;
+    const ownItem = opened.items.find((item) => item.vehicleId === ownVehicle)!;
+
+    const entered = await submit(
+      person,
+      opened.version,
+      [line(staffItem.id, { odometerKm: 2000, engineHours: 310.5 })],
+      { mode: 'staff' },
+    );
+    const staffReading = entered.items.find((item) => item.id === staffItem.id)!.reading!;
+    expect(staffReading).toMatchObject({ startedAt: null, endedAt: null });
+
+    // The staff line exactly as the cabinet sends it back: every key explicit, times empty.
+    const asSaved = line(staffItem.id, {
+      odometerKm: 2000,
+      engineHours: 310.5,
+      fuelStartLiters: null,
+      fuelFilledLiters: null,
+      fuelEndLiters: null,
+      startedAt: null,
+      endedAt: null,
+      comment: '',
+    });
+    const sent = await submit(person, entered.version, [
+      asSaved,
+      line(ownItem.id, { odometerKm: 5000, startedAt: '08:00', endedAt: '17:00' }),
+    ]);
+    expect(sent.items.find((item) => item.id === staffItem.id)!.reading).toMatchObject({
+      id: staffReading.id,
+      source: 'staff',
+      startedAt: null,
+    });
+    expect(sent.items.find((item) => item.id === ownItem.id)!.reading).toMatchObject({
+      odometerKm: 5000,
+      startedAt: '08:00',
+      endedAt: '17:00',
+    });
+
+    // Changed by the driver, the line is his: the evening value brings both times with it.
+    const edited = await failure(
+      submit(person, sent.version, [
+        line(staffItem.id, { odometerKm: 2001, startedAt: null, endedAt: null }),
+      ]),
+    );
+    expect(edited.statusCode).toBe(400);
+    expect(edited.message).toContain('начала смены');
+  });
+
   it('рейс с остановками: прибытие на первую — всегда, отправления — с вечерними числами', async () => {
     const person = await makeDriver('Рейсов');
     const vehicle = await makeVehicle();

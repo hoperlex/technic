@@ -77,8 +77,12 @@ day is submitted in parts (ADR 0163): fuel in the morning, counters in the eveni
    engine hours or end fuel — also carries the end time or every departure. The driver's ESM-2
    pair may not have equal start and end. Staff may leave every time empty (D5), a relocation and
    `no_data` need none. The rule is written once (`driverReadingTimeIssues`) and the service applies
-   it by actor and by the report's stored format (`reportRequiresDriverTimes`, the predicate the
-   cabinet previews with); the acceptance door is unchanged.
+   it by actor, by the report's stored format and only to a line the driver authors in this
+   submit — a new reading or one whose content changes (`lineRequiresDriverTimes`, the predicate
+   the cabinet previews with); the acceptance door is unchanged. A line resent unchanged is not
+   judged: the cabinet sends back every block with a reading, and a staff entry without times or a
+   reading a rebase moved into the day would otherwise hold the driver's whole day until he made up
+   times for a row he never wrote. Shape and order (`readingTimeIssues`) apply to every line.
 
 4. **One reading of time.** A start/end pair is read by `shiftSpanMinutes` only (equal times are
    24 h; `shiftSpanHours` is its rounding for the site's window). A route's elapsed time is the sum
@@ -116,10 +120,11 @@ day is submitted in parts (ADR 0163): fuel in the morning, counters in the eveni
    by `routeTimeByRequest`. Every time field has «сейчас», which writes the device's current time
    into the draft like a keystroke; there is no "shift running" state. The stops shown and sent
    back are the reading's saved stops once it has them, otherwise the live stops of the task. The
-   cabinet previews decision 3 with the same contract functions and by the report's stored format
-   (`reportRequiresDriverTimes`), so its refusals stand under the fields before the day leaves the
-   phone. The task carries no request id, so the preview keys a request by its label («ТС-40» of
-   «ТС-40/2»); the server's split reads the snapshot by id.
+   cabinet previews decision 3 with the same contract functions, by the report's stored format and
+   per line (`lineRequiresDriverTimes`, a block compared with its saved reading as the service
+   compares content), so its refusals stand under the fields before the day leaves the phone. The
+   task carries no request id, so the preview keys a request by its label («ТС-40» of «ТС-40/2»);
+   the server's split reads the snapshot by id.
 
 9. **The local draft moved to `v3` under its own prefix** (`technic:driver-draft-v3:`), for the
    reason ADR 0129 gave `v2` one: a `v2` build still open in a tab normalizes every branch it

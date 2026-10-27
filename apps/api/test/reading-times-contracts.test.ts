@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DRIVER_REPORT_FORMATS,
   driverReadingTimeIssues,
+  lineRequiresDriverTimes,
   readingHasShiftEnd,
   readingInputSchema,
   readingPointsInputSchema,
@@ -151,6 +152,13 @@ describe('обязательность у водителя (D11): «законч
     expect(DRIVER_REPORT_FORMATS.filter((format) => !reportRequiresDriverTimes(format))).toEqual([
       'v2',
     ]);
+  });
+
+  it('правило судит только строку, которую водитель меняет: присланная как есть — не его слово', () => {
+    expect(lineRequiresDriverTimes('v3', true)).toBe(true);
+    // A staff entry without times resent unchanged must not hold the driver's day (D5).
+    expect(lineRequiresDriverTimes('v3', false)).toBe(false);
+    expect(lineRequiresDriverTimes('v2', true)).toBe(false);
   });
 
   it('вечерние числа — одометр, моточасы или остаток на конец; заправка и утро — нет', () => {

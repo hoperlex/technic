@@ -6,8 +6,8 @@ import {
   driverReadingTimeIssues,
   readingTimeIssues,
   moscowDateKeyOf,
+  lineRequiresDriverTimes,
   REPORT_ACCEPT_BLOCKED_CODE,
-  reportRequiresDriverTimes,
   STAFF_SUBMIT_PAST_DAYS,
   vehicleLabel,
   type DiscrepancyResolveInput,
@@ -359,11 +359,13 @@ function assertLegacyOpen(
 }
 
 /**
- * A cabinet build of the current format opening a `v2` draft moves it to `v3` (ADR 0234). Only an
- * untouched draft: a draft never carries a reading (readings are written by submit, which leaves
- * `draft`), so nothing recorded under the old rules changes its rules. The version moves, and an
- * old tab that still holds this draft gets a conflict on submit instead of writing into a report
- * whose rules it does not know. A submitted `v2` report is left alone and finishes as `v2`.
+ * A cabinet build of the current format opening a `v2` draft moves it to `v3` (ADR 0234). Only a
+ * draft: the driver's own submit leaves `draft`, so it holds no reading of his. It can still hold
+ * one a rebase moved in (`rebaseItem` keeps an existing draft target); that reading is not asked
+ * for times after the upgrade either, because the driver's time rule judges only a line he changes
+ * (`lineRequiresDriverTimes`). The version moves, and an old tab that still holds this draft gets
+ * a conflict on submit instead of writing into a report whose rules it does not know. A submitted
+ * `v2` report is left alone and finishes as `v2`.
  *
  * Staff opening a day do not upgrade: the garage form has no draft format to declare, and the
  * driver's own build is the one that has to agree with the report.
@@ -685,7 +687,8 @@ function readingColumns(
 /**
  * Shape, order and — for the driver of a `v3` report — requiredness of the resolved times
  * (ADR 0234, D5, D11). Staff may leave every time empty; the driver's evening values bring the end
- * time with them. A `v2` report finishes under the rules it was opened with.
+ * time with them. A `v2` report finishes under the rules it was opened with, and a line the driver
+ * resends unchanged is not judged again (`lineRequiresDriverTimes`).
  */
 async function assertReadingTimes(
   tx: Tx,
@@ -695,18 +698,21 @@ async function assertReadingTimes(
     times: ResolvedReadingTimes;
     actor: ReadingsActor;
     report: DriverDailyReportRow;
+    /** A new reading, or a saved one whose content this line changes. */
+    changed: boolean;
   },
 ): Promise<void> {
-  const { item, columns, times, actor, report } = params;
+  const { item, columns, times, actor, report, changed } = params;
   if (columns.kind !== 'values') return;
   const resolved = timesOf(times);
   const issues = readingTimeIssues(item.sourceKind, resolved);
-  // The stored format decides, not the client build: the cabinet previews the rule with the same
-  // predicate, so a format exemption added on one side only would refuse what the other accepts.
+  // The stored format and the line's change decide, not the client build: the cabinet previews the
+  // rule with the same predicate, so an exemption added on one side only would refuse what the
+  // other accepts.
   if (
     issues.length === 0 &&
     actor.mode === 'driver' &&
-    reportRequiresDriverTimes(report.draftFormat)
+    lineRequiresDriverTimes(report.draftFormat, changed)
   ) {
     const hasStops =
       item.sourceKind === 'route' && (await routeHasStops(tx, item.routeId, times.points));
@@ -843,9 +849,18 @@ export async function submitReport(
         saved,
       });
       const columns = readingColumns(line.reading, existing ?? null, times);
-      await assertReadingTimes(tx, { item, columns, times, actor, report });
+      // Сравниваются уже разрешённые пять чисел: остатки участвуют наравне со счётчиками
+      // (ADR 0163, Р12), иначе правка уровня не подняла бы `content_version` и принятый отчёт не
+      // ушёл бы в `needs_reacceptance` — число в базе поменялось бы, а приёмка об этом не узнала.
+      // Times, stops and their request snapshot take part on the same terms (ADR 0234): a
+      // time-only edit is content and must reopen acceptance. Compared before the time rule: a
+      // line resent unchanged is not the driver's word in this submit (`lineRequiresDriverTimes`).
+      const before = existing ? readingSnapshot(existing, saved) : null;
+      const after = contentSnapshot(columns, times);
+      const same = before !== null && JSON.stringify(before) === JSON.stringify(after);
+      await assertReadingTimes(tx, { item, columns, times, actor, report, changed: !same });
 
-      if (!existing) {
+      if (!existing || !before) {
         const [created] = await tx
           .insert(vehicleReadings)
           .values({
@@ -865,7 +880,7 @@ export async function submitReport(
         await writeReadingEvent(tx, {
           readingId: created.id,
           event: 'created',
-          after: contentSnapshot(columns, times),
+          after,
           reason,
           version: created.version,
           changedBy: actor.userId,
@@ -889,14 +904,6 @@ export async function submitReport(
         odometer: line.confirmOdometerAnomaly,
         engineHours: line.confirmEngineHoursAnomaly,
       });
-      const before = readingSnapshot(existing, saved);
-      const after = contentSnapshot(columns, times);
-      // Сравниваются уже разрешённые пять чисел: остатки участвуют наравне со счётчиками
-      // (ADR 0163, Р12), иначе правка уровня не подняла бы `content_version` и принятый отчёт не
-      // ушёл бы в `needs_reacceptance` — число в базе поменялось бы, а приёмка об этом не узнала.
-      // Times, stops and their request snapshot take part on the same terms (ADR 0234): a
-      // time-only edit is content and must reopen acceptance.
-      const same = JSON.stringify(before) === JSON.stringify(after);
       // Файл не двигает ни `content_version`, ни состояние отчёта (Р22): приём фиксирует числа, а
       // не вложения, — поэтому повторная отправка с теми же числами и новым фото ничего не
       // переоткрывает.

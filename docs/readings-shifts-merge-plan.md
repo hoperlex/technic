@@ -390,8 +390,10 @@ routePointId, arrivedAt?, departedAt? }]` (`routePointId` may be null for a save
 Checked in the readings service by actor, like `assertNoDataIsStaffOnly`: a driver's **finish** of
 a `values` reading of an `esm2` item needs `startedAt` and `endedAt`; of a `route` item with stops
 it needs arrival at stop 1 and every departure. An interim submit may carry a start or some point
-times while the shift is underway. This applies to each submitted item, not every expected item in
-the day: partial reports are legal. A relocation and a `no_data` reading need none. Staff may
+times while the shift is underway. This applies to each submitted item the driver authors — a new
+reading or one whose content changes — not to every expected item in the day: partial reports are
+legal, and a line resent unchanged (a staff entry without times, a reading a rebase moved in) is not
+judged again (`lineRequiresDriverTimes`, review of 27.10). A relocation and a `no_data` reading need none. Staff may
 finish on the driver's behalf without times, recording a reason. For `v3` reports the acceptance
 door refuses an unfinished submitted item; the garage marks it incomplete and the ordinary overdue
 signal remains. Stage 2 also marks an unfinished `v3` reading non-clean in the stage 1 shift reader,

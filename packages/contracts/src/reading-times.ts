@@ -340,6 +340,24 @@ export function reportRequiresDriverTimes(format: DriverReportFormat): boolean {
   return format !== 'v2';
 }
 
+/**
+ * Whether the driver's time rule applies to ONE line of a driver's submit: the report's format asks
+ * for it and the line is the driver's own word in this submit — a new reading, or a saved one whose
+ * content changes. A line resent unchanged is not judged again.
+ *
+ * The cabinet sends back every block that has a reading. Without this condition a reading staff
+ * entered without times (D5 allows it) or a reading a rebase moved into the day would hold the
+ * driver's whole day until he made up times for a row he never wrote — the same "one foreign block
+ * must not hold the day" rule the cabinet keeps for a staff `no_data` line. Shape and order
+ * (`readingTimeIssues`) still apply to every line.
+ *
+ * "Changes" is the readings service's content comparison (numbers to the column's tenth, times,
+ * stops, comment; files never count); the cabinet previews it against the saved reading.
+ */
+export function lineRequiresDriverTimes(format: DriverReportFormat, changed: boolean): boolean {
+  return changed && reportRequiresDriverTimes(format);
+}
+
 /** Route time split by request (D6): seconds per request id, or why it cannot be split. */
 export type RouteTimeAllocation =
   | { ok: true; totalSeconds: number; byRequest: Record<string, number> }
