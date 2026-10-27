@@ -727,6 +727,78 @@ describe.skipIf(!DB_URL)('время смены и остановок (жива�
     });
   });
 
+  /**
+   * A submitted report freezes its composition, while the driver's task drops a route that lost its
+   * waybill. The item names the stops the server requires by itself (`ReportItemDto.stops`), so the
+   * cabinet shows the fields for the arrival the server asks and the driver can still record it.
+   */
+  it('рейс вне задания в сданном отчёте: остановки называет сам отчёт, и показание передаётся', async () => {
+    const person = await makeDriver('Внезаданов');
+    const routeVehicle = await makeVehicle();
+    const sheetVehicle = await makeVehicle();
+    const request = await makeFreightRequest([
+      { from: 'г Москва, ул Отменная, д 1', to: 'г Москва, ул Сданная, д 2' },
+    ]);
+    const route = await makeStopRoute({
+      vehicleId: routeVehicle,
+      personId: person,
+      requestIds: [request],
+    });
+    await makeEsm2(sheetVehicle, person);
+    const live = await stopsOf(route);
+    expect(live).toHaveLength(2);
+
+    const opened = await ctx.readings.openReport(person, ctx.today, ctx.userId);
+    const routeItem = opened.items.find((item) => item.sourceKind === 'route')!;
+    const sheetItem = opened.items.find((item) => item.sourceKind === 'esm2')!;
+    const expected = live.map(({ routePointId, location }) => ({ routePointId, location }));
+    expect(routeItem.stops).toEqual(expected);
+    // An ESM-2 item has no stops to name.
+    expect(sheetItem).not.toHaveProperty('stops');
+
+    // The sheet's morning makes the report submitted: its composition is frozen from now on.
+    const morning = await submit(person, opened.version, [
+      line(sheetItem.id, { fuelStartLiters: 30, startedAt: '07:00' }),
+    ]);
+    expect(morning.state).toBe('submitted');
+
+    // The route's 4-П is cancelled: the task drops the route, the submitted report keeps its item.
+    await ctx.db
+      .update(ctx.schema.waybills)
+      .set({ status: 'cancelled', cancelledAt: new Date(), cancelReason: 'испорчен бланк' })
+      .where(eq(ctx.schema.waybills.routeId, route));
+    const task = await ctx.assignment.loadDayEntries(person, ctx.today);
+    expect(task.some((entry) => entry.sourceKind === 'route')).toBe(false);
+    const report = (await ctx.readings.loadReport(person, ctx.today))!;
+    expect(report.items.find((item) => item.id === routeItem.id)?.stops).toEqual(expected);
+
+    // The server still asks the arrival at stop 1 — the stops the item names — and takes it.
+    const noArrival = await failure(
+      submit(person, report.version, [line(routeItem.id, { odometerKm: 900 })]),
+    );
+    expect(noArrival.message).toContain('прибытия на первую точку');
+    const sent = await submit(person, report.version, [
+      line(routeItem.id, {
+        odometerKm: 900,
+        points: wirePoints(
+          expected.map((stop) => stop.routePointId),
+          [
+            ['08:00', '09:00'],
+            [null, '10:00'],
+          ],
+        ),
+      }),
+    ]);
+    const recorded = sent.items.find((item) => item.id === routeItem.id)!;
+    expect(recorded.reading).toMatchObject({
+      odometerKm: 900,
+      startedAt: '08:00',
+      endedAt: '10:00',
+    });
+    // Saved stops are the set from now on: the item no longer names live ones.
+    expect(recorded).not.toHaveProperty('stops');
+  });
+
   it('через полночь рейс переходит один раз; второй переход — отказ', async () => {
     const person = await makeDriver('Ночной');
     const vehicle = await makeVehicle();

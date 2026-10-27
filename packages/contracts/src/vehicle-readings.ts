@@ -466,6 +466,24 @@ export interface ReportItemDto {
   vehicleLabel: string;
   shiftOrder: number;
   reading: VehicleReadingDto | null;
+  /**
+   * The live stops the readings service compares a first capture of stop times with and asks the
+   * driver's arrival for (ADR 0234: `loadReadingStops`, `routeHasStops`), in route order; `[]` for
+   * a relocation. Set on a route item whose reading has no saved stops yet — saved stops are the
+   * set once they exist. The cabinet shows exactly these stops: its task drops a route without a
+   * valid waybill or under a weekly ESM-2, while a submitted report keeps such an item, and the
+   * server would then ask for a time the form had no field for.
+   *
+   * Absent on an ESM-2 item, on a reading with saved stops and from a server older than the field;
+   * the cabinet then falls back to its task.
+   */
+  stops?: ReportItemStopDto[];
+}
+
+/** A live stop of a route item: its route point and address, as the first capture records them. */
+export interface ReportItemStopDto {
+  routePointId: string;
+  location: string;
 }
 
 export interface DriverReportDto {

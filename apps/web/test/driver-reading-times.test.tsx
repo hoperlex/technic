@@ -175,9 +175,11 @@ function renderCabinet(
   items: ReportItemDto[],
   draftFormat: DriverReportFormat = 'v3',
   overrides: Partial<DriverReportDto> = {},
+  /** The task's rows; a submitted report may hold an item the task no longer has. */
+  task: ReportItemDto[] = items,
 ) {
   const http = mockHttp({
-    'GET /driver/assignment': () => json(assignmentOf(items)),
+    'GET /driver/assignment': () => json(assignmentOf(task)),
     'GET /driver/reports/:date': () => json(null),
     'POST /driver/reports/:date/open': () => json(reportOf(items, draftFormat, overrides)),
     'POST /driver/reports/:date/submit': () =>
@@ -514,6 +516,43 @@ describe('кабинет водителя: время смены и остано
     await submitSheet();
     expect(await within(staffBlock).findByText('Укажите время начала смены')).toBeDefined();
     expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1);
+  });
+
+  it('рейс вне задания в сданном отчёте: точки называет сам отчёт, и время по ним передаётся', async () => {
+    // The route lost its waybill after the report was submitted: the task dropped it, the frozen
+    // report kept the item, and the server still asks the arrival at its stops.
+    const frozen: ReportItemDto = {
+      ...routeItem,
+      id: 'item-route-frozen',
+      sourceId: 'route-frozen',
+      stops: [
+        { routePointId: RP1, location: 'Карьер «Северный»' },
+        { routePointId: RP2, location: 'ул. Строителей, 12' },
+      ],
+    };
+    const { http } = renderCabinet([frozen, esm2Item], 'v3', { state: 'submitted' }, [esm2Item]);
+    await waitForBlocks();
+
+    expect(document.querySelectorAll('[data-stop]')).toHaveLength(2);
+    type(field(blockOf(frozen.id), 'Одометр'), '231468');
+    await submitSheet();
+    expect(
+      await within(stop(1)).findByText('Укажите время прибытия на первую точку'),
+    ).toBeDefined();
+    expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
+
+    type(field(stop(1), 'Прибытие'), '07:40');
+    type(field(stop(1), 'Убытие'), '08:30');
+    type(field(stop(2), 'Убытие'), '10:05');
+    await submitSheet();
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    expect(submitBody(http).items[0]!.reading).toMatchObject({
+      odometerKm: 231468,
+      points: [
+        { position: 1, routePointId: RP1, arrivedAt: '07:40', departedAt: '08:30' },
+        { position: 2, routePointId: RP2, arrivedAt: null, departedAt: '10:05' },
+      ],
+    });
   });
 
   it('отчёт v2 доезжает без времени: правило читает формат отчёта, а не сборки', async () => {

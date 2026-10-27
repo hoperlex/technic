@@ -14,10 +14,13 @@ import type { DraftItem, DraftStopTimes } from './api';
  * Stops of a route item as the form shows them and the submit sends them back (ADR 0234; plan
  * `docs/readings-shifts-merge-plan.md` §7.4, owner decisions D6, D8, D9).
  *
- * Which stops: the reading's SAVED stops once it has them, otherwise the live stops of the task.
- * The server compares a first capture with the live route and every later edit with the saved set
- * by position, so the form has to send back exactly the set the server will compare with. After a
- * route rebuild the saved set is the only true one: the live task already shows the new plan.
+ * Which stops: the reading's SAVED stops once it has them, otherwise the live stops the server
+ * names on the item (`ReportItemDto.stops`). The server compares a first capture with the live
+ * route and every later edit with the saved set by position, and asks the driver's arrival by the
+ * same answer, so the form has to show and send back exactly that set. After a route rebuild the
+ * saved set is the only true one: the live task already shows the new plan. The task is not the
+ * set either — it drops a route without a valid waybill or under a weekly ESM-2 that a submitted
+ * report still holds; it only lends a stop its actions and planned time.
  */
 
 /** A stop on screen. */
@@ -59,6 +62,20 @@ export function stopsOf(item: ReportItemDto, entry: DriverAssignmentEntry | null
       };
     });
   }
+  if (item.stops) {
+    return item.stops.map((point, index) => {
+      const match = live.find((stop) => stop.id === point.routePointId);
+      return {
+        key: point.routePointId,
+        position: index + 1,
+        routePointId: point.routePointId,
+        location: point.location,
+        plannedTime: match?.arrivalTime ?? '',
+        actions: match?.actions ?? [],
+      };
+    });
+  }
+  // A server older than `ReportItemDto.stops`: the task's stops are built by the same rule.
   return live.map((point, index) => ({
     key: point.id,
     position: index + 1,

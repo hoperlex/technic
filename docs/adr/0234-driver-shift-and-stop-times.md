@@ -119,7 +119,11 @@ day is submitted in parts (ADR 0163): fuel in the morning, counters in the eveni
    departure at stop 1 and a departure at every other stop, and a live «Время по заявкам» computed
    by `routeTimeByRequest`. Every time field has «сейчас», which writes the device's current time
    into the draft like a keystroke; there is no "shift running" state. The stops shown and sent
-   back are the reading's saved stops once it has them, otherwise the live stops of the task. The
+   back are the reading's saved stops once it has them, otherwise the live stops the server names
+   on the report item (`ReportItemDto.stops`, read by `loadReadingStops` — the same answer the time
+   rule asks through `routeHasStops`). The task only lends a stop its actions and planned time: it
+   drops a route without a valid waybill or under a weekly ESM-2 that a submitted report still
+   holds, and a form built from it would have no field for the arrival the server requires. The
    cabinet previews decision 3 with the same contract functions, by the report's stored format and
    per line (`lineRequiresDriverTimes`, a block compared with its saved reading as the service
    compares content), so its refusals stand under the fields before the day leaves the phone. The
@@ -150,9 +154,9 @@ day is submitted in parts (ADR 0163): fuel in the morning, counters in the eveni
 - Old code that switches a reading carrying times to `no_data` during a rollback fails on the
   CHECK instead of keeping a time on a shift closed without values.
 - Stage 3 allocates from the snapshot only, never from live roles.
-- Staff correct the times of a route reading's saved stops; they cannot capture a first stop set,
-  because the report card does not carry the live stops of a route with their ids. A route
-  reading entered by staff without stops stays without stop times until the driver captures them.
+- Staff correct the times of a route reading's saved stops; the garage form does not capture a
+  first stop set, although the report item now names the live stops. A route reading entered by
+  staff without stops stays without stop times until the driver captures them.
 
 ## Rejected
 
