@@ -40,7 +40,12 @@ export { VehicleRequestAssignmentCell, VehicleRequestEarlyEndTag } from './ui/re
  * The driver's side of a shift day (readings-shifts-merge plan §6.7): the card's shift tab and the
  * "On site" shift window show the same mark and the same difference, so it lives with the request.
  */
-export { ShiftDriverNote, shiftDriverNoteText } from './ui/shiftDriverNote';
+export {
+  ShiftDriverNote,
+  shiftDriverNoteText,
+  ShiftTimeNote,
+  shiftTimeNoteText,
+} from './ui/shiftDriverNote';
 export {
   listStyle as consequencesListStyle,
   totalOf as consequencesTotalOf,

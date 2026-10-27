@@ -1,7 +1,9 @@
 import { Tag, Typography } from 'antd';
 import {
+  driverDayInterval,
   driverDayIssueLabels,
   driverReportStateLabels,
+  isShiftTimeFromDriver,
   shiftSourceOf,
   type VehicleRequestShiftDto,
   workedAmountLabel,
@@ -62,6 +64,41 @@ export function ShiftDriverNote({ shift }: { shift: VehicleRequestShiftDto }) {
   const issues = (shift.driver?.issues ?? []).map((issue) => driverDayIssueLabels[issue]);
   return (
     <div title={issues.length > 0 ? issues.join('; ') : undefined}>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {text}
+      </Typography.Text>
+    </div>
+  );
+}
+
+/**
+ * The driver's side of a day's shift time (plan §8), or `null` when there is nothing to add:
+ *
+ * - the time shown is the driver's — a short mark, it is corrected in the garage like the hours;
+ * - a signed day whose readings now give another interval — the difference, never a rewrite;
+ * - an unsigned driver day whose readings do not fold into one interval — the intervals, so the
+ *   site types the time knowing what the drivers recorded instead of the portal inventing one.
+ */
+export function shiftTimeNoteText(shift: VehicleRequestShiftDto): string | null {
+  const day = shift.driverDay;
+  if (!day) return null;
+  if (isShiftTimeFromDriver(shift)) return 'время по водителю';
+  if (shift.approvedAt) {
+    const now = driverDayInterval(day);
+    if (!now || (now.startedAt === shift.startedAt && now.endedAt === shift.endedAt)) return null;
+    return `водитель сейчас: ${now.startedAt} – ${now.endedAt}`;
+  }
+  if (shiftSourceOf(shift) !== 'driver' || day.timeIssue !== 'ambiguous') return null;
+  const intervals = (day.intervals ?? []).map((i) => `${i.startedAt} – ${i.endedAt}`).join(', ');
+  return `водитель: ${intervals} — время смены указывает объект`;
+}
+
+/** The driver note under a day's shift time, for the card's shift tab and the shift window. */
+export function ShiftTimeNote({ shift }: { shift: VehicleRequestShiftDto }) {
+  const text = shiftTimeNoteText(shift);
+  if (!text) return null;
+  return (
+    <div>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         {text}
       </Typography.Text>

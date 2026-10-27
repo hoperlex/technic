@@ -6,7 +6,12 @@ import {
   type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
-import { ShiftDriverNote, vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import {
+  ShiftDriverNote,
+  ShiftTimeNote,
+  vehicleRequestKeys,
+  vehicleRequestsApi,
+} from '@entities/vehicle-request';
 import { formatDateOnly, formatDateTime } from '@shared/lib';
 import { UserAvatar } from '@shared/ui';
 
@@ -17,8 +22,15 @@ const columns: TableColumnType<VehicleRequestShiftDto>[] = [
     key: 'time',
     title: 'Смена',
     width: 130,
-    render: (_value, shift) =>
-      shift.startedAt && shift.endedAt ? `${shift.startedAt} – ${shift.endedAt}` : dash,
+    // The driver's side of the time goes under it, as it does under the hours (plan §8).
+    render: (_value, shift) => (
+      <div style={{ lineHeight: 1.35 }}>
+        <div>
+          {shift.startedAt && shift.endedAt ? `${shift.startedAt} – ${shift.endedAt}` : dash}
+        </div>
+        <ShiftTimeNote shift={shift} />
+      </div>
+    ),
   },
   {
     key: 'machineHours',

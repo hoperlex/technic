@@ -16,6 +16,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   approvedMachineHours,
   isShiftFilled,
+  isShiftTimeFromDriver,
   MAX_MACHINE_HOURS,
   requestCustomerName,
   SHIFT_IDLE_COMMENT_MESSAGE,
@@ -25,7 +26,12 @@ import {
   type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
-import { ShiftDriverNote, vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import {
+  ShiftDriverNote,
+  ShiftTimeNote,
+  vehicleRequestKeys,
+  vehicleRequestsApi,
+} from '@entities/vehicle-request';
 import { ViewModal } from '@shared/ui';
 import { TimeInput } from '@entities/request';
 import { UserAvatar } from '@shared/ui';
@@ -188,18 +194,21 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
         const span = shiftSpanHours(v.startedAt ?? null, v.endedAt ?? null);
         return (
           <div style={{ lineHeight: 1.35 }}>
+            {/* The driver's single interval is locked like the hours (plan §8): the door writes it
+              from the readings whatever the body says. */}
             <Space size={4}>
               <TimeInput
                 value={v.startedAt}
-                disabled={!editableOn(s)}
+                disabled={!editableOn(s) || isShiftTimeFromDriver(s)}
                 onChange={(value) => patch(s.date, s, { startedAt: value })}
               />
               <TimeInput
                 value={v.endedAt}
-                disabled={!editableOn(s)}
+                disabled={!editableOn(s) || isShiftTimeFromDriver(s)}
                 onChange={(value) => patch(s.date, s, { endedAt: value })}
               />
             </Space>
+            <ShiftTimeNote shift={s} />
             {span != null && (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {workedAmountLabel('hours', span)} по времени

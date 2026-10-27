@@ -1,5 +1,6 @@
 import {
   type ApproveVehicleRequestShiftInput,
+  isShiftTimeFromDriver,
   MAX_MACHINE_HOURS,
   refuelLabel,
   type SaveVehicleRequestShiftBody,
@@ -55,15 +56,17 @@ export function draftOf(shift: VehicleRequestShiftDto): Draft {
 }
 
 /**
- * The save body. On a driver day the hours and refuelling are the driver's as shown, and the
- * fingerprint names them — the server writes its own numbers and refuses a stale view with 409.
- * Anywhere else no fingerprint is sent: an older server rejects the unknown key of a strict body.
+ * The save body. On a driver day the hours and refuelling are the driver's as shown, and so is the
+ * time when the readings give one interval (plan §8); the fingerprint names them — the server
+ * writes its own numbers and refuses a stale view with 409. Anywhere else no fingerprint is sent:
+ * an older server rejects the unknown key of a strict body.
  */
 export function saveBody(shift: VehicleRequestShiftDto, draft: Draft): SaveVehicleRequestShiftBody {
   const driver = isDriverDay(shift) && shift.driverDay;
+  const driverTime = isShiftTimeFromDriver(shift);
   return {
-    startedAt: draft.startedAt ?? null,
-    endedAt: draft.endedAt ?? null,
+    startedAt: (driverTime ? shift.startedAt : draft.startedAt) ?? null,
+    endedAt: (driverTime ? shift.endedAt : draft.endedAt) ?? null,
     machineHours: driver ? shift.machineHours : (draft.machineHours ?? 0),
     refuel: driver ? shift.refuel : (draft.refuel ?? ''),
     comment: draft.comment ?? '',
