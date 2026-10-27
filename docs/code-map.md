@@ -79,7 +79,7 @@
 ## Кабинет водителя
 
 - Домен: `кабинет-водителя`
-- Источник истины: [driver-cabinet.ts](../packages/contracts/src/driver-cabinet.ts)
+- Источник истины: [driver-cabinet.ts](../packages/contracts/src/driver-cabinet.ts), [reading-times.ts](../packages/contracts/src/reading-times.ts)
 - Разделы портала: `driver-cabinet`
 - API-маршруты: [driver.ts](../apps/api/src/routes/driver.ts)
 - Остальной API: [driver-assignment.ts](../apps/api/src/services/driver-assignment.ts)
