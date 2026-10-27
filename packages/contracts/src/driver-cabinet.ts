@@ -122,6 +122,18 @@ export interface DriverAssignmentAction {
    * доехало бы до водителя нигде. Ценой свёртывания в бланке оплачено ровно это (§8 плана).
    */
   comment: string;
+  /**
+   * The request this row serves: its id and its own number «ТС-40» — no trip, no day. The cabinet
+   * groups «Время по заявкам» by the id, as the server's split does over the stop snapshot (ADR
+   * 0234): two trips of one request are one share, and the indivisible remainder of a shared stop
+   * goes by ascending id on both sides, so the preview cannot be a second off. The number labels the
+   * line. A request is the work done at the stop, not a directory record, and the driver reads
+   * nothing by its id, so the "no directory ids" rule above holds.
+   *
+   * Optional: a server older than the field sends none, and the cabinet then groups by the request
+   * part of `displayNumber`.
+   */
+  request?: { id: string; displayNumber: string };
 }
 
 /**

@@ -132,7 +132,7 @@ function Summary({
       ) : (
         <>
           {summary.requests.map((request) => (
-            <div key={request.label} style={lineStyle}>
+            <div key={request.key} style={lineStyle}>
               <span>{request.label}</span>
               <span>{durationLabel(request.seconds, { zeroMinutes: true })}</span>
             </div>

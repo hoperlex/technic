@@ -6,6 +6,7 @@ import {
   type DriverAssignmentPoint,
   type DriverPreviousReading,
   formatMoscowDateTime,
+  formatVehicleRequestNumber,
   isRelocationPurpose,
   pointContacts,
   type RoutePointAction,
@@ -245,6 +246,10 @@ function assignmentAction(
     // комментарий заявки — он и стоит в графе груза бланка (ADR 0100 §10).
     cargoLabel: action.kind === 'freight' ? action.cargoLabel : '',
     comment: actionComment(action, tripNotes, requestComments),
+    request: {
+      id: action.ref.requestId,
+      displayNumber: formatVehicleRequestNumber(action.requestNum),
+    },
   };
 }
 

@@ -128,12 +128,16 @@ export function stopTimesText(item: DraftItem, stops: readonly ShownStop[]): str
 }
 
 /**
- * The request an action serves, as a label: «ТС-40» of «ТС-40/2» and of «ТС-77 · 12.08». The task
- * carries no request id (the cabinet gets no directory ids), and the label is enough for a preview:
- * two trips of one request share one label, as they share one request in the server's snapshot.
+ * The request an action serves, as the server names it on the task: the id groups the split, the
+ * number labels it. A server older than `DriverAssignmentAction.request` names neither, and then
+ * the request part of the row's number stands for both — «ТС-40» of «ТС-40/2» and of «ТС-77 · 12.08»:
+ * two trips of one request still share one key, though the remainder of a shared stop may then go
+ * to another request than on the server, which hands it out by id.
  */
-export function requestLabelOf(action: DriverAssignmentAction): string {
-  return action.displayNumber.split(/\/| · /u)[0] ?? action.displayNumber;
+export function requestOf(action: DriverAssignmentAction): { key: string; label: string } {
+  if (action.request) return { key: action.request.id, label: action.request.displayNumber };
+  const label = action.displayNumber.split(/\/| · /u)[0] ?? action.displayNumber;
+  return { key: label, label };
 }
 
 /** «Время по заявкам» of the route block, or why it cannot be counted yet. */
@@ -141,7 +145,7 @@ export type RouteSummary =
   | {
       kind: 'ok';
       /** Requests in the order the route first meets them, with their exact D6 seconds. */
-      requests: { label: string; seconds: number }[];
+      requests: { key: string; label: string; seconds: number }[];
       shift: { from: string; to: string; seconds: number };
       /** Stops served for several requests: the segment is split equally (D6). */
       shared: { position: number; shareSeconds: number }[];
@@ -159,26 +163,32 @@ export function routeSummary(
   times: Readonly<Record<string, DraftStopTimes>>,
 ): RouteSummary {
   const points = stopPointTimes(stops, times);
-  const labels = new Map(
-    stops.map((stop) => [stop.position, [...new Set(stop.actions.map(requestLabelOf))]]),
+  const served = stops.map((stop) => ({ stop, requests: stop.actions.map(requestOf) }));
+  const labels = new Map(served.flatMap(({ requests }) => requests.map((r) => [r.key, r.label])));
+  const keys = new Map(
+    served.map(({ stop, requests }) => [stop.position, [...new Set(requests.map((r) => r.key))]]),
   );
-  const split = routeTimeByRequest(points, labels);
+  const split = routeTimeByRequest(points, keys);
   if (!split.ok) return { kind: split.reason };
   const { startedAt, endedAt } = routeScalarTimes(points);
-  const order = [...new Set(stops.flatMap((stop) => labels.get(stop.position) ?? []))];
+  const order = [...new Set(stops.flatMap((stop) => keys.get(stop.position) ?? []))];
   // A shared stop's segment is the growth of the elapsed time over the route's prefix: the same
   // contract function measures both, so the note cannot disagree with the totals above it.
   const elapsedTo = (count: number) =>
     count === 0 ? 0 : (routeElapsed(points.slice(0, count)).minutes ?? 0);
   const shared = stops.flatMap((stop, index) => {
-    const count = labels.get(stop.position)?.length ?? 0;
+    const count = keys.get(stop.position)?.length ?? 0;
     if (count < 2) return [];
     const segment = elapsedTo(index + 1) - elapsedTo(index);
     return [{ position: stop.position, shareSeconds: (segment * 60) / count }];
   });
   return {
     kind: 'ok',
-    requests: order.map((label) => ({ label, seconds: split.byRequest[label] ?? 0 })),
+    requests: order.map((key) => ({
+      key,
+      label: labels.get(key) ?? key,
+      seconds: split.byRequest[key] ?? 0,
+    })),
     shift: { from: startedAt ?? '', to: endedAt ?? '', seconds: split.totalSeconds },
     shared,
   };

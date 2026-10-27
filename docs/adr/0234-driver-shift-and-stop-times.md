@@ -126,9 +126,13 @@ day is submitted in parts (ADR 0163): fuel in the morning, counters in the eveni
    holds, and a form built from it would have no field for the arrival the server requires. The
    cabinet previews decision 3 with the same contract functions, by the report's stored format and
    per line (`lineRequiresDriverTimes`, a block compared with its saved reading as the service
-   compares content), so its refusals stand under the fields before the day leaves the phone. The
-   task carries no request id, so the preview keys a request by its label («ТС-40» of «ТС-40/2»);
-   the server's split reads the snapshot by id.
+   compares content), so its refusals stand under the fields before the day leaves the phone. Every
+   action of the task names its request (`DriverAssignmentAction.request`: the id and the number
+   «ТС-40»), and «Время по заявкам» is keyed by that id, as the server's split keys the snapshot:
+   two trips of one request are one share, and a shared stop's remainder goes by the same id order.
+   A request is the work of the stop, not a directory record, so the cabinet's "no directory ids"
+   rule holds. The field is optional: a server older than it leaves the cabinet keying by the
+   request part of the row's number («ТС-40» of «ТС-40/2»).
 
 9. **The local draft moved to `v3` under its own prefix** (`technic:driver-draft-v3:`), for the
    reason ADR 0129 gave `v2` one: a `v2` build still open in a tab normalizes every branch it

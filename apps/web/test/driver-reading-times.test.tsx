@@ -74,13 +74,24 @@ const RP1 = '11111111-1111-4111-8111-111111111111';
 const RP2 = '22222222-2222-4222-8222-222222222222';
 const RP4 = '44444444-4444-4444-8444-444444444444';
 
-const action = (roleLabel: string, displayNumber: string, cargoLabel: string) => ({
+/** The requests of the route as the server names them on the task: an id and its own number. */
+const REQUESTS = {
+  'ТС-40': { id: 'a0000000-0000-4000-8000-000000000040', displayNumber: 'ТС-40' },
+  'ТС-41': { id: 'a0000000-0000-4000-8000-000000000041', displayNumber: 'ТС-41' },
+} as const;
+
+const action = (
+  roleLabel: string,
+  displayNumber: `${keyof typeof REQUESTS}/${number}`,
+  cargoLabel: string,
+) => ({
   role: roleLabel === 'Грузим' ? ('load' as const) : ('unload' as const),
   roleLabel,
   displayNumber,
   customerName: 'ООО «Заказчик»',
   cargoLabel,
   comment: '',
+  request: REQUESTS[displayNumber.split('/')[0] as keyof typeof REQUESTS],
 });
 
 /**

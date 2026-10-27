@@ -608,6 +608,9 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
     expect(freightEntry.points[0]!.actions[0]).toMatchObject({
       role: 'load',
       displayNumber: `${request.displayNumber}/1`,
+      // The request itself, not its trip: the cabinet groups «Время по заявкам» by this id, as the
+      // server's split groups the stop snapshot (ADR 0234), and labels the line with the number.
+      request: { id: request.id, displayNumber: request.displayNumber },
     });
     expect(freightEntry.points[1]).toMatchObject({
       position: 2,
@@ -775,13 +778,18 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
 
     // Р13 буквально: у роли `driver` нет `directories.read`, поэтому единственные идентификаторы
     // в задании — свои, источников. Ни типа ТС, ни контрагента, ни объекта, ни самой машины.
-    // The route's own stops are the one addition (ADR 0234): the cabinet sends a stop's id back
-    // with its times, and a route point is a row of the source, not a directory record.
+    // Two additions of ADR 0234, neither a directory record: the route's own stops — the cabinet
+    // sends a stop's id back with its times — and the requests served at them, which key the
+    // per-request split the way the server's snapshot does.
     const found = [...JSON.stringify(dto.entries).matchAll(UUID_RE)].map((m) => m[0]);
     const pointIds = dto.entries.flatMap((entry) => entry.points.map((point) => point.id));
+    const requestIds = dto.entries.flatMap((entry) =>
+      entry.points.flatMap((point) => point.actions.map((action) => action.request?.id)),
+    );
     expect(pointIds.length).toBeGreaterThan(0);
+    expect(new Set(requestIds)).toEqual(new Set([request.id]));
     expect(new Set(found)).toEqual(
-      new Set([...dto.entries.map((entry) => entry.sourceId), ...pointIds]),
+      new Set([...dto.entries.map((entry) => entry.sourceId), ...pointIds, request.id]),
     );
     for (const entry of dto.entries) {
       expect(entry).not.toHaveProperty('vehicleId');
