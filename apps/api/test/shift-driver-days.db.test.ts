@@ -20,6 +20,7 @@ import type * as SchemaNs from '../src/db/schema';
 import type * as ReadingsNs from '../src/services/readings';
 import type * as DaysNs from '../src/services/vehicle-request-days';
 import type * as AssignmentShiftsNs from '../src/services/assignment-shifts';
+import type * as AggregateNs from '../src/services/readings-aggregate';
 
 /**
  * The request shift table reading the driver's readings (readings-shifts-merge plan §6, ADR 0184
@@ -68,6 +69,7 @@ interface Ctx {
   readings: typeof ReadingsNs;
   days: typeof DaysNs;
   assignmentShifts: typeof AssignmentShiftsNs;
+  aggregate: typeof AggregateNs;
   closeDb: () => Promise<void>;
   admin: Auth;
   observer: Auth;
@@ -399,6 +401,7 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
     const readings = await import('../src/services/readings');
     const days = await import('../src/services/vehicle-request-days');
     const assignmentShifts = await import('../src/services/assignment-shifts');
+    const aggregate = await import('../src/services/readings-aggregate');
     const { buildApp: build } = await import('../src/app');
 
     const types = await db.execute<{ id: string }>(sql`
@@ -429,6 +432,7 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
       readings,
       days,
       assignmentShifts,
+      aggregate,
       closeDb,
       admin: { authorization: '' },
       observer: { authorization: '' },
@@ -492,6 +496,10 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
         previousDate: baseline,
       }),
     ]);
+    // The same day in the garage's month aggregate: an empty refill is zero liters there too.
+    const card = await ctx.aggregate.loadVehicleCard(scene.vehicleId, day, day);
+    expect(card?.total.fuelFilledLiters).toBe(0);
+
     // The baseline is a first snapshot: shown, never signable, nothing filled.
     expect(await dayOf(requestId, baseline)).toMatchObject({
       source: null,
@@ -727,6 +735,20 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
     expect(await dayOf(vehicle.requestId, vehicle.day)).toMatchObject({
       source: 'driver',
       machineHours: 6,
+    });
+
+    const moved = await esm2Case('Перенесённый лист');
+    await submitDay(moved.person.id, moved.day, values({ engineHours: 1003 }));
+    await ctx.db
+      .update(ctx.schema.waybills)
+      .set({ periodFrom: ago(1), periodTo: ago(1), issuedForDate: ago(1) })
+      .where(eq(ctx.schema.waybills.id, moved.waybillOfDay));
+    expect(await dayOf(moved.requestId, moved.day)).toMatchObject({
+      source: null,
+      driver: {
+        issues: ['discrepancy'],
+        readings: [{ discrepancies: [{ kind: 'date', resolved: false }] }],
+      },
     });
 
     const cancelled = await esm2Case('Аннулированный лист');
