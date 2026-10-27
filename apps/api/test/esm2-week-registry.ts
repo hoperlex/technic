@@ -547,6 +547,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'pure time rules of a reading (ADR 0234): `esm2` is a source kind passed to the functions; no sheet, no period',
   },
   {
+    file: 'request-driver-times-contracts.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'pure stage 3 time rules (readings-shifts-merge plan §8): `esm2` is a source kind of a fixture reading passed to `driverDayTime`; no sheet, no period',
+  },
+  {
     file: 'shift-driver-days.test.ts',
     klass: 'mention',
     status: 'done',

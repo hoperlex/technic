@@ -155,8 +155,7 @@ export function routeDurationLabel(seconds: number): string {
 
 /** What the completion window of a freight request starts from (D7, D12). */
 export type RouteTimePrefill =
-  | { ok: true; hours: number; seconds: number }
-  | { ok: false; reason: string };
+  { ok: true; hours: number; seconds: number } | { ok: false; reason: string };
 
 /**
  * The completion prefill of a freight request: unit "hours" and the request's route time rounded
