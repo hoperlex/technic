@@ -561,12 +561,12 @@ export async function collectMetrics(): Promise<string> {
       values: [{ value: Number(overdue.rows[0]?.count ?? '0') }],
     },
     {
-      // Без этого ряда «капча выключена правкой env» снаружи неотличимо от «капча включена, но
-      // регистраций не было»: у выключенной все счётчики нули, и узнать правду можно только
-      // дёрнув `GET /auth/captcha`. В production капча обязана быть включена (config.ts), поэтому
-      // ноль здесь — сам по себе повод для тревоги.
+      // Without this series "captcha switched off by an env edit" looks from outside like "captcha
+      // on, but nobody registered": a disabled captcha has all counters at zero, and the truth is
+      // only in `GET /auth/captcha`. Production starts only with the keys (config.ts), so a zero
+      // there is either the owner's pause (`SMARTCAPTCHA_DISABLED`, logged at start) or an alarm.
       name: 'technic_captcha_enabled',
-      help: '1 — ключи SmartCaptcha заданы и проверка работает; 0 — капча выключена',
+      help: '1 — ключи SmartCaptcha заданы и проверка работает; 0 — капча выключена (нет ключей или SMARTCAPTCHA_DISABLED=true)',
       type: 'gauge',
       values: [{ value: config.captcha.enabled ? 1 : 0 }],
     },

@@ -148,6 +148,18 @@ ADR 0034 п. 6 отверг внешние сервисы проверки пр�
     динамически обновляемому скрипту неприменим, IP и поведенческие сигналы уходят в Яндекс, а
     уведомить пользователя об обработке данных требует сама документация сервиса (щит не скрываем).
 
+16. **The owner may pause the captcha without removing the keys** (added 27.10.2026: the captcha
+    started misbehaving on production, and the forms had to stay usable while the cause was looked
+    for). `SMARTCAPTCHA_DISABLED=true` in `prod.env` blanks the client key, so `GET /auth/captcha`
+    answers `clientKey: null` and the portal hides the field, and turns the server check off — one
+    switch for both sides, as item 2 requires. The keys stay mandatory in production and are still
+    checked as a pair (item 8): the pause cannot become the way to start a release without them,
+    and turning the captcha back on is deleting one line. The release gate (item 11) passes a pause
+    with a loud notice instead of refusing, otherwise every release would wait on the very service
+    that was paused. The pause is never silent: a warning at every API start, and
+    `technic_captcha_enabled` at 0. Only the exact `true` pauses — a typo errs towards the
+    captcha being on. Steps are in the runbook, "Turning the captcha off for a while".
+
 ## Последствия
 
 - Удалено 511 строк своей капчи (`captcha.ts` 155 + `captcha-image.ts` 356) и 119 строк её теста;

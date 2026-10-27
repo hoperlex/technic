@@ -1497,6 +1497,35 @@ Cloud.
 попытка была. Молчащий canary виден по возрасту отметки, плохой результат — по нулю; в одном
 значении эти сигналы неразличимы.
 
+### Turning the captcha off for a while
+
+When SmartCaptcha misbehaves — the widget gives no token, people are refused on a solved check —
+and the forms must keep working while the cause is investigated, pause it instead of removing the
+keys (ADR 0130, item 16). Without the keys the API does not start in production at all.
+
+```bash
+# On the VPS: keep both SMARTCAPTCHA_* keys, add the pause, recreate only the API
+echo 'SMARTCAPTCHA_DISABLED=true' | sudo tee -a /etc/technic-portal/prod.env
+docker compose -f deploy/docker-compose.yml -p technic up -d --force-recreate technic-api
+
+# Check from anywhere: the portal must get no key, so it hides the field
+curl -s https://auto.su10.ru/api/v1/auth/captcha     # {"clientKey":null}
+```
+
+- Only the exact `true` pauses; any other value leaves the captcha on. A release older than the
+  switch ignores the variable altogether.
+- The API log says `SmartCaptcha выключена владельцем` at every start, `technic_captcha_enabled`
+  drops to 0 (its alarm is expected for the duration), and the `deploy-auto` captcha preflight
+  prints `ПРОПУЩЕН` and passes instead of asking Yandex.
+- Registration, resending the verification mail and password reset then rest on the per-address
+  limits (5 per 10 minutes), the honeypot and the per-account cooldown — the same protection as
+  during a Yandex outage (fail-open).
+- A tab opened before the switch already holds the key and keeps the widget until reloaded.
+
+To turn it back on: delete the `SMARTCAPTCHA_DISABLED` line, recreate `technic-api`, check that
+`/api/v1/auth/captcha` returns the `ysc1_…` key again, then pass the registration form by hand on
+the production domain — only a live pass shows that a real token is accepted.
+
 ## Почта: очередь и разбор жалоб «письмо не пришло»
 
 Письмо составляет API и кладёт в `mail_messages` вместе с задачей `send_email` — одной транзакцией.
