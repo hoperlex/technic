@@ -77,7 +77,8 @@ day is submitted in parts (ADR 0163): fuel in the morning, counters in the eveni
    engine hours or end fuel — also carries the end time or every departure. The driver's ESM-2
    pair may not have equal start and end. Staff may leave every time empty (D5), a relocation and
    `no_data` need none. The rule is written once (`driverReadingTimeIssues`) and the service applies
-   it by actor; the acceptance door is unchanged.
+   it by actor and by the report's stored format (`reportRequiresDriverTimes`, the predicate the
+   cabinet previews with); the acceptance door is unchanged.
 
 4. **One reading of time.** A start/end pair is read by `shiftSpanMinutes` only (equal times are
    24 h; `shiftSpanHours` is its rounding for the site's window). A route's elapsed time is the sum
