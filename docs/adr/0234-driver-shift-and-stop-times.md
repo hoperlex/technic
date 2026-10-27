@@ -36,6 +36,7 @@
   [cabinet draft of older formats](../../apps/web/src/pages/driver/draftLegacy.ts),
   [garage journal](../../apps/web/src/pages/garage/journalTimes.tsx),
   [garage staff entry](../../apps/web/src/pages/garage/IntakeTimeFields.tsx),
+  [garage entry tests](../../apps/web/test/readings-report-card.test.tsx),
   [cabinet tests](../../apps/web/test/driver-reading-times.test.tsx)
 
 ## Context
@@ -158,9 +159,11 @@ day is submitted in parts (ADR 0163): fuel in the morning, counters in the eveni
 - Old code that switches a reading carrying times to `no_data` during a rollback fails on the
   CHECK instead of keeping a time on a shift closed without values.
 - Stage 3 allocates from the snapshot only, never from live roles.
-- Staff correct the times of a route reading's saved stops; the garage form does not capture a
-  first stop set, although the report item now names the live stops. A route reading entered by
-  staff without stops stays without stop times until the driver captures them.
+- Staff correct the times of a route reading's saved stops, and capture a first stop set from the
+  live stops the report item names (`ReportItemDto.stops`) through the driver's write path — the
+  same route lock, comparison and request snapshot, with every time optional (D5). The garage
+  form sends the capture only when a stop time is typed: an empty one would freeze the snapshot
+  without a time, and the driver can still capture the stops himself.
 
 ## Rejected
 

@@ -96,7 +96,8 @@ export async function writeReadingPoints(
  *
  * The stop set has two lives. Its first capture is compared with the live route under the route
  * lock the submit already holds (`lockSources`), and the served requests of every stop are
- * snapshotted then. Every later edit addresses the SAVED stops by position: after a rebuild the
+ * snapshotted then — for the garage's staff entry exactly as for the cabinet: both send back the
+ * live stops the report item names (`ReportItemDto.stops`), and only requiredness is the actor's. Every later edit addresses the SAVED stops by position: after a rebuild the
  * live point ids are gone (`ON DELETE SET NULL`), and staff still correct the times the driver
  * recorded without inheriting the new plan's allocation. Moving such a reading onto the new plan is
  * explicit: clear the stops, then capture them again.

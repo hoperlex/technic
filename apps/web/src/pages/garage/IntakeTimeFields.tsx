@@ -18,10 +18,13 @@ import { TimeInput } from '@entities/request';
  * Shape and order are checked for staff as for anyone (`readingTimeIssues`), before the request,
  * so that a refusal stands under its field instead of coming back as one sentence.
  *
- * A route's stops are the reading's SAVED stops: their times are corrected by position, as the
- * server addresses them after a route rebuild. A route reading without saved stops shows no stop
- * fields — the first capture of a stop set needs the live stops of the route with their ids, which
- * the report card does not carry; the driver captures them from the cabinet.
+ * A route's stops are the reading's SAVED stops once it has them: their times are corrected by
+ * position, as the server addresses them after a route rebuild. Before that the form offers the
+ * live stops the server names on the item (`ReportItemDto.stops`) — the very set the readings
+ * service compares a first capture with under the route lock, for staff as for the driver — and
+ * typing any of their times sends them as the first capture, with the request snapshot taken then.
+ * With every stop field empty nothing is captured: an empty capture would freeze the snapshot
+ * without a single time, and the driver can still record the stops himself.
  */
 
 /** A refusal under a time field, in the shape `setFields` takes. */
@@ -33,8 +36,34 @@ interface FieldError {
 export interface TimeValues {
   startedAt?: string;
   endedAt?: string;
-  /** Times of the saved stops, in their order. */
+  /** Times of the shown stops (`formStops`), in their order. */
   stops?: { arrivedAt?: string; departedAt?: string }[];
+}
+
+/** A stop of the form: a saved one with its times, or a live one about to be captured. */
+interface FormStop {
+  position: number;
+  routePointId: string | null;
+  location: string;
+  arrivedAt: string | null;
+  departedAt: string | null;
+}
+
+/**
+ * The stops the form shows: the saved set, otherwise the live one the item names (`capture`).
+ * A relocation and an ESM-2 item have none.
+ */
+function formStops(item: ReportItemDto): { stops: FormStop[]; capture: boolean } {
+  const saved = item.reading?.points ?? [];
+  if (saved.length > 0) return { stops: saved, capture: false };
+  const live = (item.stops ?? []).map((stop, index) => ({
+    ...stop,
+    // A reading numbers its stops 1..N, whatever the route points' own positions are.
+    position: index + 1,
+    arrivedAt: null,
+    departedAt: null,
+  }));
+  return { stops: live, capture: live.length > 0 };
 }
 
 /** An optional time: empty is fine, a typed one must read as `HH:mm` (any hour — shifts run at night). */
@@ -51,9 +80,9 @@ export function timeInitialValues(item: ReportItemDto): TimeValues {
   return {
     startedAt: item.sourceKind === 'esm2' ? (reading?.startedAt ?? '') : '',
     endedAt: item.sourceKind === 'esm2' ? (reading?.endedAt ?? '') : '',
-    stops: (reading?.points ?? []).map((point) => ({
-      arrivedAt: point.arrivedAt ?? '',
-      departedAt: point.departedAt ?? '',
+    stops: formStops(item).stops.map((stop) => ({
+      arrivedAt: stop.arrivedAt ?? '',
+      departedAt: stop.departedAt ?? '',
     })),
   };
 }
@@ -71,7 +100,7 @@ export function IntakeTimeFields({ item }: { item: ReportItemDto }) {
       </Space>
     );
   }
-  return (item.reading?.points ?? []).map((point, index) => (
+  return formStops(item).stops.map((point, index) => (
     <Space key={point.position} size={12} style={{ display: 'flex' }}>
       {index === 0 && (
         <Form.Item
@@ -99,7 +128,8 @@ const time = (raw: string | undefined): string | null =>
 /**
  * The time keys of a staff `values` reading, or the refusals of the contract's shape and order rule
  * under their fields. Keys are explicit, empty as `null`: the form shows the saved times, so an
- * emptied field is the decision to clear it (the ADR 0163 Р13 wire contract).
+ * emptied field is the decision to clear it (the ADR 0163 Р13 wire contract). A first capture goes
+ * only when a stop time is typed (see the header).
  */
 export function timeKeys(
   item: ReportItemDto,
@@ -118,20 +148,23 @@ export function timeKeys(
     }
     return { keys: { startedAt, endedAt } };
   }
-  const saved = item.reading?.points ?? [];
-  if (saved.length === 0) return { keys: {} };
-  const points = saved.map((point, index) => ({
+  const { stops, capture } = formStops(item);
+  if (stops.length === 0) return { keys: {} };
+  const points = stops.map((point, index) => ({
     position: point.position,
     routePointId: point.routePointId,
     arrivedAt: index === 0 ? time(values.stops?.[index]?.arrivedAt) : null,
     departedAt: time(values.stops?.[index]?.departedAt),
   }));
+  if (capture && points.every((point) => point.arrivedAt === null && point.departedAt === null)) {
+    return { keys: {} };
+  }
   const issues = readingTimeIssues('route', { startedAt: null, endedAt: null, points });
   if (issues.length > 0) {
     const index = (issue: ReadingTimeIssue) =>
       issue.position === null
-        ? saved.length - 1
-        : saved.findIndex((p) => p.position === issue.position);
+        ? stops.length - 1
+        : stops.findIndex((p) => p.position === issue.position);
     return {
       fields: issues.map((issue) => ({
         name: ['stops', Math.max(0, index(issue)), 'departedAt'],

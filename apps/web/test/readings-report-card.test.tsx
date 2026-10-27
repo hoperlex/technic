@@ -868,4 +868,101 @@ describe('карточка отчёта дня: время смены при в�
     });
     expect(body.items[0]!.reading).not.toHaveProperty('startedAt');
   });
+
+  /**
+   * A route item without saved stops: the server names the live stops on the item
+   * (`ReportItemDto.stops`), and staff capture them for the first time — the set the readings
+   * service compares a first capture with under the route lock, so the ids go back as they came.
+   */
+  const LIVE_STOPS_ITEM: ReportItemDto = {
+    ...FILLED_ITEM,
+    reading: null,
+    stops: [
+      { routePointId: '11111111-1111-4111-8111-111111111111', location: 'Карьер' },
+      { routePointId: '22222222-2222-4222-8222-222222222222', location: 'Склад' },
+    ],
+  };
+
+  it('рейс без сохранённых остановок: персонал впервые записывает остановки, названные сервером', async () => {
+    const http = renderGarage(intakeRoute('&report=r-1'), {
+      [REPORT]: () => json(reportDto({ items: [LIVE_STOPS_ITEM], discrepancies: [] })),
+      [SUBMIT]: () => json(reportDto()),
+    });
+    expect(await screen.findByText('Отчёт — Петров П. П., 14.08.2026')).toBeDefined();
+
+    await openForm('Внести показание — Р-142');
+    expect(field('Р-142', '1. Карьер — прибытие').value).toBe('');
+    expect(field('Р-142', 'убытие').value).toBe('');
+    expect(field('Р-142', '2. Склад — убытие').value).toBe('');
+
+    // Times stay optional for staff (D5): an arrival alone, with the evening counter, is a capture.
+    fireEvent.change(field('Р-142', 'Одометр на конец смены, км'), { target: { value: '128500' } });
+    fireEvent.change(field('Р-142', '1. Карьер — прибытие'), { target: { value: '0740' } });
+    fireEvent.click(saveButton('Р-142'));
+
+    await waitFor(() => expect(http.countOf(SUBMIT)).toBe(1));
+    const body = http.lastCall(SUBMIT)!.body as { items: { reading: unknown }[] };
+    expect(body.items[0]!.reading).toMatchObject({
+      odometerKm: 128500,
+      points: [
+        {
+          position: 1,
+          routePointId: '11111111-1111-4111-8111-111111111111',
+          arrivedAt: '07:40',
+          departedAt: null,
+        },
+        {
+          position: 2,
+          routePointId: '22222222-2222-4222-8222-222222222222',
+          arrivedAt: null,
+          departedAt: null,
+        },
+      ],
+    });
+    // A route's pair is derived from its stops by the server; the form never types it.
+    expect(body.items[0]!.reading).not.toHaveProperty('startedAt');
+  });
+
+  it('рейс без сохранённых остановок: без набранного времени остановки не захватываются', async () => {
+    const http = renderGarage(intakeRoute('&report=r-1'), {
+      [REPORT]: () => json(reportDto({ items: [LIVE_STOPS_ITEM], discrepancies: [] })),
+      [SUBMIT]: () => json(reportDto()),
+    });
+    expect(await screen.findByText('Отчёт — Петров П. П., 14.08.2026')).toBeDefined();
+
+    await openForm('Внести показание — Р-142');
+    fireEvent.change(field('Р-142', 'Одометр на конец смены, км'), { target: { value: '128500' } });
+    fireEvent.click(saveButton('Р-142'));
+
+    await waitFor(() => expect(http.countOf(SUBMIT)).toBe(1));
+    const body = http.lastCall(SUBMIT)!.body as { items: { reading: unknown }[] };
+    // An empty capture would freeze the request snapshot without a single time: the key stays
+    // absent, and the driver can still record the stops himself.
+    expect(body.items[0]!.reading).toMatchObject({ odometerKm: 128500 });
+    expect(body.items[0]!.reading).not.toHaveProperty('points');
+  });
+
+  it('рейс без сохранённых остановок: порядок времени проверяется до отправки', async () => {
+    const http = renderGarage(intakeRoute('&report=r-1'), {
+      [REPORT]: () => json(reportDto({ items: [LIVE_STOPS_ITEM], discrepancies: [] })),
+      [SUBMIT]: () => json(reportDto()),
+    });
+    expect(await screen.findByText('Отчёт — Петров П. П., 14.08.2026')).toBeDefined();
+
+    await openForm('Внести показание — Р-142');
+    fireEvent.change(field('Р-142', 'Одометр на конец смены, км'), { target: { value: '128500' } });
+    // Two midnight wraps: the order rule binds staff as it binds the driver (only requiredness
+    // is the driver's), and the refusal stands under the stop it names.
+    fireEvent.change(field('Р-142', '1. Карьер — прибытие'), { target: { value: '20:00' } });
+    fireEvent.change(field('Р-142', 'убытие'), { target: { value: '08:00' } });
+    fireEvent.change(field('Р-142', '2. Склад — убытие'), { target: { value: '07:00' } });
+    fireEvent.click(saveButton('Р-142'));
+
+    expect(
+      await within(form('Р-142')).findByText(
+        'Время отправления идёт по порядку остановок: через полночь — не больше одного раза',
+      ),
+    ).toBeDefined();
+    expect(http.countOf(SUBMIT)).toBe(0);
+  });
 });

@@ -799,6 +799,108 @@ describe.skipIf(!DB_URL)('время смены и остановок (жива�
     expect(recorded).not.toHaveProperty('stops');
   });
 
+  /**
+   * The garage form captures a route's stops for the first time from the live set the item names
+   * (`ReportItemDto.stops`). The submit is the driver's write path: the same route lock
+   * (`lockSources`), the same comparison with the live route and the same request snapshot. Only
+   * requiredness differs — every time stays optional for staff (D5), so an evening counter with
+   * the arrival alone is taken.
+   */
+  it('персонал впервые записывает остановки рейса: та же сверка и снимок заявок, время необязательно', async () => {
+    const person = await makeDriver('Гаражов');
+    const vehicle = await makeVehicle();
+    const request = await makeFreightRequest([
+      { from: 'г Москва, ул Гаражная, д 1', to: 'г Москва, ул Приёмная, д 2' },
+    ]);
+    const route = await makeStopRoute({
+      vehicleId: vehicle,
+      personId: person,
+      requestIds: [request],
+    });
+    const opened = await ctx.readings.openReport(person, ctx.today, ctx.userId, { mode: 'staff' });
+    const item = opened.items[0]!;
+    const live = await stopsOf(route);
+    expect(item.stops).toEqual(
+      live.map(({ routePointId, location }) => ({ routePointId, location })),
+    );
+    const ids = item.stops!.map((stop) => stop.routePointId);
+
+    // The numbers alone capture nothing: the item keeps naming the live stops.
+    const entered = await submit(person, opened.version, [line(item.id, { odometerKm: 700 })], {
+      mode: 'staff',
+    });
+    const reading = entered.items[0]!.reading!;
+    expect(reading.points).toEqual([]);
+    expect(entered.items[0]!.stops).toEqual(item.stops);
+
+    // A set that is not the live route's is refused for staff as for the driver.
+    const reversed = await failure(
+      submit(
+        person,
+        entered.version,
+        [
+          line(item.id, {
+            odometerKm: 700,
+            points: wirePoints([...ids].reverse(), [
+              ['08:00', null],
+              [null, null],
+            ]),
+          }),
+        ],
+        { mode: 'staff', reason: 'по путевому листу' },
+      ),
+    );
+    expect(reversed.statusCode).toBe(409);
+
+    // Shape and order bind staff too: two midnight wraps are refused.
+    const disordered = await failure(
+      submit(
+        person,
+        entered.version,
+        [
+          line(item.id, {
+            odometerKm: 700,
+            points: wirePoints(ids, [
+              ['20:00', '08:00'],
+              [null, '07:00'],
+            ]),
+          }),
+        ],
+        { mode: 'staff', reason: 'по путевому листу' },
+      ),
+    );
+    expect(disordered.statusCode).toBe(400);
+
+    // The capture: the arrival alone with the evening counter — the driver's evening would need
+    // every departure (D11), staff need none (D5).
+    const captured = await submit(
+      person,
+      entered.version,
+      [
+        line(item.id, {
+          odometerKm: 700,
+          points: wirePoints(ids, [
+            ['08:00', null],
+            [null, null],
+          ]),
+        }),
+      ],
+      { mode: 'staff', reason: 'по путевому листу' },
+    );
+    const timed = captured.items[0]!.reading!;
+    expect(timed).toMatchObject({ id: reading.id, startedAt: '08:00', endedAt: null });
+    expect(timed.points.map((p) => [p.position, p.routePointId, p.location, p.arrivedAt])).toEqual([
+      [1, ids[0], 'г Москва, ул Гаражная, д 1', '08:00'],
+      [2, ids[1], 'г Москва, ул Приёмная, д 2', null],
+    ]);
+    expect(await snapshotOf(timed.id)).toEqual([
+      [1, request],
+      [2, request],
+    ]);
+    // Saved stops are the set from now on, for the garage and the cabinet alike.
+    expect(captured.items[0]).not.toHaveProperty('stops');
+  });
+
   it('через полночь рейс переходит один раз; второй переход — отказ', async () => {
     const person = await makeDriver('Ночной');
     const vehicle = await makeVehicle();
