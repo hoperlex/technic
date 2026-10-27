@@ -225,6 +225,9 @@ export function dayColumns({
             </div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {workedAmountLabel('hours', day.shift.machineHours)}
+              {/* The day's effective hours may be the driver's readings (readings-shifts-merge
+                plan §6.3): the mark says whose numbers the site is about to sign. */}
+              {day.shift.source === 'driver' ? ' · по водителю' : ''}
             </Typography.Text>
           </div>
         ) : (

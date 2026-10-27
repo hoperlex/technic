@@ -1,6 +1,7 @@
 import { App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { vehicleReadingKeys } from '@entities/vehicle-reading';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { isApiError } from '@shared/api';
 import { errorMessage } from '@shared/lib';
 
@@ -48,6 +49,9 @@ export function useIntakeAction<TVars>({
     onSuccess: () => {
       message.success(done);
       void qc.invalidateQueries({ queryKey: vehicleReadingKeys.root });
+      // Each of these actions changes a reading's numbers or attribution, and the request shift
+      // table reads readings as its days' numbers (readings-shifts-merge plan §6.7).
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       onDone?.();
     },
     onError: (error) => {

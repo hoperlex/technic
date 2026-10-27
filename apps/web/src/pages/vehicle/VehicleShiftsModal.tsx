@@ -15,6 +15,7 @@ import { DeleteOutlined, SaveOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   approvedMachineHours,
+  isShiftFilled,
   MAX_MACHINE_HOURS,
   requestCustomerName,
   SHIFT_IDLE_COMMENT_MESSAGE,
@@ -24,12 +25,21 @@ import {
   type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
-import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { ShiftDriverNote, vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { ViewModal } from '@shared/ui';
 import { TimeInput } from '@entities/request';
 import { UserAvatar } from '@shared/ui';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
+import { isApiError } from '@shared/api';
 import { formatDateOnly } from '@shared/lib';
+import {
+  approveBody,
+  type Draft,
+  draftOf,
+  driverPrefill,
+  isDriverDay,
+  saveBody,
+} from './shiftDraft';
 
 /**
  * Подтверждение смен по заказу спецтехники: день работы, его показатели и подпись объекта.
@@ -53,26 +63,7 @@ interface Props {
   onClose: () => void;
 }
 
-/** Черновик строки: то, что человек набрал, но ещё не сохранил. */
-interface Draft {
-  startedAt?: string;
-  endedAt?: string;
-  machineHours?: number | null;
-  refuel?: string;
-  comment?: string;
-}
-
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
-
-function draftOf(shift: VehicleRequestShiftDto): Draft {
-  return {
-    startedAt: shift.startedAt ?? undefined,
-    endedAt: shift.endedAt ?? undefined,
-    machineHours: shift.filledAt ? shift.machineHours : null,
-    refuel: shift.refuel,
-    comment: shift.comment,
-  };
-}
 
 export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Props) {
   const { message } = App.useApp();
@@ -95,37 +86,47 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
     void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
   };
 
+  const dropDraft = (date: string) =>
+    setDrafts((d) => {
+      const next = { ...d };
+      delete next[date];
+      return next;
+    });
+
+  /**
+   * A 409 means the day the person saw is gone: a driver reading was edited, rebased or voided, or
+   * a driver day now overlays the site's row. Nothing typed can be retried as is — the day is
+   * reloaded and shown again (plan §6.4).
+   */
+  const onShiftError = (e: unknown, date: string) => {
+    message.error(errorMessage(e));
+    if (isApiError(e) && e.status === 409) {
+      dropDraft(date);
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.shifts(request?.id) });
+    }
+  };
+
   const saveMut = useMutation({
-    mutationFn: (v: { date: string; draft: Draft }) =>
-      vehicleRequestsApi.saveShift(request!.id, v.date, {
-        startedAt: v.draft.startedAt ?? null,
-        endedAt: v.draft.endedAt ?? null,
-        machineHours: v.draft.machineHours ?? 0,
-        refuel: v.draft.refuel ?? '',
-        comment: v.draft.comment ?? '',
-      }),
+    mutationFn: (v: { shift: VehicleRequestShiftDto; draft: Draft }) =>
+      vehicleRequestsApi.saveShift(request!.id, v.shift.date, saveBody(v.shift, v.draft)),
     onSuccess: (res, v) => {
-      message.success(`Смена за ${formatDateOnly(v.date)} сохранена`);
+      message.success(`Смена за ${formatDateOnly(v.shift.date)} сохранена`);
       qc.setQueryData(vehicleRequestKeys.shifts(request!.id), res);
-      setDrafts((d) => {
-        const next = { ...d };
-        delete next[v.date];
-        return next;
-      });
+      dropDraft(v.shift.date);
       invalidate();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e, v) => onShiftError(e, v.shift.date),
   });
 
   const approveMut = useMutation({
-    mutationFn: (v: { date: string; approved: boolean }) =>
-      vehicleRequestsApi.approveShift(request!.id, v.date, v.approved),
+    mutationFn: (v: { shift: VehicleRequestShiftDto; approved: boolean }) =>
+      vehicleRequestsApi.approveShift(request!.id, v.shift.date, approveBody(v.shift, v.approved)),
     onSuccess: (res, v) => {
       message.success(v.approved ? 'Смена согласована' : 'Согласование снято');
       qc.setQueryData(vehicleRequestKeys.shifts(request!.id), res);
       invalidate();
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e, v) => onShiftError(e, v.shift.date),
   });
 
   const deleteMut = useMutation({
@@ -133,11 +134,7 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
     onSuccess: (res, date) => {
       message.success(`Смена за ${formatDateOnly(date)} удалена`);
       qc.setQueryData(vehicleRequestKeys.shifts(request!.id), res);
-      setDrafts((d) => {
-        const next = { ...d };
-        delete next[date];
-        return next;
-      });
+      dropDraft(date);
       invalidate();
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -149,8 +146,12 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
   /** Значение поля: сначала черновик, затем сохранённое. */
   const valueOf = (shift: VehicleRequestShiftDto): Draft => drafts[shift.date] ?? draftOf(shift);
 
-  /** Строка изменена и её есть смысл сохранять. */
-  const isDirty = (date: string) => drafts[date] !== undefined;
+  /**
+   * The row has something to save: typed values, or the driver's partial numbers the form started
+   * from — those are signed only after an explicit save (D3).
+   */
+  const isDirty = (shift: VehicleRequestShiftDto) =>
+    drafts[shift.date] !== undefined || driverPrefill(shift) !== null;
 
   const busy = saveMut.isPending || approveMut.isPending || deleteMut.isPending;
 
@@ -211,18 +212,32 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
     {
       key: 'machineHours',
       title: 'Машиночасы',
-      width: 120,
+      width: 140,
       render: (_v, s) => (
-        <InputNumber
-          min={0}
-          max={MAX_MACHINE_HOURS}
-          step={0.5}
-          precision={2}
-          style={{ width: '100%' }}
-          disabled={!editableOn(s)}
-          value={valueOf(s).machineHours}
-          onChange={(value) => patch(s.date, s, { machineHours: value })}
-        />
+        <div style={{ lineHeight: 1.35 }}>
+          <InputNumber
+            min={0}
+            max={MAX_MACHINE_HOURS}
+            step={0.5}
+            precision={2}
+            style={{ width: '100%' }}
+            // A driver day's hours come from the readings: they are corrected in the garage.
+            disabled={!editableOn(s) || isDriverDay(s)}
+            value={valueOf(s).machineHours}
+            onChange={(value) => patch(s.date, s, { machineHours: value })}
+          />
+          {isDriverDay(s) && editableOn(s) && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              по показаниям водителя — исправляют в гараже
+            </Typography.Text>
+          )}
+          {driverPrefill(s) && editableOn(s) && !drafts[s.date] && (
+            <Typography.Text type="warning" style={{ fontSize: 12 }}>
+              неполные данные водителя — проверьте и сохраните
+            </Typography.Text>
+          )}
+          <ShiftDriverNote shift={s} />
+        </div>
       ),
     },
     {
@@ -233,7 +248,7 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
         <Input
           placeholder="120 л"
           maxLength={200}
-          disabled={!editableOn(s)}
+          disabled={!editableOn(s) || isDriverDay(s)}
           value={valueOf(s).refuel}
           onChange={(e) => patch(s.date, s, { refuel: e.target.value })}
         />
@@ -264,8 +279,8 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
           <div style={{ lineHeight: 1.35 }}>
             <Checkbox
               checked={!!s.approvedAt}
-              disabled={!canApprove || dayBlocked || !s.filledAt || busy}
-              onChange={(e) => approveMut.mutate({ date: s.date, approved: e.target.checked })}
+              disabled={!canApprove || dayBlocked || !isShiftFilled(s) || busy}
+              onChange={(e) => approveMut.mutate({ shift: s, approved: e.target.checked })}
             >
               {s.approvedAt ? 'Согласовано' : 'Согласовать'}
             </Checkbox>
@@ -292,8 +307,8 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
               type="text"
               icon={<SaveOutlined />}
               title="Сохранить смену"
-              disabled={!isDirty(s.date) || busy}
-              onClick={() => saveMut.mutate({ date: s.date, draft: valueOf(s) })}
+              disabled={!isDirty(s) || busy}
+              onClick={() => saveMut.mutate({ shift: s, draft: valueOf(s) })}
             />
             {s.filledAt && (
               <Button

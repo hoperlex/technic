@@ -17,6 +17,7 @@ import {
   vehicleReadingsApi,
   type ReadingField,
 } from '@entities/vehicle-reading';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { isApiError } from '@shared/api';
 import { errorMessage } from '@shared/lib';
 import { FormModal } from '@shared/ui';
@@ -171,6 +172,9 @@ export function IntakeReadingForm({
        * вчерашнее до перезагрузки страницы.
        */
       void qc.invalidateQueries({ queryKey: vehicleReadingKeys.root });
+      // The request shift table reads these readings as its days' numbers (readings-shifts-merge
+      // plan §6.7): a request card open over the garage must not keep yesterday's day.
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
       onClose();
     },
     onError: (e) => {

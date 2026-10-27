@@ -9,6 +9,7 @@ import {
   type ReportItemDto,
 } from '@technic/contracts';
 import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { isApiError } from '@shared/api';
 import { errorMessage } from '@shared/lib';
 import { ViewModal } from '@shared/ui';
@@ -90,6 +91,9 @@ export function IntakeReportModal({
       message.success('День принят');
       // Корень слайса (Р19): принятый день меняет и реестр, и сводку парка, и журнал машины.
       void qc.invalidateQueries({ queryKey: vehicleReadingKeys.root });
+      // The request shift table shows the report state of its driver days (readings-shifts-merge
+      // plan §6.7): a request card open over the garage must not keep yesterday's day.
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     },
     onError: (e) => {
       if (isApiError(e) && e.status === 409) {
@@ -129,12 +133,7 @@ export function IntakeReportModal({
       }
     >
       {isError ? (
-        <Alert
-          type="error"
-          showIcon
-          title="Отчёт не открылся"
-          description={errorMessage(error)}
-        />
+        <Alert type="error" showIcon title="Отчёт не открылся" description={errorMessage(error)} />
       ) : !report ? (
         <Skeleton active paragraph={{ rows: 6 }} />
       ) : (

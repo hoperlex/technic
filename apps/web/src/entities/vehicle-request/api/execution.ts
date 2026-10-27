@@ -1,4 +1,5 @@
 import type {
+  ApproveVehicleRequestShiftInput,
   CreateRequestRelocationBody,
   DayBatchApplyBody,
   IssueRequestEsm2Body,
@@ -109,11 +110,14 @@ export const vehicleRequestExecution = {
     apiFetch<VehicleRequestShiftsDto>(`/vehicle-requests/${id}/shifts/${date}`, {
       method: 'DELETE',
     }),
-  /** Подпись объекта под днём работы и её снятие — одним маршрутом, как виза заявки. */
-  approveShift: (id: string, date: string, approved: boolean) =>
+  /**
+   * The object's sign-off of a work day and its revocation — one route, like the request approval.
+   * On a driver day the body names the driver numbers the person saw (`expectedDriverFingerprint`).
+   */
+  approveShift: (id: string, date: string, body: ApproveVehicleRequestShiftInput) =>
     apiFetch<VehicleRequestShiftsDto>(`/vehicle-requests/${id}/shifts/${date}/approval`, {
       method: 'POST',
-      body: { approved },
+      body,
     }),
   /**
    * Дни линейного заказа (ADR 0100): дни срока целиком — с рейсом дня, его машиной, водителем,

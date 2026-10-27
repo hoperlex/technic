@@ -2,10 +2,11 @@ import { Space, Spin, Table, Tag, Typography, type TableColumnType } from 'antd'
 import { useQuery } from '@tanstack/react-query';
 import {
   approvedMachineHours,
+  isShiftFilled,
   type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
-import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
+import { ShiftDriverNote, vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { formatDateOnly, formatDateTime } from '@shared/lib';
 import { UserAvatar } from '@shared/ui';
 
@@ -22,11 +23,16 @@ const columns: TableColumnType<VehicleRequestShiftDto>[] = [
   {
     key: 'machineHours',
     title: 'Моточасы',
-    width: 110,
+    width: 150,
     // An unfilled day and an idle day read differently: the first has no hours at all, the second
-    // has an honest zero with an explanation next to it.
-    render: (_value, shift) =>
-      shift.filledAt ? workedAmountLabel('hours', shift.machineHours) : dash,
+    // has an honest zero with an explanation next to it. The driver's side of the day — the mark,
+    // a non-clean sum or a later difference under a signature — goes right under the hours.
+    render: (_value, shift) => (
+      <div style={{ lineHeight: 1.35 }}>
+        <div>{isShiftFilled(shift) ? workedAmountLabel('hours', shift.machineHours) : dash}</div>
+        <ShiftDriverNote shift={shift} />
+      </div>
+    ),
   },
   { key: 'refuel', title: 'Заправка', width: 150, render: (_value, shift) => shift.refuel || dash },
   {
@@ -53,8 +59,8 @@ const columns: TableColumnType<VehicleRequestShiftDto>[] = [
           </div>
         </div>
       ) : (
-        <Tag color={shift.filledAt ? 'orange' : 'default'} style={{ marginInlineEnd: 0 }}>
-          {shift.filledAt ? 'ждёт согласования' : 'не заполнена'}
+        <Tag color={isShiftFilled(shift) ? 'orange' : 'default'} style={{ marginInlineEnd: 0 }}>
+          {isShiftFilled(shift) ? 'ждёт согласования' : 'не заполнена'}
         </Tag>
       ),
   },

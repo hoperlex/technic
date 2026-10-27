@@ -3,6 +3,7 @@ import { CheckOutlined } from '@ant-design/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { REPORT_ACCEPT_BATCH_LIMIT, type ReadingIntakeReport } from '@technic/contracts';
 import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
+import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { errorMessage } from '@shared/lib';
 import { useAuth } from '@entities/session';
 
@@ -92,6 +93,9 @@ export function IntakeAcceptButton({ reports }: { reports: readonly ReadingIntak
        * статистика, открытая рядом, показывала бы вчерашнее до перезагрузки страницы.
        */
       void qc.invalidateQueries({ queryKey: vehicleReadingKeys.root });
+      // The request shift table shows the report state of its driver days (readings-shifts-merge
+      // plan §6.7): a request card open over the garage must not keep yesterday's day.
+      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
