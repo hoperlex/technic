@@ -456,9 +456,9 @@ No migration.
   `routeTimeByRequest`. The live `vehicle_route_point_trips` supply the snapshot when times are
   submitted, never historical allocation after a route rebuild.
 - **Completion prefill (D7).** The closing window of a freight request proposes unit "hours" and that
-  sum, rounded to two decimals (Q7); the dispatcher may change it. No times, an unfinished `v3`
-  reading, an incomplete legacy reading, a `no_data` reading or an unresolved allocation — no
-  prefill, and the window says why.
+  sum, rounded up to a whole hour after the per-request sum (D12: 2 h 10 min → 3 h); the dispatcher
+  may change it. No times, an unfinished `v3` reading, an incomplete legacy reading, a `no_data`
+  reading or an unresolved allocation — no prefill, and the window says why.
 
 ## 9. Stage 4 — remaining readers (open)
 
@@ -515,6 +515,13 @@ because it changes who can read reading-derived data: an access change is never 
   departure (route); any submit carries the start time or the first arrival. No new column, flag or
   acceptance gate; a morning-only interim reading still lacks engine hours and is therefore already
   non-clean for §6.2. The `draft_format` gate of §7.3 is needed either way.
+- **Q10.** A linear special-equipment day that shares a route with freight requests takes the whole
+  route's interval as its shift time and the route item's engine hours as its hours, as stages 1
+  and 3 do today (arrival at stop 1 to departure from the last stop). The freight requests of the
+  same route get their D6 shares of that time (§8), so the vehicle's hours on such a route are
+  counted once for the special-equipment day and again, in part, for the freight. Should such a
+  route's time be split between the special-equipment day and the freight requests instead — the
+  day taking only its D6 share of its own stops? No code change until the owner answers.
 
 ## 13. Out of scope
 
