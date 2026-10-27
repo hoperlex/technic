@@ -791,7 +791,12 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
     });
   });
 
-  it('простой без причины — 422, с комментарием водителя подписывается', async () => {
+  /**
+   * An idle day's reason is the site's own word. The driver's reading comment is diagnostics behind
+   * `vehicleReadings.read` (D10): the signer may not hold that right, and the row's comment goes to
+   * every reader of the request and into its history.
+   */
+  it('простой без причины — 422, комментарий водителя не становится причиной площадки', async () => {
     const silent = await esm2Case('Молчаливый');
     await submitDay(silent.person.id, silent.day, values({ engineHours: 1000 }));
     const idle = await dayOf(silent.requestId, silent.day);
@@ -816,17 +821,53 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
     const rainy = await esm2Case('Дождливый');
     await submitDay(rainy.person.id, rainy.day, values({ engineHours: 1000, comment: 'дождь' }));
     const rain = await dayOf(rainy.requestId, rainy.day);
+    const rainFingerprint = rain.driverDay!.fingerprint;
+    // The driver's word does not stand in for the site's: both doors still ask for one.
     await expectStatus(
       approve(rainy.requestId, rainy.day, {
         approved: true,
-        expectedDriverFingerprint: rain.driverDay!.fingerprint,
+        expectedDriverFingerprint: rainFingerprint,
+      }),
+      422,
+    );
+    await expectStatus(
+      save(rainy.requestId, rainy.day, {
+        machineHours: 0,
+        comment: '',
+        expectedDriverFingerprint: rainFingerprint,
+      }),
+      422,
+    );
+    expect(await rowOf(rainy.requestId, rainy.day)).toBeNull();
+
+    // The site types its reason, saves and signs.
+    await expectStatus(
+      save(rainy.requestId, rainy.day, {
+        machineHours: 0,
+        comment: 'стояли — не было фронта работ',
+        expectedDriverFingerprint: rainFingerprint,
+      }),
+      200,
+    );
+    await expectStatus(
+      approve(rainy.requestId, rainy.day, {
+        approved: true,
+        expectedDriverFingerprint: rainFingerprint,
       }),
       200,
     );
     expect(await rowOf(rainy.requestId, rainy.day)).toMatchObject({
       machine_hours: '0.00',
-      comment: 'дождь',
+      comment: 'стояли — не было фронта работ',
       approved: true,
     });
+    // Neither the shift row an observer reads nor the request history carries the reading text.
+    const seen = await dayOf(rainy.requestId, rainy.day, ctx.observer);
+    expect(seen.driver).toBeUndefined();
+    expect(JSON.stringify(seen)).not.toContain('дождь');
+    const audit = await ctx.db.execute<{ metadata: unknown }>(sql`
+      SELECT metadata FROM audit_log WHERE entity_id = ${rainy.requestId}`);
+    expect(audit.rows.length).toBeGreaterThan(0);
+    expect(JSON.stringify(audit.rows)).not.toContain('дождь');
   });
 });

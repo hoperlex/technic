@@ -200,7 +200,8 @@ describe('день водителя', () => {
       comment: 'работали без обеда',
       discrepancies: [{ kind: 'driver', resolved: false }],
     });
-    // The idle-reason fallback of the doors reads the driver's first comment.
-    expect(day.comment).toBe('работали без обеда');
+    // The comment lives in the diagnostics only: the day carries no reading text the doors could
+    // copy into the public shift row (D10).
+    expect(day).not.toHaveProperty('comment');
   });
 });

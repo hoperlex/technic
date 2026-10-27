@@ -306,13 +306,14 @@ export function assertDriverHandshake(
 
 /**
  * The reason of an idle driver day (zero hours; the database `CHECK` and the save schema hold the
- * same pair): the site's comment, else the driver's reading comment, else a 422 asking the site
- * for one. A day with hours keeps the site's comment as it is.
+ * same pair) is the site's own comment, else a 422 asking the site for one. Never the driver's
+ * reading comment: it is diagnostics behind `vehicleReadings.read` (D10, access-model §9.3), the
+ * signer may not hold that right and would publish a text it was never shown — the row's comment
+ * goes to every reader of the request, the lessor included, and into the request history.
  */
 export function driverDayComment(day: DriverShiftDay, siteComment: string, date: string): string {
   const comment = siteComment.trim();
   if (day.machineHours !== 0 || comment) return comment;
-  if (day.comment) return day.comment;
   throw err.unprocessable(
     `Смена за ${dateKeyRu(date)}: по показаниям водителя машина не работала — ${SHIFT_IDLE_COMMENT_MESSAGE.toLowerCase()}`,
     { comment: SHIFT_IDLE_COMMENT_MESSAGE },

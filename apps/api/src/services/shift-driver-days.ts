@@ -83,11 +83,6 @@ export interface DriverShiftDay extends ShiftDriverDayDto {
   date: string;
   issues: DriverDayIssue[];
   readings: DriverShiftReading[];
-  /**
-   * The driver's own word about the day — the first non-empty reading comment. An idle (zero-hour)
-   * day signed from the readings takes it as its reason when the site wrote none (§6.5).
-   */
-  comment: string;
 }
 
 /**
@@ -200,7 +195,6 @@ export function driverShiftDayOf(
     timeIssue: time.issue,
     issues: [...issues],
     readings: [...readings],
-    comment: readings.map((r) => r.comment.trim()).find((c) => c !== '') ?? '',
   };
 }
 

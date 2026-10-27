@@ -243,8 +243,10 @@ text that was accepted.
 - **Approval door** (`POST /:id/shifts/:date/approval`, approve): under the same locks, when the day
   is `driver`, compare the expected fingerprint with a freshly loaded candidate, upsert the row
   from server-computed numbers (keeping the row's time and comment), then sign. Zero hours need a
-  comment (the existing CHECK and rule): the row's comment, else the driver's reading comment,
-  else 422 asking for one. A day that is neither a row nor clean keeps the old 422. The signature
+  comment (the existing CHECK and rule): the row's comment, else 422 asking for one. Not the
+  driver's reading comment — D10 made it diagnostics behind `vehicleReadings.read`, and the row's
+  comment reaches every reader of the request and its history (review of 27.10, after D10). A day
+  that is neither a row nor clean keeps the old 422. The signature
   records the numbers read in this transaction; a later reading edit is a visible difference. Do
   not promise that readings cannot change immediately after signing. Revoking is unchanged.
 - **Save door**: on a clean `driver` day, require the candidate fingerprint and write the current

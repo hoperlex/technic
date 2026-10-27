@@ -386,9 +386,11 @@ stage 3 (section «Driver times on a request day» below).
   report state, so a dispatcher accepting the report between load and click is not a conflict). A
   missing or stale fingerprint on a driver day, or any fingerprint on another day, is a 409 with a
   reload. The portal sends the key only on a driver day: the bodies are strict, and an older server
-  never reports a source. An idle driver day takes the site's comment, else the driver's reading
-  comment, else a 422 asking for one. DELETE addresses only the site's row: a driver-only day
-  answers 404. Revoking a sign-off is unchanged.
+  never reports a source. An idle driver day takes the site's own comment, else a 422 asking for
+  one — never the driver's reading comment: it is diagnostics behind `vehicleReadings.read` (D10),
+  the signer may not hold that right, and the row's comment goes to every reader of the request
+  and into its history. DELETE addresses only the site's row: a driver-only day answers 404.
+  Revoking a sign-off is unchanged.
 - **Who sees what (D10, [access-model.md](../access-model.md) §9.3).** Everyone who reads the
   request sees the day's effective numbers and the «по водителю» mark — the site signs them. Driver
   names, the reading comment, the `no_data` reason, report states and discrepancy kinds come in the

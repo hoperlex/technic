@@ -597,8 +597,8 @@ export const saveVehicleRequestShiftSchema = z
         message: 'Укажите начало и конец смены',
       });
     }
-    // On a driver day the hours are the server's, and an idle day may take the driver's reading
-    // comment as its reason — the door decides, by the same rule as the sign-off.
+    // On a driver day the hours are the server's, so the body's zero proves nothing: the door
+    // applies the same rule to the server's hours, as the sign-off does.
     if (v.machineHours === 0 && !v.comment && !v.expectedDriverFingerprint) {
       ctx.addIssue({ code: 'custom', path: ['comment'], message: SHIFT_IDLE_COMMENT_MESSAGE });
     }
