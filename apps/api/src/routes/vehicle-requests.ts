@@ -278,11 +278,14 @@ import {
   shiftChange,
 } from '../services/vehicle-request-diff';
 import {
+  assertDriverHandshake,
   deleteRequestShift,
+  driverShiftInput,
   dropRequestShifts,
   hasUnapprovedPastShiftsSql,
-  loadRequestShift,
   loadRequestShifts,
+  loadShiftDoorState,
+  loadShiftRow,
   saveRequestShift,
   setShiftApproval,
   shiftSummaries,
@@ -1796,12 +1799,18 @@ async function daysResponse(request: LinearRequestState): Promise<VehicleRequest
   };
 }
 
-/** Ответ маршрутов смены: таблица целиком и день среза — тем же составом, что отдаёт чтение. */
+/**
+ * The answer of the shift routes: the whole table and the day of the cut — the same composition
+ * the read gives, with the driver diagnostics only for `vehicleReadings.read` (D10).
+ */
 async function shiftsResponse(
-  request: SpecialEquipmentRequestDto,
+  p: Principal,
+  request: Pick<SpecialEquipmentRequestDto, 'id' | 'dateFrom' | 'dateTo'>,
 ): Promise<VehicleRequestShiftsDto> {
   return {
-    items: await loadRequestShifts(request.id, request),
+    items: await loadRequestShifts(request.id, request, db, {
+      diagnostics: can(p, 'vehicleReadings.read'),
+    }),
     onDate: moscowDateKeyOf(new Date()),
   };
 }
@@ -8400,16 +8409,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     assertArchiveVisible(p, request.deletedAt, 'Заявка не найдена');
     assertRequestScope(p, request);
     assertLessorScope(p, request.assignment?.lessorId ?? null);
-    const onDate = moscowDateKeyOf(new Date());
     // У грузоперевозки смен нет вовсе: у неё не период работ, а момент подачи. Пустая таблица, а
     // не 422 — карточка спрашивает смены у любой заявки, и отказ ей пришлось бы обходить.
     if (request.requestType !== 'special_equipment') {
-      return { items: [], onDate } satisfies VehicleRequestShiftsDto;
+      return { items: [], onDate: moscowDateKeyOf(new Date()) } satisfies VehicleRequestShiftsDto;
     }
-    return {
-      items: await loadRequestShifts(request.id, request),
-      onDate,
-    } satisfies VehicleRequestShiftsDto;
+    // Everyone who reads the request reads the day's effective numbers and the driver mark — the
+    // site signs them; the diagnostics behind them stay with `vehicleReadings.read` (D10).
+    return await shiftsResponse(p, request);
   });
 
   /**
@@ -8445,18 +8452,32 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // работает при откате и закрывается только на cutover.
         await requireOpenDoor(tx, 'history_free');
         await lockRequestRow(tx, request.id);
-        const before = await loadRequestShift(request.id, date, request, tx);
+        const state = await loadShiftDoorState(tx, request.id, date);
         // Принятый день не переписывается: иначе часы менялись бы под уже поставленной подписью.
         // Снять подпись может тот же круг, кто её ставил, — и это отдельное, видимое действие.
-        if (before?.approvedAt) {
+        if (state.row?.approvedAt) {
           throw err.unprocessable(
             `Смена за ${dateKeyRu(date)} согласована — сначала снимите согласование`,
           );
         }
-        await saveRequestShift(tx, { requestId: request.id, date, actorId: p.id, input: req.body });
+        // On a clean driver day the numbers are the server's, never the body's: a stale site's
+        // hours must not come back after a driver report is voided or rebased (plan §6.5).
+        const input =
+          assertDriverHandshake(state, req.body.expectedDriverFingerprint, date) === 'driver'
+            ? driverShiftInput(
+                state.driverDay!,
+                {
+                  startedAt: req.body.startedAt ?? null,
+                  endedAt: req.body.endedAt ?? null,
+                  comment: req.body.comment,
+                },
+                date,
+              )
+            : req.body;
+        await saveRequestShift(tx, { requestId: request.id, date, actorId: p.id, input });
         await markAssignmentHistoryDirty(tx, request.id);
       });
-      return await shiftsResponse(request);
+      return await shiftsResponse(p, request);
     },
   );
 
@@ -8473,7 +8494,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     await db.transaction(async (tx) => {
       await requireOpenDoor(tx, 'history_free');
       await lockRequestRow(tx, request.id);
-      const before = await loadRequestShift(request.id, date, request, tx);
+      // The site's physical row only: a day filled by the driver alone has nothing to delete, and
+      // its readings are corrected in the garage.
+      const before = await loadShiftRow(tx, request.id, date);
       if (!before) throw err.notFound('Смена не найдена');
       if (before.approvedAt) {
         throw err.unprocessable(
@@ -8483,7 +8506,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       await deleteRequestShift(tx, request.id, date);
       await markAssignmentHistoryDirty(tx, request.id);
     });
-    return await shiftsResponse(request);
+    return await shiftsResponse(p, request);
   });
 
   /**
@@ -8509,30 +8532,53 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const { date } = req.params;
-      const { approved } = req.body;
+      const { approved, expectedDriverFingerprint } = req.body;
       const request = await requireShiftEditableRequest(p, req.params.id, date);
       // Право на маршруте общее, а подтверждает заказчик этой заявки — как виза руководителя
       // строительства проверяется по объекту, а не по одному лишь праву.
       assertShiftApprover(p, request);
 
-      /** Смена после правки; `null` — правки не было: подпись уже стояла (или уже была снята). */
+      /** The shift after the change; `null` — no change: already signed (or already revoked). */
       const after = await db.transaction(async (tx) => {
         await requireOpenDoor(tx, 'history_free');
         await lockRequestRow(tx, request.id);
-        const before = await loadRequestShift(request.id, date, request, tx);
-        // Подтверждают внесённые часы, а не пустой день: подпись под ненаписанным ничего не значит.
-        if (!before) {
-          throw err.unprocessable(
-            `Смена за ${dateKeyRu(date)} не заполнена — подтверждать нечего`,
-            {
-              machineHours: 'Заполните смену',
-            },
-          );
+        const state = await loadShiftDoorState(tx, request.id, date);
+        const { row } = state;
+        // A sign-off stands under entered hours, not under an empty day: a signature under
+        // nothing means nothing. A non-clean driver day is refused too — the site saves its form
+        // consciously first (D3). A driver-only day has no row whose sign-off could be revoked.
+        const notFilled = () =>
+          err.unprocessable(`Смена за ${dateKeyRu(date)} не заполнена — подтверждать нечего`, {
+            machineHours: 'Заполните смену',
+          });
+        if (!approved && !row) throw notFilled();
+        if (!!row?.approvedAt === approved) return null;
+        // One click on a driver day (D1): the row is written from the numbers computed in this
+        // very transaction, keeping the site's time and comment, and signed right after — a
+        // signature always stands under a row, so a later reading edit is a visible difference.
+        const fromDriver =
+          approved && assertDriverHandshake(state, expectedDriverFingerprint, date) === 'driver';
+        if (fromDriver) {
+          await saveRequestShift(tx, {
+            requestId: request.id,
+            date,
+            actorId: p.id,
+            input: driverShiftInput(
+              state.driverDay!,
+              {
+                startedAt: row?.startedAt ?? null,
+                endedAt: row?.endedAt ?? null,
+                comment: row?.comment ?? '',
+              },
+              date,
+            ),
+          });
+        } else if (!row) {
+          throw notFilled();
         }
-        if (!!before.approvedAt === approved) return null;
         await setShiftApproval(tx, { requestId: request.id, date, approved, actorId: p.id });
         await markAssignmentHistoryDirty(tx, request.id);
-        return (await loadRequestShift(request.id, date, request, tx))!;
+        return { shift: (await loadShiftRow(tx, request.id, date))!, fromDriver };
       });
       // Событие пишется только за состоявшуюся правку — как и прежде: повторное нажатие той же
       // кнопки журнал не пополняет.
@@ -8542,10 +8588,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           action: approved ? 'vehicle_request.shift_approve' : 'vehicle_request.shift_revoke',
           entityType: 'vehicle_request',
           entityId: request.id,
-          metadata: { shiftDate: date, changes: shiftChange(after) },
+          metadata: {
+            shiftDate: date,
+            changes: shiftChange(after.shift, { fromDriver: after.fromDriver }),
+          },
         });
       }
-      return await shiftsResponse(request);
+      return await shiftsResponse(p, request);
     },
   );
 

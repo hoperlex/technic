@@ -2,8 +2,10 @@ import { and, asc, eq, inArray, isNotNull, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   pastShiftDaysCount,
+  refuelLabel,
   type RequestStatus,
   type SaveVehicleRequestShiftInput,
+  SHIFT_IDLE_COMMENT_MESSAGE,
   shiftDaysOf,
   type VehicleRequestShiftDto,
   type VehicleRequestShiftsSummaryDto,
@@ -11,7 +13,15 @@ import {
 } from '@technic/contracts';
 import { db } from '../db/client';
 import { specialEquipmentRequestDetails, users, vehicleRequestShifts } from '../db/schema';
+import { err } from '../lib/errors';
+import { dateKeyRu } from './request-diff';
 import { approvalLockingReassignmentSql, shiftWithinTermSql } from './shift-approval-scope';
+import {
+  driverDayDto,
+  driverDiagnosticsDto,
+  loadDriverShiftDays,
+  type DriverShiftDay,
+} from './shift-driver-days';
 
 // Подтверждение смен по заказу спецтехники: день работы, его показатели и подпись объекта.
 // Здесь только данные — проверки прав, статусов и границ дня живут в маршруте, а правило «какой
@@ -92,6 +102,7 @@ function emptyShift(date: string): VehicleRequestShiftDto {
 export async function loadShiftRows(
   reader: Reader,
   requestId: string,
+  date?: string,
 ): Promise<Map<string, VehicleRequestShiftDto>> {
   const rows = await reader
     .select({
@@ -111,7 +122,12 @@ export async function loadShiftRows(
     .from(vehicleRequestShifts)
     .innerJoin(fillers, eq(vehicleRequestShifts.filledBy, fillers.id))
     .leftJoin(shiftApprovers, eq(vehicleRequestShifts.approvedBy, shiftApprovers.id))
-    .where(eq(vehicleRequestShifts.requestId, requestId));
+    .where(
+      and(
+        eq(vehicleRequestShifts.requestId, requestId),
+        date === undefined ? undefined : eq(vehicleRequestShifts.shiftDate, date),
+      ),
+    );
   return new Map(
     rows.map((row) => [
       row.shiftDate,
@@ -133,35 +149,187 @@ export async function loadShiftRows(
   );
 }
 
+/** What a reader of the shift table may see beyond the numbers (D10). */
+export interface ShiftReadOptions {
+  /** The diagnostic `driver` block — only for a principal with `vehicleReadings.read`. */
+  diagnostics?: boolean;
+}
+
 /**
- * Shifts of a request by the days of its term: filled rows and the empty days nobody has filled
- * yet. The days come from the term, not from the table — unfilled days have no rows at all, and
- * without this the table would show only what was already written.
+ * The effective day (readings-shifts-merge plan §6.3), one rule for the shift table and the linear
+ * days table:
+ *
+ * | day                             | hours, refuelling | time, comment   | source   |
+ * | ------------------------------- | ----------------- | --------------- | -------- |
+ * | signed                          | the row (frozen)  | the row         | `site`   |
+ * | unsigned, driver clean          | driver            | the row, if any | `driver` |
+ * | unsigned, driver not clean, row | the row           | the row         | `site`   |
+ * | nothing                         | empty             | empty           | `null`   |
+ *
+ * The driver's numbers ride along on every day that has them: under a signed day they show a later
+ * reading edit as a difference instead of rewriting the signature (D4).
+ */
+export function effectiveShift(
+  date: string,
+  row: VehicleRequestShiftDto | undefined,
+  driverDay: DriverShiftDay | undefined,
+  options: ShiftReadOptions = {},
+): VehicleRequestShiftDto {
+  const extras: Pick<VehicleRequestShiftDto, 'driverDay' | 'driver'> = {
+    driverDay: driverDay ? driverDayDto(driverDay) : null,
+    ...(options.diagnostics ? { driver: driverDay ? driverDiagnosticsDto(driverDay) : null } : {}),
+  };
+  if (row?.approvedAt) return { ...row, source: 'site', ...extras };
+  if (driverDay?.clean && driverDay.machineHours !== null) {
+    return {
+      ...(row ?? emptyShift(date)),
+      machineHours: driverDay.machineHours,
+      refuel: refuelLabel(driverDay.refuelLiters),
+      source: 'driver',
+      ...extras,
+    };
+  }
+  if (row) return { ...row, source: 'site', ...extras };
+  return { ...emptyShift(date), source: null, ...extras };
+}
+
+/** The first and last day of a term — the range the driver days are read for. */
+function termRange(days: readonly string[]): { from: string; to: string } | null {
+  return days.length === 0 ? null : { from: days[0]!, to: days[days.length - 1]! };
+}
+
+/**
+ * Shifts of a request by the days of its term: the effective day of each (§6.3), including the
+ * empty days nobody has filled yet. The days come from the term, not from the table — unfilled
+ * days have no rows at all, and without this the table would show only what was already written.
  */
 export async function loadRequestShifts(
   requestId: string,
   term: ShiftTerm,
   reader: Reader = db,
+  options: ShiftReadOptions = {},
 ): Promise<VehicleRequestShiftDto[]> {
-  const saved = await loadShiftRows(reader, requestId);
-  return shiftDaysOf(term).map((date) => saved.get(date) ?? emptyShift(date));
+  const days = shiftDaysOf(term);
+  const range = termRange(days);
+  if (!range) return [];
+  const [saved, driver] = await Promise.all([
+    loadShiftRows(reader, requestId),
+    loadDriverShiftDays(reader, requestId, range),
+  ]);
+  return days.map((date) => effectiveShift(date, saved.get(date), driver.get(date), options));
 }
 
 /**
- * One shift by its day; `null` — nothing is entered for this day.
+ * The site's physical row of one day; `null` — the site wrote nothing for it. Write doors decide
+ * by the row, never by the effective day: a driver-only day has no row to delete, and DELETE
+ * answering 404 for it is the rule (§6.5).
  *
  * Every writing shift door passes its transaction as the reader: the day is re-read **inside** it
  * and after `lockRequestRow`, otherwise the decision would rest on a state that is already wrong
  * by the time of the write (plan Р18, sub-stage 2a).
  */
-export async function loadRequestShift(
+export async function loadShiftRow(
+  reader: Reader,
   requestId: string,
   date: string,
-  term: ShiftTerm,
-  reader: Reader = db,
 ): Promise<VehicleRequestShiftDto | null> {
-  const shift = (await loadRequestShifts(requestId, term, reader)).find((s) => s.date === date);
-  return shift?.filledAt ? shift : null;
+  return (await loadShiftRows(reader, requestId, date)).get(date) ?? null;
+}
+
+/** What the save and sign-off doors decide by, read under the request lock. */
+export interface ShiftDoorState {
+  row: VehicleRequestShiftDto | null;
+  driverDay: DriverShiftDay | null;
+  /** The effective day is the driver's: unsigned and clean (§6.3). */
+  driverDriven: boolean;
+}
+
+/**
+ * The candidate of a write door: the row and the driver day, computed by the same helper the
+ * table reads with, under the request lock the door already holds. Readings themselves are not
+ * locked: the signature records what this transaction read, and a later reading edit shows as a
+ * difference next to the signed row (§6.5).
+ */
+export async function loadShiftDoorState(
+  tx: Tx,
+  requestId: string,
+  date: string,
+): Promise<ShiftDoorState> {
+  const [row, driver] = await Promise.all([
+    loadShiftRow(tx, requestId, date),
+    loadDriverShiftDays(tx, requestId, { from: date, to: date }),
+  ]);
+  const driverDay = driver.get(date) ?? null;
+  return {
+    row,
+    driverDay,
+    driverDriven: !row?.approvedAt && !!driverDay?.clean && driverDay.machineHours !== null,
+  };
+}
+
+/**
+ * The handshake of a write door (§6.4): on a driver day the body must name the very driver numbers
+ * the person saw, and anywhere else it must name none.
+ *
+ * Both mismatches are a 409 with a reload, not a 422. An old tab that saw a site-only row now
+ * overlaid by a clean reading sends no fingerprint — signing would put a signature under numbers
+ * nobody saw. A tab that saw a driver day sends one that no longer matches when a reading was
+ * edited, rebased, voided or moved to another request — saving would bring back numbers that are
+ * gone. In both cases refreshing the day is the whole cure.
+ */
+export function assertDriverHandshake(
+  state: ShiftDoorState,
+  expected: string | undefined,
+  date: string,
+): 'driver' | 'site' {
+  if (state.driverDriven) {
+    if (expected !== state.driverDay!.fingerprint) {
+      throw err.conflict(
+        `Показания водителя за ${dateKeyRu(date)} изменились — обновите смены и проверьте часы`,
+      );
+    }
+    return 'driver';
+  }
+  if (expected !== undefined) {
+    throw err.conflict(
+      `Смена за ${dateKeyRu(date)} больше не берётся из показаний водителя — обновите смены`,
+    );
+  }
+  return 'site';
+}
+
+/**
+ * The reason of an idle driver day (zero hours; the database `CHECK` and the save schema hold the
+ * same pair): the site's comment, else the driver's reading comment, else a 422 asking the site
+ * for one. A day with hours keeps the site's comment as it is.
+ */
+export function driverDayComment(day: DriverShiftDay, siteComment: string, date: string): string {
+  const comment = siteComment.trim();
+  if (day.machineHours !== 0 || comment) return comment;
+  if (day.comment) return day.comment;
+  throw err.unprocessable(
+    `Смена за ${dateKeyRu(date)}: по показаниям водителя машина не работала — ${SHIFT_IDLE_COMMENT_MESSAGE.toLowerCase()}`,
+    { comment: SHIFT_IDLE_COMMENT_MESSAGE },
+  );
+}
+
+/**
+ * The row a driver day is written as: the server-computed hours and refuelling, the site's time and
+ * comment. Neither door takes the numbers from the body — a stale tab could otherwise bring back
+ * numbers of a report voided or rebased meanwhile.
+ */
+export function driverShiftInput(
+  day: DriverShiftDay,
+  site: { startedAt: string | null; endedAt: string | null; comment: string },
+  date: string,
+): SaveVehicleRequestShiftInput {
+  return {
+    startedAt: site.startedAt,
+    endedAt: site.endedAt,
+    machineHours: day.machineHours!,
+    refuel: refuelLabel(day.refuelLiters),
+    comment: driverDayComment(day, site.comment, date),
+  };
 }
 
 /**

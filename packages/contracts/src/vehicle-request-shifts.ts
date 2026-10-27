@@ -7,6 +7,8 @@ import {
   TIME_FORMAT_MESSAGE,
   TIME_PATTERN,
 } from './time';
+import type { ReadingSourceKind } from './driver-cabinet';
+import type { DiscrepancyKind, DriverReportState, ReadingKind } from './vehicle-readings';
 import type { VehicleOwnership } from './vehicles';
 
 // ── Подтверждение смен по заказу спецтехники ──
@@ -61,6 +63,92 @@ export interface VehicleRequestShiftsSummaryDto {
   unapprovedPastDays: number;
 }
 
+/**
+ * Where a day's hours and refuelling come from (readings-shifts-merge plan, D1 and §6.3): `site` —
+ * the site's own row, always so for a signed day; `driver` — the driver's clean readings of an
+ * unsigned day, which replace the site's unsigned numbers (D4).
+ */
+export const SHIFT_SOURCES = ['site', 'driver'] as const;
+export type ShiftSource = (typeof SHIFT_SOURCES)[number];
+
+/**
+ * Why the driver's numbers of a day cannot be signed in one click (plan §6.2, D3). The day still
+ * shows the sum it has; the site saves the form consciously before signing.
+ */
+export const DRIVER_DAY_ISSUES = [
+  'no_data',
+  'first_snapshot',
+  'missing_engine_hours',
+  'counter_reset',
+  'gap',
+  'discrepancy',
+  'out_of_range',
+] as const;
+export type DriverDayIssue = (typeof DRIVER_DAY_ISSUES)[number];
+
+export const driverDayIssueLabels: Record<DriverDayIssue, string> = {
+  no_data: 'показание без чисел',
+  first_snapshot: 'первое показание машины — не с чем сравнить',
+  missing_engine_hours: 'моточасы не указаны',
+  counter_reset: 'счётчик моточасов сброшен',
+  gap: 'предыдущее показание раньше вчерашнего дня',
+  discrepancy: 'расхождение с источником не разобрано',
+  out_of_range: `сумма за день вне 0–${MAX_MACHINE_HOURS} ч`,
+};
+
+/**
+ * The driver's numbers of a request day, read from the submitted readings of the day (plan §6.1,
+ * §6.2). Everyone who reads the request sees them (D10): the site signs these numbers.
+ */
+export interface ShiftDriverDayDto {
+  /** Sum of the engine-hour deltas the day has; `null` — no reading of the day has hours. */
+  machineHours: number | null;
+  /**
+   * Sum of the refilled liters; an empty refill counts as "not refuelled", as the garage reads it
+   * (`readings-aggregate.ts`). `null` — the day has no reading with numbers at all.
+   */
+  refuelLiters: number | null;
+  /** Signable in one click: every reading has hours from a snapshot of this or the previous day. */
+  clean: boolean;
+  /** The oldest predecessor snapshot when it is older than the previous day: «23 ч с 14.08». */
+  since: string | null;
+  /**
+   * What the person signs or saves (§6.4): the readings with their versions, their predecessors,
+   * their sources and the computed numbers — not the report state, so a dispatcher accepting the
+   * report between load and click changes nothing. Sent back as `expectedDriverFingerprint`.
+   */
+  fingerprint: string;
+}
+
+/** One reading of the day as a principal with `vehicleReadings.read` sees it (D10). */
+export interface ShiftDriverReadingDto {
+  readingId: string;
+  personName: string;
+  reportState: DriverReportState;
+  sourceKind: ReadingSourceKind;
+  /** «ЭСМ-2 № 0012» or «Р-12». */
+  sourceLabel: string;
+  kind: ReadingKind;
+  machineHours: number | null;
+  refuelLiters: number | null;
+  /** Day of the engine-hour predecessor; `null` — the first snapshot of the vehicle. */
+  previousDate: string | null;
+  noDataReason: string;
+  comment: string;
+  discrepancies: { kind: DiscrepancyKind; resolved: boolean }[];
+}
+
+/**
+ * The diagnostics of a driver day: names, comments, report states and discrepancy kinds. Readings
+ * live behind `vehicleReadings.read`, so the server fills this block only for that right; the
+ * site, the requester and a lessor see the numbers and the mark without it (D10,
+ * docs/access-model.md).
+ */
+export interface ShiftDriverDiagnosticsDto {
+  readings: ShiftDriverReadingDto[];
+  issues: DriverDayIssue[];
+}
+
 /** Смена одного дня. Пустая (`filledAt === null`) — день заказа, за который ещё ничего не внесли. */
 export interface VehicleRequestShiftDto {
   date: string;
@@ -73,11 +161,24 @@ export interface VehicleRequestShiftDto {
   comment: string;
   filledBy: string | null;
   filledByName: string | null;
+  /** When the site's row was written; `null` — the site wrote nothing for this day. */
   filledAt: string | null;
   /** Подпись объекта: кто и когда подтвердил этот день. `null` — день ещё не согласован. */
   approvedBy: string | null;
   approvedByName: string | null;
   approvedAt: string | null;
+  /**
+   * The effective source of the hours and refuelling above (§6.3); `null` — nothing. Optional: a
+   * server older than the merge does not send it, and `shiftSourceOf` falls back to `filledAt`.
+   */
+  source?: ShiftSource | null;
+  /**
+   * The driver's numbers of the day, clean or not; `null` — no submitted reading for this day. On a
+   * signed day they stay next to the signed numbers, so a later reading edit shows as a difference.
+   */
+  driverDay?: ShiftDriverDayDto | null;
+  /** Diagnostics, filled only for a principal with `vehicleReadings.read`. */
+  driver?: ShiftDriverDiagnosticsDto | null;
 }
 
 /** Таблица смен заявки: дни заказа целиком, включая пустые, и день, по которому считался срез. */
@@ -358,6 +459,33 @@ export function shiftSpanHours(startedAt: string | null, endedAt: string | null)
   return Math.round((minutes / 60) * 100) / 100;
 }
 
+/**
+ * The effective source of a day: the server's answer, or — from a server older than the merge,
+ * which never sends `source` — the old meaning "the site wrote a row". One place, so the approve
+ * checkbox, the "not filled" tag and the window's form never read `filledAt` on their own.
+ */
+export function shiftSourceOf(
+  shift: Pick<VehicleRequestShiftDto, 'source' | 'filledAt'>,
+): ShiftSource | null {
+  if (shift.source !== undefined) return shift.source;
+  return shift.filledAt ? 'site' : null;
+}
+
+/** A day has numbers to sign: the site's row or the driver's clean readings. */
+export function isShiftFilled(shift: Pick<VehicleRequestShiftDto, 'source' | 'filledAt'>): boolean {
+  return shiftSourceOf(shift) !== null;
+}
+
+/**
+ * The one way a driver's liters become the refuel text of a day (§6.3): «120 л» for a positive
+ * sum and an empty text for nothing refilled — the same "not refuelled" the site writes as an
+ * empty field.
+ */
+export function refuelLabel(liters: number | null | undefined): string {
+  if (liters == null || !(liters > 0)) return '';
+  return `${liters.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} л`;
+}
+
 /** Итог подтверждённых машиночасов — им подставляется факт выполнения при закрытии (ADR 0029). */
 export function approvedMachineHours(shifts: VehicleRequestShiftDto[]): number {
   const total = shifts.reduce((sum, s) => (s.approvedAt ? sum + s.machineHours : sum), 0);
@@ -391,12 +519,23 @@ export const machineHoursSchema = z
 export const SHIFT_IDLE_COMMENT_MESSAGE = 'Опишите, почему техника не работала';
 
 /**
- * Смена одного дня. Дата в теле не передаётся: день — часть адреса (`/shifts/:date`), и второй
- * ответ на «за какой это день» расходился бы с первым.
+ * The driver numbers a person saw, echoed back (`ShiftDriverDayDto.fingerprint`). Sent only on a
+ * `driver` day: a server older than the merge rejects an unknown key of these strict bodies with
+ * 400, and it never reports `source`, so a portal falling back to `site` never sends it.
+ */
+export const driverFingerprintSchema = z.string().trim().min(1).max(200);
+
+/**
+ * The shift of one day. The date is not in the body: the day is part of the address
+ * (`/shifts/:date`), and a second answer to "which day is this" would drift from the first.
  *
- * Нулевые машиночасы требуют комментария: простой, дождь, не открыли фронт работ — это часть
- * учёта, а не пропуск в нём, и за такой день с арендодателем разговаривают отдельно. Ту же пару
- * держит `CHECK` в базе.
+ * Zero machine-hours need a comment: idle time, rain, no work front — that is part of the record,
+ * not a gap in it, and such a day is discussed with the lessor separately. The database `CHECK`
+ * holds the same pair.
+ *
+ * On a clean driver day the door writes the server-computed hours and refuelling and takes only the
+ * time and the comment from the body (plan §6.5); `expectedDriverFingerprint` proves the person saw
+ * those numbers.
  */
 export const saveVehicleRequestShiftSchema = z
   .object({
@@ -405,10 +544,11 @@ export const saveVehicleRequestShiftSchema = z
     machineHours: machineHoursSchema,
     refuel: z.string().trim().max(200).optional().default(''),
     comment: z.string().trim().max(2000).optional().default(''),
+    expectedDriverFingerprint: driverFingerprintSchema.optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
-    // Половина смены не описывает ничего: «с 08:00» без конца — это не время работы.
+    // Half a shift describes nothing: «from 08:00» without an end is not a working time.
     if ((v.startedAt == null) !== (v.endedAt == null)) {
       ctx.addIssue({
         code: 'custom',
@@ -416,7 +556,9 @@ export const saveVehicleRequestShiftSchema = z
         message: 'Укажите начало и конец смены',
       });
     }
-    if (v.machineHours === 0 && !v.comment) {
+    // On a driver day the hours are the server's, and an idle day may take the driver's reading
+    // comment as its reason — the door decides, by the same rule as the sign-off.
+    if (v.machineHours === 0 && !v.comment && !v.expectedDriverFingerprint) {
       ctx.addIssue({ code: 'custom', path: ['comment'], message: SHIFT_IDLE_COMMENT_MESSAGE });
     }
   });
@@ -424,8 +566,13 @@ export type SaveVehicleRequestShiftInput = z.infer<typeof saveVehicleRequestShif
 export type SaveVehicleRequestShiftBody = z.input<typeof saveVehicleRequestShiftSchema>;
 
 /**
- * Согласование смены и его снятие — одним телом, как виза заявки (ADR 0025 п. 6): у них одно
- * право, одна область и один инвариант; раздельные маршруты разошлись бы в проверках.
+ * The sign-off of a day and its revocation — one body, like the request approval (ADR 0025 item 6):
+ * one right, one scope and one invariant; separate routes would drift in their checks.
+ *
+ * Signing a `driver` day writes its row from the server-computed numbers in the same transaction
+ * (plan D1); `expectedDriverFingerprint` names the numbers the person saw, and a stale one is a 409.
  */
-export const approveVehicleRequestShiftSchema = z.object({ approved: z.boolean() }).strict();
+export const approveVehicleRequestShiftSchema = z
+  .object({ approved: z.boolean(), expectedDriverFingerprint: driverFingerprintSchema.optional() })
+  .strict();
 export type ApproveVehicleRequestShiftInput = z.infer<typeof approveVehicleRequestShiftSchema>;

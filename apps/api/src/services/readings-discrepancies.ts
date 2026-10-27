@@ -211,6 +211,12 @@ export type FoundDiscrepancy = Omit<
   targetRef: TargetRef | null;
 };
 
+/** What the rule reads of an item: its snapshot of the source, vehicle and day. */
+export type DiscrepancyItem = Pick<
+  DriverDailyReportItemRow,
+  'id' | 'sourceKind' | 'routeId' | 'waybillId' | 'vehicleId' | 'reportDate'
+>;
+
 /**
  * Every discrepancy of one report: the items against their live sources (`driver`, `vehicle`,
  * `date`, `source_state`) and the day's sources missing from it (`missing_source`). Pure: the live
@@ -221,7 +227,7 @@ export type FoundDiscrepancy = Omit<
  */
 export function findDiscrepancies(
   report: { personId: string },
-  items: readonly DriverDailyReportItemRow[],
+  items: readonly DiscrepancyItem[],
   dayRefs: readonly SourceRef[],
   live: ReadonlyMap<string, LiveSource>,
 ): FoundDiscrepancy[] {

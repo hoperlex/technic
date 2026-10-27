@@ -331,17 +331,25 @@ export function weeklyExtendChanges(
 }
 
 /**
- * Что подтвердили (или с чего сняли подпись) — день и его показатели одной строкой:
- * «12.08.2026 · 08:00–20:00 · 11,5 ч · 120 л». Событием-списком, потому что «было» здесь нет:
- * решение принимают один раз про один день, а правки самих часов события не пишут вовсе.
+ * What was signed (or had its sign-off taken back) — the day and its figures in one line:
+ * «12.08.2026 · 08:00–20:00 · 11,5 ч · 120 л». A listed change, because there is no "before" here:
+ * the decision is taken once about one day, and edits of the hours write no events at all.
+ *
+ * A day signed from the driver's readings says so («по показаниям водителя», readings-shifts-merge
+ * plan §6.5): in a dispute about hours the signature is read together with where its numbers came
+ * from.
  */
-export function shiftChange(s: VehicleRequestShiftDto): RequestChangeDto[] {
+export function shiftChange(
+  s: VehicleRequestShiftDto,
+  options: { fromDriver?: boolean } = {},
+): RequestChangeDto[] {
   const parts = [dateOnly(s.date)];
   if (s.startedAt && s.endedAt) parts.push(`${s.startedAt}–${s.endedAt}`);
   parts.push(workedAmountLabel('hours', s.machineHours));
   if (s.refuel) parts.push(s.refuel);
-  // Причина простоя — часть строки: без неё «0 ч» в истории читается как ошибка ввода.
+  // The idle reason is part of the line: without it «0 ч» in the history reads as a typing error.
   if (s.machineHours === 0 && s.comment) parts.push(s.comment);
+  if (options.fromDriver) parts.push('по показаниям водителя');
   const diff = changeSet();
   diff.listed('shift', [parts.join(' · ')]);
   return diff.changes;

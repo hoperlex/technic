@@ -10,6 +10,8 @@ import {
   type LinearDaySubject,
   type PlanVehicleRequestDayInput,
   type PlannedVehicleRequestDay,
+  shiftDaysOf,
+  shiftSourceOf,
   type VehicleRequestDayDto,
   type VehicleOwnership,
   vehicleStatusLabels,
@@ -37,7 +39,8 @@ import {
   type RouteRow,
   routeWaybill,
 } from './vehicle-routes';
-import { loadShiftRows } from './vehicle-request-shifts';
+import { effectiveShift, loadShiftRows } from './vehicle-request-shifts';
+import { loadDriverShiftDays, type DriverShiftDay } from './shift-driver-days';
 
 /**
  * Дни заказа техники на объект (ADR 0100): чтение плана по дням и сверка его с самой заявкой.
@@ -323,12 +326,21 @@ export async function loadRequestDays(
   reader: Reader,
   request: LinearRequestState,
 ): Promise<VehicleRequestDayDto[]> {
-  const [rows, shifts] = await Promise.all([
+  const termDays = request.requestType === 'special_equipment' ? shiftDaysOf(request) : [];
+  const [rows, shifts, driverDays] = await Promise.all([
     plannedDayRows(reader, request.id),
     // Hours and the object's sign-off live in the shift table (ADR 0100 §12), read by its one row
     // mapper. Every row of the request, not the term's only: a planned day outside the term held
     // by an issued route keeps its row visible.
     loadShiftRows(reader, request.id),
+    // The driver's readings overlay the term's days only, by the shift table's own rule
+    // (`effectiveShift`): a day outside the term is no request day the site could sign.
+    termDays.length > 0
+      ? loadDriverShiftDays(reader, request.id, {
+          from: termDays[0]!,
+          to: termDays[termDays.length - 1]!,
+        })
+      : new Map<string, DriverShiftDay>(),
   ]);
   const waybillsByRouteId = await waybillsOfRoutes(
     reader,
@@ -353,8 +365,11 @@ export async function loadRequestDays(
   const term =
     request.requestType === 'special_equipment' ? request : { dateFrom: undefined, dateTo: null };
 
+  const inTerm = new Set(termDays);
   const planned: PlannedVehicleRequestDay[] = rows.map((row) => {
-    const shift = shifts.get(row.workDate!);
+    const date = row.workDate!;
+    const saved = shifts.get(date);
+    const shift = inTerm.has(date) ? effectiveShift(date, saved, driverDays.get(date)) : saved;
     return {
       date: row.workDate!,
       route: {
@@ -368,15 +383,17 @@ export async function loadRequestDays(
         waybill: waybillsByRouteId.get(row.routeId) ?? null,
         version: row.routeVersion,
       },
-      shift: shift
-        ? {
-            startedAt: shift.startedAt,
-            endedAt: shift.endedAt,
-            machineHours: shift.machineHours,
-            approvedAt: shift.approvedAt,
-            approvedByName: shift.approvedByName,
-          }
-        : null,
+      shift:
+        shift && shiftSourceOf(shift)
+          ? {
+              startedAt: shift.startedAt,
+              endedAt: shift.endedAt,
+              machineHours: shift.machineHours,
+              approvedAt: shift.approvedAt,
+              approvedByName: shift.approvedByName,
+              source: shiftSourceOf(shift)!,
+            }
+          : null,
       // Машина дня против машины назначения (ADR 0100 §4): расхождение помечается, а не
       // отклоняется — на разные дни выходят разные единицы.
       otherVehicle: !!request.vehicleId && row.vehicleId !== request.vehicleId,

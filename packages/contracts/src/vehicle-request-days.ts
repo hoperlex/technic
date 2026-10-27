@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { uuidSchema } from './common';
 import { requestStatusLabels, type RequestStatus, type VehicleRequestType } from './enums';
 import { WAYBILL_CORRECTION_DAYS } from './time';
-import { isShiftDayInTerm, shiftDaysOf } from './vehicle-request-shifts';
+import { isShiftDayInTerm, shiftDaysOf, type ShiftSource } from './vehicle-request-shifts';
 import {
   dayAlreadyPlannedMessage,
   routeTripFieldsSchema,
@@ -91,7 +91,13 @@ export interface VehicleRequestDayRouteDto {
 export interface VehicleRequestDayShiftDto {
   startedAt: string | null;
   endedAt: string | null;
+  /** The day's effective hours (readings-shifts-merge plan §6.3), the driver's on a driver day. */
   machineHours: number;
+  /**
+   * Where the hours come from; optional — a server older than the merge does not send it, and
+   * a day with a shift then is the site's.
+   */
+  source?: ShiftSource;
   /** Подпись объекта за этот день; `null` — день ещё не согласован. */
   approvedAt: string | null;
   approvedByName: string | null;
