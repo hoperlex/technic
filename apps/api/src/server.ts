@@ -49,6 +49,13 @@ async function main(): Promise<void> {
   // метриках. Без `await`: открытый порт не должен зависеть от доступности чужого сервиса, а
   // таймер внутри `unref()` и процесс не держит.
   startCaptchaCanary();
+  // A paused captcha is an open door on three public forms; every start says so, so the pause
+  // cannot quietly outlive the reason it was set for (ADR 0130, item 16).
+  if (config.captcha.paused) {
+    logger.warn(
+      'SmartCaptcha выключена владельцем (SMARTCAPTCHA_DISABLED=true): публичные формы без капчи',
+    );
+  }
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Плавная остановка');

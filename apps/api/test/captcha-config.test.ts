@@ -56,6 +56,7 @@ async function loadConfig(overrides: Record<string, string> = {}): Promise<AppCo
   Object.assign(process.env, BASE_ENV);
   delete process.env.SMARTCAPTCHA_CLIENT_KEY;
   delete process.env.SMARTCAPTCHA_SERVER_KEY;
+  delete process.env.SMARTCAPTCHA_DISABLED;
   delete process.env.PGSSLROOTCERT;
   Object.assign(process.env, overrides);
   const module = await import('../src/config');
@@ -70,6 +71,7 @@ afterAll(() => {
   process.env.NODE_ENV = 'test';
   delete process.env.SMARTCAPTCHA_CLIENT_KEY;
   delete process.env.SMARTCAPTCHA_SERVER_KEY;
+  delete process.env.SMARTCAPTCHA_DISABLED;
   delete process.env.PGSSLROOTCERT;
 });
 
@@ -171,5 +173,60 @@ describe('ключи SmartCaptcha в конфигурации', () => {
     expect(error?.message).toMatch(/SMARTCAPTCHA_CLIENT_KEY/);
     expect(error?.message).toMatch(/короче 25 символов/);
     expect(error?.message).toMatch(/обрезан при переносе/);
+  });
+});
+
+/**
+ * The owner's pause (ADR 0130, item 16): the keys stay in place, the captcha is off. What must hold
+ * is that the form and the check follow one switch — a hidden field with a server still demanding a
+ * token would lock all three public forms, the exact failure the pause exists to step around.
+ */
+describe('owner pause SMARTCAPTCHA_DISABLED', () => {
+  it('hides the client key and turns the check off while the keys stay', async () => {
+    const config = await loadConfig({
+      SMARTCAPTCHA_CLIENT_KEY: CLIENT_KEY,
+      SMARTCAPTCHA_SERVER_KEY: SERVER_KEY,
+      SMARTCAPTCHA_DISABLED: 'true',
+    });
+
+    expect(config.captcha.enabled).toBe(false);
+    expect(config.captcha.paused).toBe(true);
+    // The empty key is what makes `GET /auth/captcha` answer `clientKey: null`, so the portal
+    // drops the field and sends the form with an empty token.
+    expect(config.captcha.clientKey).toBe('');
+    expect(config.captcha.serverKey).toBe(SERVER_KEY);
+  });
+
+  it('pauses only on the exact `true`: anything else leaves the captcha on', async () => {
+    const config = await loadConfig({
+      SMARTCAPTCHA_CLIENT_KEY: CLIENT_KEY,
+      SMARTCAPTCHA_SERVER_KEY: SERVER_KEY,
+      SMARTCAPTCHA_DISABLED: 'yes',
+    });
+
+    expect(config.captcha.enabled).toBe(true);
+    expect(config.captcha.paused).toBe(false);
+    expect(config.captcha.clientKey).toBe(CLIENT_KEY);
+  });
+
+  /** The keys are what the captcha comes back with, so a broken pair fails while paused too. */
+  it('still refuses a mismatched pair', async () => {
+    await expect(
+      loadConfig({
+        SMARTCAPTCHA_CLIENT_KEY: `ysc1_${PAIR_TAIL}client`,
+        SMARTCAPTCHA_SERVER_KEY: `ysc2_${OTHER_TAIL}server`,
+        SMARTCAPTCHA_DISABLED: 'true',
+      }),
+    ).rejects.toThrow(/принадлежат разным капчам/);
+  });
+
+  it('does not lift the production requirement for the keys', async () => {
+    await expect(
+      loadConfig({
+        NODE_ENV: 'production',
+        PGSSLROOTCERT: EXISTING_FILE,
+        SMARTCAPTCHA_DISABLED: 'true',
+      }),
+    ).rejects.toThrow(/SMARTCAPTCHA_CLIENT_KEY и SMARTCAPTCHA_SERVER_KEY обязательны в production/);
   });
 });

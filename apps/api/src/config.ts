@@ -373,6 +373,10 @@ const rawSchema = z.object({
   // 3 секунды: проверка стоит перед регистрацией, которая и так ждёт argon2, а сорванный по
   // таймауту запрос всё равно проходит fail-open (§7) — ждать дольше не за чем.
   SMARTCAPTCHA_TIMEOUT_MS: z.coerce.number().int().positive().default(3_000),
+  // An owner's pause (ADR 0130, item 16): the captcha is off while the keys stay in prod.env, so
+  // turning it back on is deleting one line and recreating the container, not hunting for keys.
+  // Only the exact `true` pauses: a typo leaves the captcha on, the safe side for a public form.
+  SMARTCAPTCHA_DISABLED: boolFromEnv(false),
 });
 
 /**
@@ -709,15 +713,19 @@ function loadConfig() {
       attemptTtlDays: env.TICKET_OCR_ATTEMPT_TTL_DAYS,
     },
     captcha: {
-      // Пустая строка вместо `undefined` — по соглашению файла (ср. `mail.from`). Ручке
-      // `GET /auth/captcha` нужен `clientKey: string | null`, и `null` она делает из пустой строки:
-      // в контракте это единственный признак «капча выключена» (§5).
-      clientKey: captchaClientKey,
+      // An empty string rather than `undefined`, by this file's convention (cf. `mail.from`).
+      // `GET /auth/captcha` turns it into `clientKey: null`, the contract's only sign of "captcha
+      // off" (§5). A pause blanks the key here and not in the route, so the form and the check keep
+      // following one decision: the portal hides the field exactly when the server stops asking.
+      clientKey: env.SMARTCAPTCHA_DISABLED ? '' : captchaClientKey,
       serverKey: captchaServerKey,
       timeoutMs: env.SMARTCAPTCHA_TIMEOUT_MS,
-      // Включённость решает наличие серверного ключа, а не отдельный флаг: флаг можно выставить
-      // без ключа и получить проверку, которой нечем проверять.
-      enabled: !!captchaServerKey,
+      // The server key decides, not a flag: a flag that could turn the check on without a key would
+      // give a check with nothing to check by. The pause can only turn it off, so it is safe.
+      enabled: !!captchaServerKey && !env.SMARTCAPTCHA_DISABLED,
+      // Kept apart from `enabled`: "keys absent" and "owner paused it" read alike there, while the
+      // release gate refuses the first and lets the second through (`scripts/check-captcha.ts`).
+      paused: env.SMARTCAPTCHA_DISABLED,
     },
     clientGate: {
       /** Пол версии клиента; см. `MIN_CLIENT_CONTRACT` выше и `src/lib/client-contract.ts`. */

@@ -69,6 +69,7 @@ async function loadCaptcha(overrides: Record<string, string> = {}): Promise<type
   Object.assign(process.env, BASE_ENV);
   delete process.env.SMARTCAPTCHA_CLIENT_KEY;
   delete process.env.SMARTCAPTCHA_SERVER_KEY;
+  delete process.env.SMARTCAPTCHA_DISABLED;
   Object.assign(process.env, overrides);
   return import('../src/auth/captcha');
 }
@@ -134,6 +135,7 @@ afterEach(() => {
 afterAll(() => {
   delete process.env.SMARTCAPTCHA_CLIENT_KEY;
   delete process.env.SMARTCAPTCHA_SERVER_KEY;
+  delete process.env.SMARTCAPTCHA_DISABLED;
 });
 
 describe('проверка токена: капча включена, портал на https://portal.test', () => {
@@ -230,6 +232,30 @@ describe('капча выключена: серверного ключа нет'
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(captcha.captchaMetrics().invalidTokenRejected).toBe(0);
+  });
+});
+
+/**
+ * The owner's pause (ADR 0130, item 16) with the keys in place: the portal sends the form with an
+ * empty token, and the server must take it without asking the service — the server key is there,
+ * so only the pause stands between an empty token and a refusal.
+ */
+describe('owner pause: keys set, SMARTCAPTCHA_DISABLED=true', () => {
+  beforeAll(async () => {
+    captcha = await loadCaptcha({ ...ENABLED_KEYS, SMARTCAPTCHA_DISABLED: 'true' });
+  }, 60_000);
+
+  it('an empty token passes, and nothing goes to the network', async () => {
+    await expect(captcha.verifyCaptcha('')).resolves.toBeUndefined();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(captcha.captchaMetrics().checks).toEqual({ ok: 0, failed: 0, fail_open: 0 });
+  });
+
+  it('canary stays silent', async () => {
+    await captcha.runCaptchaCanary();
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

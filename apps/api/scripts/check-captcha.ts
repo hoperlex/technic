@@ -157,6 +157,21 @@ function shortStatus(status: unknown): string {
 }
 
 async function main(): Promise<void> {
+  // The owner's pause (ADR 0130, item 16) passes the gate: the forms ship without a captcha on
+  // purpose, and the gate refusing would hold every release hostage to the very service that was
+  // paused for misbehaving. It passes loudly, so a forgotten pause shows up in every deploy log.
+  if (config.captcha.paused) {
+    console.log(
+      'preflight капчи: ПРОПУЩЕН — капча выключена владельцем (SMARTCAPTCHA_DISABLED=true).',
+    );
+    console.log('  Регистрация, повторное письмо и сброс пароля работают без капчи: их держат');
+    console.log('  лимиты по адресу и honeypot. Включить обратно — убрать строку из prod.env и');
+    console.log('  пересоздать technic-api (runbook, «Turning the captcha off for a while»).');
+    // Its own marker, not `captcha ok`: nothing was checked, and the log must not say otherwise.
+    console.log('captcha paused');
+    return;
+  }
+
   // Незаданные ключи для гейта — отказ, а не «нечего проверять». В production они обязательны
   // (§8): без них API просто не стартует, и релиз, дошедший сюда без ключей, — это релиз, который
   // всё равно не поднимется. Молчаливое «ок, пропускаем» на этом месте означало бы гейт, который
