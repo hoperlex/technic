@@ -1,14 +1,10 @@
 import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
 import {
   DRIVER_SUBMIT_PAST_DAYS,
-  discrepancyKindLabels,
-  formatVehicleRouteNumber,
   moscowDateKeyOf,
   REPORT_ACCEPT_BLOCKED_CODE,
   STAFF_SUBMIT_PAST_DAYS,
   vehicleLabel,
-  waybillDisplayNumber,
-  type DiscrepancyKind,
   type DiscrepancyResolveInput,
   type DiscrepancyTargetDto,
   type DriverAssignmentEntry,
@@ -16,7 +12,6 @@ import {
   type ReadingInput,
   type ReadingRebaseInput,
   type ReadingSource,
-  type ReadingSourceKind,
   type ReportDiscrepancyDto,
   type ReportItemDto,
   type ReportItemOrderInput,
@@ -35,11 +30,8 @@ import {
   vehicleModels,
   vehicleReadingFiles,
   vehicleReadings,
-  vehicleRoutes,
   vehicles,
   vehicleTypes,
-  waybills,
-  waybillSeries,
   type DriverDailyReportItemRow,
   type DriverDailyReportRow,
   type VehicleReadingRow,
@@ -68,6 +60,18 @@ import {
   type SourceRef,
   type Tx,
 } from './readings-chain';
+import {
+  findDiscrepancies,
+  itemRef,
+  loadDecisions,
+  loadLiveSources,
+  rebaseDateOf,
+  resolutionOf,
+  sourceCoversDate,
+  sourceKey,
+  type LiveSource,
+  type TargetRef,
+} from './readings-discrepancies';
 
 /**
  * Показания техники (ADR 0103): отчёт дня работника, строки ожидания и снимки счётчиков.
@@ -156,140 +160,6 @@ function assertNoDataIsStaffOnly(input: ReportSubmitInput, actor: ReadingsActor)
   throw err.forbidden(
     'Отметку «нет возможности снять показания» ставит диспетчер: оставьте эту строку незаполненной и отправьте остальные — её закроет диспетчер с причиной',
   );
-}
-
-// ── Живые источники (Р16, Р21) ──
-
-/**
- * Источник глазами модуля: то, с чем сравнивается снимок строки ожидания. Поля названы общо
- * намеренно — расхождение считается одинаково у рейса и у листа, и две ветки на каждое сравнение
- * разошлись бы при первой же правке.
- */
-interface LiveSource {
-  ref: SourceRef;
-  label: string;
-  /** Ключ первичной нумерации смен (Р15) — сравнимый строкой, но упорядоченный по числу. */
-  orderKey: string;
-  vehicleId: string;
-  personId: string | null;
-  /** День рейса; у недельного листа — `null`, его время задано периодом. */
-  date: string | null;
-  periodFrom: string | null;
-  periodTo: string | null;
-  /** Рейс существует, лист не аннулирован. */
-  active: boolean;
-}
-
-function sourceKey(ref: SourceRef): string {
-  return `${ref.kind}:${ref.id}`;
-}
-
-/** Число в ключе сортировки дополняется нулями: иначе «Р-10» встало бы раньше «Р-9». */
-function orderKeyOf(group: string, num: number): string {
-  return `${group}|${String(num).padStart(12, '0')}`;
-}
-
-function itemRef(item: DriverDailyReportItemRow): SourceRef {
-  return item.sourceKind === 'route'
-    ? { kind: 'route', id: item.routeId! }
-    : { kind: 'esm2', id: item.waybillId! };
-}
-
-/** Накрывает ли источник день строки: у рейса это его дата, у листа — период работы. */
-function sourceCoversDate(source: LiveSource, date: string): boolean {
-  if (source.date !== null) return source.date === date;
-  if (source.periodFrom === null || source.periodTo === null) return false;
-  return source.periodFrom <= date && date <= source.periodTo;
-}
-
-/**
- * День, в который строка уедет вслед за источником: у рейса это его дата, а у недельного листа
- * своего дня нет вовсе — он задан периодом, и строка остаётся в дне отчёта.
- *
- * Правило написано один раз и обслуживает и сам перенос (`rebaseItem`), и его предсказание в
- * расхождении: разойдись они, и портал называл бы человеку один день, а сервер переносил бы в
- * другой — молча и без единой красной проверки.
- */
-function rebaseDateOf(source: LiveSource, itemDate: string): string {
-  return source.date ?? itemDate;
-}
-
-async function loadLiveSources(
-  tx: Tx,
-  refs: readonly SourceRef[],
-): Promise<Map<string, LiveSource>> {
-  const routeIds = [...new Set(refs.filter((r) => r.kind === 'route').map((r) => r.id))];
-  const waybillIds = [...new Set(refs.filter((r) => r.kind === 'esm2').map((r) => r.id))];
-  const live = new Map<string, LiveSource>();
-
-  if (routeIds.length > 0) {
-    const rows = await tx
-      .select({
-        id: vehicleRoutes.id,
-        num: vehicleRoutes.num,
-        vehicleId: vehicleRoutes.vehicleId,
-        routeDate: vehicleRoutes.routeDate,
-        driverPersonId: vehicleRoutes.driverPersonId,
-      })
-      .from(vehicleRoutes)
-      .where(inArray(vehicleRoutes.id, routeIds));
-    for (const row of rows) {
-      const ref: SourceRef = { kind: 'route', id: row.id };
-      live.set(sourceKey(ref), {
-        ref,
-        label: formatVehicleRouteNumber(row.num),
-        orderKey: orderKeyOf('', row.num),
-        vehicleId: row.vehicleId,
-        personId: row.driverPersonId,
-        date: row.routeDate,
-        periodFrom: null,
-        periodTo: null,
-        // Удалённого рейса нет вовсе: строка ожидания держит его `RESTRICT`, и «удалён» узнаётся
-        // отсутствием строки, а не колонкой.
-        active: true,
-      });
-    }
-  }
-
-  if (waybillIds.length > 0) {
-    const rows = await tx
-      .select({
-        id: waybills.id,
-        number: waybills.number,
-        formCode: waybills.formCode,
-        status: waybills.status,
-        vehicleId: waybills.vehicleId,
-        driverPersonId: waybills.driverPersonId,
-        periodFrom: waybills.periodFrom,
-        periodTo: waybills.periodTo,
-        seriesId: waybills.seriesId,
-        prefix: waybillSeries.prefix,
-        numberWidth: waybillSeries.numberWidth,
-      })
-      .from(waybills)
-      .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-      .where(inArray(waybills.id, waybillIds));
-    for (const row of rows) {
-      // Канонический источник (Р16): у 4-П и формы № 3 заполнен `route_id`, и их выезд уже
-      // представлен рейсом. Лист таких форм источником показаний не бывает — иначе один выезд
-      // получил бы две карточки в форме и две точки в цепочке.
-      if (row.formCode !== 'esm2') continue;
-      const ref: SourceRef = { kind: 'esm2', id: row.id };
-      live.set(sourceKey(ref), {
-        ref,
-        label: `ЭСМ-2 № ${waybillDisplayNumber(row.prefix, row.number, row.numberWidth)}`,
-        // Ключ по серии и номеру, а не по подписи: номер бланка уникален только внутри серии.
-        orderKey: orderKeyOf(row.seriesId, row.number),
-        vehicleId: row.vehicleId,
-        personId: row.driverPersonId,
-        date: null,
-        periodFrom: row.periodFrom,
-        periodTo: row.periodTo,
-        active: row.status !== 'cancelled',
-      });
-    }
-  }
-  return live;
 }
 
 /** Подписи машин: правило одно на портал и сервер (`vehicleLabel`), а не своё в каждом модуле. */
@@ -1114,31 +984,10 @@ async function loadReportState(
 // ── Расхождения (Р21) ──
 
 /**
- * Расхождения не хранятся — хранятся решения по ним. Живой источник сравнивается со снимком при
- * каждом чтении, а журнал решений отвечает только на вопрос «этот разбор ещё в силе».
- *
- * Отпечаток несёт версию алгоритма (`v1:`): канонизацию однажды придётся поменять, и без версии
- * это молча обесценило бы все прежние решения. Разделитель — управляющий символ, которого в
- * идентификаторах и датах не бывает: со склейкой через пустую строку две разные пары значений
- * дали бы один хеш, и решение по одному расхождению действовало бы на другое.
+ * The report's discrepancies with their decisions and rebase targets. The rule itself is shared with
+ * the request shift table (`readings-discrepancies.ts`); the targets are this module's own — only
+ * the intake card offers a rebase.
  */
-function discrepancyFingerprint(
-  kind: DiscrepancyKind,
-  subject: string,
-  parts: (string | null)[],
-): string {
-  return `v1:${sha256hex([kind, subject, ...parts.map((p) => p ?? '')].join('\u0001'))}`;
-}
-
-function discrepancySubject(d: {
-  kind: DiscrepancyKind;
-  itemId: string | null;
-  sourceKind: ReadingSourceKind | null;
-  sourceId: string | null;
-}): string {
-  return d.kind === 'missing_source' ? `${d.sourceKind}:${d.sourceId}` : `item:${d.itemId}`;
-}
-
 async function computeDiscrepancies(
   tx: Tx,
   report: DriverDailyReportRow,
@@ -1146,136 +995,17 @@ async function computeDiscrepancies(
   dayRefs: readonly SourceRef[],
   live: Map<string, LiveSource>,
 ): Promise<ReportDiscrepancyDto[]> {
-  const found: (Omit<ReportDiscrepancyDto, 'resolved' | 'resolvedReason' | 'target'> & {
-    /** Куда уедет строка при переносе; у видов, которым переносить нечего, — `null`. */
-    targetRef: TargetRef | null;
-  })[] = [];
-
-  for (const item of items) {
-    const ref = itemRef(item);
-    const source = live.get(sourceKey(ref));
-    const label = source?.label ?? sourceKey(ref);
-    if (!source || !source.active) {
-      found.push({
-        kind: 'source_state',
-        itemId: item.id,
-        sourceKind: ref.kind,
-        sourceId: ref.id,
-        fingerprint: discrepancyFingerprint('source_state', `item:${item.id}`, [
-          source ? 'cancelled' : 'deleted',
-        ]),
-        message: `${label}: ${discrepancyKindLabels.source_state}`,
-        // Источника нет либо он аннулирован: приводить снимок не к чему, и цели у переноса нет.
-        targetRef: null,
-      });
-      continue;
-    }
-    // Цель у всех трёх переносимых видов одна и та же — та, которую выберет сам `rebaseItem`:
-    // работник и день берутся у живого источника. У источника без работника переносить некуда.
-    const targetRef: TargetRef | null =
-      source.personId === null
-        ? null
-        : { personId: source.personId, date: rebaseDateOf(source, item.reportDate) };
-    if (source.personId !== report.personId) {
-      found.push({
-        kind: 'driver',
-        itemId: item.id,
-        sourceKind: ref.kind,
-        sourceId: ref.id,
-        fingerprint: discrepancyFingerprint('driver', `item:${item.id}`, [
-          source.personId,
-          report.personId,
-        ]),
-        message: `${label}: ${discrepancyKindLabels.driver}`,
-        targetRef,
-      });
-    }
-    if (source.vehicleId !== item.vehicleId) {
-      found.push({
-        kind: 'vehicle',
-        itemId: item.id,
-        sourceKind: ref.kind,
-        sourceId: ref.id,
-        fingerprint: discrepancyFingerprint('vehicle', `item:${item.id}`, [
-          source.vehicleId,
-          item.vehicleId,
-        ]),
-        message: `${label}: ${discrepancyKindLabels.vehicle}`,
-        targetRef,
-      });
-    }
-    if (!sourceCoversDate(source, item.reportDate)) {
-      found.push({
-        kind: 'date',
-        itemId: item.id,
-        sourceKind: ref.kind,
-        sourceId: ref.id,
-        fingerprint: discrepancyFingerprint('date', `item:${item.id}`, [
-          source.date,
-          source.periodFrom,
-          source.periodTo,
-          item.reportDate,
-        ]),
-        message: `${label}: ${discrepancyKindLabels.date}`,
-        targetRef,
-      });
-    }
-  }
-
-  // Состав дня: источник, которого в отчёте нет. Отпечаток берёт источник целиком — водителя,
-  // машину, дату (у листа период) и состояние: источник, который «решили не включать», после
-  // смены машины или водителя это уже другой источник, и прежнее решение к нему отношения не имеет.
-  const present = new Set(items.map((i) => sourceKey(itemRef(i))));
-  for (const ref of dayRefs) {
-    const key = sourceKey(ref);
-    if (present.has(key)) continue;
-    const source = live.get(key);
-    if (!source || !source.active) continue;
-    found.push({
-      kind: 'missing_source',
-      itemId: null,
-      sourceKind: ref.kind,
-      sourceId: ref.id,
-      fingerprint: discrepancyFingerprint('missing_source', key, [
-        source.personId,
-        source.vehicleId,
-        source.date,
-        source.periodFrom,
-        source.periodTo,
-        source.active ? 'active' : 'inactive',
-      ]),
-      message: `${source.label}: ${discrepancyKindLabels.missing_source}`,
-      // Строки у нехватки источника нет вовсе: её заводит разбор («добавить источник»), а не
-      // перенос.
-      targetRef: null,
-    });
-  }
-
-  const decisions = await loadDecisions(tx, report.id);
+  const found = findDiscrepancies(report, items, dayRefs, live);
+  const decisions = (await loadDecisions(tx, [report.id])).get(report.id);
   const targets = await loadRebaseTargets(
     tx,
     found.map((d) => d.targetRef),
   );
-  return found.map(({ targetRef, ...d }) => {
-    const last = decisions.get(`${d.kind}|${discrepancySubject(d)}`);
-    // Разобрано, если ПОСЛЕДНЕЕ событие журнала по предмету имеет совпадающий отпечаток и
-    // разрешающий исход. `revoked` существует ради этого правила: отменить прежнее решение при
-    // неизменном отпечатке иначе нечем.
-    const resolved =
-      last !== undefined && last.fingerprint === d.fingerprint && last.resolution !== 'revoked';
-    return {
-      ...d,
-      resolved,
-      resolvedReason: resolved ? last.reason : '',
-      target: targetRef ? (targets.get(targetKey(targetRef)) ?? null) : null,
-    };
-  });
-}
-
-/** Пара «работник + день», в которую уедет строка: ключ целевого отчёта, даже если его ещё нет. */
-interface TargetRef {
-  personId: string;
-  date: string;
+  return found.map(({ targetRef, ...d }) => ({
+    ...d,
+    ...resolutionOf({ ...d, targetRef }, decisions),
+    target: targetRef ? (targets.get(targetKey(targetRef)) ?? null) : null,
+  }));
 }
 
 function targetKey(ref: TargetRef): string {
@@ -1344,36 +1074,6 @@ async function loadRebaseTargets(
     });
   }
   return result;
-}
-
-/**
- * Действующее решение по каждому предмету. Последнее — по `report_version_after`, а не по времени:
- * всякая запись в журнал берёт отчёт `FOR UPDATE` и двигает его версию, поэтому версия строго
- * возрастает и задаёт причинный порядок. `now()` для этого не годится — в PostgreSQL это время
- * начала транзакции, и две записи, начатые одновременно, получили бы одну метку.
- */
-async function loadDecisions(
-  tx: Tx,
-  reportId: string,
-): Promise<Map<string, { fingerprint: string; resolution: string; reason: string }>> {
-  const rows = await tx
-    .select()
-    .from(driverReportDiscrepancyResolutions)
-    .where(eq(driverReportDiscrepancyResolutions.reportId, reportId))
-    .orderBy(asc(driverReportDiscrepancyResolutions.reportVersionAfter));
-  const last = new Map<string, { fingerprint: string; resolution: string; reason: string }>();
-  for (const row of rows) {
-    const subject =
-      row.kind === 'missing_source'
-        ? `${row.routeId ? 'route' : 'esm2'}:${row.routeId ?? row.waybillId}`
-        : `item:${row.itemId}`;
-    last.set(`${row.kind}|${subject}`, {
-      fingerprint: row.fingerprint,
-      resolution: row.resolution,
-      reason: row.reason,
-    });
-  }
-  return last;
 }
 
 /**
