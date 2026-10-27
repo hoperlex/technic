@@ -483,6 +483,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: '`newEsm2` (250–271) недельный; тест 417–445 требует, чтобы понедельник и вторник дали строки ОДНОГО `waybillId`, и на паре «лист+день» проверяется `report_items_waybill_key`',
   },
   {
+    file: 'shift-driver-days.db.test.ts',
+    klass: 'consumer',
+    status: 'done',
+    note: 'request shifts read driver readings (ADR 0184): `issueEsm2` inserts a one-day sheet (`period_from = period_to = day`) only so that the day has an ESM-2 source of the request; the moved-sheet case re-dates that one day for a `date` discrepancy. No assertion reads the bounds as a week. Marked ЭСМ2-РАЗРЕЗ at `issueEsm2`',
+  },
+  {
     file: 'vehicle-readings.db.test.ts',
     klass: 'consumer',
     status: 'done',
