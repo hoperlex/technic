@@ -9,7 +9,8 @@
   [error classes](../../apps/api/src/lib/pg-error.ts), [error handler](../../apps/api/src/lib/error-handler.ts),
   [readiness streak](../../apps/api/src/lib/readiness-watch.ts), [server](../../apps/api/src/server.ts),
   [refresh route](../../apps/api/src/routes/auth.ts), [config](../../apps/api/src/config.ts),
-  [worker pool](../../apps/worker/src/db-pool.ts), [worker](../../apps/worker/src/index.ts)
+  [worker pool](../../apps/worker/src/db-pool.ts), [worker](../../apps/worker/src/index.ts),
+  [worker loop watchdog](../../apps/worker/src/loop-watch.ts)
 
 ## Context
 
@@ -61,6 +62,12 @@ failover into a logout.
    - in the API only, readiness fails at least three times in a row over at least a minute. With
      Docker's 30-second interval that is the third check; a failover takes seconds, and
      `deploy-auto`'s five checks in fifteen seconds cannot reach it.
+
+   The worker has a third, broader trigger with the same exit, added with the mailbox fix of
+   22.10.2026: no step of its sequential loop (one job, one tick, one cleanup pass) starts for
+   `WORKER_LOOP_STALL_MS`, 30 minutes by default and never below 10 (runbook, «Worker loop
+   watchdog»). It catches any hang, not only the database's; the pool stall stays the fast path for
+   the database, 30 seconds instead of half an hour.
 5. **Connection failures answer 503.** Every route, not only login and refresh, answers a request
    that failed on an unreachable or silent database with 503, code `db_unavailable` and
    `Retry-After: 5`, from the one error handler. The code differs from the gate's
@@ -88,12 +95,13 @@ limit is what keeps a row inside its lease.
 - During a long cluster outage the API exits every minute or so and Docker restarts it with a
   growing delay of up to a minute; between restarts nginx answers 502 instead of 503. Accepted: a
   restart costs nothing while the cluster is down and is the only cure when the process is stuck.
-- Both exits work only if the process's exit ends the container. Locally the exit passes the whole
-  launch chain (`pnpm --filter … start` → `sh -c` → `tsx` → `node`), but on 22.10.2026 the worker
-  process died on an unhandled IMAP error and the container stayed `Up` without a restart, for a
-  reason not yet known (card «Оргтехника: обрыв почтового ящика больше не роняет worker»). Until the
-  prod check (`RestartCount`, `docker top`, log timestamps) explains it, a restart after these
-  exits is expected, not proven; a fix of the launch chain is one decision for both cases.
+- The exits work only if the process's exit ends the container. The exit passes the whole launch
+  chain (`pnpm --filter … start` → `sh -c` → `tsx` → `node`) locally, and in `node:24-bookworm-slim`
+  with `pnpm` as PID 1 the container stopped with code 1 on an unhandled error. Yet on 22.10.2026 the
+  prod worker's queue stood for four days with the container `Up` (card «Оргтехника: обрыв почтового
+  ящика больше не роняет worker»), for a reason not yet known. Until the prod check (`RestartCount`,
+  `docker top`, log timestamps) explains it, a restart after these exits is expected, not proven;
+  a fix of the launch chain, if one is needed, is one decision for all three triggers.
 - A COMMIT that hits the deadline is ambiguous: the rotation may have landed. The kept old token
   then reads as reuse on the next refresh and ends the session, the same outcome as before, only
   rarer.
