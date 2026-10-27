@@ -3,10 +3,10 @@ import { alias } from 'drizzle-orm/pg-core';
 import {
   type DiscrepancyKind,
   fuelDeviation,
-  type DriverReportState,
   formatVehicleRouteNumber,
   type ReadingAnomaly,
   type ReadingAnomalyDto,
+  SUBMITTED_REPORT_STATES,
   vehicleLabel,
   vehicleReadingDayState,
   type VehicleReadingDayState,
@@ -218,25 +218,6 @@ export function pendingReadingsSql(on: string): SQL {
 }
 
 /**
- * Источник дня, которого нет в отправленном отчёте (`missing_source`, Р21) — по машинам страницы.
- *
- * Спрашивается только у отчёта в отправленном состоянии, и это существенно: пока отчёт в `draft`,
- * состав пересобирается при каждом открытии кабинета (Р17 п. 2), и «строки ещё нет» означает лишь
- * то, что водитель не открывал приложение. Расхождением это становится с отправкой, которая состав
- * замораживает.
- *
- * Машина берётся у самого источника, а не у отчёта: несданным остался конкретный выезд, и красным
- * обязана быть строка той машины, которая в этот день ездила.
- *
- * Источник спрашивается **ожидаемый** — теми же фрагментами, что и фильтр «не сданы» (Р26а, Р26б).
- * Раньше ветка рейсов действующего листа не требовала вовсе, и гараж красил рейс, которого водитель
- * у себя в кабинете не видел: спросить показание было не с кого, а день горел. Побочный эффект
- * приведения назван в плане (§14 п. 4): сигнала «рейс есть, лист не выписали» в гараже больше нет —
- * его показывает журнал маршрутов фильтром «Без листа».
- */
-const SUBMITTED_STATES: DriverReportState[] = ['submitted', 'accepted', 'needs_reacceptance'];
-
-/**
  * Алиасы источников под общие фрагменты ожидаемой смены: `EXPECTED_ROUTE_FILTER` ждёт строку рейса
  * под именем `vr`, `EXPECTED_ESM2_FILTER` — строку листа под именем `w`. Имена заданы фрагментом, а
  * не выбраны здесь: он один на четырёх читателей (двое здешние — `pendingReadingsSql` и
@@ -259,6 +240,24 @@ function missingSourceResolvedSql(source: 'route' | 'waybill', sourceId: SQL): S
   ) IN ('accepted_as_is', 'source_added'), false)`;
 }
 
+/**
+ * A source of the day missing from a submitted report (`missing_source`, Р21), by the vehicles of
+ * the page.
+ *
+ * Asked only of a report in a submitted state (`SUBMITTED_REPORT_STATES`), and that matters: while
+ * the report is a `draft`, its composition is rebuilt on every opening of the cabinet (Р17 item 2),
+ * and "no row yet" means only that the driver has not opened the app. Submitting freezes the
+ * composition, and only then is a missing source a discrepancy.
+ *
+ * The vehicle is taken from the source, not from the report: what stayed unsubmitted is a concrete
+ * trip, and the row that turns red must be the row of the vehicle that worked that day.
+ *
+ * The source asked is the **expected** one, by the same fragments as the "not submitted" filter
+ * (Р26а, Р26б). The route branch used to require no issued waybill at all, and the garage painted a
+ * route the driver did not see in the cabinet: nobody could be asked for a reading, yet the day was
+ * red. The side effect is named in the plan (§14 item 4): the garage no longer signals "a route
+ * without a waybill" — the route journal shows it with its «Без листа» filter.
+ */
 async function loadMissingSourceVehicles(on: string, vehicleIds: string[]): Promise<Set<string>> {
   const [routes, sheets] = await Promise.all([
     db
@@ -276,7 +275,7 @@ async function loadMissingSourceVehicles(on: string, vehicleIds: string[]): Prom
           inArray(expectedRoute.vehicleId, vehicleIds),
           eq(expectedRoute.routeDate, on),
           sql`(${EXPECTED_ROUTE_FILTER})`,
-          inArray(driverDailyReports.state, SUBMITTED_STATES),
+          inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
           sql`NOT EXISTS (
             SELECT 1 FROM ${driverDailyReportItems} ms_i WHERE ms_i.route_id = ${expectedRoute.id}
           )`,
@@ -298,7 +297,7 @@ async function loadMissingSourceVehicles(on: string, vehicleIds: string[]): Prom
           inArray(expectedEsm2.vehicleId, vehicleIds),
           sql`(${EXPECTED_ESM2_FILTER})`,
           sql`${expectedEsm2.periodFrom} <= ${on}::date AND ${expectedEsm2.periodTo} >= ${on}::date`,
-          inArray(driverDailyReports.state, SUBMITTED_STATES),
+          inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
           sql`NOT EXISTS (
             SELECT 1 FROM ${driverDailyReportItems} ms_i
             WHERE ms_i.waybill_id = ${expectedEsm2.id} AND ms_i.report_date = ${on}::date

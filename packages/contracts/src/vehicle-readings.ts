@@ -53,6 +53,18 @@ export const driverReportStateLabels: Record<DriverReportState, string> = {
 };
 
 /**
+ * Report states whose readings count — the garage's operative rule (Р27): every submitted reading,
+ * not only accepted ones. A `draft` carries no reading (it is written at submit) and a `voided`
+ * report gave its rows away. One list for every reader — the garage's missing-source search and the
+ * request shift table (readings-shifts-merge plan, D2) — so the two cannot count different days.
+ */
+export const SUBMITTED_REPORT_STATES: readonly DriverReportState[] = [
+  'submitted',
+  'accepted',
+  'needs_reacceptance',
+];
+
+/**
  * Вид показания. `no_data` — «работали, но снять нечего»: счётчик неисправен, машину увёл
  * сменщик, кабина опечатана. Это закрытие строки, а не пропуск, и причина у него обязательна.
  */

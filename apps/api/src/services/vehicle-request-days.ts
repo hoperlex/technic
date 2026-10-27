@@ -18,11 +18,9 @@ import type { db } from '../db/client';
 import {
   persons,
   specialEquipmentRequestDetails,
-  users,
   vehicleModels,
   vehicleRequestAssignments,
   vehicleRequests,
-  vehicleRequestShifts,
   vehicleRouteRequests,
   vehicleRoutes,
   vehicles,
@@ -39,6 +37,7 @@ import {
   type RouteRow,
   routeWaybill,
 } from './vehicle-routes';
+import { loadShiftRows } from './vehicle-request-shifts';
 
 /**
  * Дни заказа техники на объект (ADR 0100): чтение плана по дням и сверка его с самой заявкой.
@@ -313,35 +312,6 @@ async function waybillsOfRoutes(
   return map;
 }
 
-/** Часы дня и подпись объекта: их ведёт таблица смен — своей у дней нет (ADR 0100 §12). */
-async function shiftsOfRequest(reader: Reader, requestId: string) {
-  const rows = await reader
-    .select({
-      date: vehicleRequestShifts.shiftDate,
-      startedAt: vehicleRequestShifts.startedAt,
-      endedAt: vehicleRequestShifts.endedAt,
-      machineHours: vehicleRequestShifts.machineHours,
-      approvedAt: vehicleRequestShifts.approvedAt,
-      approvedByName: users.fullName,
-    })
-    .from(vehicleRequestShifts)
-    // Кто принял день: учётка подписавшего — тем же join'ом её берёт таблица смен.
-    .leftJoin(users, eq(users.id, vehicleRequestShifts.approvedBy))
-    .where(eq(vehicleRequestShifts.requestId, requestId));
-  return new Map(rows.map((row) => [row.date, row]));
-}
-
-/** `time` из pg приходит как `08:00:00`; смену читают до минут — так её и вводят. */
-function timeOnly(v: string | null): string | null {
-  return v ? v.slice(0, 5) : null;
-}
-
-/** numeric из pg приходит строкой; нечисло читается нулём — так же, как в таблице смен. */
-function hours(v: string | null | undefined): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
 /**
  * Таблица дней заказа: дни срока целиком, включая те, на которые ещё никого не назначили.
  *
@@ -355,7 +325,10 @@ export async function loadRequestDays(
 ): Promise<VehicleRequestDayDto[]> {
   const [rows, shifts] = await Promise.all([
     plannedDayRows(reader, request.id),
-    shiftsOfRequest(reader, request.id),
+    // Hours and the object's sign-off live in the shift table (ADR 0100 §12), read by its one row
+    // mapper. Every row of the request, not the term's only: a planned day outside the term held
+    // by an issued route keeps its row visible.
+    loadShiftRows(reader, request.id),
   ]);
   const waybillsByRouteId = await waybillsOfRoutes(
     reader,
@@ -397,10 +370,10 @@ export async function loadRequestDays(
       },
       shift: shift
         ? {
-            startedAt: timeOnly(shift.startedAt),
-            endedAt: timeOnly(shift.endedAt),
-            machineHours: hours(shift.machineHours),
-            approvedAt: shift.approvedAt ? shift.approvedAt.toISOString() : null,
+            startedAt: shift.startedAt,
+            endedAt: shift.endedAt,
+            machineHours: shift.machineHours,
+            approvedAt: shift.approvedAt,
             approvedByName: shift.approvedByName,
           }
         : null,

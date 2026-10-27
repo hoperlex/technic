@@ -52,18 +52,18 @@ export interface ShiftSummarySubject {
  */
 const withinTerm = shiftWithinTermSql();
 
-/** numeric из pg приходит строкой; часы всегда заполнены — нечисло читается как ноль. */
+/** pg returns `numeric` as a string; hours are always filled, so a non-number reads as zero. */
 function hours(v: string | null): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
 
-/** `time` из pg приходит как `08:00:00`; смена читается до минут — так её и вводят. */
+/** pg returns `time` as `08:00:00`; a shift is read to the minute, the way it is typed. */
 function timeOnly(v: string | null): string | null {
   return v ? v.slice(0, 5) : null;
 }
 
-/** День заказа, за который ничего не внесли: строкой в таблице он есть, в базе — ещё нет. */
+/** A day of the term nobody filled: it is a row of the table but has no row in the database. */
 function emptyShift(date: string): VehicleRequestShiftDto {
   return {
     date,
@@ -82,15 +82,17 @@ function emptyShift(date: string): VehicleRequestShiftDto {
 }
 
 /**
- * Смены заявки по дням заказа: заполненные строки и пустые дни, за которые ещё ничего не внесли.
- * Дни считаются из срока, а не из таблицы — строк на незаполненные дни в базе нет вовсе, и без
- * этого таблица показывала бы только то, что уже успели записать.
+ * The physical shift rows of a request by day — what the site wrote, with nothing derived. Every
+ * row, not only the term's: the linear days table shows a planned day outside the term that an
+ * issued route still holds (ADR 0100), and its row must stay visible there.
+ *
+ * The one mapper of a row: the shift table and the linear days table read hours, times and the
+ * sign-off through it, so the two cannot parse `numeric` and `time` differently.
  */
-export async function loadRequestShifts(
+export async function loadShiftRows(
+  reader: Reader,
   requestId: string,
-  term: ShiftTerm,
-  reader: Reader = db,
-): Promise<VehicleRequestShiftDto[]> {
+): Promise<Map<string, VehicleRequestShiftDto>> {
   const rows = await reader
     .select({
       shiftDate: vehicleRequestShifts.shiftDate,
@@ -110,34 +112,47 @@ export async function loadRequestShifts(
     .innerJoin(fillers, eq(vehicleRequestShifts.filledBy, fillers.id))
     .leftJoin(shiftApprovers, eq(vehicleRequestShifts.approvedBy, shiftApprovers.id))
     .where(eq(vehicleRequestShifts.requestId, requestId));
-
-  const saved = new Map(rows.map((r) => [r.shiftDate, r]));
-  return shiftDaysOf(term).map((date) => {
-    const row = saved.get(date);
-    if (!row) return emptyShift(date);
-    return {
-      date,
-      startedAt: timeOnly(row.startedAt),
-      endedAt: timeOnly(row.endedAt),
-      machineHours: hours(row.machineHours),
-      refuel: row.refuel,
-      comment: row.comment,
-      filledBy: row.filledBy,
-      filledByName: row.filledByName,
-      filledAt: row.filledAt.toISOString(),
-      approvedBy: row.approvedBy,
-      approvedByName: row.approvedByName,
-      approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
-    };
-  });
+  return new Map(
+    rows.map((row) => [
+      row.shiftDate,
+      {
+        date: row.shiftDate,
+        startedAt: timeOnly(row.startedAt),
+        endedAt: timeOnly(row.endedAt),
+        machineHours: hours(row.machineHours),
+        refuel: row.refuel,
+        comment: row.comment,
+        filledBy: row.filledBy,
+        filledByName: row.filledByName,
+        filledAt: row.filledAt.toISOString(),
+        approvedBy: row.approvedBy,
+        approvedByName: row.approvedByName,
+        approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
+      },
+    ]),
+  );
 }
 
 /**
- * Одна смена по её дню; `null` — за этот день ничего не внесено.
+ * Shifts of a request by the days of its term: filled rows and the empty days nobody has filled
+ * yet. The days come from the term, not from the table — unfilled days have no rows at all, and
+ * without this the table would show only what was already written.
+ */
+export async function loadRequestShifts(
+  requestId: string,
+  term: ShiftTerm,
+  reader: Reader = db,
+): Promise<VehicleRequestShiftDto[]> {
+  const saved = await loadShiftRows(reader, requestId);
+  return shiftDaysOf(term).map((date) => saved.get(date) ?? emptyShift(date));
+}
+
+/**
+ * One shift by its day; `null` — nothing is entered for this day.
  *
- * Читателя передают все пишущие ручки смен: они перечитывают день **внутри** транзакции и после
- * `lockRequestRow`, иначе решение принималось бы по состоянию, которое к моменту записи уже
- * неверно (план Р18, подэтап 2a).
+ * Every writing shift door passes its transaction as the reader: the day is re-read **inside** it
+ * and after `lockRequestRow`, otherwise the decision would rest on a state that is already wrong
+ * by the time of the write (plan Р18, sub-stage 2a).
  */
 export async function loadRequestShift(
   requestId: string,
