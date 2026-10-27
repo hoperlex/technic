@@ -6,6 +6,7 @@ import {
   readingHasShiftEnd,
   readingInputSchema,
   readingPointsInputSchema,
+  readingShiftHours,
   readingShiftMinutes,
   readingTimeIssues,
   reportRequiresDriverTimes,
@@ -45,6 +46,11 @@ describe('пара начала и конца: один толкователь',
     expect(readingShiftMinutes('esm2', { startedAt: '08:00', endedAt: '10:10', points: [] })).toBe(
       130,
     );
+    // The books' hours round as the site's window does; an incomplete pair has no duration.
+    expect(readingShiftHours('esm2', { startedAt: '08:00', endedAt: '10:10', points: [] })).toBe(
+      2.17,
+    );
+    expect(readingShiftHours('esm2', { startedAt: '08:00', endedAt: null, points: [] })).toBeNull();
   });
 });
 

@@ -565,6 +565,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'pure driver-day rule (ADR 0184): `esm2` is a source kind of a fixture reading and `ЭСМ-2 № 0012` its label; no sheet, no period',
   },
   {
+    file: 'readings-export.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'the garage journal books (ADR 0234): `esm2` is the source kind of a fixture journal row whose shift pair the time columns read; the database is mocked, no sheet, no period',
+  },
+  {
     file: 'access-conditions.test.ts',
     klass: 'mention',
     status: 'done',

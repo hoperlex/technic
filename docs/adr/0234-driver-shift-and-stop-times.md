@@ -27,6 +27,7 @@
   [journal](../../apps/api/src/services/readings-stats.ts),
   [intake registry](../../apps/api/src/services/readings-intake.ts),
   [readings book](../../apps/api/src/services/readings-admin-export.ts),
+  [garage books](../../apps/api/src/services/readings-export.ts),
   [tests](../../apps/api/test/reading-times.db.test.ts),
   [rule tests](../../apps/api/test/reading-times-contracts.test.ts),
   [cabinet fields](../../apps/web/src/pages/driver/DriverReadingFields.tsx),
@@ -111,7 +112,10 @@ day is submitted in parts (ADR 0163): fuel in the morning, counters in the eveni
 7. **Times are content.** Scalar times, stops and the request snapshot are part of the reading's
    snapshot, change detection and history, so a time-only edit raises `content_version` and moves
    an accepted report to `needs_reacceptance`. The vehicle journal, the intake registry and the
-   readings book carry the times; the book adds start, end and duration columns.
+   readings book carry the times. The readings book and the garage's journal books (a vehicle's
+   journal, by months and for the whole fleet) add start, end and duration columns, the duration
+   by one helper (`readingShiftHours`); the journal books append them after the fuel levels, so
+   that no column of a book already sent moves.
 
 8. **The cabinet (D9: variant A with a "now" button).** The ESM-2 pair stands in the existing
    groups — «Время начала» opens «Начало смены», «Время окончания» opens «Конец смены» with the

@@ -238,6 +238,19 @@ export function readingShiftMinutes(
 }
 
 /**
+ * The same duration in hours to two decimals — the «Длительность, ч» column of every readings
+ * book, rounded as the site's pair is (`shiftSpanHours`). `null` while the times are incomplete:
+ * an interim reading has no duration yet, and a zero would read as "did not work".
+ */
+export function readingShiftHours(
+  sourceKind: ReadingSourceKind,
+  times: ReadingTimes,
+): number | null {
+  const minutes = readingShiftMinutes(sourceKind, times);
+  return minutes === null ? null : Math.round((minutes / 60) * 100) / 100;
+}
+
+/**
  * Shape and order of the times, for every author: the driver, staff entering on a driver's behalf
  * and staff correcting a saved reading. Required fields are not checked here — staff may leave
  * every time empty (D5); `driverReadingTimeIssues` adds the driver's rule on top.

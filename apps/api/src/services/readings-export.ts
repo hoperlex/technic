@@ -9,7 +9,9 @@ import {
   type ReadingExportKind,
   readingExportKindLabels,
   type ReadingMonthRow,
+  readingShiftHours,
   vehicleLabel,
+  type VehicleReadingPointDto,
   type VehicleMaintenanceSummaryDto,
   type VehicleReadingStatsRow,
   waybillDisplayNumber,
@@ -38,6 +40,7 @@ import {
   loadLastReadings,
 } from './readings-aggregate';
 import { readingStatsSheet } from './readings-stats';
+import { clockTime } from './reading-points';
 import { loadMaintenanceSnapshot } from './vehicle-maintenance';
 
 /**
@@ -306,6 +309,24 @@ async function loadJournalRows(from: string, to: string, vehicleId: string | nul
       engineHoursAnomalyConfirmedAt: vehicleReadings.engineHoursAnomalyConfirmedAt,
       previousOdometerKm: previousOdometer.odometerKm,
       previousEngineHours: previousEngineHours.engineHours,
+      startedAt: vehicleReadings.startedAt,
+      endedAt: vehicleReadings.endedAt,
+      /*
+       * The stops of a route reading, in order: its duration is the sum of their steps, and the
+       * stored pair alone cannot tell a zero-length route from a whole day (ADR 0234, decision 4).
+       * One correlated subquery instead of a second round trip: the book reads up to
+       * `READING_EXPORT_ROW_LIMIT` rows, and an id list that long does not belong in a query.
+       */
+      points: sql<VehicleReadingPointDto[]>`(
+        SELECT coalesce(json_agg(json_build_object(
+                 'position', rp.position,
+                 'routePointId', rp.route_point_id,
+                 'location', rp.location,
+                 'arrivedAt', to_char(rp.arrived_at, 'HH24:MI'),
+                 'departedAt', to_char(rp.departed_at, 'HH24:MI')
+               ) ORDER BY rp.position), '[]'::json)
+          FROM vehicle_reading_points rp
+         WHERE rp.reading_id = ${vehicleReadings.id})`,
     })
     .from(driverDailyReportItems)
     .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
@@ -387,6 +408,10 @@ function readingStateText(row: JournalRow): string {
  * такую ссылку. Приписка справа не двигает ни одного существующего индекса. «Заправлено, л»
  * остаётся на своём прежнем месте и не дублируется: это поток за смену, а не уровень в баке, и
  * второй его колонки в книге быть не должно.
+ *
+ * The shift time (ADR 0234) is appended after the fuel levels by the same rule: start, end and the
+ * duration in hours, the columns of the readings book (`readings-admin-export.ts`) under the same
+ * names and by the same helper (`readingShiftHours`).
  */
 const JOURNAL_HEADER = [
   'День',
@@ -403,9 +428,12 @@ const JOURNAL_HEADER = [
   'Показание',
   'Топливо на начало, л',
   'Топливо на конец, л',
+  'Начало',
+  'Окончание',
+  'Длительность, ч',
 ];
 /** Ширины — по числу колонок шапки; у остатков она под подпись, число там того же порядка, что заправленное. */
-const JOURNAL_WIDTHS = [12, 8, 18, 28, 18, 14, 12, 14, 12, 12, 34, 40, 20, 20];
+const JOURNAL_WIDTHS = [12, 8, 18, 28, 18, 14, 12, 14, 12, 12, 34, 40, 20, 20, 9, 11, 16];
 const VEHICLE_COLUMN = { header: 'Техника', width: 38 };
 
 /**
@@ -445,9 +473,20 @@ function journalRow(row: JournalRow, withVehicle: boolean): string[] {
       .filter(Boolean)
       .join('; '),
     readingStateText(row),
-    // Хвост строки — те же две колонки и в том же порядке, что в конце `JOURNAL_HEADER` (Р9).
+    // Хвост строки — те же колонки и в том же порядке, что в конце `JOURNAL_HEADER` (Р9).
     cell(num(row.fuelStartLiters), 1),
     cell(num(row.fuelEndLiters), 1),
+    // A legacy reading was never asked for a time, and a row without a reading has none: a dash.
+    clockTime(row.startedAt) ?? '—',
+    clockTime(row.endedAt) ?? '—',
+    cell(
+      readingShiftHours(row.sourceKind, {
+        startedAt: clockTime(row.startedAt),
+        endedAt: clockTime(row.endedAt),
+        points: row.points,
+      }),
+      2,
+    ),
   ];
 }
 

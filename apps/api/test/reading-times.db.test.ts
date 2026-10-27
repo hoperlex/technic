@@ -725,6 +725,20 @@ describe.skipIf(!DB_URL)('время смены и остановок (жива�
       ended_at: '10:30',
       reading_points: evening.items[0]!.reading!.points,
     });
+    // The garage's journal book reads them through its own query, the stops by a subquery.
+    const { buildReadingsExport } = await import('../src/services/readings-export');
+    const { readWorkbook } = await import('../src/lib/xlsx');
+    const book = await buildReadingsExport({
+      kind: 'vehicleJournal',
+      from: ctx.today,
+      to: ctx.today,
+      vehicleId: vehicle,
+      withMaintenance: false,
+      season: { winterFromMd: '11-01', winterToMd: '03-31', tolerancePercent: 5 },
+    });
+    const sheet = readWorkbook(book.bytes)[0]!;
+    const start = sheet.rows[0]!.indexOf('Начало');
+    expect(sheet.rows[1]!.slice(start, start + 3)).toEqual(['08:00', '10:30', '2,50']);
   });
 
   /**

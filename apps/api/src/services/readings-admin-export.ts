@@ -4,7 +4,7 @@ import {
   formatNameWithInitials,
   formatVehicleRouteNumber,
   readingAnomalyLabels,
-  readingShiftMinutes,
+  readingShiftHours,
   vehicleLabel,
   vehicleOwnershipLabels,
   waybillDisplayNumber,
@@ -467,18 +467,17 @@ const DETAIL_HEADER = [
 const DETAIL_WIDTHS = [12, 8, 24, 22, 14, 12, 12, 13, 19, 14, 19, 12, 9, 11, 16, 30, 34, 16];
 
 /**
- * Shift duration in hours (ADR 0234) by the one rule the portal has for it: an ESM-2 pair through
- * `shiftSpanMinutes`, a route through the sum of its stop steps. A dash until the times are
- * complete — an interim reading has no duration yet, and a zero would read as "did not work".
+ * Shift duration in hours (ADR 0234) by the one rule the portal has for it, shared with the
+ * garage's journal books (`readingShiftHours`): an ESM-2 pair through `shiftSpanMinutes`, a route
+ * through the sum of its stop steps.
  */
 function shiftHours(row: ShiftRow): number | null {
   if (row.reading_id === null) return null;
-  const minutes = readingShiftMinutes(row.source_kind, {
+  return readingShiftHours(row.source_kind, {
     startedAt: row.started_at ?? null,
     endedAt: row.ended_at ?? null,
     points: row.reading_points ?? [],
   });
-  return minutes === null ? null : Math.round((minutes / 60) * 100) / 100;
 }
 
 /** A clock time or a dash: a legacy reading was never asked for one. */

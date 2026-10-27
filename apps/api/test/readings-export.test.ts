@@ -277,6 +277,10 @@ function journalRow(over: JournalRow = {}): JournalRow {
     engineHoursAnomalyConfirmedAt: null,
     previousOdometerKm: 128_150,
     previousEngineHours: '9303.0',
+    // Times as the driver returns them: `time` as `HH:mm:ss`, the stops as the subquery's JSON.
+    startedAt: null,
+    endedAt: null,
+    points: [],
     ...over,
   };
 }
@@ -460,6 +464,10 @@ describe('выгрузки показаний: один сборщик, вари
       // именно затем, чтобы индексы всех колонок выше не сдвинулись.
       'Топливо на начало, л',
       'Топливо на конец, л',
+      // The shift time (ADR 0234) is appended after them by the same rule.
+      'Начало',
+      'Окончание',
+      'Длительность, ч',
     ]);
     expect(book[0]!.rows[1]).toEqual([
       '05.01.2026',
@@ -476,6 +484,9 @@ describe('выгрузки показаний: один сборщик, вари
       'передано водителем',
       '—',
       '—',
+      '—',
+      '—',
+      '—',
     ]);
     // Смена без показания из журнала не выпадает: «смена была, цифр нет» — то, ради чего его и
     // открывают. Прочерки в её числах не притворяются нулями.
@@ -483,7 +494,7 @@ describe('выгрузки показаний: один сборщик, вари
     // «Показание» спрашивается номером колонки, а не `at(-1)`: с приписанными остатками последней
     // ячейкой строки стало топливо, и хвостовой поиск читал бы соседа.
     expect(book[0]!.rows[2]![11]).toBe('не сдано');
-    expect(book[0]!.rows[2]!.slice(12)).toEqual(['—', '—']);
+    expect(book[0]!.rows[2]!.slice(12)).toEqual(['—', '—', '—', '—', '—']);
   });
 
   it('журнал машины по месяцам — месяц отдельным листом, пустой месяц тоже', async () => {
@@ -503,6 +514,65 @@ describe('выгрузки показаний: один сборщик, вари
     // гадать, попал ли месяц в выгрузку.
     expect(book[1]!.rows).toHaveLength(1);
     expect(book[2]!.rows[1]![0]).toBe('11.03.2026');
+  });
+
+  /**
+   * Shift time in the garage's journal books (ADR 0234) by the readings book's helper
+   * (`readingShiftHours`): an ESM-2 pair through the one pair rule — an end earlier than the start is
+   * the next day — and a route by the steps of its stops, not by its stored pair. An interim reading
+   * has a start and a dash for the duration: a zero would read as "did not work".
+   */
+  it('журналы машины и парка несут начало, окончание и длительность смены', async () => {
+    const stop = (position: number, arrivedAt: string | null, departedAt: string | null) => ({
+      position,
+      routePointId: null,
+      location: `Точка ${position}`,
+      arrivedAt,
+      departedAt,
+    });
+    state.journalRows = [
+      journalRow({
+        sourceKind: 'esm2',
+        routeNum: null,
+        startedAt: '20:00:00',
+        endedAt: '08:00:00',
+      }),
+      journalRow({
+        reportDate: '2026-01-06',
+        startedAt: '07:40:00',
+        endedAt: '11:50:00',
+        points: [stop(1, '07:40', '08:30'), stop(2, null, '10:05'), stop(3, null, '11:50')],
+      }),
+      // A route whose every step is zero lasted no time; its pair alone would read as a whole day.
+      journalRow({
+        reportDate: '2026-01-07',
+        startedAt: '09:00:00',
+        endedAt: '09:00:00',
+        points: [stop(1, '09:00', '09:00')],
+      }),
+      journalRow({
+        reportDate: '2026-01-08',
+        startedAt: '08:00:00',
+        endedAt: null,
+        points: [stop(1, '08:00', null), stop(2, null, null)],
+      }),
+    ];
+    state.journalTotal = 4;
+
+    for (const query of [
+      `kind=vehicleJournal&from=2026-01-01&to=2026-01-31&vehicleId=${VEHICLE_ID}`,
+      'kind=fleetJournal&from=2026-01-01&to=2026-01-31',
+    ]) {
+      const sheet = (await download(query))[0]!;
+      const start = sheet.rows[0]!.indexOf('Начало');
+      const times = sheet.rows.slice(1).map((row) => row.slice(start, start + 3));
+      expect(times, query).toEqual([
+        ['20:00', '08:00', '12,00'],
+        ['07:40', '11:50', '4,17'],
+        ['09:00', '09:00', '0,00'],
+        ['08:00', '—', '—'],
+      ]);
+    }
   });
 
   it('журнал всего парка — одним листом, машина первой колонкой', async () => {
@@ -569,6 +639,9 @@ describe('выгрузки показаний: один сборщик, вари
           ...OLD_HEADER,
           'Топливо на начало, л',
           'Топливо на конец, л',
+          'Начало',
+          'Окончание',
+          'Длительность, ч',
         ]);
         // Индексы старых колонок названы отдельно от сравнения целиком: сравнение упадёт и от
         // переименования, а вопрос караула — сдвиг, и он должен быть виден в отказе прямо.
@@ -603,8 +676,9 @@ describe('выгрузки показаний: один сборщик, вари
       const width = sheet.rows[0]!.length;
       for (const row of sheet.rows) expect(row, `${query}: ${row.join('|')}`).toHaveLength(width);
       // Формат ячейки тот же, каким книга пишет заправленное: одна десятая и запятая разделителем.
-      expect(sheet.rows[1]!.slice(-2), query).toEqual(['58,5', '12,0']);
-      expect(sheet.rows[2]!.slice(-2), query).toEqual(['—', '—']);
+      const fuel = sheet.rows[0]!.indexOf('Топливо на начало, л');
+      expect(sheet.rows[1]!.slice(fuel, fuel + 2), query).toEqual(['58,5', '12,0']);
+      expect(sheet.rows[2]!.slice(fuel, fuel + 2), query).toEqual(['—', '—']);
     }
   });
 
@@ -701,8 +775,8 @@ describe('срез на дату и право на данные ТО', () => {
           from: '2026-01-01',
           to: '2026-03-31',
           withMaintenance: false,
-      season: { winterFromMd: '11-01', winterToMd: '03-31', tolerancePercent: 5 },
-    })
+          season: { winterFromMd: '11-01', winterToMd: '03-31', tolerancePercent: 5 },
+        })
       ).bytes,
     );
 
