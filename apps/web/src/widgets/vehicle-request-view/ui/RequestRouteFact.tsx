@@ -74,7 +74,7 @@ const columns = [
 ];
 
 /** «Время по заявке» in words: the exact total, or why there is none. */
-export function routeTimeSummary(time: RequestRouteTimeDto): string {
+function routeTimeSummary(time: RequestRouteTimeDto): string {
   if (time.seconds !== null) return routeDurationLabel(time.seconds);
   return `нет — ${routeTimeIssueLabels[time.issues[0] ?? 'no_readings']}`;
 }
