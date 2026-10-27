@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DRIVER_REPORT_FORMATS,
   driverReadingTimeIssues,
   readingHasShiftEnd,
   readingInputSchema,
   readingPointsInputSchema,
   readingShiftMinutes,
   readingTimeIssues,
+  reportRequiresDriverTimes,
   reportSubmitSchema,
   routeElapsed,
   routeScalarTimes,
@@ -141,6 +143,14 @@ describe('обязательность у водителя (D11): «законч
         times: { startedAt: null, endedAt: null, points: [] },
       }),
     ).toEqual([]);
+  });
+
+  it('правило — по формату отчёта: старый v2 доканчивается без времени, каждый новый — со временем', () => {
+    // The server and the cabinet ask this one predicate, so a format added later carries the rule
+    // unless it is named here as exempt.
+    expect(DRIVER_REPORT_FORMATS.filter((format) => !reportRequiresDriverTimes(format))).toEqual([
+      'v2',
+    ]);
   });
 
   it('вечерние числа — одометр, моточасы или остаток на конец; заправка и утро — нет', () => {

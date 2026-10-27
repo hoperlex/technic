@@ -7,6 +7,7 @@ import {
   readingTimeIssues,
   moscowDateKeyOf,
   REPORT_ACCEPT_BLOCKED_CODE,
+  reportRequiresDriverTimes,
   STAFF_SUBMIT_PAST_DAYS,
   vehicleLabel,
   type DiscrepancyResolveInput,
@@ -700,11 +701,12 @@ async function assertReadingTimes(
   if (columns.kind !== 'values') return;
   const resolved = timesOf(times);
   const issues = readingTimeIssues(item.sourceKind, resolved);
-  // Every format from `v3` on carries the rule; only the legacy one is exempt.
+  // The stored format decides, not the client build: the cabinet previews the rule with the same
+  // predicate, so a format exemption added on one side only would refuse what the other accepts.
   if (
     issues.length === 0 &&
     actor.mode === 'driver' &&
-    report.draftFormat !== LEGACY_DRIVER_DRAFT_FORMAT
+    reportRequiresDriverTimes(report.draftFormat)
   ) {
     const hasStops =
       item.sourceKind === 'route' && (await routeHasStops(tx, item.routeId, times.points));
