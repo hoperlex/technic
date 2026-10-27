@@ -21,6 +21,7 @@ import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { isApiError } from '@shared/api';
 import { errorMessage } from '@shared/lib';
 import { FormModal } from '@shared/ui';
+import { IntakeTimeFields, timeInitialValues, timeKeys, type TimeValues } from './IntakeTimeFields';
 
 /**
  * Внесение показания за работника (ADR 0103; план «Показания техники», §7, Р26).
@@ -43,6 +44,8 @@ import { FormModal } from '@shared/ui';
  * 3. **Вид «нет возможности снять показания» ставит персонал, и только он** (план кабинета, Р4).
  *    Это закрытие строки с причиной, которую знает человек, а не пропуск: у водителя такого поля
  *    нет вовсе, и сервер его отправку с этим видом отклоняет.
+ *
+ * Times (ADR 0234) are the driver's fields here too, all optional (D5): see `IntakeTimeFields`.
  *
  * Подтверждения аномалии в теле нет намеренно (`confirm*Anomaly` уходят умолчанием `false`):
  * подтверждение приходит следующей волной и снятой подписи не снимает — сервер применяет его
@@ -89,7 +92,7 @@ function normalizeDecimal(raw: string, integer: boolean): string {
   return cleaned.split('.')[0]!.replace(/\D/gu, '');
 }
 
-interface Values {
+interface Values extends TimeValues {
   kind: ReadingKind;
   odometerKm?: string;
   engineHours?: string;
@@ -199,11 +202,17 @@ export function IntakeReadingForm({
       // 'invalid' сюда не доходит: его отвергло правило поля. Оговорка нужна типу, а не логике.
       return value === 'invalid' ? null : value;
     };
+    const times = v.kind === 'values' ? timeKeys(item, v) : { keys: {} };
+    if ('fields' in times) {
+      form.setFields(times.fields);
+      return;
+    }
     const parsed = readingInputSchema.safeParse(
       v.kind === 'no_data'
         ? { kind: 'no_data', noDataReason: v.noDataReason ?? '', comment: v.comment ?? '' }
         : {
             kind: 'values',
+            ...times.keys,
             odometerKm: numberOf(v.odometerKm),
             engineHours: numberOf(v.engineHours),
             // Остатки уходят явными ключами, в том числе пустыми: форма их показывает, значит
@@ -252,6 +261,7 @@ export function IntakeReadingForm({
           noDataReason: reading?.noDataReason ?? '',
           comment: reading?.comment ?? '',
           reason: '',
+          ...timeInitialValues(item),
         }}
         onFinish={submit}
       >
@@ -272,6 +282,7 @@ export function IntakeReadingForm({
 
         {kind === 'values' ? (
           <>
+            <IntakeTimeFields item={item} />
             <Form.Item
               name="odometerKm"
               label="Одометр на конец смены, км"

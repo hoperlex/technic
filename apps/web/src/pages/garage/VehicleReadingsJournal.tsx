@@ -12,11 +12,12 @@ import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-readin
 import { DataTable, ViewModal } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
 import { FilesCell } from '@entities/file';
+import { ShiftTimeCell } from './journalTimes';
 
 /**
- * Журнал показаний машины (ADR 0103, Р27): день, смена, кто передал, два счётчика и три числа
- * топлива, разности по каждому счётчику со своим предшественником, аномалии, фотографии и история
- * правок.
+ * Журнал показаний машины (ADR 0103, Р27): день, смена, кто передал, время смены и остановок (ADR
+ * 0234), два счётчика и три числа топлива, разности по каждому счётчику со своим предшественником,
+ * аномалии, фотографии и история правок.
  *
  * Окно читающее — правят показания в своём модуле, под `vehicleReadings.write` и с причиной. Гараж
  * показывает чужие данные ровно так же, как показывает рейсы и бланки (ADR 0076).
@@ -203,6 +204,12 @@ const columns: TableColumnType<VehicleReadingJournalRow>[] = [
         </Typography.Text>
       </Space>
     ),
+  },
+  {
+    key: 'time',
+    title: 'Время',
+    width: 190,
+    render: (_v, r) => <ShiftTimeCell row={r} />,
   },
   {
     key: 'odometer',
