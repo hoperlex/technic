@@ -4,6 +4,7 @@ import type {
   DayBatchApplyBody,
   IssueRequestEsm2Body,
   PlanVehicleRequestDayBody,
+  RequestRouteTimeDto,
   RequestWaybillDto,
   RouteTripFields,
   SaveVehicleRequestShiftBody,
@@ -99,6 +100,12 @@ export const vehicleRequestExecution = {
    * считает сервер — по нему таблица решает, какая строка ещё в будущем и потому неактивна.
    */
   shifts: (id: string) => apiFetch<VehicleRequestShiftsDto>(`/vehicle-requests/${id}/shifts`),
+  /**
+   * The actual time of a freight request (readings-shifts-merge plan §8): its stops as the driver
+   * recorded them and its share of the route time (D6), with the reasons it is missing. The card
+   * shows it, the completion window proposes it rounded up to a whole hour (D12).
+   */
+  routeTime: (id: string) => apiFetch<RequestRouteTimeDto>(`/vehicle-requests/${id}/route-time`),
   /** Записать смену дня: время, машиночасы, заправку и комментарий. */
   saveShift: (id: string, date: string, body: SaveVehicleRequestShiftBody) =>
     apiFetch<VehicleRequestShiftsDto>(`/vehicle-requests/${id}/shifts/${date}`, {

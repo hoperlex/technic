@@ -153,6 +153,13 @@ export const vehicleRequestKeys = createQueryKeys('vehicle-requests', {
    * Оставлена как есть — сегмент это ячейка кэша.
    */
   shifts: (id: string | undefined) => ['shifts', id],
+  /**
+   * The actual time of a freight request (readings-shifts-merge plan §8): one key for the card and
+   * the completion window, which ask the same question. Under the card's prefix on purpose, unlike
+   * `shifts`: a garage action on a reading invalidates the request root, and this answer is read
+   * from readings.
+   */
+  routeTime: (id: string | undefined) => [id, 'route-time'],
   // Ниже — история назначения (план `docs/assignment-periods-plan.md`, §9): кто и с какой даты
   // работал на заявке, что в этой истории чинить и чем обернётся правка срока. Имя `history`
   // закреплено за ней давно и потому занято; события самой заявки живут выше, под именем `events`.

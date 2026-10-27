@@ -18,6 +18,8 @@ import {
   assignmentTitle,
   calcVehicleRequestCost,
   rateForWorkUnit,
+  routeDurationLabel,
+  type RouteTimePrefill,
   shiftsCompletionWarning,
   unapprovedPastShiftDays,
   VEHICLE_WORK_UNITS,
@@ -68,6 +70,17 @@ function listDays(days: string[]): string {
   return `Без подписи: ${head}${rest > 0 ? ` и ещё ${rest}` : ''}`;
 }
 
+/**
+ * The basis of a freight request's hours (D7, D12): the exact recorded share and the whole hours it
+ * was rounded up to, or why nothing was proposed — the dispatcher sees where the number came from,
+ * or that it has to come from the invoice.
+ */
+function routeTimeHint(prefill: RouteTimePrefill | null): string | undefined {
+  if (!prefill) return undefined;
+  if (!prefill.ok) return `Время по точкам не подставлено: ${prefill.reason}`;
+  return `По точкам: ${routeDurationLabel(prefill.seconds)} → ${workedAmountLabel('hours', prefill.hours)}, округлено вверх до часа`;
+}
+
 interface Props {
   request: VehicleRequestDto;
   form: FormInstance<CompletionFormValues>;
@@ -79,6 +92,11 @@ interface Props {
   unit: VehicleWorkUnit;
   /** Таблица смен заявки: из неё считаются принятые часы и дни без подписи объекта. */
   shifts: VehicleRequestShiftsDto | undefined;
+  /**
+   * A freight request's recorded route time as the window proposes it (D7, D12), or the reason it
+   * proposes none; `null` — not freight, or not loaded yet.
+   */
+  routePrefill?: RouteTimePrefill | null;
   /** Сумму уже правили руками — подсказка о расхождении с расчётом показывается только тогда. */
   costTouched: boolean;
   onUnitChange: (unit: VehicleWorkUnit) => void;
@@ -93,6 +111,7 @@ export function CompletionFields({
   bounds,
   unit,
   shifts,
+  routePrefill = null,
   costTouched,
   onUnitChange,
   onAmountChange,
@@ -228,7 +247,7 @@ export function CompletionFields({
                   ]
                     .filter(Boolean)
                     .join(' · ')
-                : undefined
+                : routeTimeHint(routePrefill)
             }
           >
             <InputNumber

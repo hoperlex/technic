@@ -22,6 +22,7 @@ import { useAuth } from '@entities/session';
 import { vehicleRequestErrorMessage as errorMessage } from '@entities/vehicle-request';
 import { CompletionConsequences, CompletionHandshakeFields } from './CompletionConsequences';
 import { CompletionFields, type CompletionFormValues } from './CompletionFields';
+import { useRouteTimePrefill } from './useRouteTimePrefill';
 import {
   bodyOf,
   type CompletionBody,
@@ -131,15 +132,19 @@ export function VehicleCompleteModal({
       ? completionEndBounds(request, onDate)
       : null;
 
-  // Принятые объектом машиночасы: ими открывается поле, если объект уже расписался. Таблица смен
-  // нужна и полям — она же перечисляет дни без подписи, — поэтому спрашивается здесь и уходит вниз
-  // одним ответом: два запроса за теми же строками разошлись бы между собой.
+  // Machine hours the site signed open the field when there are any. The fields need the shift
+  // table too — it lists the unsigned days — so it is asked here and passed down as one answer: two
+  // queries for the same rows could disagree.
   const { data: shifts } = useQuery({
     queryKey: vehicleRequestKeys.shifts(request?.id),
     queryFn: () => vehicleRequestsApi.shifts(request!.id),
     enabled: !!request && request.requestType === 'special_equipment',
   });
   const approvedHours = shifts ? approvedMachineHours(shifts.items) : 0;
+  // A freight request's basis is its share of the recorded route time, rounded up (D7, D12).
+  const routePrefill = useRouteTimePrefill(request);
+  /** Hours the work is closed by: signed shifts or the route share — never both on one request. */
+  const basisHours = approvedHours > 0 ? approvedHours : routePrefill?.ok ? routePrefill.hours : 0;
 
   // Окно переиспользуется под разные заявки, поэтому поля сбрасываются при смене цели, а не при
   // размонтировании. Повторное закрытие (после отката администратором) открывается на прежнем
@@ -147,10 +152,10 @@ export function VehicleCompleteModal({
   const targetId = request?.id ?? null;
   const resetForRequest = useEffectEvent((_id: string | null, _hours: number) => {
     if (!request) return;
-    // Подтверждённые смены закрывают заявку часами: за них расписался объект, и второй счёт
-    // (в сменах) спорил бы с первым. Прежнее закрытие всё равно главнее — его правят, а не
-    // набирают заново.
-    const start = !request.completion && approvedHours > 0 ? 'hours' : defaultUnit(request);
+    // Signed shifts (or a freight request's recorded route time) close the request in hours: the
+    // site signed them, or the driver recorded them, and a second count in shifts would argue with
+    // the first. The previous completion still wins — it is corrected, not typed again.
+    const start = !request.completion && basisHours > 0 ? 'hours' : defaultUnit(request);
     const previous = request.completion;
     setUnit(start);
     setCostTouched(!!previous);
@@ -164,9 +169,7 @@ export function VehicleCompleteModal({
     const endedOn = bounds?.max ?? null;
     const amount =
       previous?.workedAmount ??
-      (start === 'hours' && approvedHours > 0
-        ? approvedHours
-        : plannedAmount(request, start, endedOn));
+      (start === 'hours' && basisHours > 0 ? basisHours : plannedAmount(request, start, endedOn));
     form.setFieldsValue({
       endedOn: endedOn ? dayjs(endedOn) : undefined,
       workedAmount: amount,
@@ -178,10 +181,10 @@ export function VehicleCompleteModal({
       reason: '',
     });
   });
-  // Зависимости — заявка и подтверждённые часы: таблица смен приходит вторым запросом, и до
-  // её ответа подставлять было нечего. Перерисовка той же заявки поля не трогает — иначе
-  // стёрла бы уже набранное.
-  useEffect(() => resetForRequest(targetId, approvedHours), [targetId, approvedHours]);
+  // Dependencies are the request and the basis hours: the shift table and the route time come by
+  // a second query, and before their answer there was nothing to propose. A re-render of the same
+  // request does not touch the fields — it would erase what was already typed.
+  useEffect(() => resetForRequest(targetId, basisHours), [targetId, basisHours]);
 
   const endedOn = Form.useWatch('endedOn', form);
 
@@ -364,6 +367,7 @@ export function VehicleCompleteModal({
               bounds={bounds}
               unit={unit}
               shifts={shifts}
+              routePrefill={routePrefill}
               costTouched={costTouched}
               onUnitChange={changeUnit}
               onAmountChange={changeAmount}

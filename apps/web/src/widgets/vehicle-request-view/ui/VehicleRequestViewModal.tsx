@@ -5,6 +5,7 @@ import { vehicleRequestChangeLabels } from '@technic/contracts';
 import { ViewFields, ViewModal } from '@shared/ui';
 import type { VehicleRequestViewModalProps } from '../model/types';
 import { useVehicleRequestViewData } from '../model/useVehicleRequestViewData';
+import { RequestRouteFact } from './RequestRouteFact';
 import { RequestTripsTable } from './RequestTripsTable';
 import { requestAssignmentFields } from './requestAssignmentFields';
 import { requestExecutionFields } from './requestExecutionFields';
@@ -97,6 +98,11 @@ export function VehicleRequestViewModal({
           </div>
         </div>
       )}
+
+      {/* What the driver recorded at this request's stops and its share of the route time
+          (readings-shifts-merge plan §8): freight only — an on-site order keeps its time by day
+          on the shift tab. The block decides itself whether there is anything to say. */}
+      <RequestRouteFact request={request} />
 
       {request.files.length > 0 && (
         <div>
