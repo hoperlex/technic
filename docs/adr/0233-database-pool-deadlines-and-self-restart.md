@@ -88,6 +88,12 @@ limit is what keeps a row inside its lease.
 - During a long cluster outage the API exits every minute or so and Docker restarts it with a
   growing delay of up to a minute; between restarts nginx answers 502 instead of 503. Accepted: a
   restart costs nothing while the cluster is down and is the only cure when the process is stuck.
+- Both exits work only if the process's exit ends the container. Locally the exit passes the whole
+  launch chain (`pnpm --filter … start` → `sh -c` → `tsx` → `node`), but on 22.10.2026 the worker
+  process died on an unhandled IMAP error and the container stayed `Up` without a restart, for a
+  reason not yet known (card «Оргтехника: обрыв почтового ящика больше не роняет worker»). Until the
+  prod check (`RestartCount`, `docker top`, log timestamps) explains it, a restart after these
+  exits is expected, not proven; a fix of the launch chain is one decision for both cases.
 - A COMMIT that hits the deadline is ambiguous: the rotation may have landed. The kept old token
   then reads as reuse on the next refresh and ends the session, the same outcome as before, only
   rarer.
