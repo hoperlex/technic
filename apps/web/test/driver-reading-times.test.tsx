@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import dayjs from 'dayjs';
 import type {
@@ -16,6 +16,9 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { DriverLayout } from '../src/pages/driver/DriverLayout';
 import { DriverReadingsPage } from '../src/pages/driver/DriverReadingsPage';
+import { ReadingBlock } from '../src/pages/driver/DriverReadingBlock';
+import { emptyItem } from '../src/pages/driver/readingsDraft';
+import { stopsOf } from '../src/pages/driver/readingStops';
 
 /**
  * Shift and stop times in the driver cabinet (ADR 0234; plan `docs/readings-shifts-merge-plan.md`
@@ -552,5 +555,50 @@ describe('кабинет водителя: время смены и остано
         { position: 2, routePointId: null, arrivedAt: null, departedAt: '10:05' },
       ],
     });
+  });
+
+  it('в читающем дне время не правится: поля и «сейчас» выключены вместе с числами (Р10)', () => {
+    const onChange = vi.fn();
+    const entry = assignmentOf([routeItem]).entries[0]!;
+    renderWithUser(
+      <>
+        <ReadingBlock
+          item={esm2Item}
+          value={emptyItem()}
+          previous={null}
+          stops={[]}
+          errors={{}}
+          uploading={false}
+          readOnly
+          onChange={onChange}
+          onUpload={vi.fn()}
+          onRemoveFile={vi.fn()}
+        />
+        <ReadingBlock
+          item={routeItem}
+          value={emptyItem()}
+          previous={null}
+          stops={stopsOf(routeItem, entry)}
+          errors={{}}
+          uploading={false}
+          readOnly
+          onChange={onChange}
+          onUpload={vi.fn()}
+          onRemoveFile={vi.fn()}
+        />
+      </>,
+      { user: driver },
+    );
+
+    const buttons = screen.getAllByRole('button', { name: /: сейчас$/u });
+    // Two at the ESM-2 pair, four at the route's stops.
+    expect(buttons).toHaveLength(6);
+    for (const button of buttons) {
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(button);
+    }
+    expect(field(blockOf(esm2Item.id), 'Время начала').disabled).toBe(true);
+    expect(field(stop(1), 'Прибытие').disabled).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
