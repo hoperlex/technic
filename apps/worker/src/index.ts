@@ -9,6 +9,7 @@ import { PermanentMailError } from './mail-transport';
 import { RateLimiter } from './mail-rate';
 import { createMailAccounts } from './mail-accounts';
 import { tickMailings } from './mail-scheduler';
+import { watchLoop } from './loop-watch';
 import { readDeviceMailConfig, startDeviceMailPoller } from './device-mail';
 import {
   createEngineFrom,
@@ -667,6 +668,43 @@ async function reclaimExpiredSafely(): Promise<void> {
   }
 }
 
+/*
+ * Loop watchdog. Every job, tick and cleanup pass runs in one sequential loop, so a single await
+ * that never settles stops all of them while the process stays up: on prod 22.10.2026 the queue
+ * (ticket OCR, mail, S3 deletes) stood for four days with the container `Up` and the log silent. No
+ * healthcheck watches the worker, so the exit hands the restart to Docker (`unless-stopped`, the
+ * same path as the pool stall exit of ADR 0233). Held jobs return to the queue when their lease
+ * expires, and the attempt that costs them ends a job that hangs every time in `dead`.
+ *
+ * The limit sits above the longest legitimate step: one ticket job is up to five pages of OCR calls
+ * of up to two minutes each plus PDF rendering, about a quarter of an hour. A floor keeps a typo in
+ * the variable from restarting the worker in the middle of every such job.
+ */
+const DEFAULT_LOOP_STALL_MS = 30 * 60_000;
+const MIN_LOOP_STALL_MS = 10 * 60_000;
+
+function readLoopStallMs(): number {
+  const raw = process.env.WORKER_LOOP_STALL_MS;
+  if (!raw) return DEFAULT_LOOP_STALL_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < MIN_LOOP_STALL_MS) {
+    logger.warn(
+      { WORKER_LOOP_STALL_MS: raw, minMs: MIN_LOOP_STALL_MS, usedMs: DEFAULT_LOOP_STALL_MS },
+      'WORKER_LOOP_STALL_MS задан неверно — берётся значение по умолчанию',
+    );
+    return DEFAULT_LOOP_STALL_MS;
+  }
+  return value;
+}
+
+const loopWatch = watchLoop({
+  stallMs: readLoopStallMs(),
+  onStall: (stall) => {
+    logger.fatal(stall, 'Цикл worker не продвигается: worker завершается для перезапуска');
+    process.exit(1);
+  },
+});
+
 async function processJobs(): Promise<number> {
   await reclaimExpiredSafely();
 
@@ -679,6 +717,7 @@ async function processJobs(): Promise<number> {
   const stopHeartbeat = startLeaseHeartbeat(held);
   try {
     for (const job of claimed) {
+      loopWatch.enter('job', { jobId: job.id, type: job.type });
       try {
         const outcome = await handleJob(job);
         if (outcome?.deferUntil) {
@@ -1215,21 +1254,26 @@ async function loop(): Promise<void> {
   );
   while (!stopping) {
     try {
+      loopWatch.enter('jobs');
       const processed = await processJobs();
       if (Date.now() - lastMailingTick > MAILING_TICK_MS) {
         lastMailingTick = Date.now();
+        loopWatch.enter('mailings');
         await tickMailingsSafely();
       }
       if (Date.now() - lastDeviceMailTick > DEVICE_MAIL_TICK_MS) {
         lastDeviceMailTick = Date.now();
+        loopWatch.enter('device-mail');
         await tickDeviceMailSafely();
       }
       if (Date.now() - lastServiceAutoCloseTick > SERVICE_AUTO_CLOSE_TICK_MS) {
         lastServiceAutoCloseTick = Date.now();
+        loopWatch.enter('service-auto-close');
         await tickServiceAutoCloseSafely();
       }
       if (Date.now() - lastCleanup > CLEANUP_INTERVAL_MS) {
         lastCleanup = Date.now();
+        loopWatch.enter('cleanup');
         await cleanupFiles();
         // Черновики — до файлов? Нет: наоборот. Снос черновика освобождает источник, но файлов у
         // него нет по построению (показаний-то нет), а вот файлы, брошенные незавершённой
