@@ -1465,8 +1465,13 @@ echo 'SMARTCAPTCHA_DISABLED=true' | sudo tee -a /etc/technic-portal/prod.env
 docker compose -f deploy/docker-compose.yml -p technic up -d --force-recreate technic-api
 
 # Check from anywhere: the portal must get no key, so it hides the field
-curl -s https://auto.su10.ru/api/v1/auth/captcha     # {"clientKey":null}
+curl -s https://auto.su10.ru/api/v1/auth/captcha -H 'X-Client-Contract: 7'   # {"clientKey":null}
 ```
+
+The header is required: without it the request reads as client contract 1, below the production
+floor, and gets `426 client_upgrade_required` instead of the answer. `7` is the portal's current
+`CLIENT_CONTRACT` (`apps/web/src/shared/api/clientContract.ts`); any value at or above the floor
+works.
 
 - Only the exact `true` pauses; any other value leaves the captcha on. A release older than the
   switch ignores the variable altogether.
@@ -1479,7 +1484,7 @@ curl -s https://auto.su10.ru/api/v1/auth/captcha     # {"clientKey":null}
 - A tab opened before the switch already holds the key and keeps the widget until reloaded.
 
 To turn it back on: delete the `SMARTCAPTCHA_DISABLED` line, recreate `technic-api`, check that
-`/api/v1/auth/captcha` returns the `ysc1_…` key again, then pass the registration form by hand on
+`/api/v1/auth/captcha` (same header) returns the `ysc1_…` key again, then pass the registration form by hand on
 the production domain — only a live pass shows that a real token is accepted.
 
 ## Почта: очередь и разбор жалоб «письмо не пришло»
