@@ -12,6 +12,9 @@ import ts from 'typescript';
 export const PURE_BARRELS = [
   'apps/web/src/entities/service-request/index.ts',
   'apps/web/src/entities/office-equipment/index.ts',
+  // The shell's route-window provider needs only keys and links from it, while the barrel also
+  // carries the shift notes, whose reading and shift schemas would otherwise load on every screen.
+  'apps/web/src/entities/vehicle-request/index.ts',
   'packages/contracts/src/index.ts',
 ] as const;
 

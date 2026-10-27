@@ -27,6 +27,7 @@ describe('узкая политика чистых публичных входо
   it('не помечает соседние входы или shared/lib с инициализацией dayjs', () => {
     const matches = (path: string) => pureBarrelRules.some(({ test }) => test.test(path));
     expect(matches('/repo/apps/web/src/entities/service-request/index.ts')).toBe(true);
+    expect(matches('/repo/apps/web/src/entities/vehicle-request/index.ts')).toBe(true);
     expect(matches('/repo/apps/web/src/entities/service-request/ui/index.ts')).toBe(false);
     expect(matches('/repo/apps/web/src/shared/lib/index.ts')).toBe(false);
     expect(matches('/repo/apps/web/src/entities/session/index.ts')).toBe(false);
