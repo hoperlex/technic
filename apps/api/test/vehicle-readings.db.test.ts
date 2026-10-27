@@ -267,6 +267,12 @@ async function new4p(
   return waybill!.id;
 }
 
+/**
+ * Shift times of a driver's ESM-2 line in a `v3` report (ADR 0234, D11): the start always, the end
+ * with any evening value. Route lines here have no stops and carry no time at all.
+ */
+const ESM2_TIMES = { startedAt: '08:00', endedAt: '18:00' } as const;
+
 /** Числа показания: поля с умолчаниями схема заполняет сама, а сервис зовётся уже разобранным телом. */
 function values(input: Partial<Omit<ReadingInput & { kind: 'values' }, 'kind'>>): ReadingInput {
   return {
@@ -484,7 +490,13 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
         ctx.service.submitReport(
           ctx.drivers.twin,
           ctx.today,
-          { version: report!.version, items: [line(itemId, values({}))], reason: '' },
+          // The start time is there, so the driver's D11 rule passes and the empty body reaches the
+          // CHECK it is about.
+          {
+            version: report!.version,
+            items: [line(itemId, values({ startedAt: ESM2_TIMES.startedAt }))],
+            reason: '',
+          },
           ctx.adminId,
           null,
         ),
@@ -785,7 +797,7 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
       first,
       {
         version: day1.version,
-        items: [line(day1.items[0]!.id, values({ odometerKm: 5000 }))],
+        items: [line(day1.items[0]!.id, values({ odometerKm: 5000, ...ESM2_TIMES }))],
         reason: '',
       },
       ctx.adminId,
@@ -801,7 +813,7 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
       second,
       {
         version: day2.version,
-        items: [line(day2.items[0]!.id, values({ odometerKm: 5120 }))],
+        items: [line(day2.items[0]!.id, values({ odometerKm: 5120, ...ESM2_TIMES }))],
         reason: '',
       },
       ctx.adminId,
@@ -842,7 +854,7 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
       {
         version: report.version,
         items: [
-          line(shift1.id, values({ odometerKm: 1400 })),
+          line(shift1.id, values({ odometerKm: 1400, ...ESM2_TIMES })),
           line(shift2.id, values({ odometerKm: 2800 })),
         ],
         reason: '',
@@ -898,7 +910,7 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
       ctx.today,
       {
         version: opened!.version,
-        items: [line(item1!.id, values({ odometerKm: 500 }))],
+        items: [line(item1!.id, values({ odometerKm: 500, ...ESM2_TIMES }))],
         reason: '',
       },
       ctx.adminId,
@@ -936,7 +948,10 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
           ctx.today,
           {
             version: sent.version,
-            items: [line(item1!.id, values({ odometerKm: 600 })), line(item2!.id, values({}))],
+            items: [
+              line(item1!.id, values({ odometerKm: 600, ...ESM2_TIMES })),
+              line(item2!.id, values({ startedAt: ESM2_TIMES.startedAt })),
+            ],
             reason: '',
           },
           ctx.adminId,

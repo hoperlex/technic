@@ -483,6 +483,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: '`newEsm2` (250–271) недельный; тест 417–445 требует, чтобы понедельник и вторник дали строки ОДНОГО `waybillId`, и на паре «лист+день» проверяется `report_items_waybill_key`',
   },
   {
+    file: 'reading-times.db.test.ts',
+    klass: 'consumer',
+    status: 'done',
+    note: 'driver shift and stop times (ADR 0234): `makeEsm2` inserts a one-day sheet (`period_from = period_to = today`) only so that the day has an ESM-2 source; the bounds go into no assertion, and a one-day segment is already the shape the read switch produces. Marked ЭСМ2-РАЗРЕЗ at `makeEsm2`',
+  },
+  {
     file: 'shift-driver-days.db.test.ts',
     klass: 'consumer',
     status: 'done',
@@ -534,6 +540,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
 
   // ── mention: упоминание кода формы, права или комментария ──
 
+  {
+    file: 'reading-times-contracts.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note: 'pure time rules of a reading (ADR 0234): `esm2` is a source kind passed to the functions; no sheet, no period',
+  },
   {
     file: 'shift-driver-days.test.ts',
     klass: 'mention',

@@ -52,8 +52,21 @@ export const DRIVER_DRAFT_FORMAT_HEADER = 'x-driver-draft-format';
  * по строке ожидания (Р11). Значение здесь одно и сравнивается точно: «неизвестный формат» — это и
  * старая сборка, которая ещё пишет `v1`, и будущая, о которой этот сервер ничего не знает; пускать
  * писать черновик ни ту, ни другую нельзя.
+ *
+ * `v3` (ADR 0234): the draft also holds shift and stop times. The open door requires it for every
+ * report, and the submit door checks it against the report's STORED format, after the idempotency
+ * lookup: a `v3` report takes only a `v3` build, while a `v2` report opened before the release
+ * still finishes and replays from the build that opened it.
  */
-export const DRIVER_DRAFT_FORMAT = 'v2';
+export const DRIVER_DRAFT_FORMAT = 'v3';
+
+/**
+ * Formats a report can be stored under (`driver_daily_reports.draft_format`). `v2` is every report
+ * opened before the release or by old code during the migration window; `v3` is what new code
+ * opens.
+ */
+export const DRIVER_REPORT_FORMATS = ['v2', 'v3'] as const;
+export type DriverReportFormat = (typeof DRIVER_REPORT_FORMATS)[number];
 
 /**
  * Код отказа «сборка портала устарела» (Р13). Отдельным кодом, а не текстом: новая сборка по нему
@@ -123,6 +136,12 @@ export interface DriverAssignmentAction {
  * — обещание, что полный текст водитель получит другим каналом (§8 плана).
  */
 export interface DriverAssignmentPoint {
+  /**
+   * The route point itself (`vehicle_route_points.id`): the cabinet sends it back with the stop
+   * times, and the server compares it with the live route at the first capture (ADR 0234). It is a
+   * route's own row, not a directory record, so the cabinet's "no directory ids" rule holds.
+   */
+  id: string;
   /** Место в порядке объезда, 1..N: им остановки и пронумерованы в письме и в кабинете. */
   position: number;
   location: string;

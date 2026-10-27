@@ -47,6 +47,10 @@ const TODAY = moscowDateKeyOf(new Date());
 const state = vi.hoisted(() => ({
   /** Журнал обращений к сервисам: им проверяется, что до открытия дошли (или не дошли). */
   calls: [] as string[],
+  /** The options the submit door handed to the service: the declared format travels in them. */
+  submitOptions: [] as unknown[],
+  /** The same for the open door. */
+  openOptions: [] as unknown[],
 }));
 
 /**
@@ -109,6 +113,7 @@ function draftReport(): DriverReportDto {
     personName: 'Водителев Водитель Водителевич',
     reportDate: TODAY,
     state: 'draft',
+    draftFormat: 'v3',
     contentVersion: 0,
     version: 0,
     acceptedContentVersion: null,
@@ -129,16 +134,18 @@ function draftReport(): DriverReportDto {
  */
 vi.mock('../src/services/readings', async (importOriginal) => ({
   ...(await importOriginal<typeof ReadingsNs>()),
-  openReport: async (): Promise<DriverReportDto> => {
+  openReport: async (...args: unknown[]): Promise<DriverReportDto> => {
     state.calls.push('open');
+    state.openOptions.push(args[3]);
     return draftReport();
   },
   loadReport: async (): Promise<DriverReportDto | null> => {
     state.calls.push('load');
     return draftReport();
   },
-  submitReport: async (): Promise<DriverReportDto> => {
+  submitReport: async (...args: unknown[]): Promise<DriverReportDto> => {
     state.calls.push('submit');
+    state.submitOptions.push(args[5]);
     return draftReport();
   },
 }));
@@ -222,8 +229,22 @@ describe('открытие отчёта дня требует объявленн
     expect(state.calls).toEqual([]);
   });
 
+  /**
+   * `v2` is the build before ADR 0234. The door lets it through to the service with its format
+   * named, and only the service can answer: it may reopen a report that is itself `v2` (so a report
+   * opened before the release can finish) and is refused on a new or a `v3` report — that refusal is
+   * checked on the live schema (`reading-times.db.test.ts`).
+   */
+  it('сборка `v2` доходит до открытия со своим форматом — решает сервис по сохранённому отчёту', async () => {
+    state.openOptions.length = 0;
+    const res = await open('v2');
+    expect(res.statusCode).toBe(200);
+    expect(state.calls).toEqual(['open']);
+    expect(state.openOptions).toEqual([{ clientDraftFormat: 'v2' }]);
+  });
+
   it('незнакомое значение тоже не пускает — сравнение точное', async () => {
-    for (const value of ['', 'V2', 'v2 ', 'v3', 'v2,v1']) {
+    for (const value of ['', 'V3', 'v3 ', 'v4', 'v3,v2']) {
       const res = await open(value);
       expect(res.statusCode, `формат «${value}»`).toBe(409);
       expect(res.json().code).toBe(DRIVER_CLIENT_OUTDATED_CODE);
@@ -243,10 +264,12 @@ describe('открытие отчёта дня требует объявленн
   });
 
   it('с объявленным форматом открытие проходит', async () => {
+    state.openOptions.length = 0;
     const res = await open(DRIVER_DRAFT_FORMAT);
     expect(res.statusCode).toBe(200);
     expect(res.json().id).toBe(REPORT_ID);
     expect(state.calls).toEqual(['open']);
+    expect(state.openOptions).toEqual([{ clientDraftFormat: DRIVER_DRAFT_FORMAT }]);
   });
 
   it('регистр имени заголовка значения не имеет', async () => {
@@ -299,5 +322,32 @@ describe('остальные ручки кабинета запретом не �
     });
     expect(res.statusCode).toBe(200);
     expect(state.calls).toEqual(['submit']);
+  });
+
+  /**
+   * The door does not judge the format on submit, it hands it over: only the service knows the
+   * report's stored format, and only after its idempotency lookup may it refuse (ADR 0234). An
+   * absent header arrives as `null` — "a build that declared nothing" — not as `undefined`, which
+   * the service reads as "not a cabinet call".
+   */
+  it('передача показаний передаёт сервису объявленный формат, а без заголовка — null', async () => {
+    const submit = (format?: string) =>
+      app.inject({
+        method: 'POST',
+        url: `/api/v1/driver/reports/${TODAY}/submit`,
+        remoteAddress: nextAddress(),
+        headers: headersWith(format),
+        payload: {
+          version: 0,
+          items: [{ itemId: ITEM_ID, reading: { kind: 'values', odometerKm: 128_400 } }],
+        },
+      });
+    state.submitOptions.length = 0;
+    expect((await submit(DRIVER_DRAFT_FORMAT)).statusCode).toBe(200);
+    expect((await submit()).statusCode).toBe(200);
+    expect(state.submitOptions).toEqual([
+      { clientDraftFormat: DRIVER_DRAFT_FORMAT },
+      { clientDraftFormat: null },
+    ]);
   });
 });

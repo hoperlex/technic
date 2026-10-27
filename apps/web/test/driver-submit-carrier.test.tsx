@@ -45,6 +45,7 @@ function reportOf(overrides: Partial<DriverReportDto> = {}): DriverReportDto {
     personName: driver.fullName,
     reportDate: today,
     state: 'draft',
+    draftFormat: 'v2',
     contentVersion: 1,
     version: 3,
     acceptedContentVersion: null,

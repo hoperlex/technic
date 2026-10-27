@@ -19,6 +19,7 @@ import {
   vehicleLabel,
   type VehicleOwnership,
   type VehicleReadingDto,
+  type VehicleReadingPointDto,
   waybillDisplayNumber,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -101,6 +102,14 @@ export type IntakeSqlRow = {
   fuel_start_liters: string | null;
   fuel_filled_liters: string | null;
   fuel_end_liters: string | null;
+  /** Shift time `HH:mm` (ADR 0234), formatted by the query like `recorded_at`. */
+  started_at: string | null;
+  ended_at: string | null;
+  /**
+   * Recorded stops of the reading, aggregated by the same query: the registry and the readings
+   * book read one row set, and a second query per page would be a second answer to "which stops".
+   */
+  reading_points: VehicleReadingPointDto[];
   no_data_reason: string | null;
   comment: string | null;
   reading_source: 'driver' | 'staff' | null;
@@ -173,6 +182,17 @@ SELECT r.source_id,
        vr.fuel_start_liters,
        vr.fuel_filled_liters,
        vr.fuel_end_liters,
+       to_char(vr.started_at, 'HH24:MI') AS started_at,
+       to_char(vr.ended_at, 'HH24:MI')   AS ended_at,
+       (SELECT coalesce(json_agg(json_build_object(
+                 'position', rp.position,
+                 'routePointId', rp.route_point_id,
+                 'location', rp.location,
+                 'arrivedAt', to_char(rp.arrived_at, 'HH24:MI'),
+                 'departedAt', to_char(rp.departed_at, 'HH24:MI')
+               ) ORDER BY rp.position), '[]'::json)
+          FROM vehicle_reading_points rp
+         WHERE rp.reading_id = vr.id) AS reading_points,
        vr.no_data_reason,
        vr.comment,
        vr.source::text           AS reading_source,
@@ -257,6 +277,9 @@ function readingOf(row: IntakeSqlRow): VehicleReadingDto | null {
     fuelStartLiters: num(row.fuel_start_liters),
     fuelFilledLiters: num(row.fuel_filled_liters),
     fuelEndLiters: num(row.fuel_end_liters),
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    points: row.reading_points ?? [],
     noDataReason: row.no_data_reason ?? '',
     comment: row.comment ?? '',
     source: row.reading_source ?? 'staff',

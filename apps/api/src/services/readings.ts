@@ -1,6 +1,10 @@
 import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
 import {
+  DRIVER_CLIENT_OUTDATED_CODE,
+  DRIVER_DRAFT_FORMAT,
   DRIVER_SUBMIT_PAST_DAYS,
+  driverReadingTimeIssues,
+  readingTimeIssues,
   moscowDateKeyOf,
   REPORT_ACCEPT_BLOCKED_CODE,
   STAFF_SUBMIT_PAST_DAYS,
@@ -8,6 +12,7 @@ import {
   type DiscrepancyResolveInput,
   type DiscrepancyTargetDto,
   type DriverAssignmentEntry,
+  type DriverReportFormat,
   type DriverReportDto,
   type ReadingInput,
   type ReadingRebaseInput,
@@ -39,6 +44,18 @@ import {
 import { sha256hex } from '../lib/crypto';
 import { err } from '../lib/errors';
 import { assertFilesAttachable, markFilesActive } from './request-files';
+import {
+  clockTime,
+  loadReadingPoints,
+  pointDto,
+  resolveReadingTimes,
+  routeHasStops,
+  timesOf,
+  timesSnapshot,
+  writeReadingPoints,
+  type ResolvedReadingTimes,
+  type StoredPoint,
+} from './reading-times';
 // Задание дня собирает общий слой (Р12): кабинет и рассылка обязаны видеть один и тот же день, и
 // второй сборки «что у человека сегодня» в портале быть не должно.
 import { loadDayEntries } from './driver-assignment';
@@ -110,7 +127,31 @@ export interface ReadingsWriteOptions {
   mode?: ReadingSource;
   /** Обязательна, когда персонал правит уже сданное число (Р19). */
   reason?: string;
+  /**
+   * The draft format the cabinet build declared (`DRIVER_DRAFT_FORMAT_HEADER`), `null` when the
+   * header is absent. Only the cabinet routes pass it; `undefined` means the caller is not a cabinet
+   * build and no format is negotiated (staff entry, services, tests of the current build).
+   */
+  clientDraftFormat?: string | null;
 }
+
+/**
+ * Text of the "outdated build" refusal. Self-contained on purpose: the build that reads it was
+ * loaded before this release, does not know `client_outdated` and shows the message as a plain
+ * error — so it names the whole action and refers to no button, which that build does not have.
+ */
+const CLIENT_OUTDATED_TEXT = 'Приложение обновилось: закройте вкладку и откройте кабинет заново';
+
+/** The refusal to a cabinet build whose draft format does not match the report (ADR 0129, 0234). */
+export function driverClientOutdated(): Error {
+  return err.conflict(CLIENT_OUTDATED_TEXT, { code: DRIVER_CLIENT_OUTDATED_CODE });
+}
+
+/**
+ * The format of the build before ADR 0234. It may still open and finish a report that was opened
+ * under it, but never start one: a report born from it would carry no time rule.
+ */
+export const LEGACY_DRIVER_DRAFT_FORMAT: DriverReportFormat = 'v2';
 
 /** Операции приёмки и разбора — право персонала (`vehicleReadings.write`), и другого ввода нет. */
 function staffActor(actorUserId: string): ReadingsActor {
@@ -217,6 +258,8 @@ export async function openReport(
       .where(
         and(eq(driverDailyReports.personId, personId), eq(driverDailyReports.reportDate, date)),
       );
+    // Checked before `ensureReport`: a legacy build must not create the report it is refused on.
+    assertLegacyOpen(existing[0], options);
     const scoutedItems = existing[0]
       ? await tx
           .select()
@@ -237,8 +280,14 @@ export async function openReport(
     const opened = await ensureReport(tx, personId, date, actor);
     const foreignReportIds = occupying.map((i) => i.reportId).filter((id) => id !== opened.id);
     const locked = await lockReports(tx, [opened.id, ...foreignReportIds]);
-    const report = locked.get(opened.id);
-    if (!report) throw err.conflict('Отчёт дня исчез, повторите открытие');
+    const lockedReport = locked.get(opened.id);
+    if (!lockedReport) throw err.conflict('Отчёт дня исчез, повторите открытие');
+    // Again under the lock: a current build may have upgraded the draft since the scouting read.
+    assertLegacyOpen(lockedReport, options);
+    const report =
+      options.clientDraftFormat === LEGACY_DRIVER_DRAFT_FORMAT
+        ? lockedReport
+        : await upgradeUntouchedDraft(tx, lockedReport, actor);
     if (opened.created) {
       // История шапки ведётся с открытия (Р23): у правки черновика ещё нет числа, историю
       // которого можно вести, зато перенос источника между черновиками обязан быть виден в обеих.
@@ -296,6 +345,52 @@ async function loadOccupyingItems(
 }
 
 /**
+ * A legacy build (`v2`) may reopen only a report that is itself `v2`: the old cabinet calls open on
+ * every entry to the form, and refusing it there would stop a report opened before the release from
+ * ever finishing. A new report, or one already `v3`, is refused with the "outdated build" text.
+ */
+function assertLegacyOpen(
+  report: DriverDailyReportRow | undefined,
+  options: ReadingsWriteOptions,
+): void {
+  if (options.clientDraftFormat !== LEGACY_DRIVER_DRAFT_FORMAT) return;
+  if (report?.draftFormat !== LEGACY_DRIVER_DRAFT_FORMAT) throw driverClientOutdated();
+}
+
+/**
+ * A cabinet build of the current format opening a `v2` draft moves it to `v3` (ADR 0234). Only an
+ * untouched draft: a draft never carries a reading (readings are written by submit, which leaves
+ * `draft`), so nothing recorded under the old rules changes its rules. The version moves, and an
+ * old tab that still holds this draft gets a conflict on submit instead of writing into a report
+ * whose rules it does not know. A submitted `v2` report is left alone and finishes as `v2`.
+ *
+ * Staff opening a day do not upgrade: the garage form has no draft format to declare, and the
+ * driver's own build is the one that has to agree with the report.
+ */
+async function upgradeUntouchedDraft(
+  tx: Tx,
+  report: DriverDailyReportRow,
+  actor: ReadingsActor,
+): Promise<DriverDailyReportRow> {
+  if (actor.mode !== 'driver' || report.state !== 'draft') return report;
+  if (report.draftFormat === DRIVER_DRAFT_FORMAT) return report;
+  const [upgraded] = await tx
+    .update(driverDailyReports)
+    .set({
+      draftFormat: DRIVER_DRAFT_FORMAT,
+      version: report.version + 1,
+      updatedBy: actor.userId,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(eq(driverDailyReports.id, report.id), eq(driverDailyReports.version, report.version)),
+    )
+    .returning();
+  if (!upgraded) throw err.conflict('Отчёт изменился, обновите страницу и повторите');
+  return upgraded;
+}
+
+/**
  * Шапка дня: заводится вставкой с `ON CONFLICT DO NOTHING`, а не проверкой «нет — создам».
  * Уникальный ключ `(person_id, report_date)` — единственное, что здесь по-настоящему сериализует
  * два одновременных открытия одного дня.
@@ -308,7 +403,14 @@ async function ensureReport(
 ): Promise<{ id: string; created: boolean }> {
   const [inserted] = await tx
     .insert(driverDailyReports)
-    .values({ personId, reportDate: date, state: 'draft', createdBy: actor.userId })
+    // New code opens `v3` explicitly: the column default stays `v2` for old code in the window.
+    .values({
+      personId,
+      reportDate: date,
+      state: 'draft',
+      draftFormat: DRIVER_DRAFT_FORMAT,
+      createdBy: actor.userId,
+    })
     .onConflictDoNothing({ target: [driverDailyReports.personId, driverDailyReports.reportDate] })
     .returning({ id: driverDailyReports.id });
   if (inserted) return { id: inserted.id, created: true };
@@ -542,7 +644,11 @@ function keptFuelLevel(value: number | null | undefined, stored: string | null):
  * «оставить как есть» выразить нечем, а оставлять при создании нечего, и отсутствующий ключ там
  * значит `NULL`.
  */
-function readingColumns(reading: ReadingInput, existing: VehicleReadingRow | null) {
+function readingColumns(
+  reading: ReadingInput,
+  existing: VehicleReadingRow | null,
+  times: ResolvedReadingTimes,
+) {
   if (reading.kind === 'no_data') {
     // «Снять нечего» обнуляет все пять чисел: у строки, где прибор не читали, не бывает и уровня в
     // баке, — поэтому здесь не действует и «оставить как есть».
@@ -553,6 +659,8 @@ function readingColumns(reading: ReadingInput, existing: VehicleReadingRow | nul
       fuelStartLiters: null,
       fuelFilledLiters: null,
       fuelEndLiters: null,
+      startedAt: null,
+      endedAt: null,
       noDataReason: reading.noDataReason,
       comment: reading.comment,
     };
@@ -564,9 +672,56 @@ function readingColumns(reading: ReadingInput, existing: VehicleReadingRow | nul
     fuelStartLiters: keptFuelLevel(reading.fuelStartLiters, existing?.fuelStartLiters ?? null),
     fuelFilledLiters: numeric1(reading.fuelFilledLiters),
     fuelEndLiters: keptFuelLevel(reading.fuelEndLiters, existing?.fuelEndLiters ?? null),
+    // Already resolved against the saved row (`resolveReadingTimes`): for a route the pair is the
+    // one derived from the stops written in this same transaction.
+    startedAt: times.startedAt,
+    endedAt: times.endedAt,
     noDataReason: '',
     comment: reading.comment,
   };
+}
+
+/**
+ * Shape, order and — for the driver of a `v3` report — requiredness of the resolved times
+ * (ADR 0234, D5, D11). Staff may leave every time empty; the driver's evening values bring the end
+ * time with them. A `v2` report finishes under the rules it was opened with.
+ */
+async function assertReadingTimes(
+  tx: Tx,
+  params: {
+    item: DriverDailyReportItemRow;
+    columns: ReturnType<typeof readingColumns>;
+    times: ResolvedReadingTimes;
+    actor: ReadingsActor;
+    report: DriverDailyReportRow;
+  },
+): Promise<void> {
+  const { item, columns, times, actor, report } = params;
+  if (columns.kind !== 'values') return;
+  const resolved = timesOf(times);
+  const issues = readingTimeIssues(item.sourceKind, resolved);
+  // Every format from `v3` on carries the rule; only the legacy one is exempt.
+  if (
+    issues.length === 0 &&
+    actor.mode === 'driver' &&
+    report.draftFormat !== LEGACY_DRIVER_DRAFT_FORMAT
+  ) {
+    const hasStops =
+      item.sourceKind === 'route' && (await routeHasStops(tx, item.routeId, times.points));
+    issues.push(
+      ...driverReadingTimeIssues({
+        sourceKind: item.sourceKind,
+        hasStops,
+        values: {
+          odometerKm: columns.odometerKm,
+          engineHours: columns.engineHours === null ? null : Number(columns.engineHours),
+          fuelEndLiters: columns.fuelEndLiters === null ? null : Number(columns.fuelEndLiters),
+        },
+        times: resolved,
+      }),
+    );
+  }
+  if (issues.length > 0) throw err.badRequest(issues.map((issue) => issue.message).join('; '));
 }
 
 /**
@@ -625,6 +780,16 @@ export async function submitReport(
       }
       return buildReportDto(tx, report, entries);
     }
+    // The format is checked against the STORED report and only after the idempotency lookup: a
+    // lost response to a pre-release submit must still replay, and a `v2` report opened before the
+    // release finishes from the build that opened it (ADR 0234).
+    if (
+      options.clientDraftFormat !== undefined &&
+      report.draftFormat === DRIVER_DRAFT_FORMAT &&
+      options.clientDraftFormat !== DRIVER_DRAFT_FORMAT
+    ) {
+      throw driverClientOutdated();
+    }
     if (report.version !== input.version) {
       throw err.conflict('Отчёт изменился, обновите страницу и повторите');
     }
@@ -649,6 +814,10 @@ export async function submitReport(
       tx,
       items.map((i) => i.id),
     );
+    const savedPoints = await loadReadingPoints(
+      tx,
+      [...readings.values()].map((r) => r.id),
+    );
 
     const chain = emptyChainContext(actor.userId, reason);
     const anchors: ChainAnchor[] = [];
@@ -663,7 +832,16 @@ export async function submitReport(
       // Существующая строка читается до разрешения ввода: отсутствующий ключ остатка берёт
       // значение именно из неё (ADR 0163, Р13).
       const existing = readings.get(item.id);
-      const columns = readingColumns(line.reading, existing ?? null);
+      const saved = existing ? (savedPoints.get(existing.id) ?? []) : [];
+      const times = await resolveReadingTimes(tx, {
+        sourceKind: item.sourceKind,
+        routeId: item.routeId,
+        reading: line.reading,
+        existing: existing ?? null,
+        saved,
+      });
+      const columns = readingColumns(line.reading, existing ?? null, times);
+      await assertReadingTimes(tx, { item, columns, times, actor, report });
 
       if (!existing) {
         const [created] = await tx
@@ -680,11 +858,12 @@ export async function submitReport(
           })
           .returning();
         if (!created) throw err.conflict('Показание не сохранилось, повторите');
+        await writeReadingPoints(tx, created.id, times.points);
         await attachFiles(tx, created.id, line.fileIds, actor);
         await writeReadingEvent(tx, {
           readingId: created.id,
           event: 'created',
-          after: columns,
+          after: contentSnapshot(columns, times),
           reason,
           version: created.version,
           changedBy: actor.userId,
@@ -708,19 +887,14 @@ export async function submitReport(
         odometer: line.confirmOdometerAnomaly,
         engineHours: line.confirmEngineHoursAnomaly,
       });
-      const before = readingSnapshot(existing);
+      const before = readingSnapshot(existing, saved);
+      const after = contentSnapshot(columns, times);
       // Сравниваются уже разрешённые пять чисел: остатки участвуют наравне со счётчиками
       // (ADR 0163, Р12), иначе правка уровня не подняла бы `content_version` и принятый отчёт не
       // ушёл бы в `needs_reacceptance` — число в базе поменялось бы, а приёмка об этом не узнала.
-      const same =
-        before.kind === columns.kind &&
-        before.odometerKm === columns.odometerKm &&
-        before.engineHours === columns.engineHours &&
-        before.fuelStartLiters === columns.fuelStartLiters &&
-        before.fuelFilledLiters === columns.fuelFilledLiters &&
-        before.fuelEndLiters === columns.fuelEndLiters &&
-        before.noDataReason === columns.noDataReason &&
-        before.comment === columns.comment;
+      // Times, stops and their request snapshot take part on the same terms (ADR 0234): a
+      // time-only edit is content and must reopen acceptance.
+      const same = JSON.stringify(before) === JSON.stringify(after);
       // Файл не двигает ни `content_version`, ни состояние отчёта (Р22): приём фиксирует числа, а
       // не вложения, — поэтому повторная отправка с теми же числами и новым фото ничего не
       // переоткрывает.
@@ -734,11 +908,14 @@ export async function submitReport(
         .update(vehicleReadings)
         .set({ ...columns, version, updatedBy: actor.userId, updatedAt: new Date() })
         .where(eq(vehicleReadings.id, existing.id));
+      if (JSON.stringify(before.points) !== JSON.stringify(after.points)) {
+        await writeReadingPoints(tx, existing.id, times.points);
+      }
       await writeReadingEvent(tx, {
         readingId: existing.id,
         event: 'updated',
         before,
-        after: columns,
+        after,
         reason,
         version,
         changedBy: actor.userId,
@@ -832,8 +1009,32 @@ async function attachFiles(
 /**
  * Снимок для истории и для сравнения. Перечисляет ровно те же поля, что и `readingColumns`:
  * пропущенное здесь меняется в базе молча — ни журнал правок, ни приёмка о нём не узнают.
+ *
+ * Both snapshots are built by one function with one key order: the change check compares them as
+ * JSON, and a key missing on one side would read as a change on every submit.
  */
-function readingSnapshot(row: VehicleReadingRow) {
+function readingSnapshot(row: VehicleReadingRow, points: readonly StoredPoint[]) {
+  return contentSnapshot(row, {
+    startedAt: clockTime(row.startedAt),
+    endedAt: clockTime(row.endedAt),
+    points: [...points],
+  });
+}
+
+function contentSnapshot(
+  row: Pick<
+    VehicleReadingRow,
+    | 'kind'
+    | 'odometerKm'
+    | 'engineHours'
+    | 'fuelStartLiters'
+    | 'fuelFilledLiters'
+    | 'fuelEndLiters'
+    | 'noDataReason'
+    | 'comment'
+  >,
+  times: ResolvedReadingTimes,
+) {
   return {
     kind: row.kind,
     odometerKm: row.odometerKm,
@@ -843,6 +1044,7 @@ function readingSnapshot(row: VehicleReadingRow) {
     fuelEndLiters: row.fuelEndLiters,
     noDataReason: row.noDataReason,
     comment: row.comment,
+    ...timesSnapshot(times),
   };
 }
 
@@ -1462,6 +1664,7 @@ export async function rebaseItem(
           // Закрытая строка молча в черновик не прячется: показание уже сдано.
           state: hasReading ? 'submitted' : 'draft',
           submittedAt: hasReading ? new Date() : null,
+          draftFormat: DRIVER_DRAFT_FORMAT,
           createdBy: actor.userId,
         })
         .onConflictDoNothing({
@@ -1668,6 +1871,10 @@ async function buildReportDto(
       .where(inArray(vehicleReadings.id, [...new Set(previousIds)]));
     for (const row of rows) previous.set(row.id, row);
   }
+  const points = await loadReadingPoints(
+    tx,
+    readings.map((r) => r.id),
+  );
   const fileIds = new Map<string, string[]>();
   if (readings.length > 0) {
     const rows = await tx
@@ -1710,7 +1917,9 @@ async function buildReportDto(
       vehicleId: item.vehicleId,
       vehicleLabel: labels.get(item.vehicleId) ?? '',
       shiftOrder: item.shiftOrder,
-      reading: reading ? readingDto(reading, previous, fileIds.get(reading.id) ?? []) : null,
+      reading: reading
+        ? readingDto(reading, previous, fileIds.get(reading.id) ?? [], points.get(reading.id) ?? [])
+        : null,
     };
   });
 
@@ -1720,6 +1929,7 @@ async function buildReportDto(
     personName: person?.fullName ?? '',
     reportDate: report.reportDate,
     state: report.state,
+    draftFormat: report.draftFormat,
     contentVersion: report.contentVersion,
     version: report.version,
     acceptedContentVersion: report.acceptedContentVersion,
@@ -1738,6 +1948,7 @@ function readingDto(
   row: VehicleReadingRow,
   previous: Map<string, VehicleReadingRow>,
   fileIds: string[],
+  points: readonly StoredPoint[],
 ): VehicleReadingDto {
   const prevOdometer = row.previousOdometerId ? previous.get(row.previousOdometerId) : undefined;
   const prevEngineHours = row.previousEngineHoursId
@@ -1755,6 +1966,9 @@ function readingDto(
     fuelStartLiters: row.fuelStartLiters === null ? null : Number(row.fuelStartLiters),
     fuelFilledLiters: row.fuelFilledLiters === null ? null : Number(row.fuelFilledLiters),
     fuelEndLiters: row.fuelEndLiters === null ? null : Number(row.fuelEndLiters),
+    startedAt: clockTime(row.startedAt),
+    endedAt: clockTime(row.endedAt),
+    points: points.map(pointDto),
     noDataReason: row.noDataReason,
     comment: row.comment,
     source: row.source,

@@ -5,7 +5,6 @@ import {
   dateOnlySchema,
   DRIVER_ASSIGNMENT_FUTURE_DAYS,
   DRIVER_ASSIGNMENT_PAST_DAYS,
-  DRIVER_CLIENT_OUTDATED_CODE,
   DRIVER_DRAFT_FORMAT,
   DRIVER_DRAFT_FORMAT_HEADER,
   DRIVER_SUBMIT_PAST_DAYS,
@@ -16,7 +15,13 @@ import { err } from '../lib/errors';
 import { requirePrincipal } from '../auth/plugin';
 import type { Principal } from '../auth/principal';
 import { buildAssignment } from '../services/driver-assignment';
-import { loadReport, openReport, submitReport } from '../services/readings';
+import {
+  driverClientOutdated,
+  LEGACY_DRIVER_DRAFT_FORMAT,
+  loadReport,
+  openReport,
+  submitReport,
+} from '../services/readings';
 
 /**
  * Кабинет водителя (ADR 0102) — второй контур портала: своё задание на дату и свои показания.
@@ -87,13 +92,11 @@ function idempotencyKeyOf(req: FastifyRequest): string | null {
   return parsed.data;
 }
 
-/**
- * Текст отказа устаревшей сборке. Самодостаточен намеренно: читать его будет портал, загруженный
- * до этого выпуска, — кода `client_outdated` он не знает и покажет сообщение как обычную ошибку.
- * Поэтому здесь названо действие целиком, и ни на какую кнопку текст не ссылается: кнопки у той
- * сборки нет и появиться ей неоткуда — её код уже загружен.
- */
-const CLIENT_OUTDATED_TEXT = 'Приложение обновилось: закройте вкладку и откройте кабинет заново';
+/** The draft format the build declared, `null` when it declared none. */
+function draftFormatOf(req: FastifyRequest): string | null {
+  const raw = req.headers[DRIVER_DRAFT_FORMAT_HEADER];
+  return (Array.isArray(raw) ? raw[0] : raw) ?? null;
+}
 
 /**
  * Граница, после которой старый формат черновика больше не рождается (ADR 0129, решение 8; план
@@ -110,14 +113,15 @@ const CLIENT_OUTDATED_TEXT = 'Приложение обновилось: зак�
  * старого формата и делает устаревание громким; сохранность держит показ несопоставленной записи на
  * стороне портала.
  */
-function assertDraftFormat(req: FastifyRequest): void {
-  const raw = req.headers[DRIVER_DRAFT_FORMAT_HEADER];
-  const value = Array.isArray(raw) ? raw[0] : raw;
+function assertDraftFormat(req: FastifyRequest): string {
+  const declared = draftFormatOf(req);
   // Сравнение точное: отсутствие заголовка и незнакомое значение — один и тот же случай «клиент не
-  // договаривался с этим сервером о формате», и разных исходов у них нет.
-  if (value !== DRIVER_DRAFT_FORMAT) {
-    throw err.conflict(CLIENT_OUTDATED_TEXT, { code: DRIVER_CLIENT_OUTDATED_CODE });
+  // договаривался с этим сервером о формате», и разных исходов у них нет. The legacy `v2` passes
+  // here only to reach the service, which lets it reopen a `v2` report and nothing else.
+  if (declared !== DRIVER_DRAFT_FORMAT && declared !== LEGACY_DRIVER_DRAFT_FORMAT) {
+    throw driverClientOutdated();
   }
+  return declared;
 }
 
 export default async function driverRoutes(app: FastifyInstance): Promise<void> {
@@ -145,18 +149,21 @@ export default async function driverRoutes(app: FastifyInstance): Promise<void> 
    * открытие заводит строки — то есть занимает источники глобально (ADR 0103). Чтение задания
    * такого права не имеет и остаётся безобидным.
    *
-   * Единственная ручка кабинета, требующая объявленного формата черновика (`assertDraftFormat`):
-   * здесь рождаются идентификаторы, которыми черновик адресуется.
+   * The only door that REQUIRES a declared draft format (`assertDraftFormat`): the ids the draft
+   * is addressed by are born here. A new report needs the current `v3` build; a legacy `v2` build may
+   * only reopen a report that is itself `v2`, so that a report opened before the release can finish.
+   * A `v3` open of an untouched `v2` draft upgrades it (`openReport`); the submit door checks the
+   * stored format.
    */
   r.post('/reports/:date/open', { ...submit, schema: { params: dateParams } }, async (req) => {
     const p = requirePrincipal(req);
     // Формат черновика спрашивается первым: отказ устаревшей сборке не зависит ни от даты, ни от
     // состава дня, и «обновите приложение» полезнее, чем «за этот день уже не передать».
-    assertDraftFormat(req);
+    const clientDraftFormat = assertDraftFormat(req);
     const today = todayKey();
     const { date } = req.params;
     if (!canSubmitOn(date, today)) throw err.badRequest('За этот день показания уже не передать');
-    return openReport(personOf(p), date, p.id);
+    return openReport(personOf(p), date, p.id, { clientDraftFormat });
   });
 
   /** Свой отчёт за дату. `null` — ещё не открывали: у экрана это состояние «ничего не передано». */
@@ -171,6 +178,11 @@ export default async function driverRoutes(app: FastifyInstance): Promise<void> 
    * Передача показаний. Идемпотентна по паре «ключ + отпечаток тела»: повтор потерянного ответа
    * возвращает текущее состояние, а тот же ключ с другим телом — конфликт, потому что это уже
    * другая команда под старым ключом.
+   *
+   * The declared draft format is passed through, not checked here: the service compares it with
+   * the report's STORED format after the idempotency lookup (ADR 0234). An unconditional `v3` guard
+   * at this door would refuse the retry of a submit accepted before the release, and would stop a
+   * `v2` report opened before it from ever finishing.
    */
   r.post(
     '/reports/:date/submit',
@@ -180,7 +192,9 @@ export default async function driverRoutes(app: FastifyInstance): Promise<void> 
       const today = todayKey();
       const { date } = req.params;
       if (!canSubmitOn(date, today)) throw err.badRequest('За этот день показания уже не передать');
-      return submitReport(personOf(p), date, req.body, p.id, idempotencyKeyOf(req));
+      return submitReport(personOf(p), date, req.body, p.id, idempotencyKeyOf(req), {
+        clientDraftFormat: draftFormatOf(req),
+      });
     },
   );
 }

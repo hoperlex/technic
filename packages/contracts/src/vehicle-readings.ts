@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, type ListResult, uuidSchema } from './common';
-import type { ReadingSourceKind } from './driver-cabinet';
+import type { DriverReportFormat, ReadingSourceKind } from './driver-cabinet';
 import type { AttachedFileDto } from './files';
+import {
+  readingPointsInputSchema,
+  readingTimeSchema,
+  type VehicleReadingPointDto,
+} from './reading-times';
 import type { VehicleOwnership } from './vehicles';
 
 /**
@@ -153,6 +158,15 @@ const readingNumber = z.number().nonnegative();
  */
 const fuelLevel = readingNumber.nullable().optional();
 
+/**
+ * Shift time keys follow the same wire contract as the fuel levels (ADR 0234, the ADR 0163 Р13
+ * precedent): an absent key keeps the saved value, an explicit `null` clears it, and a `points`
+ * array replaces the whole stop set. A tab opened before the release does not know these keys and
+ * must not erase them, and a pre-release body retried after it must keep its fingerprint — so no
+ * `default` here, ever.
+ */
+const readingTime = readingTimeSchema.nullable().optional();
+
 export const readingValuesSchema = z
   .object({
     kind: z.literal('values'),
@@ -163,6 +177,14 @@ export const readingValuesSchema = z
     fuelFilledLiters: readingNumber.nullable().default(null),
     /** Остаток в баке на КОНЕЦ смены. Необязателен наравне с началом (Р2). */
     fuelEndLiters: fuelLevel,
+    /**
+     * The ESM-2 shift pair, typed by the driver. A route item does not send it: its pair is derived
+     * from the stops, and a pair that disagrees with them is refused.
+     */
+    startedAt: readingTime,
+    endedAt: readingTime,
+    /** The stops of a route item (`reading-times.ts`). A time alone does not make a `values` reading. */
+    points: readingPointsInputSchema.nullable().optional(),
     comment: z.string().trim().max(500).default(''),
   })
   .superRefine((v, ctx) => {
@@ -368,6 +390,15 @@ export interface VehicleReadingDto {
   fuelFilledLiters: number | null;
   /** Топливо в баке на конец смены, литры. */
   fuelEndLiters: number | null;
+  /**
+   * Shift time `HH:mm` (ADR 0234). For a route item it is derived from `points`: the arrival at stop
+   * 1 and, once every stop has a departure, the departure from the last one. `null` on a reading
+   * submitted before the release means "not asked".
+   */
+  startedAt: string | null;
+  endedAt: string | null;
+  /** Recorded stops of a route item in order; empty for an ESM-2 item, a relocation and `no_data`. */
+  points: VehicleReadingPointDto[];
   noDataReason: string;
   comment: string;
   source: ReadingSource;
@@ -443,6 +474,12 @@ export interface DriverReportDto {
   personName: string;
   reportDate: string;
   state: DriverReportState;
+  /**
+   * Protocol the report was opened under (ADR 0234). Only a `v3` report requires the driver's
+   * times (`driverReadingTimeIssues`); a `v2` report opened before the release finishes under the
+   * rules it was opened with, and the cabinet asks this field rather than its own build.
+   */
+  draftFormat: DriverReportFormat;
   contentVersion: number;
   version: number;
   acceptedContentVersion: number | null;
@@ -465,6 +502,11 @@ export interface VehicleReadingJournalRow {
   reportDate: string;
   shiftOrder: number;
   reportState: DriverReportState;
+  /**
+   * The report's protocol: a `v2` reading without times is a legacy one, never asked for them, and
+   * the journal says so instead of showing it as a driver who skipped the time.
+   */
+  draftFormat: DriverReportFormat;
   sourceKind: ReadingSourceKind;
   sourceId: string;
   /** «Р-142» либо номер бланка ЭСМ-2 — тем же правилом, каким источник зовут везде. */

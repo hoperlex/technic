@@ -37,6 +37,7 @@ import {
   waybillSeries,
 } from '../db/schema';
 import { attachedFileView } from './file-view';
+import { clockTime, loadReadingPoints, pointDto } from './reading-times';
 import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER } from './readings-aggregate';
 
 /**
@@ -456,6 +457,7 @@ export async function loadVehicleReadingJournal(
         reportDate: driverDailyReportItems.reportDate,
         shiftOrder: driverDailyReportItems.shiftOrder,
         reportState: driverDailyReports.state,
+        draftFormat: driverDailyReports.draftFormat,
         sourceKind: driverDailyReportItems.sourceKind,
         routeId: driverDailyReportItems.routeId,
         routeNum: vehicleRoutes.num,
@@ -472,6 +474,8 @@ export async function loadVehicleReadingJournal(
         fuelStartLiters: vehicleReadings.fuelStartLiters,
         fuelFilledLiters: vehicleReadings.fuelFilledLiters,
         fuelEndLiters: vehicleReadings.fuelEndLiters,
+        startedAt: vehicleReadings.startedAt,
+        endedAt: vehicleReadings.endedAt,
         noDataReason: vehicleReadings.noDataReason,
         comment: vehicleReadings.comment,
         source: vehicleReadings.source,
@@ -515,9 +519,10 @@ export async function loadVehicleReadingJournal(
   ]);
 
   const readingIds = rows.map((row) => row.readingId).filter((id): id is string => id !== null);
-  const [readingFiles, edits] = await Promise.all([
+  const [readingFiles, edits, points] = await Promise.all([
     loadReadingFiles(readingIds),
     loadReadingEdits(readingIds),
+    loadReadingPoints(db, readingIds),
   ]);
 
   /**
@@ -547,6 +552,10 @@ export async function loadVehicleReadingJournal(
       fuelStartLiters: num(row.fuelStartLiters),
       fuelFilledLiters: num(row.fuelFilledLiters),
       fuelEndLiters: num(row.fuelEndLiters),
+      // Shift and stop times (ADR 0234) belong to the one shift the row shows, like the fuel levels.
+      startedAt: clockTime(row.startedAt),
+      endedAt: clockTime(row.endedAt),
+      points: (points.get(row.readingId) ?? []).map(pointDto),
       noDataReason: row.noDataReason ?? '',
       comment: row.comment ?? '',
       source: row.source,
@@ -589,6 +598,7 @@ export async function loadVehicleReadingJournal(
       reportDate: row.reportDate,
       shiftOrder: row.shiftOrder,
       reportState: row.reportState,
+      draftFormat: row.draftFormat,
       sourceKind: row.sourceKind,
       sourceId: row.routeId ?? row.waybillId ?? '',
       // Источник зовут его номером: рейс — «Р-142», недельный лист — номером бланка, как он

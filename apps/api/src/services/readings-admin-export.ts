@@ -4,6 +4,7 @@ import {
   formatNameWithInitials,
   formatVehicleRouteNumber,
   readingAnomalyLabels,
+  readingShiftMinutes,
   vehicleLabel,
   vehicleOwnershipLabels,
   waybillDisplayNumber,
@@ -336,7 +337,8 @@ const SUMMARY_HEADER = [
 ];
 
 const SUMMARY_WIDTHS = [
-  22, 18, 20, 12, 13, 12, 10, 16, 12, 14, 18, 13, 16, 14, 14, 12, 16, 12, 14, 14, 16, 13, 11, 36, 40,
+  22, 18, 20, 12, 13, 12, 10, 16, 12, 14, 18, 13, 16, 14, 14, 12, 16, 12, 14, 14, 16, 13, 11, 36,
+  40,
 ];
 
 /** Машина со своими числами: строка свода и её же итоги для листа детализации. */
@@ -454,12 +456,35 @@ const DETAIL_HEADER = [
   'Заправлено, л',
   'Топливо на конец, л',
   'Расход, л',
+  'Начало',
+  'Окончание',
+  'Длительность, ч',
   'Аномалии',
   'Показание',
   'Отчёт',
 ];
 
-const DETAIL_WIDTHS = [12, 8, 24, 22, 14, 12, 12, 13, 19, 14, 19, 12, 30, 34, 16];
+const DETAIL_WIDTHS = [12, 8, 24, 22, 14, 12, 12, 13, 19, 14, 19, 12, 9, 11, 16, 30, 34, 16];
+
+/**
+ * Shift duration in hours (ADR 0234) by the one rule the portal has for it: an ESM-2 pair through
+ * `shiftSpanMinutes`, a route through the sum of its stop steps. A dash until the times are
+ * complete — an interim reading has no duration yet, and a zero would read as "did not work".
+ */
+function shiftHours(row: ShiftRow): number | null {
+  if (row.reading_id === null) return null;
+  const minutes = readingShiftMinutes(row.source_kind, {
+    startedAt: row.started_at ?? null,
+    endedAt: row.ended_at ?? null,
+    points: row.reading_points ?? [],
+  });
+  return minutes === null ? null : Math.round((minutes / 60) * 100) / 100;
+}
+
+/** A clock time or a dash: a legacy reading was never asked for one. */
+function clock(value: string | null | undefined): CellInput {
+  return value ?? DASH;
+}
 
 function detailRow(row: ShiftRow): CellInput[] {
   return [
@@ -476,6 +501,9 @@ function detailRow(row: ShiftRow): CellInput[] {
     num(decimal(row.fuel_filled_liters), 1),
     num(decimal(row.fuel_end_liters), 1),
     num(fuelSpent(row), 1),
+    clock(row.started_at),
+    clock(row.ended_at),
+    num(shiftHours(row), 1),
     anomalyText(row),
     readingText(row),
     reportStateText(row),
@@ -502,7 +530,7 @@ function detailSheet(
   const rowStyles: (RowStyle | undefined)[] = [undefined, undefined, undefined];
   const outline: number[] = [0, 0, 0];
   const merges: string[] = [];
-  const lastColumn = 'O';
+  const lastColumn = 'R';
 
   for (const vehicle of vehicles) {
     const { stats, extra } = vehicle;
@@ -702,7 +730,10 @@ function parametersSheet(
         'Норма и отклонение',
         'норма — база смены (пробег или моточасы) по ставке сезона из приказа; отклонение — расход сверки против неё, в процентах',
       ],
-      ['Допуск сверки', `${tolerancePercent}% — отклонение в его пределах превышением не считается`],
+      [
+        'Допуск сверки',
+        `${tolerancePercent}% — отклонение в его пределах превышением не считается`,
+      ],
       [
         'Зимний сезон',
         `с ${season.winterFromMd.replace('-', '.')} по ${season.winterToMd.replace('-', '.')}: ставка выбирается датой смены`,

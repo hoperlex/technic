@@ -31,6 +31,7 @@ import type {
   AssignmentDimension,
   AssignmentHistoryState,
   AssignmentSupersedeKind,
+  DriverReportFormat,
   DriverStateKind,
   FeatureFlagKey,
   MailAccount,
@@ -9847,6 +9848,13 @@ export const driverDailyReports = pgTable(
     /** Идемпотентность отправки: ключ клиента и отпечаток принятого тела. */
     submitIdempotencyKey: uuid('submit_idempotency_key'),
     submitFingerprint: text('submit_fingerprint').notNull().default(''),
+    /**
+     * Protocol the report was opened under (migration 0389, ADR 0234). The default stays `v2`
+     * because old code opens reports during the migration window and must keep producing rows
+     * that finish under its own rules; new code writes `v3` explicitly, and only a `v3` report
+     * requires the driver's shift and stop times.
+     */
+    draftFormat: text('draft_format').$type<DriverReportFormat>().notNull().default('v2'),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -9856,6 +9864,10 @@ export const driverDailyReports = pgTable(
   },
   (t) => ({
     personDateUnique: uniqueIndex('driver_daily_reports_key').on(t.personId, t.reportDate),
+    draftFormatCheck: check(
+      'driver_daily_reports_draft_format_check',
+      sql`${t.draftFormat} IN ('v2', 'v3')`,
+    ),
     // Цель составного внешнего ключа из строк ожидания: день строки равен дню своего отчёта.
     idDateUnique: unique('driver_daily_reports_date_unique').on(t.id, t.reportDate),
     openIdx: index('driver_daily_reports_open_idx')
@@ -10016,6 +10028,14 @@ export const vehicleReadings = pgTable(
     fuelEndLiters: numeric('fuel_end_liters', { precision: 7, scale: 1 }),
     noDataReason: text('no_data_reason').notNull().default(''),
     comment: text('comment').notNull().default(''),
+    /**
+     * Shift time (ADR 0234). `time`, not `timestamptz`: the day is `report_date`, and a second copy
+     * of it would diverge on a rebase. Typed by the driver for an ESM-2 item; derived from the stop
+     * times for a route item in the same transaction that writes `vehicle_reading_points`. An end
+     * earlier than the start is the next day (`shiftSpanMinutes`).
+     */
+    startedAt: time('started_at'),
+    endedAt: time('ended_at'),
     // Две независимые цепочки: строка с одними моточасами не разрывает ряд одометра.
     previousOdometerId: uuid('previous_odometer_id'),
     previousEngineHoursId: uuid('previous_engine_hours_id'),
@@ -10076,6 +10096,13 @@ export const vehicleReadings = pgTable(
             AND ${t.fuelFilledLiters} IS NULL AND ${t.fuelStartLiters} IS NULL
             AND ${t.fuelEndLiters} IS NULL AND btrim(${t.noDataReason}) <> '')`,
     ),
+    // An end without a start has no day to belong to, and a shift closed as `no_data` was not
+    // timed either.
+    timesShape: check(
+      'vehicle_readings_times_check',
+      sql`(${t.endedAt} IS NULL OR ${t.startedAt} IS NOT NULL)
+        AND (${t.kind} = 'values' OR (${t.startedAt} IS NULL AND ${t.endedAt} IS NULL))`,
+    ),
     nonNegative: check(
       'vehicle_readings_non_negative_check',
       sql`(${t.odometerKm} IS NULL OR ${t.odometerKm} >= 0)
@@ -10114,6 +10141,77 @@ export const vehicleReadingFiles = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.readingId, t.fileId] }),
     fileUnique: uniqueIndex('vehicle_reading_files_file_unique').on(t.fileId),
+  }),
+);
+
+/**
+ * The stops a driver recorded on a route reading (migration 0389, ADR 0234): an address snapshot and
+ * the actual times. A snapshot, not a reference: route points are rebuilt when a waybill is
+ * cancelled and the route reassembled, and the reading must keep what was recorded.
+ *
+ * `position` is the stop's place among this reading's stops, 1..N without gaps — not the route
+ * point's position, which has gaps where the task leaves out a point of cancelled requests. Only
+ * stop 1 carries an arrival.
+ */
+export const vehicleReadingPoints = pgTable(
+  'vehicle_reading_points',
+  {
+    readingId: uuid('reading_id')
+      .notNull()
+      .references(() => vehicleReadings.id, { onDelete: 'cascade' }),
+    position: smallint('position').notNull(),
+    /** The live point at capture; `SET NULL` so that a rebuild never takes the recorded times. */
+    routePointId: uuid('route_point_id').references(() => vehicleRoutePoints.id, {
+      onDelete: 'set null',
+    }),
+    location: text('location').notNull(),
+    arrivedAt: time('arrived_at'),
+    departedAt: time('departed_at'),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.readingId, t.position] }),
+    positionCheck: check(
+      'vehicle_reading_points_position_check',
+      sql`${t.position} BETWEEN 1 AND 20`,
+    ),
+    arrivalCheck: check(
+      'vehicle_reading_points_arrival_check',
+      sql`${t.position} = 1 OR ${t.arrivedAt} IS NULL`,
+    ),
+    locationCheck: check('vehicle_reading_points_location_check', sql`btrim(${t.location}) <> ''`),
+    routePointIdx: index('vehicle_reading_points_route_point_idx')
+      .on(t.routePointId)
+      .where(sql`${t.routePointId} IS NOT NULL`),
+  }),
+);
+
+/**
+ * Whose work a recorded stop was: the distinct requests served at the stop when its point set was
+ * first captured (migration 0389). Time edits keep these rows; stage 3 allocates route time from
+ * here rather than from live roles, which a rebuild or a detached request changes afterwards.
+ *
+ * The request reference cascades: a purge of an archived request (`directory-purge.ts`) deletes its
+ * dependants, and a RESTRICT would make it fail on a historical reading.
+ */
+export const vehicleReadingPointRequests = pgTable(
+  'vehicle_reading_point_requests',
+  {
+    readingId: uuid('reading_id').notNull(),
+    position: smallint('position').notNull(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.readingId, t.position, t.requestId] }),
+    pointFk: foreignKey({
+      columns: [t.readingId, t.position],
+      foreignColumns: [vehicleReadingPoints.readingId, vehicleReadingPoints.position],
+      name: 'vehicle_reading_point_requests_point_fk',
+    })
+      .onUpdate('cascade')
+      .onDelete('cascade'),
+    requestIdx: index('vehicle_reading_point_requests_request_idx').on(t.requestId),
   }),
 );
 
@@ -10232,6 +10330,7 @@ export const vehicleReadingHistory = pgTable(
 export type DriverDailyReportRow = typeof driverDailyReports.$inferSelect;
 export type DriverDailyReportItemRow = typeof driverDailyReportItems.$inferSelect;
 export type VehicleReadingRow = typeof vehicleReadings.$inferSelect;
+export type VehicleReadingPointRow = typeof vehicleReadingPoints.$inferSelect;
 export type DriverReportDiscrepancyResolutionRow =
   typeof driverReportDiscrepancyResolutions.$inferSelect;
 export type DriverDailyReportHistoryRow = typeof driverDailyReportHistory.$inferSelect;

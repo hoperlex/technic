@@ -449,14 +449,24 @@ function pendingDaysLabel(days: number): string {
  * видно человеку, и форма показывает его подсказкой.
  */
 export function shiftSpanHours(startedAt: string | null, endedAt: string | null): number | null {
+  const minutes = shiftSpanMinutes(startedAt, endedAt);
+  return minutes === null ? null : Math.round((minutes / 60) * 100) / 100;
+}
+
+/**
+ * The same span in whole minutes, and the only interpreter of a start/end pair in the portal: the
+ * site's shift window reads it in hours, a driver's ESM-2 reading in minutes (ADR 0234). Equal
+ * clock times give 24 h; the driver's input refuses an equal pair instead of re-reading it here,
+ * because changing this rule would also change the site's hint.
+ */
+export function shiftSpanMinutes(startedAt: string | null, endedAt: string | null): number | null {
   if (!startedAt || !endedAt) return null;
   const from = TIME_PATTERN.exec(startedAt);
   const to = TIME_PATTERN.exec(endedAt);
   if (!from || !to) return null;
   const start = Number(from[1]) * 60 + Number(from[2]);
   const end = Number(to[1]) * 60 + Number(to[2]);
-  const minutes = end > start ? end - start : end + 24 * 60 - start;
-  return Math.round((minutes / 60) * 100) / 100;
+  return end > start ? end - start : end + 24 * 60 - start;
 }
 
 /**

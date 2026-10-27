@@ -68,13 +68,13 @@
 ## Гараж, показания и ТО
 
 - Домен: `гараж`
-- Источник истины: [garage.ts](../packages/contracts/src/garage.ts), [vehicle-readings.ts](../packages/contracts/src/vehicle-readings.ts), [vehicle-maintenance.ts](../packages/contracts/src/vehicle-maintenance.ts)
+- Источник истины: [garage.ts](../packages/contracts/src/garage.ts), [vehicle-readings.ts](../packages/contracts/src/vehicle-readings.ts), [reading-times.ts](../packages/contracts/src/reading-times.ts), [vehicle-maintenance.ts](../packages/contracts/src/vehicle-maintenance.ts)
 - Разделы портала: `garage`
 - API-маршруты: [garage.ts](../apps/api/src/routes/garage.ts), [vehicle-readings.ts](../apps/api/src/routes/vehicle-readings.ts), [vehicle-readings-stats.ts](../apps/api/src/routes/vehicle-readings-stats.ts), [vehicle-maintenance.ts](../apps/api/src/routes/vehicle-maintenance.ts)
-- Остальной API: [readings-intake.ts](../apps/api/src/services/readings-intake.ts), [vehicle-maintenance.ts](../apps/api/src/services/vehicle-maintenance.ts)
+- Остальной API: [readings-intake.ts](../apps/api/src/services/readings-intake.ts), [reading-times.ts](../apps/api/src/services/reading-times.ts), [vehicle-maintenance.ts](../apps/api/src/services/vehicle-maintenance.ts)
 - Web: [garage](../apps/web/src/pages/garage), [vehicle-reading](../apps/web/src/entities/vehicle-reading)
 - Тесты: `vehicle-readings*.db.test.ts`, `vehicle-maintenance*.db.test.ts`, `garage-*.db.test.ts`
-- Решения: [ADR 0076](adr/0076-garage-day-view.md), [ADR 0103](adr/0103-vehicle-readings.md), [ADR 0126](adr/0126-assignment-periods.md)
+- Решения: [ADR 0076](adr/0076-garage-day-view.md), [ADR 0103](adr/0103-vehicle-readings.md), [ADR 0126](adr/0126-assignment-periods.md), [ADR 0234](adr/0234-driver-shift-and-stop-times.md)
 
 ## Кабинет водителя
 
@@ -85,7 +85,7 @@
 - Остальной API: [driver-assignment.ts](../apps/api/src/services/driver-assignment.ts)
 - Web: [driver](../apps/web/src/pages/driver), [driver-cabinet](../apps/web/src/entities/driver-cabinet)
 - Тесты: `driver-cabinet*.db.test.ts`, `driver-routes-mail.db.test.ts`
-- Решения: [ADR 0102](adr/0102-driver-cabinet.md), [ADR 0129](adr/0129-driver-cabinet-readings-first.md)
+- Решения: [ADR 0102](adr/0102-driver-cabinet.md), [ADR 0129](adr/0129-driver-cabinet-readings-first.md), [ADR 0234](adr/0234-driver-shift-and-stop-times.md)
 
 ## Справочники и обмен
 

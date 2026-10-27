@@ -85,6 +85,14 @@ const EXPECTED: Record<string, { mode: Mode; why: string }> = {
     mode: 'зеркало',
     why: 'снимок строки ожидания: исправленный порядок смены тянет показание за собой (ADR 0103)',
   },
+  // A stop's request snapshot and its stop (ADR 0234, migration 0389): the pair `(reading_id,
+  // position)` is the stop's identity, and the snapshot belongs to the stop. Mirror: the service
+  // never renumbers a saved stop (it replaces the set), but if a stop moved, its requests must
+  // move with it rather than block the move or point at another stop.
+  vehicle_reading_point_requests_point_fk: {
+    mode: 'зеркало',
+    why: 'снимок заявок остановки следует за самой остановкой (ADR 0234)',
+  },
   // День строки ожидания — копия дня своего отчёта (ADR 0103): на ней держатся ключ цепочки
   // «машина + день + позиция» и составной ключ снимка. Зеркало: копия обязана следовать за
   // оригиналом. Правку дня шапки при этом запрещает не ключ, а отсутствие такой операции —

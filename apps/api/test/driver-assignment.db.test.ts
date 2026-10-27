@@ -775,8 +775,14 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
 
     // Р13 буквально: у роли `driver` нет `directories.read`, поэтому единственные идентификаторы
     // в задании — свои, источников. Ни типа ТС, ни контрагента, ни объекта, ни самой машины.
+    // The route's own stops are the one addition (ADR 0234): the cabinet sends a stop's id back
+    // with its times, and a route point is a row of the source, not a directory record.
     const found = [...JSON.stringify(dto.entries).matchAll(UUID_RE)].map((m) => m[0]);
-    expect(new Set(found)).toEqual(new Set(dto.entries.map((entry) => entry.sourceId)));
+    const pointIds = dto.entries.flatMap((entry) => entry.points.map((point) => point.id));
+    expect(pointIds.length).toBeGreaterThan(0);
+    expect(new Set(found)).toEqual(
+      new Set([...dto.entries.map((entry) => entry.sourceId), ...pointIds]),
+    );
     for (const entry of dto.entries) {
       expect(entry).not.toHaveProperty('vehicleId');
       expect(entry).not.toHaveProperty('vehicleTypeId');

@@ -31,7 +31,7 @@ import {
   waybills,
   waybillSeries,
 } from '../db/schema';
-import { daysBetween } from './readings-chain';
+import { daysBetween, type Tx } from './readings-chain';
 import { loadRoutePoints } from './route-points';
 import { loadRouteDtos, routeQuery } from './vehicle-routes';
 
@@ -267,6 +267,7 @@ function assignmentPoint(
   const actions = point.actions.filter((action) => visible.has(action.ref.requestId));
   if (actions.length === 0) return null;
   return {
+    id: point.id,
     position: point.position,
     location: point.location,
     arrivalTime: pointArrivalTime(point, actions, times),
@@ -276,20 +277,67 @@ function assignmentPoint(
   };
 }
 
+type Reader = Tx | typeof db;
+
 /**
- * Комментарии живых заявок рейсов. Ключи карты — они же и ответ на «жива ли заявка»: удалённая
- * (`deleted_at`) остаётся в маршруте историей рейса, но ехать по ней не надо, и в задание она не
- * входит ни строкой, ни адресом.
+ * Comments of the requests the driver serves today: live (not archived) and not cancelled. The
+ * keys of the map are also the answer to "is this request served": an archived or cancelled
+ * request stays in the route as its history, but nobody drives for it, and the task shows neither
+ * its row nor its address.
  *
- * Один запрос на оба вопроса, потому что вопрос один: заявка, которой нет, комментария не имеет.
+ * One rule for two readers: the task built here and the stops a reading records
+ * (`loadReadingStops`). The cabinet sends back exactly the stops it showed, and the server compares
+ * them with this same set — a second definition of "served" would refuse every submit at a route
+ * with a cancelled request.
  */
-async function liveRequestComments(requestIds: string[]): Promise<Map<string, string>> {
-  if (requestIds.length === 0) return new Map();
-  const rows = await db
+export async function servedRequests(
+  reader: Reader,
+  requestIds: readonly string[],
+): Promise<Map<string, string>> {
+  const ids = [...new Set(requestIds)];
+  if (ids.length === 0) return new Map();
+  const rows = await reader
     .select({ id: vehicleRequests.id, comment: vehicleRequests.comment })
     .from(vehicleRequests)
-    .where(and(inArray(vehicleRequests.id, requestIds), isNull(vehicleRequests.deletedAt)));
+    .where(
+      and(
+        inArray(vehicleRequests.id, ids),
+        isNull(vehicleRequests.deletedAt),
+        ne(vehicleRequests.status, 'cancelled'),
+      ),
+    );
   return new Map(rows.map((row) => [row.id, row.comment]));
+}
+
+/** A stop as a reading records it at the first capture: the live point and its served requests. */
+export interface ReadingStop {
+  routePointId: string;
+  location: string;
+  /** Distinct served request ids at the stop: two trips of one request are one share (D6). */
+  requestIds: string[];
+}
+
+/**
+ * The stops of a route as the task shows them, in route order: points left without a served request
+ * are dropped exactly as `assignmentPoint` drops them. The caller holds the route lock
+ * (`lockSources`), so the set cannot be rebuilt between this read and the snapshot written from it.
+ */
+export async function loadReadingStops(reader: Reader, routeId: string): Promise<ReadingStop[]> {
+  const points = await loadRoutePoints(reader, routeId);
+  const served = await servedRequests(
+    reader,
+    points.flatMap((point) => point.actions.map((action) => action.ref.requestId)),
+  );
+  return points.flatMap((point) => {
+    const requestIds = [
+      ...new Set(
+        point.actions.map((action) => action.ref.requestId).filter((id) => served.has(id)),
+      ),
+    ];
+    return requestIds.length === 0
+      ? []
+      : [{ routePointId: point.id, location: point.location, requestIds }];
+  });
 }
 
 /**
@@ -419,18 +467,13 @@ async function routeSources(
   if (rows.length === 0) return byDate;
 
   const routes = await loadRouteDtos(db, rows);
-  // Живые заявки состава: `requestsByRoute` их не фильтрует — там состав как история рейса.
-  const comments = await liveRequestComments(
+  // Served requests of the composition: `requestsByRoute` keeps every row as the route's history.
+  // Status is a property of the request, not of its row in a route, so one set serves the window.
+  const comments = await servedRequests(
+    db,
     routes.flatMap((r) => r.requests.map((q) => q.requestId)),
   );
-  // Заявки, по которым сегодня едут: живые и не отменённые. Статус — свойство самой заявки, а не
-  // её строки в рейсе, поэтому список один на все рейсы окна.
-  const visibleRequests = new Set(
-    routes
-      .flatMap((route) => route.requests)
-      .filter((q) => comments.has(q.requestId) && q.status !== 'cancelled')
-      .map((q) => q.requestId),
-  );
+  const visibleRequests = new Set(comments.keys());
   const visible = routes
     .map((route) => ({
       ...route,

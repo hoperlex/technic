@@ -83,6 +83,7 @@ const routeEntry: DriverAssignmentEntry = {
    */
   points: [
     {
+      id: 'route-point-1',
       position: 1,
       location: 'Карьер «Северный»',
       arrivalTime: '08:30',
@@ -100,6 +101,7 @@ const routeEntry: DriverAssignmentEntry = {
       comment: '',
     },
     {
+      id: 'route-point-2',
       position: 2,
       location: 'ЖК «Восход», корпус 3',
       arrivalTime: '',
