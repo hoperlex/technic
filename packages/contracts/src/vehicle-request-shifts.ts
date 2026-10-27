@@ -8,6 +8,7 @@ import {
   TIME_PATTERN,
 } from './time';
 import type { ReadingSourceKind } from './driver-cabinet';
+import type { DriverDayTimeIssue, ShiftInterval } from './reading-times';
 import type { DiscrepancyKind, DriverReportState, ReadingKind } from './vehicle-readings';
 import type { VehicleOwnership } from './vehicles';
 
@@ -118,6 +119,16 @@ export interface ShiftDriverDayDto {
    * report between load and click changes nothing. Sent back as `expectedDriverFingerprint`.
    */
   fingerprint: string;
+  /**
+   * The driver's shift time of the day (plan §8, stage 3): one interval when the readings fold into
+   * one, otherwise `null` with `timeIssue`. Optional, like the source: a server before stage 3 sends
+   * none, and the portal then keeps the site's time.
+   */
+  startedAt?: string | null;
+  endedAt?: string | null;
+  /** Every complete pair of the day — shown when they cannot be merged into one interval. */
+  intervals?: ShiftInterval[];
+  timeIssue?: DriverDayTimeIssue | null;
 }
 
 /** One reading of the day as a principal with `vehicleReadings.read` sees it (D10). */
@@ -479,6 +490,26 @@ export function shiftSourceOf(
 ): ShiftSource | null {
   if (shift.source !== undefined) return shift.source;
   return shift.filledAt ? 'site' : null;
+}
+
+/** The driver's single interval of a day; `null` — none, ambiguous, or an older server. */
+export function driverDayInterval(
+  day: Pick<ShiftDriverDayDto, 'startedAt' | 'endedAt'> | null | undefined,
+): ShiftInterval | null {
+  if (!day?.startedAt || !day.endedAt) return null;
+  return { startedAt: day.startedAt, endedAt: day.endedAt };
+}
+
+/**
+ * The day's shift time is the driver's (plan §8): the effective day is the driver's — unsigned and
+ * clean — and its readings fold into one interval. Then the time is locked like the hours and is
+ * corrected in the garage; anywhere else the site types it. The server overlays the time by the
+ * same two conditions, so the window never offers an input whose value the door would ignore.
+ */
+export function isShiftTimeFromDriver(
+  shift: Pick<VehicleRequestShiftDto, 'source' | 'filledAt' | 'driverDay'>,
+): boolean {
+  return shiftSourceOf(shift) === 'driver' && driverDayInterval(shift.driverDay) !== null;
 }
 
 /** A day has numbers to sign: the site's row or the driver's clean readings. */

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { uuidSchema } from './common';
 import type { DriverReportFormat, ReadingSourceKind } from './driver-cabinet';
-import { TIME_FORMAT_MESSAGE, TIME_PATTERN, timeToMinutes } from './time';
+import { minutesToTime, TIME_FORMAT_MESSAGE, TIME_PATTERN, timeToMinutes } from './time';
 import { shiftSpanMinutes } from './vehicle-request-shifts';
 
 /**
@@ -387,4 +387,88 @@ export function routeTimeByRequest(
     previous = departure;
   }
   return { ok: true, totalSeconds: elapsed.minutes * 60, byRequest };
+}
+
+/**
+ * Why a request day has no single shift time from the driver (plan §8, stage 3):
+ *
+ * - `incomplete` — some reading of the day has no complete pair (a morning-only interim reading, a
+ *   legacy `v2` reading recorded before times existed, a relocation without stops);
+ * - `ambiguous` — the readings do not fold into one interval of the ordered day: their unfolded
+ *   span is longer than 24 h, or it is empty and the site's pair would read equal clock times as a
+ *   whole day (`shiftSpanMinutes`).
+ *
+ * Either way the site types the time itself; the portal never fabricates an interval.
+ */
+export const DRIVER_DAY_TIME_ISSUES = ['incomplete', 'ambiguous'] as const;
+export type DriverDayTimeIssue = (typeof DRIVER_DAY_TIME_ISSUES)[number];
+
+export const driverDayTimeIssueLabels: Record<DriverDayTimeIssue, string> = {
+  incomplete: 'время смены записано не во всех показаниях дня',
+  ambiguous: 'интервалы водителя не складываются в одну смену — время указывает объект',
+};
+
+/** One driver interval of a day, as clock times; the end may be on the next calendar day. */
+export interface ShiftInterval {
+  startedAt: string;
+  endedAt: string;
+}
+
+/** The driver's time of a request day: one interval when it is unambiguous, and every interval. */
+export interface DriverDayTime {
+  /** The single interval of the day; `null` — no reading has times, or `issue` says why not. */
+  startedAt: string | null;
+  endedAt: string | null;
+  /** Every complete pair of the day, in unfolded start order — shown when they cannot be merged. */
+  intervals: ShiftInterval[];
+  issue: DriverDayTimeIssue | null;
+}
+
+/**
+ * The shift time of a request day from its readings (plan §8): an ESM-2 item's pair, a route
+ * item's arrival at stop 1 and departure from the last stop.
+ *
+ * Every reading of the day starts on the day itself (`report_date`), so a start is unfolded as a
+ * minute of that day and its end as the start plus the reading's own duration — the one duration
+ * rule (`readingShiftMinutes`), which reads an ESM-2 end earlier than its start as the next day and
+ * a route by its steps. The day's interval is the earliest start to the latest end, but only when
+ * that span fits one ordered day with at most one midnight wrap (0 < span ≤ 24 h). Several
+ * readings that do not fit are shown as they are and the site types the time: one invented
+ * interval would put a shift under the signature that nobody worked.
+ *
+ * A day without readings has no time and no issue; a reading without a complete pair makes the
+ * whole day `incomplete` — a partial union would claim a shift shorter than the work.
+ */
+export function driverDayTime(
+  readings: readonly { sourceKind: ReadingSourceKind; times: ReadingTimes }[],
+): DriverDayTime {
+  const unfolded: { from: number; to: number; pair: ShiftInterval }[] = [];
+  let complete = true;
+  for (const { sourceKind, times } of readings) {
+    const from = minutesOf(times.startedAt);
+    const minutes = readingShiftMinutes(sourceKind, times);
+    if (from === null || times.endedAt === null || minutes === null) {
+      complete = false;
+      continue;
+    }
+    unfolded.push({
+      from,
+      to: from + minutes,
+      pair: { startedAt: times.startedAt!, endedAt: times.endedAt },
+    });
+  }
+  unfolded.sort((a, b) => a.from - b.from || a.to - b.to);
+  const intervals = unfolded.map((u) => u.pair);
+  const none = { startedAt: null, endedAt: null, intervals };
+  if (readings.length === 0) return { ...none, issue: null };
+  if (!complete) return { ...none, issue: 'incomplete' };
+  const from = unfolded[0]!.from;
+  const to = Math.max(...unfolded.map((u) => u.to));
+  if (to - from <= 0 || to - from > MINUTES_PER_DAY) return { ...none, issue: 'ambiguous' };
+  return {
+    startedAt: minutesToTime(from),
+    endedAt: minutesToTime(to),
+    intervals,
+    issue: null,
+  };
 }

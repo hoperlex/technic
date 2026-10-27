@@ -136,6 +136,8 @@ export * from './fuel-norms';
 export * from './vehicle-readings';
 /* Shift and stop times of a reading (ADR 0234): the rule the cabinet previews and the server enforces. */
 export * from './reading-times';
+/* A freight request's recorded stops and its share of the route time (plan §8, D6, D7, D12). */
+export * from './request-route-time';
 /* Receipt-backed auto-part accounting (`auto-part-receipts.ts`, ADR 0216). The retired ADR 0134
  * catalog stays frozen; warehouse lots are receipt lines and never reference its tables. */
 export * from './auto-part-receipts';
