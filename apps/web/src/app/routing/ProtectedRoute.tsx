@@ -1,5 +1,5 @@
 import { Navigate, Outlet, useLocation } from 'react-router';
-import { Spin } from 'antd';
+import { Spin, Typography } from 'antd';
 import {
   isSectionOpen,
   PORTAL_SECTIONS,
@@ -8,26 +8,45 @@ import {
   type PortalSectionId,
   type SectionAccess,
 } from '@technic/contracts';
-import { useAuth } from '@entities/session';
+import { useAuth, useAuthReconnecting } from '@entities/session';
 // Экран «разделов нет» — из `pages`: стартовая страница его рисует, а не уводит на него, и своего
 // адреса у него нет вовсе.
 import { NoSectionsPage } from '@pages/no-sections';
 
-function FullScreenSpin() {
+function FullScreenSpin({ note }: { note?: string }) {
   return (
     <div
-      style={{ height: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      style={{
+        height: '100dvh',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16,
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        textAlign: 'center',
+      }}
     >
       <Spin size="large" />
+      {note && <Typography.Text type="secondary">{note}</Typography.Text>}
     </div>
   );
 }
 
 export function ProtectedRoute() {
   const { status, user } = useAuth();
+  const reconnecting = useAuthReconnecting();
   const location = useLocation();
 
-  if (status === 'loading') return <FullScreenSpin />;
+  // While the server cannot answer, the tab keeps retrying instead of sending the person to sign
+  // in: the session is intact, and signing in would hit the same unavailable server (ADR 0233).
+  if (status === 'loading') {
+    return (
+      <FullScreenSpin
+        note={reconnecting ? 'Нет связи с сервером. Повторяем подключение…' : undefined}
+      />
+    );
+  }
   if (status === 'unauthenticated') {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }

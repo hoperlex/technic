@@ -52,6 +52,7 @@ export {
   permissionChecks,
   resetAuthBootstrap,
   useAuth,
+  useAuthReconnecting,
   __resetAuthForTests,
 } from './model/authContext';
 /*

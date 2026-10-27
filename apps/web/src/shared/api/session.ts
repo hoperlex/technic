@@ -16,13 +16,31 @@ import { clientRequestHeaders } from './clientContract';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
 
-/** Чем кончилось обновление токена. */
+/** How a token refresh ended. */
 export type RefreshOutcome =
   | { status: 'refreshed' }
-  /** Сессия кончилась; `generation` — та, в которой это выяснилось. */
+  /** The session ended; `generation` is the one in which that came out. */
   | { status: 'expired'; generation: number }
-  /** Ответ пришёл уже к другой сессии: ни применять его, ни объявлять о нём нельзя. */
+  /**
+   * The server gave no verdict: the proxy or the API answered 502/503/504, or nothing answered at
+   * all. The session stays as it was, because the refresh cookie is still valid: the API keeps it
+   * on such failures (ADR 0233), and ending the session here logged people out on every page reload
+   * during a failover.
+   */
+  | { status: 'unavailable' }
+  /** The answer came to another session: it may be neither applied nor announced. */
   | { status: 'stale' };
+
+/**
+ * Statuses of a server that is there but cannot answer now: nginx without a live API (502), the
+ * API without a database (503 `db_unavailable`), nginx giving up on the API (504). A 500 is not one
+ * of them: that is a bug, and repeating would not cure it.
+ */
+const UNREACHABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+export function isServerUnreachableStatus(status: number): boolean {
+  return UNREACHABLE_STATUSES.has(status);
+}
 
 /**
  * Ответ обновления токена. Учётка приходит в нём вместе с токеном (ADR 0106, этап 2): сервер
@@ -125,52 +143,61 @@ export function onRefreshedUser(handler: (user: unknown) => void): () => void {
 }
 
 /**
- * Обмен refresh-cookie на новый access-токен. Одна попытка на несколько параллельных 401: второй
- * запрос дожидается того же обещания, иначе сервер увидел бы повторное использование refresh и
- * отозвал бы сессию целиком.
+ * Exchange of the refresh cookie for a new access token. One attempt for several parallel 401s: the
+ * second request waits for the same promise, otherwise the server would see the refresh reused and
+ * revoke the whole session.
  */
 export async function refresh(): Promise<RefreshOutcome> {
   if (refreshing) return refreshing;
 
   const startedAt = generation;
-  /** Ответ пришёл к другой сессии — его результат не наш. */
+  /** The answer came to another session: its result is not ours. */
   const stale = () => startedAt !== generation;
 
   /*
-   * Заголовки версии клиента ставятся и здесь, а не только в транспорте: этот `fetch` идёт мимо
-   * `http.ts`, и без них сервер видел бы обновление сессии как запрос неизвестной сборки. Сама
-   * ручка `/auth/refresh` из-под гейта выведена насовсем (ADR 0146, решение 7) — иначе отказ
-   * попал бы в ветку `!res.ok` ниже и был бы прочитан как конец сессии, то есть гейт разлогинивал
-   * бы живых людей. Заголовки при этом уходят всё равно: диагностика в журнале сервера нужна и
-   * тут, а «освобождено» не значит «безымянно».
+   * Client version headers are set here too, not only in the transport: this `fetch` bypasses
+   * `http.ts`, and without them the server would see the refresh as a request from an unknown build.
+   * The `/auth/refresh` route itself is exempt from the gate for good (ADR 0146, decision 7):
+   * otherwise its refusal would land in the `!res.ok` branch below and read as the end of the
+   * session, so the gate would log live people out. The headers still go: diagnostics in the server
+   * log are needed here too, and "exempt" does not mean "anonymous".
    */
   refreshing = fetch(`${BASE}/auth/refresh`, {
     method: 'POST',
     credentials: 'include',
     headers: clientRequestHeaders(),
   })
-    .then(async (res): Promise<RefreshOutcome> => {
-      if (stale()) return { status: 'stale' };
-      if (!res.ok) {
-        accessToken = null;
-        return { status: 'expired', generation: startedAt };
-      }
-      const data = (await res.json()) as RefreshResponse;
-      if (stale()) return { status: 'stale' };
-      accessToken = data.accessToken;
+    .then(
+      async (res): Promise<RefreshOutcome> => {
+        if (stale()) return { status: 'stale' };
+        if (isServerUnreachableStatus(res.status)) return { status: 'unavailable' };
+        if (!res.ok) {
+          accessToken = null;
+          return { status: 'expired', generation: startedAt };
+        }
+        const data = (await res.json()) as RefreshResponse;
+        if (stale()) return { status: 'stale' };
+        accessToken = data.accessToken;
+        /*
+         * The account in the answer is applied, not thrown away. The server computes permissions,
+         * and a refresh is the only place it reports them mid-work: after `authVersion + 1` it
+         * already checks requests against the new set, while the menu and buttons would stay as
+         * they were until a reload. The check here is the minimum a transport can do without
+         * knowing the domain: the body is an object, or the route sent no account (old API builds
+         * and tests that need no user answer so).
+         */
+        if (typeof data.user === 'object' && data.user !== null) {
+          for (const handler of refreshedUserHandlers) handler(data.user);
+        }
+        return { status: 'refreshed' };
+      },
       /*
-       * Учётка из ответа применяется, а не выбрасывается. Права считает сервер, и обновление —
-       * единственное место, где он сообщает их посреди работы: после `authVersion + 1` он проверяет
-       * запросы уже по новому набору, а меню и кнопки остались бы прежними до перезагрузки
-       * страницы. Проверка здесь — минимум, доступный транспорту без знания домена: тело либо
-       * объект, либо ручка учётку не прислала (так отвечают старые сборки API и тесты, которым
-       * пользователь в ответе не нужен).
+       * No answer at all: the network or the proxy dropped the request. Kept apart from the
+       * `catch` below, which takes a broken answer: that one still ends the session, because a
+       * server that answers but cannot be read will not be cured by waiting.
        */
-      if (typeof data.user === 'object' && data.user !== null) {
-        for (const handler of refreshedUserHandlers) handler(data.user);
-      }
-      return { status: 'refreshed' };
-    })
+      (): RefreshOutcome => (stale() ? { status: 'stale' } : { status: 'unavailable' }),
+    )
     .catch((): RefreshOutcome => {
       if (stale()) return { status: 'stale' };
       accessToken = null;

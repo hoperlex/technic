@@ -6,13 +6,22 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { canUse as scopedCanUse, type AuthUser, type Permission } from '@technic/contracts';
 import { accessFingerprint } from './accessFingerprint';
 import { authApi } from '../api/authApi';
-import { clear as clearSession, onExpired, onRefreshedUser, refresh } from '@shared/api';
+import {
+  clear as clearSession,
+  isApiError,
+  isServerUnreachableStatus,
+  MAINTENANCE_MODE_CODE,
+  onExpired,
+  onRefreshedUser,
+  refresh,
+} from '@shared/api';
 
 type Status = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -116,9 +125,81 @@ export function resetAuthBootstrap(): void {
   bootstrapPromise = null;
 }
 
+/**
+ * Pauses between bootstrap attempts while the server cannot answer: 1, 2, 4, 8, then every 10 s.
+ * No limit on attempts: signing in during the outage would hit the same database, and the moment
+ * the server answers the tab goes on by itself, into the portal or to the login form.
+ */
+const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
+
+/** Bootstrap is waiting for the server. Module state, like `bootstrapPromise`: it belongs to the tab. */
+let bootstrapUnreachable = false;
+const unreachableListeners = new Set<() => void>();
+
+function setBootstrapUnreachable(next: boolean): void {
+  if (bootstrapUnreachable === next) return;
+  bootstrapUnreachable = next;
+  for (const listener of unreachableListeners) listener();
+}
+
+function subscribeUnreachable(listener: () => void): () => void {
+  unreachableListeners.add(listener);
+  return () => unreachableListeners.delete(listener);
+}
+
+/** Whether the tab's first look at the session is waiting for the server; the loader says so. */
+export function useAuthReconnecting(): boolean {
+  return useSyncExternalStore(subscribeUnreachable, () => bootstrapUnreachable);
+}
+
+const UNREACHABLE = Symbol('unreachable');
+
+/**
+ * A failed `/auth/me` that waiting can cure: no answer at all (`fetch` rejects with a TypeError),
+ * or 502/503/504. The maintenance gate's 503 is excluded: the window has its own screen and its
+ * own reset of the bootstrap (`resetAuthBootstrap`).
+ */
+function isUnreachableError(e: unknown): boolean {
+  if (e instanceof TypeError) return true;
+  return isApiError(e) && isServerUnreachableStatus(e.status) && e.code !== MAINTENANCE_MODE_CODE;
+}
+
+async function bootstrapOnce(): Promise<AuthUser | null | typeof UNREACHABLE> {
+  const outcome = await refresh();
+  if (outcome.status === 'unavailable') return UNREACHABLE;
+  if (outcome.status !== 'refreshed') return null;
+  try {
+    return await authApi.me();
+  } catch (e) {
+    return isUnreachableError(e) ? UNREACHABLE : null;
+  }
+}
+
+/**
+ * Bootstrap that waits out a server which cannot answer (ADR 0233). A run replaced meanwhile by a
+ * sign-in or a sign-out answers with the replacement: its own `null` would declare signed out a tab
+ * that has just signed in. A run dropped by a reset answers `null` and starts nothing: only an
+ * unmounted provider waits for it, and the next mount asks anew.
+ */
+async function retryBootstrap(isCurrent: () => boolean): Promise<AuthUser | null> {
+  for (let attempt = 0; ; attempt += 1) {
+    const me = await bootstrapOnce();
+    if (!isCurrent()) return bootstrapPromise ?? null;
+    if (me !== UNREACHABLE) {
+      setBootstrapUnreachable(false);
+      return me;
+    }
+    setBootstrapUnreachable(true);
+    const delay = RECONNECT_DELAYS_MS[Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)];
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (!isCurrent()) return bootstrapPromise ?? null;
+  }
+}
+
 /** Тестам: вернуть модуль в состояние «на вкладку ещё никто не входил». */
 export function __resetAuthForTests(): void {
   resetAuthBootstrap();
+  setBootstrapUnreachable(false);
   cachedUserId = null;
   // Вместе с учёткой забывается и её доступ: иначе первый же сценарий следующего файла сравнил бы
   // свой отпечаток с чужим и вычистил кэш там, где ничего не менялось.
@@ -127,11 +208,12 @@ export function __resetAuthForTests(): void {
 
 function bootstrapAuth(): Promise<AuthUser | null> {
   if (!bootstrapPromise) {
-    bootstrapPromise = (async () => {
-      const outcome = await refresh();
-      if (outcome.status !== 'refreshed') return null;
-      return authApi.me();
-    })().catch(() => null);
+    // A run replaced while waiting may have left the flag up; the new run sets it again if needed.
+    setBootstrapUnreachable(false);
+    const run: Promise<AuthUser | null> = retryBootstrap(() => bootstrapPromise === run).catch(
+      () => null,
+    );
+    bootstrapPromise = run;
   }
   return bootstrapPromise;
 }

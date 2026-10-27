@@ -10,7 +10,10 @@
   [readiness streak](../../apps/api/src/lib/readiness-watch.ts), [server](../../apps/api/src/server.ts),
   [refresh route](../../apps/api/src/routes/auth.ts), [config](../../apps/api/src/config.ts),
   [worker pool](../../apps/worker/src/db-pool.ts), [worker](../../apps/worker/src/index.ts),
-  [worker loop watchdog](../../apps/worker/src/loop-watch.ts)
+  [worker loop watchdog](../../apps/worker/src/loop-watch.ts),
+  [portal session](../../apps/web/src/shared/api/session.ts), [transport](../../apps/web/src/shared/api/http.ts),
+  [portal bootstrap](../../apps/web/src/entities/session/model/authContext.tsx),
+  [loader](../../apps/web/src/app/routing/ProtectedRoute.tsx), [bundle budget](../../apps/web/bundle-budget.json)
 
 ## Context
 
@@ -78,6 +81,17 @@ failover into a logout.
 6. **Only the verdict on the token drops the refresh cookie.** `POST /auth/refresh` clears the
    cookie when the rotation refuses the token (an `AppError`), and keeps it on any other failure:
    the rotation rolled back, and the token is as valid as it was.
+7. **The portal waits out an unreachable server instead of ending the session** (owner's choice of
+   27.10.2026). A refresh answered 502, 503 or 504, or not answered at all, is a new outcome,
+   `unavailable`, that leaves the session as it was; a 500 is not one of them, since repeating does
+   not cure a bug. On opening a tab the bootstrap retries after 1, 2, 4, 8 and then every 10
+   seconds, with no limit, and the loader says «Нет связи с сервером. Повторяем подключение…»;
+   when the server answers, the person is in the portal, or on the login form if the cookie is
+   really dead. In the middle of work a 401 whose refresh is `unavailable` fails only that action
+   with `server_unreachable` («Нет связи с сервером. Повторите через несколько секунд.»), and the
+   person keeps the screen and the form; the next request after recovery refreshes by itself. A
+   bootstrap run replaced while it waits (a sign-in, a sign-out) answers with its replacement, and
+   one dropped by a reset starts nothing.
 
 The deadlines form a ladder in the sense of ADR 0148: connect 5 s, query 15 s, pool stall 30 s,
 readiness exit after a minute, the nginx timeout for `/api/` 60 s. The bulk actions' own
@@ -105,9 +119,11 @@ limit is what keeps a row inside its lease.
 - A COMMIT that hits the deadline is ambiguous: the rotation may have landed. The kept old token
   then reads as reuse on the next refresh and ends the session, the same outcome as before, only
   rarer.
-- The portal still reads any refused refresh as the end of the session, so a reload during the
-  burst shows the login form. The cookie survives, and the next reload after recovery restores the
-  session. A portal-side retry is a separate decision and is not taken here.
+- A tab opened during a long outage shows the reconnecting loader for as long as the outage
+  lasts. Signing in would not help: login asks the same database. The maintenance window keeps its
+  own screen: its 503 carries `maintenance_mode` and is not read as unreachable.
+- The portal's entry chunk grew by up to 548 gzip bytes; the 48 route closures that crossed their
+  limits got the measured values in `apps/web/bundle-budget.json`.
 - The worker carries a copy of the pool code: the two apps share no server package.
 - The API's test runner raises the query deadline to 120 s (`apps/api/vitest.config.ts`): db tests
   seed and sweep thousands of rows in one statement on a shared host, and 15 s cut the seeding of
@@ -131,7 +147,11 @@ then stays silent, which is what a half-open socket looks like from the client: 
 is dropped after a plain release, a drizzle transaction fails after one deadline, a failed BEGIN
 returns its slot, both connect deadlines fire, and dropped connections of checked-out and idle
 clients do not end the process, and pool errors carry the database's mark. Removing any of these
-mechanisms fails at least one of the tests. `db-unavailable-auth.test.ts` checks the 503 of login and refresh on the assembled
-application and that the cookie survives a database failure but not a refused token;
-`pg-error.test.ts` and `readiness-watch.test.ts` cover the error classes and the streak;
-`apps/worker/test/db-pool.test.ts` covers the worker's copy.
+mechanisms fails at least one of the tests. `db-unavailable-auth.test.ts` checks the 503 of login
+and refresh on the assembled application and that the cookie survives a database failure but not a
+refused token; `pg-error.test.ts` and `readiness-watch.test.ts` cover the error classes and the
+streak; `apps/worker/test/db-pool.test.ts` covers the worker's copy.
+`apps/web/test/flow-session-server-unreachable.test.tsx` covers the portal: the loader waits out a
+503 and a dropped request, a dead cookie still goes straight to the login form, a sign-in during
+the wait is not undone by the waiting run, and a 401 mid-work keeps the session and fails only the
+action. Each of the four portal mechanisms, removed alone, fails one of these tests.

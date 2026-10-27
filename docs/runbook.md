@@ -1378,8 +1378,10 @@ What a drop looks like now:
   соединения…` (callers waited and the pool stayed silent for twice the query deadline; API and
   worker) or `Проверка готовности не проходит…` (three failed readiness checks over at least a
   minute; API only);
-- in the browser a page reload during the burst shows the login form, but the refresh cookie
-  survives: a reload after recovery restores the session.
+- in the browser a tab opened during the burst shows «Нет связи с сервером. Повторяем
+  подключение…» and goes on by itself when the server answers; mid-work an action may fail with
+  «Нет связи с сервером. Повторите через несколько секунд.», while the session and the open form
+  stay. Nobody is sent to the login form unless the refresh cookie is really dead.
 
 Check:
 

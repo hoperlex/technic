@@ -28,6 +28,10 @@ import {
 } from './maintenance';
 import { expireIfCurrent, getToken, refresh } from './session';
 
+/** The tab could not reach the server; the session is intact and the action may be repeated. */
+export const SERVER_UNREACHABLE_CODE = 'server_unreachable';
+export const SERVER_UNREACHABLE_MESSAGE = 'Нет связи с сервером. Повторите через несколько секунд.';
+
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
 
 export interface ApiError {
@@ -149,6 +153,19 @@ async function request(path: string, options: RequestOptions): Promise<Response>
     // каждое действие отвечает «Требуется авторизация»: сообщение верное, но читается как поломка
     // печати или выгрузки, а не как конец сессии.
     else if (outcome.status === 'expired') expireIfCurrent(outcome.generation);
+    /*
+     * The server could not say whether the session is alive (a failover, a dropped connection).
+     * The person stays on the screen with the form they were filling, and only this action fails:
+     * the next request after recovery gets its 401 again and refreshes by itself. The 401 at hand
+     * would read "Требуется авторизация", which is not what happened.
+     */
+    else if (outcome.status === 'unavailable') {
+      throw {
+        code: SERVER_UNREACHABLE_CODE,
+        message: SERVER_UNREACHABLE_MESSAGE,
+        status: 503,
+      } as ApiError;
+    }
   }
 
   if (!res.ok) {
