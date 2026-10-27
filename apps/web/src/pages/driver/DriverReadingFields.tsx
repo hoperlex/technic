@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Input, Typography } from 'antd';
-import { shiftSpanMinutes, type DriverPreviousReading } from '@technic/contracts';
-import { formatDuration, previousHintText, type ReadingField } from '@entities/vehicle-reading';
+import { durationLabel, shiftSpanMinutes, type DriverPreviousReading } from '@technic/contracts';
+import { previousHintText, type ReadingField } from '@entities/vehicle-reading';
 import type { DraftItem } from './api';
 import { fieldLabelStyle, hintStyle, keepVisible } from './readingFieldStyles';
 import { TimeField } from './DriverTimeField';
@@ -138,7 +138,7 @@ export interface ReadingFieldsProps {
 }
 
 /**
- * «смена 12 ч 00 мин» under the end time, read by `shiftSpanMinutes` — the one reading of a pair
+ * «смена 12 ч» under the end time, read by `shiftSpanMinutes` — the one reading of a pair
  * the site's shift window uses too. An end earlier than the start is the next day, and the hint
  * says so, since that is the one case a typo and a night shift look alike. Equal times get no
  * hint: the submit refuses them («начало и конец смены совпадают»).
@@ -150,7 +150,7 @@ function spanHint(startedAt: string, endedAt: string): string | undefined {
   const minutes = shiftSpanMinutes(start, end);
   if (minutes === null) return undefined;
   const night = end < start ? ' · ночная — конец раньше начала' : '';
-  return `смена ${formatDuration(minutes)}${night}`;
+  return `смена ${durationLabel(minutes * 60)}${night}`;
 }
 
 export function ReadingFields({

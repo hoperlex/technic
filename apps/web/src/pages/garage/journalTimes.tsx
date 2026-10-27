@@ -1,6 +1,10 @@
 import { Space, Tag, Typography } from 'antd';
-import { readingShiftMinutes, type VehicleReadingJournalRow } from '@technic/contracts';
-import { formatDuration, timeRangeText } from '@entities/vehicle-reading';
+import {
+  durationLabel,
+  readingShiftMinutes,
+  type VehicleReadingJournalRow,
+} from '@technic/contracts';
+import { timeRangeText } from '@entities/vehicle-reading';
 
 /**
  * Shift and stop times in the vehicle's readings journal (ADR 0234; plan
@@ -57,7 +61,7 @@ export function ShiftTimeCell({ row }: { row: VehicleReadingJournalRow }) {
       <span>{timeRangeText(reading.startedAt, reading.endedAt) ?? '—'}</span>
       {minutes !== null ? (
         <Typography.Text type="secondary" style={secondary}>
-          {formatDuration(minutes)}
+          {durationLabel(minutes * 60, { zeroMinutes: true })}
         </Typography.Text>
       ) : (
         <Tag color="gold" style={{ marginInlineEnd: 0 }}>

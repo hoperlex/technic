@@ -140,11 +140,11 @@ export function requestLabelOf(action: DriverAssignmentAction): string {
 export type RouteSummary =
   | {
       kind: 'ok';
-      /** Requests in the order the route first meets them, with their minutes. */
-      requests: { label: string; minutes: number }[];
-      shift: { from: string; to: string; minutes: number };
+      /** Requests in the order the route first meets them, with their exact D6 seconds. */
+      requests: { label: string; seconds: number }[];
+      shift: { from: string; to: string; seconds: number };
       /** Stops served for several requests: the segment is split equally (D6). */
-      shared: { position: number; shareMinutes: number }[];
+      shared: { position: number; shareSeconds: number }[];
     }
   | { kind: 'incomplete' | 'order' | 'unassigned' };
 
@@ -174,12 +174,12 @@ export function routeSummary(
     const count = labels.get(stop.position)?.length ?? 0;
     if (count < 2) return [];
     const segment = elapsedTo(index + 1) - elapsedTo(index);
-    return [{ position: stop.position, shareMinutes: segment / count }];
+    return [{ position: stop.position, shareSeconds: (segment * 60) / count }];
   });
   return {
     kind: 'ok',
-    requests: order.map((label) => ({ label, minutes: (split.byRequest[label] ?? 0) / 60 })),
-    shift: { from: startedAt ?? '', to: endedAt ?? '', minutes: split.totalSeconds / 60 },
+    requests: order.map((label) => ({ label, seconds: split.byRequest[label] ?? 0 })),
+    shift: { from: startedAt ?? '', to: endedAt ?? '', seconds: split.totalSeconds },
     shared,
   };
 }

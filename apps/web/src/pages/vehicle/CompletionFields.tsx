@@ -13,12 +13,12 @@ import type { Dayjs } from 'dayjs';
 import type { FormInstance } from 'antd';
 import {
   approvedMachineHours,
+  durationLabel,
   requestCustomerName,
   assignmentRateLabel,
   assignmentTitle,
   calcVehicleRequestCost,
   rateForWorkUnit,
-  routeDurationLabel,
   type RouteTimePrefill,
   shiftsCompletionWarning,
   unapprovedPastShiftDays,
@@ -78,7 +78,7 @@ function listDays(days: string[]): string {
 function routeTimeHint(prefill: RouteTimePrefill | null): string | undefined {
   if (!prefill) return undefined;
   if (!prefill.ok) return `Время по точкам не подставлено: ${prefill.reason}`;
-  return `По точкам: ${routeDurationLabel(prefill.seconds)} → ${workedAmountLabel('hours', prefill.hours)}, округлено вверх до часа`;
+  return `По точкам: ${durationLabel(prefill.seconds)} → ${workedAmountLabel('hours', prefill.hours)}, округлено вверх до часа`;
 }
 
 interface Props {

@@ -328,7 +328,7 @@ describe('журнал показаний машины', () => {
     expect(await screen.findByText('Р-1')).toBeDefined();
 
     // A night shift reads by the one rule of a pair (`shiftSpanMinutes`): the end is the next day.
-    expect(cellsOf('Р-1')[2]).toBe('20:00–08:0012 ч 00 мин');
+    expect(cellsOf('Р-1')[2]).toBe('20:00–08:0012 ч 0 мин');
     expect(cellsOf('Р-2')[2]).toBe(
       '07:40–11:504 ч 10 мин' +
         '1. Карьер — 07:40–08:30' +

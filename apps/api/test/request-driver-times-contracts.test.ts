@@ -3,8 +3,8 @@ import {
   driverDayInterval,
   driverDayTime,
   isShiftTimeFromDriver,
+  durationLabel,
   requestRouteStops,
-  routeDurationLabel,
   routeHoursForCompletion,
   routeScalarTimes,
   routeTimePrefill,
@@ -160,12 +160,19 @@ describe('время по точкам грузоперевозки', () => {
     expect(routeHoursForCompletion(3 * 3600 + 1)).toBe(4);
   });
 
-  it('длительность читается часами и минутами', () => {
-    expect(routeDurationLabel(2 * 3600 + 10 * 60)).toBe('2 ч 10 мин');
-    expect(routeDurationLabel(45 * 60)).toBe('45 мин');
-    expect(routeDurationLabel(3 * 3600)).toBe('3 ч');
-    expect(routeDurationLabel(20)).toBe('меньше минуты');
-    expect(routeDurationLabel(0)).toBe('0 мин');
+  it('длительность читается часами и минутами — одна формулировка портала', () => {
+    expect(durationLabel(2 * 3600 + 10 * 60)).toBe('2 ч 10 мин');
+    // Minutes are an amount, not a clock: never zero-padded.
+    expect(durationLabel(2 * 3600 + 5 * 60)).toBe('2 ч 5 мин');
+    expect(durationLabel(45 * 60)).toBe('45 мин');
+    expect(durationLabel(3 * 3600)).toBe('3 ч');
+    expect(durationLabel(3 * 3600, { zeroMinutes: true })).toBe('3 ч 0 мин');
+    expect(durationLabel(3 * 3600 + 60, { zeroMinutes: true })).toBe('3 ч 1 мин');
+    expect(durationLabel(20)).toBe('меньше минуты');
+    expect(durationLabel(0)).toBe('0 мин');
+    expect(durationLabel(-90)).toBe('0 мин');
+    // A split share with seconds rounds to the minute.
+    expect(durationLabel(30 * 60 + 40)).toBe('31 мин');
   });
 
   it('предложение закрытия — часы вверх, иначе причина словами', () => {

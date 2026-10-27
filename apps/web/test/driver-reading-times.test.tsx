@@ -282,12 +282,12 @@ describe('кабинет водителя: время смены и остано
 
     type(field(block, 'Время начала'), '08:00');
     type(field(block, 'Время окончания'), '20:00');
-    expect(await within(block).findByText('смена 12 ч 00 мин')).toBeDefined();
+    expect(await within(block).findByText('смена 12 ч')).toBeDefined();
 
     // An end earlier than the start is the next day — one reading of a pair (`shiftSpanMinutes`).
     type(field(block, 'Время окончания'), '06:00');
     expect(
-      await within(block).findByText('смена 22 ч 00 мин · ночная — конец раньше начала'),
+      await within(block).findByText('смена 22 ч · ночная — конец раньше начала'),
     ).toBeDefined();
   });
 
@@ -353,7 +353,8 @@ describe('кабинет водителя: время смены и остано
     // Stop 1 (50 min) is split between ТС-40 and ТС-41; stops 2 and 3 belong to one each (D6).
     await waitFor(() => expect(within(summary).getByText('ТС-40')).toBeDefined());
     const line = (label: string) => within(summary).getByText(label).parentElement!.textContent;
-    expect(line('ТС-40')).toBe('ТС-402 ч 00 мин');
+    // A list of durations keeps the zero minutes, so every line has one shape.
+    expect(line('ТС-40')).toBe('ТС-402 ч 0 мин');
     expect(line('ТС-41')).toBe('ТС-412 ч 10 мин');
     expect(within(summary).getByText('Смена 07:40–11:50')).toBeDefined();
     expect(within(summary).getByText('4 ч 10 мин')).toBeDefined();

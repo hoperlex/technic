@@ -1,5 +1,5 @@
 import { Typography } from 'antd';
-import { formatDuration } from '@entities/vehicle-reading';
+import { durationLabel } from '@technic/contracts';
 import type { DraftStopTimes } from './api';
 import { TimeField } from './DriverTimeField';
 import { hintStyle } from './readingFieldStyles';
@@ -134,18 +134,20 @@ function Summary({
           {summary.requests.map((request) => (
             <div key={request.label} style={lineStyle}>
               <span>{request.label}</span>
-              <span>{formatDuration(request.minutes)}</span>
+              <span>{durationLabel(request.seconds, { zeroMinutes: true })}</span>
             </div>
           ))}
           <div style={lineStyle}>
             <Typography.Text
               strong
             >{`Смена ${summary.shift.from}–${summary.shift.to}`}</Typography.Text>
-            <Typography.Text strong>{formatDuration(summary.shift.minutes)}</Typography.Text>
+            <Typography.Text strong>
+              {durationLabel(summary.shift.seconds, { zeroMinutes: true })}
+            </Typography.Text>
           </div>
           {summary.shared.map((stop) => (
             <Typography.Text key={stop.position} type="secondary" style={hintStyle}>
-              {`Общая точка ${stop.position} делится поровну: по ${formatDuration(stop.shareMinutes)} каждой заявке`}
+              {`Общая точка ${stop.position} делится поровну: по ${durationLabel(stop.shareSeconds)} каждой заявке`}
             </Typography.Text>
           ))}
         </>

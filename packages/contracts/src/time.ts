@@ -295,3 +295,32 @@ export const WORK_TIME_MESSAGE = 'Время должно быть в рабоч
 export const TIME_FORMAT_MESSAGE = 'Время в формате чч:мм (24 часа)';
 /** Сообщение о слишком ранней дате — общее для формы и ответа API. */
 export const MIN_REQUEST_DATE_MESSAGE = 'Дата не может быть раньше сегодняшней';
+
+/** Per-call variations of `durationLabel`: one wording with switches, never a second format. */
+export interface DurationLabelOptions {
+  /**
+   * Keep zero minutes after whole hours: «12 ч 0 мин» instead of «12 ч». For durations stacked in a
+   * column or a list (the garage journal, the cabinet's «Время по заявкам»), where every line keeps
+   * one shape and is compared at a glance; a sentence reads the short form.
+   */
+  zeroMinutes?: boolean;
+}
+
+/**
+ * A duration in hours and minutes — the portal's one wording of it: «2 ч 5 мин», «45 мин», «3 ч».
+ * The driver cabinet, the garage journal, the request card and the completion window once read
+ * one shift as «2 ч 05 мин» and «2 ч 5 мин» from two copies. Minutes are not zero-padded: the
+ * portal writes a duration as an amount (`workedAmountLabel` «26 ч»), not as a clock reading.
+ *
+ * Takes seconds, the exact unit of the D6 split, and rounds to whole minutes: times are typed to
+ * the minute, and only a share of a split stop carries seconds. A positive duration under half a
+ * minute reads «меньше минуты», so a recorded share never reads as nothing; a negative one is 0.
+ */
+export function durationLabel(seconds: number, options: DurationLabelOptions = {}): string {
+  const minutes = Math.max(0, Math.round(seconds / 60));
+  if (minutes === 0) return seconds > 0 ? 'меньше минуты' : '0 мин';
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours === 0) return `${rest} мин`;
+  return rest === 0 && !options.zeroMinutes ? `${hours} ч` : `${hours} ч ${rest} мин`;
+}

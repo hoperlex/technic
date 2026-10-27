@@ -2,10 +2,10 @@ import { Space, Spin, Table, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   driverReportStateLabels,
+  durationLabel,
   type RequestRouteReadingDto,
   type RequestRouteStopDto,
   type RequestRouteTimeDto,
-  routeDurationLabel,
   routeTimeIssueLabels,
   type VehicleRequestDto,
 } from '@technic/contracts';
@@ -75,7 +75,7 @@ const columns = [
 
 /** «Время по заявке» in words: the exact total, or why there is none. */
 function routeTimeSummary(time: RequestRouteTimeDto): string {
-  if (time.seconds !== null) return routeDurationLabel(time.seconds);
+  if (time.seconds !== null) return durationLabel(time.seconds);
   return `нет — ${routeTimeIssueLabels[time.issues[0] ?? 'no_readings']}`;
 }
 
@@ -95,7 +95,7 @@ function ReadingFact({
         <Typography.Text>{formatDateOnly(reading.reportDate)}</Typography.Text>
         {reading.issue && <Tag color="orange">{routeTimeIssueLabels[reading.issue]}</Tag>}
         {reading.seconds !== null && (
-          <Typography.Text type="secondary">{routeDurationLabel(reading.seconds)}</Typography.Text>
+          <Typography.Text type="secondary">{durationLabel(reading.seconds)}</Typography.Text>
         )}
         {diagnostics && (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>

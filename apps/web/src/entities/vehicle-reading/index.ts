@@ -31,5 +31,5 @@ export {
   type ReadingValue,
   type ReadingWarning,
 } from './model/readingLimits';
-/** Wording of shift and stop times (ADR 0234): the cabinet and the garage journal read them alike. */
-export { formatDuration, timeRangeText } from './model/readingTimes';
+/** The shift's time range (ADR 0234): the cabinet and the garage journal read it alike. */
+export { timeRangeText } from './model/readingTimes';

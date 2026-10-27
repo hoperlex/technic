@@ -143,16 +143,6 @@ export function routeHoursForCompletion(seconds: number): number {
   return Math.ceil(seconds / SECONDS_PER_HOUR);
 }
 
-/** «2 ч 10 мин», «45 мин», «3 ч» — the exact total as the card and the window show it. */
-export function routeDurationLabel(seconds: number): string {
-  const minutes = Math.round(seconds / 60);
-  if (minutes === 0) return seconds > 0 ? 'меньше минуты' : '0 мин';
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  if (hours === 0) return `${rest} мин`;
-  return rest === 0 ? `${hours} ч` : `${hours} ч ${rest} мин`;
-}
-
 /** What the completion window of a freight request starts from (D7, D12). */
 export type RouteTimePrefill =
   { ok: true; hours: number; seconds: number } | { ok: false; reason: string };

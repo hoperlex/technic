@@ -1,6 +1,7 @@
 import dayjs from 'dayjs';
 import { MOSCOW_TZ } from '@shared/config';
 import {
+  durationLabel,
   TICKET_AUDIT_OPERATIONS_DAYS,
   type TicketAuditOperationsDto,
   type TicketAuditSubsystemState,
@@ -126,17 +127,17 @@ export function generatedLabel(iso: string): string {
 }
 
 /**
- * Возраст старейшей ждущей задачи. `null` — очередь пуста, и это сказано словами: «старейшая 0 мин»
- * читалось бы как «только что положили».
+ * The age of the oldest waiting task. `null` is an empty queue, said in words: «старейшая 0 мин»
+ * would read as "just queued".
  *
- * Часы отделяются от минут, потому что счёт идёт до тысяч: «старейшая 2880 мин» глазами не
- * читается, а «2 дня» — читается, и именно по этому числу решают, встала очередь или движется.
+ * Hours are split from minutes because the count runs into thousands: «старейшая 2880 мин» is not
+ * read at a glance, «2 сут» is, and this number is what tells a stalled queue from a moving one.
+ * Under a day it is the portal's one duration wording (`durationLabel`); days are this screen's own.
  */
 export function oldestLabel(minutes: number | null): string {
   if (minutes === null) return 'очередь пуста';
-  if (minutes < 60) return `старейшая ${minutes} мин`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `старейшая ${hours} ч ${minutes % 60} мин`;
+  if (hours < 24) return `старейшая ${durationLabel(minutes * 60)}`;
   return `старейшая ${Math.floor(hours / 24)} сут ${hours % 24} ч`;
 }
 
