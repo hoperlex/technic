@@ -55,7 +55,13 @@
   [shift-driver-days.test.ts](../../apps/api/test/shift-driver-days.test.ts),
   [shift-driver-days.db.test.ts](../../apps/api/test/shift-driver-days.db.test.ts),
   [vehicle-shifts-tab.test.tsx](../../apps/web/test/vehicle-shifts-tab.test.tsx),
-  [readings-request-shifts-carrier.test.tsx](../../apps/web/test/readings-request-shifts-carrier.test.tsx)
+  [readings-request-shifts-carrier.test.tsx](../../apps/web/test/readings-request-shifts-carrier.test.tsx);
+  driver times on a request day of 2026-10-27 (stage 3) —
+  [reading-times.ts](../../packages/contracts/src/reading-times.ts) (`driverDayTime`),
+  [reading-points.ts](../../apps/api/src/services/reading-points.ts) (the stops a route's duration
+  is read from), tests
+  [request-driver-times-contracts.test.ts](../../apps/api/test/request-driver-times-contracts.test.ts),
+  [request-driver-times.db.test.ts](../../apps/api/test/request-driver-times.db.test.ts)
 - Связано: [ADR 0103](0103-vehicle-readings.md) (since 2026-10-27 a request day reads the driver's
   submitted readings, section «Driver readings as the day's numbers»)
 - Решение вырастает из: [ADR 0029](0029-vehicle-request-completion.md) (факт выполнения — итог, к
@@ -341,8 +347,8 @@ The shift table was built when the portal held no driver data: the site typed a 
 hours and refuelling by hand. Since [ADR 0103](0103-vehicle-readings.md) the driver submits the
 same day as counter snapshots, and the request showed the copy typed by hand. The owner closed the
 forks by surveys of 27 October ([readings-shifts-merge-plan.md](../readings-shifts-merge-plan.md),
-D1–D4 and D10); this section records stages 0 and 1 of that plan. Times stay the site's until
-stage 2.
+D1–D4 and D10); this section records stages 0 and 1 of that plan. Times stayed the site's until
+stage 3 (section «Driver times on a request day» below).
 
 - **A request day is a view, not a second store (D1).** Nothing is copied when a driver submits:
   the table reads, for every day of the term, the readings of reports in a submitted state
@@ -407,3 +413,43 @@ history line, the old-tab and stale-fingerprint 409s, acceptance between load an
 diagnostics only for `vehicleReadings.read`. `vehicle-shifts-modal.test.tsx` and
 `vehicle-shifts-tab.test.tsx` cover the window and the card; `readings-request-shifts-carrier.test.tsx`
 proves that a garage reading edit and an acceptance refresh the request shifts.
+
+## Driver times on a request day (2026-10-27)
+
+Stage 2 of the merge plan ([ADR 0234](0234-driver-shift-and-stop-times.md)) gave a reading its
+shift time: an ESM-2 item's start/end pair, a route item's stops. Stage 3
+([readings-shifts-merge-plan.md](../readings-shifts-merge-plan.md) §8) lets the request day read
+it, so the site no longer types the time the driver already recorded.
+
+- **Where the time comes from.** A clean unsigned driver day (the `driver` row of the effective-day
+  table above) takes its time from the readings — an ESM-2 pair, a route item's arrival at stop 1
+  and departure from the last stop — only when the day's readings fold into ONE interval
+  (`driverDayTime` in the contracts). Every reading starts on the day itself; its end is the start
+  plus its own duration by the one duration rule (`readingShiftMinutes`: an ESM-2 pair through
+  `shiftSpanMinutes`, a route by its steps). The interval is the earliest start to the latest end,
+  only when that span fits the ordered day with at most one midnight wrap (0 < span ≤ 24 h).
+- **What happens otherwise.** A reading without a complete pair (an interim reading, a legacy
+  reading, a relocation) makes the day's time `incomplete`; readings that do not fold make it
+  `ambiguous`, and a zero-length span is ambiguous too, because the site's pair reads equal clock
+  times as a whole day. In both cases the day keeps the site's time or shows none, the intervals
+  ride along in `driverDay.intervals`, and the shift window leaves the time to the site — one
+  invented interval would put a shift under the signature that nobody worked. Cleanliness is not
+  affected: the hours stay signable in one click.
+- **Doors.** The save and sign-off doors write the driver's interval from the server's own read,
+  never from the body, exactly as they write the hours; the fingerprint covers the interval (added
+  only when there is one, so a day without driver times keeps the fingerprint an open stage 1 tab
+  holds). The shift window locks the time inputs by the same pair of conditions
+  (`isShiftTimeFromDriver`). A signed day keeps its time; a later reading edit shows next to it as
+  «водитель сейчас: …», as the hours do.
+- **Access (D10).** The time is a number of the day: everyone who reads the request sees it, with
+  no diagnostics added.
+- **Release.** No migration and no client floor. An older portal shows the overlaid time as the
+  day's time and sends it back; the door ignores the body's time on such a day anyway. A newer
+  portal on an older server sees no time fields in `driverDay` and keeps the site's time.
+
+**Tests.** `request-driver-times-contracts.test.ts` holds the folding rule;
+`request-driver-times.db.test.ts` proves an ESM-2 pair written by the save and sign-off doors and
+frozen by the signature, a stale fingerprint after a time-only edit, a clean day without driver
+times keeping the site's time, two vehicles of one day folding and not folding, and a linear day
+in a route taking the arrival at stop 1 and the departure from the last stop.
+`vehicle-shifts-modal.test.tsx` covers the locked inputs and the shown intervals.

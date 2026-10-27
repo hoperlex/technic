@@ -1059,6 +1059,17 @@ purpose (survey of 27.10.2026, Q8):
   fills only for a principal with `vehicleReadings.read` (`shiftsResponse` asks `can`). Without the
   right the key is absent, not empty: the portal shows the mark and the numbers and nothing else.
 
+The same split holds for the driver's times of stage 3 ([plan](readings-shifts-merge-plan.md) §8):
+
+- the day's shift time taken from the readings and the driver's intervals (`driverDay.startedAt`,
+  `endedAt`, `intervals`, `timeIssue`) are numbers of the day and go to every reader of the request;
+- `GET /vehicle-requests/:id/route-time` — a freight request's recorded stop times and its share of
+  the route time — is read under `vehicleRequests.read` and the request's own scope
+  (`assertRequestScope`, `assertLessorScope`), like the shift table. The times, the share and the
+  reasons it is missing go to every reader, the lessor included: its invoice is checked against
+  them. The `driver` block (names, report states, the `no_data` reason, the reading comment) is
+  filled only for `vehicleReadings.read`.
+
 No new permission was added, and no role gained one: the change widens what an existing reader of
 the request sees, and it is recorded here because access is a protected area.
 

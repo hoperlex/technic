@@ -104,3 +104,37 @@
 - Закрытие требует одного числа там, где на объекте бывает сложнее (два дня по 8 часов и один по
   4). Такое закрытие сводят в часы — единица для того и есть; если практика покажет, что этого мало,
   строка закрытия расширяется до нескольких, а не переделывается.
+
+## Freight hours from the driver's stop times (2026-10-27)
+
+The consequence above — «the daily record … must later prefill the amount instead of manual
+entry» — now holds for freight as well. Since [ADR 0234](0234-driver-shift-and-stop-times.md) the
+driver records the arrival at stop 1 and every departure of a route, and the request snapshot of
+each stop says whose work it was. Stage 3 of
+[readings-shifts-merge-plan.md](../readings-shifts-merge-plan.md) (§8, owner decisions D6, D7, D12)
+uses it:
+
+- **«Время по заявке».** `GET /vehicle-requests/:id/route-time` reads the request's recorded stops
+  and its share of the route time: the segment from the previous departure (the arrival for stop 1)
+  to a stop's departure belongs to the requests of that stop in equal shares
+  (`routeTimeByRequest`), split from the snapshot taken at capture, never from live roles — a
+  rebuild of the route or a detached request does not move recorded work. The card shows it as
+  «Факт по точкам» ([request-route-time.ts](../../apps/api/src/services/request-route-time.ts),
+  [RequestRouteFact.tsx](../../apps/web/src/widgets/vehicle-request-view/ui/RequestRouteFact.tsx)).
+- **The prefill (D7, D12).** The closing window of a freight request proposes the unit "hours" and
+  the share rounded UP to a whole hour after summing (2 h 10 min → 3 h;
+  `routeTimePrefill` in [request-route-time.ts](../../packages/contracts/src/request-route-time.ts)).
+  The amount stays editable: the completion must match the carrier's invoice. A previous completion
+  still wins on a repeated closing.
+- **No prefill, said aloud.** No submitted reading, a `no_data` shift, a reading without stop times,
+  an incomplete set or a stop without a request give no number; the window and the card name the
+  reason (`routeTimeIssueLabels`). The total is all or nothing: a partial sum would bill less than
+  the work.
+- **Access (D10).** The times and the share go to everyone who reads the request, the lessor
+  included; who submitted the reading, its report state, the `no_data` reason and the comment only
+  to `vehicleReadings.read` ([access-model.md](../access-model.md) §9.3).
+
+The server does not require the prefill: it is a portal default, and the status door accepts any
+amount as before. Tests: `request-driver-times.db.test.ts` (the split from the snapshot, a rebuild
+and a detached request, the reasons, the diagnostics), `request-driver-times-contracts.test.ts`
+(the rounding), `freight-route-time.test.tsx` (the card block and the prefill).
