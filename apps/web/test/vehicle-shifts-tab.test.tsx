@@ -63,6 +63,9 @@ function renderCard(dto: VehicleRequestDto = request, table: VehicleRequestShift
     'GET /vehicle-requests/r1/waybills': () => json([]),
     'GET /vehicle-requests/r1/relocations': () => json([]),
     'GET /vehicle-requests/r1/shifts': () => json(table),
+    // The freight variant of the card asks for its recorded stop times instead (plan §8).
+    'GET /vehicle-requests/r1/route-time': () =>
+      json({ readings: [], seconds: null, issues: ['no_readings'] }),
   });
   return renderWithUser(<VehicleRequestViewModal request={dto} onClose={() => {}} />, {
     user: authUser({ role: 'dispatcher' }),

@@ -252,6 +252,9 @@ const CARD_ROUTES: RouteMap = {
   'GET /vehicle-requests/:id/history': () => json([]),
   'GET /vehicle-requests/:id/waybills': () => json([]),
   'GET /vehicle-requests/:id/relocations': () => json([]),
+  // A freight request in work shows what its driver recorded at the stops (plan §8).
+  'GET /vehicle-requests/:id/route-time': () =>
+    json({ readings: [], seconds: null, issues: ['no_readings'] }),
   'GET /vehicle-requests/:id/driver': () =>
     json({
       personId: 'p-machinist',

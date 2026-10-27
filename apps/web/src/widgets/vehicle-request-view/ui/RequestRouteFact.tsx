@@ -126,20 +126,22 @@ function ReadingFact({
  * were recorded; the card does no arithmetic of its own, so it cannot disagree with the completion
  * window, which proposes the same share rounded up to a whole hour (D12).
  *
- * A request not taken into work has no route yet, and the block stays silent rather than saying
- * "the driver has not submitted" about work nobody has planned.
+ * Asked only of a request in work or done: a new one has no route yet, and a cancelled one was
+ * not billed — the block stays silent rather than saying "the driver has not submitted" about work
+ * nobody planned, and the card does not spend a request on it.
  */
 export function RequestRouteFact({ request }: { request: VehicleRequestDto }) {
+  const asks =
+    request.requestType === 'freight_transport' &&
+    (request.status === 'confirmed' || request.status === 'done');
   const { data, isPending } = useQuery({
     queryKey: vehicleRequestKeys.routeTime(request.id),
     queryFn: () => vehicleRequestsApi.routeTime(request.id),
-    enabled: request.requestType === 'freight_transport',
+    enabled: asks,
   });
-  if (request.requestType !== 'freight_transport') return null;
+  if (!asks) return null;
   if (isPending) return <Spin size="small" />;
   if (!data) return null;
-  const inWork = request.status === 'confirmed' || request.status === 'done';
-  if (data.readings.length === 0 && !inWork) return null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

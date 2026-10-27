@@ -405,3 +405,98 @@ describe('окно смен: день по показаниям водителя
     await waitFor(() => expect(http.countOf('GET /vehicle-requests/r1/shifts')).toBe(2));
   });
 });
+
+/**
+ * Stage 3 of the merge (plan §8): a clean driver day whose readings fold into one interval takes
+ * its time from the driver, locked like the hours; a day whose intervals do not fold shows them and
+ * leaves the time to the site.
+ */
+describe('окно смен: время смены по водителю', () => {
+  const timedDay = shift(ON_DATE, {
+    source: 'driver',
+    startedAt: '07:40',
+    endedAt: '16:20',
+    machineHours: 8.5,
+    driverDay: {
+      machineHours: 8.5,
+      refuelLiters: 0,
+      clean: true,
+      since: null,
+      fingerprint: 'v1:timed',
+      startedAt: '07:40',
+      endedAt: '16:20',
+      intervals: [{ startedAt: '07:40', endedAt: '16:20' }],
+      timeIssue: null,
+    },
+  });
+  const splitDay = shift('2026-08-04', {
+    source: 'driver',
+    machineHours: 9,
+    driverDay: {
+      machineHours: 9,
+      refuelLiters: 0,
+      clean: true,
+      since: null,
+      fingerprint: 'v1:split',
+      startedAt: null,
+      endedAt: null,
+      intervals: [
+        { startedAt: '02:00', endedAt: '06:00' },
+        { startedAt: '20:00', endedAt: '08:00' },
+      ],
+      timeIssue: 'ambiguous',
+    },
+  });
+  const timedShifts: VehicleRequestShiftsDto = {
+    onDate: ON_DATE,
+    items: [shifts.items[0]!, splitDay, timedDay, shift('2026-08-06')],
+  };
+
+  function renderTimedWindow() {
+    const http = mockHttp({
+      'GET /vehicle-requests/r1/shifts': () => json(timedShifts),
+      'PUT /vehicle-requests/r1/shifts/:date': () => json(timedShifts),
+    });
+    renderWithUser(<VehicleShiftsModal request={request} canEdit canApprove onClose={() => {}} />);
+    return http;
+  }
+
+  it('locks the driver interval and sends it back as shown', async () => {
+    const http = renderTimedWindow();
+
+    const today = await rowOf(ON_DATE);
+    expect(within(today).getByText('время по водителю')).toBeDefined();
+    const [start, end, , comment] = within(today).getAllByRole('textbox');
+    expect(isDisabled(start!)).toBe(true);
+    expect(isDisabled(end!)).toBe(true);
+    expect((start as HTMLInputElement).value).toBe('07:40');
+    expect(isDisabled(comment!)).toBe(false);
+
+    fireEvent.change(comment!, { target: { value: 'приняли' } });
+    fireEvent.click(within(today).getByTitle('Сохранить смену').closest('button')!);
+    await waitFor(() =>
+      expect(http.lastCall('PUT /vehicle-requests/r1/shifts/:date')?.body).toEqual({
+        startedAt: '07:40',
+        endedAt: '16:20',
+        machineHours: 8.5,
+        refuel: '',
+        comment: 'приняли',
+        expectedDriverFingerprint: 'v1:timed',
+      }),
+    );
+  });
+
+  it('shows intervals that do not fold and leaves the time to the site', async () => {
+    renderTimedWindow();
+
+    const split = await rowOf('2026-08-04');
+    expect(
+      within(split).getByText(
+        'водитель: 02:00 – 06:00, 20:00 – 08:00 — время смены указывает объект',
+      ),
+    ).toBeDefined();
+    const [start, end] = within(split).getAllByRole('textbox');
+    expect(isDisabled(start!)).toBe(false);
+    expect(isDisabled(end!)).toBe(false);
+  });
+});
