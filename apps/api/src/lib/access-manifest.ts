@@ -1922,6 +1922,13 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['waybills.read', 'vehicleRequests.status'],
   },
+  // A freight request's recorded stop times and its share of the route (readings-shifts-merge
+  // plan §8): read like the shift table — the request's own right, the driver diagnostics inside
+  // gated by `vehicleReadings.read` (D10).
+  'GET /api/v1/vehicle-requests/:id/route-time': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read'],
+  },
   'GET /api/v1/vehicle-requests/:id/shifts': {
     kind: 'permissions',
     allOf: ['vehicleRequests.read'],

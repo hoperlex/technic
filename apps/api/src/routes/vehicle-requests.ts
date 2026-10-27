@@ -133,6 +133,7 @@ import {
   shiftDayBlocker,
   shiftsCompletionWarning,
   type VehicleRequestShiftsDto,
+  type RequestRouteTimeDto,
   type VehicleRequestShiftsSummaryDto,
   requestStatusLabels,
   setVehicleRequestApprovalSchema,
@@ -291,6 +292,7 @@ import {
   shiftSummaries,
   unapprovedPastShiftDates,
 } from '../services/vehicle-request-shifts';
+import { loadRequestRouteTime } from '../services/request-route-time';
 // The refusal of a term that drops a filled shift day: one helper for this edit and the term door.
 import { assertTermKeepsFilledShifts } from '../services/assignment-shifts';
 // Гейт режима модуля периодов назначения (план §10, решение И1) и метка загрязнения истории (К4).
@@ -8418,6 +8420,32 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     // Everyone who reads the request reads the day's effective numbers and the driver mark — the
     // site signs them; the diagnostics behind them stay with `vehicleReadings.read` (D10).
     return await shiftsResponse(p, request);
+  });
+
+  /**
+   * The actual time of a freight request (readings-shifts-merge plan §8, D7): the stops of the
+   * request as the driver recorded them and «время по заявке», the request's D6 share of the route
+   * time, read from the stop and request snapshots of the readings, never from live roles. The
+   * card shows it and the completion window proposes it rounded up to a whole hour (D12).
+   *
+   * Read like the shift table (D10): the times and the share to everyone who reads the request —
+   * the lessor included, the share is what its invoice is checked against — and the driver
+   * diagnostics only to `vehicleReadings.read`. A special-equipment request answers an empty
+   * object rather than a 422, as the shift table does for freight: its time lives in its shifts.
+   */
+  r.get('/:id/route-time', { ...auth, schema: { params: idParams } }, async (req) => {
+    const p = requirePrincipal(req);
+    const request = await getDto(req.params.id);
+    if (!request) throw err.notFound('Заявка не найдена');
+    assertArchiveVisible(p, request.deletedAt, 'Заявка не найдена');
+    assertRequestScope(p, request);
+    assertLessorScope(p, request.assignment?.lessorId ?? null);
+    if (request.requestType !== 'freight_transport') {
+      return { readings: [], seconds: null, issues: [] } satisfies RequestRouteTimeDto;
+    }
+    return await loadRequestRouteTime(db, request.id, {
+      diagnostics: can(p, 'vehicleReadings.read'),
+    });
   });
 
   /**
