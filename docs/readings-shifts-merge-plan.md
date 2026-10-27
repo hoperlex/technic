@@ -93,6 +93,26 @@ lessor's invoice includes delivery and minimum rental, and the completion must m
 Read from the owner's words, not asked separately: on a route the arrival at stop 1 is the start of
 the shift and the departure from the last stop is its end; every other stop has a departure only.
 
+Third survey, 27 October (the owner approved both mock-ups):
+
+- **D9 (Q1). Cabinet variant A with a "now" button.** Time fields sit in the existing groups as in
+  variant A; every time field has a «сейчас» button that writes the current local time in one tap,
+  and typing stays possible. No "shift running" state of variant B.
+- **D10 (Q8). Numbers to every request reader, diagnostics by right.** The day's effective hours,
+  refuelling and the «по водителю» mark are visible to everyone who reads the request; the `driver`
+  block (names, reading comment, `no_data` reason, report states, discrepancy kinds) only to a
+  principal with `vehicleReadings.read`. Record it in `docs/access-model.md`.
+- **D11 (Q9). "Finished" is derived from the evening values.** Any driver `values` submit of an
+  `esm2` item carries the start time, of a `route` item with stops the arrival at stop 1; a submit
+  that carries any end-of-shift value (odometer, engine hours or end fuel — the cabinet's `ended`,
+  ADR 0163 Р8) also carries the end time or every departure. This **supersedes** the explicit finish
+  design in §7.1–§7.3: no `time_finalized_at`, no `finishTime` flag, no acceptance refusal for
+  unfinished items. The `draft_format` gate of §7.3 stays.
+- **D12 (Q7). Freight hours in the completion are rounded up to a whole hour** (2 h 10 min → 3 h),
+  after summing per request; the dispatcher can still change the completion.
+- **Q2 is taken as proposed** (a technical choice): scalar start/end columns on every reading, the
+  points table and the request snapshot, written by one path.
+
 ## 5. Stage 0 — cleanup without behavior change
 
 One commit, no behavior change, so stage 1 lands on one reader instead of three.
