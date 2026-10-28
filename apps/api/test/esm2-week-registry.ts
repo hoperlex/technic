@@ -495,6 +495,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'driver times reach the requests (readings-shifts-merge plan §8): `issueEsm2` inserts a one-day sheet (`period_from = period_to = date`) only so that the day has an ESM-2 source of the request; no assertion reads the bounds as a week. Marked ЭСМ2-РАЗРЕЗ at `issueEsm2`',
   },
   {
+    file: 'analytics-facts-vehicle.db.test.ts',
+    klass: 'consumer',
+    status: 'done',
+    note: 'the summary book counting a request day by the driver readings (D14, ADR 0184): one ESM-2 sheet of 03–07.08 is inserted only so that every day has an ESM-2 source of the request; the bounds go into no assertion, and a segment of the same days after the read switch serves the same. Marked ЭСМ2-РАЗРЕЗ at the sheet insert',
+  },
+  {
     file: 'shift-driver-days.db.test.ts',
     klass: 'consumer',
     status: 'done',

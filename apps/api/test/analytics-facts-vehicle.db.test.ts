@@ -1058,4 +1058,140 @@ describe.skipIf(!DB_URL)('атомы заказа техники: перевоз
       expect(qualityOf('onsite.shifts-plan-fact')).toEqual({ value: 14, outOf: 33 });
     });
   });
+
+  // ── 7. The effective day (D14): the book counts a day as the request card shows it ──
+
+  /**
+   * The summary book reads the request day the card shows (owner decision D14): a signed day as
+   * signed, an unsigned day from the driver's clean numbers, a clean driver day without a site row
+   * as a shift of its own; a driver day that is not clean is no shift. A week of its own in August,
+   * so the June assertions above keep their numbers.
+   *
+   * The readings are inserted by hand, like the rest of this file: the chain links
+   * (`previous_engine_hours_id`) are written the way the readings service writes them, and the
+   * rule of a driver day itself is proven through the service by `shift-driver-days.db.test.ts`.
+   */
+  describe('смены по показаниям водителя (D14)', () => {
+    const AUG = { from: '2026-08-01', to: '2026-08-31' };
+    const own = { person: randomUUID(), vehicle: randomUUID(), request: randomUUID() };
+    let august: AnalyticsFacts;
+
+    beforeAll(async () => {
+      const db = ctx.db;
+      const first = async (query: ReturnType<typeof sql>): Promise<string> =>
+        (await db.execute<{ id: string }>(query)).rows[0]!.id;
+      const typeId = await first(sql`SELECT id FROM vehicle_types ORDER BY code LIMIT 1`);
+      const seriesId = await first(sql`SELECT id FROM waybill_series ORDER BY code LIMIT 1`);
+      const organizationId = await first(sql`SELECT id FROM organizations ORDER BY id LIMIT 1`);
+
+      await db.execute(sql`
+        INSERT INTO persons (id, last_name, first_name, middle_name)
+        VALUES (${own.person}, 'Показаниев', 'Иван', 'Сменович')`);
+      await db.execute(sql`
+        INSERT INTO vehicles (id, ownership, vehicle_type_id, registration_number)
+        VALUES (${own.vehicle}, 'own', ${typeId}, ${`Е004ЕЕ${RUN.slice(0, 3)}`})`);
+      await db.execute(sql`
+        INSERT INTO vehicle_requests (id, request_type, object_id, vehicle_type_id, status,
+                                      created_by)
+        VALUES (${own.request}, 'special_equipment', ${id.objectA}, ${typeId}, 'confirmed',
+                ${id.user})`);
+      await db.execute(sql`
+        INSERT INTO special_equipment_request_details (request_id, date_from, date_to)
+        VALUES (${own.request}, '2026-08-04'::date, '2026-08-07'::date)`);
+      await db.execute(sql`
+        INSERT INTO vehicle_request_assignments (request_id, vehicle_id, vehicle_type_id,
+                                                 ordered_vehicle_type_id, price_per_shift,
+                                                 assigned_by)
+        VALUES (${own.request}, ${own.vehicle}, ${typeId}, ${typeId}, 600, ${id.user})`);
+      // One weekly ESM-2 of the request: every day of it is the driver's source.
+      // ЭСМ2-РАЗРЕЗ: the bounds (Monday to Friday of one week) only give each day an ESM-2 source;
+      // no assertion reads them as a week, and one-day segments of the same days would serve alike.
+      const waybill = await first(sql`
+        INSERT INTO waybills (series_id, number, form_code, status, organization_id, vehicle_id,
+                              driver_person_id, issued_for_date, source_request_id, period_from,
+                              period_to, issued_by)
+        VALUES (${seriesId}, ${970_000_000 + Math.floor(Math.random() * 1_000_000)}, 'esm2',
+                'issued', ${organizationId}, ${own.vehicle}, ${own.person}, '2026-08-03'::date,
+                ${own.request}, '2026-08-03'::date, '2026-08-07'::date, ${id.user})
+        RETURNING id`);
+
+      // 03.08 is the baseline before the term; 07.08 is closed without numbers.
+      const days: [string, number | null][] = [
+        ['2026-08-03', 100],
+        ['2026-08-04', 108],
+        ['2026-08-05', 114],
+        ['2026-08-06', 119],
+        ['2026-08-07', null],
+      ];
+      let previous: string | null = null;
+      for (const [date, engineHours] of days) {
+        const report = await first(sql`
+          INSERT INTO driver_daily_reports (person_id, report_date, state, submitted_at, created_by)
+          VALUES (${own.person}, ${date}::date, 'submitted', now(), ${id.user})
+          RETURNING id`);
+        const item = await first(sql`
+          INSERT INTO driver_daily_report_items (report_id, source_kind, waybill_id, vehicle_id,
+                                                 report_date, shift_order)
+          VALUES (${report}, 'esm2', ${waybill}, ${own.vehicle}, ${date}::date, 1)
+          RETURNING id`);
+        const reading = await first(sql`
+          INSERT INTO vehicle_readings (item_id, report_id, vehicle_id, report_date, shift_order,
+                                        kind, engine_hours, no_data_reason,
+                                        previous_engine_hours_id, source, created_by)
+          VALUES (${item}, ${report}, ${own.vehicle}, ${date}::date, 1,
+                  ${engineHours === null ? 'no_data' : 'values'}::reading_kind, ${engineHours},
+                  ${engineHours === null ? 'счётчик неисправен' : ''},
+                  ${engineHours === null ? null : previous}, 'driver', ${id.user})
+          RETURNING id`);
+        if (engineHours !== null) previous = reading;
+      }
+
+      // The site typed 05.08 (3 h, unsigned) and signed 06.08 at 4 h; the driver says 6 h and 5 h.
+      await db.execute(sql`
+        INSERT INTO vehicle_request_shifts (request_id, shift_date, machine_hours, filled_by,
+                                            approved_by, approved_at) VALUES
+          (${own.request}, '2026-08-05'::date, 3, ${id.user}, NULL, NULL),
+          (${own.request}, '2026-08-06'::date, 4, ${id.user}, ${id.user}, now())`);
+
+      august = await ctx.load(AUG);
+    }, 120_000);
+
+    function augustAtoms(): AnalyticsAtom[] {
+      return august.atoms
+        .filter((a) => a.requestId === own.request)
+        .sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    it('день водителя без строки площадки — смена с его моточасами', () => {
+      expect(augustAtoms()[0]).toMatchObject({ date: '2026-08-04', shifts: 1, engineHours: 8 });
+    });
+
+    it('неподписанный день берёт числа водителя, подписанный — подписанные', () => {
+      const [, unsigned, signed] = augustAtoms();
+      expect(unsigned).toMatchObject({ date: '2026-08-05', shifts: 1, engineHours: 6 });
+      expect(signed).toMatchObject({ date: '2026-08-06', shifts: 1, engineHours: 4 });
+    });
+
+    it('нечистый день водителя сменой не становится: остаётся днём плана', () => {
+      expect(augustAtoms().map((a) => [a.date, a.shifts, a.planShifts])).toEqual([
+        ['2026-08-04', 1, 1],
+        ['2026-08-05', 1, 1],
+        ['2026-08-06', 1, 1],
+        ['2026-08-07', 0, 1],
+      ]);
+    });
+
+    it('смена водителя ждёт визы площадки, как и неподписанная строка', () => {
+      const quality = (key: string) => august.quality.find((q) => q.key === key)!;
+      expect(quality('onsite.shifts-unapproved')).toMatchObject({ value: 2, outOf: 3 });
+      expect(quality('onsite.shifts-plan-fact')).toMatchObject({ value: 3, outOf: 4 });
+      // Each filled day earns the shift price below; the term gives it above.
+      expect(augustAtoms().map((a) => [a.moneyLow, a.moneyHigh])).toEqual([
+        [600, 600],
+        [600, 600],
+        [600, 600],
+        [0, 600],
+      ]);
+    });
+  });
 });

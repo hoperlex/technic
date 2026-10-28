@@ -13,6 +13,12 @@ import {
 import { db } from '../../db/client';
 import { requestDayVehicleSql } from '../assignment-read';
 import {
+  isDriverDaySignable,
+  loadDriverShiftDaysByRequest,
+  type DriverShiftDay,
+} from '../shift-driver-days';
+import { effectiveDaySource } from '../vehicle-request-shifts';
+import {
   NO_VEHICLE_POSITION_KEY,
   type AnalyticsAtom,
   type AnalyticsFacts,
@@ -44,10 +50,12 @@ import {
  * - позиция «техника не назначена» — `NO_VEHICLE_POSITION_KEY`: счётчик единиц техники обязан
  *   уметь её исключать, а свой литерал в каждом загрузчике исключался бы только в одном из них.
  *
- * ЗАПРОСОВ ДВА, ПО ОДНОМУ НА РАЗРЯД (Р15). Всё остальное — разбор строк и раскладка денег — идёт
- * в памяти: запрос в цикле по объектам или заявкам здесь недопустим, книга сводит год работы трёх
- * модулей сразу. Стиль запросов — сырой текст с CTE через `db.execute`, как в `readings-aggregate.ts`
- * и `readings-intake.ts`; цена приёма та же: `numeric` приходит строками, и разбирает их `num`.
+ * ONE QUERY PER UNIT (Р15), and the site unit adds one batch read of the driver days of all its
+ * requests at once (`loadDriverShiftDaysByRequest`, D14). Everything else — parsing the rows and
+ * laying out the money — happens in memory: a query in a loop over objects or requests is not
+ * allowed here, the book sums up a year of three modules at once. The queries are raw text with CTEs
+ * through `db.execute`, as in `readings-aggregate.ts` and `readings-intake.ts`; the price is the
+ * same: `numeric` comes as strings, and `num` parses them.
  *
  * ОБА ЗАПРОСА ЧИТАЮТ ШИРЕ ПЕРИОДА, И ЭТО НЕ ЛИШНЯЯ РАБОТА, А ЗНАМЕНАТЕЛЬ (Р28). Сумма заявки
  * делится между ВСЕМИ днями её работы, а период забирает свою долю; знай запрос только дни внутри
@@ -213,6 +221,13 @@ type OnsiteRow = CustomerColumns &
     approved: boolean | null;
     date_from: string | null;
     date_to: string | null;
+    /**
+     * The request's term on every row, whatever its status: the days the card's shift table shows
+     * and reads the driver's numbers for (D14). `date_from`/`date_to` above come only with a `term`
+     * row and are the plan's term — a request that never reached work has none.
+     */
+    term_from: string | null;
+    term_to: string | null;
   };
 
 // ── Деньги заявки (Р9, Р28, Р29) ──
@@ -645,7 +660,7 @@ interface OnsiteRequest {
   money: RequestMoney;
   /** Любая строка заявки: из неё берутся заказчик и номер там, где своей строки у дня нет. */
   any: OnsiteRow;
-  /** Все смены заявки, включая лежащие за границей периода: они и есть знаменатель факта (Р28). */
+  /** Every shift row of the request, beyond the period too: the rows the effective days start from. */
   shiftRows: OnsiteRow[];
   /** День срока внутри периода → строка с машиной ЭТОГО дня (Р8). */
   termRows: Map<string, OnsiteRow>;
@@ -653,21 +668,82 @@ interface OnsiteRequest {
   dateTo: string | null;
 }
 
+/** A filled day of a request as the card shows it: its numbers and the row its atom is built on. */
+interface EffectiveShiftDay {
+  date: string;
+  machineHours: number;
+  approved: boolean;
+  inPeriod: boolean;
+  row: OnsiteRow;
+}
+
 /**
- * Смена на объекте — строка `vehicle_request_shifts` (Р7): факт с моточасами и визой площадки.
+ * The filled days of a request by the effective day (D14, `effectiveDaySource`): a signed row as
+ * signed, an unsigned row with a clean driver day as the driver's numbers, a clean driver day
+ * without a row as a day of its own, any other row as written. The driver's numbers count only on
+ * the days of the term — the card reads them nowhere else, and a row outside the term stays the
+ * row it is (ADR 0101). Every day, beyond the period too: they are the denominator of the fact (Р28).
+ */
+function effectiveShiftDays(
+  request: OnsiteRequest,
+  termDays: readonly string[],
+  driverDays: ReadonlyMap<string, DriverShiftDay>,
+  range: AnalyticsRange,
+): EffectiveShiftDay[] {
+  const rows = new Map(request.shiftRows.map((row) => [row.date, row]));
+  const inTerm = new Set(termDays);
+  const days: EffectiveShiftDay[] = [];
+  for (const date of [...new Set([...rows.keys(), ...termDays])].sort()) {
+    const row = rows.get(date);
+    const driverDay = inTerm.has(date) ? driverDays.get(date) : undefined;
+    const source = effectiveDaySource(row ? { signed: row.approved === true } : null, driverDay);
+    if (source === 'driver' && isDriverDaySignable(driverDay)) {
+      days.push({
+        date,
+        machineHours: driverDay.machineHours,
+        // Only the site's signature signs a day: the driver's numbers wait for it.
+        approved: false,
+        inPeriod: date >= range.from && date <= range.to,
+        row: row ?? request.termRows.get(date) ?? request.any,
+      });
+    } else if (row) {
+      days.push({
+        date,
+        machineHours: num(row.machine_hours) ?? 0,
+        approved: row.approved === true,
+        inPeriod: row.in_period,
+        row,
+      });
+    }
+  }
+  return days;
+}
+
+/**
+ * A shift on a site is the request's effective day (Р7, D14): a fact with engine hours and the
+ * site's sign-off, as the card's shift table shows it — the site's row, or the driver's clean
+ * numbers where the site has signed nothing (`effectiveShiftDays`). The book counted the rows alone
+ * until the owner's decision D14 (28.10.2026): a day the driver reported and the site did not type
+ * was missing, and an unsigned day carried the site's superseded hours. Past periods change by it.
  *
- * Запрос отдаёт три вида строк одним набором:
+ * The query returns three kinds of rows in one set:
  *
- * - `shift` — смены заявки. ВСЕ, а не только попавшие в период: атом рождает лишь помеченная
- *   `in_period`, но знаменатель факта — вся работа заявки (Р28);
- * - `relocation` — перегон техники к своему заказу и обратно (Р27): не смена и не деньги, только
- *   счётчик. Машина берётся у самого рейса — перегон заводится ровно на ту машину, что стоит в
- *   назначении («перегнать одной, а работать другой» не состояние, а расхождение);
- * - `term` — день срока заказа внутри периода. Он нужен двум числам сразу: ПЛАНУ смен
- *   (`planShifts`, Р7 — «смен 52 (план 56)» на листе детализации) и верхней оценке денег (Р29):
- *   заказ, простоявший месяц без единой заполненной смены, в нижней оценке честно даёт ноль, а в
- *   верхней обязан дать цену срока. Разворачивает срок в дни SQL, но СОСТАВ дней решает
- *   `shiftDaysOf`: SQL отвечает только на «какая машина стояла в этот день».
+ * - `shift` — the request's shift rows. ALL of them, not only those in the period: only a row marked
+ *   `in_period` makes an atom, but the denominator of the fact is the whole work of the request
+ *   (Р28);
+ * - `relocation` — moving the machine to its own order and back (Р27): not a shift and not money,
+ *   only a counter. The vehicle is the route's own — a relocation is made for exactly the vehicle
+ *   that stands in the assignment ("move one, work with another" is a discrepancy, not a state);
+ * - `term` — a day of the order's term inside the period. Two numbers need it: the PLAN of shifts
+ *   (`planShifts`, Р7 — «смен 52 (план 56)» on the detail sheet) and the upper money estimate
+ *   (Р29): an order that stood a month without a single filled shift honestly gives zero in the
+ *   lower estimate and must give the term's price in the upper one. SQL lays the term out in days,
+ *   but the SET of days is decided by `shiftDaysOf`: SQL answers only "which vehicle stood that day".
+ *
+ * The driver days come from one batch read over the terms of every request in the set
+ * (`loadDriverShiftDaysByRequest`) — the reader of the card itself, never a query per request. A
+ * request is read only when the set already holds it: a request that never reached work and has no
+ * row and no relocation in the period is not in the set, and its driver days are not counted.
  */
 async function loadOnsite(range: AnalyticsRange): Promise<OnsiteFacts> {
   const result = await db.execute<OnsiteRow>(sql`
@@ -759,11 +835,14 @@ SELECT rz.kind              AS kind,
        rz.approved          AS approved,
        rz.date_from::text   AS date_from,
        rz.date_to::text     AS date_to,
+       sed.date_from::text  AS term_from,
+       sed.date_to::text    AS term_to,
        ${CUSTOMER_COLUMNS},
        ${VEHICLE_COLUMNS},
        ${MONEY_COLUMNS}
   FROM resolved rz
   JOIN vehicle_requests q ON q.id = rz.request_id
+  LEFT JOIN special_equipment_request_details sed ON sed.request_id = rz.request_id
   ${CUSTOMER_JOINS}
   ${vehicleJoins(sql`rz.vehicle_id`)}
   ${MONEY_JOINS}
@@ -790,16 +869,41 @@ SELECT rz.kind              AS kind,
     }
   }
 
+  // The days the card shows for each request, whatever its status, and the driver days of them all
+  // in one read: the card's own reader, so the book and the card cannot disagree about a day.
+  const cardDays = new Map<string, string[]>();
+  for (const [requestId, request] of requests) {
+    const days = shiftDaysOf({
+      dateFrom: request.any.term_from ?? undefined,
+      dateTo: request.any.term_to,
+    });
+    if (days.length > 0) cardDays.set(requestId, days);
+  }
+  const allCardDays = [...cardDays.values()].flat().sort();
+  const driverDays =
+    allCardDays.length > 0
+      ? await loadDriverShiftDaysByRequest(db, [...cardDays.keys()], {
+          from: allCardDays[0]!,
+          to: allCardDays[allCardDays.length - 1]!,
+        })
+      : new Map<string, Map<string, DriverShiftDay>>();
+
   const atoms: AnalyticsAtom[] = [];
   let shifts = 0;
   let shiftsUnapproved = 0;
   let plannedDays = 0;
 
-  for (const request of requests.values()) {
+  for (const [requestId, request] of requests) {
     const { money } = request;
     const priced = pricedOf(money);
     const closed = isClosed(money);
     const price = dayPrice(money);
+    const filled = effectiveShiftDays(
+      request,
+      cardDays.get(requestId) ?? [],
+      driverDays.get(requestId) ?? new Map(),
+      range,
+    );
 
     // Дни срока считает контрактный `shiftDaysOf` — тот же, которым карточка рисует таблицу смен.
     // Пересечение с периодом — обычный отбор по ключам дат: они лексикографически сравнимы, и
@@ -813,16 +917,16 @@ SELECT rz.kind              AS kind,
 
     /** День периода → его атом. Один день — один атом: второй удвоил бы верхнюю оценку (Р29). */
     const dayAtoms = new Map<string, AnalyticsAtom>();
-    const shiftDates = new Set(request.shiftRows.map((row) => row.date));
+    const shiftDates = new Set(filled.map((day) => day.date));
 
-    for (const row of request.shiftRows) {
-      if (!row.in_period) continue;
-      const atom = emptyAtom('onsite', row, row.date, priced);
+    for (const day of filled) {
+      if (!day.inPeriod) continue;
+      const atom = emptyAtom('onsite', day.row, day.date, priced);
       atom.shifts = 1;
-      atom.engineHours = num(row.machine_hours) ?? 0;
+      atom.engineHours = day.machineHours;
       shifts += 1;
-      if (row.approved !== true) shiftsUnapproved += 1;
-      dayAtoms.set(row.date, atom);
+      if (!day.approved) shiftsUnapproved += 1;
+      dayAtoms.set(day.date, atom);
       atoms.push(atom);
     }
 
@@ -853,8 +957,7 @@ SELECT rz.kind              AS kind,
        * Дни работы — заполненные смены; если их нет вовсе, носителем становится срок заказа:
        * иначе сумма закрытия просто исчезла бы из книги.
        */
-      const carriers =
-        request.shiftRows.length > 0 ? request.shiftRows.map((row) => row.date).sort() : termDays;
+      const carriers = filled.length > 0 ? filled.map((day) => day.date) : termDays;
       const shares = spread(
         money.totalCost ?? 0,
         carriers.map(() => 1),
