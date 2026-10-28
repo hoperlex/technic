@@ -1,14 +1,18 @@
 /**
- * Краткая инструкция для водителя и машиниста.
+ * Short instruction for the driver and the machinist.
  *
- * Факты и подписи сверены с интерфейсом на 04.09.2026:
- * - RegisterPage.tsx и production SmartCaptcha;
- * - DriverLayout.tsx, DriverReadingsPage.tsx, DriverReadingFields.tsx;
- * - DriverPage.tsx и ADR 0163 о поэтапной передаче топлива.
+ * Facts and captions are checked against the interface as of 28.10.2026:
+ * - RegisterPage.tsx;
+ * - DriverLayout.tsx, DriverDayView.tsx, DriverReadingsPage.tsx, DriverReadingFields.tsx,
+ *   DriverRouteTimes.tsx, DriverSubmitCheck.tsx, readingChecks.ts;
+ * - ADR 0237: readings go as a whole shift at its end, the previous shift is checked in a window
+ *   before sending, and the time fields have no «сейчас» button.
  *
- * Страница рисуется в SVG, системный librsvg переводит её в PNG, pdf-lib собирает A4. Такой же
- * маршрут используют остальные иллюстрированные инструкции проекта; он не требует браузера и
- * делает результат воспроизводимым в репозитории.
+ * A page is drawn in SVG, the system librsvg turns it into PNG, and pdf-lib assembles A4. The other
+ * illustrated instructions of the project use the same route; it needs no browser and makes the
+ * result reproducible from the repository.
+ *
+ * node docs/generate-driver-guide.mjs [output.pdf]   (default: docs/Инструкция_водителю_и_машинисту.pdf)
  */
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,8 +27,8 @@ const OUTPUT = resolve(process.argv[2] ?? 'docs/Инструкция_водит�
 const WORK = mkdtempSync(join(tmpdir(), 'driver-guide-'));
 const W = 1123;
 const H = 1588;
-const TOTAL = 4;
-const REVISION = '4 сентября 2026';
+const TOTAL = 5;
+const REVISION = '28 октября 2026';
 
 const C = {
   ink: '#172033',
@@ -225,12 +229,12 @@ function note(x, y, width, height, titleValue, body, options = {}) {
 }
 
 function field(x, y, width, label, value = '', options = {}) {
-  const { suffix, placeholder = false, height = 49, selected = false } = options;
+  const { suffix, placeholder = false, height = 49, selected = false, error, hint } = options;
   let output = text(x, y, label, 14, { fill: C.text, weight: 500 });
   output += rect(x, y + 10, width, height, {
     fill: '#fff',
-    stroke: selected ? C.blue : '#d9d9d9',
-    sw: selected ? 2 : 1,
+    stroke: error ? C.red : selected ? C.blue : '#d9d9d9',
+    sw: error || selected ? 2 : 1,
     r: 7,
   });
   if (value)
@@ -243,6 +247,9 @@ function field(x, y, width, label, value = '', options = {}) {
       fill: C.muted,
       anchor: 'end',
     });
+  // A refusal replaces the hint: the real form shows one line under a field, red when it refuses.
+  if (error) output += text(x, y + 10 + height + 20, error, 13, { fill: C.red });
+  else if (hint) output += text(x, y + 10 + height + 20, hint, 13, { fill: C.muted });
   return output;
 }
 
@@ -278,7 +285,7 @@ function appChrome(x, y, width, options = {}) {
     weight: 600,
     anchor: 'middle',
   });
-  if (pending) output += text(x + 14, y + 132, 'Не переданы показания за 3 сентября', 13, { fill: C.orange, weight: 600 });
+  if (pending) output += text(x + 14, y + 132, 'Не переданы показания за 27 окт.', 13, { fill: C.orange, weight: 600 });
   return output;
 }
 
@@ -300,7 +307,14 @@ function page1() {
     stroke: '#ffd591',
     dotFill: C.orange,
   });
-  body += step(55, 670, '4', 'Пройдите проверку', 'Отметьте «Я не робот» и нажмите «Зарегистрироваться».', 465);
+  body += step(
+    55,
+    670,
+    '4',
+    'Пройдите проверку',
+    'Если на форме есть «Я не робот» — отметьте. Затем нажмите «Зарегистрироваться».',
+    465,
+  );
 
   body += note(
     55,
@@ -376,7 +390,7 @@ function page2() {
   body += paragraph(
     55,
     163,
-    'После входа сразу открывается форма показаний за сегодня. Задание — соседняя страница того же дня.',
+    'После входа сразу открывается форма показаний за сегодня. Показания передаются один раз — в конце смены. Задание — соседняя страница того же дня.',
     1000,
     20,
     { fill: C.muted, lineHeight: 28 },
@@ -388,7 +402,7 @@ function page2() {
   const sh = 875;
   body += rect(sx, sy, sw, sh, { fill: '#fff', stroke: '#d6deea', r: 22, shadow: true });
   body += appChrome(sx, sy, sw, { page: 'Показания', pending: true });
-  body += text(sx + 24, sy + 184, 'Показания за 4 сентября', 23, { fill: C.ink, weight: 700 });
+  body += text(sx + 24, sy + 184, 'Показания за 28 октября', 23, { fill: C.ink, weight: 700 });
   body += text(sx + 24, sy + 224, 'Передать показания', 18, { fill: C.ink, weight: 700 });
   body += rect(sx + 24, sy + 252, sw - 48, 466, { fill: '#fff', stroke: C.line, r: 12 });
   body += text(sx + 46, sy + 290, 'А123ВС 77', 22, { fill: C.ink, weight: 700 });
@@ -433,13 +447,13 @@ function page2() {
     lineHeight: 23,
   });
 
-  body += text(55, 1160, 'Когда что заполнять', 25, { fill: C.ink, weight: 700 });
+  body += text(55, 1160, 'Что делать в течение смены', 25, { fill: C.ink, weight: 700 });
   body += line(122, 1248, 1003, 1248, { stroke: '#91caff', sw: 5 });
   const moments = [
-    { x: 130, n: '1', title: 'Начало смены', body: 'Остаток топлива в баке', fill: C.blue },
-    { x: 412, n: '2', title: 'За смену', body: 'Сумма всех заправок', fill: C.orange },
-    { x: 710, n: '3', title: 'Конец смены', body: 'Одометр, моточасы, топливо', fill: C.green },
-    { x: 1000, n: '4', title: 'Передать', body: 'После каждого заполнения', fill: C.blueDark },
+    { x: 130, n: '1', title: 'Начало смены', body: 'Запишите остаток топлива в баке', fill: C.blue },
+    { x: 412, n: '2', title: 'За смену', body: 'Запишите, сколько заправили', fill: C.orange },
+    { x: 710, n: '3', title: 'Конец смены', body: 'Снимите одометр или моточасы и остаток топлива', fill: C.green },
+    { x: 1000, n: '4', title: 'Передать', body: 'Один раз, когда всё заполнено', fill: C.blueDark },
   ];
   for (const moment of moments) {
     body += circle(moment.x, 1248, 27, { fill: moment.fill, stroke: '#fff', sw: 5 });
@@ -456,8 +470,8 @@ function page2() {
     1404,
     1013,
     110,
-    'Не ждите конца смены',
-    'Утренний остаток можно передать сразу, а днём и вечером дополнить ту же строку — пока диспетчер её не принял.',
+    'Передавайте смену целиком',
+    'Отправить одну утреннюю часть нельзя. Введённое сохраняется на телефоне как черновик, а передать его можно, когда заполнены все обязательные поля.',
     { fill: C.orangeSoft, stroke: '#ffd591', color: C.orange },
   );
   body += footer();
@@ -469,7 +483,7 @@ function page3() {
   body += paragraph(
     55,
     163,
-    'Заполняйте только те значения, которые можно снять на вашей машине. Нули вместо отсутствующих данных не ставьте.',
+    'Показания передаются целиком, один раз за смену. Заполните все поля, кроме «Заправлено»: если не заправлялись, оставьте его пустым.',
     1000,
     20,
     { fill: C.muted, lineHeight: 28 },
@@ -478,75 +492,86 @@ function page3() {
   const sx = 55;
   const sy = 226;
   const sw = 540;
-  const sh = 1200;
+  const sh = 1224;
   body += rect(sx, sy, sw, sh, { fill: '#fff', stroke: '#d6deea', r: 22, shadow: true });
   body += appChrome(sx, sy, sw, { page: 'Показания' });
-  body += text(sx + 24, sy + 154, 'Показания за 4 сентября', 23, { fill: C.ink, weight: 700 });
+  body += text(sx + 24, sy + 154, 'Показания за 28 октября', 23, { fill: C.ink, weight: 700 });
   body += text(sx + 24, sy + 194, 'Черновик', 18, { fill: C.ink, weight: 700 });
   body += text(sx + 24, sy + 221, 'Заполнено, но не передано', 14, { fill: C.muted });
-  body += rect(sx + 22, sy + 247, sw - 44, 838, { fill: '#fff', stroke: C.line, r: 12 });
+  body += rect(sx + 22, sy + 247, sw - 44, 880, { fill: '#fff', stroke: C.line, r: 12 });
   body += text(sx + 44, sy + 286, 'А123ВС 77', 22, { fill: C.ink, weight: 700 });
   body += text(sx + 44, sy + 315, 'Путевой лист ПЛ-00421 · смена 1', 14, { fill: C.muted });
 
   body += text(sx + 44, sy + 361, 'Начало смены', 17, { fill: C.ink, weight: 700 });
-  body += field(sx + 44, sy + 392, sw - 88, 'Топливо', '140', { suffix: 'л', selected: true });
-  body += text(sx + 44, sy + 488, 'За смену', 17, { fill: C.ink, weight: 700 });
-  body += field(sx + 44, sy + 519, sw - 88, 'Заправлено', '75', { suffix: 'л' });
-  body += text(sx + 44, sy + 615, 'Конец смены', 17, { fill: C.ink, weight: 700 });
-  body += field(sx + 44, sy + 646, sw - 88, 'Одометр', '145320', { suffix: 'км' });
-  body += text(sx + 44, sy + 727, 'Предыдущее: 145 108 (3 сентября)', 13, { fill: C.muted });
-  body += field(sx + 44, sy + 757, sw - 88, 'Моточасы', '3241,5', { suffix: 'ч' });
-  body += text(sx + 44, sy + 838, 'Предыдущее: 3 233,0 (3 сентября)', 13, { fill: C.muted });
-  body += field(sx + 44, sy + 868, sw - 88, 'Топливо', '92', { suffix: 'л' });
-  body += field(sx + 44, sy + 962, sw - 88, 'Комментарий', 'Заправка по чеку', { height: 53 });
-  body += button(sx + 44, sy + 1050, 213, 'Прикрепить фото', { primary: false, height: 44 });
-  body += text(sx + 275, sy + 1078, 'чек_04-09.jpg', 13, { fill: C.blue });
-  body += button(sx + 22, sy + 1126, sw - 44, 'Передать');
+  body += field(sx + 44, sy + 392, sw - 88, 'Топливо', '92', {
+    suffix: 'л',
+    selected: true,
+    hint: 'в конце прошлой смены: 92 л (27.10)',
+  });
+  body += text(sx + 44, sy + 512, 'За смену', 17, { fill: C.ink, weight: 700 });
+  body += field(sx + 44, sy + 543, sw - 88, 'Заправлено', '75', { suffix: 'л' });
+  body += text(sx + 44, sy + 639, 'Конец смены', 17, { fill: C.ink, weight: 700 });
+  body += field(sx + 44, sy + 670, sw - 88, 'Одометр', '145320', {
+    suffix: 'км',
+    hint: 'предыдущее: 145 108 (27.10)',
+  });
+  body += field(sx + 44, sy + 781, sw - 88, 'Моточасы', '', {
+    suffix: 'ч',
+    hint: 'предыдущее: 3 233,5 (27.10)',
+  });
+  body += field(sx + 44, sy + 892, sw - 88, 'Топливо', '60', { suffix: 'л' });
+  body += field(sx + 44, sy + 986, sw - 88, 'Комментарий', 'Заправка по чеку', { height: 53 });
+  body += button(sx + 44, sy + 1074, 213, 'Прикрепить фото', { primary: false, height: 44 });
+  body += text(sx + 275, sy + 1102, 'чек_28-10.jpg', 13, { fill: C.blue });
+  body += button(sx + 22, sy + 1150, sw - 44, 'Передать');
 
   body += dot('1', sx + sw - 20, sy + 286);
-  body += dot('2', sx + sw - 20, sy + 503, { fill: C.orange });
-  body += dot('3', sx + sw - 20, sy + 751, { fill: C.green });
-  body += dot('4', sx + sw - 20, sy + 1058, { fill: C.orange });
-  body += dot('5', sx + sw - 20, sy + 1150);
+  body += dot('2', sx + sw - 20, sy + 427, { fill: C.orange });
+  body += dot('3', sx + sw - 20, sy + 704, { fill: C.green });
+  body += dot('4', sx + sw - 20, sy + 471);
+  body += dot('5', sx + sw - 20, sy + 1174);
 
   body += step(635, 226, '1', 'Проверьте машину', 'Госномер стоит первым; ниже указан источник и смена.', 433, { height: 126 });
-  body += step(635, 370, '2', 'Введите доступные числа', 'Можно передать одну группу и позже дополнить остальные.', 433, {
+  body += step(635, 370, '2', 'Обязательные поля', 'Все, кроме «Заправлено». Не заправлялись — оставьте пустым.', 433, {
     fill: C.orangeSoft,
     stroke: '#ffd591',
     dotFill: C.orange,
     height: 126,
   });
-  body += step(635, 514, '3', 'Сверьте счётчики', 'Под одометром и моточасами показано предыдущее значение.', 433, {
+  body += step(635, 514, '3', 'Одометр или моточасы', 'Достаточно одного: того, что есть на вашей машине.', 433, {
     fill: C.greenSoft,
     stroke: '#b7eb8f',
     dotFill: C.green,
     height: 126,
   });
-  body += step(635, 658, '4', 'Фото и комментарий', 'Необязательны. Фото чека прикрепляется здесь же.', 433, {
-    fill: C.orangeSoft,
-    stroke: '#ffd591',
-    dotFill: C.orange,
+  body += step(635, 658, '4', 'Сверьте с подсказками', 'Под топливом — остаток с конца прошлой смены, под счётчиками — их прошлые значения.', 433, {
     height: 126,
   });
-  body += step(635, 802, '5', 'Нажмите «Передать»', 'После успеха появится состояние «Передано».', 433, { height: 126 });
+  body += step(635, 802, '5', 'Нажмите «Передать»', 'После успеха появится состояние «Передано». Фото и комментарий — по желанию.', 433, {
+    height: 126,
+  });
 
-  body += rect(635, 966, 433, 212, { fill: C.goldSoft, stroke: '#ffe58f', r: 14 });
-  body += text(660, 1007, 'Если портал просит проверить число', 17, { fill: C.gold, weight: 700 });
+  body += rect(635, 966, 433, 300, { fill: C.goldSoft, stroke: '#ffe58f', r: 14 });
+  body += text(660, 1007, 'Если поле подсвечено красным', 17, { fill: C.gold, weight: 700 });
+  body += field(660, 1030, 383, 'Топливо', '', {
+    suffix: 'л',
+    error: 'Укажите остаток топлива на конец смены',
+  });
   body += paragraph(
     660,
-    1043,
-    'Сравните его с прибором. Если всё верно, поставьте галочку «Всё верно, подтверждаю» и передайте снова.',
+    1150,
+    'Под полем написано, чего не хватает. Заполните его и нажмите «Передать» снова. Пока блок не заполнен целиком, данные не передаются.',
     383,
     16,
     { lineHeight: 23 },
   );
 
-  body += rect(635, 1202, 433, 224, { fill: C.bluePale, stroke: '#bae0ff', r: 14 });
-  body += text(660, 1243, 'Если машин несколько', 17, { fill: C.blueDark, weight: 700 });
+  body += rect(635, 1286, 433, 200, { fill: C.bluePale, stroke: '#bae0ff', r: 14 });
+  body += text(660, 1327, 'Если машин несколько', 17, { fill: C.blueDark, weight: 700 });
   body += paragraph(
     660,
-    1279,
-    'Каждая машина показана отдельным блоком. Пустой блок можно оставить: портал отправит заполненные строки. Но если не заполнено ни одного числа за день, передача не состоится.',
+    1363,
+    'Каждая машина показана отдельным блоком. Блок, в который ничего не введено, портал пропустит: сдайте его, когда эта смена закончится. Начатый блок должен быть заполнен целиком.',
     383,
     16,
     { lineHeight: 23 },
@@ -555,8 +580,145 @@ function page3() {
   return document(body);
 }
 
+function windowCard(mx, my, mw, mh) {
+  let output = rect(mx, my, mw, mh, { fill: '#fff', r: 14, shadow: true });
+  output += circle(mx + 38, my + 46, 14, { fill: '#faad14' });
+  output += text(mx + 38, my + 53, '!', 18, { fill: '#fff', weight: 700, anchor: 'middle' });
+  output += text(mx + 64, my + 53, 'Проверьте данные перед передачей', 17, { fill: C.ink, weight: 700 });
+  output += paragraph(mx + 28, my + 104, 'В указанных данных выявлены следующие расхождения:', mw - 56, 15, {
+    lineHeight: 22,
+  });
+  output += text(mx + 28, my + 170, '1.', 15, { fill: C.ink, weight: 700 });
+  output += text(mx + 52, my + 170, 'А123ВС 77 · Путевой лист ПЛ-00421', 15, { fill: C.ink, weight: 700 });
+  output += paragraph(
+    mx + 52,
+    my + 196,
+    'Топливо на начало смены (80 л) не совпадает с остатком на конец прошлой смены (92 л, 27.10)',
+    mw - 80,
+    15,
+    { lineHeight: 22 },
+  );
+  output += text(mx + 28, my + 290, '2.', 15, { fill: C.ink, weight: 700 });
+  output += text(mx + 52, my + 290, 'В010ОР 77 · ЭСМ-2 № 000318', 15, { fill: C.ink, weight: 700 });
+  output += paragraph(mx + 52, my + 316, 'Одометр: меньше предыдущего (145 320 от 27.10)', mw - 80, 15, {
+    lineHeight: 22,
+  });
+  output += paragraph(
+    mx + 28,
+    my + 400,
+    'Подтверждаете ли вы, что значения сняты с приборов верно? Если допущена ошибка, вернитесь к форме и исправьте её.',
+    mw - 56,
+    15,
+    { lineHeight: 22 },
+  );
+  output += button(mx + 28, my + 480, mw - 56, 'Вернуться к исправлению', { primary: false });
+  output += button(mx + 28, my + 540, mw - 56, 'Подтверждаю, передать');
+  return output;
+}
+
 function page4() {
-  let body = pageHeader(4, 'Задание и статусы', 'АВТО · ВОДИТЕЛЬ / МАШИНИСТ');
+  let body = pageHeader(4, 'Проверка данных и время', 'АВТО · ВОДИТЕЛЬ / МАШИНИСТ');
+  body += paragraph(
+    55,
+    163,
+    'Если введённое расходится с прошлой сменой, портал спросит один раз — при нажатии «Передать». Время смены вводится вручную.',
+    1000,
+    20,
+    { fill: C.muted, lineHeight: 28 },
+  );
+
+  const sx = 55;
+  const sy = 226;
+  const sw = 540;
+  const sh = 760;
+  body += rect(sx, sy, sw, sh, { fill: '#e9edf3', stroke: '#d6deea', r: 22, shadow: true });
+  // The form behind the window, dimmed: the window opens over it and changes nothing in it.
+  body += rect(sx + 24, sy + 24, sw - 48, 36, { fill: '#dde3ec', r: 8 });
+  body += rect(sx + 24, sy + 76, sw - 48, 22, { fill: '#dde3ec', r: 8 });
+  body += rect(sx + 24, sy + 700, sw - 48, 36, { fill: '#cfd8e6', r: 8 });
+  const mx = sx + 36;
+  const my = sy + 80;
+  const mw = sw - 72;
+  body += windowCard(mx, my, mw, 620);
+  body += dot('1', sx + sw - 18, my + 46);
+  body += dot('2', sx + sw - 18, my + 190);
+  body += dot('3', sx + sw - 18, my + 503, { fill: C.orange });
+  body += dot('4', sx + sw - 18, my + 563, { fill: C.green });
+
+  body += step(635, 226, '1', 'Окно появляется само', 'Если данные расходятся с прошлой сменой, при «Передать» откроется список.', 433, {
+    height: 126,
+  });
+  body += step(635, 370, '2', 'Сверьте с прибором', 'Проверьте каждую строку списка по показаниям на машине.', 433, { height: 126 });
+  body += step(635, 514, '3', 'Ошибка? Вернитесь', 'Нажмите «Вернуться к исправлению»: ничего не будет передано.', 433, {
+    fill: C.orangeSoft,
+    stroke: '#ffd591',
+    dotFill: C.orange,
+    height: 126,
+  });
+  body += step(635, 658, '4', 'Всё верно? Подтвердите', 'Нажмите «Подтверждаю, передать»: показания будут переданы.', 433, {
+    fill: C.greenSoft,
+    stroke: '#b7eb8f',
+    dotFill: C.green,
+    height: 126,
+  });
+  body += rect(635, 806, 433, 180, { fill: C.goldSoft, stroke: '#ffe58f', r: 14 });
+  body += text(660, 847, 'Расхождение — не всегда ошибка', 17, { fill: C.gold, weight: 700 });
+  body += paragraph(
+    660,
+    883,
+    'Счётчик могли заменить, топливо — слить или долить. Подтверждайте, только если значения списаны с приборов.',
+    383,
+    16,
+    { lineHeight: 23 },
+  );
+
+  body += text(55, 1052, 'Время смены и маршрута', 25, { fill: C.ink, weight: 700 });
+
+  // Недельный лист: пара «начало — конец».
+  const cy = 1084;
+  body += rect(55, cy, 497, 410, { fill: C.bluePale, stroke: '#bae0ff', r: 14 });
+  body += text(81, cy + 42, 'Недельный лист (ЭСМ-2)', 18, { fill: C.blueDark, weight: 700 });
+  body += field(81, cy + 75, 210, 'Время начала', '08:00');
+  body += field(316, cy + 75, 210, 'Время окончания', '20:00', { hint: 'смена 12 ч' });
+  body += paragraph(
+    81,
+    cy + 200,
+    'Время вводится с клавиатуры: достаточно цифр, «730» станет 07:30. Если конец раньше начала, смена считается ночной.',
+    445,
+    16,
+    { lineHeight: 23 },
+  );
+  body += paragraph(
+    81,
+    cy + 290,
+    'Кнопки «сейчас» нет: укажите то время, которое было на самом деле.',
+    445,
+    16,
+    { lineHeight: 23, fill: C.muted },
+  );
+
+  // Рейс: время по точкам.
+  body += rect(571, cy, 497, 410, { fill: C.greenSoft, stroke: '#b7eb8f', r: 14 });
+  body += text(597, cy + 42, 'Рейс по маршруту', 18, { fill: C.green, weight: 700 });
+  body += text(597, cy + 80, '1. Склад, ул. Промышленная, 12', 15, { fill: C.ink, weight: 700 });
+  body += field(597, cy + 104, 212, 'Прибытие', '07:40');
+  body += field(832, cy + 104, 212, 'Убытие', '08:30');
+  body += text(597, cy + 206, '2. Объект, ул. Строителей, 48', 15, { fill: C.ink, weight: 700 });
+  body += field(597, cy + 230, 212, 'Убытие', '10:05');
+  body += paragraph(
+    597,
+    cy + 318,
+    'На первой точке отмечаются прибытие (начало смены) и убытие, на остальных — убытие. Убытие с последней точки — конец смены. Для перегона время не вводится.',
+    445,
+    16,
+    { lineHeight: 23 },
+  );
+  body += footer();
+  return document(body);
+}
+
+function page5() {
+  let body = pageHeader(5, 'Задание и статусы', 'АВТО · ВОДИТЕЛЬ / МАШИНИСТ');
   body += paragraph(
     55,
     163,
@@ -635,7 +797,7 @@ function page4() {
     820,
     403,
     191,
-    'Задание — только для просмотра',
+    'Изменять задание нельзя',
     'Если не совпадает машина, водитель, маршрут, адрес или время — свяжитесь с диспетчером. Исправления вносит он.',
     { fill: C.orangeSoft, stroke: '#ffd591', color: C.orange },
   );
@@ -656,7 +818,7 @@ function page4() {
       color: C.blueDark,
       fill: C.bluePale,
       stroke: '#bae0ff',
-      body: 'Можно дополнить или поправить до приёмки.',
+      body: 'Можно поправить, пока диспетчер не принял день.',
     },
     {
       x: 559,
@@ -684,7 +846,7 @@ function page4() {
   return document(body);
 }
 
-const pages = [page1(), page2(), page3(), page4()];
+const pages = [page1(), page2(), page3(), page4(), page5()];
 
 for (const [index, svg] of pages.entries()) {
   const stem = `driver-guide-${String(index + 1).padStart(2, '0')}`;
@@ -703,12 +865,12 @@ for (const [index, svg] of pages.entries()) {
 
 const pdf = await PDFDocument.create();
 pdf.setTitle('Инструкция водителю и машинисту');
-pdf.setSubject('Регистрация, задание и поэтапная передача показаний техники');
+pdf.setSubject('Регистрация, задание и передача показаний техники целиком в конце смены');
 pdf.setKeywords(['водитель', 'машинист', 'задание', 'показания', 'топливо', 'АВТО']);
 pdf.setAuthor('АВТО');
 pdf.setCreator('SVG guide generator + librsvg + pdf-lib');
 pdf.setProducer('pdf-lib');
-const fixedDate = new Date('2026-09-04T18:00:00+05:00');
+const fixedDate = new Date('2026-10-28T20:00:00+05:00');
 pdf.setCreationDate(fixedDate);
 pdf.setModificationDate(fixedDate);
 
