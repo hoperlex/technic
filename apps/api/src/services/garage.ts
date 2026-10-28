@@ -47,6 +47,8 @@ import { requestIsLinearRawSql, requestIsLinearSql } from '../db/linear-mode';
  * спрашивает её дважды — состоянием дня и расшифровкой строки, — и оба раза одним выражением.
  */
 import { requestDayVehicleSql } from './assignment-read';
+import { loadDriverShiftDaysByRequest } from './shift-driver-days';
+import { effectiveDaySource } from './vehicle-request-shifts';
 
 /**
  * Занятость дня: чем заняты машина и человек на выбранную дату (ADR 0076).
@@ -725,9 +727,9 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
       dateFrom: specialEquipmentRequestDetails.dateFrom,
       dateTo: specialEquipmentRequestDetails.dateTo,
       vehicleId: vehicles.id,
-      // Строка смены появляется при первом заполнении, а не заготавливается на весь срок
-      // (миграция 0086): её наличие и означает «день заполнен».
-      shiftFilled: sql<boolean>`${vehicleRequestShifts.requestId} IS NOT NULL`,
+      // The site's row of the day: it appears at the first fill, it is not prepared for the whole
+      // term (migration 0086). Whether the day is filled is decided below with the driver day.
+      shiftRow: sql<boolean>`${vehicleRequestShifts.requestId} IS NOT NULL`,
       shiftApproved: sql<boolean>`${vehicleRequestShifts.approvedAt} IS NOT NULL`,
       earlyEndPending: sql<boolean>`coalesce(${vehicleRequestEarlyEndings.status} = 'pending', false)`,
       ...vehicleLabelColumns,
@@ -780,19 +782,33 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
     )
     .orderBy(vehicleRequests.num);
 
-  return rows.map((r) => ({
-    kind: 'special' as const,
-    requestId: r.requestId,
-    displayNumber: formatVehicleRequestNumber(r.num),
-    status: r.status,
-    customerName: requestCustomerName(r),
-    dateFrom: r.dateFrom,
-    dateTo: r.dateTo,
-    vehicleId: r.vehicleId,
-    ...busyVehicleOf(r),
-    shift: r.shiftFilled ? { filled: true, approved: r.shiftApproved } : null,
-    earlyEndPending: r.earlyEndPending,
-  }));
+  // D15: a day is filled when the request card shows it filled — the site's row, or a clean driver
+  // day (`effectiveDaySource`) — read for every request of the page at once. It is signed only by
+  // the site's signature: the driver's numbers wait for it.
+  const driverDays = await loadDriverShiftDaysByRequest(
+    db,
+    rows.map((r) => r.requestId),
+    { from: on, to: on },
+  );
+  return rows.map((r) => {
+    const source = effectiveDaySource(
+      r.shiftRow ? { signed: r.shiftApproved } : null,
+      driverDays.get(r.requestId)?.get(on),
+    );
+    return {
+      kind: 'special' as const,
+      requestId: r.requestId,
+      displayNumber: formatVehicleRequestNumber(r.num),
+      status: r.status,
+      customerName: requestCustomerName(r),
+      dateFrom: r.dateFrom,
+      dateTo: r.dateTo,
+      vehicleId: r.vehicleId,
+      ...busyVehicleOf(r),
+      shift: source === null ? null : { filled: true, approved: r.shiftApproved },
+      earlyEndPending: r.earlyEndPending,
+    };
+  });
 }
 
 /** Действующие недельные листы ЭСМ-2, накрывающие день, — по машинам и по машинистам. */

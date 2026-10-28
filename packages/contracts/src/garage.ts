@@ -190,7 +190,10 @@ export interface GarageSpecialBusy extends GarageBusyVehicle {
   dateFrom: string;
   /** Пусто — однодневный срок: `coalesce(date_to, date_from)`, как и в отборе. */
   dateTo: string | null;
-  /** Смена этого дня: заполнена ли и подписана ли объектом; `null` — строки за день нет вовсе. */
+  /**
+   * The day's shift as the request card shows it: filled by the site's row or by the driver's clean
+   * readings (D15), signed only by the site; `null` — the day is not filled.
+   */
   shift: { filled: boolean; approved: boolean } | null;
   /** Запрошено досрочное завершение и ждёт визы (ADR 0044): срок ещё прежний, но машина уедет. */
   earlyEndPending: boolean;

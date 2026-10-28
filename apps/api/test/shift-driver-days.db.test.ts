@@ -21,6 +21,7 @@ import type * as ReadingsNs from '../src/services/readings';
 import type * as DaysNs from '../src/services/vehicle-request-days';
 import type * as AssignmentShiftsNs from '../src/services/assignment-shifts';
 import type * as AggregateNs from '../src/services/readings-aggregate';
+import type * as GarageNs from '../src/services/garage';
 
 /**
  * The request shift table reading the driver's readings (readings-shifts-merge plan §6, ADR 0184
@@ -70,6 +71,7 @@ interface Ctx {
   days: typeof DaysNs;
   assignmentShifts: typeof AssignmentShiftsNs;
   aggregate: typeof AggregateNs;
+  garage: typeof GarageNs;
   closeDb: () => Promise<void>;
   admin: Auth;
   observer: Auth;
@@ -353,6 +355,14 @@ function save(requestId: string, date: string, body: Record<string, unknown>) {
   return inject('PUT', `/api/v1/vehicle-requests/${requestId}/shifts/${date}`, body);
 }
 
+/** The day's shift of the request in the garage occupancy of its vehicle (D15). */
+async function garageShiftOf(vehicleId: string, requestId: string, date: string) {
+  const busy = (await ctx.garage.loadVehicleBusy(date, [vehicleId])).get(vehicleId) ?? [];
+  const special = busy.find((entry) => entry.kind === 'special' && entry.requestId === requestId);
+  expect(special, `${date}: заказ в занятости машины`).toBeDefined();
+  return special!.kind === 'special' ? special!.shift : undefined;
+}
+
 async function rowOf(requestId: string, date: string) {
   const rows = await ctx.db.execute<{
     machine_hours: string;
@@ -402,6 +412,7 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
     const days = await import('../src/services/vehicle-request-days');
     const assignmentShifts = await import('../src/services/assignment-shifts');
     const aggregate = await import('../src/services/readings-aggregate');
+    const garage = await import('../src/services/garage');
     const { buildApp: build } = await import('../src/app');
 
     const types = await db.execute<{ id: string }>(sql`
@@ -433,6 +444,7 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
       days,
       assignmentShifts,
       aggregate,
+      garage,
       closeDb,
       admin: { authorization: '' },
       observer: { authorization: '' },
@@ -507,6 +519,14 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
       driver: { issues: ['first_snapshot'] },
     });
 
+    // D15: the garage occupancy counts the driver day as filled — as the card shows it — but only
+    // the site signs it; the baseline (a first snapshot) is not filled there either.
+    expect(await garageShiftOf(scene.vehicleId, requestId, day)).toEqual({
+      filled: true,
+      approved: false,
+    });
+    expect(await garageShiftOf(scene.vehicleId, requestId, baseline)).toBeNull();
+
     // D10: the observer reads the request — the numbers and the mark, no diagnostics.
     const seen = await dayOf(requestId, day, ctx.observer);
     expect(seen).toMatchObject({ source: 'driver', machineHours: 8.5, driverDay: { clean: true } });
@@ -535,6 +555,10 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
     const signedDay = (signed.json() as VehicleRequestShiftsDto).items.find((s) => s.date === day);
     expect(signedDay).toMatchObject({ source: 'site', machineHours: 8.5, refuel: '' });
     expect(signedDay?.approvedAt).not.toBeNull();
+    expect(await garageShiftOf(scene.vehicleId, requestId, day)).toEqual({
+      filled: true,
+      approved: true,
+    });
     expect(await rowOf(requestId, day)).toMatchObject({ machine_hours: '8.50', approved: true });
 
     // The history line says where the signed numbers came from.
