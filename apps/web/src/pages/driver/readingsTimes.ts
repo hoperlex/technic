@@ -121,6 +121,9 @@ export function buildTimes(params: {
       ? driverReadingTimeIssues({
           sourceKind: item.sourceKind,
           hasStops: stops.length > 0,
+          // The cabinet sends whole shifts only (ADR 0237): the end and every departure are due
+          // even when a half-typed block has no evening number yet, so all refusals show at once.
+          complete: true,
           values: {
             odometerKm: valid(numbers.odometerKm),
             engineHours: valid(numbers.engineHours),

@@ -109,6 +109,12 @@ describe('later cabinet days carried from a submit', () => {
       .find((label) => label.textContent?.startsWith('Одометр'))
       ?.querySelector('input');
     fireEvent.change(odometer!, { target: { value: '145400' } });
+    // A whole shift (ADR 0237): both fuel levels go with the counter.
+    const fuels = [...block.querySelectorAll('label')]
+      .filter((label) => label.textContent?.startsWith('Топливо'))
+      .map((label) => label.querySelector('input')!);
+    fireEvent.change(fuels[0]!, { target: { value: '120' } });
+    fireEvent.change(fuels[1]!, { target: { value: '90' } });
     const button = await screen.findByText('Передать');
     await waitFor(() => expect(button.closest('button')?.disabled).toBe(false));
     fireEvent.click(button);

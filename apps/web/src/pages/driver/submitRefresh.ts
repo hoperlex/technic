@@ -1,5 +1,6 @@
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
-import { driverCabinetKeys } from '@entities/driver-cabinet';
+import { driverCabinetApi, driverCabinetKeys } from '@entities/driver-cabinet';
+import type { ReadGate } from './dayState';
 
 /**
  * What a submit for `date` changes in the cabinet's cache besides its own report.
@@ -22,4 +23,25 @@ export function refreshAfterSubmit(queryClient: QueryClient, date: string): Prom
     queryClient.invalidateQueries({ queryKey: driverCabinetKeys.assignments(), predicate: later }),
     queryClient.invalidateQueries({ queryKey: driverCabinetKeys.reports(), predicate: later }),
   ]);
+}
+
+/**
+ * The rows are re-read by a READ, not by `open`: `open` takes the locks of vehicles, the report and
+ * the sources BEFORE it checks the state, and on an accepted or voided day it would hit the database
+ * with a heavy transaction for nothing (Р2). A failed read is not swallowed: a report with the old
+ * version left in the cache would give the next submit the same 409, so the snapshot is declared
+ * stale and the read goes by itself.
+ *
+ * The task is re-read with it: a stop set changed under the form is a 409 too (ADR 0234).
+ */
+export async function rereadAfterConflict(
+  queryClient: QueryClient,
+  run: ReadGate['run'],
+  date: string,
+): Promise<void> {
+  const reportKey = driverCabinetKeys.report(date);
+  await run(async () =>
+    queryClient.setQueryData(reportKey, await driverCabinetApi.report(date)),
+  ).catch(() => queryClient.invalidateQueries({ queryKey: reportKey }));
+  void queryClient.invalidateQueries({ queryKey: driverCabinetKeys.assignment(date) });
 }

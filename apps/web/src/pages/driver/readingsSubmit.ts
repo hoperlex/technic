@@ -1,4 +1,5 @@
 import {
+  driverReadingCompletenessIssues,
   lineRequiresDriverTimes,
   readingInputSchema,
   type DriverAssignmentEntry,
@@ -10,8 +11,9 @@ import {
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import { errorMessage } from '@shared/lib';
-import { parseReadingNumber, readingWarnings } from '@entities/vehicle-reading';
+import { parseReadingNumber } from '@entities/vehicle-reading';
 import type { DraftItem } from './api';
+import { blockChecks, numberOrNull, previousOfItem, readingNumbers } from './readingChecks';
 import { emptyItem, savedItem, sourceKey } from './readingsDraft';
 import { parseTime, stopPointTimes, stopsOf, type ShownStop } from './readingStops';
 import { buildTimes, timeFields } from './readingsTimes';
@@ -34,7 +36,9 @@ import { buildTimes, timeFields } from './readingsTimes';
  * совершенно разные новости человеку (Р6).
  */
 type BuiltItem =
-  { submit: ReportItemSubmit } | { errors: Record<string, string> } | { skip: 'closed' | 'blank' };
+  | { submit: ReportItemSubmit; notes: string[] }
+  | { errors: Record<string, string> }
+  | { skip: 'closed' | 'blank' };
 
 /**
  * Сообщения схемы — по именам полей блока: их и подсвечивает форма. A refusal about the stop set
@@ -50,50 +54,54 @@ function issueMessages(issues: readonly { path: PropertyKey[]; message: string }
 }
 
 /**
- * Строка отправки: показание, вновь загруженные файлы и подтверждение показанных аномалий.
+ * A submit row: the reading, the files newly uploaded and the driver's confirmation of the
+ * discrepancies shown for it.
  *
- * Флаг один на оба счётчика намеренно: подтверждают не «одометр» и «моточасы» по отдельности, а
- * показанное предупреждение целиком — и сервер применяет подтверждение только там, где аномалия
- * действительно есть.
+ * One flag for both counters on purpose: what is confirmed is the shown warning as a whole, not
+ * "odometer" and "engine hours" apart — and the server applies a confirmation only where an anomaly
+ * really exists. The flag is not read from the draft: it follows the submit window's answer
+ * (ADR 0237), so a confirmation typed earlier can never stand in for the question asked now.
  */
-function submitItem(itemId: string, reading: ReadingInput, value: DraftItem): ReportItemSubmit {
-  return {
+function submitItem(itemId: string, reading: ReadingInput, value: DraftItem, confirm: boolean) {
+  const row: ReportItemSubmit = {
     itemId,
     reading,
     fileIds: value.files.map((file) => file.id),
-    confirmOdometerAnomaly: value.confirmAnomaly,
-    confirmEngineHoursAnomaly: value.confirmAnomaly,
+    confirmOdometerAnomaly: confirm,
+    confirmEngineHoursAnomaly: confirm,
   };
+  return row;
 }
 
 /**
- * Собирает строку отправки либо ошибки блока: числа проверяет схема контракта, правдоподобие —
- * предупреждения при вводе (Р6). Вида `no_data` здесь больше нет: строку без показаний закрывает
- * только персонал (Р4), и сервер отправку водителя с таким видом отклоняет.
+ * Builds the submit row or the refusals of a block. The number format is the contract schema's,
+ * plausibility is the input warnings' (Р6), and since ADR 0237 completeness is the contract's
+ * `driverReadingCompletenessIssues`. A `no_data` kind is not built here: staff alone close a row
+ * without readings (Р4), and the server refuses a driver's submit of that kind.
  *
- * **Пустой блок пропускается только у НОВОЙ строки, и это не оптимизация, а разные события в
- * учёте** (Р6). У строки без сохранённого показания пусто означает «в эту машину ещё не смотрели»:
- * день с двумя машинами, из которых заполнена одна, обязан уйти — иначе поэтапная сдача не
- * работает вовсе, и утром одну машину не передать. У уже существующего показания вида `values`
- * та же пустота означает противоположное: человек СТЁР последнее число, и это команда, а не
- * молчание. Пропусти её — тело уедет без строки, сервер оставит в базе прежнее значение, а портал
- * покажет успех: очистка исчезнет молча. Поэтому опустошённый `values` идёт в схему и получает
- * оттуда отказ «заполните хотя бы одно значение».
+ * **An empty block is skipped only for a NEW row, and it is not an optimisation but two different
+ * events in the ledger** (Р6). A row without a saved reading means "nobody has looked at this
+ * vehicle yet": a day with two vehicles, one filled, must go — the other shift is sent when it ends.
+ * The same emptiness over an existing `values` reading means the opposite: the person ERASED the
+ * last number, which is a command, not silence. Skip it and the body leaves without the row, the
+ * server keeps the old value and the portal shows a success — the erasure would vanish quietly. An
+ * emptied `values` therefore goes on and is refused as incomplete.
+ *
+ * **A block the driver started is whole or it does not go** (ADR 0237): both fuel levels, one of the
+ * two counters, and every time the shift needs. All refusals of a block stand at once, each under
+ * its field, so a person fixing one does not learn about the next only on the next tap. A block
+ * resent unchanged is not judged again (`changed`): a staff entry or a morning part saved by an older
+ * build must not hold the day.
  */
 function buildItem(
   item: ReportItemDto,
   value: DraftItem,
   previous: DriverPreviousReading | null,
   stops: readonly ShownStop[],
+  changed: boolean,
   timesRequired: boolean,
 ): BuiltItem {
-  const numbers = {
-    odometerKm: parseReadingNumber(value.odometerKm),
-    engineHours: parseReadingNumber(value.engineHours),
-    fuelStartLiters: parseReadingNumber(value.fuelStartLiters),
-    fuelFilledLiters: parseReadingNumber(value.fuelFilledLiters),
-    fuelEndLiters: parseReadingNumber(value.fuelEndLiters),
-  };
+  const numbers = readingNumbers(value);
   // Time refusals stand next to the number refusals, not after them: a driver fixing an odometer
   // typo should not learn only on the next tap that the end time is missing too (ADR 0234, D11).
   const times = buildTimes({ item, value, stops, required: timesRequired, numbers });
@@ -104,10 +112,10 @@ function buildItem(
   }
 
   /*
-   * «Ни одного числа» — не то же самое, что «блок пуст»: комментарий и файл пустотой не считаются
-   * намеренно (Р6). Человек, приложивший фото щитка или написавший «одометр не работает», ждёт,
-   * что это уедет; пропусти такой блок — и вложение с текстом исчезли бы без единого слова. Ему
-   * отвечает схема отказом «заполните хотя бы одно значение», и отказ этот стоит на его блоке.
+   * "No numbers at all" is not the same as "the block is empty": a comment and a file do not count
+   * as emptiness, on purpose (Р6). A person who attached a photo of the dashboard or wrote "the
+   * odometer is broken" expects it to go; skip such a block and the attachment and the text would
+   * vanish without a word. The completeness refusal answers it, and it stands on this block.
    */
   const noNumbers =
     !value.odometerKm &&
@@ -116,36 +124,34 @@ function buildItem(
     !value.fuelFilledLiters &&
     !value.fuelEndLiters;
 
-  // Строка, закрытая персоналом видом `no_data`, — первая ветка и до общего правила пустоты не
-  // доходит: её сохранённый комментарий приезжает в поля вместе с показанием, и по общему правилу
-  // она перестала бы считаться пустой — то есть один чужой блок снова держал бы весь день.
-  // Водитель эту строку не редактирует; набранное же в ней число уедет как обычное показание.
+  // A row staff closed as `no_data` is the first branch and never reaches the general emptiness
+  // rule: its saved comment arrives in the fields with the reading, and by the general rule it would
+  // stop counting as empty — one foreign block would again hold the whole day. The driver does not
+  // edit this row; a number typed into it goes as an ordinary reading.
   if (item.reading?.kind === 'no_data' && noNumbers && !times.typed) return { skip: 'closed' };
 
-  // Новая строка, в которой не тронуто ничего, — это «сюда ещё не дошли», а не команда. Условие
-  // проверяет отсутствие сохранённого показания, а не его пустоту: `values` с числами в базе,
-  // очищенный на экране, выглядит отсюда так же — и обязан дойти до схемы (см. заголовок).
-  // A typed time is input too: alone it does not make a reading (ADR 0234), so it goes on to the
-  // schema and comes back as "fill in at least one value" instead of vanishing as a blank row.
+  // A new row with nothing touched is "not reached yet", not a command. The condition checks the
+  // absence of a saved reading, not its emptiness: a saved `values` erased on screen looks the same
+  // from here and must reach the refusals (see the header). A typed time is input too: alone it
+  // does not make a reading (ADR 0234), so it is refused as incomplete instead of vanishing.
   const untouched = noNumbers && !times.typed && !value.comment.trim() && value.files.length === 0;
   if (!item.reading && untouched) return { skip: 'blank' };
 
-  // Грубое (вне абсолютных границ) отправку не пропускает вовсе: подтверждать опечатку в разряде
-  // бессмысленно — её подтвердят так же, как набрали. Мягкое снимается галочкой: странное число
-  // бывает правдой (Р6).
-  const warnings = readingWarnings(numbers, previous);
-  const hard = warnings.filter((w) => w.hard);
-  if (hard.length > 0) {
-    return {
-      errors: { ...times.errors, ...Object.fromEntries(hard.map((w) => [w.field, w.text])) },
-    };
+  const { hard, notes } = blockChecks(item, value, previous, changed);
+  // A gross error is never let through: confirming a typo in a digit is pointless, it would be
+  // confirmed as it was typed. A soft one is confirmed in the submit window (ADR 0237).
+  const refused: Record<string, string> = { ...times.errors };
+  for (const warning of hard) refused[warning.field] ??= warning.text;
+  if (changed) {
+    const incomplete = driverReadingCompletenessIssues({
+      odometerKm: numberOrNull(numbers.odometerKm),
+      engineHours: numberOrNull(numbers.engineHours),
+      fuelStartLiters: numberOrNull(numbers.fuelStartLiters),
+      fuelEndLiters: numberOrNull(numbers.fuelEndLiters),
+    });
+    for (const [field, text] of Object.entries(incomplete)) refused[field] ??= text;
   }
-  const soft = warnings.filter((w) => !w.hard);
-  if (soft.length > 0 && !value.confirmAnomaly) {
-    const confirm = 'Подтвердите значение галочкой «Всё верно»';
-    return { errors: { ...times.errors, [soft[0]!.field]: confirm } };
-  }
-  if (Object.keys(times.errors).length > 0) return { errors: times.errors };
+  if (Object.keys(refused).length > 0) return { errors: refused };
 
   const parsed = readingInputSchema.safeParse({
     kind: 'values',
@@ -154,7 +160,7 @@ function buildItem(
     comment: value.comment,
   });
   if (!parsed.success) return { errors: issueMessages(parsed.error.issues) };
-  return { submit: submitItem(item.id, parsed.data, value) };
+  return { submit: submitItem(item.id, parsed.data, value, notes.length > 0), notes };
 }
 
 const NUMBER_FIELDS = [
@@ -176,7 +182,11 @@ const NUMBER_FIELDS = [
  * version (Р22). A block without a saved reading, or over a staff `no_data` one, is always the
  * driver's word.
  */
-function blockChanged(item: ReportItemDto, value: DraftItem, stops: readonly ShownStop[]): boolean {
+export function blockChanged(
+  item: ReportItemDto,
+  value: DraftItem,
+  stops: readonly ShownStop[],
+): boolean {
   const saved = savedItem(item);
   if (!saved || item.reading?.kind !== 'values') return true;
   const tenths = (raw: string) => {
@@ -196,27 +206,49 @@ function blockChanged(item: ReportItemDto, value: DraftItem, stops: readonly Sho
 }
 
 /**
- * Тело отправки по всем строкам отчёта — и отказы по блокам, если хоть один не прошёл. Отказы
- * возвращаются вместе со строками, а не вместо них: страница подсвечивает блок и приводит к
- * первому неправильному, а не показывает одно сообщение на весь день (ADR 0094).
+ * What a block says about its own input that the driver must confirm before it leaves (ADR 0237):
+ * the discrepancies with the previous shift and the anomalies nobody confirmed. `label` names the
+ * block the way the form does — vehicle first, source after — so two shifts of one vehicle in the
+ * list are told apart.
+ */
+export interface SubmitDiscrepancy {
+  itemId: string;
+  label: string;
+  notes: string[];
+}
+
+/**
+ * The submit body for every row of the report — and the refusals by block if any did not pass. The
+ * refusals come together with the rows, not instead of them: the page highlights the block and leads
+ * to the first wrong one rather than showing one message for the whole day (ADR 0094).
  *
- * Значения адресуются источником — тем же ключом, что и черновик (Р11): `itemId` строки живёт
- * только в отчёте и переживает не всё.
+ * Values are addressed by source, the same key as the draft (Р11): a row's `itemId` lives only in
+ * the report and does not survive everything.
  */
 export interface SubmitBody {
   items: ReportItemSubmit[];
   errors: Record<string, Record<string, string>>;
   /**
-   * Тело пустое, хотя заполнить было что: хотя бы одна открытая строка пропущена как нетронутая
-   * (Р6). Признак считается здесь, а не угадывается страницей заново: только сборка знает, почему
-   * строк не осталось, — «весь день закрыл персонал» и «день просто не заполнен» отсюда выглядят
-   * одинаково пустым телом, а человеку это две разные новости.
+   * The body is empty although there was something to fill: at least one open row was skipped as
+   * untouched (Р6). The flag is computed here, not guessed by the page again: only the build knows
+   * why no rows are left — "staff closed the whole day" and "the day is simply not filled" look the
+   * same as an empty body, and they are two different pieces of news for a person.
    *
-   * Отказы полей при этом старше признака: если хоть один блок отказал, страница показывает
-   * отказы и до подвала не доходит.
+   * Field refusals outrank the flag: if any block refused, the page shows them and never reaches the
+   * footer.
    */
   emptyOpenDay: boolean;
+  /**
+   * The blocks whose rows carry a confirmation flag. Not empty — the page asks the driver before
+   * the day leaves, and a refusal there sends nothing. The flags are already set in `items`: they
+   * are part of the body's fingerprint, so a retry after a lost answer repeats the same body.
+   */
+  discrepancies: SubmitDiscrepancy[];
 }
+
+/** «А123ВС 77 · Р-142»: the vehicle first, then the source that tells its shifts apart. */
+const blockLabel = (item: ReportItemDto) =>
+  [item.vehicleLabel, item.sourceLabel].filter(Boolean).join(' · ');
 
 export function buildSubmitBody(
   report: DriverReportDto,
@@ -225,23 +257,27 @@ export function buildSubmitBody(
 ): SubmitBody {
   const items: ReportItemSubmit[] = [];
   const errors: Record<string, Record<string, string>> = {};
+  const discrepancies: SubmitDiscrepancy[] = [];
   let blank = false;
   for (const item of report.items) {
     const entry = entryOf(item);
     const value = values[sourceKey(item)] ?? emptyItem();
     const stops = stopsOf(item, entry);
+    const changed = blockChanged(item, value, stops);
     // The rule follows the report's stored format, not this build (ADR 0234, decision 6), and
     // judges only the lines the driver changes.
-    const timesRequired = lineRequiresDriverTimes(
-      report.draftFormat,
-      blockChanged(item, value, stops),
-    );
-    const built = buildItem(item, value, entry?.previous ?? null, stops, timesRequired);
-    if ('submit' in built) items.push(built.submit);
-    else if ('errors' in built) errors[item.id] = built.errors;
+    const timesRequired = lineRequiresDriverTimes(report.draftFormat, changed);
+    const previous = previousOfItem(item, report, values, entry);
+    const built = buildItem(item, value, previous, stops, changed, timesRequired);
+    if ('submit' in built) {
+      items.push(built.submit);
+      if (built.notes.length > 0) {
+        discrepancies.push({ itemId: item.id, label: blockLabel(item), notes: built.notes });
+      }
+    } else if ('errors' in built) errors[item.id] = built.errors;
     else if (built.skip === 'blank') blank = true;
   }
-  return { items, errors, emptyOpenDay: items.length === 0 && blank };
+  return { items, errors, emptyOpenDay: items.length === 0 && blank, discrepancies };
 }
 
 /** Что делать с неудачной отправкой: сказать словами, закрывать ли попытку и перечитывать ли день. */

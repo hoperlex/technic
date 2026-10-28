@@ -25,9 +25,11 @@ import { stopsOf } from '../src/pages/driver/readingStops';
  * §7.4, owner decisions D5, D6, D8, D9, D11).
  *
  * Checked as the driver meets them: where the fields stand (variant A — inside the existing
- * groups, the route's stops above the counters), what «сейчас» does, what the live per-request
- * split says, and which submit the D11 rule stops before it leaves the phone — the same contract
- * rule the readings service applies, read by the report's stored format.
+ * groups, the route's stops above the counters), that a time is typed (ADR 0237 removed the
+ * «сейчас» button), what the live per-request split says, and which submit the D11 rule stops
+ * before it leaves the phone — the same contract rule the readings service applies, read by the
+ * report's stored format. Since ADR 0237 a block the driver sends is a whole shift: both fuel
+ * levels and a counter come with the times, so `fillNumbers` is part of every sending scenario.
  */
 
 const today = dayjs().tz(MOSCOW_TZ).format('YYYY-MM-DD');
@@ -269,6 +271,13 @@ function submitBody(http: ReturnType<typeof mockHttp>): ReportSubmitBody {
   return http.lastCall('POST /driver/reports/:date/submit')?.body as ReportSubmitBody;
 }
 
+/** Both fuel levels and a counter: the numbers of a whole shift (ADR 0237) the time tests share. */
+function fillNumbers(block: HTMLElement, odometer = '18252'): void {
+  type(field(group(block, 'Начало смены'), 'Топливо'), '120');
+  type(field(group(block, 'Конец смены'), 'Топливо'), '90');
+  type(field(block, 'Одометр'), odometer);
+}
+
 /** Times of the mock-up: 07:40 arrival, departures 08:30, 10:05, 11:50. */
 function fillRoute(): void {
   type(field(stop(1), 'Прибытие'), '07:40');
@@ -302,20 +311,15 @@ describe('кабинет водителя: время смены и остано
     ).toBeDefined();
   });
 
-  it('«сейчас» ставит текущее время одним касанием, а набор остаётся', async () => {
+  it('время набирается рукой: кнопки «сейчас» нет, «730» читается как 07:30', async () => {
     renderCabinet([esm2Item]);
     await waitForBlocks();
     const block = blockOf(esm2Item.id);
 
-    const now = within(block).getByRole('button', { name: 'Время начала: сейчас' });
-    // A large button: the cabinet theme makes it 60 px tall — a gloved finger's target.
-    expect(now.className).toContain('ant-btn-lg');
-    const before = dayjs().format('HH:mm');
-    fireEvent.click(now);
-    const after = dayjs().format('HH:mm');
-    await waitFor(() => expect([before, after]).toContain(field(block, 'Время начала').value));
+    // ADR 0237: the readings are sent when the shift ends, so the device's clock at that moment is
+    // not the time of the event, and a tap on it wrote a wrong time more often than a right one.
+    expect(within(block).queryByRole('button', { name: /сейчас/u })).toBeNull();
 
-    // Typing stays: «730» reads as 07:30 when the field is left.
     const end = field(block, 'Время окончания');
     type(end, '730');
     fireEvent.blur(end);
@@ -340,8 +344,9 @@ describe('кабинет водителя: время смены и остано
     expect(labelsIn(stop(3))).toEqual(['Убытие']);
     expect(within(stop(1)).getByText('Прибытие на первую точку — начало смены')).toBeDefined();
     expect(within(stop(3)).getByText('Убытие с последней точки — конец смены')).toBeDefined();
-    // Every time field has its «сейчас».
-    expect(within(route).getAllByRole('button', { name: /: сейчас$/u })).toHaveLength(4);
+    // Four time fields, and none has a «сейчас» (ADR 0237).
+    expect(route.querySelectorAll('input')).toHaveLength(4);
+    expect(within(route).queryAllByRole('button', { name: /сейчас/u })).toHaveLength(0);
 
     // The route block stands above the counters, and the scalar pair is not typed on a route.
     const order = [...block.querySelectorAll('strong')].map((el) => el.textContent);
@@ -379,7 +384,7 @@ describe('кабинет водителя: время смены и остано
     await waitForBlocks();
     const block = blockOf(esm2Item.id);
 
-    type(field(block, 'Одометр'), '18252');
+    fillNumbers(block);
     await submitSheet();
 
     expect(await within(block).findByText('Укажите время начала смены')).toBeDefined();
@@ -405,24 +410,35 @@ describe('кабинет водителя: время смены и остано
     });
   });
 
-  it('D11: утро уходит со временем начала; без него — отказ', async () => {
+  it('утро без вечера больше не уходит: все недостающие поля и время окончания — отказами сразу', async () => {
     const { http } = renderCabinet([esm2Item]);
     await waitForBlocks();
     const block = blockOf(esm2Item.id);
 
-    // A morning-only interim submit is legal (ADR 0163) but carries the start (D11).
+    // ADR 0237: the morning-only interim submit that ADR 0163 allowed is gone. The block is whole
+    // or does not leave, and every refusal stands under its own field at once.
     type(field(group(block, 'Начало смены'), 'Топливо'), '62');
     await submitSheet();
     expect(await within(block).findByText('Укажите время начала смены')).toBeDefined();
+    expect(
+      within(block).getByText('Переданы показания конца смены — укажите время её окончания'),
+    ).toBeDefined();
+    expect(within(block).getByText('Укажите остаток топлива на конец смены')).toBeDefined();
+    expect(within(block).getAllByText('Укажите одометр или моточасы')).toHaveLength(2);
     expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
 
+    type(field(group(block, 'Конец смены'), 'Топливо'), '40');
+    type(field(block, 'Моточасы'), '310.5');
     type(field(block, 'Время начала'), '08:00');
+    type(field(block, 'Время окончания'), '17:00');
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     expect(submitBody(http).items[0]!.reading).toMatchObject({
       fuelStartLiters: 62,
+      fuelEndLiters: 40,
+      engineHours: 310.5,
       startedAt: '08:00',
-      endedAt: null,
+      endedAt: '17:00',
     });
   });
 
@@ -431,7 +447,7 @@ describe('кабинет водителя: время смены и остано
     await waitForBlocks();
     const block = blockOf(routeItem.id);
 
-    type(field(block, 'Одометр'), '231468');
+    fillNumbers(block, '231468');
     type(field(stop(2), 'Убытие'), '10:05');
     await submitSheet();
 
@@ -504,7 +520,7 @@ describe('кабинет водителя: время смены и остано
 
     const own = blockOf(esm2Item.id);
     type(field(own, 'Время начала'), '08:00');
-    type(field(own, 'Одометр'), '18252');
+    fillNumbers(own);
     type(field(own, 'Время окончания'), '17:00');
     await submitSheet();
 
@@ -546,7 +562,7 @@ describe('кабинет водителя: время смены и остано
     await waitForBlocks();
 
     expect(document.querySelectorAll('[data-stop]')).toHaveLength(2);
-    type(field(blockOf(frozen.id), 'Одометр'), '231468');
+    fillNumbers(blockOf(frozen.id), '231468');
     await submitSheet();
     expect(
       await within(stop(1)).findByText('Укажите время прибытия на первую точку'),
@@ -571,10 +587,11 @@ describe('кабинет водителя: время смены и остано
     const { http } = renderCabinet([esm2Item], 'v2');
     await waitForBlocks();
 
-    type(field(blockOf(esm2Item.id), 'Одометр'), '18252');
+    fillNumbers(blockOf(esm2Item.id));
     await submitSheet();
 
-    // A `v2` report opened before the release finishes under its own rules (ADR 0234, decision 6).
+    // A `v2` report opened before the release finishes under its own time rules (ADR 0234,
+    // decision 6); the completeness of the numbers is the cabinet's own and does not depend on it.
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     expect(submitBody(http).items[0]!.reading).toMatchObject({ startedAt: null, endedAt: null });
   });
@@ -585,9 +602,9 @@ describe('кабинет водителя: время смены и остано
     const block = blockOf(moveItem.id);
 
     expect(within(block).queryByText('Маршрут — время по факту')).toBeNull();
-    expect(within(block).queryByRole('button', { name: /: сейчас$/u })).toBeNull();
+    expect(within(block).queryByRole('button', { name: /сейчас/u })).toBeNull();
 
-    type(field(block, 'Одометр'), '231468');
+    fillNumbers(block, '231468');
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     const reading = submitBody(http).items[0]!.reading;
@@ -658,6 +675,9 @@ describe('кабинет водителя: время смены и остано
     expect(field(stop(1), 'Прибытие').value).toBe('07:40');
 
     // A stop without a request cannot be split: the summary says so instead of dropping its time.
+    // The saved reading has only the fuel start: the rest of a whole shift is typed now.
+    type(field(group(blockOf(routeItem.id), 'Конец смены'), 'Топливо'), '90');
+    type(field(blockOf(routeItem.id), 'Одометр'), '231468');
     type(field(stop(1), 'Убытие'), '08:30');
     type(field(stop(2), 'Убытие'), '10:05');
     expect(
@@ -676,7 +696,7 @@ describe('кабинет водителя: время смены и остано
     });
   });
 
-  it('в читающем дне время не правится: поля и «сейчас» выключены вместе с числами (Р10)', () => {
+  it('в читающем дне время не правится: поля выключены вместе с числами (Р10)', () => {
     const onChange = vi.fn();
     const entry = assignmentOf([routeItem]).entries[0]!;
     renderWithUser(
@@ -709,13 +729,8 @@ describe('кабинет водителя: время смены и остано
       { user: driver },
     );
 
-    const buttons = screen.getAllByRole('button', { name: /: сейчас$/u });
-    // Two at the ESM-2 pair, four at the route's stops.
-    expect(buttons).toHaveLength(6);
-    for (const button of buttons) {
-      expect((button as HTMLButtonElement).disabled).toBe(true);
-      fireEvent.click(button);
-    }
+    // No «сейчас» button anywhere (ADR 0237): the fields are the only way to a time.
+    expect(screen.queryAllByRole('button', { name: /сейчас/u })).toHaveLength(0);
     expect(field(blockOf(esm2Item.id), 'Время начала').disabled).toBe(true);
     expect(field(stop(1), 'Прибытие').disabled).toBe(true);
     expect(onChange).not.toHaveBeenCalled();

@@ -269,6 +269,19 @@ function odometer(itemId: string): HTMLInputElement {
   return input as HTMLInputElement;
 }
 
+/**
+ * Both fuel levels of a whole shift (ADR 0237): a block the driver sends is whole. The level at the
+ * start is the first fuel field of the block, the one at the end the last.
+ */
+function fillFuel(itemId: string): void {
+  const block = document.getElementById(`reading-${itemId}`);
+  const fuels = [...(block?.querySelectorAll('label') ?? [])]
+    .filter((label) => label.textContent?.startsWith('Топливо'))
+    .map((label) => label.querySelector('input') as HTMLInputElement);
+  fireEvent.change(fuels[0]!, { target: { value: '120' } });
+  fireEvent.change(fuels[1]!, { target: { value: '90' } });
+}
+
 async function submitSheet(): Promise<void> {
   const button = await screen.findByText('Передать');
   await waitFor(() => expect(button.closest('button')?.disabled).toBe(false));
@@ -413,6 +426,7 @@ describe('кабинет водителя: один кэш отчёта', () => 
     await waitForBlocks();
 
     fireEvent.change(odometer(routeItem.id), { target: { value: '145320' } });
+    fillFuel(routeItem.id);
     await waitFor(() => expect(odometer(routeItem.id).value).toBe('145320'));
 
     // Возврат в приложение во время ввода: фокусный `GET` стартовал и завис на снимке «до».
@@ -436,6 +450,7 @@ describe('кабинет водителя: один кэш отчёта', () => 
     // Проверка та же, но с другой стороны: следующая отправка уходит с версией из ответа. Снимок
     // «до» дал бы версию 3, то есть гарантированный 409 «Отчёт изменился».
     fireEvent.change(odometer(routeItem.id), { target: { value: '145400' } });
+    fillFuel(routeItem.id);
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(2));
     expect(submitBody(http).version).toBe(4);
@@ -453,6 +468,7 @@ describe('кабинет водителя: один кэш отчёта', () => 
     await waitForBlocks();
 
     fireEvent.change(odometer(routeItem.id), { target: { value: '145320' } });
+    fillFuel(routeItem.id);
     await waitFor(() => expect(odometer(routeItem.id).value).toBe('145320'));
 
     const reads = reportReads(http, yesterday);

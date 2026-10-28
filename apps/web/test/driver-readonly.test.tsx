@@ -185,9 +185,8 @@ describe('Читающий режим блока показаний (Р10)', () 
       fireEvent.change(input, { target: { value: next } });
     }
 
-    const confirm = screen.getByRole('checkbox') as HTMLInputElement;
-    expect(confirm.disabled).toBe(true);
-    fireEvent.click(confirm);
+    // The «Всё верно» checkbox is gone (ADR 0237): a discrepancy is answered in the submit window.
+    expect(screen.queryByRole('checkbox')).toBeNull();
 
     expect(button(/Прикрепить фото/).disabled).toBe(true);
     const picker = filePicker();
@@ -218,9 +217,6 @@ describe('Читающий режим блока показаний (Р10)', () 
 
     fireEvent.change(field('Комментарий'), { target: { value: 'мыл машину' } });
     expect(spies.onChange).toHaveBeenCalledWith({ comment: 'мыл машину' });
-
-    fireEvent.click(screen.getByRole('checkbox'));
-    expect(spies.onChange).toHaveBeenCalledWith({ confirmAnomaly: true });
 
     fireEvent.click(button('Удалить'));
     expect(spies.onRemoveFile).toHaveBeenCalledWith('file-1');

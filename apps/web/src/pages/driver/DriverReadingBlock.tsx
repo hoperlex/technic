@@ -1,17 +1,14 @@
-import { Alert, Button, Checkbox, Input, Typography, Upload } from 'antd';
+import { Alert, Button, Input, Typography, Upload } from 'antd';
 import { PaperClipOutlined } from '@ant-design/icons';
-import dayjs from 'dayjs';
-import {
-  readingAnomalyLabels,
-  type DriverPreviousReading,
-  type ReportItemDto,
-} from '@technic/contracts';
-import { parseReadingNumber, readingWarnings, type ReadingField } from '@entities/vehicle-reading';
+import type { DriverPreviousReading, ReportItemDto } from '@technic/contracts';
+import { type ReadingField } from '@entities/vehicle-reading';
 import { FileLinkList } from '@entities/file';
 import type { DraftItem } from './api';
 import { ReadingFields } from './DriverReadingFields';
 import { RouteTimes } from './DriverRouteTimes';
 import { fieldLabelStyle, hintStyle, keepVisible } from './readingFieldStyles';
+import { blockChecks } from './readingChecks';
+import { blockChanged } from './readingsSubmit';
 import type { ShownStop } from './readingStops';
 
 /**
@@ -42,33 +39,6 @@ const vehicleStyle = { fontSize: '1.2em' } as const;
 /** Источник строки — вторым: им различают две смены одной машины за один день. */
 const sourceStyle = { fontSize: '0.9em' } as const;
 
-/**
- * Неподтверждённые аномалии показания — словами, с тем значением, с которым сравнивали.
- *
- * Это аномалии, записанные СЕРВЕРОМ по прошлой отправке (Р20), а не предупреждения при вводе:
- * первые уже лежат в учёте и ждут ответа человека, вторые считаются здесь же по ходу набора.
- * Показываются они вместе, одним предупреждением — водителю всё равно, кто именно усомнился.
- */
-function anomalyNotes(item: ReportItemDto): string[] {
-  const reading = item.reading;
-  if (!reading) return [];
-  const counters = [
-    { name: 'Одометр', anomaly: reading.odometerAnomaly },
-    { name: 'Моточасы', anomaly: reading.engineHoursAnomaly },
-  ];
-  return counters
-    .filter((counter) => counter.anomaly && !counter.anomaly.confirmed)
-    .map(({ name, anomaly }) => {
-      const previous =
-        anomaly?.previousValue != null
-          ? ` (предыдущее ${anomaly.previousValue}${
-              anomaly.previousDate ? ` от ${dayjs(anomaly.previousDate).format('DD.MM.YYYY')}` : ''
-            })`
-          : '';
-      return `${name}: ${anomaly ? readingAnomalyLabels[anomaly.kind] : ''}${previous}`;
-    });
-}
-
 export interface ReadingBlockProps {
   item: ReportItemDto;
   value: DraftItem;
@@ -80,9 +50,9 @@ export interface ReadingBlockProps {
   errors: Record<string, string>;
   uploading: boolean;
   /**
-   * Читающий режим (Р10): выключено всё, чем можно ввести, — пять чисел, комментарий, подтверждение
-   * аномалии, «Прикрепить фото» и удаление файла. Иначе водитель правит принятый день, а отказ
-   * приходит с сервера — после того, как он всё набрал.
+   * Read-only mode (Р10): everything that takes input is off — the five numbers, the comment,
+   * «Прикрепить фото» and the file removal. Otherwise a driver edits an accepted day and the refusal
+   * comes from the server after he has typed it all.
    *
    * Показанное режим не выбирает: чьи значения лежат в `value` — серверные или локальные — решает
    * страница, и решает по-разному (Р10). Блок знает только, что ввод закрыт.
@@ -117,25 +87,16 @@ export function ReadingBlock({
   };
 
   /*
-   * Предупреждения считаются на каждом наборе символа и той же чистой проверкой, которой лист не
-   * пускает отправку: одно правило на показ и на запрет — иначе форма предупреждала бы об одном, а
-   * не пускала за другое.
+   * The checks are computed on every keystroke by the same pure function the submit uses: one rule
+   * for showing and for refusing, or the form would warn about one thing and the window ask about
+   * another (`readingChecks`).
    */
-  const warnings = readingWarnings(
-    {
-      odometerKm: parseReadingNumber(value.odometerKm),
-      engineHours: parseReadingNumber(value.engineHours),
-      fuelStartLiters: parseReadingNumber(value.fuelStartLiters),
-      fuelFilledLiters: parseReadingNumber(value.fuelFilledLiters),
-      fuelEndLiters: parseReadingNumber(value.fuelEndLiters),
-    },
-    previous,
-  );
-  // Грубое — под полем красным: это не вопрос к человеку, а опечатка в разряде, и подтверждать её
-  // нечем. Мягкое — общим предупреждением с галочкой: странное число бывает правдой (Р6).
+  const { hard, notes } = blockChecks(item, value, previous, blockChanged(item, value, stops));
+  // A hard one stands under its field in red: it is not a question to the person but a typo in a
+  // digit, and there is nothing to confirm. A soft one is a general warning — a strange number can
+  // be true (Р6) — and the person answers it in the window when sending.
   const hardOf = (field: ReadingField): string | undefined =>
-    warnings.find((w) => w.hard && w.field === field)?.text;
-  const notes = [...anomalyNotes(item), ...warnings.filter((w) => !w.hard).map((w) => w.text)];
+    hard.find((warning) => warning.field === field)?.text;
   const closedByStaff = item.reading?.kind === 'no_data';
 
   return (
@@ -180,28 +141,21 @@ export function ReadingBlock({
         />
       )}
 
-      {/* Предупреждение требует ответа человека, а не отказывает: и серверная аномалия (день без
-          подтверждения не примут, Р22), и расхождение с предыдущим снимком бывают правдой —
-          счётчик заменили, машина неделю стояла в поле. Подтверждение уезжает той же отправкой,
-          что и сами числа. */}
+      {/* A warning wants an answer, it does not refuse: a server anomaly (a day without confirmation
+          is not accepted, Р22) and a mismatch with the previous shift both happen to be true — a
+          counter was replaced, the tank was topped up from the side. The answer is the window at
+          «Передать» (ADR 0237); the block only says in advance that it will be asked. */}
       {notes.length > 0 && (
         <Alert
           type="warning"
           showIcon
-          title="Проверьте показание перед отправкой"
+          title="Проверьте показание перед передачей"
           description={
             <>
               {notes.map((note) => (
                 <div key={note}>{note}</div>
               ))}
-              <Checkbox
-                checked={value.confirmAnomaly}
-                disabled={readOnly}
-                onChange={(e) => edit({ confirmAnomaly: e.target.checked })}
-                style={{ marginTop: 8 }}
-              >
-                Всё верно, подтверждаю
-              </Checkbox>
+              <div style={{ marginTop: 8 }}>При передаче потребуется подтверждение.</div>
             </>
           }
         />

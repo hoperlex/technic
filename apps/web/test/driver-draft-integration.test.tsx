@@ -296,6 +296,16 @@ function type(input: HTMLInputElement, value: string): void {
   fireEvent.change(input, { target: { value } });
 }
 
+/**
+ * The fuel of a whole shift (ADR 0237): a block the driver sends is whole, so every scenario that
+ * sends one types both levels next to its counter. A draft item written by hand carries the same.
+ */
+const WHOLE = { fuelStartLiters: '120', fuelEndLiters: '90' } as const;
+function fillFuel(itemId: string): void {
+  type(fuelStart(itemId), WHOLE.fuelStartLiters);
+  type(fuelEnd(itemId), WHOLE.fuelEndLiters);
+}
+
 async function submitSheet(): Promise<void> {
   const button = await screen.findByText('Передать');
   await waitFor(() => expect(button.closest('button')?.disabled).toBe(false));
@@ -353,6 +363,7 @@ describe('кабинет водителя: черновик по источни�
     expect(screen.getByText('222222 км')).toBeDefined();
 
     type(odometer(routeItem.id), '145320');
+    fillFuel(routeItem.id);
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
 
@@ -528,6 +539,7 @@ describe('кабинет водителя: отправка и попытки', 
     await waitForBlocks();
 
     type(odometer(routeItem.id), '145320');
+    fillFuel(routeItem.id);
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
 
@@ -556,6 +568,7 @@ describe('кабинет водителя: отправка и попытки', 
     await waitForBlocks();
 
     type(odometer(routeItem.id), '145320');
+    fillFuel(routeItem.id);
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
 
@@ -578,6 +591,7 @@ describe('кабинет водителя: отправка и попытки', 
     });
     await waitForBlocks();
     type(odometer(routeItem.id), '145320');
+    fillFuel(routeItem.id);
     await submitSheet();
     await waitFor(() => expect(first.http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     expect(await screen.findByText('Связь оборвалась')).toBeDefined();
@@ -611,6 +625,7 @@ describe('кабинет водителя: отправка и попытки', 
     const reads = reportReads(http);
 
     type(odometer(routeItem.id), '145320');
+    fillFuel(routeItem.id);
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     // Ответ сервера — исход известный: повторять эту команду нечего, повторяется только обрыв.
@@ -638,6 +653,7 @@ describe('кабинет водителя: отправка и попытки', 
     await waitForBlocks();
 
     type(odometer(routeItem.id), '145320');
+    fillFuel(routeItem.id);
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     expect(await screen.findByText('Bad gateway')).toBeDefined();
@@ -654,7 +670,8 @@ describe('кабинет водителя: отправка и попытки', 
   });
 
   it('перенос делает прежнюю попытку недействительной: у отправки свой ключ', async () => {
-    putBranch('aaaa', { 'route:route-gone': item({ odometerKm: '111111' }) });
+    // The orphan is whole as well: the transfer replaces the block, and the block must still leave.
+    putBranch('aaaa', { 'route:route-gone': item({ odometerKm: '111111', ...WHOLE }) });
     const { http, sent } = renderCabinet([routeItem], {
       // Обрыв: ответа не было вовсе, и попытка остаётся незавершённой — её ключ и повторяют.
       submit: () => {
@@ -664,6 +681,7 @@ describe('кабинет водителя: отправка и попытки', 
     await waitForBlocks();
 
     type(odometer(routeItem.id), '145320');
+    fillFuel(routeItem.id);
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     expect(await screen.findByText('Связь оборвалась')).toBeDefined();
@@ -689,11 +707,12 @@ describe('кабинет водителя: отправка и попытки', 
     const { http } = renderCabinet([routeItem]);
     await waitForBlocks();
     type(odometer(routeItem.id), '145320');
+    fillFuel(routeItem.id);
     await waitFor(() => expect(draft().items['route:route-1']?.item.odometerKm).toBe('145320'));
 
     // Соседняя вкладка переписала ту же строку, а событие `storage` ещё не пришло: на экране
     // прежнее число, в хранилище — новое. Счётчик старше — победитель слияния определён.
-    putBranch('bbbb', { 'route:route-1': item({ odometerKm: '146000' }) }, 5);
+    putBranch('bbbb', { 'route:route-1': item({ odometerKm: '146000', ...WHOLE }) }, 5);
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
 
@@ -718,6 +737,7 @@ describe('кабинет водителя: отправка и попытки', 
     await waitForBlocks();
 
     type(odometer(esm2Item.id), '9812');
+    fillFuel(esm2Item.id);
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
 
@@ -748,7 +768,8 @@ describe('кабинет водителя: отправка и попытки', 
     const { http } = renderCabinet([routeItem]);
     await waitForBlocks();
     type(odometer(routeItem.id), '145320');
-    await waitFor(() => expect(draft().items['route:route-1']?.item.odometerKm).toBe('145320'));
+    fillFuel(routeItem.id);
+    await waitFor(() => expect(draft().items['route:route-1']?.item.fuelEndLiters).toBe('90'));
 
     const quota = new DOMException('переполнено', 'QuotaExceededError');
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {

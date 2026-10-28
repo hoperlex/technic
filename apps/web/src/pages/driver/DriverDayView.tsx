@@ -8,6 +8,7 @@ import { OrphanBlock, type TransferMode, type TransferTarget } from './DriverOrp
 import { ReadingBlock } from './DriverReadingBlock';
 import type { DayState } from './dayState';
 import type { Orphan, PendingRow } from './readingsDraft';
+import { previousOfItem } from './readingChecks';
 import { emptyItem, sourceKey } from './readingsDraft';
 import { stopsOf } from './readingStops';
 
@@ -29,12 +30,20 @@ const hintStyle = { display: 'block', fontSize: '0.9em' } as const;
 const noteStyle = { display: 'block', marginBottom: 8 } as const;
 
 /**
- * Открытая строка в дне есть, а чисел нет ни одного (Р6). Прежде это объясняли отказом схемы на
- * КАЖДОМ блоке разом — день из трёх машин краснел целиком, хотя человек просто не начал вводить.
- * Теперь пустой новый блок отправку не держит, и сказать, почему день не ушёл, обязан подвал: без
- * этой строки нажатие «Передать» не отвечало бы вовсе.
+ * An open row is in the day but nothing is typed (Р6). Before, it was explained by a schema refusal
+ * on EVERY block at once — a day of three vehicles turned red whole although the person had simply
+ * not begun. An empty new block does not hold the submit, so the footer must say why the day did
+ * not go: without this line the tap on «Передать» would not answer at all.
  */
-const DAY_BLANK = 'Заполните хотя бы одно значение: пока в дне нет ни одного числа';
+const DAY_BLANK = 'Заполните показания: ни в одной смене дня пока не введено ни одного значения';
+
+/**
+ * The fill rule, once above the form (ADR 0237): short enough to read before the first field and
+ * the same words the instruction for drivers uses. The per-field refusals say the rest.
+ */
+const FILL_RULE =
+  'Показания передаются в конце смены. Обязательны все поля, кроме «Заправлено»; ' +
+  'из пары «Одометр» и «Моточасы» достаточно заполнить одно.';
 
 /**
  * Состояние дня — крупнее основного текста (план типографики, Р6): это первое, что водитель читает,
@@ -58,6 +67,11 @@ export function DayLine({ day }: { day: DayState }) {
       {day.hint && (
         <Typography.Text type="secondary" style={hintStyle}>
           {day.hint}
+        </Typography.Text>
+      )}
+      {day.submittable && (
+        <Typography.Text type="secondary" style={hintStyle}>
+          {FILL_RULE}
         </Typography.Text>
       )}
     </div>
@@ -185,7 +199,7 @@ export function DayRows({
         key={item.id}
         item={item}
         value={values[sourceKey(item)] ?? emptyItem()}
-        previous={entry?.previous ?? null}
+        previous={previousOfItem(item, report, values, entry)}
         stops={stopsOf(item, entry)}
         errors={errors[item.id] ?? {}}
         uploading={uploadingId === item.id}

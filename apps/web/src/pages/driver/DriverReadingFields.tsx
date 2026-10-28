@@ -16,11 +16,12 @@ import { timeFields } from './readingsTimes';
  * строк — порог бюджета качества (`scripts/quality.mjs`). Граница честная: здесь ни своего
  * состояния, ни сети, ни решений об отправке — только ввод чисел и то, чем они подписаны.
  *
- * Порядок групп — по ходу дня, а не «сначала счётчики»: форму заполняют сверху вниз тем, что уже
- * есть на руках, и утром это остаток в баке. Заголовки групп — рабочая часть раскладки, а не
- * оформление: два поля с подписью «Топливо» различаются только ими. Без заголовков подписи
- * пришлось бы удлинять («Топливо на начало смены»), и в кабине, на ходу, два длинных похожих
- * заголовка читаются как одно и то же поле (Р7).
+ * The groups follow the shift, not "counters first": the form is read top to bottom as the shift
+ * went. Since ADR 0237 it is filled at the END of the shift, whole — both fuel levels and one of the
+ * two counters are required; only «Заправлено» may stay empty (nothing was refuelled). The group
+ * titles are a working part of the layout, not decoration: two fields captioned «Топливо» differ only
+ * by them. Without titles the captions would have to grow («Топливо на начало смены»), and in a cab,
+ * on the move, two long similar captions read as the same field (Р7).
  *
  * An ESM-2 item also records its shift time here (ADR 0234, D9 variant A): «Время начала» opens the
  * start group, «Время окончания» the end group, because the time is taken at the same moment as the
@@ -162,18 +163,6 @@ export function ReadingFields({
   timed,
   onChange,
 }: ReadingFieldsProps) {
-  /*
-   * Подсказка о недосданном вечере (Р8) считается из показанных значений — ни поля в базе, ни
-   * состояния у неё нет. Состояние пришлось бы гасить при всякой правке, и первое же расхождение
-   * оставило бы подсказку висеть над уже заполненным концом смены.
-   *
-   * Условие смотрит на утро ИЛИ дневную заправку и на отсутствие ВСЕХ трёх вечерних чисел: день, в
-   * котором сняли хотя бы один вечерний счётчик, недосданным больше не считается — что снимать
-   * дальше, решает машина, а не портал.
-   */
-  const started = Boolean(value.fuelStartLiters || value.fuelFilledLiters || value.startedAt);
-  const ended = Boolean(value.odometerKm || value.engineHours || value.fuelEndLiters);
-
   return (
     <>
       <FieldGroup title="Начало смены">
@@ -186,14 +175,15 @@ export function ReadingFields({
             onChange={(next) => onChange({ startedAt: next })}
           />
         )}
-        {/* Остаток в баке — уровень, а не поток: за период он не суммируется, и подсказки
-            «предыдущий остаток» под ним нет намеренно (Р9). Сравнение остатков между сменами —
-            это уже расход, а его портал не считает. */}
+        {/* The level in the tank, not a flow: it is not summed over a period. Under it stands the end
+            of the previous shift (ADR 0237) — the number it must equal; a different one is not
+            refused, the submit window asks about it. */}
         <NumberField
           label="Топливо"
           suffix="л"
           integer={false}
           value={value.fuelStartLiters}
+          hint={previousHintText(previous, 'fuelStartLiters')}
           error={errors.fuelStartLiters ?? hardOf('fuelStartLiters')}
           disabled={disabled}
           onChange={(next) => onChange({ fuelStartLiters: next })}
@@ -257,14 +247,6 @@ export function ReadingFields({
           disabled={disabled}
           onChange={(next) => onChange({ fuelEndLiters: next })}
         />
-        {/* Словами, а не запретом: передать одно утро — законный день (Р6), и отказывать за него
-            нельзя. Формулировка намеренно не говорит «сдано начало»: водитель мог передать одну
-            дневную заправку, и «начала» у него нет. */}
-        {started && !ended && (
-          <Typography.Text type="secondary" style={hintStyle}>
-            Вечерние показания ещё не переданы — снимите их в конце смены
-          </Typography.Text>
-        )}
       </FieldGroup>
     </>
   );

@@ -8,13 +8,14 @@ import { errorMessage } from '@shared/lib';
 import { filesApi } from '@entities/file';
 import { useAuth } from '@entities/session';
 import { DayFailure, DayFooter, DayLine, DayNotice, DayRows, OrphanList } from './DriverDayView';
+import { useSubmitCheck } from './DriverSubmitCheck';
 import { type TransferMode } from './DriverOrphanBlock';
 import { useDriverDate } from './DriverLayout';
 import { useAssignment, useAutoOpen, useDayState, useEntryOf, useReadGate } from './dayState';
 import { useKeyboardInset } from './keyboardInset';
 import { driverCabinetApi, driverCabinetKeys } from '@entities/driver-cabinet';
 import { newIdempotencyKey, type DraftItem } from './api';
-import { refreshAfterSubmit } from './submitRefresh';
+import { refreshAfterSubmit, rereadAfterConflict } from './submitRefresh';
 import {
   bodyFingerprint,
   isDayDraftKey,
@@ -86,6 +87,7 @@ export function DriverReadingsPage() {
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const keyboardInset = useKeyboardInset();
+  const confirmDiscrepancies = useSubmitCheck();
   /** Пока `open` или `submit` в полёте, читающие запросы кабинета выключены (Р7). */
   const gate = useReadGate(date);
 
@@ -250,24 +252,28 @@ export function DriverReadingsPage() {
      */
     const view = readDraft(userId, date);
     const sending = seedValues(report, draftUse === 'edit' ? view.items : {});
-    const { items, errors: refused, emptyOpenDay } = buildSubmitBody(report, sending, entryOf);
+    const body = buildSubmitBody(report, sending, entryOf);
+    const { items, errors: refused, emptyOpenDay } = body;
     setErrors(refused);
     const firstBad = report.items.find((item) => refused[item.id]);
-    // Ставится и снимается одним значением: иначе строка подвала пережила бы день, в котором уже
-    // есть что передать. Отказ поля её отменяет — он конкретнее и стоит на самом блоке.
+    // Set and cleared as one value, or the footer line would outlive a day that now has something to
+    // send. A field refusal cancels it: that is more specific and stands on the block itself.
     setDayBlank(emptyOpenDay && !firstBad);
     if (firstBad) {
-      // Отказ называет поле и приводит к нему, а не уходит тостом в угол экрана (ADR 0094).
+      // A refusal names the field and leads to it, not a toast in the corner (ADR 0094).
       document.getElementById(`reading-${firstBad.id}`)?.scrollIntoView({ block: 'center' });
       return;
     }
-    // Пустое тело сервер не примет, но объяснений у него два, и путать их нельзя (Р6). Открытая
-    // строка не заполнена — человеку осталось ввести число, и зовёт его к кнопке подвал. Открытых
-    // строк нет вовсе — день закрыл персонал: это новость, а не подсказка, и она остаётся тостом.
+    // The server refuses an empty body, but there are two explanations and they must not be mixed
+    // up (Р6): an open row is unfilled — the footer calls the person to the button; no open rows at
+    // all — staff closed the day, which is news, not a hint, and stays a toast.
     if (items.length === 0) {
       if (!emptyOpenDay) message.info('Передавать нечего: строки этого дня уже закрыты');
       return;
     }
+    // The only way past a discrepancy (ADR 0237). Before the attempt is written: a return to the
+    // form must leave no pending key behind that a later, corrected body would have to repeat.
+    if (body.discrepancies.length > 0 && !(await confirmDiscrepancies(body.discrepancies))) return;
 
     /*
      * Ключ идемпотентности принадлежит попытке, а не дню (Р12а). Незавершённая попытка с тем же
@@ -311,20 +317,7 @@ export function DriverReadingsPage() {
       const failed = submitFailure(e);
       if (stillShown()) message.error(failed.message);
       if (failed.settled) commit({ close: { key, state: 'rejected' } });
-      /*
-       * Строки перечитываются чтением, а не `open`: тот берёт блокировки машин, отчёта и источников
-       * ДО проверки состояния и по принятому или аннулированному дню бил бы тяжёлой транзакцией
-       * впустую (Р2). Отказ чтения не глотается: отчёт со старой версией, оставшийся в кэше, дал бы
-       * следующей отправке тот же 409 — снимок объявляется устаревшим, и чтение уйдёт само.
-       */
-      if (failed.stale) {
-        const reportKey = driverCabinetKeys.report(date);
-        await gate
-          .run(async () => queryClient.setQueryData(reportKey, await driverCabinetApi.report(date)))
-          .catch(() => queryClient.invalidateQueries({ queryKey: reportKey }));
-        // A stop set changed under the form is a 409 too (ADR 0234): the task is re-read with it.
-        void queryClient.invalidateQueries({ queryKey: driverCabinetKeys.assignment(date) });
-      }
+      if (failed.stale) await rereadAfterConflict(queryClient, gate.run, date);
     } finally {
       setSubmitting(false);
     }

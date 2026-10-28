@@ -28,15 +28,19 @@ import type { DraftItem } from '../src/pages/driver/api';
  * хелпера «открой оверлей» здесь больше нет. Открытие отчёта от этого не изменилось — тот же
  * `POST …/open`, только по показу дня, а не по нажатию кнопки.
  *
- * Два правила ввода, ради которых набор и переписан:
+ * Three input rules this suite holds:
  *
- * 1. **Вида «нет возможности снять показания» у водителя нет** (Р4). Строку без показаний закрывает
- *    персонал — с причиной, которую знает человек; поля, которым водитель мог отписаться от ввода,
- *    в форме нет вовсе, и сервер такую отправку от него не принимает.
- * 2. **Предупреждения показываются во время ввода, а не после отправки** (Р6). Мягкое — значение
- *    меньше предыдущего или прирост выше суточного порога — снимается галочкой: странное число
- *    бывает правдой. Грубое — значение вне абсолютных границ — не снимается ничем: это опечатка в
- *    разряде, и подтверждать её бессмысленно.
+ * 1. **A driver has no "no readings possible" kind** (Р4). Staff close a row without readings, with
+ *    a reason a person knows; the form has no field to write off the input, and the server does not
+ *    take such a submit from a driver.
+ * 2. **Warnings show while typing, not after the submit** (Р6). A soft one — a value below the
+ *    previous one, a growth above the daily threshold, a fuel start that is not the end of the
+ *    previous shift — is answered in the window at «Передать» (ADR 0237): a strange number can be
+ *    true. A hard one — outside the absolute bounds — is answered by nothing: it is a typo in a
+ *    digit, and confirming it is pointless.
+ * 3. **A block the driver started is whole** (ADR 0237): both fuel levels and one of the two
+ *    counters; only «Заправлено» may stay empty. An untouched block is skipped — that shift is sent
+ *    when it ends.
  *
  * Предыдущий снимок счётчиков приходит в задании (`previous`), а не в отчёте: по нему стоит подпись
  * под полем и считаются оба мягких предупреждения. Его может не быть — начало ряда законно, и форма
@@ -94,6 +98,12 @@ const previousSnapshot: DriverPreviousReading = {
   engineHours: 9812.5,
   measuredOn: '2026-08-10',
   daysAgo: 2,
+};
+
+/** The same snapshot with the fuel the previous shift left in the tank (ADR 0237). */
+const previousWithFuel: DriverPreviousReading = {
+  ...previousSnapshot,
+  fuelEndLiters: 92,
 };
 
 /** Показание прошлой отправки с непризнанной аномалией одометра — с тем, с чем сравнивали (Р20). */
@@ -359,14 +369,11 @@ function type(input: HTMLInputElement | HTMLTextAreaElement, value: string): voi
   fireEvent.change(input, { target: { value } });
 }
 
-/** Подсказка Р8 — серой строкой под группой «Конец смены», а не запретом отправки. */
-const EVENING_HINT = 'Вечерние показания ещё не переданы — снимите их в конце смены';
-
 /**
  * Строка пустого открытого дня (Р6). Стоит в подвале, у самой кнопки: человек смотрит на то, что
  * только что нажал, и объяснению место там же, а не тостом, уехавшим за клавиатуру.
  */
-const DAY_BLANK = 'Заполните хотя бы одно значение: пока в дне нет ни одного числа';
+const DAY_BLANK = 'Заполните показания: ни в одной смене дня пока не введено ни одного значения';
 
 /** Подвал: и кнопка, и причина, по которой нажатие не дало отправки, живут в нём (Р10, Р6). */
 function footer(): HTMLElement {
@@ -375,9 +382,37 @@ function footer(): HTMLElement {
   return element as HTMLElement;
 }
 
-/** Галочка «Всё верно» стоит в самом предупреждении: подтверждают то, что показано. */
-function confirmBox(itemId: string): HTMLInputElement | null {
-  return blockOf(itemId).querySelector('input[type="checkbox"]');
+/**
+ * Both fuel levels of a block — the part of a whole shift (ADR 0237) every sending test shares. The
+ * defaults differ from `previousWithFuel` on purpose only where a test says so: a test that does not
+ * care about the fuel comparison hands the block a snapshot without fuel.
+ */
+function fillFuel(itemId: string, start = '120', end = '90'): void {
+  type(fuelStart(itemId), start);
+  type(fuelEnd(itemId), end);
+}
+
+/**
+ * The windows that are open now. jsdom never ends antd's leave animation, so a dismissed window
+ * stays in the DOM in its `ant-zoom-leave` state: it is not "open", and a later window must not
+ * collide with it.
+ */
+const openWindows = () =>
+  screen.queryAllByRole('dialog').filter((el) => !el.className.includes('ant-zoom-leave'));
+
+/** The submit window of ADR 0237: the only way past a discrepancy. */
+async function submitWindow(): Promise<HTMLElement> {
+  return waitFor(() => {
+    const [open] = openWindows().slice(-1);
+    if (!open) throw new Error('Окна подтверждения на экране нет');
+    return open;
+  });
+}
+
+/** Answers the window by the label of its button; the window closes with the answer. */
+async function answerWindow(label: 'Вернуться к исправлению' | 'Подтверждаю, передать') {
+  const dialog = await submitWindow();
+  fireEvent.click(within(dialog).getByRole('button', { name: label }));
 }
 
 /**
@@ -474,6 +509,7 @@ describe('кабинет водителя: передача показаний',
     expect(within(closed).getByText('Строку закрыл диспетчер')).toBeDefined();
     expect(within(closed).getByText('Счётчик неисправен, машину увёл сменщик')).toBeDefined();
 
+    fillFuel(esm2Item.id);
     type(field(blockOf(esm2Item.id), 'Моточасы'), '9812.5');
     await submitSheet();
 
@@ -485,7 +521,7 @@ describe('кабинет водителя: передача показаний',
 
   it('под полем стоит предыдущее показание, а без снимка форма работает по-прежнему', async () => {
     const { http } = renderCabinet([routeItem, esm2Item], {
-      [routeItem.sourceId]: previousSnapshot,
+      [routeItem.sourceId]: previousWithFuel,
     });
     await waitForBlocks();
 
@@ -494,40 +530,68 @@ describe('кабинет водителя: передача показаний',
     const withPrevious = blockOf(routeItem.id);
     expect(within(withPrevious).getByText('предыдущее: 145 320 (10.08)')).toBeDefined();
     expect(within(withPrevious).getByText('предыдущее: 9 812,5 (10.08)')).toBeDefined();
+    // ADR 0237: under the fuel at the start stands the end of the previous shift — the number it
+    // must equal. The fuel at the end has nothing before it in this shift to be compared with.
+    expect(
+      within(group(withPrevious, 'Начало смены')).getByText('в конце прошлой смены: 92 л (10.08)'),
+    ).toBeDefined();
+    expect(within(group(withPrevious, 'Конец смены')).queryByText(/прошлой смены/u)).toBeNull();
 
     // Начало ряда — законное состояние, а не ошибка: подписи нет, и форма отправляется как обычно.
     const withoutPrevious = blockOf(esm2Item.id);
     expect(within(withoutPrevious).queryByText(/предыдущее/u)).toBeNull();
 
+    // The start equals the previous end, so nothing is asked and the day goes straight away.
+    fillFuel(routeItem.id, '92', '60');
     type(field(withPrevious, 'Одометр'), '145400');
+    fillFuel(esm2Item.id);
     type(field(withoutPrevious, 'Моточасы'), '10');
     await submitSheet();
 
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    expect(openWindows()).toHaveLength(0);
   });
 
-  it('значение меньше предыдущего уходит только с подтверждением', async () => {
+  it('значение меньше предыдущего уходит только через окно подтверждения', async () => {
     const { http } = renderCabinet([routeItem], { [routeItem.sourceId]: previousSnapshot });
     await waitForBlocks();
 
+    fillFuel(routeItem.id);
     type(field(blockOf(routeItem.id), 'Одометр'), '140000');
 
     // Предупреждение показано во время ввода и называет то, с чем сравнивали: «невероятно» без
-    // «от чего» человеку нечем проверить.
+    // «от чего» человеку нечем проверить. Блок заранее говорит, что ответ потребуется при передаче.
     expect(
       within(blockOf(routeItem.id)).getByText('Одометр: меньше предыдущего (145 320 от 10.08)'),
     ).toBeDefined();
+    expect(
+      within(blockOf(routeItem.id)).getByText('При передаче потребуется подтверждение.'),
+    ).toBeDefined();
+    // Галочки «Всё верно» в блоке больше нет: ответ даёт окно в момент отправки (ADR 0237).
+    expect(blockOf(routeItem.id).querySelector('input[type="checkbox"]')).toBeNull();
 
     await submitSheet();
+    const dialog = await submitWindow();
+    // The title is drawn twice by the dialog (header and its accessible name).
+    expect(within(dialog).getAllByText('Проверьте данные перед передачей').length).toBeGreaterThan(
+      0,
+    );
+    // Расхождение названо вместе с машиной, а число — с тем, от чего оно отличается.
     expect(
-      await within(blockOf(routeItem.id)).findByText('Подтвердите значение галочкой «Всё верно»'),
+      within(dialog).getByText(/Одометр: меньше предыдущего \(145 320 от 10\.08\)/u),
     ).toBeDefined();
+    expect(within(dialog).getByText(/КамАЗ 65115 · А123ВС799 · Рейс Р-142/u)).toBeDefined();
     expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
 
-    // Сброшенный или заменённый счётчик — не ошибка ввода, и подтверждённое число уходит вместе с
-    // самим подтверждением: разбирается с ним сервер (Р20).
-    fireEvent.click(confirmBox(routeItem.id)!);
+    // «Вернуться» не отправляет ничего и не заводит попытку: ни запроса, ни ключа.
+    await answerWindow('Вернуться к исправлению');
+    await waitFor(() => expect(openWindows()).toHaveLength(0));
+    expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
+
+    // Сброшенный или заменённый счётчик — не ошибка ввода: подтверждённое число уходит вместе с
+    // самим подтверждением, и разбирается с ним сервер (Р20).
     await submitSheet();
+    await answerWindow('Подтверждаю, передать');
 
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     expect(submitBody(http).items[0]).toMatchObject({
@@ -543,7 +607,7 @@ describe('кабинет водителя: передача показаний',
     const odometer = field(blockOf(routeItem.id), 'Одометр');
 
     // Прошло двое суток, суточный порог — 1500 км из readingLimits: 1680 км за два дня нормальны,
-    // и предупреждать здесь означало бы приучить водителя щёлкать галочку не глядя.
+    // и предупреждать здесь означало бы приучить водителя подтверждать окно не глядя.
     type(odometer, '147000');
     expect(within(blockOf(routeItem.id)).queryByText(/прирост/u)).toBeNull();
 
@@ -552,21 +616,23 @@ describe('кабинет водителя: передача показаний',
       within(blockOf(routeItem.id)).getByText('Одометр: прирост 3 680 км за 2 дня — проверьте'),
     ).toBeDefined();
 
+    fillFuel(routeItem.id);
     await submitSheet();
+    expect(await submitWindow()).toBeDefined();
     expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
 
-    fireEvent.click(confirmBox(routeItem.id)!);
-    await submitSheet();
+    await answerWindow('Подтверждаю, передать');
 
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     expect(submitBody(http).items[0]).toMatchObject({ confirmOdometerAnomaly: true });
   });
 
-  it('значение вне абсолютных границ не уходит ни с какой галочкой', async () => {
+  it('значение вне абсолютных границ не уходит ни с каким подтверждением', async () => {
     const { http } = renderCabinet([routeItem], { [routeItem.sourceId]: previousSnapshot });
     await waitForBlocks();
 
-    // Моточасы ниже предыдущих — мягкое предупреждение: галочка на экране появляется.
+    fillFuel(routeItem.id);
+    // Моточасы ниже предыдущих — мягкое предупреждение: его отвечает окно.
     type(field(blockOf(routeItem.id), 'Моточасы'), '9000');
     // Одометр в семь знаков — грубое: столько ни один одометр не показывает, и это опечатка в
     // разряде, а не факт.
@@ -575,21 +641,22 @@ describe('кабинет водителя: передача показаний',
       within(blockOf(routeItem.id)).getByText('Проверьте разряд: столько одометр не показывает'),
     ).toBeDefined();
 
-    fireEvent.click(confirmBox(routeItem.id)!);
     await submitSheet();
 
-    // Подтверждать опечатку бессмысленно: водитель подтвердит её так же, как набрал (Р6).
+    // Подтверждать опечатку бессмысленно: водитель подтвердит её так же, как набрал (Р6). Окна нет
+    // вовсе — отказ стоит под полем, а мягкое расхождение ещё не спрошено.
     await waitFor(() =>
       expect(
         within(blockOf(routeItem.id)).getByText('Проверьте разряд: столько одометр не показывает'),
       ).toBeDefined(),
     );
+    expect(openWindows()).toHaveLength(0);
     expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
 
-    // Исправленный разряд отправку освобождает — вместе с подтверждением мягкого предупреждения.
+    // Исправленный разряд освобождает отправку — и тут же приводит к окну с мягким расхождением.
     type(field(blockOf(routeItem.id), 'Одометр'), '146000');
-    if (!confirmBox(routeItem.id)!.checked) fireEvent.click(confirmBox(routeItem.id)!);
     await submitSheet();
+    await answerWindow('Подтверждаю, передать');
 
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     expect(submitBody(http).items[0]!.reading).toMatchObject({
@@ -605,6 +672,7 @@ describe('кабинет водителя: передача показаний',
     // Р6 — самая существенная правка портала выпуска, и она не про топливо: прежде пустой блок
     // держал весь день, и водитель с двумя машинами не мог сдать утром одну. Караул на прежнее
     // поведение стоял здесь же и закреплял ровно то, что решение отменило (Н1).
+    fillFuel(routeItem.id);
     type(field(blockOf(routeItem.id), 'Одометр'), '145320');
     await submitSheet();
 
@@ -613,7 +681,7 @@ describe('кабинет водителя: передача показаний',
     // и сервер, получив её пустой, оставил бы в базе прежнее.
     expect(submitBody(http).items.map((entry) => entry.itemId)).toEqual([routeItem.id]);
     // Ни одного отказа на экране: вторая машина ждёт вечера, а не краснеет за человека.
-    expect(screen.queryByText(/Заполните хотя бы одно значение/u)).toBeNull();
+    expect(screen.queryByText(/Укажите/u)).toBeNull();
     // Блок второй машины при этом на месте: её ещё сдавать.
     expect(field(blockOf(esm2Item.id), 'Одометр').value).toBe('');
   });
@@ -675,14 +743,15 @@ describe('кабинет водителя: передача показаний',
     /*
      * Пустотой считаются только числа (Р6). Человек, написавший «одометр не работает» или
      * приложивший фото щитка, ждёт, что это уедет: пропусти такой блок — и текст с вложением
-     * исчезли бы без единого слова, а портал показал бы успех. Ему отвечает схема, и отказ стоит
-     * на его собственном блоке.
+     * исчезли бы без единого слова, а портал показал бы успех. Ему отвечает проверка полноты, и
+     * отказы стоят на его собственном блоке — под каждым недостающим полем (ADR 0237).
      */
+    const route = blockOf(routeItem.id);
+    expect(await within(route).findByText('Укажите остаток топлива на начало смены')).toBeDefined();
+    expect(within(route).getByText('Укажите остаток топлива на конец смены')).toBeDefined();
+    expect(within(route).getAllByText('Укажите одометр или моточасы')).toHaveLength(2);
     expect(
-      await within(blockOf(routeItem.id)).findByText(/Заполните хотя бы одно значение/u),
-    ).toBeDefined();
-    expect(
-      within(blockOf(esm2Item.id)).getByText(/Заполните хотя бы одно значение/u),
+      within(blockOf(esm2Item.id)).getByText('Укажите остаток топлива на начало смены'),
     ).toBeDefined();
     // Отказ поля старше строки подвала: он конкретнее и приводит к самому блоку.
     expect(screen.queryByText(DAY_BLANK)).toBeNull();
@@ -703,19 +772,20 @@ describe('кабинет водителя: передача показаний',
     /*
      * Пропуск здесь был бы худшим исходом из возможных: тело уехало бы без строки, сервер оставил
      * бы в базе прежние 145 320, а портал отчитался бы успехом — очистка исчезла бы молча. Поэтому
-     * опустошённый `values` обязан дойти до схемы и получить оттуда отказ.
+     * опустошённое показание обязано дойти до проверки полноты и получить оттуда отказ.
      */
     expect(
-      await within(blockOf(routeItem.id)).findByText(/Заполните хотя бы одно значение/u),
-    ).toBeDefined();
+      (await within(blockOf(routeItem.id)).findAllByText('Укажите одометр или моточасы')).length,
+    ).toBeGreaterThan(0);
     expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
     expect(screen.queryByText(DAY_BLANK)).toBeNull();
   });
 
   it('потолок в 1000 л держит оба остатка, а суточный порог к ним не применяется', async () => {
     // Снимок предыдущей смены есть — и это половина проверки: у остатков ни порога прироста в
-    // `PER_DAY`, ни прошлого значения в контракте нет намеренно (Р10). Появись он — сравнение
-    // остатков между сменами и стало бы тем расходом, который заказчик отложил (Р3).
+    // `PER_DAY` нет намеренно (Р10): уровень в баке не растёт от прошлого снимка, а сливается,
+    // доливается и меняется под человеком. Остаток сверяется на равенство с концом прошлой смены
+    // (ADR 0237), а не на прирост — это отдельный тест ниже.
     const { http } = renderCabinet([routeItem], { [routeItem.sourceId]: previousSnapshot });
     await waitForBlocks();
 
@@ -743,9 +813,13 @@ describe('кабинет водителя: передача показаний',
     // 900 → 20 за смену: у счётчика такой скачок дал бы мягкое предупреждение с галочкой, а у бака
     // это обычный день — за ночь его сливают, доливают со стороны и меняют машину под человеком.
     type(fuelEnd(routeItem.id), '20');
+    type(field(blockOf(routeItem.id), 'Одометр'), '145400');
     expect(within(blockOf(routeItem.id)).queryByText(/прирост|меньше предыдущего/u)).toBeNull();
-    expect(confirmBox(routeItem.id)).toBeNull();
+    expect(
+      within(blockOf(routeItem.id)).queryByText('Проверьте показание перед передачей'),
+    ).toBeNull();
     await submitSheet();
+    expect(openWindows()).toHaveLength(0);
 
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     expect(submitBody(http).items[0]!.reading).toMatchObject({
@@ -754,38 +828,152 @@ describe('кабинет водителя: передача показаний',
     });
   });
 
-  it('подсказка о недосданном вечере появляется от утра или заправки и гаснет счётчиком', async () => {
-    renderCabinet([routeItem]);
+  it('неполный блок не уходит: каждый отказ стоит под своим полем, всё сразу', async () => {
+    const { http } = renderCabinet([routeItem, esm2Item]);
     await waitForBlocks();
-    const block = blockOf(routeItem.id);
+    const route = blockOf(routeItem.id);
 
-    // Р8 — словами, а не запретом: передать одно утро законно, и отказывать за это нельзя. На
-    // нетронутом блоке подсказки нет: она про недосданное, а не про незаполненное.
-    expect(within(block).queryByText(EVENING_HINT)).toBeNull();
+    // ADR 0237: начатый блок целый или не уходит. Здесь введён один счётчик — не хватает обоих
+    // остатков, и оба отказа видны сразу, а не по одному на каждое нажатие.
+    type(field(route, 'Одометр'), '145320');
+    await submitSheet();
 
-    type(fuelStart(routeItem.id), '120');
-    expect(within(block).getByText(EVENING_HINT)).toBeDefined();
+    expect(
+      await within(group(route, 'Начало смены')).findByText(
+        'Укажите остаток топлива на начало смены',
+      ),
+    ).toBeDefined();
+    expect(
+      within(group(route, 'Конец смены')).getByText('Укажите остаток топлива на конец смены'),
+    ).toBeDefined();
+    // Пара «одометр или моточасы» закрыта одним счётчиком: отказа по ней нет.
+    expect(within(route).queryByText('Укажите одометр или моточасы')).toBeNull();
+    expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
 
-    // Хватает ОДНОГО вечернего числа: что снимать дальше, решает машина, а не портал — на технике
-    // без одометра его нет физически.
-    type(field(block, 'Одометр'), '145320');
-    expect(within(block).queryByText(EVENING_HINT)).toBeNull();
+    // Правка снимает отказы блока, а исправленный блок уходит; нетронутая вторая смена ждёт.
+    fillFuel(routeItem.id);
+    expect(within(route).queryByText(/Укажите/u)).toBeNull();
+    await submitSheet();
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    expect(submitBody(http).items.map((entry) => entry.itemId)).toEqual([routeItem.id]);
+  });
 
-    // Второй повод для подсказки — дневная заправка без утра: формулировка потому и не говорит
-    // «сдано начало», что «начала» у такого водителя нет вовсе.
-    type(field(block, 'Одометр'), '');
-    type(fuelStart(routeItem.id), '');
-    type(field(block, 'Заправлено'), '80');
-    expect(within(block).getByText(EVENING_HINT)).toBeDefined();
+  it('одометр и моточасы — один слот: достаточно одного, без обоих отказ под обоими', async () => {
+    const { http } = renderCabinet([routeItem]);
+    await waitForBlocks();
+    const route = blockOf(routeItem.id);
 
-    type(fuelEnd(routeItem.id), '150');
-    expect(within(block).queryByText(EVENING_HINT)).toBeNull();
+    fillFuel(routeItem.id);
+    await submitSheet();
+    // Машина может иметь только один из двух счётчиков, и форма не знает, какой: отказ стоит под
+    // обоими полями, чтобы не искать его там, куда человек не смотрит.
+    expect(await within(route).findAllByText('Укажите одометр или моточасы')).toHaveLength(2);
+    expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
+
+    // Только моточасы (экскаватор без одометра) — полный блок.
+    type(field(route, 'Моточасы'), '9812.5');
+    expect(within(route).queryByText('Укажите одометр или моточасы')).toBeNull();
+    await submitSheet();
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    expect(submitBody(http).items[0]!.reading).toMatchObject({
+      odometerKm: null,
+      engineHours: 9812.5,
+    });
+  });
+
+  it('пустое «Заправлено» — не заправляли: блок уходит, а в теле стоит пусто', async () => {
+    const { http } = renderCabinet([routeItem]);
+    await waitForBlocks();
+
+    fillFuel(routeItem.id);
+    type(field(blockOf(routeItem.id), 'Одометр'), '145320');
+    expect(within(blockOf(routeItem.id)).queryByText(/Заправлено.*обязательн/u)).toBeNull();
+    await submitSheet();
+
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    expect(submitBody(http).items[0]!.reading).toMatchObject({ fuelFilledLiters: null });
+  });
+
+  it('топливо на начало не равно концу прошлой смены: окно называет оба числа, дата — в скобках', async () => {
+    const { http } = renderCabinet([routeItem], { [routeItem.sourceId]: previousWithFuel });
+    await waitForBlocks();
+
+    fillFuel(routeItem.id, '80', '50');
+    type(field(blockOf(routeItem.id), 'Одометр'), '145400');
+    // Блок предупреждает сразу, как только число набрано: водитель сверяется с прибором до отправки.
+    expect(
+      within(blockOf(routeItem.id)).getByText(
+        'Топливо на начало смены (80 л) не совпадает с остатком на конец прошлой смены (92 л, 10.08)',
+      ),
+    ).toBeDefined();
+
+    await submitSheet();
+    const dialog = await submitWindow();
+    expect(
+      within(dialog).getByText(
+        /Топливо на начало смены \(80 л\) не совпадает с остатком на конец/u,
+      ),
+    ).toBeDefined();
+    expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
+
+    await answerWindow('Подтверждаю, передать');
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    // Расхождение топлива сервер не записывает (правило кабинета): уходит число как есть.
+    expect(submitBody(http).items[0]!.reading).toMatchObject({
+      fuelStartLiters: 80,
+      fuelEndLiters: 50,
+    });
+  });
+
+  it('вторая смена той же машины сверяется с тем, что введено в первой, ещё до отправки', async () => {
+    const secondRoute: ReportItemDto = {
+      ...routeItem,
+      id: 'item-route-2',
+      sourceId: 'route-2',
+      sourceLabel: 'Рейс Р-143',
+      shiftOrder: 2,
+    };
+    const { http } = renderCabinet([routeItem, secondRoute]);
+    await waitForBlocks();
+
+    // Сервер о первой смене ещё ничего не знает — она не отправлена, — но день заполняют и
+    // отправляют одним нажатием, и вторая смена начинается с того, чем кончается первая.
+    fillFuel(routeItem.id, '120', '90');
+    type(field(blockOf(routeItem.id), 'Одометр'), '145400');
+    // The hint under the second shift's start already names what the first one is typed to leave.
+    expect(
+      within(group(blockOf(secondRoute.id), 'Начало смены')).getByText(
+        `в конце прошлой смены: 90 л (${dayjs(today).format('DD.MM')})`,
+      ),
+    ).toBeDefined();
+
+    type(fuelStart(secondRoute.id), '75');
+    expect(
+      within(blockOf(secondRoute.id)).getByText(
+        /Топливо на начало смены \(75 л\) не совпадает с остатком на конец прошлой смены \(90 л/u,
+      ),
+    ).toBeDefined();
+
+    type(fuelStart(secondRoute.id), '90');
+    expect(within(blockOf(secondRoute.id)).queryByText(/не совпадает/u)).toBeNull();
+    type(fuelEnd(secondRoute.id), '60');
+    type(field(blockOf(secondRoute.id), 'Одометр'), '145480');
+    await submitSheet();
+
+    // Совпало — окна нет, оба блока ушли одним запросом.
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    expect(openWindows()).toHaveLength(0);
+    expect(submitBody(http).items.map((entry) => entry.itemId)).toEqual([
+      routeItem.id,
+      secondRoute.id,
+    ]);
   });
 
   it('запятая в дробном поле становится точкой', async () => {
     const { http } = renderCabinet([routeItem]);
     await waitForBlocks();
     const block = blockOf(routeItem.id);
+    fillFuel(routeItem.id);
 
     // На телефоне десятичный разделитель зависит от раскладки: человек набирает тот, что на
     // клавише, и отказывать ему за это нельзя (Р14).
@@ -815,6 +1003,8 @@ describe('кабинет водителя: передача показаний',
     const { http, sent } = renderCabinet([routeItem, esm2Item]);
     await waitForBlocks();
 
+    fillFuel(routeItem.id);
+    fillFuel(esm2Item.id);
     type(field(blockOf(routeItem.id), 'Одометр'), '145320');
     type(field(blockOf(esm2Item.id), 'Моточасы'), '9812.5');
     await submitSheet();
@@ -847,8 +1037,17 @@ describe('кабинет водителя: передача показаний',
     // Числа прошлой отправки стоят в полях: подтверждают показанное, а не вводят заново.
     expect((field(block, 'Одометр') as HTMLInputElement).value).toBe('145320');
 
-    fireEvent.click(confirmBox(routeItem.id)!);
+    // The block is resent unchanged, so its saved numbers are not judged again (nothing is asked
+    // about fuel it never had) — only the anomaly the server recorded is put to the driver.
     await submitSheet();
+    const dialog = await submitWindow();
+    expect(
+      within(dialog).getByText(
+        /Одометр: невероятный прирост \(предыдущее 140000 от 10\.08\.2026\)/u,
+      ),
+    ).toBeDefined();
+    expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
+    await answerWindow('Подтверждаю, передать');
 
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
     // Аномалия не отказ, а предупреждение: подтверждение уезжает тем же запросом, что и числа.
@@ -868,6 +1067,7 @@ describe('кабинет водителя: передача показаний',
     expect(openRequest?.headers['x-driver-draft-format']).toBe('v3');
 
     // ADR 0234: submit declares it too — the server refuses a `v3` report to a build that does not.
+    fillFuel(routeItem.id);
     type(field(blockOf(routeItem.id), 'Одометр'), '145320');
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
@@ -879,6 +1079,7 @@ describe('кабинет водителя: передача показаний',
     const { http, sent } = renderCabinet([routeItem]);
     await waitForBlocks();
 
+    fillFuel(routeItem.id);
     type(field(blockOf(routeItem.id), 'Одометр'), '145320');
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
@@ -887,6 +1088,7 @@ describe('кабинет водителя: передача показаний',
     // Прежде это делало закрытие листа; теперь отчёт заменяется ответом, а израсходованный ключ
     // гасится вместе с попыткой — иначе правка сразу за отправкой получала бы 409 дважды: по
     // устаревшей версии и по тому же ключу с другим телом.
+    fillFuel(routeItem.id);
     type(field(blockOf(routeItem.id), 'Одометр'), '145400');
     await submitSheet();
     await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(2));
