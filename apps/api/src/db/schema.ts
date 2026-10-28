@@ -2946,19 +2946,20 @@ export const officeEquipmentCandidates = pgTable(
       sql`${t.status} <> 'rejected' OR btrim(${t.decisionReason}) <> ''`,
     ),
     /**
-     * ГОНКУ ДВУХ ЗАЯВИТЕЛЕЙ ЛОВЯТ ЭТИ ДВА ИНДЕКСА, А НЕ SELECT МАРШРУТА (Р10, рубеж 2). Двое в одну
-     * минуту сообщают об одном принтере: проверка «нет ли такого кандидата» у обоих проходит, а
-     * отбивает второго уникальность — его транзакция откатывается целиком, и маршрут переводит
-     * `23505` в 409 «Этот аппарат уже отправлен на проверку». Тот же расклад и по той же причине,
-     * что у замка «одна открытая заявка на единицу».
+     * THESE TWO INDEXES, NOT THE ROUTE'S SELECT, CATCH TWO REQUESTERS RACING (R10, barrier 2). Two
+     * people report one printer in the same minute: the "is there such a candidate" check passes
+     * for both, uniqueness refuses the second, its transaction rolls back whole, and the route turns
+     * `23505` into 409 "this device has already been sent for review". The lock protects the
+     * directory from two cards for one device, so it stays when several open requests per
+     * registered unit are allowed (ADR 0236).
      *
-     * Частичные по `status = 'pending'`: решённый кандидат номер НЕ держит — новый факт можно
-     * сообщить новой парой «кандидат + заявка», в том числе после отказа. Пустой номер не
-     * сравнивается вовсе: он законен, пока заполнен второй, и «пусто = пусто» запретило бы второе
-     * сообщение с одним лишь серийным.
+     * Partial on `status = 'pending'`: a decided candidate holds no number, so a new fact can be
+     * reported by a new "candidate + request" pair, even after a rejection. An empty number is not
+     * compared at all: it is legal while the other one is filled, and "empty = empty" would forbid
+     * a second report with only a serial number.
      *
-     * `upper(btrim(...))` — ровно как у номеров парка: человек набирает номер с пробелом или другим
-     * регистром, и без нормализации замок обходился бы опечаткой.
+     * `upper(btrim(...))`, exactly as for fleet numbers: a person types the number with a space or
+     * another case, and without normalisation a typo would bypass the lock.
      */
     serialPendingUnique: uniqueIndex('office_equipment_candidates_serial_pending_unique')
       .on(sql`upper(btrim(${t.serialNumber}))`)
@@ -3571,51 +3572,28 @@ export const serviceRequests = pgTable(
     ),
     numUnique: uniqueIndex('service_requests_num_unique').on(t.num),
     /**
-     * Пара «заявка — кандидат» строго 1:1 (Р4), и держит её именно индекс, а не аккуратность
-     * маршрута: вторая ссылка на чужого кандидата — это гонка, а гонку ловит база (тот же расклад,
-     * что у замка «одна открытая заявка на единицу» ниже).
+     * The "request - candidate" pair is strictly 1:1 (R4), and the index holds it, not the route's
+     * care: a second link to another request's candidate is a race, and the database catches races.
      *
-     * Частичный по непустому значению: заявок БЕЗ кандидата сколько угодно, и в B-tree `NULL` не
-     * равен `NULL` — то есть строгий `UNIQUE` по одной колонке дал бы тот же результат. Условие
-     * записано явно затем, что оно называет размер индекса: он остаётся размером с число сообщений,
-     * а не с архивом всех заявок модуля.
+     * Partial on a non-null value: requests WITHOUT a candidate are unlimited, and in a B-tree
+     * `NULL` is not equal to `NULL`, so a plain `UNIQUE` on one column would behave the same. The
+     * condition is written out because it names the index size: it stays as large as the number of
+     * reports, not as the module's whole request archive.
      *
-     * `deleted_at` в условие НЕ идёт, и это решение: мягкий архив заявки связь не рвёт (Р4) — пара
-     * остаётся парой, — а необратимый purge удаляет заявку вместе с её единственным кандидатом.
-     * Исключи мы архивные, освободившееся место занял бы второй кандидат, и восстановление заявки
-     * из архива упёрлось бы в уникальность.
+     * `deleted_at` is deliberately NOT in the condition: a soft archive keeps the pair (R4), and an
+     * irreversible purge removes the request together with its only candidate. Were archived rows
+     * excluded, a second candidate could take the freed place, and restoring the request from the
+     * archive would then hit the uniqueness.
      */
     candidateUnique: uniqueIndex('service_requests_equipment_candidate_unique')
       .on(t.equipmentCandidateId)
       .where(sql`${t.equipmentCandidateId} IS NOT NULL`),
-    // Одна открытая заявка на единицу — но НА ВИД (В12, миграция M3): ремонт и расходники по
-    // одному аппарату не мешают друг другу (картридж просят и тому принтеру, который сейчас в
-    // ремонте), а два открытых ремонта или две открытых заявки на картриджи по-прежнему означали
-    // бы два сервиса, два акта и две гарантии на одну работу. Прежний общий
-    // `service_requests_open_per_equipment_unique` снят там же и заменён этой парой.
-    //
-    // Оба индекса сторожат и заведение, и восстановление из архива — сервер обязан отвечать на оба
-    // случая понятным 409 со ссылкой на открытую заявку, а не ошибкой БД. Отложенная заявка
-    // считается открытой (Р109) и потому из условия не исключается: техника ждёт этого же ремонта,
-    // и второй заявке на неё взяться неоткуда.
-    //
-    // ЗАЯВОК БЕЗ АППАРАТА ОБА ИНДЕКСА ПРОПУСКАЮТ СКОЛЬКО УГОДНО, и это правильно (миграция 0230):
-    // в B-tree `NULL` не равен `NULL`, поэтому строки с пустым `office_equipment_id` друг с другом
-    // не сталкиваются. Запирать их нечем и незачем — «не заводите вторую розетку в тот же кабинет»
-    // не инвариант схемы, а работа диспетчера модуля. `NULLS NOT DISTINCT` был бы здесь прямой
-    // ошибкой: он разрешил бы одну заявку без аппарата на весь портал.
-    openRepairUnique: uniqueIndex('service_requests_open_repair_unique')
-      .on(t.officeEquipmentId)
-      .where(
-        sql`${t.deletedAt} IS NULL AND ${t.kind} = 'repair'
-            AND ${t.status} NOT IN ('accepted','cancelled')`,
-      ),
-    openConsumableUnique: uniqueIndex('service_requests_open_consumable_unique')
-      .on(t.officeEquipmentId)
-      .where(
-        sql`${t.deletedAt} IS NULL AND ${t.kind} = 'consumable'
-            AND ${t.status} NOT IN ('accepted','cancelled')`,
-      ),
+    // A unit may carry any number of open requests of either kind (ADR 0236, migration 0392): the
+    // owner lifted "one open request of a kind per unit" (ADR 0085 item 13), and its partial unique
+    // indexes are gone. Do not bring a uniqueness back here without revoking that decision: the
+    // portal lets people file the second request, and an index would turn their ordinary save into
+    // a database error. Whether two requests are one fault is the dispatcher's call, prompted by
+    // the form hint, not a schema invariant.
     // Очереди спрашивают «что в этом статусе ждёт дольше всех» — статус и возраст читаются
     // вместе; отдельного индекса по одному статусу нет, этот покрывает его префиксом.
     statusChangedIdx: index('service_requests_status_changed_idx').on(t.status, t.statusChangedAt),

@@ -70,7 +70,7 @@ interface Ctx {
   admin: Auth;
   customer: Auth;
   customerEmail: string;
-  /** Своя единица на каждый сценарий: по одной технике незакрытая заявка бывает только одна. */
+  /** A unit of its own per scenario keeps one scenario's requests out of another's assertions. */
   newEquipment: (tag: string) => Promise<string>;
   /**
    * Почтовый модуль целиком: ручка `PUT /:id/executors` приезжает соседней зоной той же волны, и

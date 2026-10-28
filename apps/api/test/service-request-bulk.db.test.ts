@@ -195,12 +195,12 @@ async function rowsOf(ids: string[], auth: Auth = ctx.operator.auth) {
 }
 
 /**
- * Заявка БЕЗ АППАРАТА, заведённая «Ведением» на своей площадке.
+ * A request WITHOUT A UNIT, filed by the module's operator on their own site.
  *
- * Без аппарата — намеренно: по единице справочника разрешена одна открытая заявка на ремонт, и
- * пятьдесят строк одной пачки означали бы пятьдесят карточек техники, заведённых ради номера. Здесь
- * предмет проверки — протокол, а не справочник; описание у всех заявок одно и то же, чтобы карточки
- * близнецов сравнивались целиком.
+ * No unit on purpose: the subject here is the bulk protocol, not the directory, and fifty rows of
+ * one batch need no fifty cards. (The choice was once forced by the "one open repair per unit"
+ * lock, which ADR 0236 removed.) Every request has the same description so that twin cards compare
+ * whole.
  */
 async function makeRequest(opts: { objectId?: string; auth?: Auth } = {}): Promise<string> {
   const res = await inject('POST', REQUESTS, opts.auth ?? ctx.operator.auth, {

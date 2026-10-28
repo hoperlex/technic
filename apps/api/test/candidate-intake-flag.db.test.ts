@@ -167,7 +167,7 @@ async function counts(): Promise<{ requests: number; candidates: number }> {
 }
 
 describe.skipIf(!DB_URL)('рубильник приёма сообщений о технике: серверный fail-closed', () => {
-  /** Своя единица на случай: по одной технике незакрытая заявка бывает только одна (Р21). */
+  /** A unit of its own per case keeps one case's requests out of another's assertions. */
   let unitNo = 0;
   async function freshUnit(): Promise<string> {
     unitNo += 1;

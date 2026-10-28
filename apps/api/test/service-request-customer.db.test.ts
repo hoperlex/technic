@@ -74,7 +74,7 @@ interface Ctx {
   secondDepartmentId: string;
   /** Отдел согласующего от ИТ — чужой для всех прочих учёток файла. */
   itDepartmentId: string;
-  /** Своя единица на каждый сценарий: по одной технике незакрытая заявка бывает только одна (Р21). */
+  /** A unit of its own per scenario keeps one scenario's requests out of another's assertions. */
   newEquipment: (tag: string, ownerDepartmentId?: string | null) => Promise<string>;
 }
 
@@ -529,8 +529,11 @@ describe.skipIf(!DB_URL)('заказчик заявки на обслужива�
     expect(res.statusCode, res.body).toBe(422);
     expect(res.json().message).toContain('площадки своего отдела');
 
-    // Отказ ничего не записал: та же единица принимает обычную заявку без «уже есть незакрытая»
-    // (Р21), и записана та на площадку карточки.
+    // The refusal wrote nothing, counted in the table: a second request on the unit is accepted
+    // either way now (ADR 0236). The ordinary request then goes to the card's site.
+    const written = await ctx.db.execute<{ c: number }>(sql`
+      SELECT count(*)::int AS c FROM service_requests WHERE office_equipment_id = ${equipmentId}`);
+    expect(written.rows[0]!.c).toBe(0);
     const ok = await createOk(ctx.dept, equipmentId, {
       customerDepartmentId: ctx.ownDepartmentId,
     });

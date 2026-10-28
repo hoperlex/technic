@@ -159,9 +159,9 @@ async function seesInList(auth: Auth, id: string): Promise<boolean> {
 
 describe.skipIf(!DB_URL)('предмет заявки: область считается по итоговому объекту', () => {
   /**
-   * Своя единица на случай (по одной технике незакрытая заявка бывает только одна, Р21). Карточка
-   * ЧИСЛИТСЯ на чужой площадке и за чужим отделом — то самое положение, из которого просьба
-   * заказчика и выросла: справочник говорит одно, человек рядом с аппаратом видит другое.
+   * A unit of its own per case keeps the cases apart. The card is LISTED on another site and
+   * under another department — the very situation the customer's request grew from: the
+   * directory says one thing, the person next to the device sees another.
    */
   let unitNo = 0;
   async function foreignUnit(): Promise<string> {

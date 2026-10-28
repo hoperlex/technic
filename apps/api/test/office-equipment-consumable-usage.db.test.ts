@@ -163,7 +163,7 @@ async function makeConsumable(
 }
 
 let equipmentNo = 0;
-/** Своя единица техники на заявку: по единице и виду незакрытая заявка бывает одна (В12). */
+/** A unit of its own per request keeps one case's requests out of another's assertions. */
 async function makeEquipment(): Promise<string> {
   equipmentNo += 1;
   const res = await inject('POST', '/api/v1/office-equipment', {

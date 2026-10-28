@@ -121,7 +121,7 @@ async function statusOf(id: string): Promise<string> {
   return res.rows[0]!.status;
 }
 
-/** Единица техники под заявку: по одной единице незакрытая заявка бывает только одна (Р21). */
+/** A unit of its own per request keeps one case's requests out of another's assertions. */
 async function makeEquipment(tag: string): Promise<string> {
   const res = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO office_equipment (equipment_type_id, name, inventory_number, object_id)

@@ -74,17 +74,16 @@ export const serviceRequestKindSchema = z.enum(SERVICE_REQUEST_KINDS);
 export type ServiceRequestKind = (typeof SERVICE_REQUEST_KINDS)[number];
 
 /**
- * Подписи видов для человека. `repair` подписан «Обслуживанием» (Р1, просьба 7): заказчик просит
- * слово пошире — заявка этого вида не всегда про поломку, ею же просят настроить, подключить и
- * заправить, и узкое «Ремонт» отговаривало заводить такую заявку вовсе.
+ * Kind labels for people. `repair` reads «Обслуживание» (R1, request 7): the customer asked for a
+ * wider word, since a request of this kind is not always about a fault — it also asks to set up,
+ * connect or refill, and a narrow «Ремонт» discouraged filing it at all.
  *
- * Само значение `repair` при этом не меняется нигде — ни в базе, ни в контракте, ни в индексах,
- * ни в `CHECK`: переименование значения потребовало бы миграции данных ради слова на экране, а
- * читают это слово только три места — переключатель «Чем помочь» в форме, тег вида в карточке и
- * текст 409 «по этой технике уже есть незакрытая заявка (обслуживание)».
+ * The value `repair` itself changes nowhere — not in the database, the contract, the indexes or a
+ * `CHECK`: renaming the value would take a data migration for a word on screen, and only two
+ * places read the word: the «Чем помочь» switch in the form and the kind tag on the card.
  *
- * Слово «ремонт» в гарантиях (`warrantyClaimSourceLabels.item`, `warrantyBearerLabels.repair`)
- * намеренно осталось: там оно про уже выполненную работу, а не про вид заявки.
+ * The word «ремонт» in warranties (`warrantyClaimSourceLabels.item`, `warrantyBearerLabels.repair`)
+ * is kept on purpose: there it names work already done, not the request kind.
  */
 export const serviceRequestKindLabels: Record<ServiceRequestKind, string> = {
   repair: 'Обслуживание',
@@ -2444,6 +2443,19 @@ export const serviceRequestListQuerySchema = baseListQuery(SERVICE_REQUEST_SORT_
       .optional()
       .transform((v) => v === 'true'),
     warrantyClaim: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => v === 'true'),
+    /**
+     * Only requests that are not closed (`isServiceRequestClosed`), archived ones excluded by the
+     * archive filter as usual. The request form asks it together with `equipmentId` to hint at
+     * requests already open on the chosen unit (ADR 0236). The answer is narrowed by the reader's
+     * scope like any other list, so an empty page means "none visible to you", not "none at all".
+     *
+     * Named `openOnly`, not `open`: the portal's `open` URL parameter already names the card to
+     * open, and one word with two meanings in one address would be read the wrong way.
+     */
+    openOnly: z
       .enum(['true', 'false'])
       .optional()
       .transform((v) => v === 'true'),

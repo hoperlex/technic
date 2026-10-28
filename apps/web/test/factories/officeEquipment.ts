@@ -95,9 +95,14 @@ function matches(unit: OfficeEquipmentRequestOptionDto, term: string | null): bo
  * Обычная выдача справочника (`GET /office-equipment`) сюда не входит намеренно: её спрашивают
  * соседи с другими нуждами — окно расходников заявки (ему нужна модель) и объединение кандидата, —
  * и мок, отвечающий за обе разом, скрыл бы, кто из них куда ходит.
+ *
+ * The list of requests comes along by default, empty: once the field holds a unit, the form asks
+ * which requests are already open on it (ADR 0236). "None" keeps every form test quiet about the
+ * hint; a test that needs other rows or the registry list puts its own route after this spread.
  */
 export function equipmentSelectorRoutes(units: OfficeEquipmentRequestOptionDto[]): RouteMap {
   return {
+    'GET /service-requests': () => json(list([])),
     'GET /office-equipment/selector': ({ query }) =>
       json(list(units.filter((unit) => matches(unit, query.get('search'))))),
     'GET /office-equipment/selector/:id': ({ params }) => {

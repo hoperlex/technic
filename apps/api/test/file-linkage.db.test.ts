@@ -541,9 +541,8 @@ describe.skipIf(!DB_URL)('жизненный цикл файла: связи и 
     const series = await db.execute<{ id: string }>(
       sql`SELECT id FROM waybill_series ORDER BY code LIMIT 1`,
     );
-    // Оргтехника берётся свободная: открытая заявка на обслуживание у единицы техники может быть
-    // только одна (`service_requests_open_per_equipment_unique`), и занятая соседним прогоном
-    // единица уронила бы фикстуру уникальностью, а не по существу.
+    // A unit without open requests keeps this fixture apart from a neighbouring run's requests;
+    // uniqueness no longer demands it (ADR 0236), the choice is kept because it costs nothing.
     const equipment = await db.execute<{ id: string; object_id: string; name: string }>(
       sql`SELECT e.id, e.object_id, e.name FROM office_equipment e
            WHERE e.deleted_at IS NULL

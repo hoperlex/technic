@@ -351,8 +351,7 @@ describe.skipIf(!DB_URL)('деньги ремонта в карточке еди
     const equipmentId = equipmentRow.rows[0]!.id;
 
     /*
-     * Две ЗАКРЫТЫЕ заявки на один аппарат: открытая по виду `repair` бывает только одна
-     * (`service_requests_open_repair_unique`), а нужны обе разом — назначенная и соседняя.
+     * Two CLOSED requests on one unit: the assigned one and its neighbour.
      *
      * Контрагент-исполнитель проставлен обеим намеренно. Во-первых, у сумм появляется имя сервиса —
      * так строка истории выглядит как настоящая. Во-вторых, снятие поимённого назначения ниже

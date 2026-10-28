@@ -206,7 +206,7 @@ async function list(query: string, auth: Auth = ctx.admin.auth): Promise<ListPag
 // ── Фикстуры ──
 
 let unitNo = 0;
-/** Своя единица на случай: по единице и виду незакрытая заявка бывает одна (замок §2.1 плана). */
+/** A unit of its own per case: the repeat count reads every request of the unit, so cases must not share one. */
 async function makeEquipment(tag: string, objectId?: string): Promise<string> {
   unitNo += 1;
   const res = await inject('POST', EQUIPMENT, ctx.admin.auth, {
@@ -288,9 +288,9 @@ interface Pair {
 /**
  * Пара «принятая предшественница + заведённая после неё заявка» — общий вход почти всех случаев.
  *
- * Порядок шагов не свободен: пока `P` не закрыта, вторую ремонтную заявку по тому же аппарату не
- * пускает замок «одна открытая» (§2.1) — тот самый, который отвечает на вопрос «уже чиним?» и с
- * признаком повтора не имеет ничего общего.
+ * `P` is closed before `R` is filed: the rule counts only predecessors that closed within the
+ * window before `R` was created, so a still-open `P` would give no repeat at all. (The order was
+ * once forced by the "one open request per unit" lock as well; ADR 0236 removed the lock.)
  */
 async function pair(tag: string, objectId?: string): Promise<Pair> {
   const equipmentId = await makeEquipment(tag, objectId);
@@ -578,11 +578,9 @@ describe.skipIf(!DB_URL)('повторное обращение по аппар�
       expect((await repeatOf(id))?.count).toBe(1);
 
       /*
-       * Дальше нашу `R` приходится закрыть, и это не подгонка под удобство: замок «одна открытая
-       * заявка на аппарат и вид» (§2.1) физически не даёт держать открытыми предшественницу и
-       * заявку разом — частичный уникальный индекс `service_requests_open_repair_unique` считает
-       * ровно такие строки. Правилу же статус самой `R` безразличен: повтором бывает и новая
-       * заявка, и давно закрытая.
+       * `R` is closed next only to show that its own status is irrelevant to the rule: a repeat
+       * may be a new request or one closed long ago. (This step was once forced by the "one open
+       * request per unit" lock; ADR 0236 removed it, and the case keeps its order.)
        */
       await settle(id, 'cancelled');
       expect((await repeatOf(id))?.count).toBe(1);
@@ -683,10 +681,9 @@ describe.skipIf(!DB_URL)('повторное обращение по аппар�
        * Что здесь считается доказательством: `version` и `updated_at` заявки `R` до и после отката
        * ОДИНАКОВЫ. Никто в неё не писал — а число изменилось.
        *
-       * Заявка `R` закрыта заранее, и это не декорация случая, а его условие: пока `R` открыта,
-       * отката приёмки `P` по тому же аппарату не бывает вовсе — обе оказались бы незакрытыми, и
-       * `service_requests_open_repair_unique` такую пару не принимает. То есть состояние из §10.1
-       * достижимо только при закрытой (или снесённой в архив) соседке.
+       * `R` is closed beforehand. That was once forced by the "one open request per unit" lock,
+       * which ADR 0236 removed; the case keeps it, since the proof is about `R` staying untouched
+       * whatever its own status.
        */
       const { prevId, id } = await pair('rollback');
       await settle(id, 'accepted');

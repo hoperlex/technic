@@ -165,7 +165,7 @@ interface Ctx {
   itGrantId: string;
   requesterGrantId: string;
   operatorGrantId: string;
-  /** Своя единица на сценарий: по одной технике незакрытая заявка бывает только одна. */
+  /** A unit of its own per scenario keeps one scenario's requests out of another's assertions. */
   newEquipment: (tag: string, objectId?: string) => Promise<string>;
   /** Свежая заявка от заказчика на своей единице. */
   newRequest: (tag: string) => Promise<ServiceRequestDto>;

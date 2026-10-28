@@ -28,6 +28,7 @@ import {
   ServiceRequestEquipmentField,
   useServiceRequestEquipment,
 } from './ServiceRequestEquipmentField';
+import { ServiceRequestOpenOnUnit } from './ServiceRequestOpenOnUnit';
 import { ServiceRequestUrgency } from './ServiceRequestUrgency';
 import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
 import { useRequesterPlace } from './ServiceRequestRequesterPlace';
@@ -283,6 +284,11 @@ export function ServiceRequestForm({
             optional={canSkipEquipment}
             open={open}
             {...equipment}
+          />
+          <ServiceRequestOpenOnUnit
+            open={open}
+            equipmentId={request ? undefined : equipmentId}
+            kind={kind}
           />
 
           {/* Warranty claims require a repair on a specific device; the schema rejects other pairs. */}

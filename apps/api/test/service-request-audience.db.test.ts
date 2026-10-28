@@ -457,9 +457,9 @@ describe.skipIf(!DB_URL)('карточка заявки на обслужива�
     };
 
     /**
-     * Единица техники на каждую заявку: по единице и виду незакрытая заявка бывает одна. Площадка —
-     * общая (её видят «Ведение», исполнитель и архивариус), отдел-владелец — заказчика (по нему его
-     * роль отдела заявку и видит): обе оси области нужны разом.
+     * A unit of its own per request keeps the cases apart. The site is shared (the module's
+     * operators, the executor and the archivist see it), the owning department is the customer's
+     * (its department role sees the request through it): both scope axes are needed at once.
      */
     const makeEquipment = async (tag: string): Promise<string> => {
       const row = await ctx.db.execute<{ id: string }>(sql`

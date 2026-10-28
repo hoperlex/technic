@@ -1,23 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import {
-  and,
-  asc,
-  count,
-  desc,
-  eq,
-  inArray,
-  isNull,
-  ne,
-  notInArray,
-  or,
-  sql,
-  type SQL,
-} from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   confirmOfficeEquipmentCandidateSchema,
-  formatServiceRequestNumber,
   isObjectScopedRole,
   mergeOfficeEquipmentCandidateSchema,
   officeEquipmentCandidateListQuerySchema,
@@ -27,7 +13,6 @@ import {
   updateOfficeEquipmentCandidateSchema,
   type OfficeEquipmentCandidateDecisionDto,
   type OfficeEquipmentCandidateDto,
-  type ServiceRequestStatus,
   type UpdateOfficeEquipmentCandidateInput,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -232,9 +217,6 @@ interface DecisionRecord {
 interface LockedRequest {
   id: string;
   num: number;
-  kind: 'repair' | 'consumable';
-  status: ServiceRequestStatus;
-  deletedAt: Date | null;
   /** The declared site — decides whether the resolved card's room fits the request (ADR 0215). */
   equipmentObjectId: string | null;
 }
@@ -257,9 +239,6 @@ async function lockLinkedRequest(tx: Tx, candidateId: string): Promise<LockedReq
     .select({
       id: serviceRequests.id,
       num: serviceRequests.num,
-      kind: serviceRequests.kind,
-      status: serviceRequests.status,
-      deletedAt: serviceRequests.deletedAt,
       equipmentObjectId: serviceRequests.equipmentObjectId,
     })
     .from(serviceRequests)
@@ -619,51 +598,6 @@ async function requireMergeTarget(
 }
 
 /**
- * «Одна открытая заявка на единицу» — та же планка, что и у заведения (Р21 ADR 0085), но спрошенная
- * со второй стороны: объединение приписывает существующей карточке ЧУЖУЮ заявку, и если по этой
- * карточке уже открыт ремонт, в парке оказались бы две открытые заявки на один аппарат.
- *
- * Проверяется здесь, а не отдаётся частичному индексу `service_requests_open_repair_unique`:
- * нарушение индекса стало бы пятисоткой, а проверяющему нужен номер занявшей место заявки — чтобы
- * открыть её и разобраться, какая из двух настоящая.
- *
- * У подтверждения такой проверки нет и не нужно: карточка там только что заведена, и заявок по ней
- * не существует по построению.
- */
-async function assertCardFreeOfOpenRequest(
-  tx: Tx,
-  equipmentId: string,
-  request: LockedRequest,
-): Promise<void> {
-  /*
-   * Спрашивается ТОЛЬКО у открытой заявки, и это не оптимизация: замок держат ЧАСТИЧНЫЕ индексы, и
-   * закрытая либо архивная заявка в них не входит вовсе. Спроси мы всегда, объединение сообщения по
-   * отменённой заявке отбивалось бы там, где база его принимает, — то есть запрет оказался бы
-   * строже собственного инварианта.
-   */
-  const openHere =
-    request.deletedAt === null && request.status !== 'accepted' && request.status !== 'cancelled';
-  if (!openHere) return;
-  const [open] = await tx
-    .select({ num: serviceRequests.num })
-    .from(serviceRequests)
-    .where(
-      and(
-        eq(serviceRequests.officeEquipmentId, equipmentId),
-        eq(serviceRequests.kind, request.kind),
-        isNull(serviceRequests.deletedAt),
-        notInArray(serviceRequests.status, ['accepted', 'cancelled']),
-        ne(serviceRequests.id, request.id),
-      ),
-    );
-  if (!open) return;
-  throw err.conflict(
-    `По этой карточке уже есть незакрытая заявка ${formatServiceRequestNumber(open.num)} — объединять сообщение с ней нельзя, пока та не закрыта`,
-    { fields: { officeEquipmentId: 'Занята другой заявкой' } },
-  );
-}
-
-/**
  * Снимки заявки после положительного решения (Р6) — единственный раз в жизни заявки, когда снимок
  * меняется.
  *
@@ -1001,7 +935,6 @@ export default async function officeEquipmentCandidatesRoutes(app: FastifyInstan
       return await runDecision(p, id, b.expectedVersion, 'merge', async (tx, request) => {
         const linked = requireLinkedRequest(request);
         const target = await requireMergeTarget(tx, p, b.officeEquipmentId);
-        await assertCardFreeOfOpenRequest(tx, target.id, linked);
         return {
           status: 'duplicate',
           resultEquipmentId: target.id,

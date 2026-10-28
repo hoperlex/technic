@@ -75,7 +75,6 @@ import {
   roleLabels,
   putServiceConsumablesSchema,
   serviceConsumableIssueIssue,
-  serviceRequestKindLabels,
   setServiceConsumablesIssuedSchema,
   SERVICE_ADMIN_ROLLBACKS,
   isServiceClosingDocument,
@@ -2228,8 +2227,9 @@ async function resolveWarrantyClaim(
       warrantyClaim: 'Это та же заявка',
     });
   }
-  // Именно «Принята», а не «закрыта»: пока источник ждёт приёмки, вторую заявку на ту же единицу
-  // не даёт завести уникальный индекс (Р21), так что состояние «Ожидает приёмки» здесь недостижимо.
+  // Exactly "accepted", not "closed": warranty on work starts with its acceptance. Since a unit may
+  // carry several open requests (ADR 0236), a claim against a source still awaiting acceptance is
+  // reachable, and this refusal is what keeps an unaccepted repair from vouching for a warranty.
   if (row.requestStatus !== 'accepted') {
     throw err.unprocessable(`Заявка ${source} ещё не принята — по её гарантии не обращаются`, {
       warrantyClaim: 'Заявка-источник не принята',
@@ -2252,38 +2252,9 @@ async function resolveWarrantyClaim(
   return { source: 'item', itemId: row.id };
 }
 
-// ── Одна открытая заявка на единицу (Р21) ──
-//
-// **На единицу И НА ВИД** (В12, миграция `0177`): ремонт и расходники по одному аппарату друг другу
-// не мешают — картридж просят и тому принтеру, который сейчас в ремонте, — а два открытых ремонта
-// по-прежнему означали бы два сервиса, два акта и две гарантии на одну работу. Проверка повторяет
-// условие пары частичных индексов `service_requests_open_repair_unique` и `…_open_consumable_unique`
-// затем, что человеку нужен номер занявшей место заявки, а не `23505`.
-
-async function assertNoOpenRequest(
-  tx: Tx,
-  equipmentId: string,
-  kind: ServiceRequestKind,
-  exceptId?: string,
-): Promise<void> {
-  const [open] = await tx
-    .select({ num: serviceRequests.num })
-    .from(serviceRequests)
-    .where(
-      and(
-        eq(serviceRequests.officeEquipmentId, equipmentId),
-        eq(serviceRequests.kind, kind),
-        isNull(serviceRequests.deletedAt),
-        notInArray(serviceRequests.status, ['accepted', 'cancelled']),
-        exceptId ? ne(serviceRequests.id, exceptId) : undefined,
-      ),
-    );
-  if (!open) return;
-  // Номер в ответе — не украшение: портал вместо глухого отказа предлагает открыть эту заявку.
-  throw err.conflict(
-    `По этой технике уже есть незакрытая заявка ${formatServiceRequestNumber(open.num)} (${serviceRequestKindLabels[kind].toLowerCase()}) — откройте её`,
-  );
-}
+// The closed statuses as SQL reads them: derived from the contract predicate, so the `openOnly`
+// filter cannot drift from what the portal and the card call "closed".
+const CLOSED_STATUSES = SERVICE_REQUEST_STATUSES.filter(isServiceRequestClosed);
 
 // ── Строки заявки на расходники и склад (§4 набросков, Р1–Р8) ──
 
@@ -3576,6 +3547,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           )
         : undefined,
       q.warrantyClaim ? isNotNull(serviceRequests.warrantyClaimSource) : undefined,
+      q.openOnly ? notInArray(serviceRequests.status, CLOSED_STATUSES) : undefined,
       // Заморозка признак срочности не гасит (Р119) — заявка не перестала быть срочной оттого, что
       // её остановили, — но из отбора выпадает: пока она ждёт решения, браться не за что.
       // Условие шире, чем у прежнего частичного индекса `service_requests_urgent_idx` (тот исключал
@@ -4556,11 +4528,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       // The candidate uniqueness conflict must be handled after the transaction aborts; the
       // ordinary receipt path also needs this callback inside its reservation transaction.
       const createInTransaction = async (tx: Tx) => {
-        // Замок «одна открытая заявка вида на аппарат» (Р21) без аппарата не зовётся, и это не
-        // послабление, а буквальное прочтение правила: запирается ЕДИНИЦА, а её здесь нет. Тем же
-        // читаются и частичные уникальные индексы под ним — в B-tree `NULL` не равен `NULL`, и
-        // открытых заявок без аппарата бывает сколько угодно (миграция 0230).
-        if (equipment) await assertNoOpenRequest(tx, equipment.id, kind);
+        // No "already open on this unit" check: several open requests per unit are allowed
+        // (ADR 0236), and the form only hints at them.
         await assertConsumablesExist(
           tx,
           consumables.map((line) => line.consumableId),
@@ -9834,9 +9803,9 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
 
   // ── Восстановление из архива ──
   /**
-   * Идемпотентно: живая заявка просто отдаётся — повтор запроса при потерянном ответе обычное дело.
-   * Пока заявка лежала в архиве, по той же единице могли завести новую: уникальный индекс (Р21)
-   * иначе отклонил бы возврат ошибкой БД, а человеку нужен номер той заявки, которая заняла место.
+   * Idempotent: a live request is simply returned, since repeating a request after a lost response
+   * is ordinary. A request opened on the same unit while this one lay in the archive does not block
+   * the return: several open requests per unit are allowed (ADR 0236).
    */
   r.post(
     '/:id/restore',
@@ -9890,17 +9859,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
          */
         await assertServiceRequestActionable(p, authorPlaceOf(row), facts.isNamedExecutor);
         if (!row.deletedAt) return false;
-        // Место в очереди по единице занимает только заявка С аппаратом. Правило «одна открытая
-        // заявка на единицу и вид» (Р21) держат уникальные частичные индексы по
-        // `office_equipment_id`, а `NULL` в уникальном индексе PostgreSQL считает отличным от
-        // всякого другого `NULL` — заявки без аппарата (Р8) друг другу не мешают и мешать не
-        // должны: «одна заявка на аппарат» без аппарата означало бы «одна заявка на всю компанию».
-        // Условие названо явно, а не оставлено базе: сравнение `office_equipment_id = NULL` и так
-        // не находит ничего, но отвечает это «ничего» случайностью трёхзначной логики, а не
-        // правилом, — и первая же правка запроса превратила бы случайность в дефект.
-        if (!isServiceRequestClosed(row.status) && row.officeEquipmentId !== null) {
-          await assertNoOpenRequest(tx, row.officeEquipmentId, row.kind, row.id);
-        }
+        // An open request comes back even when its unit has opened another one meanwhile: several
+        // open requests per unit are allowed (ADR 0236).
         await tx
           .update(serviceRequests)
           .set({

@@ -733,26 +733,32 @@ describe.skipIf(!DB_URL)(
         expect(candidate.result_equipment_id).toBeNull();
       });
 
-      it('карточку с чужой незакрытой заявкой не берёт — назван номер занявшей место', async () => {
+      it('takes a card that already has an open request of the same kind (ADR 0236)', async () => {
         const pair = await makePair({ tag: 'M4' });
         const card = await makeCard('M4');
-        // Открытая заявка по той же карточке: «одна открытая заявка на единицу» держится частичным
-        // индексом (Р21 ADR 0085), и объединение упёрлось бы в него пятисоткой вместо ответа словами.
-        const busy = await ctx.db.execute<{ num: number }>(sql`
+        // An open repair on the target card used to refuse the merge with 409; now the unit simply
+        // ends up with two open repairs, and neither request is touched by the other.
+        const busy = await ctx.db.execute<{ id: string }>(sql`
         INSERT INTO service_requests (
           office_equipment_id, equipment_object_id, equipment_name,
           description, responsible_name, created_by)
         VALUES (
           ${card.id}, ${ctx.objectA}, 'МФУ занято', 'Не печатает', 'Иванов Иван Иванович',
           ${ctx.users.author.id})
-        RETURNING num`);
+        RETURNING id`);
         const res = await decide('merge', 'reviewer', pair.candidateId, {
           expectedVersion: 1,
           officeEquipmentId: card.id,
         });
-        expect(res.statusCode, res.body).toBe(409);
-        expect((res.json() as { message: string }).message).toContain(`СО-${busy.rows[0]!.num}`);
-        expect((await candidateRow(pair.candidateId)).status).toBe('pending');
+        expect(res.statusCode, res.body).toBe(200);
+        expect((await candidateRow(pair.candidateId)).status).toBe('duplicate');
+        const open = await ctx.db.execute<{ id: string }>(sql`
+        SELECT id FROM service_requests
+         WHERE office_equipment_id = ${card.id} AND status = 'new' AND deleted_at IS NULL
+         ORDER BY id`);
+        expect(open.rows.map((r) => r.id).sort()).toEqual(
+          [busy.rows[0]!.id, pair.requestId].sort(),
+        );
       });
 
       it('несуществующая цель — 422 полем, а не пятисоткой внешнего ключа', async () => {

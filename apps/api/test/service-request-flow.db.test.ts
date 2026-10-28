@@ -555,7 +555,7 @@ async function closingFileId(id: string): Promise<string> {
   return file.id;
 }
 
-/** Своя единица под каждую заявку помощника: по технике разрешена одна открытая заявка (Р21). */
+/** A unit of its own for each helper request, so one scenario's requests never show up in another's. */
 let extraUnitNo = 0;
 async function freshUnit(): Promise<string> {
   extraUnitNo += 1;
@@ -1101,17 +1101,50 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(dto.version).toBe(0);
   });
 
-  it('вторая заявка на ту же единицу отклоняется номером первой (Р21)', async () => {
-    // Две параллельные заявки означали бы два сервиса, два акта и две гарантии на одну работу.
-    // Номер в ответе — не украшение: портал вместо глухого отказа предлагает открыть эту заявку.
-    const res = await inject('POST', '/api/v1/service-requests', ctx.customer.auth, {
-      officeEquipmentId: ctx.mfp.id,
-      description: 'Тот же аппарат, второй заход',
-      responsibleName: 'Иванов Иван Иванович',
-      responsiblePhone: '+79990000000',
+  describe('several open requests on one unit (ADR 0236)', () => {
+    it('a second request of the same kind is accepted, and openOnly lists both', async () => {
+      // A unit of its own: the main scenario's MFP must keep exactly one request for later steps.
+      const equipmentId = await freshUnit();
+      const first = await createRequest(ctx.customer.auth, equipmentId, 'Мнёт бумагу');
+      const second = await createRequest(ctx.customer.auth, equipmentId, 'Полосы при печати');
+      expect(second.kind).toBe(first.kind);
+      expect(second.id).not.toBe(first.id);
+
+      const open = `&equipmentId=${equipmentId}&openOnly=true`;
+      expect((await listIds(ctx.customer.auth, open)).sort()).toEqual([first.id, second.id].sort());
+      // A closed request leaves the hint's list but stays in the unit's ordinary list.
+      const cancelled = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${first.id}/status`,
+        ctx.operator.auth,
+        { status: 'cancelled', reason: 'Дубль', version: await version(first.id) },
+      );
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      expect(await listIds(ctx.customer.auth, open)).toEqual([second.id]);
+      expect(await listIds(ctx.customer.auth, `&equipmentId=${equipmentId}`)).toContain(first.id);
     });
-    expect(res.statusCode, res.body).toBe(409);
-    expect(res.json().message).toContain(formatServiceRequestNumber(state.main.num));
+
+    it('an archived open request comes back although the unit has another open one', async () => {
+      const equipmentId = await freshUnit();
+      const archived = await createRequest(ctx.customer.auth, equipmentId, 'Не берёт бумагу');
+      const removed = await inject(
+        'DELETE',
+        `/api/v1/service-requests/${archived.id}`,
+        ctx.admin.auth,
+      );
+      expect(removed.statusCode, removed.body).toBe(200);
+      await createRequest(ctx.customer.auth, equipmentId, 'Не берёт бумагу, снова');
+
+      const restored = await inject(
+        'POST',
+        `/api/v1/service-requests/${archived.id}/restore`,
+        ctx.admin.auth,
+      );
+      expect(restored.statusCode, restored.body).toBe(200);
+      const dto = restored.json() as ServiceRequestDto;
+      expect(dto.deletedAt).toBeNull();
+      expect(dto.status).toBe('new');
+    });
   });
 
   it('«Новую» заявку сервис не видит: исполнителя в ней ещё нет', async () => {
@@ -3002,7 +3035,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(res.statusCode, res.body).toBe(422);
     expect(res.json().message).toContain('только на свой объект');
 
-    // Заявка не завелась вовсе: та же единица принимает следующую без «уже есть незакрытая» (Р21).
+    // The refused request was not written at all. Counted in the table: a second request on the
+    // unit is accepted either way now (ADR 0236), so a successful retry proves nothing.
+    const written = await ctx.db.execute<{ c: number }>(sql`
+      SELECT count(*)::int AS c FROM service_requests WHERE office_equipment_id = ${equipmentId}`);
+    expect(written.rows[0]!.c).toBe(0);
     const ok = await createRequest(
       ctx.customer.auth,
       equipmentId,
@@ -4002,27 +4039,17 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect((await card(dto.id)).status).toBe('on_hold');
     });
 
-    it('пока заявка отложена, вторую на ту же единицу не завести (Р109)', async () => {
+    it('a held request stays open and does not block a second one on the unit (R109, ADR 0236)', async () => {
       const equipmentId = await freshUnit();
-      const dto = await createRequest(
-        ctx.customer.auth,
-        equipmentId,
-        'Отложенная занимает единицу',
-      );
+      const dto = await createRequest(ctx.customer.auth, equipmentId, 'Отложенная по единице');
       const frozen = await hold(dto.id, 'Ждём решения заказчика');
       expect(frozen.statusCode, frozen.body).toBe(200);
 
-      const second = await inject('POST', '/api/v1/service-requests', ctx.customer.auth, {
-        officeEquipmentId: equipmentId,
-        description: 'Тот же аппарат, второй заход',
-        responsibleName: 'Иванов Иван Иванович',
-        responsiblePhone: '+79990000000',
-      });
-      // Отложенная — открытая (Р109): техника ждёт этого же ремонта, и вторая заявка означала бы
-      // два сервиса и два акта на одну работу. Держит это частичный уникальный индекс
-      // `service_requests_open_per_equipment_unique`, чьё условие `on_hold` и не знает.
-      expect(second.statusCode, second.body).toBe(409);
-      expect(second.json().message).toContain(formatServiceRequestNumber(dto.num));
+      const second = await createRequest(ctx.customer.auth, equipmentId, 'Второй заход');
+      // Held is still open (R109): the hint's list names it beside the new one.
+      expect(
+        (await listIds(ctx.customer.auth, `&equipmentId=${equipmentId}&openOnly=true`)).sort(),
+      ).toEqual([dto.id, second.id].sort());
     });
 
     it('отложенная выпадает из очереди «ждут меня» и из счётчика раздела (Р111)', async () => {
