@@ -9,6 +9,7 @@ import {
   parseVehicleRequestNumberSearch,
   type RequestStatus,
   requestStatusLabels,
+  type VehicleOwnership,
   type VehicleRequestDto,
   VEHICLE_REQUEST_TYPES,
   vehicleRequestTypeLabels,
@@ -19,6 +20,7 @@ import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-reques
 import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 import { useRequestCustomerDefaults, useRequestCustomerFilter } from '@features/request-customer';
 import { useLessorOptions, useVehicleFilter } from '@features/vehicle-request-filters';
+import { useOwnershipFilter } from '@features/vehicle-ownership-filter';
 import { formatMoney, useListParams, useOpenedRecord } from '@shared/lib';
 import {
   DataTable,
@@ -44,6 +46,8 @@ interface HistoryParams {
   classifications?: string;
   /** The vehicle that closed the request (ADR 0098), next to "rented from whom". */
   vehicleId?: string;
+  /** Ownership of the vehicle assigned to the request: own fleet or rental. */
+  ownership?: VehicleOwnership;
   lessorId?: string;
   num?: number;
   dateFrom?: string;
@@ -95,6 +99,15 @@ export function VehicleRequestHistory({
   // "Which vehicle" is a question separate from "rented from whom" (the lessor filter below): one
   // unit is rented from one lessor, and one lessor rents out different units (ADR 0098).
   const vehicleFilter = useVehicleFilter({ vehicleId: params.vehicleId, onChange: applyFilter });
+  // A lessor exists only on rental vehicles: choosing "own" drops a chosen lessor (as the fleet
+  // registry does), because the pair would silently return an empty journal.
+  const ownershipFilter = useOwnershipFilter({
+    ownership: params.ownership,
+    onChange: (patch) =>
+      applyFilter(patch.ownership === 'own' ? { ...patch, lessorId: undefined } : patch),
+  });
+  // The lessor select has nothing to ask on an own-only journal, and a lessor account never sees it.
+  const showLessorFilter = !isLessor && params.ownership !== 'own';
   /*
    * The "Object/department" picker replaced the former object filter
    * (docs/department-requests-plan.md, R9), using the module-wide filter: closed department
@@ -198,7 +211,9 @@ export function VehicleRequestHistory({
       {classificationFilter.controls}
       {/* The vehicle that closed the request (ADR 0098). */}
       {vehicleFilter.controls}
-      {!isLessor && (
+      {/* Own fleet or rental, by the vehicle assigned to the request. */}
+      {ownershipFilter.controls}
+      {showLessorFilter && (
         <Select
           allowClear
           showSearch
@@ -265,7 +280,8 @@ export function VehicleRequestHistory({
     customerFilter.mobileFilter,
     classificationFilter.mobileFilter,
     vehicleFilter.mobileFilter,
-    ...(isLessor
+    ...ownershipFilter.mobileFilters,
+    ...(!showLessorFilter
       ? []
       : [
           {

@@ -5,6 +5,7 @@ import {
   type FeedKind,
   feedKindLabels,
   parseFeedNumberSearch,
+  type VehicleOwnership,
   vehicleRequestTypeLabels,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
@@ -15,6 +16,7 @@ import { useVehicleClassificationFilter } from '@entities/vehicle-type';
 import { weeklyRequestPath, weekSelectOptions } from '@entities/weekly-request';
 import { useRequestCustomerDefaults, useRequestCustomerFilter } from '@features/request-customer';
 import { useVehicleFilter } from '@features/vehicle-request-filters';
+import { useOwnershipFilter } from '@features/vehicle-ownership-filter';
 import { useListParams } from '@shared/lib';
 import { listQueryOptions } from '@shared/api';
 import type {
@@ -34,6 +36,8 @@ interface FeedParams {
   classifications?: string;
   /** Assigned vehicle (ADR 0098): a fleet unit, not a classifier position. */
   vehicleId?: string;
+  /** Ownership of the assigned vehicle: own fleet or rental. */
+  ownership?: VehicleOwnership;
   num?: number;
   /** Approval (ADR 0025): 'false' means requests awaiting approval. */
   approved?: string;
@@ -93,6 +97,11 @@ export function useVehicleRequestFeedState() {
   // The assigned-vehicle filter (ADR 0098) is the second equipment question next to the first:
   // "what was ordered" is asked by the classifier, "what closed it" by this one.
   const vehicleFilter = useVehicleFilter({ vehicleId: params.vehicleId, onChange: applyFilter });
+  // Whose vehicle it is: a property of the same assigned vehicle, asked next to the vehicle itself.
+  const ownershipFilter = useOwnershipFilter({
+    ownership: params.ownership,
+    onChange: applyFilter,
+  });
   /*
    * Customer in the feed filter (R9) uses the module-wide filter: the same picker as the form, with
    * the same groups (the requester's own axis, both for the office and read-only roles). The filter
@@ -117,8 +126,8 @@ export function useVehicleRequestFeedState() {
   );
   // Header summary: how many requests await processing and how many are in work. The key starts
   // with 'vehicle-requests', so the counters refresh with the same invalidations as the list.
-  // Narrowing filters (customer, request type, vehicle type and the vehicle itself) apply to the
-  // summary: the numbers are about the list the person sees. Status and number do not: they would
+  // Narrowing filters (customer, request type, vehicle type, the vehicle itself and its ownership)
+  // apply to the summary: the numbers are about the list the person sees. Status and number do not: they would
   // reduce the summary to itself.
   const summaryQuery = {
     objectId: params.objectId,
@@ -128,6 +137,7 @@ export function useVehicleRequestFeedState() {
     requestType: params.requestType,
     classifications: params.classifications,
     vehicleId: params.vehicleId,
+    ownership: params.ownership,
   };
   const summaryResult = useQuery(
     listQueryOptions({
@@ -195,6 +205,8 @@ export function useVehicleRequestFeedState() {
     onNumberSearch: applyNumberSearch,
     onStatusChange: (value) => applyFilter({ status: value }),
     onWeekStartChange: (value) => applyFilter({ weekStart: value }),
+    ownershipControls: ownershipFilter.controls,
+    ownershipMobileFilters: ownershipFilter.mobileFilters,
     status: params.status,
     vehicleControls: vehicleFilter.controls,
     vehicleMobileFilter: vehicleFilter.mobileFilter,

@@ -79,6 +79,9 @@ export interface VehicleRequestFeedFilters {
   onNumberSearch: (value: string) => void;
   onStatusChange: (value: RequestStatus | undefined) => void;
   onWeekStartChange: (value: string | undefined) => void;
+  /** Empty for a lessor account: all its rows are rental, so the filter has nothing to ask. */
+  ownershipControls: ReactNode;
+  ownershipMobileFilters: FilterDefinition[];
   status?: string;
   vehicleControls: ReactNode;
   vehicleMobileFilter: FilterDefinition;

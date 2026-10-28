@@ -63,6 +63,8 @@ export function VehicleRequestFeedFilterBar({ filters }: { filters: FeedFilters 
       {filters.classificationControls}
       {/* Assigned vehicle (ADR 0098): requests closed with this fleet unit. */}
       {filters.vehicleControls}
+      {/* Own fleet or rental, by the same assigned vehicle; absent for a lessor account. */}
+      {filters.ownershipControls}
       <Input.Search
         allowClear
         placeholder="Поиск по № (ТС-123, НЗ-12)"
@@ -120,6 +122,7 @@ export function vehicleRequestFeedMobileFilters(filters: FeedFilters): FilterDef
     filters.customerMobileFilter,
     filters.classificationMobileFilter,
     filters.vehicleMobileFilter,
+    ...filters.ownershipMobileFilters,
     {
       kind: 'text',
       key: 'num',

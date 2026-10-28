@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Button } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
-import type { SpecialEquipmentRequestDto } from '@technic/contracts';
+import type { SpecialEquipmentRequestDto, VehicleOwnership } from '@technic/contracts';
+import { useOwnershipFilter } from '@features/vehicle-ownership-filter';
 import { useWaybillFormFilter } from '@features/waybill-form-filter';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
@@ -54,6 +55,11 @@ export function VehicleRequestsOnSiteTab() {
      * заблуждение вернее, чем её отсутствие.
      */
     forms?: string;
+    /**
+     * Ownership of the vehicle working on the site **today** (the one the row names), not of the
+     * latest assignment. Goes to both the list and the summary through the same `params`.
+     */
+    ownership?: VehicleOwnership;
     num?: number;
     /**
      * Порядок задан явно, а не оставлен на сервер: срез читают площадкой, и по объекту он идёт
@@ -79,6 +85,10 @@ export function VehicleRequestsOnSiteTab() {
   // закрывается этот день» на обоих экранах один, и второй его разбор разошёлся бы с первым на
   // первой же правке справочника бланков.
   const formFilter = useWaybillFormFilter({ forms: params.forms, onChange: applyFilter });
+  const ownershipFilter = useOwnershipFilter({
+    ownership: params.ownership,
+    onChange: applyFilter,
+  });
 
   const { data, isFetching, isPlaceholderData } = useQuery(
     listQueryOptions({
@@ -159,6 +169,7 @@ export function VehicleRequestsOnSiteTab() {
     num: params.num,
     onChange: applyFilter,
     classificationFilter,
+    ownershipFilter,
     formFilter,
   });
 
