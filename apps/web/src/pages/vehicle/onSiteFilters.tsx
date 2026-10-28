@@ -24,6 +24,11 @@ export type OnSiteFiltersArgs = {
   /** Классификатор собран своим хуком — здесь его половины только встают по местам. */
   classificationFilter: { controls: ReactNode; mobileFilter: FilterDefinition };
   /**
+   * Own fleet or rental, by today's vehicle of the row. Mobile definitions come as an array: the
+   * filter is absent for a lessor account (every row of it is rental), and the hook says so.
+   */
+  ownershipFilter: { controls: ReactNode; mobileFilters: FilterDefinition[] };
+  /**
    * Бланк работы дня — тем же приёмом своим хуком (`useWaybillFormFilter`): им спрашивают не
    * справочник техники, а чем этот день закрывается, и набор бланков считает сервер (Р5–Р7).
    */
@@ -37,6 +42,7 @@ export function onSiteFilters({
   num,
   onChange,
   classificationFilter,
+  ownershipFilter,
   formFilter,
 }: OnSiteFiltersArgs): { filters: ReactNode; mobileFilters: FilterDefinition[] } {
   const filters = (
@@ -54,6 +60,8 @@ export function onSiteFilters({
       />
       {/* Заказанная техника: тип целиком либо одна его категория (ADR 0028). */}
       {classificationFilter.controls}
+      {/* Own fleet or rental by the vehicle of the day; a row with no vehicle today matches neither. */}
+      {ownershipFilter.controls}
       {/* Чем закрывается сегодняшний день заявки: ЭСМ-2 у своей работы на объекте, бланк рейса у
         линейного заказа. Строка без работы в день среза (аренда, долговая) не проходит никакой
         отбор по бланку — бланка у неё нет вовсе (Р21). */}
@@ -80,6 +88,7 @@ export function onSiteFilters({
       onChange: (v) => onChange({ objectId: v }),
     },
     classificationFilter.mobileFilter,
+    ...ownershipFilter.mobileFilters,
     formFilter.mobileFilter,
     {
       kind: 'text',

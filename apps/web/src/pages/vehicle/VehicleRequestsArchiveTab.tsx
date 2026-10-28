@@ -8,6 +8,7 @@ import {
   requestStatusColors,
   requestStatusLabels,
   vehicleClassificationLabel,
+  type VehicleOwnership,
   type VehicleRequestDto,
   vehicleRequestTypeColors,
   vehicleRequestTypeLabels,
@@ -16,6 +17,7 @@ import { useAuth } from '@entities/session';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
 import { weeklyRequestKeys } from '@entities/weekly-request';
 import { useRequestCustomerFilter } from '@features/request-customer';
+import { useOwnershipFilter } from '@features/vehicle-ownership-filter';
 import { DataTable, DeferredSearchInput, type CardConfig } from '@shared/ui';
 import { listQueryOptions } from '@shared/api';
 import { PageTableLayout } from '@shared/ui';
@@ -59,6 +61,8 @@ export function VehicleRequestsArchiveTab() {
     /** Заказчик заявки (ADR 0040): подбор «Объект/отдел» заполняет ровно один из двух. */
     objectId?: string;
     departmentId?: string;
+    /** Ownership of the vehicle the deleted request had: own fleet or rental. */
+    ownership?: VehicleOwnership;
   }>({}, { searchKeys: [] });
   const [numInput, setNumInput] = useState('');
   const applyNumFilter = (raw: string) => {
@@ -79,6 +83,12 @@ export function VehicleRequestsArchiveTab() {
     // заявки не сказал бы, чем именно её искать.
     label: 'Объект/отдел',
     placeholder: 'Все объекты и отделы',
+  });
+  // Whose vehicle the deleted request had: the archive is one more place to ask the same question,
+  // answered by the same assignment as the working list.
+  const ownershipFilter = useOwnershipFilter({
+    ownership: params.ownership,
+    onChange: (patch) => setParams((p) => ({ ...p, ...patch, page: 1 })),
   });
 
   const { data, isFetching, isPlaceholderData } = useQuery(
@@ -279,6 +289,7 @@ export function VehicleRequestsArchiveTab() {
 
   const mobileFilters: FilterDefinition[] = [
     customerFilter.mobileFilter,
+    ...ownershipFilter.mobileFilters,
     {
       kind: 'text',
       key: 'num',
@@ -294,6 +305,7 @@ export function VehicleRequestsArchiveTab() {
       filters={
         <Space wrap>
           {customerFilter.controls}
+          {ownershipFilter.controls}
           <DeferredSearchInput
             allowClear
             style={{ width: 180 }}
