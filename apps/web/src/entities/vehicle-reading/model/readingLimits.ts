@@ -23,15 +23,16 @@ import type { DriverPreviousReading } from '@technic/contracts';
  * приёмки. Масштаб шрифта кабинета сюда не переехал: он про экран в кабине, а не про показания.
  *
  * **Fuel in the tank is checked differently from the counters.** The levels at the start and at
- * the end of a shift have the absolute ceiling and no daily threshold: a level does not grow from
- * the previous snapshot, it is a state. Since ADR 0237 the START level is compared with the END
- * level of the previous shift (`DriverPreviousReading.fuelEndLiters`) and any difference is a soft
- * warning that the driver confirms in the submit window; the old ban on that comparison (fuel plan
- * Р9, Р10) went with the consumption ban (ADR 0194). The ceiling is still shared with the refuel.
- * The consumption itself is the server's, once (`fuelSpentSql`), not a third formula in this file.
+ * the end of a shift have only the absolute ceiling here: no daily threshold, and no previous value
+ * in the snapshot this file reads — a level does not grow from the previous snapshot, it is a state.
+ * The END level of the previous shift is what the START level of the next one must equal (ADR 0237),
+ * and that continuity is the driver cabinet's alone (`pages/driver/readingChecks.ts`): the garage
+ * intake form builds its snapshot from a reading's anomalies, which know no fuel, and importing the
+ * cabinet's rule here would grow every route that reads this file. The old ban on the comparison
+ * (fuel plan Р9, Р10) went with the consumption ban (ADR 0194). The ceiling is shared with the refuel.
  */
 
-// ── Daily growth thresholds: a soft warning, confirmed in the submit window (ADR 0237) ──
+// ── Суточные пороги прироста: мягкое предупреждение, снимается галочкой ──
 
 /**
  * Пробег за сутки, выше которого прирост одометра просят подтвердить, км. Значение заведомо
@@ -43,7 +44,7 @@ export const ODOMETER_WARN_KM_PER_DAY = 1500;
 /** Наработка за сутки, выше которой прирост моточасов просят подтвердить, ч. Сутки — это 24. */
 export const ENGINE_HOURS_WARN_PER_DAY = 24;
 
-// ── Absolute bounds: a hard error, the submit is refused ──
+// ── Абсолютные границы: грубая ошибка, отправка запрещена ──
 
 /**
  * Потолок одометра, км. Ловит опечатку в разряде там, где сравнивать не с чем (первое показание
@@ -67,7 +68,11 @@ export const FUEL_MAX_LITERS = 1_000;
  * счётчиков.
  */
 export type ReadingField =
-  'odometerKm' | 'engineHours' | 'fuelStartLiters' | 'fuelFilledLiters' | 'fuelEndLiters';
+  | 'odometerKm'
+  | 'engineHours'
+  | 'fuelStartLiters'
+  | 'fuelFilledLiters'
+  | 'fuelEndLiters';
 
 /** Значение поля так, как его видит форма: число, пусто или недонабранное «145 3.». */
 export type ReadingValue = number | null | 'invalid';
@@ -124,13 +129,13 @@ const FIELDS: Record<ReadingField, { name: string; unit: string; max: number; to
 };
 
 /**
- * Daily thresholds exist only for the counters: they grow from the previous snapshot, so "too fast"
- * means something for them. Fuel has none: a refuel is a single event and a level is a state that
- * is drained, topped up from the side and changed under a driver overnight, so an increase is an
- * ordinary day. Fuel is compared for continuity instead (`readingWarnings`), not for growth.
+ * Суточные пороги — только у счётчиков: они растут от предыдущего снимка, и «слишком быстро» у них
+ * осмысленно. У топлива не растёт ничего. Заправка разовая, а остаток **не наследуется от
+ * предыдущей смены**: за ночь бак сливают, доливают со стороны и меняют машину под человеком, —
+ * поэтому прирост остатка не аномалия, а обычный день, и порога у него нет намеренно (Р10).
  *
- * A missing key here is part of the rule, not a forgotten row: `readingWarnings` decides by it that
- * the field is not checked beyond the ceiling.
+ * Отсутствие ключа здесь — рабочая часть правила, а не забытая строка: `readingWarnings` по нему и
+ * решает, что дальше потолка поле не проверяется.
  */
 const PER_DAY: Partial<Record<ReadingField, number>> = {
   odometerKm: ODOMETER_WARN_KM_PER_DAY,
@@ -164,26 +169,21 @@ const isCounterField = (field: ReadingField): field is CounterField =>
   field === 'odometerKm' || field === 'engineHours';
 
 /**
- * The caption under a field: «предыдущее: 145 320 (10.08)» for a counter (П1) and «в конце прошлой
- * смены: 92 л (27.10)» for the fuel at the start (ADR 0237). It costs less than any warning — two
- * numbers are compared by eye before they are wrong. Empty when there is no previous snapshot, or
- * it has no value for the field: the start of a series is a state, not a deviation.
+ * Подпись под полем: «предыдущее: 145 320 (10.08)» (П1). Стоит дешевле любого предупреждения —
+ * два числа сверяют глазами до того, как ошибутся. Пусто, когда предыдущего снимка нет:
+ * начало ряда — состояние, а не отклонение.
  *
- * Other fuel fields have no caption: a refuel is a single event and the end level of THIS shift has
- * nothing before it to be compared with. Fields are cut off BEFORE the snapshot is read, not by a
- * list of exceptions, so a new reading field does not slip in silently.
+ * У топлива подсказки нет, и это решение, а не недоделка (Р9): «предыдущий остаток» под полем стал
+ * бы первым сравнением остатков между сменами — то есть расходом, отложенным решением Р3. Поэтому
+ * отсекаются все поля, кроме счётчиков, **до** обращения к снимку, а не перечислением исключений:
+ * список разрешённых растёт только вместе с `DriverPreviousReading`, и новое поле показания молча
+ * сюда не проберётся.
  */
 export function previousHintText(
   previous: DriverPreviousReading | null,
   field: ReadingField,
 ): string | undefined {
-  if (!previous) return undefined;
-  if (field === 'fuelStartLiters') {
-    const end = previous.fuelEndLiters;
-    if (end == null) return undefined;
-    return `в конце прошлой смены: ${formatReading(end)} л (${shortDate(previous.measuredOn)})`;
-  }
-  if (!isCounterField(field)) return undefined;
+  if (!previous || !isCounterField(field)) return undefined;
   const value = previous[field];
   if (value == null) return undefined;
   return `предыдущее: ${formatReading(value)} (${shortDate(previous.measuredOn)})`;
@@ -225,26 +225,11 @@ export function readingWarnings(
       continue;
     }
 
-    // The start level has no threshold, but it must equal the end of the previous shift (ADR 0237):
-    // compared to the column's tenth, as the server stores it. A previous shift without the end
-    // level is "nothing to compare with", never an older shift's level.
-    if (key === 'fuelStartLiters') {
-      const end = previous?.fuelEndLiters;
-      if (previous && typeof end === 'number' && Math.round(value * 10) !== Math.round(end * 10)) {
-        warnings.push({
-          field: key,
-          hard: false,
-          text: `Топливо на начало смены (${formatReading(value)} л) не совпадает с остатком на конец прошлой смены (${formatReading(end)} л, ${shortDate(previous.measuredOn)})`,
-        });
-      }
-      continue;
-    }
-
-    // Beyond this only the daily growth is left, and only the counters have it: the other fuel
-    // fields have neither a `PER_DAY` threshold nor a previous value in the snapshot. The two
-    // conditions answer different questions — `perDay` is "is there a growth norm", `isCounterField`
-    // is "does the contract carry anything to compare with" — and the second also makes
-    // `previous[key]` type-safe.
+    // Дальше — только суточный прирост, а он есть лишь у счётчиков: у трёх топливных полей нет ни
+    // порога в `PER_DAY`, ни прошлого значения в снимке. Условия проверяются раздельно, потому что
+    // отвечают на разные вопросы: `perDay` — «есть ли норма прироста», `isCounterField` — «есть ли
+    // вообще с чем сравнивать в контракте». Второе заодно делает `previous[key]` типобезопасным и
+    // убирает прежний тернарник, который для нового поля молча подставил бы моточасы.
     const perDay = PER_DAY[key];
     if (perDay === undefined || !isCounterField(key)) continue;
     // Без предыдущего снимка сравнивать не с чем: начало ряда — состояние, а не отклонение.

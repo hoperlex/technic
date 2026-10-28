@@ -7,6 +7,8 @@ import {
   type ReportItemDto,
 } from '@technic/contracts';
 import {
+  FUEL_MAX_LITERS,
+  formatReading,
   parseReadingNumber,
   readingWarnings,
   type ReadingValue,
@@ -37,6 +39,42 @@ export function readingNumbers(value: DraftItem) {
 /** A parsed number, or `null` for empty and for unreadable (the form refuses the latter earlier). */
 export const numberOrNull = (value: ReadingValue): number | null =>
   typeof value === 'number' ? value : null;
+
+const shortDate = (value: string): string => dayjs(value).format('DD.MM');
+
+/**
+ * What the fuel at the start of a shift must equal: the end of the previous one (ADR 0237). It is
+ * the cabinet's rule alone and lives here, not with the shared input limits: the garage intake form
+ * builds its previous snapshot from a reading's anomalies, which know no fuel, so the rule could
+ * never fire there, and a shared copy would grow the bundle of every route that reads the limits.
+ *
+ * `undefined` when there is no previous shift or it left no fuel end: nothing to compare with.
+ */
+export function fuelStartHint(previous: DriverPreviousReading | null): string | undefined {
+  const end = previous?.fuelEndLiters;
+  if (!previous || end == null) return undefined;
+  return `в конце прошлой смены: ${formatReading(end)} л (${shortDate(previous.measuredOn)})`;
+}
+
+/**
+ * A soft warning that the fuel at the start is not the end of the previous shift. Compared to the
+ * column's tenth, as the server stores it; a value outside the absolute bounds is a typo that the
+ * shared hard check already refuses, and comparing a typo with anything is pointless.
+ */
+function fuelStartWarning(
+  start: ReadingValue,
+  previous: DriverPreviousReading | null,
+): ReadingWarning | null {
+  const end = previous?.fuelEndLiters;
+  if (!previous || typeof end !== 'number' || typeof start !== 'number') return null;
+  if (start < 0 || start > FUEL_MAX_LITERS) return null;
+  if (Math.round(start * 10) === Math.round(end * 10)) return null;
+  return {
+    field: 'fuelStartLiters',
+    hard: false,
+    text: `Топливо на начало смены (${formatReading(start)} л) не совпадает с остатком на конец прошлой смены (${formatReading(end)} л, ${shortDate(previous.measuredOn)})`,
+  };
+}
 
 /**
  * The previous shift of a block: the one its counters and its fuel start are compared with.
@@ -119,7 +157,10 @@ export function blockChecks(
   previous: DriverPreviousReading | null,
   changed: boolean,
 ): BlockChecks {
-  const warnings = readingWarnings(readingNumbers(value), previous);
+  const numbers = readingNumbers(value);
+  const warnings = readingWarnings(numbers, previous);
+  const fuel = fuelStartWarning(numbers.fuelStartLiters, previous);
+  if (fuel) warnings.push(fuel);
   return {
     hard: warnings.filter((warning) => warning.hard),
     notes: changed

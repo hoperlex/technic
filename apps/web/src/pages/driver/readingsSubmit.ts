@@ -104,7 +104,7 @@ function buildItem(
   const numbers = readingNumbers(value);
   // Time refusals stand next to the number refusals, not after them: a driver fixing an odometer
   // typo should not learn only on the next tap that the end time is missing too (ADR 0234, D11).
-  const times = buildTimes({ item, value, stops, required: timesRequired, numbers });
+  const times = buildTimes({ item, value, stops, required: timesRequired });
   const broken = Object.entries(numbers).filter(([, v]) => v === 'invalid');
   if (broken.length > 0) {
     const refused = Object.fromEntries(broken.map(([field]) => [field, 'Введите число']));

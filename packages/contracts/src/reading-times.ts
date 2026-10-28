@@ -284,8 +284,7 @@ export function readingTimeIssues(
  * - Every driver submit of an ESM-2 item carries the start time; of a route item with stops, the
  *   arrival at stop 1. A morning-only interim reading therefore has its start already.
  * - A submit that carries an end-of-shift value (`readingHasShiftEnd`) also carries the end time,
- *   or every departure of a route. Since ADR 0237 the cabinet submits whole shifts only and says so
- *   with `complete`, so the morning-only interim reading this rule once allowed no longer leaves it.
+ *   or every departure of a route.
  * - The driver's ESM-2 pair may not have equal start and end: `shiftSpanMinutes` would read it as
  *   24 h, and asking is cheaper than guessing (plan §7.2).
  *
@@ -299,15 +298,9 @@ export function driverReadingTimeIssues(params: {
   hasStops: boolean;
   values: { odometerKm: number | null; engineHours: number | null; fuelEndLiters?: number | null };
   times: ReadingTimes;
-  /**
-   * The submit is a whole shift (ADR 0237): the end time and every departure are required whatever
-   * the numbers say. The cabinet passes it because its block is complete or not sent; the server
-   * never does, so a part-filled reading from staff or an older build keeps its derived rule.
-   */
-  complete?: boolean;
 }): ReadingTimeIssue[] {
   const { sourceKind, hasStops, values, times } = params;
-  const ended = params.complete === true || readingHasShiftEnd(values);
+  const ended = readingHasShiftEnd(values);
   const issues: ReadingTimeIssue[] = [];
   if (sourceKind === 'esm2') {
     if (times.startedAt === null) {

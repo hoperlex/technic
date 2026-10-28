@@ -6,6 +6,7 @@ import type { DraftItem } from './api';
 import { fieldLabelStyle, hintStyle, keepVisible } from './readingFieldStyles';
 import { TimeField } from './DriverTimeField';
 import { parseTime } from './readingStops';
+import { fuelStartHint } from './readingChecks';
 import { timeFields } from './readingsTimes';
 
 /**
@@ -183,7 +184,7 @@ export function ReadingFields({
           suffix="л"
           integer={false}
           value={value.fuelStartLiters}
-          hint={previousHintText(previous, 'fuelStartLiters')}
+          hint={fuelStartHint(previous)}
           error={errors.fuelStartLiters ?? hardOf('fuelStartLiters')}
           disabled={disabled}
           onChange={(next) => onChange({ fuelStartLiters: next })}

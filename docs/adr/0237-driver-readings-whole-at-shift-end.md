@@ -19,12 +19,10 @@
   comparing a fuel start with the previous end, are superseded here) and
   [driver-cabinet-ux-plan.md](../driver-cabinet-ux-plan.md) (Р6, the «Всё верно» checkbox, is
   superseded here)
-- Область: [completeness predicate](../../packages/contracts/src/vehicle-readings.ts),
-  [time rule](../../packages/contracts/src/reading-times.ts),
+- Область: [completeness and whole-shift time rule](../../packages/contracts/src/driver-reading-completeness.ts),
   [previous-shift snapshot](../../packages/contracts/src/driver-cabinet.ts),
   [snapshot builder](../../apps/api/src/services/driver-assignment.ts),
-  [input rules](../../apps/web/src/entities/vehicle-reading/model/readingLimits.ts),
-  [block checks](../../apps/web/src/pages/driver/readingChecks.ts),
+  [block checks and the fuel continuity](../../apps/web/src/pages/driver/readingChecks.ts),
   [submit body](../../apps/web/src/pages/driver/readingsSubmit.ts),
   [submit window](../../apps/web/src/pages/driver/DriverSubmitCheck.tsx),
   [time field](../../apps/web/src/pages/driver/DriverTimeField.tsx)
@@ -57,17 +55,20 @@ not the time of the event, and a tap on it wrote a wrong time more often than a 
    vehicle often has only one of them, and the form cannot know which — the refusal stands under
    both fields). `fuelFilledLiters`, the comment and the files stay optional: an empty refuel means
    "not refuelled", which is how the server already reads it (`coalesce` in `fuelSpentSql`). The
-   rule is one contract predicate, `driverReadingCompletenessIssues`; every refusal of the block is
-   shown at once, each under its own field, together with the time refusals.
+   rule is one contract predicate, `driverReadingCompletenessIssues`, in a module of its own that
+   only the cabinet imports; every refusal of the block is shown at once, each under its own field,
+   together with the time refusals.
 2. **Whose block is judged.** Only a block the driver changes (`blockChanged`, the comparison the
    time rule already uses). A new block with nothing touched is skipped, as before (ADR 0163
    decision 5): the other shift of a day is sent when it ends. A saved block resent unchanged is not
    judged again, so a staff entry or a morning part saved by an older build never holds the day. A
    saved block the driver empties is a command and is refused as incomplete, not skipped.
-3. **The shift is always finished.** `driverReadingTimeIssues` takes `complete: true` from the
-   cabinet: an ESM-2 block carries the start and the end time, a route block the arrival at stop 1
-   and the departure from every stop, whatever the numbers say. The server never passes the flag, so
-   its derived rule (an evening value requires the end time) is unchanged for staff and older builds.
+3. **The shift is always finished.** The cabinet judges the times through
+   `driverWholeShiftTimeIssues`: an ESM-2 block carries the start and the end time, a route block the
+   arrival at stop 1 and the departure from every stop, whatever the numbers say. The function hands
+   the unchanged rule `driverReadingTimeIssues` the evening marker it reads (a counter at zero, never
+   stored or sent) instead of growing the rule with a flag, so the rule and its server use stay as
+   they were: an evening value requires the end time for staff and for older builds.
 4. **The previous shift.** The snapshot `DriverPreviousReading` gains `fuelEndLiters` and is built
    from the ledger's own order `(report_date, shift_order)`: the latest reading of an earlier day,
    or the nearest earlier shift of the SAME day when there is one — the second shift of a day opens
@@ -85,7 +86,9 @@ not the time of the event, and a tap on it wrote a wrong time more often than a 
    unchanged carries only the anomalies already recorded. Judging an unchanged block by its numbers
    would ask on every later submit of the day about a discrepancy confirmed five minutes ago. Under
    the fuel start stands «в конце прошлой смены: 92 л (27.10)», as under a counter stands the
-   previous value.
+   previous value. The fuel comparison is the cabinet's code (`readingChecks.ts`), not part of the
+   input limits the garage form shares: the garage snapshot has no fuel, so the rule could never
+   fire there.
 6. **One window instead of a checkbox.** Where the block carried «Всё верно, подтверждаю», «Передать»
    now opens a window when any discrepancy exists: a formal text, every discrepancy of the day in
    one numbered list with the vehicle and the source, «Вернуться к исправлению» and «Подтверждаю,
@@ -119,6 +122,10 @@ not the time of the event, and a tap on it wrote a wrong time more often than a 
 - (−) An empty «Заправлено» and a zero are indistinguishable to the form: both mean "not refuelled".
 - (−) The previous-shift snapshot costs two more small queries per day (the day's readings and the
   positions of the entries' own items).
+- The bundle budget is byte-exact, so the two new contract functions sit in their own module and
+  the fuel comparison in cabinet code: placed in `vehicle-readings.ts` and in the shared input limits
+  they measured +125 B gzip on every garage route and +147 B on the directories, and a flag on
+  `driverReadingTimeIssues` +5 B on the entry and so on every route.
 
 ## Verification
 

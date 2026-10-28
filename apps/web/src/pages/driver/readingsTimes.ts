@@ -1,5 +1,5 @@
 import {
-  driverReadingTimeIssues,
+  driverWholeShiftTimeIssues,
   readingTimeIssues,
   TIME_FORMAT_MESSAGE,
   type ReadingPointInput,
@@ -7,7 +7,6 @@ import {
   type ReadingTimes,
   type ReportItemDto,
 } from '@technic/contracts';
-import type { ReadingValue } from '@entities/vehicle-reading';
 import type { DraftItem } from './api';
 import { parseTime, stopPointTimes, type ShownStop } from './readingStops';
 
@@ -49,8 +48,6 @@ function issueField(issue: ReadingTimeIssue): string {
   }
 }
 
-type Numbers = Record<'odometerKm' | 'engineHours' | 'fuelEndLiters', ReadingValue>;
-
 export interface BuiltTimes {
   /** Something time-like was typed: a row with only a time is not a blank row. */
   typed: boolean;
@@ -65,9 +62,8 @@ export function buildTimes(params: {
   stops: readonly ShownStop[];
   /** The driver's rule judges this line (`lineRequiresDriverTimes`: format and change). */
   required: boolean;
-  numbers: Numbers;
 }): BuiltTimes {
-  const { item, value, stops, required, numbers } = params;
+  const { item, value, stops, required } = params;
   const errors: Record<string, string> = {};
   const read = (raw: string, field: string): string | null => {
     const time = parseTime(raw);
@@ -114,21 +110,14 @@ export function buildTimes(params: {
     return { typed: false, errors, keys: {} };
   }
 
-  const valid = (number: ReadingValue) => (number === 'invalid' ? null : number);
   const issues = [
     ...readingTimeIssues(item.sourceKind, times),
     ...(required
-      ? driverReadingTimeIssues({
+      ? // The cabinet sends whole shifts only (ADR 0237): the end and every departure are due even
+        // when a half-typed block has no evening number yet, so all refusals show at once.
+        driverWholeShiftTimeIssues({
           sourceKind: item.sourceKind,
           hasStops: stops.length > 0,
-          // The cabinet sends whole shifts only (ADR 0237): the end and every departure are due
-          // even when a half-typed block has no evening number yet, so all refusals show at once.
-          complete: true,
-          values: {
-            odometerKm: valid(numbers.odometerKm),
-            engineHours: valid(numbers.engineHours),
-            fuelEndLiters: valid(numbers.fuelEndLiters),
-          },
           times,
         })
       : []),
