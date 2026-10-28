@@ -9,6 +9,8 @@ import {
   driverDocumentGaps,
   type GarageDriverListDto,
   garageDriverQuerySchema,
+  type GarageDriverScheduleDto,
+  garageDriverScheduleQuerySchema,
   type GarageDriversSummaryDto,
   type GarageDriverState,
   type GarageVehicleDto,
@@ -23,6 +25,7 @@ import {
   vehicleLabel,
   type VehicleReadingDayState,
   type WaybillFormCode,
+  uuidSchema,
 } from '@technic/contracts';
 import { requirePrincipal } from '../auth/plugin';
 import { db } from '../db/client';
@@ -36,6 +39,7 @@ import {
   vehicleTypes,
 } from '../db/schema';
 import { queryClassificationWhere } from '../lib/classification-filter';
+import { err } from '../lib/errors';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import {
   documentsCompleteCondition,
@@ -53,18 +57,21 @@ import {
   vehicleObjectFilterSql,
   vehicleStateSql,
 } from '../services/garage';
+import { loadDriverSchedule } from '../services/garage-driver-schedule';
 import { loadLastOdometers } from '../services/readings-aggregate';
 import { loadVehicleReadingStates, pendingReadingsSql } from '../services/readings-stats';
 
 /**
- * Гараж: чем занят день собственной техники и водителей (ADR 0076).
+ * Garage: what the day of the own fleet and of the drivers is taken by (ADR 0076).
  *
- * Раздел читающий и никаких действий не предлагает — ни здесь, ни на портале: заявки, рейсы и
- * бланки ведут в своих модулях, а срез отвечает на единственный вопрос «кто чем занят и кто
- * свободен». Поэтому у всех четырёх ручек одно право, `garage.read`, и ни одной мутирующей.
+ * The section only reads and offers no action, here or in the portal: requests, routes and blanks
+ * are run in their own modules, and the snapshot answers the single question "who is busy with
+ * what and who is free". Hence all five handles share one permission, `garage.read`, and none
+ * writes. The fifth, the month of one driver (`/drivers/:personId/schedule`), answers about the
+ * same people as the list and is closed the same way.
  *
- * Право своё, а не сумма прав тех списков, из которых срез собран: в строке видно, кто за рулём, —
- * это те же персональные данные, что в карточке водителя (ADR 0037 п. 13).
+ * The permission is its own rather than the sum of the permissions of the lists the snapshot is
+ * built from: a row shows who drives, the same personal data as the driver card (ADR 0037 §13).
  */
 
 /** Свободные первыми: гараж открывают вопросом «кому дать работу», а не «кто уже занят». */
@@ -515,6 +522,33 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
         documentsIncomplete: Number(totals!.documentsIncomplete),
         onDate: on,
       };
+    },
+  );
+
+  /**
+   * A driver's month: the shifts due a reading and the days he is named without paper (owner's
+   * decisions of 28.10.2026). The month, its bounds and today are the server's, by Moscow.
+   *
+   * Same permission and same people as `/drivers`: whoever sees the list sees the month of any of
+   * its rows, and nobody else's — a person outside the list answers 404. The reason a shift was
+   * closed without numbers is readings content and comes only with `vehicleReadings.read`, as the
+   * odometer of the vehicles tab does; the status itself is the garage's, like its readings column.
+   */
+  r.get(
+    '/drivers/:personId/schedule',
+    {
+      preHandler: guards,
+      schema: {
+        params: z.object({ personId: uuidSchema }),
+        querystring: garageDriverScheduleQuerySchema,
+      },
+    },
+    async (req): Promise<GarageDriverScheduleDto> => {
+      const schedule = await loadDriverSchedule(req.params.personId, req.query.month, {
+        canReadReadings: can(requirePrincipal(req), 'vehicleReadings.read'),
+      });
+      if (!schedule) throw err.notFound('Водитель не найден');
+      return schedule;
     },
   );
 }

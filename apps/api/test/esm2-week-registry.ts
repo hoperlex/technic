@@ -489,6 +489,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'driver shift and stop times (ADR 0234): `makeEsm2` inserts a one-day sheet (`period_from = period_to = today`) only so that the day has an ESM-2 source; the bounds go into no assertion, and a one-day segment is already the shape the read switch produces. Marked ЭСМ2-РАЗРЕЗ at `makeEsm2`',
   },
   {
+    file: 'garage-driver-schedule.db.test.ts',
+    klass: 'consumer',
+    status: 'done',
+    note: 'the garage driver schedule (owner, 28.10.2026): `newEsm2` inserts sheets with the bounds the scene names — one-day segments and one Monday-to-Sunday sheet across a month boundary, the widest the week CHECK allows; the assertions read the days the schedule expands from the period as given, never "a week from Monday". Marked ЭСМ2-РАЗРЕЗ at `newEsm2`',
+  },
+  {
     file: 'request-driver-times.db.test.ts',
     klass: 'consumer',
     status: 'done',

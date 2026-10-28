@@ -2086,6 +2086,8 @@ export const ACCESS_MANIFEST = {
   // ── Гараж (ADR 0076) ──
   'GET /api/v1/garage/drivers': { kind: 'permissions', allOf: ['garage.read'] },
   'GET /api/v1/garage/drivers/summary': { kind: 'permissions', allOf: ['garage.read'] },
+  // The month of one driver of the list: the same permission and the same people as the list.
+  'GET /api/v1/garage/drivers/:personId/schedule': { kind: 'permissions', allOf: ['garage.read'] },
   'GET /api/v1/garage/vehicles': { kind: 'permissions', allOf: ['garage.read'] },
   'GET /api/v1/garage/vehicles/summary': { kind: 'permissions', allOf: ['garage.read'] },
 
