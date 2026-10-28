@@ -8,6 +8,7 @@ import {
   type SaveVehicleRequestShiftInput,
   SHIFT_IDLE_COMMENT_MESSAGE,
   shiftDaysOf,
+  type ShiftSource,
   type VehicleRequestShiftDto,
   type VehicleRequestShiftsSummaryDto,
   type VehicleRequestType,
@@ -20,6 +21,7 @@ import { approvalLockingReassignmentSql, shiftWithinTermSql } from './shift-appr
 import {
   driverDayDto,
   driverDiagnosticsDto,
+  isDriverDaySignable,
   loadDriverShiftDays,
   type DriverShiftDay,
 } from './shift-driver-days';
@@ -184,19 +186,35 @@ export function effectiveShift(
     driverDay: driverDay ? driverDayDto(driverDay) : null,
     ...(options.diagnostics ? { driver: driverDay ? driverDiagnosticsDto(driverDay) : null } : {}),
   };
-  if (row?.approvedAt) return { ...row, source: 'site', ...extras };
-  if (driverDay?.clean && driverDay.machineHours !== null) {
+  const source = effectiveDaySource(row ? { signed: !!row.approvedAt } : null, driverDay);
+  if (source === 'driver' && isDriverDaySignable(driverDay)) {
     return {
       ...(row ?? emptyShift(date)),
       ...driverDayInterval(driverDay),
       machineHours: driverDay.machineHours,
       refuel: refuelLabel(driverDay.refuelLiters),
-      source: 'driver',
+      source,
       ...extras,
     };
   }
   if (row) return { ...row, source: 'site', ...extras };
   return { ...emptyShift(date), source: null, ...extras };
+}
+
+/**
+ * Whose numbers a day stands on (§6.3), from its row's signature and the driver day: a signed row is
+ * the site's, a clean driver day is the driver's, any other row is the site's, and nothing is
+ * `null`. The one decision behind `effectiveShift` and its write doors, the summary book (D14) and
+ * the garage occupancy (D15): a day the request card shows as the driver's must be filled for the
+ * book and the garage alike, and only the site's signature makes it signed.
+ */
+export function effectiveDaySource(
+  row: { signed: boolean } | null | undefined,
+  driverDay: DriverShiftDay | null | undefined,
+): ShiftSource | null {
+  if (row?.signed) return 'site';
+  if (isDriverDaySignable(driverDay)) return 'driver';
+  return row ? 'site' : null;
 }
 
 /** The first and last day of a term — the range the driver days are read for. */
@@ -269,7 +287,8 @@ export async function loadShiftDoorState(
   return {
     row,
     driverDay,
-    driverDriven: !row?.approvedAt && !!driverDay?.clean && driverDay.machineHours !== null,
+    driverDriven:
+      effectiveDaySource(row ? { signed: !!row.approvedAt } : null, driverDay) === 'driver',
   };
 }
 

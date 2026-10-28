@@ -108,6 +108,14 @@ export interface RouteStopWithRequests extends ReadingPointTimes {
 }
 
 /**
+ * Where a stop's D6 segment starts: the arrival for stop 1, otherwise the departure from the
+ * previous stop. The boundaries `routeTimeByRequest` splits by.
+ */
+function segmentStart(points: readonly ReadingPointTimes[], index: number): string | null {
+  return index === 0 ? points[0]!.arrivedAt : points[index - 1]!.departedAt;
+}
+
+/**
  * The stops of one request in a recorded route, each with the start of its D6 segment: the arrival
  * for stop 1, otherwise the departure from the previous stop. The same boundaries
  * `routeTimeByRequest` splits by, so the card shows the segments the share was counted from.
@@ -124,12 +132,55 @@ export function requestRouteStops(
       position: point.position,
       location: point.location,
       arrivedAt: index === 0 ? point.arrivedAt : null,
-      segmentFrom: index === 0 ? point.arrivedAt : points[index - 1]!.departedAt,
+      segmentFrom: segmentStart(points, index),
       departedAt: point.departedAt,
       sharedBy: shared.size,
     });
   });
   return stops;
+}
+
+/** The part of a recorded route that is one request's work, and whether others ride it too. */
+export interface RequestRouteSpan {
+  /**
+   * The stops from the request's first own stop to its last, in route order, shaped as a route of
+   * their own: the first one's arrival is the start of its D6 segment, every later one has a
+   * departure only. Empty — no recorded stop names the request.
+   */
+  points: ReadingPointTimes[];
+  /** Another request has a role at some stop of the recorded route: the route is shared. */
+  shared: boolean;
+}
+
+/**
+ * The shift time of a linear special-equipment day on a recorded route (owner decision D13): its
+ * own stops, attributed by the request snapshot of the capture exactly as D6 attributes a freight
+ * request's stops (`requestRouteStops`). The span runs from the start of the first own stop's
+ * segment to the departure from the last own stop, so `routeScalarTimes` and `routeElapsed` read it
+ * as any route — through every stop in between, one duration rule.
+ *
+ * The time is cut, the engine hours are not: one counter cannot be split by stops, so the day keeps
+ * the whole route's hours and says the route is shared instead of pretending they are its own.
+ */
+export function requestRouteSpan(
+  points: readonly RouteStopWithRequests[],
+  requestId: string,
+): RequestRouteSpan {
+  const shared = points.some((point) => point.requestIds.some((id) => id !== requestId));
+  const own = points.flatMap((point, index) =>
+    point.requestIds.includes(requestId) ? [index] : [],
+  );
+  if (own.length === 0) return { points: [], shared };
+  const first = own[0]!;
+  const last = own[own.length - 1]!;
+  return {
+    points: points.slice(first, last + 1).map((point, offset) => ({
+      position: point.position,
+      arrivedAt: offset === 0 ? segmentStart(points, first) : null,
+      departedAt: point.departedAt,
+    })),
+    shared,
+  };
 }
 
 const SECONDS_PER_HOUR = 3600;

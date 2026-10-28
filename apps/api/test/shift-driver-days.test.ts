@@ -37,6 +37,7 @@ function reading(over: Partial<DriverShiftReading> = {}): DriverShiftReading {
     comment: '',
     discrepancies: [],
     times: { startedAt: null, endedAt: null, points: [] },
+    sharedRoute: false,
     ...over,
   };
 }
@@ -182,6 +183,16 @@ describe('день водителя', () => {
     );
   });
 
+  it('a shared route marks the day; the hours stay the route reading’s whole delta (D13)', () => {
+    const route = { sourceKind: 'route' as const, sourceId: 'route-1', sourceLabel: 'Р-12' };
+    const shared = driverShiftDayOf(DAY, [reading({ ...route, sharedRoute: true })]);
+    expect(shared).toMatchObject({ machineHours: 8.5, clean: true, sharedRoute: true });
+    expect(driverDayDto(shared).sharedRoute).toBe(true);
+    // The mark explains the hours, it signs nothing: the fingerprint does not move with it.
+    expect(shared.fingerprint).toBe(driverShiftDayOf(DAY, [reading(route)]).fingerprint);
+    expect(driverShiftDayOf(DAY, [reading()]).sharedRoute).toBe(false);
+  });
+
   it('the public part carries numbers only; the diagnostics carry names, comments and states', () => {
     const day = driverShiftDayOf(DAY, [
       reading({
@@ -197,6 +208,7 @@ describe('день водителя', () => {
       'intervals',
       'machineHours',
       'refuelLiters',
+      'sharedRoute',
       'since',
       'startedAt',
       'timeIssue',

@@ -4,6 +4,7 @@ import {
   driverDayTime,
   isShiftTimeFromDriver,
   durationLabel,
+  requestRouteSpan,
   requestRouteStops,
   routeHoursForCompletion,
   routeScalarTimes,
@@ -241,5 +242,68 @@ describe('время по точкам грузоперевозки', () => {
       },
     ]);
     expect(requestRouteStops(points, 'c')).toEqual([]);
+  });
+});
+
+describe('время линейного дня на общем рейсе (D13)', () => {
+  const stop = (
+    position: number,
+    arrivedAt: string | null,
+    departedAt: string | null,
+    requestIds: string[],
+  ) => ({ position, location: `Точка ${position}`, arrivedAt, departedAt, requestIds });
+
+  it('день берёт время своих точек: от начала отрезка первой до отправления с последней', () => {
+    // A quarry and an unloading for a freight request, then the site of the linear day.
+    const points = [
+      stop(1, '07:40', '09:10', ['freight']),
+      stop(2, null, '11:00', ['freight']),
+      stop(3, null, '15:20', ['linear']),
+    ];
+    const span = requestRouteSpan(points, 'linear');
+    expect(span).toEqual({
+      points: [{ position: 3, arrivedAt: '11:00', departedAt: '15:20' }],
+      shared: true,
+    });
+    expect(driverDayTime([route(span.points)])).toMatchObject({
+      startedAt: '11:00',
+      endedAt: '15:20',
+      issue: null,
+    });
+  });
+
+  it('чужая точка между своими входит в отрезок дня, как D6 режет перевозку', () => {
+    const points = [
+      stop(1, '07:00', '08:00', ['linear']),
+      stop(2, null, '09:00', ['freight']),
+      stop(3, null, '23:30', ['linear', 'freight']),
+      stop(4, null, '00:30', ['freight']),
+    ];
+    const span = requestRouteSpan(points, 'linear');
+    expect(span.points.map((point) => point.position)).toEqual([1, 2, 3]);
+    expect(driverDayTime([route(span.points)])).toMatchObject({
+      startedAt: '07:00',
+      endedAt: '23:30',
+    });
+  });
+
+  it('рейс одной заявки — весь рейс и не общий', () => {
+    const points = [stop(1, '06:50', '12:00', ['linear']), stop(2, null, '17:10', ['linear'])];
+    const span = requestRouteSpan(points, 'linear');
+    expect(span.shared).toBe(false);
+    expect(span.points).toEqual(stops(['06:50', '12:00'], [null, '17:10']));
+  });
+
+  it('точки рейса без этой заявки времени дню не дают, а незаписанное отправление — неполное время', () => {
+    expect(requestRouteSpan([stop(1, '07:00', '08:00', ['freight'])], 'linear')).toEqual({
+      points: [],
+      shared: true,
+    });
+    const interim = requestRouteSpan(
+      [stop(1, '07:00', null, ['freight']), stop(2, null, '12:00', ['linear'])],
+      'linear',
+    );
+    expect(interim.points).toEqual([{ position: 2, arrivedAt: null, departedAt: '12:00' }]);
+    expect(driverDayTime([route(interim.points)]).issue).toBe('incomplete');
   });
 });

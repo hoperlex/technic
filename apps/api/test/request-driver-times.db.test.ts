@@ -68,6 +68,7 @@ interface Ctx {
   readings: typeof ReadingsNs;
   assignment: typeof AssignmentNs;
   placeRequestTrips: (typeof RoutePointsNs)['placeRequestTrips'];
+  placeLinearDay: (typeof RoutePointsNs)['placeLinearDay'];
   closeDb: () => Promise<void>;
   admin: Auth;
   observer: Auth;
@@ -286,7 +287,7 @@ async function issue4p(routeId: string, vehicleId: string, personId: string, dat
 /**
  * A route of `date` laid out in stops by the algorithm the working doors call
  * (`placeRequestTrips`): equal addresses share one point. `dayRequestId` puts a special-equipment
- * request's day into it (`work_date`), the freight requests ride along as the stops.
+ * request's day into it (`work_date`) as the site's point after the freight stops.
  */
 async function stopRoute(opts: {
   vehicleId: string;
@@ -319,6 +320,10 @@ async function stopRoute(opts: {
   );
   for (const requestId of opts.freightIds) {
     await ctx.placeRequestTrips(ctx.db as never, route!.id, requestId);
+  }
+  // The linear day stands at its site's point after the freight stops (ADR 0100, `work` role).
+  if (opts.dayRequestId) {
+    await ctx.placeLinearDay(ctx.db as never, route!.id, opts.dayRequestId, opts.date);
   }
   await issue4p(route!.id, opts.vehicleId, opts.personId, opts.date);
   return route!.id;
@@ -482,6 +487,7 @@ describe.skipIf(!DB_URL)('время водителя доходит до зая
       readings,
       assignment,
       placeRequestTrips: routePoints.placeRequestTrips,
+      placeLinearDay: routePoints.placeLinearDay,
       closeDb,
       admin: { authorization: '' },
       observer: { authorization: '' },
@@ -734,7 +740,13 @@ describe.skipIf(!DB_URL)('время водителя доходит до зая
     expect(await dayOf(requestId, day)).toMatchObject({ startedAt: '02:00', endedAt: '08:00' });
   });
 
-  it('день в рейсе: время смены — прибытие на первую точку и отправление с последней', async () => {
+  /**
+   * D13: a linear day on a route shared with a freight request takes its time from its OWN stops —
+   * from the start of its stop's D6 segment to the departure from it — while its engine hours stay
+   * the whole route's (one counter), and the day says the route is shared. A route of the day alone
+   * gives the whole route, unshared.
+   */
+  it('день в рейсе: время смены — свои точки дня, часы — весь рейс с пометкой «рейс общий» (D13)', async () => {
     const baseline = ago(3);
     const day = ago(2);
     const personId = await newPerson('Рейсовый');
@@ -742,8 +754,6 @@ describe.skipIf(!DB_URL)('время водителя доходит до зая
     const requestId = await newRequest(vehicleId, baseline, day);
     await issueEsm2(requestId, vehicleId, personId, baseline);
     await submitDay(personId, baseline, values({ engineHours: 2000 }));
-    // The linear day rides a route whose stops are a freight request's: the vehicle's shift is the
-    // whole route, as its counter is.
     const freight = await newFreightRequest([
       { from: 'г Москва, ул Карьерная, д 9', to: 'г Москва, ул Бетонная, д 4' },
     ]);
@@ -755,7 +765,7 @@ describe.skipIf(!DB_URL)('время водителя доходит до зая
       dayRequestId: requestId,
     });
     const ids = await stopIds(routeId);
-    expect(ids).toHaveLength(2);
+    expect(ids).toHaveLength(3);
     await submitDay(
       personId,
       day,
@@ -763,15 +773,63 @@ describe.skipIf(!DB_URL)('время водителя доходит до зая
         engineHours: 2007.5,
         points: wirePoints(ids, [
           ['07:40', '09:10'],
+          [null, '11:00'],
           [null, '15:20'],
         ]),
       }),
     );
-    expect(await dayOf(requestId, day)).toMatchObject({
+    const shared = await dayOf(requestId, day);
+    expect(shared).toMatchObject({
       source: 'driver',
       machineHours: 7.5,
-      startedAt: '07:40',
+      startedAt: '11:00',
       endedAt: '15:20',
+      driverDay: { machineHours: 7.5, clean: true, sharedRoute: true },
+    });
+    // The mark is a number of the day (D10): an observer sees it too.
+    expect((await dayOf(requestId, day, ctx.observer)).driverDay?.sharedRoute).toBe(true);
+    // The sign-off writes the own interval and the whole route's hours.
+    await expectStatus(
+      inject('POST', `/api/v1/vehicle-requests/${requestId}/shifts/${day}/approval`, {
+        approved: true,
+        expectedDriverFingerprint: shared.driverDay!.fingerprint,
+      }),
+      200,
+    );
+    expect(await rowTimeOf(requestId, day)).toMatchObject({
+      started_at: '11:00:00',
+      ended_at: '15:20:00',
+      machine_hours: '7.50',
+      approved: true,
+    });
+
+    // The same kind of day alone on its route: the whole route, nothing shared.
+    const alonePerson = await newPerson('Одиночный');
+    const aloneVehicle = await newVehicle();
+    const alone = await newRequest(aloneVehicle, baseline, day);
+    await issueEsm2(alone, aloneVehicle, alonePerson, baseline);
+    await submitDay(alonePerson, baseline, values({ engineHours: 500 }));
+    const aloneRoute = await stopRoute({
+      vehicleId: aloneVehicle,
+      personId: alonePerson,
+      date: day,
+      freightIds: [],
+      dayRequestId: alone,
+    });
+    await submitDay(
+      alonePerson,
+      day,
+      values({
+        engineHours: 508,
+        points: wirePoints(await stopIds(aloneRoute), [['07:30', '16:00']]),
+      }),
+    );
+    expect(await dayOf(alone, day)).toMatchObject({
+      source: 'driver',
+      machineHours: 8,
+      startedAt: '07:30',
+      endedAt: '16:00',
+      driverDay: { sharedRoute: false },
     });
   });
 

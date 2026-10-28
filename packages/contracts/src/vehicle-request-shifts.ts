@@ -139,6 +139,12 @@ export interface ShiftDriverDayDto {
   /** Every complete pair of the day — shown when they cannot be merged into one interval. */
   intervals?: ShiftInterval[];
   timeIssue?: DriverDayTimeIssue | null;
+  /**
+   * A route of the day serves other requests too (D13): the time above is this request's own stops,
+   * the hours are the whole route's — one counter cannot be split by stops. Shown as «рейс общий»
+   * next to the hours. Optional: a server before stage 4 does not send it.
+   */
+  sharedRoute?: boolean;
 }
 
 /** One reading of the day as a principal with `vehicleReadings.read` sees it (D10). */

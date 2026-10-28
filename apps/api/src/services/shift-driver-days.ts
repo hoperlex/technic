@@ -1,8 +1,10 @@
-import { and, between, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, between, eq, inArray, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   driverDayTime,
   MAX_MACHINE_HOURS,
+  requestRouteSpan,
+  routeScalarTimes,
   SUBMITTED_REPORT_STATES,
   type DiscrepancyKind,
   type DriverDayIssue,
@@ -14,10 +16,17 @@ import {
   type ShiftDriverDayDto,
   type ShiftDriverDiagnosticsDto,
 } from '@technic/contracts';
-import { driverDailyReportItems, driverDailyReports, persons, vehicleReadings } from '../db/schema';
+import {
+  driverDailyReportItems,
+  driverDailyReports,
+  persons,
+  vehicleReadings,
+  vehicleRouteRequests,
+  waybills,
+} from '../db/schema';
 import { sha256hex } from '../lib/crypto';
 import { clockTime, loadReadingPoints } from './reading-points';
-import { counterPairKey, loadBrokenCounterPairs } from './readings-expected';
+import { counterPairKey, loadBrokenCounterPairs, servedRequestSql } from './readings-expected';
 import {
   findDiscrepancies,
   itemRef,
@@ -79,10 +88,13 @@ export interface DriverShiftReading {
   comment: string;
   discrepancies: { kind: DiscrepancyKind; resolved: boolean }[];
   /**
-   * The reading's shift time (ADR 0234): an ESM-2 pair, or a route's pair derived from its stops
-   * together with the stops — a route's duration is read by its steps, never from the pair alone.
+   * The reading's shift time for THIS request (ADR 0234, D13): an ESM-2 pair, or the request's own
+   * span of a recorded route (`requestRouteSpan`) — a route's duration is read by its steps, never
+   * from the pair alone.
    */
   times: ReadingTimes;
+  /** A route reading whose route serves other requests too (D13); always `false` for an ESM-2. */
+  sharedRoute: boolean;
 }
 
 /** The driver's day: its public numbers (D10), the issues and the readings behind them. */
@@ -198,9 +210,22 @@ export function driverShiftDayOf(
     endedAt: time.endedAt,
     intervals: time.intervals,
     timeIssue: time.issue,
+    sharedRoute: readings.some((r) => r.sharedRoute),
     issues: [...issues],
     readings: [...readings],
   };
+}
+
+/**
+ * The effective day is the driver's: a clean day has its hours, and nothing else of the driver's is
+ * ever signable in one click. One question for the shift table, its write doors, the summary book
+ * and the garage occupancy (D14, D15), so a day cannot count as the driver's in one reader and not
+ * in another.
+ */
+export function isDriverDaySignable(
+  day: DriverShiftDay | null | undefined,
+): day is DriverShiftDay & { machineHours: number } {
+  return !!day?.clean && day.machineHours !== null;
 }
 
 /** The public part of a driver day (D10): numbers, the clean flag, `since` and the fingerprint. */
@@ -215,6 +240,7 @@ export function driverDayDto(day: DriverShiftDay): ShiftDriverDayDto {
     endedAt: day.endedAt ?? null,
     intervals: day.intervals ?? [],
     timeIssue: day.timeIssue ?? null,
+    sharedRoute: day.sharedRoute ?? false,
   };
 }
 
@@ -248,108 +274,149 @@ function numberOrNull(value: string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** What one submitted reading brings from the database, whichever request branch found it. */
+const readingColumns = {
+  readingId: vehicleReadings.id,
+  version: vehicleReadings.version,
+  kind: vehicleReadings.kind,
+  engineHours: vehicleReadings.engineHours,
+  engineHoursAnomaly: vehicleReadings.engineHoursAnomaly,
+  fuelFilledLiters: vehicleReadings.fuelFilledLiters,
+  noDataReason: vehicleReadings.noDataReason,
+  comment: vehicleReadings.comment,
+  startedAt: vehicleReadings.startedAt,
+  endedAt: vehicleReadings.endedAt,
+  previousId: vehicleReadings.previousEngineHoursId,
+  previousEngineHours: previous.engineHours,
+  previousDate: previous.reportDate,
+  itemId: driverDailyReportItems.id,
+  sourceKind: driverDailyReportItems.sourceKind,
+  routeId: driverDailyReportItems.routeId,
+  waybillId: driverDailyReportItems.waybillId,
+  vehicleId: driverDailyReportItems.vehicleId,
+  reportDate: driverDailyReportItems.reportDate,
+  reportId: driverDailyReports.id,
+  reportState: driverDailyReports.state,
+  personId: driverDailyReports.personId,
+  personName: persons.fullName,
+};
+
+/** The route row that makes a route reading a request's: the linear day of `work_date`. */
+const member = alias(vehicleRouteRequests, 'sd_member');
+
 /**
- * The driver days of a request over a range of days, by day (§6.1).
+ * The driver days of several requests over one range of days, by request and day (§6.1): the
+ * summary book and the garage occupancy read many requests at once (D14, D15), and a query per
+ * request would put a loop of queries under every period they cover. The shift table of one
+ * request asks the same reader (`loadDriverShiftDays`), so the rule cannot differ between them.
  *
  * A reading belongs to request `R` and day `D` when its report is submitted
  * (`SUBMITTED_REPORT_STATES`, D2), its item is of day `D`, and either the item's ESM-2 was issued
  * for `R` (`waybills.source_request_id`) or its route serves `R` on `D`
  * (`vehicle_route_requests.work_date`). Both branches, not only the expected one: the garage
  * suppresses a day route under a weekly ESM-2 of the same day, but a report composed before the
- * suppression may still hold the route item, and its reading is still the vehicle's work here.
+ * suppression may still hold the route item, and its reading is still the vehicle's work here. A
+ * route reading serving two linear requests of the day belongs to both, each with its own span.
  *
  * Route membership is read live: the item has the route ID but no request snapshot, and a
  * composition correction (`detachRequest`) can move an unsigned day between requests. The
  * fingerprint covers the candidate set, so such a move invalidates a stale approval; a signed row
- * stays the accepted snapshot. This is not historical attribution.
+ * stays the accepted snapshot. This is not historical attribution — the stop snapshot is, and the
+ * day's time is read from it (D13).
  */
-export async function loadDriverShiftDays(
+export async function loadDriverShiftDaysByRequest(
   reader: ReadingsReader,
-  requestId: string,
+  requestIds: readonly string[],
   range: { from: string; to: string },
-): Promise<Map<string, DriverShiftDay>> {
-  const days = new Map<string, DriverShiftDay>();
-  if (range.to < range.from) return days;
+): Promise<Map<string, Map<string, DriverShiftDay>>> {
+  const result = new Map<string, Map<string, DriverShiftDay>>();
+  const ids = [...new Set(requestIds)];
+  if (ids.length === 0 || range.to < range.from) return result;
 
-  const rows = await reader
-    .select({
-      readingId: vehicleReadings.id,
-      version: vehicleReadings.version,
-      kind: vehicleReadings.kind,
-      engineHours: vehicleReadings.engineHours,
-      engineHoursAnomaly: vehicleReadings.engineHoursAnomaly,
-      fuelFilledLiters: vehicleReadings.fuelFilledLiters,
-      noDataReason: vehicleReadings.noDataReason,
-      comment: vehicleReadings.comment,
-      startedAt: vehicleReadings.startedAt,
-      endedAt: vehicleReadings.endedAt,
-      previousId: vehicleReadings.previousEngineHoursId,
-      previousEngineHours: previous.engineHours,
-      previousDate: previous.reportDate,
-      itemId: driverDailyReportItems.id,
-      sourceKind: driverDailyReportItems.sourceKind,
-      routeId: driverDailyReportItems.routeId,
-      waybillId: driverDailyReportItems.waybillId,
-      vehicleId: driverDailyReportItems.vehicleId,
-      reportDate: driverDailyReportItems.reportDate,
-      reportId: driverDailyReports.id,
-      reportState: driverDailyReports.state,
-      personId: driverDailyReports.personId,
-      personName: persons.fullName,
-    })
-    .from(vehicleReadings)
-    .innerJoin(driverDailyReportItems, eq(driverDailyReportItems.id, vehicleReadings.itemId))
-    .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
-    .innerJoin(persons, eq(persons.id, driverDailyReports.personId))
-    .leftJoin(previous, eq(previous.id, vehicleReadings.previousEngineHoursId))
-    .where(
-      and(
-        inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
-        between(driverDailyReportItems.reportDate, range.from, range.to),
-        // A joined query: drizzle qualifies these columns, so the correlation below cannot
-        // collapse into a tautology (the single-table trap of `buildSelection`).
-        or(
-          and(
-            eq(driverDailyReportItems.sourceKind, 'esm2'),
-            sql`EXISTS (SELECT 1 FROM waybills sd_w
-                         WHERE sd_w.id = ${driverDailyReportItems.waybillId}
-                           AND sd_w.source_request_id = ${requestId})`,
-          ),
-          and(
-            eq(driverDailyReportItems.sourceKind, 'route'),
-            sql`EXISTS (SELECT 1 FROM vehicle_route_requests sd_rr
-                         WHERE sd_rr.route_id = ${driverDailyReportItems.routeId}
-                           AND sd_rr.request_id = ${requestId}
-                           AND sd_rr.work_date = ${driverDailyReportItems.reportDate})`,
-          ),
+  const common = and(
+    inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
+    between(driverDailyReportItems.reportDate, range.from, range.to),
+  );
+  const [esm2Rows, routeRows] = await Promise.all([
+    reader
+      .select({
+        ...readingColumns,
+        requestId: sql<string>`${waybills.sourceRequestId}`,
+        routeServesOthers: sql<boolean>`false`,
+      })
+      .from(vehicleReadings)
+      .innerJoin(driverDailyReportItems, eq(driverDailyReportItems.id, vehicleReadings.itemId))
+      .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
+      .innerJoin(persons, eq(persons.id, driverDailyReports.personId))
+      .leftJoin(previous, eq(previous.id, vehicleReadings.previousEngineHoursId))
+      .innerJoin(waybills, eq(waybills.id, driverDailyReportItems.waybillId))
+      .where(
+        and(
+          common,
+          eq(driverDailyReportItems.sourceKind, 'esm2'),
+          inArray(waybills.sourceRequestId, ids),
         ),
       ),
-    );
-  if (rows.length === 0) return days;
+    reader
+      .select({
+        ...readingColumns,
+        requestId: member.requestId,
+        // Whether the live composition holds another served request: the shared-route answer of a
+        // reading whose stops were never captured (D13). A joined query: drizzle qualifies the
+        // outer columns, so the correlation cannot collapse into a tautology.
+        routeServesOthers: sql<boolean>`EXISTS (
+          SELECT 1 FROM vehicle_route_requests sd_o
+            JOIN vehicle_requests sd_q ON sd_q.id = sd_o.request_id
+           WHERE sd_o.route_id = ${driverDailyReportItems.routeId}
+             AND sd_o.request_id <> ${member.requestId}
+             AND ${servedRequestSql('sd_q')})`,
+      })
+      .from(vehicleReadings)
+      .innerJoin(driverDailyReportItems, eq(driverDailyReportItems.id, vehicleReadings.itemId))
+      .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
+      .innerJoin(persons, eq(persons.id, driverDailyReports.personId))
+      .leftJoin(previous, eq(previous.id, vehicleReadings.previousEngineHoursId))
+      .innerJoin(
+        member,
+        and(
+          eq(member.routeId, driverDailyReportItems.routeId),
+          eq(member.workDate, driverDailyReportItems.reportDate),
+        ),
+      )
+      .where(
+        and(common, eq(driverDailyReportItems.sourceKind, 'route'), inArray(member.requestId, ids)),
+      ),
+  ]);
+  const rows = [...esm2Rows, ...routeRows];
+  if (rows.length === 0) return result;
 
-  const items: (DiscrepancyItem & { personId: string; reportId: string })[] = rows.map((row) => ({
-    id: row.itemId,
-    sourceKind: row.sourceKind,
-    routeId: row.routeId,
-    waybillId: row.waybillId,
-    vehicleId: row.vehicleId,
-    reportDate: row.reportDate,
-    personId: row.personId,
-    reportId: row.reportId,
-  }));
-  const live = await loadLiveSources(reader, items.map(itemRef));
+  // Everything below is per item or per reading, read once however many requests share them.
+  const items = new Map<string, DiscrepancyItem & { reportId: string; personId: string }>();
+  for (const row of rows) {
+    items.set(row.itemId, {
+      id: row.itemId,
+      sourceKind: row.sourceKind,
+      routeId: row.routeId,
+      waybillId: row.waybillId,
+      vehicleId: row.vehicleId,
+      reportDate: row.reportDate,
+      reportId: row.reportId,
+      personId: row.personId,
+    });
+  }
+  const live = await loadLiveSources(reader, [...items.values()].map(itemRef));
   const decisions = await loadDecisions(
     reader,
-    items.map((item) => item.reportId),
+    [...items.values()].map((item) => item.reportId),
   );
-  // A route's duration is the sum of its steps (ADR 0234), so its stops come along; an ESM-2 pair
-  // is read by `shiftSpanMinutes` and needs nothing more.
+  // A route's duration is the sum of its steps (ADR 0234), so its stops come along, with the request
+  // snapshot that says whose work each stop was (D13); an ESM-2 pair is read by `shiftSpanMinutes`.
   const points = await loadReadingPoints(
     reader,
     rows.filter((row) => row.sourceKind === 'route').map((row) => row.readingId),
   );
   const discrepanciesByItem = new Map<string, { kind: DiscrepancyKind; resolved: boolean }[]>();
-  for (const item of items) {
+  for (const item of items.values()) {
     // No day refs: `missing_source` never applies to an item that exists (§6.1).
     const found = findDiscrepancies(item, [item], [], live);
     discrepanciesByItem.set(
@@ -361,10 +428,19 @@ export async function loadDriverShiftDays(
     );
   }
 
-  const byDate = new Map<string, DriverShiftReading[]>();
-  const pairs: SnapshotOf[] = [];
+  const byRequestDate = new Map<string, Map<string, DriverShiftReading[]>>();
+  const snapshots: SnapshotOf[] = [];
   for (const row of rows) {
     const ref = itemRef(row);
+    const stored = points.get(row.readingId) ?? [];
+    const scalar = { startedAt: clockTime(row.startedAt), endedAt: clockTime(row.endedAt) };
+    // D13: a route reading with captured stops gives the request its own span; one without stops
+    // has no attribution to cut by, keeps its scalar pair (no route duration without steps) and
+    // answers "shared" by the live composition.
+    const span =
+      row.sourceKind === 'route' && stored.length > 0
+        ? requestRouteSpan(stored, row.requestId)
+        : null;
     const reading: DriverShiftReading = {
       readingId: row.readingId,
       version: row.version,
@@ -385,24 +461,36 @@ export async function loadDriverShiftDays(
       noDataReason: row.noDataReason,
       comment: row.comment,
       discrepancies: discrepanciesByItem.get(row.itemId) ?? [],
-      times: {
-        startedAt: clockTime(row.startedAt),
-        endedAt: clockTime(row.endedAt),
-        points: (points.get(row.readingId) ?? []).map(({ position, arrivedAt, departedAt }) => ({
-          position,
-          arrivedAt,
-          departedAt,
-        })),
-      },
+      times: span
+        ? { ...routeScalarTimes(span.points), points: span.points }
+        : { ...scalar, points: [] },
+      sharedRoute: span ? span.shared : row.sourceKind === 'route' && row.routeServesOthers,
     };
-    const list = byDate.get(row.reportDate);
+    const days = byRequestDate.get(row.requestId) ?? new Map<string, DriverShiftReading[]>();
+    byRequestDate.set(row.requestId, days);
+    const list = days.get(row.reportDate);
     if (list) list.push(reading);
-    else byDate.set(row.reportDate, [reading]);
-    pairs.push({ reading, vehicleId: row.vehicleId, date: row.reportDate });
+    else days.set(row.reportDate, [reading]);
+    snapshots.push({ reading, vehicleId: row.vehicleId, date: row.reportDate });
   }
-  await markBrokenPairs(reader, pairs);
-  for (const [date, readings] of byDate) days.set(date, driverShiftDayOf(date, readings));
-  return days;
+  await markBrokenPairs(reader, snapshots);
+  for (const [requestId, days] of byRequestDate) {
+    const byDay = new Map<string, DriverShiftDay>();
+    for (const [date, readings] of days) byDay.set(date, driverShiftDayOf(date, readings));
+    result.set(requestId, byDay);
+  }
+  return result;
+}
+
+/** The driver days of one request over a range of days, by day: the batch reader for one. */
+export async function loadDriverShiftDays(
+  reader: ReadingsReader,
+  requestId: string,
+  range: { from: string; to: string },
+): Promise<Map<string, DriverShiftDay>> {
+  return (
+    (await loadDriverShiftDaysByRequest(reader, [requestId], range)).get(requestId) ?? new Map()
+  );
 }
 
 /**

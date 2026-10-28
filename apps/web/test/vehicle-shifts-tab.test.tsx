@@ -177,6 +177,7 @@ describe('вкладка «Смены» в карточке заявки', () =>
             clean: true,
             since: null,
             fingerprint: 'v1:c',
+            sharedRoute: true,
           },
           driver: {
             issues: [],
@@ -207,6 +208,8 @@ describe('вкладка «Смены» в карточке заявки', () =>
     expect(await screen.findByText('7,5 ч')).toBeDefined();
     expect(screen.getByText('по водителю')).toBeDefined();
     expect(screen.getByText('отчёт: принят')).toBeDefined();
+    // D13: the route of the day was shared — the hours are the whole route's, and the day says so.
+    expect(screen.getAllByText('рейс общий')).toHaveLength(1);
     expect(screen.getByText('60 л')).toBeDefined();
     // A driver day has numbers to sign: it waits for the sign-off, it is not "unfilled".
     expect(screen.getAllByText('ждёт согласования')).toHaveLength(1);

@@ -427,6 +427,8 @@ describe('окно смен: время смены по водителю', () =>
       endedAt: '16:20',
       intervals: [{ startedAt: '07:40', endedAt: '16:20' }],
       timeIssue: null,
+      // A linear day on a route shared with freight (D13): its own stops' time, the route's hours.
+      sharedRoute: true,
     },
   });
   const splitDay = shift('2026-08-04', {
@@ -484,6 +486,14 @@ describe('окно смен: время смены по водителю', () =>
         expectedDriverFingerprint: 'v1:timed',
       }),
     );
+  });
+
+  it('marks the hours of a shared route «рейс общий», and only there (D13)', async () => {
+    renderTimedWindow();
+
+    const today = await rowOf(ON_DATE);
+    expect(within(today).getByText('рейс общий')).toBeDefined();
+    expect(within(await rowOf('2026-08-04')).queryByText('рейс общий')).toBeNull();
   });
 
   it('shows intervals that do not fold and leaves the time to the site', async () => {

@@ -38,6 +38,14 @@ export function shiftDriverNoteText(shift: VehicleRequestShiftDto): string | nul
 }
 
 /**
+ * Why a day carries «рейс общий» next to its hours (D13): its route served other requests too, so
+ * the hours are the whole route's — one engine-hour counter cannot be split by stops — while the
+ * time is the day's own stops.
+ */
+const SHARED_ROUTE_HINT =
+  'Машина в этот день возила и другие заявки: моточасы — за весь рейс, время — по точкам этой заявки';
+
+/**
  * The driver mark of a day for the shift table and the shift window. Everyone who reads the
  * request sees the mark and the numbers (D10); the report state and the reasons a day is not
  * clean come only in the diagnostic block, which the server sends to `vehicleReadings.read`.
@@ -46,12 +54,18 @@ export function ShiftDriverNote({ shift }: { shift: VehicleRequestShiftDto }) {
   const states = [
     ...new Set((shift.driver?.readings ?? []).map((r) => driverReportStateLabels[r.reportState])),
   ];
+  const shared = shift.driverDay?.sharedRoute === true && (
+    <Tag style={{ marginInlineEnd: 4 }} title={SHARED_ROUTE_HINT}>
+      рейс общий
+    </Tag>
+  );
   if (shiftSourceOf(shift) === 'driver') {
     return (
       <div style={{ lineHeight: 1.35 }}>
         <Tag color="blue" style={{ marginInlineEnd: 4 }}>
           по водителю
         </Tag>
+        {shared}
         {states.length > 0 && (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             отчёт: {states.join(', ').toLowerCase()}
@@ -61,10 +75,11 @@ export function ShiftDriverNote({ shift }: { shift: VehicleRequestShiftDto }) {
     );
   }
   const text = shiftDriverNoteText(shift);
-  if (!text) return null;
+  if (!text) return shared ? <div>{shared}</div> : null;
   const issues = (shift.driver?.issues ?? []).map((issue) => driverDayIssueLabels[issue]);
   return (
     <div title={issues.length > 0 ? issues.join('; ') : undefined}>
+      {shared}
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         {text}
       </Typography.Text>
