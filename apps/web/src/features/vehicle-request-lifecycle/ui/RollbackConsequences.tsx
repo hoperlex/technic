@@ -2,7 +2,7 @@ import { Alert, Button, Space, Spin } from 'antd';
 import {
   assignmentRateLabel,
   assignmentTitle,
-  completionLabel,
+  completionFactLabel,
   routePurposeLabels,
   type Esm2CancelPreviewDto,
   type VehicleRequestDto,
@@ -148,7 +148,7 @@ function eraseLines(request: VehicleRequestDto, p: VehicleRequestRollbackPreview
     lines.push({
       key: 'completion',
       text: request.completion
-        ? `Предъявленный факт: ${completionLabel(request.completion)}`
+        ? `Предъявленный факт: ${completionFactLabel(request.completion)}`
         : 'Предъявленный факт',
     });
   }

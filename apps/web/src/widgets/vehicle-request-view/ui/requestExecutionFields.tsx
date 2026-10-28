@@ -1,6 +1,6 @@
 import { Button, Space, Tag, Typography } from 'antd';
 import {
-  completionLabel,
+  completionFactLabel,
   type Permission,
   type RequestWaybillDto,
   routePurposeLabels,
@@ -217,7 +217,7 @@ export function requestExecutionFields({
                   <Typography.Text strong>
                     {formatMoney(request.completion.totalCost)}
                   </Typography.Text>
-                  <Typography.Text>{completionLabel(request.completion)}</Typography.Text>
+                  <Typography.Text>{completionFactLabel(request.completion)}</Typography.Text>
                 </Space>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   Закрыл {request.completion.completedByName || '—'} ·{' '}
