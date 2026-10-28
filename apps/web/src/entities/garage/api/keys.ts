@@ -23,4 +23,5 @@ export const garageKeys = createQueryKeys('garage', {
   vehiclesSummary: (params: Query) => ['vehicles-summary', params],
   drivers: (params: Query) => ['drivers', params],
   driversSummary: (params: Query) => ['drivers-summary', params],
+  driverSchedule: (personId: string, params: Query) => ['driver-schedule', personId, params],
 });

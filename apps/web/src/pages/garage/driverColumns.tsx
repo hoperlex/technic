@@ -6,7 +6,7 @@ import {
   garageDriverStateColors,
   garageDriverStateLabels,
 } from '@technic/contracts';
-import { textColumn, type CardConfig } from '@shared/ui';
+import { EntityLink, textColumn, type CardConfig } from '@shared/ui';
 import { busyDayColumns, driverBusyLine, type useBusyExpand } from './busyColumns';
 import { LicenseCell, licenseCardLine } from './licenseCell';
 import { type useBusyRouteActions } from './shared';
@@ -63,12 +63,15 @@ function gapsTag(r: GarageDriverDto) {
 export function driverColumns({
   expand,
   hrefOf,
+  scheduleHref,
   on,
 }: {
   /** Раскрытые дни: набор общий на три графы, поэтому и приходит снаружи (`useBusyExpand`). */
   expand: ReturnType<typeof useBusyExpand>;
   /** Адрес журнала показаний по машине; `null` — смотрящему цифры приборов не положены. */
   hrefOf: (vehicleId: string) => string | null;
+  /** The address of the person's «График» window (`driverScheduleAddress.ts`). */
+  scheduleHref: (personId: string) => string;
   /**
    * День среза: им меряется годность удостоверения. Приходит сверху, а не берётся «сегодня» —
    * гараж отвечает про выбранный день, и в пятничном срезе годность считается на пятницу.
@@ -92,7 +95,17 @@ export function driverColumns({
                 приёмом, что у подписи машины (`BusyVehicleCell`), и подсказка у него всплывает по
                 факту обреза: имя, поместившееся в 300 px, договаривать нечем, а на странице из 25
                 строк безусловная подсказка — шум при каждом наведении. */}
-            <Typography.Text ellipsis={{ tooltip: r.fullName }}>{r.fullName}</Typography.Text>
+            {/* The «График» link shares the name's line, so the cell stays two lines high; the
+                name gives way to it (`minWidth: 0`) and is cut first. No column of its own: the
+                table's width budget (see the tab) has no room for one. */}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <Typography.Text ellipsis={{ tooltip: r.fullName }} style={{ flex: 1, minWidth: 0 }}>
+                {r.fullName}
+              </Typography.Text>
+              <EntityLink to={scheduleHref(r.personId)} title="График смен за месяц">
+                График
+              </EntityLink>
+            </div>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {[r.personnelNo ? `таб. № ${r.personnelNo}` : null, formatPhone(r.phone) || null]
                 .filter(Boolean)
@@ -147,10 +160,13 @@ export function driverColumns({
 /** Та же строка на телефоне: трёх граф дня там нет, и работы дня перечисляет сама карточка. */
 export function driverCard({
   routeActions,
+  openSchedule,
   on,
 }: {
   /** Рейсы дня пунктами шита действий (`useBusyRouteActions`): хук зовёт вкладка. */
   routeActions: ReturnType<typeof useBusyRouteActions>;
+  /** Opens the person's «График» window, the same window the row's link opens on a desktop. */
+  openSchedule: (personId: string) => void;
   /** День среза — тот же, что у колонок: годность удостоверения меряется им (`licenseCardLine`). */
   on: string;
 }): CardConfig<GarageDriverDto> {
@@ -177,15 +193,17 @@ export function driverCard({
           : r.gaps.map((gap) => driverDocumentGapLabel(gap, r.credentialTypeCode)).join('; '),
     ],
     /*
-     * Единственные действия карточки водителя — его рейсы этого дня, и заведены они здесь ровно
-     * поэтому: своей карточки человек в гараже не открывает (`onOpen` у списка нет), занятость
-     * показана строкой текста, и до сих пор с телефона нельзя было попасть в рейс никак —
-     * оставалось искать его номер на десктопе.
+     * The card's actions: the person's month first, then his routes of this day. Both live here
+     * because the card opens nothing by itself (the list has no `onOpen`) and the day is shown as
+     * text, so without them a phone could reach neither the month nor a route.
      *
-     * Пункты те же, что у техники (`useBusyRouteActions`): вопрос «что за рейс Р-12» один, а
-     * пришли к нему с разных сторон — от машины или от человека за рулём. Машину каждого рейса
-     * при этом называет строка карточки, так что номера в подписях не двоятся.
+     * The route items are the vehicles tab's (`useBusyRouteActions`): "what is route Р-12" is one
+     * question reached from either side, the vehicle or the person driving it. The card's lines
+     * name each route's vehicle, so numbers are not repeated in the labels.
      */
-    actions: (r) => routeActions(r.busy),
+    actions: (r) => [
+      { key: 'schedule', label: 'График', onClick: () => openSchedule(r.personId) },
+      ...routeActions(r.busy),
+    ],
   };
 }

@@ -323,8 +323,11 @@ describe('телефон: рейс из гаража', () => {
     });
 
     expect(await screen.findByText('Иванов Иван Иванович')).toBeDefined();
-    // Других действий у карточки водителя нет вовсе, поэтому исчезает и сама кнопка шита.
-    expect(screen.queryByLabelText('Действия')).toBeNull();
+    // The sheet stays for the person's month («График», `garage.read`), but no route item is in
+    // it: the month is the garage's own window, the route is not this role's.
+    openActions();
+    expect(await screen.findByText('График')).toBeDefined();
+    expect(screen.queryAllByText(/^Открыть маршрут /u)).toEqual([]);
   });
 });
 

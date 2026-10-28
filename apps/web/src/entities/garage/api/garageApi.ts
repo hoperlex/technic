@@ -1,5 +1,6 @@
 import type {
   GarageDriverListDto,
+  GarageDriverScheduleDto,
   GarageDriversSummaryDto,
   GarageVehicleListDto,
   GarageVehiclesSummaryDto,
@@ -18,4 +19,7 @@ export const garageApi = {
   drivers: (query: Query) => apiFetch<GarageDriverListDto>('/garage/drivers', { query }),
   driversSummary: (query: Query) =>
     apiFetch<GarageDriversSummaryDto>('/garage/drivers/summary', { query }),
+  /** A driver's month: shifts due a reading and days without paper; no month — the current one. */
+  driverSchedule: (personId: string, query: Query) =>
+    apiFetch<GarageDriverScheduleDto>(`/garage/drivers/${personId}/schedule`, { query }),
 };

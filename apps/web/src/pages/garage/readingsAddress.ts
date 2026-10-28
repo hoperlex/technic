@@ -138,6 +138,23 @@ export function vehicleCardHref(vehicleId: string, date: string): string {
 }
 
 /**
+ * A driver's day in the intake registry: `?tab=readings&sub=intake&from=<day>&to=<day>&report=<id>`.
+ *
+ * The door of the garage's «График» window: a shift row opens the person's day in the registry's
+ * own report window rather than a second view of the report. Without a report (the day was never
+ * opened) the registry opens on that day alone, where its row opens the day by the registry's own
+ * confirmation (`useIntakeRowOpen`) — the window does not repeat that step.
+ *
+ * Built from scratch, as `vehicleCardHref` is, with the snapshot day kept: the drivers tab's own
+ * keys (the open schedule) belong to it, and Back returns to them.
+ */
+export function intakeDayHref(day: string, reportId: string | null, date: string): string {
+  const next = new URLSearchParams({ tab: 'readings', sub: 'intake', date, from: day, to: day });
+  if (reportId) next.set('report', reportId);
+  return `?${next.toString()}`;
+}
+
+/**
  * Подвкладка, период и открытый предмет в адресе.
  *
  * `date` — день среза страницы: от него отсчитывается умолчание периода, потому что обе подвкладки

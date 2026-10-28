@@ -12,6 +12,8 @@ import { listQueryOptions } from '@shared/api';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { useAuth } from '@entities/session';
 import { useJournalAddress } from './journalAddress';
+import { useDriverScheduleAddress } from './driverScheduleAddress';
+import { DriverScheduleModal } from './DriverScheduleModal';
 import { useBusyExpand } from './busyColumns';
 import { driverCard, driverColumns } from './driverColumns';
 import { useDriverFilters, type DriverFilterParams } from './driverFilters';
@@ -49,6 +51,9 @@ import { VehicleReadingsJournal } from './VehicleReadingsJournal';
  * журнал окном поверх среза (тем же приёмом, что рейс и заявка, ADR 0120) и только под правом на
  * сами показания: у среза дня своё право (`garage.read`), у цифр приборов — своё.
  *
+ * Beside the name stands «График», the person's month of shifts due a reading
+ * (`DriverScheduleModal`), opened over the snapshot by address (`?schedule=`) like the journal.
+ *
  * Строка и отбор собраны рядом со своими ячейками: колонки с карточкой телефона — фабриками
  * `driverColumns.tsx`, полоса фильтров с описаниями для шита — `driverFilters.tsx`.
  */
@@ -82,7 +87,11 @@ export function GarageDriversTab({
   // вкладок гаража общий, а скрытая вкладка остаётся смонтированной (`PageTabs`) — без этой
   // проверки один адрес открыл бы два журнала разом, здесь и на соседней вкладке.
   const canReadReadings = can('vehicleReadings.read');
-  const journal = useJournalAddress(useActiveTabKey() === 'drivers' && canReadReadings);
+  const activeTab = useActiveTabKey() === 'drivers';
+  const journal = useJournalAddress(activeTab && canReadReadings);
+  // The month window opens under the tab's own right (`garage.read`); the visible-tab check is the
+  // journal's, for the same reason — a hidden tab stays mounted.
+  const schedule = useDriverScheduleAddress(activeTab);
   const { params, setParams, setSort, onTableChange } = useListParams<
     DriverFilterParams & {
       sortBy?: string;
@@ -103,6 +112,7 @@ export function GarageDriversTab({
 
   const items = data?.items ?? [];
   const journalVehicle = journal.id ? openedVehicle(journal.id, items) : null;
+  const scheduleName = items.find((r) => r.personId === schedule.personId)?.fullName ?? null;
 
   /*
    * Сводка не сужается ни состоянием, ни комплектом: обе цифры — её собственные ответы.
@@ -146,12 +156,13 @@ export function GarageDriversTab({
   const columns = driverColumns({
     expand,
     hrefOf: (id) => (canReadReadings ? journal.href(id) : null),
+    scheduleHref: schedule.href,
     on: date,
   });
 
   const { bar: filters, mobile: mobileFilters } = useDriverFilters({ params, applyFilter });
 
-  const card = driverCard({ routeActions, on: date });
+  const card = driverCard({ routeActions, openSchedule: schedule.open, on: date });
 
   return (
     <PageTableLayout
@@ -200,6 +211,17 @@ export function GarageDriversTab({
           day={date}
           open
           onClose={journal.close}
+        />
+      )}
+
+      {schedule.personId && (
+        <DriverScheduleModal
+          personId={schedule.personId}
+          fullName={scheduleName}
+          month={schedule.month}
+          onMonthChange={schedule.setMonth}
+          onClose={schedule.close}
+          date={date}
         />
       )}
     </PageTableLayout>
