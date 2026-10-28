@@ -79,13 +79,13 @@
 ## Кабинет водителя
 
 - Домен: `кабинет-водителя`
-- Источник истины: [driver-cabinet.ts](../packages/contracts/src/driver-cabinet.ts), [reading-times.ts](../packages/contracts/src/reading-times.ts)
+- Источник истины: [driver-cabinet.ts](../packages/contracts/src/driver-cabinet.ts), [reading-times.ts](../packages/contracts/src/reading-times.ts), [vehicle-readings.ts](../packages/contracts/src/vehicle-readings.ts) (`driverReadingCompletenessIssues`: what a whole block of the driver is)
 - Разделы портала: `driver-cabinet`
 - API-маршруты: [driver.ts](../apps/api/src/routes/driver.ts)
 - Остальной API: [driver-assignment.ts](../apps/api/src/services/driver-assignment.ts)
 - Web: [driver](../apps/web/src/pages/driver), [driver-cabinet](../apps/web/src/entities/driver-cabinet)
 - Тесты: `driver-cabinet*.db.test.ts`, `driver-routes-mail.db.test.ts`
-- Решения: [ADR 0102](adr/0102-driver-cabinet.md), [ADR 0129](adr/0129-driver-cabinet-readings-first.md), [ADR 0234](adr/0234-driver-shift-and-stop-times.md)
+- Решения: [ADR 0102](adr/0102-driver-cabinet.md), [ADR 0129](adr/0129-driver-cabinet-readings-first.md), [ADR 0234](adr/0234-driver-shift-and-stop-times.md), [ADR 0237](adr/0237-driver-readings-whole-at-shift-end.md)
 
 ## Справочники и обмен
 
