@@ -25,34 +25,35 @@ import {
 import { db } from '../db/client';
 import { vehicleReadingFiles } from '../db/schema';
 import { daysBetween } from './readings-chain';
-import { expectedRelationCte } from './readings-aggregate';
+import { expectedRelationCte } from './readings-expected';
 import { loadReportById } from './readings';
 
 /**
- * Реестр приёма показаний (план «Показания техники», §5, §6; решения Р5—Р9а, Р22—Р26, Р32).
+ * The readings intake registry (plan «Показания техники», §5, §6; decisions Р5—Р9а, Р22—Р26, Р32).
  *
- * Экран приёма отвечает на один вопрос: **с кого сегодня ждут показания и что с ними не так**.
- * Отсюда четыре свойства, каждое — принятое решение, а не удобство реализации.
+ * The intake screen answers one question: **whom readings are expected from today and what is wrong
+ * with them**. Hence four properties, each a decision taken rather than an implementation
+ * convenience.
  *
- * 1. **Реестр строится от ожидаемых смен, а не от строк ожидания** (Р26). Строка ожидания
- *    появляется только после `openReport`, поэтому у дня, который никто не открывал, строк нет
- *    вовсе — а показания с него ждут, и ровно ради таких дней экран и нужен. Набор берётся общим
- *    фрагментом `expectedRelationCte` (`readings-aggregate.ts`): второго правила «что такое
- *    ожидаемая смена» в проекте быть не должно, иначе приём требовал бы показаний по сменам,
- *    которых не ждёт ни статистика, ни кабинет водителя (Р26а).
- * 2. **Пометки собирает сервер, с готовыми текстами** (Р5, Р7), а уровень строки считает одна
- *    функция контрактов `intakeLevel` — ни здесь, ни в SQL, ни на портале второй формулы нет.
- * 3. **«Сегодня» и «сколько дней ждём» тоже считает сервер** (Р23), по московскому дню: красная
- *    строка не должна зависеть от часов телефона в кабине.
- * 4. **Пригодность к пакетному приёму считается по ВСЕМ строкам отчёта** (Р9а), а не по видимым:
- *    пагинация делит отчёт между страницами, и кнопка, считающая по странице, предложила бы
- *    принять отчёт с невидимой жёлтой строкой. Поэтому рядом со страницей строк идёт список
- *    отчётов периода со своими счётчиками.
+ * 1. **The registry is built from the expected shifts, not from the report rows** (Р26). A report
+ *    row appears only after `openReport`, so a day nobody opened has no rows at all — yet readings
+ *    are expected from it, and the screen exists exactly for such days. The set comes from the
+ *    shared fragment `expectedRelationCte` (`readings-expected.ts`): a second rule of "what an
+ *    expected shift is" must not exist in the project, otherwise the intake would demand readings
+ *    for shifts neither the statistics nor the driver cabinet expect (Р26а).
+ * 2. **The server assembles the marks, with ready texts** (Р5, Р7), and the row level is computed by
+ *    one contract function `intakeLevel`: there is no second formula here, in SQL or in the portal.
+ * 3. **"Today" and "how many days we wait" are computed by the server too** (Р23), by the Moscow
+ *    day: a red row must not depend on the clock of the phone in the cab.
+ * 4. **Fitness for batch acceptance is computed over ALL rows of a report** (Р9а), not the visible
+ *    ones: pagination splits a report between pages, and a button counting by the page would offer
+ *    to accept a report with an invisible yellow row. So the page of rows comes with the list of the
+ *    period's reports and their own counters.
  *
- * Цена четвёртого свойства названа прямо: набор периода собирается в память целиком, а страницу из
- * него режет уже сервис. Считать счётчики в SQL было бы дешевле, но это и есть та самая вторая
- * формула уровня, которой быть не должно; период же реестра — день или неделя (Р29), и потолок
- * ручки его ограничивает.
+ * The price of the fourth property is stated plainly: the period's set is collected in memory whole,
+ * and the service cuts the page from it. Counting in SQL would be cheaper, but it is exactly the
+ * second formula of the level that must not exist; the registry period is a day or a week (Р29),
+ * and the route's ceiling bounds it.
  */
 
 // ── Строка набора ──

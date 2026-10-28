@@ -565,16 +565,18 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
   });
 
   /**
-   * The route branch with a gap, the save door and a site row overlaid by a driver day (D4). Also
-   * the linear days table: it shows the effective hours inside the term and keeps the physical row
-   * of a planned day outside the term that an issued route holds.
+   * The route branch with a gap, the save door and a site row overlaid by a driver day (D4). The gap
+   * is the garage's continuity rule (D16): the route of d5 is an expected shift nobody submitted, so
+   * the d4 reading's engine hours cover two days of work. Also the linear days table: it shows the
+   * effective hours inside the term and keeps the physical row of a planned day outside the term
+   * that an issued route holds.
    */
   it('рейсы дня: разрыв цепочки, дверь сохранения и строка площадки под днём водителя', async () => {
     const person = await newPerson('Рейсовый');
     const vehicleId = await newVehicle();
     const [d6, d5, d4, d3, d2] = [ago(6), ago(5), ago(4), ago(3), ago(2)];
     const requestId = await newRequest(vehicleId, d6, d2);
-    for (const date of [ago(7), d6, d4, d3, d2])
+    for (const date of [ago(7), d6, d5, d4, d3, d2])
       await dayRoute(requestId, vehicleId, person.id, date);
 
     await submitDay(person.id, d6, values({ engineHours: 500, fuelFilledLiters: 40 }));
@@ -671,6 +673,44 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
         }),
       ),
     ).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  /**
+   * D16: a pair is continuous when no expected shift of the vehicle without numbers lies between
+   * the snapshots — the month aggregate's rule, not the calendar. Days without an expected shift (a
+   * weekend) break nothing; a weekly ESM-2 day breaks only once its report was opened without
+   * numbers (Р13б), as the garage counts it.
+   */
+  it('непрерывность пары — правило гаража: выходные без смен не рвут, открытый пустой день рвёт', async () => {
+    const [friday, saturday, sunday, monday] = [ago(5), ago(4), ago(3), ago(2)];
+    const person = await newPerson('Понедельничный');
+    const vehicleId = await newVehicle();
+    const requestId = await newRequest(vehicleId, friday, monday);
+    await issueEsm2(requestId, vehicleId, person.id, friday);
+    await issueEsm2(requestId, vehicleId, person.id, monday);
+    await submitDay(person.id, friday, values({ engineHours: 1000 }));
+    await submitDay(person.id, monday, values({ engineHours: 1009 }));
+
+    expect(await dayOf(requestId, monday)).toMatchObject({
+      source: 'driver',
+      machineHours: 9,
+      driverDay: { clean: true, since: null },
+      driver: { issues: [], readings: [{ previousDate: friday }] },
+    });
+
+    // A weekly sheet in force on Saturday whose day nobody opened is not a missed shift (Р13б).
+    await issueEsm2(requestId, vehicleId, person.id, saturday);
+    expect((await dayOf(requestId, monday)).source).toBe('driver');
+
+    // Sunday's report opened without numbers is: the delta now covers a shift with no reading.
+    await issueEsm2(requestId, vehicleId, person.id, sunday);
+    await ctx.readings.openReport(person.id, sunday, ctx.adminId, STAFF);
+    expect(await dayOf(requestId, monday)).toMatchObject({
+      source: null,
+      machineHours: 0,
+      driverDay: { machineHours: 9, clean: false, since: friday },
+      driver: { issues: ['gap'] },
+    });
   });
 
   it('no_data и сброс счётчика — день не чистый', async () => {

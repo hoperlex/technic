@@ -73,8 +73,11 @@ export const SHIFT_SOURCES = ['site', 'driver'] as const;
 export type ShiftSource = (typeof SHIFT_SOURCES)[number];
 
 /**
- * Why the driver's numbers of a day cannot be signed in one click (plan §6.2, D3). The day still
- * shows the sum it has; the site saves the form consciously before signing.
+ * Why the driver's numbers of a day cannot be signed in one click (plan §6.2, D3, D16). The day
+ * still shows the sum it has; the site saves the form consciously before signing. `gap` is the
+ * readings module's continuity rule (Р13а): an expected shift of the vehicle without numbers lies
+ * between the predecessor snapshot and the day — not merely a calendar distance, so a Monday after
+ * a weekend without expected shifts is clean.
  */
 export const DRIVER_DAY_ISSUES = [
   'no_data',
@@ -92,7 +95,7 @@ export const driverDayIssueLabels: Record<DriverDayIssue, string> = {
   first_snapshot: 'первое показание машины — не с чем сравнить',
   missing_engine_hours: 'моточасы не указаны',
   counter_reset: 'счётчик моточасов сброшен',
-  gap: 'предыдущее показание раньше вчерашнего дня',
+  gap: 'между показаниями пропущена ожидаемая смена',
   discrepancy: 'расхождение с источником не разобрано',
   out_of_range: `сумма за день вне 0–${MAX_MACHINE_HOURS} ч`,
 };
@@ -109,9 +112,16 @@ export interface ShiftDriverDayDto {
    * (`readings-aggregate.ts`). `null` — the day has no reading with numbers at all.
    */
   refuelLiters: number | null;
-  /** Signable in one click: every reading has hours from a snapshot of this or the previous day. */
+  /**
+   * Signable in one click: every reading has hours whose engine-hour pair is continuous by the
+   * readings module's rule (Р13а, D16) — no expected shift of the vehicle without numbers lies
+   * between the predecessor snapshot and this day.
+   */
   clean: boolean;
-  /** The oldest predecessor snapshot when it is older than the previous day: «23 ч с 14.08». */
+  /**
+   * The oldest predecessor snapshot of a pair that is not continuous: the hours are counted since
+   * that day, «23 ч с 14.08». `null` — every pair is continuous.
+   */
   since: string | null;
   /**
    * What the person signs or saves (§6.4): the readings with their versions, their predecessors,

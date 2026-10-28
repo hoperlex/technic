@@ -38,7 +38,7 @@ import {
 } from '../db/schema';
 import { attachedFileView } from './file-view';
 import { clockTime, loadReadingPoints, pointDto } from './reading-times';
-import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER } from './readings-aggregate';
+import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER } from './readings-expected';
 
 /**
  * Показания глазами гаража (ADR 0103, Р27/Р28): состояние дня машины, её журнал и лист выгрузки для
@@ -161,44 +161,46 @@ function sourceClosedSql(match: SQL): SQL {
 }
 
 /**
- * Фильтр «не сданы» — главный вопрос к экрану следующего утра (Р27).
+ * The "not submitted" filter — the main question of the next morning's screen (Р27).
  *
- * Считается **от ожидаемых смен дня, а не от строк ожидания** (Р26б). Строка ожидания появляется
- * только после `openReport`, поэтому день, который никто не открывал, прежний фильтр не видел
- * вовсе: у водителя без учётки показаний нет и не ждут — хотя рейс с выписанным листом есть, и
- * ввести за него показания диспетчер обязан. Ровно ради таких дней фильтр и открывают.
+ * Counted **from the day's expected shifts, not from the report rows** (Р26б). A report row appears
+ * only after `openReport`, so the former filter did not see a day nobody opened at all: a driver
+ * without an account has no readings and none are expected of him — though a route with an issued
+ * waybill exists, and the dispatcher must enter its readings. The filter is opened for exactly such
+ * days.
  *
- * Что считается ожидаемой сменой, решают общие фрагменты `EXPECTED_ROUTE_FILTER` и
- * `EXPECTED_ESM2_FILTER` (`readings-aggregate.ts`) — те же самые, которыми считает статистика и
- * которые повторяют кабинет водителя (Р26а). Копии здесь нет намеренно: разойдись правило, гараж
- * требовал бы показаний по сменам, которых водитель у себя в задании не видит. Дневные границы к
- * фрагментам не относятся и стоят рядом с ними: у рейса это его день, у недельного листа — каждый
- * календарный день действия (Р34).
+ * What counts as an expected shift is decided by the shared fragments `EXPECTED_ROUTE_FILTER` and
+ * `EXPECTED_ESM2_FILTER` (`readings-expected.ts`) — the very ones the statistics count by and the
+ * driver cabinet repeats (Р26а). There is deliberately no copy here: were the rule to drift, the
+ * garage would demand readings for shifts the driver does not see in his task. The day bounds are
+ * not part of the fragments and stand next to them: a route's own day, every calendar day a weekly
+ * waybill is in force (Р34).
  *
- * Машина без ожидаемой смены в отбор не попадает — ждать с неё нечего; машина, у которой все
- * ожидаемые смены закрыты, — тоже.
+ * A vehicle without an expected shift is not selected — nothing is expected of it; neither is a
+ * vehicle whose expected shifts are all closed.
  *
- * Тег в отобранной строке иногда говорит «расхождение», а не «частично», и это не противоречие:
- * фильтр отвечает «по этой машине ещё ждут показания», а тег называет главное — то, с чем надо
- * что-то делать в первую очередь. Обратное тоже бывает: у рейса, переназначенного без перевыписки
- * листа, тег красный, а ждать показание не с кого (§14 п. 5 плана) — такой день разбирают, а не
- * досдают.
+ * The tag of a selected row sometimes says "discrepancy" rather than "partial", and that is no
+ * contradiction: the filter answers "readings are still expected for this vehicle", while the tag
+ * names the main thing — what has to be dealt with first. The reverse happens too: a route reassigned
+ * without reissuing its waybill has a red tag, yet nobody to expect the reading from (§14 item 5 of
+ * the plan) — such a day is sorted out, not submitted.
  *
- * Отбор идёт до страницы (`routes/garage.ts`): посчитанный по загруженной странице, он врал бы и в
- * счётчике, и в листании. Поэтому он обязан оставаться **коррелированным по машине** — и половины
- * сложены одним `EXISTS` над `UNION ALL`, а не двумя `EXISTS` через `OR`. Разница не косметическая:
- * два отдельных `EXISTS` планировщик расцепляет в `hashed SubPlan` и считает ответ сразу по всему
- * году — один раз, но целиком: полный проход по составу рейсов и по всем листам с
- * `period_from <= день`. Замер на годовом объёме (200 машин × 365 дней, 146 тыс. строк ожидания):
- * расцепленная форма 45 мс, `UNION ALL` — 5 мс, потому что обе ветки остаются на ключах своей
- * машины и дня (`vehicle_routes_vehicle_date_idx`, `waybills_vehicle_issued_idx`) и упираются в
- * `report_items_route_key` / `report_items_waybill_key`. Сверху к обеим формам PostgreSQL
- * добавляет ~22 мс компиляции JIT — оценка плана перекрывает `jit_above_cost`, как и у агрегата
- * (`readings-aggregate.ts`); там её снимают `SET LOCAL jit = off`, здесь снимать нечем: фильтр
- * приходит условием чужого запроса, а не своей транзакцией.
+ * The selection happens before the page (`routes/garage.ts`): counted over a loaded page, it would
+ * lie both in the counter and in the paging. So it must stay **correlated by the vehicle** — and the
+ * halves are put under one `EXISTS` over `UNION ALL`, not two `EXISTS` joined by `OR`. The
+ * difference is not cosmetic: the planner unties two separate `EXISTS` into a `hashed SubPlan` and
+ * computes the answer for the whole year at once — once, but whole: a full pass over route
+ * compositions and over every waybill with `period_from <= day`. Measured on a year's volume (200
+ * vehicles × 365 days, 146 thousand expectation rows): the untied form 45 ms, `UNION ALL` 5 ms,
+ * because both branches stay on the keys of their vehicle and day (`vehicle_routes_vehicle_date_idx`,
+ * `waybills_vehicle_issued_idx`) and end in `report_items_route_key` / `report_items_waybill_key`.
+ * On top of both forms PostgreSQL adds ~22 ms of JIT compilation — the plan estimate exceeds
+ * `jit_above_cost`, as the aggregate's does (`readings-aggregate.ts`); there it is turned off by
+ * `SET LOCAL jit = off`, here there is nothing to turn it off with: the filter comes as a condition
+ * of somebody else's query, not as its own transaction.
  *
- * По строкам ожидания здесь не ищут вовсе: их индекс по `(report_date, vehicle_id)` этому запросу
- * больше не нужен — в строку он приходит от найденного источника, а не наоборот.
+ * Report rows are not searched here at all: their index on `(report_date, vehicle_id)` is no longer
+ * needed by this query — a row is reached from the source found, not the other way round.
  */
 export function pendingReadingsSql(on: string): SQL {
   return sql`EXISTS (
@@ -219,12 +221,12 @@ export function pendingReadingsSql(on: string): SQL {
 }
 
 /**
- * Алиасы источников под общие фрагменты ожидаемой смены: `EXPECTED_ROUTE_FILTER` ждёт строку рейса
- * под именем `vr`, `EXPECTED_ESM2_FILTER` — строку листа под именем `w`. Имена заданы фрагментом, а
- * не выбраны здесь: он один на четырёх читателей (двое здешние — `pendingReadingsSql` и
- * `loadMissingSourceVehicles`, двое в `readings-aggregate.ts`, где фрагмент их и перечисляет), и
- * подстраиваться под него — цена того, что правило «с кого спрашивают показание» записано ровно
- * один раз.
+ * The source aliases the shared expected-shift fragments require: `EXPECTED_ROUTE_FILTER` expects
+ * the route row under the name `vr`, `EXPECTED_ESM2_FILTER` the waybill row under the name `w`. The
+ * names are set by the fragments (`readings-expected.ts`), not chosen here: one fragment serves
+ * every reader the fragment lists, two of them here (`pendingReadingsSql` and
+ * `loadMissingSourceVehicles`), and fitting in is the price of writing the rule "whom a reading is
+ * asked from" exactly once.
  */
 const expectedRoute = alias(vehicleRoutes, 'vr');
 const expectedEsm2 = alias(waybills, 'w');

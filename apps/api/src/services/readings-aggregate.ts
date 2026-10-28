@@ -10,6 +10,13 @@ import {
 import { db } from '../db/client';
 import { loadFuelNormSeason, loadVehiclesWithNorm, type FuelNormSeason } from './fuel-norms';
 import {
+  counterPairBrokenSql,
+  EXPECTED_ESM2_FILTER,
+  EXPECTED_POINTS_CTE,
+  EXPECTED_ROUTE_FILTER,
+  expectedRelationCte,
+} from './readings-expected';
+import {
   driverDailyReports,
   vehicleCategories,
   vehicleModels,
@@ -52,109 +59,6 @@ import {
  */
 
 // ── Ядро: месяцы машин ──
-
-/**
- * Сентинел-дата для соединения по рейсу.
- *
- * `FULL JOIN` в PostgreSQL 16 принимает только merge/hash-joinable условия, поэтому дизъюнкцию
- * «по рейсу ИЛИ по листу с датой» соединить нельзя (проверено на живой базе: `FULL JOIN is only
- * supported with merge-joinable or hash-joinable join conditions`, Р32б). Обе стороны приводятся к
- * одной паре равенств `(join_id, join_date)`: у листа день в ключе участвует, у рейса — нет, и
- * вместо него с обеих сторон ставится заведомо невозможная дата. `-infinity` выбран именно за
- * невозможность: любой календарный сентинел рано или поздно оказался бы чьим-то днём отчёта.
- *
- * Семантика от этого не меняется: соединение и так один к одному —
- * `report_items_route_key` уникален по `route_id`, `report_items_waybill_key` — по
- * `(waybill_id, report_date)`.
- */
-const ROUTE_JOIN_DATE = sql`DATE '-infinity'`;
-
-/**
- * Что делает рейс ожидаемой сменой (Р26а). Фрагмент общий у всех, кто спрашивает ожидаемые смены, —
- * месяцев парка и реестра приёма (через `expectedRelationCte`), хвостовой выборки ТО
- * (`loadLastExpectedShiftDays`), фильтра «не сданы» и поиска несданного источника
- * (`readings-stats.ts`), — и общий он намеренно: правило «с кого спрашивают показание» обязано быть
- * записано ровно один раз. Разойдись эти места, и подсветка «пробег с ТО известен лишь снизу»
- * зажигалась бы по сменам, которых статистика не ждёт.
- *
- * Фрагмент ждёт **строку `vehicle_routes` целиком** под алиасом `vr`: кроме ключа ему нужны машина
- * и день рейса. Все читатели так её и называют — в том числе `readings-stats.ts`, где алиас задан
- * `alias(vehicleRoutes, 'vr')` ради этого фрагмента.
- */
-export const EXPECTED_ROUTE_FILTER = sql`
-       vr.driver_person_id IS NOT NULL
-       /*
-        * Действующий лист обязателен и спрашивается на ЭТОГО же водителя: бумага именная, и
-        * переназначенный без перевыписки листа рейс заданием не является. Форма листа не
-        * проверяется — рейс закрывается 4-П или формой № 3, и перечислять их здесь значило бы
-        * завести второе место, где записано, чем закрывается рейс.
-        */
-       AND EXISTS (SELECT 1
-                     FROM waybills w
-                    WHERE w.route_id = vr.id
-                      AND w.status <> 'cancelled'
-                      AND w.driver_person_id = vr.driver_person_id)
-       /*
-        * Живой состав: рейс, оставшийся без единой неудалённой и неотменённой заявки, заданием не
-        * является — ехать по нему не надо. Перегон остаётся всегда: у него задание не в составе, а
-        * в «откуда/куда».
-        */
-       AND (vr.purpose <> 'freight'
-            OR EXISTS (SELECT 1
-                         FROM vehicle_route_requests rr
-                         JOIN vehicle_requests q ON q.id = rr.request_id
-                        WHERE rr.route_id = vr.id
-                          AND q.deleted_at IS NULL
-                          AND q.status <> 'cancelled'))
-       /*
-        * Two papers for a day, one shift. For a special-equipment request on a site the portal
-        * issues both the weekly ESM-2 and the daily 4-П for the same day of the same vehicle
-        * (ADR 0207 §2 and §3): the customer accepted the double paper deliberately, double
-        * accounting he did not. The vehicle worked one shift, its reading is one, and it is asked
-        * for by the weekly waybill; the route of that day does not count as an expected shift.
-        *
-        * The route is suppressed, not the waybill: the weekly ESM-2 is the very report of the
-        * vehicle's work on the site, the week is closed by it in accounting, while the daily blank
-        * the dispatcher is free to cancel and reissue (ADR 0207 §2), and the shift expectation must
-        * not travel after a paper that gets reissued. Were the portal to suppress neither, the
-        * second would have nothing to close it: a report row is tied to exactly one source, either
-        * a route or a waybill with a day, and one physically submitted shift closes exactly one
-        * expectation. The other would hang unsubmitted for the whole term: the garage red every
-        * day, data quality halved, and the service readings book with doubled rows.
-        *
-        * The condition is narrow: same request, same vehicle, same day. The day is taken from the
-        * composition row, whose work_date physically equals the route's day
-        * (vehicle_route_requests_route_date_fk) and is empty on a freight row. So a freight route
-        * and a relocation inside an ESM-2 week stay expected shifts, as they were: a week on the
-        * site does not cover their trip.
-        *
-        * The driver takes no part in the condition: the vehicle's shift is counted, not the
-        * person's. When the week is reissued to a substitute machinist while the daily 4-П stay on
-        * the former one, the reading is submitted by whoever the weekly waybill names. The driver
-        * cabinet suppresses the card exactly the same way (driver-assignment.ts), and the two must
-        * not drift: the report composition is assembled there.
-        */
-       AND NOT EXISTS (SELECT 1
-                         FROM waybills ew
-                         JOIN vehicle_route_requests err ON err.request_id = ew.source_request_id
-                        WHERE ew.form_code = 'esm2'
-                          AND ew.status <> 'cancelled'
-                          AND ew.vehicle_id = vr.vehicle_id
-                          AND ew.period_from <= vr.route_date
-                          AND ew.period_to >= vr.route_date
-                          AND err.route_id = vr.id
-                          AND err.work_date = vr.route_date)`;
-
-/**
- * Что делает недельный лист источником ожидаемых смен (Р26а, Р34). Границы периода к фрагменту не
- * относятся: у месяцев парка и у хвоста ТО они разные, а вот «какой лист вообще спрашивает
- * показания» — одно и то же. Фрагмент ждёт алиас `w` у строки листа.
- */
-export const EXPECTED_ESM2_FILTER = sql`
-       w.form_code = 'esm2'
-       AND w.status <> 'cancelled'
-       AND w.period_from IS NOT NULL
-       AND w.period_to IS NOT NULL`;
 
 /**
  * Расход смены: `остаток на начало + заправлено − остаток на конец` (план
@@ -233,159 +137,6 @@ function winterSql(season: { winterFromMd: string; winterToMd: string }): SQL {
 }
 
 /**
- * Общая часть запросов, которым нужны **ожидаемые смены периода вместе с их строками ожидания**:
- * три CTE — `expected`, `observed` и `relation`. Второго правила «что такое ожидаемая смена» в
- * проекте быть не должно, поэтому фрагмент вынесен, а не скопирован: его спрашивают и месяцы парка
- * (ниже), и реестр приёма (`readings-intake.ts`), и разойдись они хоть в одном условии — экран
- * приёма требовал бы показаний по сменам, которых статистика не ждёт.
- *
- * Возвращается **без** ведущего `WITH`: читатель приписывает свои CTE через запятую.
- *
- * Колонки — объединение нужд обоих читателей, и это дешевле, чем два похожих фрагмента: всё, что
- * добавлено сверх месяцев парка (вид источника, работник, версия отчёта, позиция смены), берётся из
- * уже соединённых таблиц и ни одного join не добавляет.
- *
- * Три свойства, каждое — принятое решение:
- *
- * 1. **Полное внешнее объединение без свёртки координат** (Р26в, Р32): ожидание без строки — это
- *    несданная смена, строка без ожидания — уже собранное показание источника, который
- *    переназначили или чей лист аннулировали. Терять нельзя ни то, ни другое.
- * 2. **Соединение — пара равенств `(join_id, join_date)`**, а не дизъюнкция (Р32б): `FULL JOIN` в
- *    PostgreSQL принимает только merge/hash-joinable условия.
- * 3. **`aligned` обёрнут `coalesce(..., false)`** (Р32а): у неоткрытого дня сравнение даёт `NULL`, и
- *    трёхзначная логика проглотила бы ровно тот случай, ради которого признак заводится.
- */
-export function expectedRelationCte(from: string, to: string): SQL {
-  return sql`
-expected AS (
-    /*
-     * Ожидаемый источник — рейс дня (Р26а). Правило повторяет кабинет водителя
-     * (driver-assignment.ts), и повторяет намеренно: расхождение означало бы, что с водителя
-     * спрашивают показания по сменам, которых он у себя в задании не видит. Сам отбор вынесен в
-     * EXPECTED_ROUTE_FILTER: его же спрашивает хвостовая выборка ТО.
-     */
-    SELECT vr.id                     AS join_id,
-           ${ROUTE_JOIN_DATE}        AS join_date,
-           'route'::text             AS source_kind,
-           vr.vehicle_id             AS exp_vehicle,
-           vr.route_date             AS exp_date,
-           vr.driver_person_id       AS exp_person,
-           rep.id                    AS exp_report_id,
-           rep.state::text           AS exp_state,
-           rep.version               AS exp_report_version
-      FROM vehicle_routes vr
-      /*
-       * Отчёт ОЖИДАЕМОГО работника за этот день, если он вообще существует. Именно его состояние
-       * отвечает за качество: после переназначения рейса ждут показание от нового водителя, и
-       * принятый день прежнего к этому вопросу отношения не имеет.
-       *
-       * Аннулированный отчёт (Р27) отчётом дня не считается: строк в нём нет — перенос унёс их
-       * вместе с показаниями, — и день ждёт показания так же, как если бы его не открывали. На
-       * качество данных условие не влияет (у 'voided' и у пустого состояния
-       * IS DISTINCT FROM 'accepted' одинаково истинно), а реестру приёма оно не даёт приписать
-       * строку отчёту, принять который нельзя.
-       */
-      LEFT JOIN driver_daily_reports rep
-             ON rep.person_id = vr.driver_person_id
-            AND rep.report_date = vr.route_date
-            AND rep.state <> 'voided'
-     WHERE vr.route_date BETWEEN ${from}::date AND ${to}::date
-       AND ${EXPECTED_ROUTE_FILTER}
-    UNION ALL
-    /*
-     * Ожидаемый источник — недельный ЭСМ-2, разложенный по КАЖДОМУ календарному дню действия
-     * (Р34). Смены считаются днями действия документа, а не выездами: в неделю с двумя простоями
-     * ожидаемых смен всё равно семь. Это не выбор статистики, а поведение модуля — кабинет
-     * показывает задание по тому же правилу.
-     *
-     * Границы среза берутся по пересечению с периодом, а ::date обязательно: generate_series
-     * над датами возвращает временные метки, и без приведения день ушёл бы в группировку меткой.
-     * Вход приводится к timestamp без пояса, чтобы день не зависел от TimeZone сессии.
-     */
-    SELECT w.id, gs.day::date, 'esm2'::text, w.vehicle_id, gs.day::date, w.driver_person_id,
-           rep.id, rep.state::text, rep.version
-      FROM waybills w
-      CROSS JOIN LATERAL generate_series(greatest(w.period_from, ${from}::date)::timestamp,
-                                         least(w.period_to, ${to}::date)::timestamp,
-                                         interval '1 day') AS gs(day)
-      LEFT JOIN driver_daily_reports rep
-             ON rep.person_id = w.driver_person_id
-            AND rep.report_date = gs.day::date
-            AND rep.state <> 'voided'
-     WHERE ${EXPECTED_ESM2_FILTER}
-       AND w.period_from <= ${to}::date
-       AND w.period_to >= ${from}::date
-),
-observed AS (
-    /*
-     * Строки ожидания только неаннулированных отчётов (Р27). Отбор — INNER JOIN, а не условие в
-     * LEFT JOIN: во втором случае строка осталась бы в наборе с пустым состоянием, и показание
-     * аннулированного отчёта попало бы и в суммы, и в качество.
-     *
-     * Период спрашивается у дня снимка: число живёт в своём месяце (Р4). Строка, чей источник
-     * перенесли за границу периода, останется здесь и посчитается — терять уже собранные данные
-     * нельзя.
-     */
-    SELECT i.id                               AS item_id,
-           coalesce(i.route_id, i.waybill_id) AS join_id,
-           CASE WHEN i.route_id IS NOT NULL THEN ${ROUTE_JOIN_DATE} ELSE i.report_date END
-                                              AS join_date,
-           i.source_kind::text                AS source_kind,
-           i.vehicle_id                       AS obs_vehicle,
-           i.report_date                      AS obs_date,
-           i.shift_order                      AS obs_shift_order,
-           i.report_id                        AS obs_report_id,
-           rep.person_id                      AS obs_person,
-           rep.state::text                    AS obs_state,
-           rep.version                        AS obs_report_version
-      FROM driver_daily_report_items i
-      JOIN driver_daily_reports rep ON rep.id = i.report_id AND rep.state <> 'voided'
-     WHERE i.report_date BETWEEN ${from}::date AND ${to}::date
-),
-relation AS (
-    /*
-     * Полное объединение БЕЗ свёртки координат (Р26в, Р32): ожидание без строки — несданная смена,
-     * строка без ожидания — уже собранное показание источника, который переназначили или чей лист
-     * аннулировали. Терять нельзя ни то, ни другое; расхождение между ними и есть то, что разбирают
-     * в приёме.
-     */
-    SELECT join_id AS source_id,
-           coalesce(e.source_kind, o.source_kind) AS source_kind,
-           e.exp_vehicle,
-           e.exp_date,
-           e.exp_person,
-           e.exp_report_id,
-           e.exp_state,
-           e.exp_report_version,
-           o.item_id,
-           o.obs_vehicle,
-           o.obs_date,
-           o.obs_shift_order,
-           o.obs_report_id,
-           o.obs_person,
-           o.obs_state,
-           o.obs_report_version,
-           /*
-            * Сошлись ли координаты (Р32а). Само существование строки по этому источнику ничего не
-            * значит: у рейса, перенесённого с 10.08 на 11.08, item_id есть, а числа на живой
-            * координате 11.08 нет, — и без признака соответствия старое показание подавило бы
-            * требование сдать показание на новой дате.
-            *
-            * coalesce(..., false) обязателен и не украшение: у неоткрытого дня exp_report_id
-            * пуст, сравнение даёт NULL, NOT NULL — снова NULL, и в count(*) FILTER (WHERE
-            * missing) такая строка НЕ посчиталась бы — трёхзначная логика проглотила бы ровно тот
-            * случай, ради которого признак и заводится. Тем же приёмом обёрнут ITEM_NEEDS_ATTENTION
-            * в readings-stats.ts.
-            */
-           coalesce(o.obs_report_id = e.exp_report_id
-                    AND o.obs_vehicle = e.exp_vehicle
-                    AND o.obs_date = e.exp_date, false) AS aligned
-      FROM expected e
-      FULL OUTER JOIN observed o USING (join_id, join_date)
-)`;
-}
-
-/**
  * Строка ответа ядра: месяц одной машины плюс её реквизиты для подписи.
  *
  * Псевдоним, а не `interface`: `db.execute` требует от параметра типа индексную сигнатуру, а её
@@ -451,39 +202,7 @@ async function loadMonthRows(
     await tx.execute(sql`SET LOCAL jit = off`);
     const result = await tx.execute<AggregateRow>(sql`
 WITH ${expectedRelationCte(from, to)},
-points AS (
-    /*
-     * Показание подшивается ДО разделения на проекции (Р32в): числа берёт проекция чисел, а
-     * reading_id и kind нужны ещё и качеству — признак «смена без числа» смотрит на них же.
-     * Оставь этот join внутри проекции чисел, и качество показаний просто не увидело бы.
-     */
-    SELECT r.*,
-           v.id                            AS reading_id,
-           v.kind::text                    AS kind,
-           v.odometer_km,
-           v.engine_hours,
-           v.fuel_filled_liters,
-           /*
-            * Остатки в баке (ADR 0163) — уровень, а не поток: за период они не суммируются, и
-            * попадают сюда ровно ради расхода смены (начало + заправлено − конец), который без
-            * обоих концов не считается вовсе.
-            */
-           v.fuel_start_liters,
-           v.fuel_end_liters,
-           v.previous_odometer_id,
-           v.previous_engine_hours_id,
-           v.odometer_anomaly::text        AS odometer_anomaly,
-           v.engine_hours_anomaly::text    AS engine_hours_anomaly,
-           /*
-            * Подтверждение аномалии нужно сверке (план docs/fuel-norms-plan.md, Р10б):
-            * неподтверждённый скачок одометра даёт базу в тысячи километров и «экономию» под сто
-            * процентов, а подтверждённый — это уже принятое гаражом число.
-            */
-           v.odometer_anomaly_confirmed_at,
-           v.engine_hours_anomaly_confirmed_at
-      FROM relation r
-      LEFT JOIN vehicle_readings v ON v.item_id = r.item_id
-),
+${EXPECTED_POINTS_CTE},
 shift_facts AS (
     /*
      * Числа — по СНИМОЧНОЙ координате: пробег принадлежит той машине и тому дню, к которым привязано
@@ -585,47 +304,26 @@ shift_checks AS (
                     WHERE n.vehicle_id = f.vehicle_id
                       AND n.deleted_at IS NULL)                        AS has_any_norm,
            /*
-            * НЕПРЕРЫВНОСТЬ ПАРЫ (Р13а) — главное расчётное правило волны.
+            * The continuity of each counter's pair (Р13а) — the main computed rule of the wave,
+            * written once in counterPairBrokenSql and shared with a request day's one-click
+            * sign-off (D16).
             *
-            * Разность счётчика назначается по цепочке показаний: предшественником становится
-            * последний снимок С ЧИСЛОМ, а не предыдущая смена. Поэтому одна разность накрывает все
-            * несданные перед ней смены, и 400 км против одного бака дали бы ложную экономию в 60%.
-            *
-            * Проверять это по снимочной проекции нельзя: у смены, чей день никто не открывал,
-            * строки в наборе нет вовсе — «соседняя строка» и «предшественник цепочки» у неё
-            * совпадают, и разрыв выглядит непрерывностью. Поэтому здесь — осознанное исключение из
-            * правила «числа по снимочной координате»: пропуски ищутся среди ОЖИДАЕМЫХ смен.
-            *
-            * Интервал полуоткрыт: дата предшественника исключительно, дата смены включительно.
-            * Отсюда несимметричность, названная в плане: несданная вторая смена того же дня разрыв
-            * даёт, а вторая смена дня предшественника — нет; позиции смены у ожидания не существует.
-            *
-            * Строгость зависит от документа (Р13б): у рейса день ожидания означает работу, а у
-            * недельного ЭСМ-2 — только действие листа, поэтому у него рвёт лишь день, за который
-            * отчёт открывали, а чисел не дали. Иначе вся техника на недельных листах — то есть всё,
-            * что нормируется в л/час, — осталась бы без сверки вовсе.
-            *
-            * CASE снаружи не украшение: у смены без расхода сверять нечего, и подзапрос по
-            * материализованному CTE для неё не выполняется вовсе.
+            * The CASE outside is not decoration: a shift without consumption has nothing to check,
+            * and the subquery over the materialized CTE is not run for it at all.
             */
-           CASE WHEN f.fuel_spent IS NULL THEN false ELSE NOT EXISTS (
-               SELECT 1 FROM points q
-                WHERE q.exp_vehicle = f.vehicle_id
-                  AND q.exp_date > f.prev_odometer_date
-                  AND q.exp_date <= f.d
-                  AND (NOT q.aligned OR q.reading_id IS NULL OR q.kind = 'no_data'
-                       OR q.odometer_km IS NULL)
-                  AND (q.source_kind = 'route' OR q.exp_report_id IS NOT NULL)
-           ) END AS odometer_continuous,
-           CASE WHEN f.fuel_spent IS NULL THEN false ELSE NOT EXISTS (
-               SELECT 1 FROM points q
-                WHERE q.exp_vehicle = f.vehicle_id
-                  AND q.exp_date > f.prev_engine_date
-                  AND q.exp_date <= f.d
-                  AND (NOT q.aligned OR q.reading_id IS NULL OR q.kind = 'no_data'
-                       OR q.engine_hours IS NULL)
-                  AND (q.source_kind = 'route' OR q.exp_report_id IS NOT NULL)
-           ) END AS engine_continuous
+           CASE WHEN f.fuel_spent IS NULL THEN false ELSE NOT ${counterPairBrokenSql('odometer', {
+             vehicle: sql`f.vehicle_id`,
+             previousDate: sql`f.prev_odometer_date`,
+             date: sql`f.d`,
+           })} END AS odometer_continuous,
+           CASE WHEN f.fuel_spent IS NULL THEN false ELSE NOT ${counterPairBrokenSql(
+             'engineHours',
+             {
+               vehicle: sql`f.vehicle_id`,
+               previousDate: sql`f.prev_engine_date`,
+               date: sql`f.d`,
+             },
+           )} END AS engine_continuous
       FROM shift_facts f
       LEFT JOIN LATERAL (
           SELECT n.id, n.unit, n.winter_rate, n.summer_rate

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lt, lte, ne } from 'drizzle-orm';
 import {
   type DriverAssignmentAction,
   type DriverAssignmentDto,
@@ -33,6 +33,7 @@ import {
   waybillSeries,
 } from '../db/schema';
 import { daysBetween, type Tx } from './readings-chain';
+import { servedRequestSql } from './readings-expected';
 import { loadRoutePoints, loadRoutePointsByRoute } from './route-points';
 import { loadRouteDtos, routeQuery } from './vehicle-routes';
 
@@ -62,7 +63,7 @@ import { loadRouteDtos, routeQuery } from './vehicle-routes';
  * second card would open a second expectation row that nothing can close. The weekly waybill's card
  * stays — a route whose day is already asked for by an ESM-2 of the same request and the same
  * vehicle is dropped from the task (`weeklyCoveredRoutes`), by the same rule by which the
- * statistics do not expect it (`EXPECTED_ROUTE_FILTER` in `readings-aggregate.ts`).
+ * statistics do not expect it (`EXPECTED_ROUTE_FILTER` in `readings-expected.ts`).
  *
  * Третье свойство появилось после первого показа и разводит двух потребителей: **кабинет строго
  * документален** (`docs/driver-cabinet-ux-plan.md`, Р5) — рейс входит в задание, только если по
@@ -293,7 +294,8 @@ type Reader = Tx | typeof db;
  * One rule for two readers: the task built here and the stops a reading records
  * (`loadReadingStops`). The cabinet sends back exactly the stops it showed, and the server compares
  * them with this same set — a second definition of "served" would refuse every submit at a route
- * with a cancelled request.
+ * with a cancelled request. The condition itself (`servedRequestSql`) is shared with the expected
+ * shifts and a request day's shared route.
  */
 export async function servedRequests(
   reader: Reader,
@@ -304,13 +306,7 @@ export async function servedRequests(
   const rows = await reader
     .select({ id: vehicleRequests.id, comment: vehicleRequests.comment })
     .from(vehicleRequests)
-    .where(
-      and(
-        inArray(vehicleRequests.id, ids),
-        isNull(vehicleRequests.deletedAt),
-        ne(vehicleRequests.status, 'cancelled'),
-      ),
-    );
+    .where(and(inArray(vehicleRequests.id, ids), servedRequestSql('vehicle_requests')));
   return new Map(rows.map((row) => [row.id, row.comment]));
 }
 
@@ -679,7 +675,7 @@ async function esm2Sources(
  * burn as not submitted until the end of the request's term.
  *
  * The waybill's card stays, not the route's: the statistics ask for the shift by the ESM-2 too
- * (`EXPECTED_ROUTE_FILTER` in `readings-aggregate.ts`), and the cabinet must not drift from them —
+ * (`EXPECTED_ROUTE_FILTER` in `readings-expected.ts`), and the cabinet must not drift from them —
  * the garage would demand readings for shifts the driver cannot see in his cabinet.
  *
  * The waybill is asked of ANY worker, not of this one, and that is no oversight: the rule counts the

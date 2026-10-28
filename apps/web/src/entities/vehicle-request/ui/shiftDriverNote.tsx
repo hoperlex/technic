@@ -20,8 +20,9 @@ function dayMonth(key: string): string {
  * numbers already are the driver's or there is nothing to add:
  *
  * - a signed day whose readings now say otherwise — the difference, never a silent rewrite (D4);
- * - an unsigned day the driver cannot sign in one click — what the readings have and since when
- *   (D3: «водитель: 23 ч с 14.08»).
+ * - an unsigned day the driver cannot sign in one click — what the readings have and, when an
+ *   expected shift without numbers lies inside the pair (D16), since when the hours are counted:
+ *   «водитель: 23 ч с 14.08».
  */
 export function shiftDriverNoteText(shift: VehicleRequestShiftDto): string | null {
   const day = shift.driverDay;

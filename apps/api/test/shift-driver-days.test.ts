@@ -7,9 +7,9 @@ import {
 } from '../src/services/shift-driver-days';
 
 /**
- * The rule of a driver day (readings-shifts-merge plan §6.2, D3): when the driver's readings are
- * the request day's numbers in one click, and what a non-clean day still carries. Pure — the live
- * wiring (both source branches, report states, the doors) is proven by
+ * The rule of a driver day (readings-shifts-merge plan §6.2, D3, D16): when the driver's readings
+ * are the request day's numbers in one click, and what a non-clean day still carries. Pure — the
+ * live wiring (both source branches, report states, the continuity query, the doors) is proven by
  * `shift-driver-days.db.test.ts`.
  */
 
@@ -31,6 +31,7 @@ function reading(over: Partial<DriverShiftReading> = {}): DriverShiftReading {
     previousId: 'reading-0',
     previousEngineHours: 1200,
     previousDate: '2026-08-11',
+    continuous: true,
     fuelFilledLiters: 120,
     noDataReason: '',
     comment: '',
@@ -73,10 +74,18 @@ describe('день водителя', () => {
     expect(day.clean).toBe(true);
   });
 
-  it('a predecessor two days back is a gap: the sum stays, «since» names it (D3)', () => {
-    const day = driverShiftDayOf(DAY, [reading({ previousDate: '2026-08-09', engineHours: 1223 })]);
+  it('a broken pair is a gap: the sum stays, «since» names its predecessor (D16)', () => {
+    const day = driverShiftDayOf(DAY, [
+      reading({ previousDate: '2026-08-09', engineHours: 1223, continuous: false }),
+    ]);
     expect(day).toMatchObject({ machineHours: 23, clean: false, since: '2026-08-09' });
     expect(day.issues).toEqual(['gap']);
+  });
+
+  it('a predecessor days back over a continuous pair is clean: the calendar alone breaks nothing (D16)', () => {
+    // A Monday after a weekend without expected shifts: the garage's rule finds no missed shift.
+    const day = driverShiftDayOf(DAY, [reading({ previousDate: '2026-08-08', engineHours: 1208 })]);
+    expect(day).toMatchObject({ machineHours: 8, clean: true, since: null, issues: [] });
   });
 
   it('a first snapshot, no_data, a missing counter and a reset are not clean', () => {

@@ -3,7 +3,6 @@ import { alias } from 'drizzle-orm/pg-core';
 import {
   driverDayTime,
   MAX_MACHINE_HOURS,
-  shiftDateKey,
   SUBMITTED_REPORT_STATES,
   type DiscrepancyKind,
   type DriverDayIssue,
@@ -18,6 +17,7 @@ import {
 import { driverDailyReportItems, driverDailyReports, persons, vehicleReadings } from '../db/schema';
 import { sha256hex } from '../lib/crypto';
 import { clockTime, loadReadingPoints } from './reading-points';
+import { counterPairKey, loadBrokenCounterPairs } from './readings-expected';
 import {
   findDiscrepancies,
   itemRef,
@@ -67,6 +67,13 @@ export interface DriverShiftReading {
   previousId: string | null;
   previousEngineHours: number | null;
   previousDate: string | null;
+  /**
+   * The engine-hour pair is continuous by the readings module's rule (Р13а, D16): no expected shift
+   * of the vehicle without numbers lies between the predecessor and this day
+   * (`counterPairBrokenSql`, the month aggregate's own definition). `true` when there is no pair to
+   * judge: a first snapshot, a missing counter or a reset are issues of their own.
+   */
+  continuous: boolean;
   fuelFilledLiters: number | null;
   noDataReason: string;
   comment: string;
@@ -100,17 +107,16 @@ function readingHours(r: DriverShiftReading): number | null {
   return (tenthsOf(r.engineHours) - tenthsOf(r.previousEngineHours)) / 10;
 }
 
-/** Issues of one reading by D3 and §6.1; the day sums them with its own range check. */
-function readingIssues(r: DriverShiftReading, date: string): DriverDayIssue[] {
+/** Issues of one reading by D3, D16 and §6.1; the day sums them with its own range check. */
+function readingIssues(r: DriverShiftReading): DriverDayIssue[] {
   if (r.kind === 'no_data') return ['no_data'];
   const issues: DriverDayIssue[] = [];
   if (r.engineHours === null) issues.push('missing_engine_hours');
   else if (r.engineHoursAnomaly === 'counter_reset') issues.push('counter_reset');
   else if (r.previousId === null || r.previousEngineHours === null) issues.push('first_snapshot');
-  // D3: one click only when the previous snapshot is from this day or the previous calendar day.
-  // Narrower than the garage's continuity (Р13а) on purpose — a Monday after a weekend without
-  // readings asks the site to save the form consciously.
-  if (r.previousDate !== null && r.previousDate < shiftDateKey(date, -1)) issues.push('gap');
+  // D16 replaced D3's "the previous snapshot is from this or the previous calendar day" with the
+  // garage's own continuity: the delta must not cover an expected shift that has no numbers.
+  if (!r.continuous) issues.push('gap');
   if (r.discrepancies.some((d) => !d.resolved && BLOCKING_DISCREPANCIES.has(d.kind))) {
     issues.push('discrepancy');
   }
@@ -148,9 +154,9 @@ function dayFingerprint(
 
 /**
  * The driver's day from its readings (§6.2). Clean means signable in one click: every reading has
- * hours from a snapshot of this or the previous day, no blocking discrepancy, and the sum lies in
- * `0..MAX_MACHINE_HOURS`. Otherwise the day keeps the sum it has, the oldest predecessor date and
- * its issues, and never replaces the site's numbers.
+ * hours over a continuous pair (D16), no blocking discrepancy, and the sum lies in
+ * `0..MAX_MACHINE_HOURS`. Otherwise the day keeps the sum it has, the oldest predecessor of a broken
+ * pair and its issues, and never replaces the site's numbers.
  *
  * An empty refill reads as "not refuelled", as the readings module reads it (the month aggregate
  * and the readings book): the driver form cannot say "unknown" apart from empty, and reading `null`
@@ -164,14 +170,13 @@ export function driverShiftDayOf(
   const issues = new Set<DriverDayIssue>();
   let hoursTenths: number | null = null;
   let refuelTenths: number | null = null;
-  const yesterday = shiftDateKey(date, -1);
   const gaps: string[] = [];
   for (const r of readings) {
-    for (const issue of readingIssues(r, date)) issues.add(issue);
+    for (const issue of readingIssues(r)) issues.add(issue);
     const hours = readingHours(r);
     if (hours !== null) hoursTenths = (hoursTenths ?? 0) + tenthsOf(hours);
     if (r.kind === 'values') refuelTenths = (refuelTenths ?? 0) + tenthsOf(r.fuelFilledLiters ?? 0);
-    if (r.previousDate !== null && r.previousDate < yesterday) gaps.push(r.previousDate);
+    if (!r.continuous && r.previousDate !== null) gaps.push(r.previousDate);
   }
   const since = gaps.length === 0 ? null : gaps.sort()[0]!;
   const machineHours = hoursTenths === null ? null : hoursTenths / 10;
@@ -357,6 +362,7 @@ export async function loadDriverShiftDays(
   }
 
   const byDate = new Map<string, DriverShiftReading[]>();
+  const pairs: SnapshotOf[] = [];
   for (const row of rows) {
     const ref = itemRef(row);
     const reading: DriverShiftReading = {
@@ -374,6 +380,7 @@ export async function loadDriverShiftDays(
       previousId: row.previousId,
       previousEngineHours: numberOrNull(row.previousEngineHours),
       previousDate: row.previousDate,
+      continuous: true,
       fuelFilledLiters: numberOrNull(row.fuelFilledLiters),
       noDataReason: row.noDataReason,
       comment: row.comment,
@@ -391,7 +398,38 @@ export async function loadDriverShiftDays(
     const list = byDate.get(row.reportDate);
     if (list) list.push(reading);
     else byDate.set(row.reportDate, [reading]);
+    pairs.push({ reading, vehicleId: row.vehicleId, date: row.reportDate });
   }
+  await markBrokenPairs(reader, pairs);
   for (const [date, readings] of byDate) days.set(date, driverShiftDayOf(date, readings));
   return days;
+}
+
+/**
+ * Judges the engine-hour pair of every reading that has hours by the readings module's continuity
+ * rule (D16): one query for all of them, the same fragment the month aggregate checks its fuel norm
+ * by. A reading without hours is not asked — its own issue already keeps the day manual.
+ */
+async function markBrokenPairs(
+  reader: ReadingsReader,
+  snapshots: readonly SnapshotOf[],
+): Promise<void> {
+  const judged = snapshots.flatMap(({ reading, vehicleId, date }) =>
+    readingHours(reading) !== null && reading.previousDate !== null
+      ? [{ reading, pair: { vehicleId, previousDate: reading.previousDate, date } }]
+      : [],
+  );
+  const broken = await loadBrokenCounterPairs(
+    reader,
+    'engineHours',
+    judged.map(({ pair }) => pair),
+  );
+  for (const { reading, pair } of judged) reading.continuous = !broken.has(counterPairKey(pair));
+}
+
+/** A reading with the coordinates of its snapshot: the vehicle and the day of its item. */
+interface SnapshotOf {
+  reading: DriverShiftReading;
+  vehicleId: string;
+  date: string;
 }
