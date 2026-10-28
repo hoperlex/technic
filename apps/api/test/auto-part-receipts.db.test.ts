@@ -1992,6 +1992,59 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
     }
   });
 
+  /*
+   * A young live job is flagged when the queue shows it stalled. The job is three minutes old in
+   * every case, well under the fifteen-minute ceiling, so only the queue columns decide.
+   */
+  it.each([
+    ['due and unclaimed for three minutes', 'pending', "now() - interval '3 minutes'", null, true],
+    ['deferred ten minutes ahead', 'pending', "now() + interval '10 minutes'", null, true],
+    [
+      'running with a lapsed lease',
+      'running',
+      "now() - interval '3 minutes'",
+      "now() - interval '1 minute'",
+      true,
+    ],
+    ['due thirty seconds ago', 'pending', "now() - interval '30 seconds'", null, false],
+    [
+      'waiting in a claimed batch',
+      'running',
+      "now() - interval '3 minutes'",
+      "now() + interval '4 minutes'",
+      false,
+    ],
+  ] as const)(
+    'a young live job %s: delayed = %s',
+    async (_name, status, nextRunAt, lockedUntil, delayed) => {
+      const file = await newFile();
+      await ctx.db.execute(
+        sql`INSERT INTO auto_part_receipt_scans (file_id, status) VALUES (${file.id}, 'pending')`,
+      );
+      await ctx.db.execute(
+        sql`INSERT INTO jobs (type, payload, status, next_run_at, locked_by, locked_until, created_at)
+           VALUES ('recognize_auto_part_receipt_file',
+                   jsonb_build_object('fileId', ${file.id}::text), ${status}::job_status,
+                   ${sql.raw(nextRunAt)},
+                   ${lockedUntil ? 'test-worker' : null},
+                   ${sql.raw(lockedUntil ?? 'NULL')},
+                   now() - interval '3 minutes')`,
+      );
+
+      try {
+        const res = await recognition(mech, file.id);
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.json()).toMatchObject({ status: 'pending', delayed });
+      } finally {
+        // A due pending job left behind would be claimed by nobody and skew later queue checks.
+        await ctx.db.execute(
+          sql`DELETE FROM jobs WHERE type = 'recognize_auto_part_receipt_file'
+             AND payload->>'fileId' = ${file.id}`,
+        );
+      }
+    },
+  );
+
   it('чужой непривязанный скан не читается, даже держателем ведения чеков (Р5)', async () => {
     // До сохранения формы файл ничей, кроме автора: это то же правило, по которому он его видит.
     const strangers = await newFile(ctx.users.admin);

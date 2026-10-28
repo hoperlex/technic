@@ -127,6 +127,15 @@
     добавлялся без замены ручных правок и после F5 не дублировался. Частичный отказ не стирает
     успешные листы; общий предел в 100 строк и непоместившиеся позиции показываются явно.
 
+16. **A stalled queue is reported at once, not after fifteen minutes** (28.10.2026). The state
+    handle counts a job as live while it is `pending` or `running`, so a job nobody takes never
+    reaches the read-side reconciliation, and the form showed "Распознаём чек…" with no hint until
+    the fifteen-minute ceiling. `delayed` now also holds when the queue shows the job will not move
+    soon: due and unclaimed for two minutes, deferred more than two minutes ahead, or running with
+    a lapsed lease. The flag stays a notice: polling goes on and it clears once a worker takes the
+    job. The health handle is unchanged — a busy worker is a delay, not a broken service. The
+    thresholds are compared on the database clock, as the claim and the lease are.
+
 ## Последствия
 
 - модуль **выключен по умолчанию** и включается после замера (этап 0 плана): точность на мелком
