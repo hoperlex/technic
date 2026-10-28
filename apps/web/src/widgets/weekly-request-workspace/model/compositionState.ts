@@ -4,6 +4,7 @@ import {
   vehicleClassificationKey,
   vehicleClassificationLabel,
   type VehicleClassificationDto,
+  type VehicleOwnership,
   type WeeklyItemWarning,
   type WeeklyRequestItemDto,
   type WeeklySuggestionDto,
@@ -38,6 +39,12 @@ export interface WeeklyOrderRow {
   title: string;
   /** The order's effective term end now; the extension is counted from it. */
   effectiveDateTo: string;
+  /**
+   * Whose vehicle stands on the order. A rental one is cut by the month border (ADR 0238), and the
+   * row asks the contracts for the cut of the date the person picks. `null` — not known (a saved
+   * row whose order left the suggestion).
+   */
+  ownership: VehicleOwnership | null;
   /**
    * Default extension date, the Sunday of the week; null means there is nothing to extend (see
    * extendBlockedReason). Exactly null, not "today" and not Sunday: if the form filled in a date
@@ -112,6 +119,7 @@ function staleRow(
     displayNumber: item.sourceDisplayNumber ?? '—',
     title: item.currentVehicleLabel ?? '—',
     effectiveDateTo: lastDate,
+    ownership: null,
     suggestedDateTo: item.dateTo ?? lastDate,
     // The order is not in the suggestion, so there is nobody to ask about extension validity, and
     // forbidding "Stays" here on our own is not allowed: the row's reason is already staleReason.
@@ -173,6 +181,7 @@ export function buildWeeklyCompositionState(
       displayNumber: order.displayNumber,
       title: orderTitle(order),
       effectiveDateTo: order.effectiveDateTo,
+      ownership: order.ownership,
       suggestedDateTo: order.suggestedDateTo,
       extendBlockedReason: order.extendBlockedReason,
       warnings: order.warnings,

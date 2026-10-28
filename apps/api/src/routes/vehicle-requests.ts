@@ -1395,7 +1395,7 @@ async function weeklyLinksByRequestIds(ids: string[]): Promise<WeeklyLinks> {
   const origins = new Map<string, VehicleRequestWeeklyOriginDto>();
   const extensions = new Map<string, VehicleRequestWeeklyExtensionDto[]>();
   if (ids.length === 0) return { origins, extensions };
-  const [created, extended] = await Promise.all([
+  const [created, continued, extended] = await Promise.all([
     db
       .select({
         requestId: weeklyVehicleRequestItems.createdRequestId,
@@ -1414,6 +1414,22 @@ async function weeklyLinksByRequestIds(ids: string[]): Promise<WeeklyLinks> {
         eq(weeklyVehicleRequestItems.weeklyRequestId, weeklyVehicleRequests.id),
       )
       .where(inArray(weeklyVehicleRequestItems.createdRequestId, ids)),
+    // The order a visa opened past the month border for a rental extension (ADR 0238) is explained
+    // by the same line as the order of a `new` row: it too has exactly one basis (partial UNIQUE).
+    db
+      .select({
+        requestId: weeklyVehicleRequestItems.continuationRequestId,
+        itemId: weeklyVehicleRequestItems.id,
+        weeklyRequestId: weeklyVehicleRequests.id,
+        weeklyRequestNum: weeklyVehicleRequests.num,
+        weeklyRequestStatus: weeklyVehicleRequests.status,
+      })
+      .from(weeklyVehicleRequestItems)
+      .innerJoin(
+        weeklyVehicleRequests,
+        eq(weeklyVehicleRequestItems.weeklyRequestId, weeklyVehicleRequests.id),
+      )
+      .where(inArray(weeklyVehicleRequestItems.continuationRequestId, ids)),
     db
       .select({
         requestId: weeklyVehicleRequestItems.sourceRequestId,
@@ -1431,6 +1447,11 @@ async function weeklyLinksByRequestIds(ids: string[]): Promise<WeeklyLinks> {
         and(
           inArray(weeklyVehicleRequestItems.sourceRequestId, ids),
           eq(weeklyVehicleRequestItems.result, 'extended'),
+          // A rental row that ended on the last day of the month moved nothing (ADR 0238): the whole
+          // extension is the order opened past the border, and "Продления" would claim a term change.
+          sql`not (${weeklyVehicleRequestItems.continuationRequestId} is not null
+            and ${weeklyVehicleRequestItems.previousDateTo} =
+              (date_trunc('month', ${weeklyVehicleRequestItems.previousDateTo}) + interval '1 month - 1 day')::date)`,
         ),
       )
       .orderBy(asc(weeklyVehicleRequests.weekStart), asc(weeklyVehicleRequests.num)),
@@ -1444,6 +1465,17 @@ async function weeklyLinksByRequestIds(ids: string[]): Promise<WeeklyLinks> {
       itemId: row.itemId,
       deliveryNeeded: row.deliveryNeeded,
       deliveryFrom: row.deliveryFrom,
+    });
+  }
+  for (const row of continued) {
+    if (!row.requestId) continue;
+    origins.set(row.requestId, {
+      weeklyRequestId: row.weeklyRequestId,
+      weeklyRequestNum: row.weeklyRequestNum,
+      weeklyRequestStatus: row.weeklyRequestStatus,
+      itemId: row.itemId,
+      deliveryNeeded: false,
+      deliveryFrom: '',
     });
   }
   for (const row of extended) {

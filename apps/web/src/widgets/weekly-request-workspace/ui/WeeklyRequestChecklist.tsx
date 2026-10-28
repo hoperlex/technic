@@ -1,6 +1,7 @@
 import { Alert, Table, Tag, Typography, type TableColumnType } from 'antd';
 import { PrinterOutlined } from '@ant-design/icons';
 import {
+  formatVehicleRequestNumber,
   type Permission,
   type WeeklyDocumentCellDto,
   type WeeklyDocumentRowDto,
@@ -291,6 +292,14 @@ export function WeeklyRequestAgreed({ items }: { items: WeeklyRequestItemDto[] }
             {item.currentVehicleLabel ?? 'машина не назначена'}
           </Typography.Text>
           <WeeklyItemWarnings warnings={item.warnings} />
+          {item.continuationRequestNum !== null && (
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Новый заказ за границей месяца:{' '}
+                {formatVehicleRequestNumber(item.continuationRequestNum)}
+              </Typography.Text>
+            </div>
+          )}
           {!!item.skipReason && (
             <Typography.Text type="danger" style={{ fontSize: 12 }}>
               {item.skipReason}

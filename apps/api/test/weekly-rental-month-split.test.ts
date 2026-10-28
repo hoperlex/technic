@@ -147,7 +147,9 @@ describe('аннулирование: строка аренды с заказо�
 
   it('срок, до которого неделя продлила разрезанную строку, — граница месяца, а не выбранная дата', () => {
     // Неделя выбрала 06.12, но заказ получил 30.11: сравнение с 06.12 назвало бы срок «изменённым».
-    const cancelled = { continuationOrder: { num: 501, status: 'cancelled' as const, deletedAt: null } };
+    const cancelled = {
+      continuationOrder: { num: 501, status: 'cancelled' as const, deletedAt: null },
+    };
     expect(weeklyAnnulItemState(extend(cancelled), order()).state).toBe('reversible');
     const moved = weeklyAnnulItemState(extend(cancelled), order({ dateTo: '2026-11-25' }));
     expect(moved.state).toBe('reverted');

@@ -704,7 +704,8 @@ export function rentalMonthSplit(
 export function rentalMonthSplitText(split: RentalMonthSplit): string | null {
   if (!split.continuation) return null;
   const { dateFrom, dateTo } = split.continuation;
-  const span = dateFrom === dateTo ? dayMonth(dateFrom) : `${dayMonth(dateFrom)}–${dayMonth(dateTo)}`;
+  const span =
+    dateFrom === dateTo ? dayMonth(dateFrom) : `${dayMonth(dateFrom)}–${dayMonth(dateTo)}`;
   return split.extendTo
     ? `Аренда не идёт за границу месяца: заказ продлится до ${dayMonth(split.extendTo)}, а на ${span} откроется новый заказ той же машины`
     : `Аренда не идёт за границу месяца: заказ остаётся как есть, а на ${span} откроется новый заказ той же машины`;
@@ -783,6 +784,7 @@ export const WEEKLY_ITEM_WARNINGS = [
   'esm2_reissue',
   'machinist_removed',
   'rental',
+  'rental_month_cut',
   'other_weekly',
 ] as const;
 export type WeeklyItemWarningKind = (typeof WEEKLY_ITEM_WARNINGS)[number];
@@ -874,6 +876,13 @@ export function itemWarnings(
       kind: 'rental',
       text: 'ЭСМ-2 и перегон ведёт арендодатель — портал документов на арендную технику не выписывает',
     });
+  }
+
+  // The month cut of a rental extension (ADR 0238): the human who signs the week must know before
+  // the signature that the visa also opens a new order and puts it into work.
+  if (newDateTo && order.ownership === 'rental') {
+    const cut = rentalMonthSplitText(rentalMonthSplit(order.ownership, last, newDateTo));
+    if (cut) warnings.push({ kind: 'rental_month_cut', text: cut });
   }
 
   // Запрета на две недели у одного заказа нет намеренно: планировать через неделю нормально, а

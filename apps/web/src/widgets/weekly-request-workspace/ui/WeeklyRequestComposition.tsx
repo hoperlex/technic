@@ -2,6 +2,8 @@ import { DatePicker, Radio, Table, Tooltip, Typography, type TableColumnType } f
 import dayjs from 'dayjs';
 import {
   dateKeySpan,
+  rentalMonthSplit,
+  rentalMonthSplitText,
   shiftDateKey,
   type WeeklySuggestionDto,
   type WeeklySuggestionOrderDto,
@@ -115,10 +117,23 @@ function ExtendDateControl({ row, decision, editable, weekStart, weekEnd, onChan
 }
 
 /** What a row tells the person: warnings, a vanished order, the apply refusal reason. */
-function RowNotes({ row, skipReason }: RowProps) {
+function RowNotes({ row, decision, skipReason }: RowProps) {
+  // The month cut follows the date the person picks, while the server warnings were computed for the
+  // suggested one: the live line replaces that one, or the row would show two different dates.
+  const cut =
+    decision.kind === 'extend' && decision.dateTo
+      ? rentalMonthSplitText(rentalMonthSplit(row.ownership, row.effectiveDateTo, decision.dateTo))
+      : null;
   return (
     <div style={{ lineHeight: 1.35 }}>
-      <WeeklyItemWarnings warnings={row.warnings} />
+      <WeeklyItemWarnings warnings={row.warnings.filter((w) => w.kind !== 'rental_month_cut')} />
+      {cut && (
+        <div>
+          <Typography.Text type="warning" style={{ fontSize: 12 }}>
+            {cut}
+          </Typography.Text>
+        </div>
+      )}
       {/* The extension ban is explained here, not only in the button tooltip: there is no hover on
           a phone, and the vehicle decision still has to be made. */}
       {row.extendBlockedReason && (

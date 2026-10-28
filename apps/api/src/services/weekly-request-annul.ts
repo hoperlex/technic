@@ -122,6 +122,7 @@ interface LockedItem {
   previousDateTo: string | null;
   sourceRequestId: string | null;
   createdRequestId: string | null;
+  continuationRequestId: string | null;
   vehicleTypeName: string | null;
   sourceRequestNum: number | null;
   createdRequestNum: number | null;
@@ -236,6 +237,7 @@ async function lockPlanRows(
       previousDateTo: weeklyVehicleRequestItems.previousDateTo,
       sourceRequestId: weeklyVehicleRequestItems.sourceRequestId,
       createdRequestId: weeklyVehicleRequestItems.createdRequestId,
+      continuationRequestId: weeklyVehicleRequestItems.continuationRequestId,
       vehicleTypeName: sql<string | null>`null`,
       sourceRequestNum: sql<number | null>`null`,
       createdRequestNum: sql<number | null>`null`,
@@ -405,6 +407,7 @@ export async function planWeeklyAnnul(
           dateTo: item.dateTo,
           previousDateTo: item.previousDateTo,
           orderId: orderIdOf(item),
+          continuationRequestId: item.continuationRequestId,
         })),
       })
     ).map((state) => [state.itemId, state] as const),

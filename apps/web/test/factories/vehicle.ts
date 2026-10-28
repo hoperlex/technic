@@ -311,6 +311,8 @@ export function weeklyItem(overrides: Partial<WeeklyRequestItemDto> = {}): Weekl
     currentVehicleLabel: 'Экскаватор JCB · А123АА77',
     createdRequestId: null,
     createdRequestNum: null,
+    continuationRequestId: null,
+    continuationRequestNum: null,
     result: 'pending',
     skipReason: '',
     warnings: [],

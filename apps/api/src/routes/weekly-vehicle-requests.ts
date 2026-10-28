@@ -161,6 +161,8 @@ const historyActors = alias(users, 'weekly_history_actors');
 const sourceRequests = alias(vehicleRequests, 'weekly_source_requests');
 /** Порождённый заказ строки `new`. */
 const createdRequests = alias(vehicleRequests, 'weekly_created_requests');
+/** Order a visa opened past the month border for a rental `extend` row (ADR 0238). */
+const continuationRequests = alias(vehicleRequests, 'weekly_continuation_requests');
 const sourceDetails = alias(specialEquipmentRequestDetails, 'weekly_source_details');
 const sourceEarlyEnds = alias(vehicleRequestEarlyEndings, 'weekly_source_early_ends');
 /**
@@ -251,6 +253,8 @@ const itemSelect = {
   createdRequestId: weeklyVehicleRequestItems.createdRequestId,
   createdRequestNum: createdRequests.num,
   createdRequestApprovedAt: createdRequests.approvedAt,
+  continuationRequestId: weeklyVehicleRequestItems.continuationRequestId,
+  continuationRequestNum: continuationRequests.num,
   sourceApprovedAt: sourceRequests.approvedAt,
   result: weeklyVehicleRequestItems.result,
   skipReason: weeklyVehicleRequestItems.skipReason,
@@ -285,6 +289,10 @@ function itemsQuery() {
       and(eq(sourceRequests.id, sourceEarlyEnds.requestId), eq(sourceEarlyEnds.status, 'pending')),
     )
     .leftJoin(createdRequests, eq(weeklyVehicleRequestItems.createdRequestId, createdRequests.id))
+    .leftJoin(
+      continuationRequests,
+      eq(weeklyVehicleRequestItems.continuationRequestId, continuationRequests.id),
+    )
     .leftJoin(orderedTypes, eq(weeklyVehicleRequestItems.vehicleTypeId, orderedTypes.id))
     .leftJoin(
       orderedCategories,
@@ -433,6 +441,8 @@ async function loadItems(
       currentVehicleLabel: labelOf(row),
       createdRequestId: row.createdRequestId,
       createdRequestNum: row.createdRequestNum,
+      continuationRequestId: row.continuationRequestId,
+      continuationRequestNum: row.continuationRequestNum,
       result: row.result,
       skipReason: row.skipReason,
       warnings,
@@ -2068,6 +2078,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
                   dateTo: row.dateTo,
                   previousDateTo: row.previousDateTo,
                   orderId: row.sourceRequestId ?? row.createdRequestId,
+                  continuationRequestId: row.continuationRequestId,
                 })),
               })
             ).map((state) => [state.itemId, state] as const),

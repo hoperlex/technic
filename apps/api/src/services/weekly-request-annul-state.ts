@@ -178,6 +178,8 @@ export interface AnnulStateInput {
   previousDateTo: string | null;
   /** Заказ строки: `source_request_id` у `extend`/`leave`, `created_request_id` у `new`. */
   orderId: string | null;
+  /** Заказ, открытый строкой `extend` за границей месяца у аренды (ADR 0238). */
+  continuationRequestId?: string | null;
 }
 
 export interface AnnulStateRow {
@@ -212,8 +214,26 @@ export async function annulStates(
         .filter((v): v is string => v !== null),
     ),
   ];
-  const [orders, laterWeeks] = await Promise.all([
+  const continuationIds = [
+    ...new Set(
+      params.items.map((item) => item.continuationRequestId).filter((v): v is string => !!v),
+    ),
+  ];
+  const [orders, continuations, laterWeeks] = await Promise.all([
     loadAnnulOrders(runner, orderIds),
+    // Read apart from `loadAnnulOrders`: the reversal needs of this order only whether it still
+    // lives and in what status, and its number for the sentence that names it.
+    continuationIds.length === 0
+      ? Promise.resolve([])
+      : runner
+          .select({
+            id: vehicleRequests.id,
+            num: vehicleRequests.num,
+            status: vehicleRequests.status,
+            deletedAt: vehicleRequests.deletedAt,
+          })
+          .from(vehicleRequests)
+          .where(inArray(vehicleRequests.id, continuationIds)),
     loadLaterWeekRefs(runner, {
       weeklyId: params.weeklyId,
       appliedAt: params.appliedAt,
@@ -221,8 +241,13 @@ export async function annulStates(
     }),
   ]);
 
+  const continuationById = new Map(continuations.map((c) => [c.id, c] as const));
+
   return params.items.map((item) => {
     const order = item.orderId ? (orders.get(item.orderId) ?? null) : null;
+    const continuation = item.continuationRequestId
+      ? (continuationById.get(item.continuationRequestId) ?? null)
+      : null;
     const verdict = weeklyAnnulItemState(
       {
         id: item.id,
@@ -231,6 +256,13 @@ export async function annulStates(
         dateTo: item.dateTo,
         previousDateTo: item.previousDateTo,
         laterWeekRefs: item.orderId ? (laterWeeks.get(item.orderId) ?? []) : [],
+        continuationOrder: continuation
+          ? {
+              num: continuation.num,
+              status: continuation.status,
+              deletedAt: continuation.deletedAt ? continuation.deletedAt.toISOString() : null,
+            }
+          : null,
       },
       order,
     );

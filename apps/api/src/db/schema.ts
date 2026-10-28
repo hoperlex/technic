@@ -9576,6 +9576,12 @@ export const weeklyVehicleRequestItems = pgTable(
     createdRequestId: uuid('created_request_id').references(() => vehicleRequests.id, {
       onDelete: 'restrict',
     }),
+    // The order a visa opened for the part of a rental extension past the month border (ADR 0238).
+    // Apart from `created_request_id` on purpose: that one is the order OF a `new` row, and readers
+    // take `coalesce(source_request_id, created_request_id)` as the order of the row.
+    continuationRequestId: uuid('continuation_request_id').references(() => vehicleRequests.id, {
+      onDelete: 'restrict',
+    }),
     result: weeklyRequestItemResultEnum('result').notNull().default('pending'),
     skipReason: text('skip_reason').notNull().default(''),
     // Явное согласие снять ожидающий досрочный отъезд. **Больше не заполняется**: единица с
@@ -9663,6 +9669,10 @@ export const weeklyVehicleRequestItems = pgTable(
       'weekly_items_skip_check',
       sql`${t.result} <> 'skipped' or btrim(${t.skipReason}) <> ''`,
     ),
+    continuationShape: check(
+      'weekly_items_continuation_check',
+      sql`${t.continuationRequestId} is null or (${t.kind} = 'extend' and ${t.result} = 'extended')`,
+    ),
     positionNonNegative: check('weekly_items_position_check', sql`${t.position} >= 0`),
     // Контакт встречающего у новой строки обязателен, как в обычной заявке; телефон — десять цифр
     // без кода страны (ADR 0066).
@@ -9685,6 +9695,9 @@ export const weeklyVehicleRequestItems = pgTable(
     createdUniq: uniqueIndex('weekly_items_created_uniq')
       .on(t.createdRequestId)
       .where(sql`${t.createdRequestId} is not null`),
+    continuationUniq: uniqueIndex('weekly_items_continuation_uniq')
+      .on(t.continuationRequestId)
+      .where(sql`${t.continuationRequestId} is not null`),
     sourceIdx: index('weekly_items_source_idx').on(t.sourceRequestId),
   }),
 );

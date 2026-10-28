@@ -9,6 +9,8 @@ import {
   newItemBlocker,
   periodsOverlap,
   orderEffectiveDateTo,
+  rentalMonthSplit,
+  rentalMonthSplitText,
   sourceItemBlocker,
   WEEKLY_SELECTABLE_WEEKS,
   weeklyWeekBlocker,
@@ -16,6 +18,8 @@ import {
   weeklyWeekLabel,
   type AssignmentUnlockDto,
   type Esm2Period,
+  type RentalMonthSplit,
+  type VehicleOwnership,
   type WeeklyApplyItemResultDto,
   type WeeklyApplyResultDto,
   type WeeklyRequestScope,
@@ -31,6 +35,7 @@ import {
   vehicleRequests,
   vehicleRequestStatusHistory,
   vehicleRoutes,
+  vehicles,
   vehicleTypes,
   weeklyVehicleRequestHistory,
   weeklyVehicleRequestItems,
@@ -49,6 +54,7 @@ import { shortenTermPlan, type ShortenTermPlan } from './assignment-shorten-term
 import { machinistCardRemovedSql } from './machinist-commitments';
 import { extendSpecialEquipmentPeriod } from './vehicle-request-period';
 import { createSpecialEquipmentRequest } from './vehicle-request-create';
+import { openRentalContinuation } from './weekly-request-continuation';
 import { loadLeftBy } from './weekly-request-blockers';
 import { esm2SheetsOfRequests, type Esm2SyncResult } from './waybill-esm2';
 // Гейт режима модуля периодов назначения (план §10, решение И1): применение недели продлевает
@@ -165,6 +171,11 @@ interface LockedOrder extends WeeklySourceOrder {
   num: number;
   version: number;
   vehicleId: string | null;
+  /** Whose vehicle stands on the order: a rental one is cut by the month border (ADR 0238). */
+  ownership: VehicleOwnership | null;
+  /** The ordered position, copied to the order that continues a rental past the month border. */
+  vehicleTypeId: string;
+  vehicleCategoryId: string | null;
 }
 
 /** Строка состава, прочитанная под блокировкой шапки. */
@@ -176,6 +187,12 @@ interface Decision {
   /** Причина непригодности; `null` — строка применяется. */
   skipReason: string | null;
   order: LockedOrder | null;
+  /**
+   * How the extension is cut by the month (ADR 0238): where the existing order moves to and what
+   * the new order carries. Set for an applicable `extend` row only; an own machine's row has
+   * `extendTo` equal to the date the human chose and no continuation.
+   */
+  split: RentalMonthSplit | null;
 }
 
 /**
@@ -233,6 +250,8 @@ async function lockOrders(
       status: vehicleRequests.status,
       deletedAt: vehicleRequests.deletedAt,
       version: vehicleRequests.version,
+      vehicleTypeId: vehicleRequests.vehicleTypeId,
+      vehicleCategoryId: vehicleRequests.vehicleCategoryId,
       // Признак «машинист снят» читается тем же запросом, что и заголовок: предупреждение строки
       // считается по нему, и второе чтение под блокировкой стоило бы запроса на каждый заказ.
       machinistCardRemoved: machinistCardRemovedSql(sql`${vehicleRequests}."id"`),
@@ -268,6 +287,19 @@ async function lockOrders(
     .from(vehicleRequestAssignments)
     .where(inArray(vehicleRequestAssignments.requestId, ids));
   const vehicleByRequest = new Map(assignments.map((a) => [a.requestId, a.vehicleId]));
+  // Read here, under the same lock as the term: the month cut of a rental extension (ADR 0238) is
+  // decided by the vehicle standing on the order NOW, not by the one the human saw at assembly.
+  const vehicleIds = [...new Set(assignments.map((a) => a.vehicleId))];
+  const ownershipByVehicle = new Map(
+    vehicleIds.length === 0
+      ? []
+      : (
+          await tx
+            .select({ id: vehicles.id, ownership: vehicles.ownership })
+            .from(vehicles)
+            .where(inArray(vehicles.id, vehicleIds))
+        ).map((v) => [v.id, v.ownership] as const),
+  );
 
   const earlyEnds = await tx
     .select({
@@ -323,6 +355,9 @@ async function lockOrders(
       machinistCardRemoved: head.machinistCardRemoved,
       version: head.version,
       vehicleId: vehicleByRequest.get(head.id) ?? null,
+      ownership: ownershipByVehicle.get(vehicleByRequest.get(head.id) ?? '') ?? null,
+      vehicleTypeId: head.vehicleTypeId,
+      vehicleCategoryId: head.vehicleCategoryId,
     });
   }
   return locked;
@@ -355,14 +390,14 @@ async function decide(
       scope,
       classification,
     );
-    return { item, skipReason: blocker, order: null };
+    return { item, skipReason: blocker, order: null, split: null };
   }
 
   const order = orders.get(item.sourceRequestId!);
   // Заказа нет в выборке — его снесли насовсем между сборкой и визой (`purge`, ADR 0070). Уборка
   // строк должна была снять эту строку и поднять версию шапки, но полагаться на это нельзя:
   // применение отвечает за то, что оно пишет.
-  if (!order) return { item, skipReason: 'Заказ удалён из портала', order: null };
+  if (!order) return { item, skipReason: 'Заказ удалён из портала', order: null, split: null };
 
   // Оформленный вывоз, чужое «уезжает» и ожидающий визы отъезд сидят внутри `sourceItemBlocker`, и
   // спрашиваются здесь ровно поэтому: между подачей и визой проходят часы, и вывоз, оформленный в
@@ -371,7 +406,44 @@ async function decide(
     item.kind === 'extend'
       ? extendBlocker(order, scope, item.expectedDateTo, item.dateTo!)
       : sourceItemBlocker(order, scope, item.expectedDateTo);
-  return { item, skipReason: blocker, order };
+  if (blocker !== null || item.kind !== 'extend') {
+    return { item, skipReason: blocker, order, split: null };
+  }
+
+  // The cut is computed here, under the order lock and from the vehicle standing on the order now:
+  // the form showed a note by what it saw at assembly, and the machine may have changed hands since.
+  const split = rentalMonthSplit(order.ownership, orderEffectiveDateTo(order), item.dateTo!);
+  if (split.continuation) {
+    const refusal = await continuationBlocker(tx, order, scope);
+    if (refusal) return { item, skipReason: refusal, order, split: null };
+  }
+  return { item, skipReason: null, order, split };
+}
+
+/**
+ * Why the order that continues a rental past the month border cannot be opened; `null` — it can.
+ *
+ * The row is skipped as a whole, not cut half-way: moving the existing order to the border and
+ * silently dropping the days past it would be exactly the hidden shortening the extension rules
+ * refuse elsewhere. Same conditions as a `new` row (`newItemBlocker`): a deactivated site or
+ * position of the classifier takes no new order.
+ */
+async function continuationBlocker(
+  tx: Tx,
+  order: LockedOrder,
+  scope: WeeklyRequestScope,
+): Promise<string | null> {
+  const prefix = 'Аренда не идёт за границу месяца, а новый заказ завести нельзя: ';
+  if (scope.objectIsActive === false) return `${prefix}площадка погашена в справочнике`;
+  const classification = await loadClassification(tx, order.vehicleTypeId, order.vehicleCategoryId);
+  if (!classification.typeIsActive) return `${prefix}тип ТС погашен в справочнике`;
+  if (classification.hasCategories && !order.vehicleCategoryId) {
+    return `${prefix}у этого типа ТС выбирают категорию`;
+  }
+  if (order.vehicleCategoryId && classification.categoryIsActive === false) {
+    return `${prefix}категория ТС погашена в справочнике`;
+  }
+  return null;
 }
 
 /**
@@ -486,11 +558,14 @@ async function planHistoryPaper(
   const unnamed: { order: string; unlock: AssignmentUnlockDto }[] = [];
   for (const decision of params.decisions) {
     if (decision.skipReason !== null || decision.item.kind !== 'extend') continue;
+    // A rental row that ends exactly on the month border moves nothing: all of it is the new order.
+    const extendTo = decision.split!.extendTo;
+    if (extendTo === null) continue;
     const order = decision.order!;
     const plan = await planWeeklyExtension(tx, {
       requestId: order.id,
       termBefore: { dateFrom: order.dateFrom, dateTo: order.dateTo },
-      dateTo: decision.item.dateTo!,
+      dateTo: extendTo,
       asOf: params.asOf,
     });
     /*
@@ -670,11 +745,14 @@ export async function applyWeeklyRequest(
   const backstop: AssignmentBackstopVerdict[] = [];
   for (const decision of decisions) {
     if (decision.skipReason !== null || decision.item.kind !== 'extend') continue;
+    // The range the row opens is the part up to the month border (ADR 0238); a row that moves
+    // nothing opens no range for the backstop to ask about.
+    if (decision.split!.extendTo === null) continue;
     const verdict = await evaluateAssignmentBackstop(tx, {
       door: 'weekly_apply',
       requestId: decision.order!.id,
       asOf: today,
-      prospectiveDateTo: decision.item.dateTo,
+      prospectiveDateTo: decision.split!.extendTo,
     });
     if (verdict) backstop.push(verdict);
   }
@@ -708,6 +786,7 @@ export async function applyWeeklyRequest(
         displayNumber: order ? formatVehicleRequestNumber(order.num) : null,
         previousDateTo: null,
         newDateTo: null,
+        continuation: null,
         skipReason: decision.skipReason,
         earlyEndDropped: false,
       });
@@ -715,64 +794,90 @@ export async function applyWeeklyRequest(
     }
 
     if (item.kind === 'extend') {
+      const split = decision.split!;
       const paperPlan = paperPlans.get(order!.id);
-      const extended = await extendSpecialEquipmentPeriod(tx, {
-        requestId: order!.id,
-        // The version comes from the order just read under the lock, not from the row: after
-        // `FOR UPDATE` the conditional write guards against a lost re-read, not against a
-        // competitor — that one is already waiting on the lock.
-        expectedVersion: order!.version,
-        newDateTo: item.dateTo!,
-        actor: params.actor,
-        reason: extendReason,
-        // The week never drops someone else's early-departure request: a unit with an undecided
-        // request does not enter the composition at all (`sourceItemBlocker`), and the module must
-        // not have a second, silent way to cancel someone else's decision. The parameter has no
-        // default on purpose (`vehicle-request-period.ts`): the caller answers, not forgetfulness.
-        dropPendingEarlyEnd: false,
-        // The backstop was computed by the preflight above — over all rows and before the first
-        // write (Р23).
-        backstop: 'checked_by_caller',
-        // The operation context — otherwise an extension into a past week would leave the order
-        // with a new term and no paper for the worked days: the weekly sweep does not issue an
-        // ended week by itself (Р21 ADR 0101). Named sheets arrive already split by order.
-        ...(params.correction
+      // The order moves only up to the month border when a rental row is cut (ADR 0238); `null` —
+      // it already ends there, and the whole extension belongs to the order opened below.
+      const extended =
+        split.extendTo === null
           ? {
-              correction: {
-                id: params.correction.id,
-                unlockWaybillIds: unlockByRequest.get(order!.id) ?? [],
-              },
+              previousDateTo: orderEffectiveDateTo(order!),
+              esm2: { cancelled: [], issued: [], trimmed: [] } as Esm2SyncResult,
+              earlyEndDropped: false,
             }
-          : {}),
-        // In `history` the paper is the segment plan computed before the first write (ADR 0220).
-        ...(paperPlan
-          ? {
-              history: {
-                asOf: today,
-                historyPresent: paperPlan.historyPresent,
-                ...assignmentPaperExecution({
-                  requestId: order!.id,
-                  actor: params.actor,
-                  reason: extendReason,
-                  mode,
-                  effects: paperPlan.effects,
-                  operationId: params.correction?.id ?? null,
-                  sheetPlan: paperPlan.sheetPlan,
-                  paperScope: paperPlan.paperScope,
-                  sheets: paperPlan.sheets,
-                  displayNumbers: paperPlan.sheetNumbers,
-                  // Every required unlock is named — `planHistoryPaper` refused otherwise.
-                  unlockWaybillIds: paperPlan.requiredUnlockIds,
-                  issues: paperPlan.issuePreparations,
-                  // The visa asks no per-sheet signatures (ADR 0220): its form has none, and the
-                  // weekly sweep it replaces did not ask either. An issued sheet keeps its
-                  // warnings unconfirmed.
-                  acknowledgements: undefined,
-                }),
-              },
-            }
-          : {}),
-      });
+          : await extendSpecialEquipmentPeriod(tx, {
+              requestId: order!.id,
+              // The version comes from the order just read under the lock, not from the row: after
+              // `FOR UPDATE` the conditional write guards against a lost re-read, not against a
+              // competitor — that one is already waiting on the lock.
+              expectedVersion: order!.version,
+              newDateTo: split.extendTo,
+              actor: params.actor,
+              reason: extendReason,
+              // The week never drops someone else's early-departure request: a unit with an undecided
+              // request does not enter the composition at all (`sourceItemBlocker`), and the module must
+              // not have a second, silent way to cancel someone else's decision. The parameter has no
+              // default on purpose (`vehicle-request-period.ts`): the caller answers, not forgetfulness.
+              dropPendingEarlyEnd: false,
+              // The backstop was computed by the preflight above — over all rows and before the first
+              // write (Р23).
+              backstop: 'checked_by_caller',
+              // The operation context — otherwise an extension into a past week would leave the order
+              // with a new term and no paper for the worked days: the weekly sweep does not issue an
+              // ended week by itself (Р21 ADR 0101). Named sheets arrive already split by order.
+              ...(params.correction
+                ? {
+                    correction: {
+                      id: params.correction.id,
+                      unlockWaybillIds: unlockByRequest.get(order!.id) ?? [],
+                    },
+                  }
+                : {}),
+              // In `history` the paper is the segment plan computed before the first write (ADR 0220).
+              ...(paperPlan
+                ? {
+                    history: {
+                      asOf: today,
+                      historyPresent: paperPlan.historyPresent,
+                      ...assignmentPaperExecution({
+                        requestId: order!.id,
+                        actor: params.actor,
+                        reason: extendReason,
+                        mode,
+                        effects: paperPlan.effects,
+                        operationId: params.correction?.id ?? null,
+                        sheetPlan: paperPlan.sheetPlan,
+                        paperScope: paperPlan.paperScope,
+                        sheets: paperPlan.sheets,
+                        displayNumbers: paperPlan.sheetNumbers,
+                        // Every required unlock is named — `planHistoryPaper` refused otherwise.
+                        unlockWaybillIds: paperPlan.requiredUnlockIds,
+                        issues: paperPlan.issuePreparations,
+                        // The visa asks no per-sheet signatures (ADR 0220): its form has none, and the
+                        // weekly sweep it replaces did not ask either. An issued sheet keeps its
+                        // warnings unconfirmed.
+                        acknowledgements: undefined,
+                      }),
+                    },
+                  }
+                : {}),
+            });
+      // The part past the month border (ADR 0238): a new order of the same rented vehicle, born
+      // approved by this visa and taken into work in the same transaction. After the existing
+      // order has moved, so that a failure of either rolls the whole row back.
+      const continued = split.continuation
+        ? await openRentalContinuation(tx, {
+            sourceId: order!.id,
+            sourceNum: order!.num,
+            period: split.continuation,
+            actor: params.actor,
+            approvedAt: appliedAt,
+            asOf: today,
+            mode,
+            reason,
+            correctionReason: params.correction?.reason,
+          })
+        : null;
       await tx
         .update(weeklyVehicleRequestItems)
         .set({
@@ -780,6 +885,7 @@ export async function applyWeeklyRequest(
           previousDateTo: extended.previousDateTo,
           appliedSourceVersion: order!.version,
           snapshotVehicleId: order!.vehicleId,
+          continuationRequestId: continued?.requestId ?? null,
         })
         .where(eq(weeklyVehicleRequestItems.id, item.id));
       // Молчаливая сверка записью не считается: у арендного заказа листов нет вовсе, и пустая
@@ -795,7 +901,21 @@ export async function applyWeeklyRequest(
         requestId: order!.id,
         displayNumber: formatVehicleRequestNumber(order!.num),
         previousDateTo: extended.previousDateTo,
-        newDateTo: item.dateTo,
+        // Where the existing order stands after the row: the border of the month when it was cut.
+        newDateTo: split.extendTo ?? extended.previousDateTo,
+        continuation:
+          continued && split.continuation
+            ? {
+                requestId: continued.requestId,
+                displayNumber: formatVehicleRequestNumber(continued.num),
+                dateFrom: split.continuation.dateFrom,
+                dateTo: split.continuation.dateTo,
+                assigned: continued.assigned,
+                note: continued.assigned
+                  ? (rentalMonthSplitText(split) ?? '')
+                  : `${rentalMonthSplitText(split) ?? ''}. ${continued.note}`,
+              }
+            : null,
         skipReason: '',
         // Ответ общего сервиса, а не своё вычисление: здесь он всегда `false` — недельная заявка
         // чужих запросов на отъезд не снимает, — но пересказывать это константой значило бы
@@ -827,6 +947,7 @@ export async function applyWeeklyRequest(
         displayNumber: formatVehicleRequestNumber(order!.num),
         previousDateTo: last,
         newDateTo: null,
+        continuation: null,
         skipReason: '',
         earlyEndDropped: false,
       });
@@ -882,6 +1003,7 @@ export async function applyWeeklyRequest(
       displayNumber: created ? formatVehicleRequestNumber(created.num) : null,
       previousDateTo: null,
       newDateTo: item.dateTo,
+      continuation: null,
       skipReason: '',
       earlyEndDropped: false,
     });

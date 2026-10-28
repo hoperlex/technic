@@ -6,6 +6,7 @@ import { describeReadModes, inLegacy, useReadModeDatabase } from './assignment-r
 import {
   esm2Periods,
   formatWeeklyRequestNumber,
+  monthEndKey,
   moscowDateKeyOf,
   shiftDateKey,
   weekStartKey,
@@ -104,6 +105,21 @@ const RUNS_ON_SUNDAY = SRC_END === CUR_SUN;
  * цифрой единица зеленела бы три недели из четырёх и краснела бы в последнюю — без правки кода.
  */
 const SRC_PERIODS = esm2Periods(TODAY, SRC_END);
+/**
+ * Default end of a RENTAL order. A rental extension is cut by the month border (ADR 0238): an order
+ * ending on or before the last day of a month cannot be extended past it, so on the days when that
+ * border lies between `SRC_END` and the end of the target week the extension would stop at the
+ * border and open a second order — a scenario `weekly-rental-continuation.db.test.ts` owns. The
+ * tests of this file are about the visa, not about the border, so their rental order starts on the
+ * first day after the border instead: it is then a plain one-month term and the week extends it
+ * whole. (When the border is the Saturday before the target Sunday no such day exists, and the
+ * order keeps `SRC_END`.)
+ */
+const SRC_MONTH_END = monthEndKey(SRC_END);
+const RENTAL_SRC_END =
+  SRC_MONTH_END < W1_END && shiftDateKey(SRC_MONTH_END, 1) < W1_END
+    ? shiftDateKey(SRC_MONTH_END, 1)
+    : SRC_END;
 
 interface Auth {
   authorization: string;
@@ -277,7 +293,7 @@ async function makeOrderNow(opts: {
   const vehicle = opts.vehicle ?? (rental ? ctx.rentalVehicles : ctx.ownVehicles).pop();
   if (!vehicle) throw new Error('Пул тестовой техники исчерпан — расширьте выборку в seed');
   const dateFrom = opts.dateFrom ?? TODAY;
-  const dateTo = opts.dateTo === undefined ? SRC_END : opts.dateTo;
+  const dateTo = opts.dateTo === undefined ? (rental ? RENTAL_SRC_END : SRC_END) : opts.dateTo;
 
   const created = await inject('POST', '/api/v1/vehicle-requests', ctx.admin.auth, {
     requestType: 'special_equipment',
