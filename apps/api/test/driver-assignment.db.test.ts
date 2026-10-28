@@ -435,13 +435,23 @@ async function seedReading(opts: {
   date: string;
   odometerKm: number;
   engineHours: string;
+  fuelEndLiters?: string | null;
+  /** The shift position of the reading's item; the day's first shift by default. */
+  shiftOrder?: number;
+  /** Attach the reading to an existing route's item instead of a route of its own. */
+  routeId?: string;
 }): Promise<void> {
-  const route = await newRelocationRoute({
-    date: opts.date,
-    personId: opts.personId,
-    vehicleId: opts.vehicleId,
-    waybill: false,
-  });
+  const routeId =
+    opts.routeId ??
+    (
+      await newRelocationRoute({
+        date: opts.date,
+        personId: opts.personId,
+        vehicleId: opts.vehicleId,
+        waybill: false,
+      })
+    ).id;
+  const shiftOrder = opts.shiftOrder ?? 1;
   const [report] = await ctx.db
     .insert(ctx.schema.driverDailyReports)
     .values({ personId: opts.personId, reportDate: opts.date, createdBy: ctx.adminId })
@@ -451,10 +461,10 @@ async function seedReading(opts: {
     .values({
       reportId: report!.id,
       sourceKind: 'route',
-      routeId: route.id,
+      routeId,
       vehicleId: opts.vehicleId,
       reportDate: opts.date,
-      shiftOrder: 1,
+      shiftOrder,
     })
     .returning({ id: ctx.schema.driverDailyReportItems.id });
   await ctx.db.insert(ctx.schema.vehicleReadings).values({
@@ -462,10 +472,11 @@ async function seedReading(opts: {
     reportId: report!.id,
     vehicleId: opts.vehicleId,
     reportDate: opts.date,
-    shiftOrder: 1,
+    shiftOrder,
     kind: 'values',
     odometerKm: opts.odometerKm,
     engineHours: opts.engineHours,
+    fuelEndLiters: opts.fuelEndLiters ?? null,
     source: 'driver',
     createdBy: ctx.adminId,
   });
@@ -919,6 +930,7 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
       date: older,
       odometerKm: 145_000,
       engineHours: '9800.0',
+      fuelEndLiters: '40.0',
     });
     await seedReading({
       personId: person,
@@ -926,15 +938,7 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
       date: nearest,
       odometerKm: 145_320,
       engineHours: '9812.5',
-    });
-    // Показание сегодняшнего дня — то самое, которое водитель сейчас и вводит: сравнивать его с
-    // самим собой значило бы объявить нормой любое сохранённое число.
-    await seedReading({
-      personId: person,
-      vehicleId: vehicle,
-      date: ctx.today,
-      odometerKm: 999_000,
-      engineHours: '9999.0',
+      fuelEndLiters: '92.5',
     });
 
     const route = await newRelocationRoute({
@@ -950,6 +954,9 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
       // Моточасы лежат `numeric` и приходят из базы строкой: в задание они едут числом, иначе
       // сравнение в браузере сравнивало бы строки.
       engineHours: 9812.5,
+      // The fuel at the end of that shift is what this shift's start must equal (ADR 0237); it is a
+      // `numeric` as well and rides as a number.
+      fuelEndLiters: 92.5,
       measuredOn: nearest,
       // Сутками масштабируется порог невероятного прироста: «3 200 км за 2 дня» и «за месяц» —
       // разные новости.
@@ -959,6 +966,97 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
     // Снимок принадлежит машине строки, а не виду источника: недельный лист той же машины получает
     // тот же — счётчик у них общий.
     expect(entryOf(dto.entries, esm2)!.previous).toEqual(expected);
+  });
+
+  it('вторая смена дня сверяется с первой, а первая — с концом прошлого дня (ADR 0237)', async () => {
+    const person = await newPerson('Двухсменный');
+    const vehicle = await newVehicle();
+    const yesterday = shiftDateKey(ctx.today, -1);
+    await seedReading({
+      personId: person,
+      vehicleId: vehicle,
+      date: yesterday,
+      odometerKm: 145_000,
+      engineHours: '9800.0',
+      fuelEndLiters: '50.0',
+    });
+    const first = await newRelocationRoute({
+      date: ctx.today,
+      personId: person,
+      vehicleId: vehicle,
+    });
+    // The first shift's own item and reading; the second route has no item yet, and the next
+    // position (`nextShiftOrder`) is after every shift of the vehicle that day.
+    await seedReading({
+      personId: person,
+      vehicleId: vehicle,
+      date: ctx.today,
+      odometerKm: 145_400,
+      engineHours: '9810.0',
+      fuelEndLiters: '80.0',
+      routeId: first.id,
+    });
+    const second = await newRelocationRoute({
+      date: ctx.today,
+      personId: person,
+      vehicleId: vehicle,
+    });
+
+    const dto = await assignment(person, ctx.today);
+
+    // A reading of the entry's own shift is never its own predecessor: it is what the driver is
+    // entering, and comparing it with itself would declare any saved number normal.
+    expect(entryOf(dto.entries, first.id)!.previous).toEqual({
+      odometerKm: 145_000,
+      engineHours: 9800,
+      fuelEndLiters: 50,
+      measuredOn: yesterday,
+      daysAgo: 1,
+    });
+    // The second shift opens with what the first left in the tank, not with yesterday's end.
+    expect(entryOf(dto.entries, second.id)!.previous).toEqual({
+      odometerKm: 145_400,
+      engineHours: 9810,
+      fuelEndLiters: 80,
+      measuredOn: ctx.today,
+      daysAgo: 0,
+    });
+  });
+
+  it('прошлая смена без остатка на конец даёт null, а не остаток более давней смены', async () => {
+    const person = await newPerson('Недосдавший');
+    const vehicle = await newVehicle();
+    // The day before yesterday left a fuel end, yesterday's shift (the nearest) left none. Carrying
+    // the older one over would compare the start with two shifts ago — a consumption, not a
+    // continuity — and the cabinet would raise a discrepancy that is not there.
+    await seedReading({
+      personId: person,
+      vehicleId: vehicle,
+      date: shiftDateKey(ctx.today, -2),
+      odometerKm: 100_000,
+      engineHours: '5000.0',
+      fuelEndLiters: '70.0',
+    });
+    await seedReading({
+      personId: person,
+      vehicleId: vehicle,
+      date: shiftDateKey(ctx.today, -1),
+      odometerKm: 100_200,
+      engineHours: '5010.0',
+      fuelEndLiters: null,
+    });
+    const route = await newRelocationRoute({
+      date: ctx.today,
+      personId: person,
+      vehicleId: vehicle,
+    });
+
+    const dto = await assignment(person, ctx.today);
+
+    expect(entryOf(dto.entries, route.id)!.previous).toMatchObject({
+      odometerKm: 100_200,
+      fuelEndLiters: null,
+    });
   });
 
   it('машине без прошлых показаний снимок не выдумывается', async () => {

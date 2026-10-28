@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, lt, lte, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lt, lte, ne, or } from 'drizzle-orm';
 import {
   type DriverAssignmentAction,
   type DriverAssignmentDto,
@@ -20,6 +20,7 @@ import {
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
+  driverDailyReportItems,
   vehicleCategories,
   vehicleModels,
   vehicleReadings,
@@ -713,40 +714,59 @@ async function weeklyCoveredRoutes(routeIds: string[], date: string): Promise<Se
   return new Set(rows.map((row) => row.routeId));
 }
 
-// ── Прошлый снимок счётчиков ──
+// ── The previous shift's snapshot ──
 
 /**
- * Последнее показание каждой машины **строго раньше** дня задания: по нему кабинет подписывает поле
- * («предыдущее: 145 320 (10.08)») и предупреждает о падении счётчика ещё до отправки (план правок,
- * Р6).
+ * The previous shift of each vehicle: its latest `values` reading before the one being entered. The
+ * cabinet labels the fields by it («предыдущее: 145 320 (10.08)») and warns about a falling counter
+ * or a fuel start that differs from the previous end before the day leaves the phone (cabinet plan
+ * Р6, ADR 0237).
  *
- * Строгость границы существенна: показание того же дня водитель как раз и вводит — сравнивать его с
- * самим собой значило бы объявить нормой любую цифру, лишь бы её однажды сохранили. Порядок —
- * `(report_date, shift_order)`, тот же, каким идёт учётная цепочка (`readings-chain`): день без
- * позиции смены не различает две смены одной машины.
+ * "Before" is the ledger's own order, `(report_date, shift_order)` — the one the readings chain
+ * (`readings-chain`) walks, since a day without a shift position cannot tell two shifts of a
+ * vehicle apart. Two readings feed it:
  *
- * Берётся именно строка, а не два счётчика по отдельности: это подсказка «что было в прошлый раз», а
- * не звено учёта. Цепочку по каждому счётчику отдельно ведёт `readings-chain`, и повторять её здесь
- * значило бы завести второй источник правды о том, с чем сравнивают показание.
+ * - the latest reading of an EARLIER day (`earlierReadings`);
+ * - the nearest earlier shift of the SAME day (`sameDayReadings`), which wins when there is one: a
+ *   second shift opens with what the first left in the tank, not with yesterday's end. A reading of
+ *   the entry's own shift is never its own predecessor — comparing it with itself would declare any
+ *   saved number normal.
  *
- * `no_data` пропускается: в такой строке чисел нет по определению (`vehicle_readings_values_check`).
+ * It is a row, not two counters picked apart: this is a hint "what it was last time", not a link of
+ * the ledger. The per-counter chain is `readings-chain`'s, and repeating it here would make a second
+ * source of truth about what a reading is compared with. For the same reason a field the previous
+ * shift did not capture is `null` ("nothing to compare with"), not the value of an older shift: a
+ * fuel end carried over two shifts would be a consumption, not a continuity.
+ *
+ * `no_data` is skipped: such a row has no numbers by definition (`vehicle_readings_values_check`).
+ * A shift that was never reported, or was closed as `no_data`, therefore shows up as a discrepancy
+ * at the next one — the driver confirms it in the window, and the ledger is not guessed at here.
  */
-async function previousReadings(
+interface PreviousRow {
+  vehicleId: string;
+  odometerKm: number | null;
+  engineHours: string | null;
+  fuelEndLiters: string | null;
+  reportDate: string;
+}
+
+const previousColumns = {
+  vehicleId: vehicleReadings.vehicleId,
+  odometerKm: vehicleReadings.odometerKm,
+  engineHours: vehicleReadings.engineHours,
+  fuelEndLiters: vehicleReadings.fuelEndLiters,
+  reportDate: vehicleReadings.reportDate,
+};
+
+/** The latest `values` reading of each vehicle strictly before `date`. */
+async function earlierReadings(
   vehicleIds: string[],
   date: string,
-): Promise<Map<string, DriverPreviousReading>> {
-  const map = new Map<string, DriverPreviousReading>();
-  if (vehicleIds.length === 0) return map;
-
-  // Один запрос на все машины дня, а не по запросу на строку: у машиниста с двумя листами и рейсом
-  // строк три, а машин обычно одна, и `DISTINCT ON` снимает ровно верхнюю строку каждой машины.
+): Promise<Map<string, PreviousRow>> {
+  // One query for all the vehicles of the day, not one per row: a machinist with two sheets and a
+  // route has three rows and usually one vehicle, and `DISTINCT ON` takes each vehicle's top row.
   const rows = await db
-    .selectDistinctOn([vehicleReadings.vehicleId], {
-      vehicleId: vehicleReadings.vehicleId,
-      odometerKm: vehicleReadings.odometerKm,
-      engineHours: vehicleReadings.engineHours,
-      reportDate: vehicleReadings.reportDate,
-    })
+    .selectDistinctOn([vehicleReadings.vehicleId], previousColumns)
     .from(vehicleReadings)
     .where(
       and(
@@ -760,18 +780,99 @@ async function previousReadings(
       desc(vehicleReadings.reportDate),
       desc(vehicleReadings.shiftOrder),
     );
+  return new Map(rows.map((row) => [row.vehicleId, row]));
+}
 
+/** The `values` readings of the day itself, with the shift each belongs to. */
+async function sameDayReadings(
+  vehicleIds: string[],
+  date: string,
+): Promise<(PreviousRow & { shiftOrder: number })[]> {
+  return db
+    .select({ ...previousColumns, shiftOrder: vehicleReadings.shiftOrder })
+    .from(vehicleReadings)
+    .where(
+      and(
+        inArray(vehicleReadings.vehicleId, vehicleIds),
+        eq(vehicleReadings.kind, 'values'),
+        eq(vehicleReadings.reportDate, date),
+      ),
+    );
+}
+
+/**
+ * The shift position of the entries that already have a report item (`kind:sourceId` → position).
+ * An entry without one is a shift the report has not opened yet: `nextShiftOrder` puts it after
+ * every shift of the vehicle that day, so all the day's readings are earlier than it.
+ */
+async function ownShiftOrders(
+  date: string,
+  entries: readonly { sourceKind: string; sourceId: string }[],
+): Promise<Map<string, number>> {
+  const routeIds = entries.filter((e) => e.sourceKind === 'route').map((e) => e.sourceId);
+  const waybillIds = entries.filter((e) => e.sourceKind === 'esm2').map((e) => e.sourceId);
+  const bySource = [
+    routeIds.length > 0 ? inArray(driverDailyReportItems.routeId, routeIds) : undefined,
+    waybillIds.length > 0 ? inArray(driverDailyReportItems.waybillId, waybillIds) : undefined,
+  ].filter((condition) => condition !== undefined);
+  const map = new Map<string, number>();
+  if (bySource.length === 0) return map;
+  const rows = await db
+    .select({
+      routeId: driverDailyReportItems.routeId,
+      waybillId: driverDailyReportItems.waybillId,
+      shiftOrder: driverDailyReportItems.shiftOrder,
+    })
+    .from(driverDailyReportItems)
+    .where(and(eq(driverDailyReportItems.reportDate, date), or(...bySource)));
   for (const row of rows) {
-    map.set(row.vehicleId, {
-      odometerKm: row.odometerKm,
-      // Моточасы лежат `numeric(9,1)` и приходят строкой: портал сравнивает их числом, и оставить
-      // «9812.5» в поле числа значило бы отдать сравнение первому же `<` в браузере.
-      engineHours: row.engineHours === null ? null : Number(row.engineHours),
-      measuredOn: row.reportDate,
-      daysAgo: daysBetween(row.reportDate, date),
-    });
+    if (row.routeId) map.set(`route:${row.routeId}`, row.shiftOrder);
+    if (row.waybillId) map.set(`esm2:${row.waybillId}`, row.shiftOrder);
   }
   return map;
+}
+
+function previousSnapshot(row: PreviousRow, date: string): DriverPreviousReading {
+  return {
+    odometerKm: row.odometerKm,
+    // Engine hours and fuel are `numeric` and arrive as strings: the cabinet compares them as
+    // numbers, and a «9812.5» left in a number field would hand the comparison to the first `<` in
+    // the browser.
+    engineHours: row.engineHours === null ? null : Number(row.engineHours),
+    fuelEndLiters: row.fuelEndLiters === null ? null : Number(row.fuelEndLiters),
+    measuredOn: row.reportDate,
+    daysAgo: daysBetween(row.reportDate, date),
+  };
+}
+
+/** The previous-shift snapshot of every entry; see the section header for what "previous" is. */
+async function previousReadings(
+  sources: readonly { vehicleId: string; entry: DriverAssignmentEntry }[],
+  date: string,
+): Promise<Map<DriverAssignmentEntry, DriverPreviousReading>> {
+  const result = new Map<DriverAssignmentEntry, DriverPreviousReading>();
+  if (sources.length === 0) return result;
+  const vehicleIds = [...new Set(sources.map((source) => source.vehicleId))];
+  const [earlier, sameDay, own] = await Promise.all([
+    earlierReadings(vehicleIds, date),
+    sameDayReadings(vehicleIds, date),
+    ownShiftOrders(
+      date,
+      sources.map((source) => source.entry),
+    ),
+  ]);
+  for (const { vehicleId, entry } of sources) {
+    const position = own.get(`${entry.sourceKind}:${entry.sourceId}`) ?? Number.POSITIVE_INFINITY;
+    const nearest = sameDay
+      .filter((row) => row.vehicleId === vehicleId && row.shiftOrder < position)
+      .reduce<(PreviousRow & { shiftOrder: number }) | null>(
+        (best, row) => (best === null || row.shiftOrder > best.shiftOrder ? row : best),
+        null,
+      );
+    const row = nearest ?? earlier.get(vehicleId);
+    if (row) result.set(entry, previousSnapshot(row, date));
+  }
+  return result;
 }
 
 // ── Задание ──
@@ -821,14 +922,8 @@ export async function loadDayEntries(
   ];
   if (sources.length === 0) return [];
 
-  const previous = await previousReadings(
-    [...new Set(sources.map((source) => source.vehicleId))],
-    date,
-  );
-  return sources.map(({ entry, vehicleId }) => ({
-    ...entry,
-    previous: previous.get(vehicleId) ?? null,
-  }));
+  const previous = await previousReadings(sources, date);
+  return sources.map(({ entry }) => ({ ...entry, previous: previous.get(entry) ?? null }));
 }
 
 /**

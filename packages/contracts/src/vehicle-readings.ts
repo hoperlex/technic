@@ -217,6 +217,49 @@ export const readingInputSchema = z.discriminatedUnion('kind', [
 ]);
 export type ReadingInput = z.infer<typeof readingInputSchema>;
 
+/** The fields a driver's completeness refusal stands under: the form looks them up by these names. */
+export type DriverReadingCompletenessField =
+  'odometerKm' | 'engineHours' | 'fuelStartLiters' | 'fuelEndLiters';
+
+/**
+ * The driver's completeness rule (ADR 0237): a reading block the driver submits is whole — the fuel
+ * at the start and at the end of the shift, and ONE of the two counters. `fuelFilledLiters`, the
+ * comment and the files stay optional: an empty "filled" means the vehicle was not refuelled.
+ *
+ * The odometer and the engine hours are one slot, not two: a vehicle often has only one of them
+ * (an excavator has no odometer, a passenger van no engine-hours meter), and the form cannot know
+ * which. Both fields get the refusal when neither is filled, so it stands under whichever the driver
+ * looks at.
+ *
+ * Only the cabinet asks it, and only about a block the driver changes (a saved staff entry resent
+ * untouched must not hold the day, as with `lineRequiresDriverTimes`). The server keeps accepting
+ * part-filled readings: staff enter them, and a build older than ADR 0237 still submits morning
+ * values — the rule is a form guard, not a ledger invariant.
+ *
+ * Values are the parsed numbers; an unreadable input is refused earlier by the form, so it never
+ * reaches here.
+ */
+export function driverReadingCompletenessIssues(values: {
+  odometerKm: number | null;
+  engineHours: number | null;
+  fuelStartLiters: number | null;
+  fuelEndLiters: number | null;
+}): Partial<Record<DriverReadingCompletenessField, string>> {
+  const issues: Partial<Record<DriverReadingCompletenessField, string>> = {};
+  if (values.fuelStartLiters === null) {
+    issues.fuelStartLiters = 'Укажите остаток топлива на начало смены';
+  }
+  if (values.fuelEndLiters === null) {
+    issues.fuelEndLiters = 'Укажите остаток топлива на конец смены';
+  }
+  if (values.odometerKm === null && values.engineHours === null) {
+    const message = 'Укажите одометр или моточасы';
+    issues.odometerKm = message;
+    issues.engineHours = message;
+  }
+  return issues;
+}
+
 /** Строка отправки: показание по конкретной строке ожидания плюс её файлы. */
 export const reportItemSubmitSchema = z.object({
   itemId: uuidSchema,

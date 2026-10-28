@@ -219,13 +219,22 @@ export interface DriverAssignmentEntry {
   previous: DriverPreviousReading | null;
 }
 
-/** Снимок счётчиков, с которым водитель сверяет свой ввод. */
+/**
+ * The previous shift's snapshot of a vehicle, which the driver checks the input against: the two
+ * counters and the fuel left at the end of that shift.
+ *
+ * `fuelEndLiters` (ADR 0237) is what the fuel at the START of the next shift must equal. It is
+ * optional: a server older than the field does not send it, and the garage intake form builds its
+ * snapshot from a reading's anomalies, which know no fuel. Both read an absent value as "nothing to
+ * compare with".
+ */
 export interface DriverPreviousReading {
   odometerKm: number | null;
   engineHours: number | null;
-  /** День, за который сняли предыдущее показание: «предыдущее: 145 320 (10.08)». */
+  fuelEndLiters?: number | null;
+  /** The day the previous reading was taken for: «предыдущее: 145 320 (10.08)». */
   measuredOn: string;
-  /** Сколько суток прошло — по нему масштабируется порог невероятного прироста. */
+  /** Days elapsed; the threshold of an implausible increase scales with it. */
   daysAgo: number;
 }
 
