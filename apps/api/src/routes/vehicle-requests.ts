@@ -319,6 +319,7 @@ import {
   readActualChanges,
   readAssignmentStatesOn,
   readHistoryIsAuthoritative,
+  requestDayVehicleSql,
   vehicleWorkedByHistorySql,
 } from '../services/assignment-read';
 import { assignmentStateOn } from '../services/assignment-history';
@@ -842,6 +843,40 @@ function assignedLessorWhere(p: Principal): SQL | undefined {
       .from(vehicleRequestAssignments)
       .innerJoin(scopedVehicles, eq(vehicleRequestAssignments.vehicleId, scopedVehicles.id))
       .where(and(eq(vehicleRequestAssignments.requestId, vehicleRequests.id), ownLessor)),
+  );
+}
+
+/**
+ * Отбор заявок по принадлежности машины, назначенной **сейчас**: своя или аренда.
+ *
+ * Назначение, а не история и не дни заказа, намеренно — в отличие от `requestVehicleWhere`. Тот
+ * отвечает «где ходила эта машина», и отработанный в любой день отрезок для него значим; этот
+ * отвечает «чья техника на заявке», и ответ обязан сходиться с тем, что уже спрашивает портал по
+ * тому же назначению: «Арендодатель» журнала (`vehicles.lessorId` той же связки) и часы с доставкой
+ * при закрытии аренды (`completionAsksRentalFacts`). Стоимость «Аренды» над журналом тогда равна
+ * сумме закрытий аренды, а не её же плюс закрытия, где аренды к концу уже не было.
+ *
+ * Заявка без назначенной машины не проходит ни одно из значений: принадлежности у неё ещё нет,
+ * и «Собственная» не должна выдавать новую заявку за закрытую своей техникой.
+ *
+ * `EXISTS`, как и у `assignedLessorWhere`, по тем же причинам: список, журнал, лента и три сводки
+ * соединяют таблицы по-разному, и условие по присоединённой колонке `vehicles` развалило бы ту
+ * выдачу, где её нет. Подзапрос двухтабличный и стоит в `WHERE`, так что ловушка drizzle с потерей
+ * квалификации колонок (она касается списка столбцов) его не затрагивает.
+ */
+function requestOwnershipWhere(ownership: VehicleOwnership | undefined): SQL | undefined {
+  if (!ownership) return undefined;
+  return exists(
+    db
+      .select({ one: sql`1` })
+      .from(vehicleRequestAssignments)
+      .innerJoin(scopedVehicles, eq(vehicleRequestAssignments.vehicleId, scopedVehicles.id))
+      .where(
+        and(
+          eq(vehicleRequestAssignments.requestId, vehicleRequests.id),
+          eq(scopedVehicles.ownership, ownership),
+        ),
+      ),
   );
 }
 
@@ -3662,6 +3697,10 @@ function historyWhere(p: Principal, q: z.infer<typeof vehicleRequestHistoryQuery
     // Машина (ADR 0027, ADR 0098, ADR 0100 §12): тот же общий отбор, что и в списке, — журнал
     // спрашивают ровно про неё («чем закрывали заказы этой машины» и «где она ходила»).
     requestVehicleWhere(q.vehicleId),
+    // Принадлежность назначенной машины — тем же условием, что и в списке; с «Арендодателем» ниже
+    // они не спорят: арендодатель есть только у арендной машины, и пара «Собственная + арендодатель»
+    // честно даёт пустой журнал.
+    requestOwnershipWhere(q.ownership),
     q.num ? eq(vehicleRequests.num, q.num) : undefined,
     // «У кого брали»: арендодатель лежит у самой машины, а не в назначении, — своя техника под
     // такой фильтр не попадает никогда, и это верно: у неё арендодателя нет.
@@ -3829,6 +3868,55 @@ function onSiteFormFilterSql(onDate: string, forms: readonly WaybillFormCode[]):
 }
 
 /**
+ * Отбор среза по принадлежности машины **сегодняшнего дня** — той, которую строка среза и называет.
+ *
+ * Срез отвечает «что на площадке сегодня», поэтому отбор по последнему назначению соврал бы тем же
+ * образом, каким соврала бы и сама колонка: у заявки со сменой машины по ходу срока назначение уже
+ * мартовское, а сегодня на объекте ещё январская. Выбор машины дня повторяет `toDtos` слово в слово
+ * и обязан меняться с ним вместе — фильтр и колонка должны говорить об одной машине:
+ *
+ * 1. рейс этого дня — у любого заказа, чей день распланирован; берётся машина **рейса**, а не
+ *    назначения (лист выписан на неё);
+ * 2. иначе у заказа в линейном режиме машины нет вовсе (`null`: нераспланированный день, машина
+ *    уехала на базу) — строка не проходит ни одно значение, как и у заявки без назначения;
+ * 3. иначе машина дня по истории назначения на день среза, а не нашлось истории — по назначению
+ *    (`requestDayVehicleSql`, тот же вопрос, что задаёт гараж).
+ *
+ * Режим читается через `requestIsLinearRawSql` с присоединённым типом **заказанной** техники, а не
+ * через колонку `vehicleTypes`: счётчик среза этот тип не присоединяет, и `linear-mode-readers`
+ * не пускает в запросы заявок чтение флага типа мимо снимка.
+ *
+ * Два скалярных подзапроса под `coalesce`, а не `UNION`: первый непуст ровно тогда, когда день
+ * распланирован, и тогда второй не должен ответить вовсе — иначе линейный режим и история
+ * подменили бы машину рейса.
+ */
+function onSiteOwnershipWhere(
+  ownership: VehicleOwnership | undefined,
+  onDate: string,
+): SQL | undefined {
+  if (!ownership) return undefined;
+  return sql`coalesce(
+    (SELECT os_orv.ownership
+       FROM ${vehicleRouteRequests} os_orr
+       JOIN ${vehicleRoutes} os_ort ON os_ort.id = os_orr.route_id
+       JOIN ${vehicles} os_orv ON os_orv.id = os_ort.vehicle_id
+      WHERE os_orr.request_id = ${vehicleRequests.id}
+        AND os_orr.work_date = ${onDate}::date
+      LIMIT 1),
+    (SELECT os_odv.ownership
+       FROM ${vehicleRequestAssignments} os_oda
+       JOIN ${vehicleTypes} os_odt ON os_odt.id = ${vehicleRequests.vehicleTypeId}
+       JOIN ${vehicles} os_odv ON os_odv.id = ${requestDayVehicleSql(
+         sql`${vehicleRequests.id}`,
+         sql`os_oda.vehicle_id`,
+         onDate,
+       )}
+      WHERE os_oda.request_id = ${vehicleRequests.id}
+        AND NOT ${requestIsLinearRawSql('vehicle_requests', 'os_odt')})
+  ) = ${ownership}`;
+}
+
+/**
  * Условия вкладки «На объекте» (ADR 0036): заказ спецтехники, взятый в работу, чей срок накрывает
  * день `onDate`. Пересечение периодов считает тот же `specialDateConds`, что и фильтр списка, —
  * пустая дата окончания там и здесь означает одно и то же: `coalesce(date_to, date_from)`.
@@ -3865,6 +3953,9 @@ function onSiteWhere(p: Principal, q: VehicleRequestOnSiteQuery, onDate: string)
     // общий, и срез отвечает тем же отбором, что список рядом с ним.
     queryClassificationWhere(vehicleRequests.vehicleTypeId, vehicleRequests.vehicleCategoryId, q),
     q.num ? eq(vehicleRequests.num, q.num) : undefined,
+    // Принадлежность машины дня (не назначения): см. `onSiteOwnershipWhere`. Условие то же и в
+    // счётчике, и в сводке среза.
+    onSiteOwnershipWhere(q.ownership, onDate),
     // Бланк работы дня набором (Р21): условие то же и в счётчике, и в сводке — ключ `forms`
     // определяет список, а не одну из его цифр.
     q.forms?.length ? onSiteFormFilterSql(onDate, q.forms) : undefined,
@@ -4090,6 +4181,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // ТС-341» спрашивают госномером. С ADR 0100 §12 ответ считает не только назначение, но и дни
       // заказа, отработанные этой машиной, — одним общим выражением на все пять выдач.
       requestVehicleWhere(q.vehicleId),
+      // Принадлежность назначенной машины: тем же условием в журнале и сводке над лентой.
+      requestOwnershipWhere(q.ownership),
       q.num ? eq(vehicleRequests.num, q.num) : undefined,
       approvedFilter(q.approved),
       ...dateFilters(q.requestType, q.dateFrom, q.dateTo),
@@ -4533,6 +4626,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // Машина (ADR 0098, ADR 0100 §12): сводка считается по тому же общему выражению, что и
         // список под ней, — иначе цифры над таблицей отвечали бы не про её строки.
         requestVehicleWhere(req.query.vehicleId),
+        // Принадлежность — тем же условием, что у списка под сводкой.
+        requestOwnershipWhere(req.query.ownership),
       );
       const rows = await db
         .select({

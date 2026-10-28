@@ -53,6 +53,7 @@ import {
   shiftHoursSchema,
   vehicleLabel,
   type VehicleOwnership,
+  vehicleOwnershipSchema,
   vehiclePriceSchema,
   type VehicleSpecValues,
 } from './vehicles';
@@ -2232,6 +2233,14 @@ export const vehicleRequestListQueryBase = baseListQuery(VEHICLE_REQUEST_SORT_FI
    * никогда, и это верно: машины у неё ещё нет.
    */
   vehicleId: uuidSchema.optional(),
+  /**
+   * Принадлежность назначенной машины: своя или аренда. Признак машины, а не заявки, и спрашивается
+   * по назначенной **сейчас** — тем же путём, что «Арендодатель» журнала и вопросы часов и доставки
+   * при закрытии аренды (`completionAsksRentalFacts`), поэтому итог «Аренды» сходится с её
+   * закрытиями. Заявка без назначенной машины не проходит ни одно из значений: принадлежности у неё
+   * ещё нет. Имя и схема те же, что у фильтра реестра техники.
+   */
+  ownership: vehicleOwnershipSchema.optional(),
   num: z.coerce.number().int().positive().optional(),
   // Виза (ADR 0025): «false» — заявки, ждущие согласования; ими и открывают день диспетчер
   // и руководитель строительства.
@@ -2333,6 +2342,12 @@ export const vehicleRequestOnSiteQuerySchema = withSingleClassificationForm(
     classifications: classificationFilterSchema.optional(),
     vehicleTypeId: uuidSchema.optional(),
     vehicleCategoryId: uuidSchema.optional(),
+    /**
+     * Принадлежность машины **сегодняшнего дня** — той, что строка среза и показывает, а не
+     * последней назначенной: срез отвечает про площадку, и у заявки со сменой машины по ходу срока
+     * они бывают разными.
+     */
+    ownership: vehicleOwnershipSchema.optional(),
     num: z.coerce.number().int().positive().optional(),
     /**
      * Бланк работы дня набором (Р6, Р21): строка проходит, если пересечение её набора бланков с
@@ -2525,6 +2540,8 @@ export const vehicleRequestSummaryQuerySchema = withSingleClassificationForm(
     vehicleCategoryId: uuidSchema.optional(),
     /** Назначенная машина (ADR 0098): та же единица парка, что и в фильтре списка. */
     vehicleId: uuidSchema.optional(),
+    /** Принадлежность машины, как в списке: цифры над лентой считаются по её же строкам. */
+    ownership: vehicleOwnershipSchema.optional(),
   }),
 );
 export type VehicleRequestSummaryQuery = z.infer<typeof vehicleRequestSummaryQuerySchema>;

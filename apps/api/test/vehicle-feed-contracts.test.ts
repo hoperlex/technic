@@ -64,6 +64,9 @@ describe('лента заказов и недельных заявок', () => {
       // Назначенная машина (ADR 0098): технику ставят на заказы, созданные из состава недели, а
       // сам документ остаётся планом — назначения у него не бывает вовсе.
       expect(weeklyRowsExcludedBy(query({ vehicleId: crypto.randomUUID() }))).toBe(true);
+      // Принадлежность — признак той же назначенной машины: обе стороны выбора её исключают.
+      expect(weeklyRowsExcludedBy(query({ ownership: 'own' }))).toBe(true);
+      expect(weeklyRowsExcludedBy(query({ ownership: 'rental' }))).toBe(true);
       expect(weeklyRowsExcludedBy(query({ departmentId: crypto.randomUUID() }))).toBe(true);
       expect(weeklyRowsExcludedBy(query({ num: 341 }))).toBe(true);
       // Архив (ADR 0070) — вкладка удалённых заказов; недельная заявка не удаляется вовсе.
