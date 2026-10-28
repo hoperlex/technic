@@ -192,6 +192,28 @@ async function findDuplicateReceipt(
   };
 }
 
+/**
+ * When the form stops promising a result soon. The flag is a notice, not a verdict: polling goes
+ * on, and it clears once a worker takes the job.
+ *
+ * Age alone said it too late. A job nobody takes stays `pending` or `running` in the queue, so it
+ * counts as live, the reconciliation below never fires, and the person watched "Распознаём чек…"
+ * without a hint for a quarter of an hour. So a live job is also delayed at once when the queue
+ * itself shows it will not move soon:
+ *
+ * - due but unclaimed for two minutes: an idle worker claims within its poll interval, so the
+ *   loop is busy with a long batch, hung or down;
+ * - deferred more than two minutes ahead (proxy `Retry-After`): the wait is known in advance;
+ * - running with a lapsed lease: the holder stopped extending it, and only a live worker returns
+ *   such a job to the queue.
+ *
+ * A job claimed into a batch and waiting its turn keeps a live lease and is not flagged by these;
+ * the age ceiling covers it.
+ */
+const RECOGNITION_UNCLAIMED_AFTER_MS = 2 * 60_000;
+/** Also the age at which health counts a job as waiting: one ceiling for both answers. */
+const RECOGNITION_DELAYED_AFTER_MS = 15 * 60_000;
+
 /** Состояние чтения и черновик формы. */
 export async function loadReceiptRecognitionState(
   fileId: string,
@@ -231,6 +253,15 @@ export async function loadReceiptRecognitionState(
     .select({
       status: jobs.status,
       createdAt: jobs.createdAt,
+      // The database clock decides, as it does for the claim and the lease: comparing these
+      // columns with the API host clock would let skew move the threshold.
+      overdue: sql<boolean>`(
+        ${jobs.createdAt} <= now() - ${RECOGNITION_DELAYED_AFTER_MS}::double precision * interval '1 millisecond'
+        OR (${jobs.status} = 'pending' AND (
+              ${jobs.nextRunAt} < now() - ${RECOGNITION_UNCLAIMED_AFTER_MS}::double precision * interval '1 millisecond'
+           OR ${jobs.nextRunAt} > now() + ${RECOGNITION_UNCLAIMED_AFTER_MS}::double precision * interval '1 millisecond'))
+        OR (${jobs.status} = 'running' AND ${jobs.lockedUntil} < now())
+      )`,
     })
     .from(jobs)
     .where(
@@ -286,11 +317,7 @@ export async function loadReceiptRecognitionState(
     }
   }
 
-  const delayed =
-    status === 'pending' &&
-    liveJob &&
-    latestJob !== undefined &&
-    Date.now() - latestJob.createdAt.getTime() >= 15 * 60_000;
+  const delayed = status === 'pending' && liveJob && latestJob?.overdue === true;
 
   const pages = await db
     .select({ pageSha256: autoPartReceiptScanPages.pageSha256 })
@@ -418,7 +445,7 @@ export async function loadReceiptRecognitionHealth(): Promise<ReceiptRecognition
       FROM jobs
      WHERE type = ${JOB_RECOGNIZE_AUTO_PART_RECEIPT_FILE}
        AND status IN ('pending', 'running')
-       AND created_at < now() - interval '15 minutes'`);
+       AND created_at < now() - ${RECOGNITION_DELAYED_AFTER_MS}::double precision * interval '1 millisecond'`);
   const waiting = Number(stuck.rows[0]?.waiting ?? 0);
 
   // Успех, случившийся ПОСЛЕ терминального отказа, доказывает, что сервис отвечает; более ранний

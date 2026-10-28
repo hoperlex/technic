@@ -385,7 +385,10 @@ export interface ReceiptRecognitionStateDto {
   status: ReceiptRecognitionStatus;
   /** When the current queue attempt was created; null before recognition was requested. */
   queuedAt: string | null;
-  /** True when a live queue job has not produced a terminal result for fifteen minutes. */
+  /**
+   * True when a live queue job will not give a result soon: queued fifteen minutes ago, or the
+   * queue shows it stalled (due and unclaimed, deferred far ahead, lease lapsed). Polling goes on.
+   */
   delayed: boolean;
   /** Страниц в файле и сколько из них разобрано: «в файле 6 страниц, обработано 5 (лимит)». */
   totalPages: number;
