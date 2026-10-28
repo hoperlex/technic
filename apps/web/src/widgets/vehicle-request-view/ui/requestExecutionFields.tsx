@@ -228,6 +228,23 @@ export function requestExecutionFields({
           },
         ]
       : []),
+    /*
+     * Delivery to and from the site (rental closing plan, D3): a separate entity with its own
+     * paperwork, so a field of its own and never part of the «Выполнение» sum above.
+     */
+    ...(request.completion?.deliveryCost != null
+      ? [
+          {
+            key: 'delivery',
+            label: 'Доставка',
+            children: (
+              <Typography.Text strong>
+                {formatMoney(request.completion.deliveryCost)}
+              </Typography.Text>
+            ),
+          },
+        ]
+      : []),
     {
       key: 'author',
       label: 'Автор',

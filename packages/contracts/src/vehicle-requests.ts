@@ -2747,10 +2747,27 @@ export interface VehicleRequestCompletionDto {
 }
 
 /**
- * What was worked, both counts when known: «3 смены · 27 ч, по 9 ч на смену». The billed count goes
- * first — the cost is rate × it; the other count and the average follow (D1, D2). One label for the
- * card, the journal and the history diff, so they cannot word the same closing differently.
+ * The count that is not billed, with the average per shift: «27 ч, по 9 ч на смену» after
+ * «3 смены» (D1, D2); `null` — a closing with one count (before migration 0391, a non-rental, an old
+ * tab). One label for the card, the journal, the rollback warning and the history diff, so they
+ * cannot word the same closing differently.
  */
+export function completionOtherCountLabel(
+  c: Pick<
+    VehicleRequestCompletionDto,
+    'workedUnit' | 'workedAmount' | 'workedHours' | 'workedShifts'
+  >,
+): string | null {
+  const hours = c.workedUnit === 'hours' ? c.workedAmount : c.workedHours;
+  const shifts = c.workedUnit === 'shifts' ? c.workedAmount : c.workedShifts;
+  const other = c.workedUnit === 'hours' ? shifts : hours;
+  if (other == null) return null;
+  const label = workedAmountLabel(c.workedUnit === 'hours' ? 'shifts' : 'hours', other);
+  const avg = hoursPerShiftLabel(hours, shifts);
+  return avg ? `${label}, ${avg}` : label;
+}
+
+/** What was worked, the billed count first: «3 смены · 27 ч, по 9 ч на смену». */
 export function completionWorkedLabel(
   c: Pick<
     VehicleRequestCompletionDto,
@@ -2758,30 +2775,24 @@ export function completionWorkedLabel(
   >,
 ): string {
   const billed = workedAmountLabel(c.workedUnit, c.workedAmount);
-  const hours = c.workedUnit === 'hours' ? c.workedAmount : c.workedHours;
-  const shifts = c.workedUnit === 'shifts' ? c.workedAmount : c.workedShifts;
-  const other =
-    c.workedUnit === 'hours'
-      ? shifts == null
-        ? null
-        : workedAmountLabel('shifts', shifts)
-      : hours == null
-        ? null
-        : workedAmountLabel('hours', hours);
-  if (other == null) return billed;
-  const avg = hoursPerShiftLabel(hours, shifts);
-  return `${billed} · ${other}${avg ? `, ${avg}` : ''}`;
+  const other = completionOtherCountLabel(c);
+  return other ? `${billed} · ${other}` : billed;
 }
 
-/** Отработанное и сумма одной строкой: «3 смены × 18 000 ₽»; без ставки — только отработанное. */
+/**
+ * Отработанное и сумма одной строкой: «3 смены × 18 000 ₽»; без ставки — только отработанное. The
+ * second count of a rental follows: «3 смены × 18 000 ₽ · 27 ч, по 9 ч на смену».
+ */
 export function completionLabel(c: VehicleRequestCompletionDto): string {
   const worked = workedAmountLabel(c.workedUnit, c.workedAmount);
-  if (c.rate == null) return worked;
+  const other = completionOtherCountLabel(c);
+  const tail = other ? ` · ${other}` : '';
+  if (c.rate == null) return `${worked}${tail}`;
   const rate = c.rate.toLocaleString('ru-RU', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-  return `${worked} × ${rate} ₽`;
+  return `${worked} × ${rate} ₽${tail}`;
 }
 
 /**

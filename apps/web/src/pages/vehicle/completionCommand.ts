@@ -1,11 +1,14 @@
-import type { Dayjs } from 'dayjs';
-import type {
-  CompleteVehicleRequestInput,
-  VehicleRequestDto,
-  VehicleWorkUnit,
+import dayjs, { type Dayjs } from 'dayjs';
+import {
+  calcVehicleRequestCost,
+  type CompleteVehicleRequestInput,
+  rateForWorkUnit,
+  type VehicleRequestDto,
+  type VehicleWorkUnit,
 } from '@technic/contracts';
 import { calendarDayCount } from '@shared/lib';
 import type { CompletionFormValues } from './CompletionFields';
+import { billedCount, rentalFactOf, rentalPrefill } from './rentalCompletion';
 
 /**
  * Сборка команды закрытия и подстановки её умолчаний (ADR 0178, Р2, Р3).
@@ -71,15 +74,64 @@ export function bodyOf(
   v: CompletionFormValues,
   unit: VehicleWorkUnit,
   endedOn: string | null,
+  rental = false,
 ): CompletionBody {
   return {
-    completion: {
-      workedUnit: unit,
-      workedAmount: v.workedAmount!,
-      totalCost: v.totalCost ?? null,
-      ...(endedOn ? { endedOn } : {}),
-    },
+    completion: factOf(v, unit, rental, endedOn),
     comment: (v.comment ?? '').trim(),
     version: request.version,
+  };
+}
+
+/**
+ * The fact half of the body — the status door of a freight request sends it alone, the completion
+ * door inside `bodyOf`. A rental sends both counts and the delivery with the billed count as
+ * `workedAmount` (D1, D3); any other closing sends none of them, and the server refuses them there.
+ */
+export function factOf(
+  v: CompletionFormValues,
+  unit: VehicleWorkUnit,
+  rental: boolean,
+  endedOn: string | null = null,
+): CompletionBody['completion'] {
+  return {
+    workedUnit: unit,
+    workedAmount: v.workedAmount!,
+    totalCost: v.totalCost ?? null,
+    ...(rental ? rentalFactOf(v, unit) : {}),
+    ...(endedOn ? { endedOn } : {}),
+  };
+}
+
+/**
+ * The fields a window opens with for `start` as the unit. A repeated closing opens on the previous
+ * fact: usually one number is corrected, not everything typed again. The default end date is the
+ * upper bound (Р2) — today is Wednesday, the order ran to Sunday, Wednesday goes in.
+ */
+export function startValues(
+  request: VehicleRequestDto,
+  start: VehicleWorkUnit,
+  basisHours: number,
+  endedOn: string | null,
+  rental: boolean,
+): CompletionFormValues {
+  const previous = request.completion;
+  const amount =
+    previous?.workedAmount ??
+    (start === 'hours' && basisHours > 0 ? basisHours : plannedAmount(request, start, endedOn));
+  const counts = rental
+    ? rentalPrefill(request, basisHours, plannedAmount(request, 'shifts', endedOn))
+    : {};
+  const billed = rental ? billedCount(counts, start) : amount;
+  return {
+    endedOn: endedOn ? dayjs(endedOn) : undefined,
+    workedAmount: amount,
+    ...counts,
+    totalCost:
+      previous?.totalCost ??
+      calcVehicleRequestCost(rateForWorkUnit(request.assignment, start), billed ?? 0),
+    comment: '',
+    cancelAck: false,
+    reason: '',
   };
 }

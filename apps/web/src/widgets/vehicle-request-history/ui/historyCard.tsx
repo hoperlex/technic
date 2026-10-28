@@ -8,7 +8,7 @@ import {
   type VehicleRequestDto,
   vehicleClassificationLabel,
   vehicleRequestTypeLabels,
-  workedAmountLabel,
+  completionWorkedLabel,
 } from '@technic/contracts';
 import { formatDate, formatMoney } from '@shared/lib';
 import type { CardConfig } from '@shared/ui';
@@ -46,12 +46,13 @@ export function historyCard(
           : null,
       (request) =>
         request.completion
-          ? `Отработано: ${workedAmountLabel(
-              request.completion.workedUnit,
-              request.completion.workedAmount,
-            )}${
+          ? `Отработано: ${completionWorkedLabel(request.completion)}${
               request.completion.rate != null ? ` по ${formatMoney(request.completion.rate)}` : ''
             }`
+          : null,
+      (request) =>
+        request.completion?.deliveryCost != null
+          ? `Доставка: ${formatMoney(request.completion.deliveryCost)}`
           : null,
       (request) => (request.cancelReason ? `Причина отмены: ${request.cancelReason}` : null),
       (request) =>

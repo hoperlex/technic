@@ -161,6 +161,10 @@ export function VehicleRequestHistory({
         </Space>
       ),
     },
+    // Delivery is a separate entity (D3): a total of its own next to the cost, never inside it.
+    ...(summary?.withDelivery
+      ? [{ label: 'Доставка', value: formatMoney(summary.deliveryCost) }]
+      : []),
   ];
 
   const filters = (

@@ -310,6 +310,9 @@ describe('арендодатель закрывает без даты', () => {
     // Кнопка сразу закрывающая: второго шага у этой ветви нет.
     expect(screen.queryByRole('button', { name: 'Показать последствия' })).toBeNull();
 
+    // A rental is closed with both counts (rental closing plan, D1): the hours have no basis here
+    // and are typed by hand.
+    fireEvent.change(screen.getByLabelText('Фактически часов'), { target: { value: '30' } });
     fireEvent.change(screen.getByLabelText('Стоимость, ₽'), { target: { value: '55000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Выполнена' }));
 
@@ -319,6 +322,7 @@ describe('арендодатель закрывает без даты', () => {
       completion: Record<string, unknown>;
     } & Record<string, unknown>;
     expect(body.completion).not.toHaveProperty('endedOn');
+    expect(body.completion).toMatchObject({ workedHours: 30, deliveryCost: null });
     expect(body).not.toHaveProperty('previewFingerprint');
   });
 });
