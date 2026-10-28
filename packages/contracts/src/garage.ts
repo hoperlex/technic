@@ -37,6 +37,9 @@ import { WAYBILL_FORM_CODES, waybillFormCodeSchema } from './waybills';
  *   ставят водителя, означало бы второй набор правил рейса.
  */
 
+// The «График» window of the «Водители» tab — a driver's month of shifts due a reading — has its own
+// module, `garage-driver-schedule.ts`: it answers about a month, not about the snapshot day.
+
 // ── Состояние дня ──
 
 /**

@@ -59,6 +59,17 @@ export function monthRange(month: string): { from: string; to: string } {
 }
 
 /**
+ * The month `delta` months away: `2026-01`, −1 → `2025-12`. Counted on the month number, not on a
+ * date: stepping a date by thirty days from the 31st would skip February.
+ */
+export function shiftMonthKey(month: string, delta: number): string {
+  const [year, index] = month.split('-').map(Number);
+  const total = (year ?? 1970) * 12 + (index ?? 1) - 1 + delta;
+  const y = Math.floor(total / 12);
+  return `${y}-${String(total - y * 12 + 1).padStart(2, '0')}`;
+}
+
+/**
  * Что список делает с архивными (удалёнными) строками — ADR 0070.
  *
  * Три состояния, а не два флага: «показать вместе с живыми» и «показать только их» отвечают на

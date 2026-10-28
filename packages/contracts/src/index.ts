@@ -133,6 +133,8 @@ export * from './print-budget';
  * дверей с общим рукопожатием, и разойдись их схемы, разошлись бы и последствия. */
 export * from './assignment-periods';
 export * from './garage';
+/* A driver's month in the garage: shifts due a reading and what became of each (owner, 28.10.2026). */
+export * from './garage-driver-schedule';
 export * from './driver-cabinet';
 export * from './fuel-norms';
 export * from './vehicle-readings';
