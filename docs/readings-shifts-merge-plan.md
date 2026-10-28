@@ -479,13 +479,23 @@ No migration.
   may change it. No times, an unfinished `v3` reading, an incomplete legacy reading, a `no_data`
   reading or an unresolved allocation — no prefill, and the window says why.
 
-## 9. Stage 4 — remaining readers (open)
+## 9. Stage 4 — remaining readers (done 28.10.2026)
 
-- Summary book (`analytics/facts-vehicle.ts`) builds shift atoms from shift rows: a driver-only day
-  is absent, an unsigned day carries the site's superseded hours. Switching it to the effective day
-  changes report numbers (Q3).
-- Garage occupancy (`garage.ts`, "day filled / signed") counts rows only (Q4).
-- The free-text `refuel` stays for rented vehicles; for own ones it becomes a display of liters (Q5).
+Implemented by the owner's decisions D13–D17 (§4) and recorded in ADR 0184, section «The remaining
+readers of a request day». No migration, no client floor.
+
+- **D16.** The one-click rule follows the readings module's continuity (Р13а): one fragment,
+  `counterPairBrokenSql` in `readings-expected.ts`, asked by the month aggregate and by the shift
+  reader. D3's calendar rule (§6.2) is gone.
+- **D13.** A linear day read from a route takes the time of its own stops (`requestRouteSpan` in
+  the contracts); the hours stay the whole route's, and the day carries `sharedRoute` — «рейс общий»
+  next to the hours in the card's shift tab and the shift window.
+- **D14.** The summary book (`analytics/facts-vehicle.ts`) counts the effective day through the
+  batch reader of driver days (`loadDriverShiftDaysByRequest`): driver-only clean days are shifts,
+  an unsigned day carries the driver's clean numbers. Past periods change.
+- **D15.** The garage occupancy (`garage.ts`) counts a clean driver day as filled; signed stays the
+  site's signature.
+- **D17.** The free-text `refuel` stays as it is.
 
 ## 10. Release and compatibility
 

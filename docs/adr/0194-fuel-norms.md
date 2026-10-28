@@ -166,3 +166,13 @@
   оборудования механизации» в базе ещё нет, а каталог аренды нормой приказа не нормируется;
 - сид норм по таблице приказа выкатывается отдельной миграцией, когда заказчик пришлёт саму
   таблицу: без неё сверка работает, но сверять не с чем.
+
+## The continuity of a pair is shared (2026-10-28)
+
+Decision 4 is now also the one-click rule of a special-equipment request day (owner decision D16,
+[ADR 0184](0184-vehicle-request-shifts.md), section «The remaining readers of a request day»): the
+driver's engine hours of a day are signed in one click only over a continuous pair. To keep one
+definition the rule left the aggregate's query: `counterPairBrokenSql` in
+`apps/api/src/services/readings-expected.ts` holds it, together with the expected-shift fragments
+it reads (`expectedRelationCte`, `EXPECTED_ROUTE_FILTER`, `EXPECTED_ESM2_FILTER`). The aggregate
+asks it in the same place of `shift_checks` and its results do not change.

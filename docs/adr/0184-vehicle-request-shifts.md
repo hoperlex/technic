@@ -61,9 +61,19 @@
   [reading-points.ts](../../apps/api/src/services/reading-points.ts) (the stops a route's duration
   is read from), tests
   [request-driver-times-contracts.test.ts](../../apps/api/test/request-driver-times-contracts.test.ts),
-  [request-driver-times.db.test.ts](../../apps/api/test/request-driver-times.db.test.ts)
+  [request-driver-times.db.test.ts](../../apps/api/test/request-driver-times.db.test.ts); the
+  remaining readers of 2026-10-28 (stage 4) —
+  [readings-expected.ts](../../apps/api/src/services/readings-expected.ts) (the continuity of a
+  counter pair, shared with the month aggregate),
+  [request-route-time.ts](../../packages/contracts/src/request-route-time.ts)
+  (`requestRouteSpan`), [facts-vehicle.ts](../../apps/api/src/services/analytics/facts-vehicle.ts)
+  (the summary book), tests
+  [analytics-facts-vehicle.db.test.ts](../../apps/api/test/analytics-facts-vehicle.db.test.ts)
 - Связано: [ADR 0103](0103-vehicle-readings.md) (since 2026-10-27 a request day reads the driver's
-  submitted readings, section «Driver readings as the day's numbers»)
+  submitted readings, section «Driver readings as the day's numbers»),
+  [ADR 0194](0194-fuel-norms.md) (its decision 4, the continuity of a counter pair, is since
+  2026-10-28 also the one-click rule of a request day, section «The remaining readers of a request
+  day»)
 - Решение вырастает из: [ADR 0029](0029-vehicle-request-completion.md) (факт выполнения — итог, к
   которому смены становятся основанием), [0036](0036-vehicle-on-site.md) (срез «На объекте» и
   серверное «сегодня»), [0044](0044-vehicle-request-early-end.md) (приём «своего права не заводим»
@@ -455,3 +465,64 @@ frozen by the signature, a stale fingerprint after a time-only edit, a clean day
 times keeping the site's time, two vehicles of one day folding and not folding, and a linear day
 in a route taking the arrival at stop 1 and the departure from the last stop.
 `vehicle-shifts-modal.test.tsx` covers the locked inputs and the shown intervals.
+
+## The remaining readers of a request day (2026-10-28)
+
+The owner closed the last forks of the merge plan by the survey of 28 October
+([readings-shifts-merge-plan.md](../readings-shifts-merge-plan.md), D13–D17); this section records
+stage 4. No migration, no client floor. It changes three statements of the sections above: the
+one-click rule of «Driver readings as the day's numbers» (D3 gives way to D16), the time of a day in
+a route of «Driver times on a request day» (D13), and «the summary book and the garage occupancy
+still read rows» (D14, D15).
+
+- **One click follows the garage's continuity (D16).** A driver day is clean when every reading's
+  engine-hour pair is continuous by the readings module's own rule (Р13а, decision 4 of
+  [ADR 0194](0194-fuel-norms.md)): no expected shift of the vehicle without numbers lies between the
+  predecessor snapshot (exclusive) and the day (inclusive); a weekly ESM-2 day breaks the pair only
+  when its report was opened without numbers. D3's "the predecessor is from this or the previous
+  calendar day" is gone: a Monday after a weekend without expected shifts is signed in one click,
+  and a missed route in between still asks the site to save the form, «водитель: 23 ч с 14.08»
+  naming the predecessor of the broken pair. The rule is written once,
+  `counterPairBrokenSql` in `readings-expected.ts`, over the expected relation of the readings
+  module; the month aggregate checks its fuel norm by the same fragment, and the shift reader asks
+  it for all its pairs in one query, narrowed to their vehicles (`loadBrokenCounterPairs`). The
+  expected-shift fragments moved there from `readings-aggregate.ts` for that reason: the pure rule
+  tests of the shift reader load without an environment. One consequence is the garage's, taken
+  with the rule: a reading whose own expected shift the garage counts as missing — a route
+  reassigned to another driver after the reading — breaks its pair until the garage sorts the
+  reading out, even though a `driver` discrepancy alone does not block.
+- **A linear day on a shared route takes its own stops' time (D13).** The time of a linear
+  special-equipment day read from a route reading is the request's span of the recorded stops
+  (`requestRouteSpan`): from the start of its first own stop's D6 segment to the departure from its
+  last own stop, attributed by the request snapshot of the capture as D6 attributes a freight
+  request's stops. A route serving the day alone gives the whole route, as before. The engine hours
+  stay the whole route's — one counter cannot be split by stops — and the day says so: the driver
+  day carries `sharedRoute`, from the snapshot when the stops were captured and from the live
+  composition (`servedRequestSql`, the cabinet's "served") when they were not, and the card's shift
+  tab and the shift window show «рейс общий» next to the hours. The mark explains the hours and
+  signs nothing, so it is not part of the fingerprint; the own interval is, as any driver time.
+- **The summary book counts the effective day (D14).** The site atoms of `facts-vehicle.ts` are the
+  days the card shows filled (`effectiveDaySource`): a signed row as signed, an unsigned row with a
+  clean driver day as the driver's numbers, a clean driver day without a row as a shift of its own
+  (unsigned), any other row as written; the driver's numbers count only on the days of the term, as
+  the card reads them. The closed money is spread over those days. The driver days come from one
+  batch read for every request of the set over the union of their terms
+  (`loadDriverShiftDaysByRequest`), the very reader of the card, never a query per request. A
+  request the set does not hold — one that never reached work, with no row and no relocation in the
+  period — keeps its driver days out of the book. Past periods change; the owner accepted it.
+- **The garage occupancy counts a clean driver day as filled (D15).** The day's shift of a special
+  request in the garage (`loadSpecials`) is filled by the same `effectiveDaySource`, read in one
+  batch for the page, and signed only by the site's signature.
+- **Refuelling stays as it is (D17).** The free-text refuelling of an own vehicle's day without
+  readings and of a rented vehicle is not changed.
+
+**Tests.** `shift-driver-days.db.test.ts` proves the weekend that breaks nothing, a weekly sheet
+whose day nobody opened, an opened empty day that breaks the pair, a missed route between two
+readings, and the garage occupancy before and after the sign-off; the month aggregate's suites
+(`readings-aggregate*.db.test.ts`, `readings-stats.db.test.ts`, `fuel-norms.db.test.ts`) pass
+unchanged on the shared fragment. `request-driver-times-contracts.test.ts` holds the span rule and
+`request-driver-times.db.test.ts` a linear day on a route shared with freight (own stop's time, the
+route's hours, the mark, the sign-off) and alone on its route. `analytics-facts-vehicle.db.test.ts`
+proves a driver-only day, an unsigned day overridden by the driver and a signed one kept, and a
+non-clean driver day left as a plan day. `vehicle-shifts-tab.test.tsx` and
+`vehicle-shifts-modal.test.tsx` show the mark.

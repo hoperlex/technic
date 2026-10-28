@@ -330,3 +330,12 @@ none of them changes it.
    листа» filter.
 
 Plan §14.5 was closed earlier, at stage 7.
+
+## The shared fragments moved (2026-10-28)
+
+`expectedRelationCte`, `EXPECTED_ROUTE_FILTER` and `EXPECTED_ESM2_FILTER` (decision 1 and §14.4
+above) now live in `apps/api/src/services/readings-expected.ts`, next to the continuity of a counter
+pair, rather than in `readings-aggregate.ts`: a request day's one-click sign-off asks the same
+continuity rule ([ADR 0184](0184-vehicle-request-shifts.md), section «The remaining readers of a
+request day»), and its pure rule tests must load without the database client the aggregate brings.
+The rules themselves did not change.
