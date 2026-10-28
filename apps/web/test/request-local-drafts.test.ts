@@ -95,7 +95,6 @@ describe('request draft recovery across forms', () => {
       displayNumber: requestId,
       title: requestId,
       effectiveDateTo: '2026-10-17',
-      ownership: null,
       suggestedDateTo: '2026-10-18',
       extendBlockedReason: null,
       warnings: [],

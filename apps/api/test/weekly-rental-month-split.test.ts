@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  itemWarnings,
   rentalMonthSplit,
   rentalMonthSplitText,
   weeklyAnnulItemState,
   type WeeklyAnnulItem,
   type WeeklyAnnulOrder,
+  type WeeklyRequestScope,
+  type WeeklyWarningOrder,
 } from '@technic/contracts';
 
 /**
@@ -169,5 +172,55 @@ describe('аннулирование: строка аренды с заказо�
   it('строка без разреза ведёт себя как раньше', () => {
     const plain = extend({ continuationOrder: null, dateTo: '2026-11-30' });
     expect(weeklyAnnulItemState(plain, order()).state).toBe('reversible');
+  });
+});
+
+describe('аренда: предупреждение строки о разрезе по границе месяца', () => {
+  const week: WeeklyRequestScope = {
+    objectId: 'obj',
+    weekStart: '2026-11-30',
+    weekEnd: '2026-12-06',
+    objectIsActive: true,
+    today: '2026-11-23',
+  };
+  const order = (patch: Partial<WeeklyWarningOrder>): WeeklyWarningOrder => ({
+    id: 'vr-1',
+    objectId: 'obj',
+    requestType: 'special_equipment',
+    status: 'confirmed',
+    deletedAt: null,
+    dateFrom: '2026-11-02',
+    dateTo: '2026-11-29',
+    hasAssignment: true,
+    pickupRoute: null,
+    leftBy: null,
+    pendingEarlyEndDate: null,
+    machinistCardRemoved: false,
+    ownership: 'rental',
+    otherWeekly: null,
+    ...patch,
+  });
+  const cut = (o: WeeklyWarningOrder, to: string | null, scope = week) =>
+    itemWarnings(o, scope, to).find((w) => w.kind === 'rental_month_cut');
+
+  it('арендной единице в неделе с границей сказано, что продление после неё откроется новым заказом', () => {
+    expect(cut(order({}), '2026-12-06')?.text).toBe(
+      'Аренда не идёт за границу месяца: продление после 30.11 откроется новым заказом той же машины',
+    );
+  });
+
+  it('текст не называет выбранную дату: форма показывает его для предложенной, а человек выберет другую', () => {
+    expect(cut(order({}), '2026-12-02')?.text).toBe(cut(order({}), '2026-12-06')?.text);
+  });
+
+  it('предупреждения нет там, где разрезать нечего: собственная машина, строка «уезжает», неделя до границы', () => {
+    expect(cut(order({ ownership: 'own' }), '2026-12-06')).toBeUndefined();
+    expect(cut(order({}), null)).toBeUndefined();
+    const early: WeeklyRequestScope = { ...week, weekStart: '2026-11-23', weekEnd: '2026-11-29' };
+    expect(cut(order({ dateTo: '2026-11-25' }), '2026-11-29', early)).toBeUndefined();
+  });
+
+  it('заказ, кончающийся в последний день месяца, получает то же предупреждение', () => {
+    expect(cut(order({ dateTo: '2026-11-30' }), '2026-12-06')).toBeDefined();
   });
 });

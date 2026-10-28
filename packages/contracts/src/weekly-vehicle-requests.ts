@@ -880,9 +880,19 @@ export function itemWarnings(
 
   // The month cut of a rental extension (ADR 0238): the human who signs the week must know before
   // the signature that the visa also opens a new order and puts it into work.
+  //
+  // Worded without the picked date and shown whenever the week reaches past the border: the form
+  // shows the warnings of the suggested date and the person may pick another one, and a text naming
+  // the dates of the cut (`rentalMonthSplitText`, which the visa answer carries) would lie after
+  // that. It is also the only form of it the portal can show without shipping the cut itself.
   if (newDateTo && order.ownership === 'rental') {
-    const cut = rentalMonthSplitText(rentalMonthSplit(order.ownership, last, newDateTo));
-    if (cut) warnings.push({ kind: 'rental_month_cut', text: cut });
+    const border = monthEndKey(last);
+    if (weekly.weekEnd > border) {
+      warnings.push({
+        kind: 'rental_month_cut',
+        text: `Аренда не идёт за границу месяца: продление после ${dayMonth(border)} откроется новым заказом той же машины`,
+      });
+    }
   }
 
   // Запрета на две недели у одного заказа нет намеренно: планировать через неделю нормально, а

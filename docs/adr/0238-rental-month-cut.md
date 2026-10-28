@@ -21,11 +21,9 @@
   [reversal state](../../apps/api/src/services/weekly-request-annul-state.ts),
   [weekly routes](../../apps/api/src/routes/weekly-vehicle-requests.ts),
   [order card origin](../../apps/api/src/routes/vehicle-requests.ts),
-  [composition row](../../apps/web/src/widgets/weekly-request-workspace/ui/WeeklyRequestComposition.tsx),
   [agreed rows](../../apps/web/src/widgets/weekly-request-workspace/ui/WeeklyRequestChecklist.tsx),
   [predicate tests](../../apps/api/test/weekly-rental-month-split.test.ts),
-  [db tests](../../apps/api/test/weekly-rental-continuation.db.test.ts),
-  [row tests](../../apps/web/test/weekly-rental-month-cut.test.tsx)
+  [db tests](../../apps/api/test/weekly-rental-continuation.db.test.ts)
 
 ## Context
 
@@ -96,12 +94,17 @@ in work at once.
    Moving the existing order to the border and silently losing the rest would be the hidden
    shortening the extension rules refuse elsewhere (ADR 0085 item 4).
 
-7. **The cut is computed where the facts are.** The form shows the note live under the date the
-   person picks (`rentalMonthSplitText`); the server adds the same text to the row warnings
-   (`rental_month_cut`) so the one who signs the week reads it before the signature; the visa
+7. **The cut is computed where the facts are, and only the server computes it.** The visa
    recomputes it under the order lock from the vehicle standing on the order now, because the
-   machine may have changed hands between the assembly and the signature. The saved row keeps the
-   date the human chose; nothing derived is stored in it.
+   machine may have changed hands between the assembly and the signature, and its answer names the
+   exact dates (`rentalMonthSplitText`). Before the signature the row carries a warning,
+   `rental_month_cut`: "продление после 30.11 откроется новым заказом той же машины" — worded
+   without the picked date and shown whenever the week reaches past the border, because the form
+   shows the warnings of the suggested date while the person may pick another. The portal holds no
+   copy of the cut: the first version computed a live note in the composition row and cost the
+   byte-exact bundle budget 273 B on the vehicle orders and 129 B on the garage, for a sentence the
+   server can say as well. The saved row keeps the date the human chose; nothing derived is stored
+   in it.
 
 8. **The reversal of the week waits for the new order.** Annulment and return for re-approval
    (ADR 0218, ADR 0219) cancel orders a week created while they stand «Новая» and refuse to touch
