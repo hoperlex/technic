@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useState } from 'react';
 import { App, Button, Form } from 'antd';
-import dayjs, { type Dayjs } from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   actsForCounterparty,
@@ -8,6 +8,7 @@ import {
   calcVehicleRequestCost,
   type CompleteVehicleRequestInput,
   type CompletionPreviewDto,
+  completionAsksRentalFacts,
   completionEndBounds,
   rateForWorkUnit,
   type VehicleRequestDto,
@@ -28,8 +29,11 @@ import {
   type CompletionBody,
   dateKeyOf,
   defaultUnit,
+  factOf,
   plannedAmount,
+  startValues,
 } from './completionCommand';
+import { billedCount, completionBlockers } from './rentalCompletion';
 import {
   acknowledgementsOf,
   assignmentRecheckReason,
@@ -115,6 +119,8 @@ export function VehicleCompleteModal({
 
   const assignment = request?.assignment ?? null;
   const rate = rateForWorkUnit(assignment, unit);
+  /** A rented vehicle: both counts and the delivery are asked (D1–D4). */
+  const rental = completionAsksRentalFacts(assignment);
 
   /**
    * Кто закрывает: арендодатель ведёт свой коридор без даты, предпросмотра и отпечатков (Р16).
@@ -163,23 +169,17 @@ export function VehicleCompleteModal({
     setShown(null);
     setStaleReason(null);
     setOperationId(crypto.randomUUID());
-    // Умолчание даты — верхняя граница: сегодня среда, разрешали до воскресенья, подставлять надо
-    // среду (Р2). Отдельного поля под умолчание контракты не отдают намеренно — два имени одного
-    // значения разъехались бы на первой же правке правила.
-    const endedOn = bounds?.max ?? null;
-    const amount =
-      previous?.workedAmount ??
-      (start === 'hours' && basisHours > 0 ? basisHours : plannedAmount(request, start, endedOn));
-    form.setFieldsValue({
-      endedOn: endedOn ? dayjs(endedOn) : undefined,
-      workedAmount: amount,
-      totalCost:
-        previous?.totalCost ??
-        calcVehicleRequestCost(rateForWorkUnit(request.assignment, start), amount ?? 0),
-      comment: '',
-      cancelAck: false,
-      reason: '',
-    });
+    // Умолчание даты — верхняя граница (Р2). Отдельного поля под умолчание контракты не отдают
+    // намеренно — два имени одного значения разъехались бы на первой же правке правила.
+    form.setFieldsValue(
+      startValues(
+        request,
+        start,
+        basisHours,
+        bounds?.max ?? null,
+        completionAsksRentalFacts(request.assignment),
+      ),
+    );
   });
   // Dependencies are the request and the basis hours: the shift table and the route time come by
   // a second query, and before their answer there was nothing to propose. A re-render of the same
@@ -192,6 +192,14 @@ export function VehicleCompleteModal({
   const changeUnit = (next: VehicleWorkUnit) => {
     setUnit(next);
     if (costTouched) return;
+    // A rental keeps both counts: the switch only names the other one as billed (D1).
+    if (rental) {
+      const billed = billedCount(form.getFieldsValue(['workedHours', 'workedShifts']), next);
+      form.setFieldsValue({
+        totalCost: calcVehicleRequestCost(rateForWorkUnit(assignment, next), billed ?? 0),
+      });
+      return;
+    }
     const amount = form.getFieldValue('workedAmount') as number | null | undefined;
     const nextAmount =
       amount ?? (request ? plannedAmount(request, next, dateKeyOf(endedOn)) : null);
@@ -207,13 +215,31 @@ export function VehicleCompleteModal({
     form.setFieldsValue({ totalCost: calcVehicleRequestCost(rate, value ?? 0) });
   };
 
+  /** A rental count: the billed one moves the cost, the other one only the average per shift. */
+  const changeCount = (field: 'workedShifts' | 'workedHours', value: number | null) => {
+    if (field === 'workedShifts') setAmountTouched(true);
+    if (costTouched || field !== (unit === 'hours' ? 'workedHours' : 'workedShifts')) return;
+    form.setFieldsValue({ totalCost: calcVehicleRequestCost(rate, value ?? 0) });
+  };
+
   /**
    * Сдвинули фактическую дату — сдвинулось и отработанное: смен ровно столько, сколько дней заказ
    * работал. Набранное руками при этом не трогаем: человек мог поставить полторы смены за два дня,
    * и «пересчёт» стёр бы именно то, ради чего поле открыто.
    */
   const changeEndedOn = (value: Dayjs | null) => {
-    if (amountTouched || unit !== 'shifts' || !request) return;
+    if (amountTouched || !request) return;
+    // A rental counts shifts whatever the unit; the cost follows them only when they are billed.
+    if (rental) {
+      const shifts = plannedAmount(request, 'shifts', dateKeyOf(value));
+      const billed = unit === 'shifts' && !costTouched;
+      form.setFieldsValue({
+        workedShifts: shifts,
+        ...(billed ? { totalCost: calcVehicleRequestCost(rate, shifts ?? 0) } : {}),
+      });
+      return;
+    }
+    if (unit !== 'shifts') return;
     const amount = plannedAmount(request, unit, dateKeyOf(value));
     form.setFieldsValue({
       workedAmount: amount,
@@ -233,7 +259,8 @@ export function VehicleCompleteModal({
   const completeMut = useMutation({
     mutationFn: (v: CompletionFormValues) => {
       const dto = shown?.preview ?? null;
-      const body = shown?.body ?? bodyOf(request!, v, unit, lessor ? null : dateKeyOf(v.endedOn));
+      const body =
+        shown?.body ?? bodyOf(request!, v, unit, lessor ? null : dateKeyOf(v.endedOn), rental);
       return vehicleRequestsApi.complete(request!.id, {
         ...body,
         // Присутствие каждого подтверждения задаёт **ответ сервера**, а не желание клиента: лишний
@@ -289,27 +316,13 @@ export function VehicleCompleteModal({
   const submit = (v: CompletionFormValues) => {
     if (!request) return;
     // Аренда — счёт от контрагента (ADR 0027): закрытие без суммы означало бы «сколько заплатили,
-    // выясним потом». Тем же правилом отвечает сервер.
-    const blocked = blockers.raise({
-      workedAmount:
-        (v.workedAmount == null || v.workedAmount <= 0) && 'Укажите, сколько отработала техника',
-      totalCost:
-        assignment?.ownership === 'rental' &&
-        v.totalCost == null &&
-        'Укажите стоимость — по арендованной технике заявка закрывается со счётом',
-    });
-    if (blocked || v.workedAmount == null) return;
+    // выясним потом»; и закрывается она обоими счётами (D1). Тем же правилом отвечает сервер.
+    const blocked = blockers.raise(completionBlockers(v, rental));
+    if (blocked || (!rental && v.workedAmount == null)) return;
 
     // Грузоперевозка идёт прежним путём: у неё ни срока работ, ни бумаги, и своей двери нет.
     if (!ownDoor) {
-      onSubmit({
-        completion: {
-          workedUnit: unit,
-          workedAmount: v.workedAmount,
-          totalCost: v.totalCost ?? null,
-        },
-        comment: (v.comment ?? '').trim(),
-      });
+      onSubmit({ completion: factOf(v, unit, rental), comment: (v.comment ?? '').trim() });
       return;
     }
     // Второй шаг уже показан — подтверждаем именно то тело, которому сервер посчитал последствия.
@@ -322,7 +335,7 @@ export function VehicleCompleteModal({
       completeMut.mutate(v);
       return;
     }
-    previewMut.mutate(bodyOf(request, v, unit, dateKeyOf(v.endedOn)));
+    previewMut.mutate(bodyOf(request, v, unit, dateKeyOf(v.endedOn), rental));
   };
 
   const secondStep = !!shown;
@@ -369,8 +382,10 @@ export function VehicleCompleteModal({
               shifts={shifts}
               routePrefill={routePrefill}
               costTouched={costTouched}
+              rental={rental}
               onUnitChange={changeUnit}
               onAmountChange={changeAmount}
+              onCountChange={changeCount}
               onCostTouched={() => setCostTouched(true)}
               onEndedOnChange={changeEndedOn}
             />

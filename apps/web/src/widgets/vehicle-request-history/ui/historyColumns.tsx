@@ -8,7 +8,7 @@ import {
   vehicleClassificationLabel,
   vehicleRequestTypeColors,
   vehicleRequestTypeLabels,
-  workedAmountLabel,
+  completionWorkedLabel,
 } from '@technic/contracts';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { VehicleRequestAssignmentCell } from '@entities/vehicle-request';
@@ -126,9 +126,8 @@ export function historyColumns(
       render: (_value, request) =>
         request.completion ? (
           <div style={{ lineHeight: 1.35 }}>
-            <div>
-              {workedAmountLabel(request.completion.workedUnit, request.completion.workedAmount)}
-            </div>
+            {/* A rental carries both counts and the average (rental closing plan, D1, D2). */}
+            <div>{completionWorkedLabel(request.completion)}</div>
             {request.completion.rate != null && (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 по {formatMoney(request.completion.rate)}
@@ -151,6 +150,17 @@ export function historyColumns(
         ) : (
           dash
         ),
+    },
+    {
+      // Delivery to and from the site (D3): its own column, never folded into «Стоимость».
+      key: 'deliveryCost',
+      title: 'Доставка',
+      width: 120,
+      align: 'right',
+      render: (_value, request) =>
+        request.completion?.deliveryCost != null
+          ? formatMoney(request.completion.deliveryCost)
+          : dash,
     },
     {
       // "Who confirmed" is two different signatures: the construction manager approved the order

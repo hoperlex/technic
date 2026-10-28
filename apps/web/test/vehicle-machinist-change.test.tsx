@@ -614,6 +614,7 @@ describe('доступ к смене машиниста', () => {
       'GET /vehicles': () => json(emptyList()),
       'GET /drivers': () => json(list([SEMENOV, KUZNETSOV])),
       'GET /vehicle-requests/:id/history': () => json([]),
+      'GET /vehicle-requests/:id/documents': () => json({ items: [] }),
       'GET /vehicle-requests/:id/driver': () =>
         json({ personId: SEMENOV.id, fullName: SEMENOV.fullName, phone: '' }),
       'GET /vehicle-requests/:id/waybills': () => json([]),

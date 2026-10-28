@@ -308,11 +308,15 @@ export async function planCompletionCommand(
    * посчитанным (пара или ни одной): у арендодательской ветви дат нет вовсе, у обычного закрытия
    * `previousDateTo` — **эффективный** конец срока, а не сырая колонка.
    */
+  // A closing survives «Выполнена» → «В работе» (ADR 0058), so a repeated closing has a previous
+  // fact: an old tab's body keeps its delivery (§4.3 of the rental closing plan).
+  const previous = await readCompletionRow(tx, request.id);
   const fact = resolveCompletion(
     subject.assignment,
     input.completion,
     { id: actor.id, name: actor.fullName },
     { endedOn, previousDateTo: endedOn === null ? null : previousDateTo },
+    previous,
   );
 
   /*
@@ -730,6 +734,11 @@ function completionFingerprintOf(
       workedUnit: plan.fact.workedUnit,
       workedAmount: plan.fact.workedAmount,
       totalCost: plan.fact.totalCost,
+      // What the window showed is what is confirmed: a changed delivery or second count after the
+      // preview is a different command.
+      workedHours: plan.fact.workedHours,
+      workedShifts: plan.fact.workedShifts,
+      deliveryCost: plan.fact.deliveryCost,
     },
     outcome: effects.operationOutcome,
     effects: {
@@ -1245,6 +1254,9 @@ export function completionPreviewDto(
       workedAmount: plan.fact.workedAmount,
       rate: plan.fact.rate,
       totalCost: plan.fact.totalCost,
+      workedHours: plan.fact.workedHours,
+      workedShifts: plan.fact.workedShifts,
+      deliveryCost: plan.fact.deliveryCost,
     },
     cancelGroups: shorten?.cancelGroupsPreview ?? [],
     cancelGroupsFingerprint: shorten?.cancelGroupsFingerprint ?? null,
@@ -1335,6 +1347,9 @@ async function readCompletionRow(
     completedAt: row.completedAt.toISOString(),
     endedOn: row.endedOn,
     previousDateTo: row.previousDateTo,
+    workedHours: numOrNull(row.workedHours),
+    workedShifts: numOrNull(row.workedShifts),
+    deliveryCost: numOrNull(row.deliveryCost),
   };
 }
 

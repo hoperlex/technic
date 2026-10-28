@@ -59,6 +59,8 @@ export const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
   accepted: 'Работы приняты',
   returnedToWork: 'Возвращена на доработку',
   documentAttached: 'Подшит документ',
+  // A typed document taken off a vehicle request (rental closing plan, P8).
+  documentRemoved: 'Снят документ',
   // Виза ИТ (Р51): решение о том, звать ли внешний сервис. Отказ читается отдельно от обычной
   // отмены — заявку закрыл не заказчик и не оператор.
   //

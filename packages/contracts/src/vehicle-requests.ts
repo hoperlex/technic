@@ -1759,6 +1759,21 @@ export const completeVehicleRequestSchema = z
     workedUnit: vehicleWorkUnitSchema,
     workedAmount: workedAmountSchema,
     totalCost: vehiclePriceSchema.nullable().optional(),
+    /**
+     * Both counts of a rental closing (plan `docs/vehicle-rental-completion-documents-plan.md`,
+     * D1): the one matching `workedUnit` repeats `workedAmount`, the other is the second fact.
+     * Optional on the wire: a tab opened before this release sends neither, and the server then
+     * records the billed count only (§4.3). The rule binding them is `completionCountsIssue`, not
+     * a refine here — `completionFactSchema` extends this object, and a refined object cannot be
+     * extended.
+     */
+    workedHours: workedAmountSchema.nullable().optional(),
+    workedShifts: workedAmountSchema.nullable().optional(),
+    /**
+     * Delivery to and from the site (D3), apart from `totalCost` and never added to it. Absent —
+     * the stored value stays (an old tab cannot know it); `null` — no delivery.
+     */
+    deliveryCost: vehiclePriceSchema.nullable().optional(),
   })
   .strict();
 export type CompleteVehicleRequestInput = z.infer<typeof completeVehicleRequestSchema>;
@@ -1893,6 +1908,11 @@ export interface CompletionFactDto {
   rate: number | null;
   /** Итоговая стоимость; `null` — считать было нечем. */
   totalCost: number | null;
+  /** Both counts of a rental closing as the door will store them (D1); `null` — not known. */
+  workedHours: number | null;
+  workedShifts: number | null;
+  /** Delivery cost as the door will store it (D3); `null` — no delivery. */
+  deliveryCost: number | null;
 }
 
 /**
@@ -2305,6 +2325,13 @@ export interface VehicleRequestHistorySummaryDto {
   totalCost: number;
   /** Сколько выполненных заявок не имеет суммы — иначе итог читается как «всё посчитано». */
   withoutCost: number;
+  /**
+   * Delivery to and from the site over the same rows (D3) — a total of its own, never part of
+   * `totalCost`: delivery is a separate entity with its own paperwork.
+   */
+  deliveryCost: number;
+  /** How many closings carry a delivery. */
+  withDelivery: number;
 }
 
 // ── Техника на объекте: вкладка «На объекте» (ADR 0036) ──
@@ -2667,6 +2694,14 @@ export interface VehicleRequestCompletionDto {
    * из соседних полей уже не восстановить.
    */
   previousDateTo: string | null;
+  /**
+   * Both counts of a rental closing (D1); `null` — closings before migration 0391, non-rentals and
+   * a closing sent by an old tab. The one matching `workedUnit` equals `workedAmount`.
+   */
+  workedHours: number | null;
+  workedShifts: number | null;
+  /** Delivery to and from the site (D3), apart from `totalCost`; `null` — no delivery. */
+  deliveryCost: number | null;
 }
 
 /** Отработанное и сумма одной строкой: «3 смены × 18 000 ₽»; без ставки — только отработанное. */
@@ -3092,6 +3127,10 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   worked: 'Отработано',
   rate: 'Ставка закрытия',
   totalCost: 'Стоимость',
+  // Delivery to and from the site (D3): its own line, never folded into «Стоимость».
+  deliveryCost: 'Доставка',
+  // A document added or removed (P8): «УПД от 14.10.2026» next to the file it names.
+  document: 'Документ',
   // Досрочное завершение (ADR 0044). Запрошенный срок — отдельным ключом от `dateTo`: пока визы
   // нет, срок заявки не менялся, и «Дата окончания: 28.07 → 24.07» в событии запроса читалось бы
   // как состоявшееся сокращение. Согласование меняет сам `dateTo` и пишется уже им.

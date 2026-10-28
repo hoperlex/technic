@@ -34,6 +34,8 @@ import {
 } from '@technic/contracts';
 import { FormGrid } from '@shared/ui';
 import { calendarDayCount, formatDateOnly, formatMoney } from '@shared/lib';
+import { billedCount } from './rentalCompletion';
+import { RentalCompletionFields } from './RentalCompletionFields';
 
 /**
  * Поля факта закрытия: фактическая дата, отработанное, стоимость и комментарий (ADR 0029, ADR 0178).
@@ -52,6 +54,12 @@ export interface CompletionFormValues {
   /** Фактический конец работ; поля нет у грузоперевозки и у арендодателя (Р2, Р16). */
   endedOn?: Dayjs;
   workedAmount?: number | null;
+  /** Both counts of a rental closing (D1); the unit switch names the billed one. */
+  workedShifts?: number | null;
+  workedHours?: number | null;
+  /** «Доставка на объект» ticked (D3); its amount is apart from `totalCost`. */
+  delivery?: boolean;
+  deliveryCost?: number | null;
   totalCost?: number | null;
   comment?: string;
   /** Подтверждение перечня гасимых решений о технике (Д2 плана периодов) — второй шаг. */
@@ -99,8 +107,11 @@ interface Props {
   routePrefill?: RouteTimePrefill | null;
   /** Сумму уже правили руками — подсказка о расхождении с расчётом показывается только тогда. */
   costTouched: boolean;
+  /** A rented vehicle: both counts and the delivery are asked (`completionAsksRentalFacts`). */
+  rental: boolean;
   onUnitChange: (unit: VehicleWorkUnit) => void;
   onAmountChange: (value: number | null) => void;
+  onCountChange: (field: 'workedShifts' | 'workedHours', value: number | null) => void;
   onCostTouched: () => void;
   onEndedOnChange: (value: Dayjs | null) => void;
 }
@@ -113,15 +124,21 @@ export function CompletionFields({
   shifts,
   routePrefill = null,
   costTouched,
+  rental,
   onUnitChange,
   onAmountChange,
+  onCountChange,
   onCostTouched,
   onEndedOnChange,
 }: Props) {
   const assignment = request.assignment ?? null;
   const rate = rateForWorkUnit(assignment, unit);
   const workedAmount = Form.useWatch('workedAmount', form);
+  const workedHours = Form.useWatch('workedHours', form);
+  const workedShifts = Form.useWatch('workedShifts', form);
   const totalCost = Form.useWatch('totalCost', form);
+  // The count the cost is rate × of: the unit's own field for a rental, the single one otherwise.
+  const billed = rental ? billedCount({ workedHours, workedShifts }, unit) : workedAmount;
 
   // Принятые объектом машиночасы: подписанные дни и есть основание факта.
   const approvedHours = shifts ? approvedMachineHours(shifts.items) : 0;
@@ -133,8 +150,19 @@ export function CompletionFields({
   const pendingDays = shifts ? unapprovedPastShiftDays(shifts.items, shifts.onDate) : [];
 
   /** Расчёт по ставке — им подставляется сумма и с ним же сравнивается введённая вручную. */
-  const calculated =
-    workedAmount != null && workedAmount > 0 ? calcVehicleRequestCost(rate, workedAmount) : null;
+  const calculated = billed != null && billed > 0 ? calcVehicleRequestCost(rate, billed) : null;
+  // What was ordered and what the site signed: the basis the worked count is checked against.
+  const orderedHint =
+    request.requestType === 'special_equipment'
+      ? [
+          `Заказано: ${calendarDayCount(request.dateFrom, request.dateTo) ?? '—'} дн.`,
+          approvedHours > 0
+            ? `согласовано смен: ${workedAmountLabel('hours', approvedHours)}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : undefined;
   const costDiffers = costTouched && calculated != null && (totalCost ?? null) !== calculated;
 
   return (
@@ -229,55 +257,64 @@ export function CompletionFields({
           </Form.Item>
         </FormGrid.Full>
 
-        {/* Отработанное и стоимость — соседними ячейками: их сверяют друг с другом. */}
-        <>
-          <Form.Item
-            name="workedAmount"
-            label={unit === 'hours' ? 'Отработано часов' : 'Отработано смен'}
-            rules={[{ required: true, message: 'Укажите отработанное' }]}
-            extra={
-              request.requestType === 'special_equipment'
-                ? [
-                    `Заказано: ${calendarDayCount(request.dateFrom, request.dateTo) ?? '—'} дн.`,
-                    // Что приняла площадка — основание факта: расхождение с ним должно быть
-                    // замечено, а не проскочить молча.
-                    approvedHours > 0
-                      ? `согласовано смен: ${workedAmountLabel('hours', approvedHours)}`
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join(' · ')
-                : routeTimeHint(routePrefill)
-            }
-          >
-            <InputNumber
-              style={{ width: '100%' }}
-              min={0}
-              step={unit === 'hours' ? 1 : 0.5}
-              precision={2}
-              onChange={onAmountChange}
+        {/* Отработанное и стоимость — соседними ячейками: их сверяют друг с другом. У аренды
+          ячеек три — смены, часы и стоимость — и доставка под ними (D1–D3). */}
+        {rental ? (
+          <FormGrid.Full>
+            <RentalCompletionFields
+              form={form}
+              unit={unit}
+              rate={rate}
+              calculated={calculated}
+              shiftsHint={orderedHint}
+              hoursHint={routeTimeHint(routePrefill)}
+              onCountChange={onCountChange}
+              onCostTouched={onCostTouched}
             />
-          </Form.Item>
-          <Form.Item
-            name="totalCost"
-            label="Стоимость, ₽"
-            extra={
-              calculated != null
-                ? `Расчёт: ${workedAmountLabel(unit, workedAmount ?? 0)} × ${formatMoney(rate)}`
-                : rate == null
-                  ? `Ставки ${vehicleWorkUnitRateLabels[unit]} нет — укажите сумму`
-                  : undefined
-            }
-          >
-            <InputNumber
-              style={{ width: '100%' }}
-              min={0}
-              step={1000}
-              precision={2}
-              onChange={onCostTouched}
-            />
-          </Form.Item>
-        </>
+          </FormGrid.Full>
+        ) : (
+          <>
+            <Form.Item
+              name="workedAmount"
+              label={unit === 'hours' ? 'Отработано часов' : 'Отработано смен'}
+              rules={[{ required: true, message: 'Укажите отработанное' }]}
+              // Что приняла площадка — основание факта: расхождение с ним должно быть замечено, а
+              // не проскочить молча.
+              extra={
+                request.requestType === 'special_equipment'
+                  ? orderedHint
+                  : routeTimeHint(routePrefill)
+              }
+            >
+              <InputNumber
+                style={{ width: '100%' }}
+                min={0}
+                step={unit === 'hours' ? 1 : 0.5}
+                precision={2}
+                onChange={onAmountChange}
+              />
+            </Form.Item>
+            <Form.Item
+              name="totalCost"
+              label="Стоимость, ₽"
+              extra={
+                calculated != null
+                  ? `Расчёт: ${workedAmountLabel(unit, workedAmount ?? 0)} × ${formatMoney(rate)}`
+                  : rate == null
+                    ? `Ставки ${vehicleWorkUnitRateLabels[unit]} нет — укажите сумму`
+                    : undefined
+              }
+            >
+              <InputNumber
+                style={{ width: '100%' }}
+                min={0}
+                step={1000}
+                precision={2}
+                onChange={onCostTouched}
+              />
+            </Form.Item>
+          </>
+        )}
 
         <FormGrid.Full>
           {costDiffers && (

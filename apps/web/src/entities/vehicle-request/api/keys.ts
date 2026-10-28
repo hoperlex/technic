@@ -160,6 +160,12 @@ export const vehicleRequestKeys = createQueryKeys('vehicle-requests', {
    * from readings.
    */
   routeTime: (id: string | undefined) => [id, 'route-time'],
+  /**
+   * The card's documents table (rental closing plan, D8). Under the card's prefix: an edit of the
+   * request changes its attachments, which are rows of this table too, and the request root
+   * invalidation must reach it.
+   */
+  documents: (id: string) => [id, 'documents'],
   // Ниже — история назначения (план `docs/assignment-periods-plan.md`, §9): кто и с какой даты
   // работал на заявке, что в этой истории чинить и чем обернётся правка срока. Имя `history`
   // закреплено за ней давно и потому занято; события самой заявки живут выше, под именем `events`.

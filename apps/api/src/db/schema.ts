@@ -42,6 +42,7 @@ import type {
   ServiceRequestBulkResultDto,
   ServiceRequestBulkRowResultDto,
   TypeWaybillFormCode,
+  VehicleRequestFileKind,
   WaybillCorrectionAuthorizationScope,
   WasteTicketBlindCheckField,
   WasteTicketField,
@@ -6856,9 +6857,42 @@ export const vehicleRequestCompletions = pgTable(
      * запись сырого `null` уронила бы CHECK «оба или ни одного» на самом обычном заказе на день.
      */
     previousDateTo: date('previous_date_to', { mode: 'string' }),
+    // ── Rental closing (migration 0391, plan `docs/vehicle-rental-completion-documents-plan.md`) ──
+    /**
+     * Both counts of a rental closing (D1). `workedAmount` stays the billed count; the count
+     * matching `workedUnit` equals it by definition (`unitCountCheck`), the other one is the second
+     * fact the closing window asks for. NULL — closings before 0391, non-rentals and an old tab's
+     * closing, which knows one count only.
+     */
+    workedHours: numeric('worked_hours', { precision: 10, scale: 2 }),
+    workedShifts: numeric('worked_shifts', { precision: 10, scale: 2 }),
+    /**
+     * Delivery to and from the site (D3): apart from `totalCost` and never added to it — delivery is
+     * a separate entity with its own paperwork. NULL is "no delivery", so the window's checkbox has
+     * no column of its own.
+     */
+    deliveryCost: numeric('delivery_cost', { precision: 14, scale: 2 }),
     updatedAt: updatedAt(),
   },
   (t) => ({
+    workedHoursPositive: check(
+      'vehicle_request_completions_worked_hours_positive_check',
+      sql`${t.workedHours} IS NULL OR ${t.workedHours} > 0`,
+    ),
+    workedShiftsPositive: check(
+      'vehicle_request_completions_worked_shifts_positive_check',
+      sql`${t.workedShifts} IS NULL OR ${t.workedShifts} > 0`,
+    ),
+    // Two copies of the billed count must not disagree: a reader would have to guess which is true.
+    unitCountCheck: check(
+      'vehicle_request_completions_unit_count_check',
+      sql`(${t.workedUnit} <> 'hours' OR ${t.workedHours} IS NULL OR ${t.workedHours} = ${t.workedAmount})
+        AND (${t.workedUnit} <> 'shifts' OR ${t.workedShifts} IS NULL OR ${t.workedShifts} = ${t.workedAmount})`,
+    ),
+    deliveryCostPositive: check(
+      'vehicle_request_completions_delivery_cost_positive_check',
+      sql`${t.deliveryCost} IS NULL OR ${t.deliveryCost} > 0`,
+    ),
     workedAmountPositive: check(
       'vehicle_request_completions_worked_amount_positive_check',
       sql`${t.workedAmount} > 0`,
@@ -7004,8 +7038,8 @@ export const vehicleRequestShifts = pgTable(
   }),
 );
 
-// Связь заявка ТС ↔ файлы. UNIQUE(file_id) — файл не в двух заявках ТС; кросс-модульную
-// уникальность с «Вывозом мусора» обеспечивает общий файловый сервис.
+// Vehicle request ↔ files link. UNIQUE(file_id): a file is in at most one vehicle request; uniqueness
+// across modules is kept by the shared file service.
 export const vehicleRequestFiles = pgTable(
   'vehicle_request_files',
   {
@@ -7016,10 +7050,32 @@ export const vehicleRequestFiles = pgTable(
       .notNull()
       .references(() => files.id, { onDelete: 'cascade' }),
     addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Who owns the row (migration 0391, D8): `attachment` — the requester's file, added and removed
+     * by the request editor; `document` — typed and dated paper added from «В работе» on by the
+     * documents door. The editor reads and removes attachments only: otherwise its remove button
+     * would take an invoice off a closed request. The default is the migration window's
+     * requirement — old code inserts without a kind and means an attachment.
+     */
+    kind: text('kind').notNull().default('attachment').$type<VehicleRequestFileKind>(),
+    /** Document type, free text (D5); NULL on an attachment (`documentCheck`). */
+    docType: text('doc_type'),
+    /** Document date, typed by hand and any date (P4); NULL on an attachment. */
+    docDate: date('doc_date', { mode: 'string' }),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.vehicleRequestId, t.fileId] }),
     fileUnique: uniqueIndex('vehicle_request_files_file_unique').on(t.fileId),
+    kindCheck: check(
+      'vehicle_request_files_kind_check',
+      sql`${t.kind} IN ('attachment', 'document')`,
+    ),
+    documentCheck: check(
+      'vehicle_request_files_document_check',
+      sql`(${t.kind} = 'document') = (${t.docType} IS NOT NULL AND ${t.docDate} IS NOT NULL)
+        AND (${t.kind} = 'document' OR (${t.docType} IS NULL AND ${t.docDate} IS NULL))
+        AND (${t.docType} IS NULL OR btrim(${t.docType}) <> '')`,
+    ),
   }),
 );
 

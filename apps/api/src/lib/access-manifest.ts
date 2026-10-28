@@ -1687,6 +1687,24 @@ export const ACCESS_MANIFEST = {
     allOf: ['vehicleRequests.status'],
   },
   /*
+   * Documents of a request (rental closing plan, D7). Reading is reading the request; adding and
+   * removing is running it — the permission of the status corridor, which the lessor holds through
+   * its counterparty type. The status corridor and «who added it» are checked inside, under the
+   * request lock, and are not a route condition.
+   */
+  'GET /api/v1/vehicle-requests/:id/documents': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read'],
+  },
+  'POST /api/v1/vehicle-requests/:id/documents': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status'],
+  },
+  'DELETE /api/v1/vehicle-requests/:id/documents/:fileId': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status'],
+  },
+  /*
    * Предпросмотр смены техники (`docs/assignment-periods-plan.md` §8, «новая ручка у старой двери»).
    *
    * Право **то же самое**, что у самой двери, а не пара «видит заявку + видит бланки», которой

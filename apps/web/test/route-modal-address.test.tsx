@@ -319,6 +319,7 @@ describe('адрес окон: заявка уступает место рейс
     mockHttp({
       'GET /vehicle-requests/:id': () => json(REQUEST),
       'GET /vehicle-requests/:id/history': () => json([]),
+      'GET /vehicle-requests/:id/documents': () => json({ items: [] }),
       'GET /vehicle-requests/:id/waybills': () => json([]),
       'GET /vehicle-requests/:id/relocations': () => json([]),
       'GET /vehicle-routes/:id': () => json(ROUTE),

@@ -60,6 +60,7 @@ const shifts: VehicleRequestShiftsDto = {
 function renderCard(dto: VehicleRequestDto = request, table: VehicleRequestShiftsDto = shifts) {
   mockHttp({
     'GET /vehicle-requests/r1/history': () => json([]),
+    'GET /vehicle-requests/r1/documents': () => json({ items: [] }),
     'GET /vehicle-requests/r1/waybills': () => json([]),
     'GET /vehicle-requests/r1/relocations': () => json([]),
     'GET /vehicle-requests/r1/shifts': () => json(table),

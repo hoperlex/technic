@@ -108,6 +108,8 @@ export * from './route-points';
 export * from './waybill-task-rows';
 export * from './vehicle-request-shifts';
 export * from './vehicle-request-days';
+export * from './vehicle-request-documents';
+export * from './vehicle-rental-completion';
 export * from './vehicle-requests';
 export * from './vehicle-request-feed';
 /* Механизация (`mech-requests.ts`) — после заявки на технику, потому что читается с ней рядом и

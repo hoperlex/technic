@@ -77,6 +77,7 @@ const WITH_DIAGNOSTICS: RequestRouteTimeDto = {
 function renderCard(request: FreightTransportRequestDto, time?: RequestRouteTimeDto) {
   const http = mockHttp({
     'GET /vehicle-requests/:id/history': () => json([]),
+    'GET /vehicle-requests/:id/documents': () => json({ items: [] }),
     'GET /vehicle-requests/:id/waybills': () => json([]),
     'GET /vehicle-requests/:id/driver': () =>
       json({ personId: 'p-1', fullName: 'Грузов Пётр Иванович', phone: '' }),
@@ -207,6 +208,9 @@ describe('закрытие грузоперевозки по времени ре
           completedAt: '2026-08-06T15:00:00.000Z',
           endedOn: null,
           previousDateTo: null,
+          workedHours: null,
+          workedShifts: null,
+          deliveryCost: null,
         },
       },
       RECORDED,

@@ -113,6 +113,25 @@ Third survey, 27 October (the owner approved both mock-ups):
 - **Q2 is taken as proposed** (a technical choice): scalar start/end columns on every reading, the
   points table and the request snapshot, written by one path.
 
+Fourth survey, 28 October (closes Q3–Q6 and Q10; the work is stage 4 below):
+
+- **D13 (Q10). A linear day on a shared route takes its time from its own stops.** The shift time of
+  a linear special-equipment day that shares a route with freight requests runs from the arrival
+  at its first stop to the departure from its last stop, as D6 cuts a freight request. Machine
+  hours come from one engine-hour counter and cannot be split by stops: they stay the whole
+  route's, and the day carries a «рейс общий» mark.
+- **D14 (Q3). The summary book counts the effective day** (`analytics/facts-vehicle.ts`): a signed
+  day as signed, an unsigned day from the driver's clean numbers, and driver-only days included.
+  Past periods change; that is accepted.
+- **D15 (Q4). Garage occupancy counts a driver-only day as filled** (`garage.ts`); it is signed only
+  by the site's signature.
+- **D16 (Q6). One-click sign-off follows the garage's continuity rule.** D3's "previous snapshot
+  from D or D − 1" is replaced by the readings module's rule (Р13а): the pair is continuous when no
+  expected shift of the vehicle lies between the two snapshots without numbers. One definition,
+  shared with the month aggregate; weekends without expected shifts no longer force a manual save.
+- **D17 (Q5). Manual refuelling stays as it is** for own-vehicle days without readings and for
+  rented vehicles. No change.
+
 ## 5. Stage 0 — cleanup without behavior change
 
 One commit, no behavior change, so stage 1 lands on one reader instead of three.

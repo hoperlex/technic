@@ -113,6 +113,12 @@ export type RequestHistoryKind =
   | 'returnedToWork'
   | 'documentAttached'
   /**
+   * A typed document taken off a vehicle request (plan `vehicle-rental-completion-documents`, P8).
+   * Its own kind, not an «updated»: the request did not change, its paper did, and the reader
+   * looking for where an invoice went must find it by name.
+   */
+  | 'documentRemoved'
+  /**
    * Виза отдела ИТ и отказ по ней (план модернизации оргтехники, Р51, Р53). Два вида, а не один:
    * состоявшееся согласование и закрытая заявка — разные новости для читателя истории, и «решение
    * ИТ» одним словом не отвечает, чем кончилось.

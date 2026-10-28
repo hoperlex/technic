@@ -1,6 +1,6 @@
 import { Spin, Tabs, Typography } from 'antd';
-import { FileLinkList } from '@entities/file';
 import { RequestHistoryTable } from '@entities/request-history';
+import { VehicleRequestDocuments } from '@features/vehicle-request-documents';
 import { vehicleRequestChangeLabels } from '@technic/contracts';
 import { ViewFields, ViewModal } from '@shared/ui';
 import type { VehicleRequestViewModalProps } from '../model/types';
@@ -104,12 +104,9 @@ export function VehicleRequestViewModal({
           on the shift tab. The block decides itself whether there is anything to say. */}
       <RequestRouteFact request={request} />
 
-      {request.files.length > 0 && (
-        <div>
-          <Typography.Text strong>Файлы</Typography.Text>
-          <FileLinkList files={request.files} maxNameWidth={420} />
-        </div>
-      )}
+      {/* The requester's attachments and the typed, dated paper in one table (rental closing plan,
+          D8); the section decides itself whether there is anything to show or add. */}
+      <VehicleRequestDocuments request={request} readOnly={readOnly} />
 
       <div>
         <Typography.Text strong>История</Typography.Text>

@@ -1,6 +1,6 @@
 import { Button, Space, Tag, Typography } from 'antd';
 import {
-  completionLabel,
+  completionFactLabel,
   type Permission,
   type RequestWaybillDto,
   routePurposeLabels,
@@ -217,13 +217,30 @@ export function requestExecutionFields({
                   <Typography.Text strong>
                     {formatMoney(request.completion.totalCost)}
                   </Typography.Text>
-                  <Typography.Text>{completionLabel(request.completion)}</Typography.Text>
+                  <Typography.Text>{completionFactLabel(request.completion)}</Typography.Text>
                 </Space>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   Закрыл {request.completion.completedByName || '—'} ·{' '}
                   {formatDateTime(request.completion.completedAt)}
                 </Typography.Text>
               </Space>
+            ),
+          },
+        ]
+      : []),
+    /*
+     * Delivery to and from the site (rental closing plan, D3): a separate entity with its own
+     * paperwork, so a field of its own and never part of the «Выполнение» sum above.
+     */
+    ...(request.completion?.deliveryCost != null
+      ? [
+          {
+            key: 'delivery',
+            label: 'Доставка',
+            children: (
+              <Typography.Text strong>
+                {formatMoney(request.completion.deliveryCost)}
+              </Typography.Text>
             ),
           },
         ]
