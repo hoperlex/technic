@@ -68,10 +68,10 @@
 ## Гараж, показания и ТО
 
 - Домен: `гараж`
-- Источник истины: [garage.ts](../packages/contracts/src/garage.ts), [vehicle-readings.ts](../packages/contracts/src/vehicle-readings.ts), [reading-times.ts](../packages/contracts/src/reading-times.ts), [vehicle-maintenance.ts](../packages/contracts/src/vehicle-maintenance.ts)
+- Источник истины: [garage.ts](../packages/contracts/src/garage.ts), [garage-driver-schedule.ts](../packages/contracts/src/garage-driver-schedule.ts) (a driver's month: the status of a shift's reading and the month's numbers), [vehicle-readings.ts](../packages/contracts/src/vehicle-readings.ts), [reading-times.ts](../packages/contracts/src/reading-times.ts), [vehicle-maintenance.ts](../packages/contracts/src/vehicle-maintenance.ts)
 - Разделы портала: `garage`
 - API-маршруты: [garage.ts](../apps/api/src/routes/garage.ts), [vehicle-readings.ts](../apps/api/src/routes/vehicle-readings.ts), [vehicle-readings-stats.ts](../apps/api/src/routes/vehicle-readings-stats.ts), [vehicle-maintenance.ts](../apps/api/src/routes/vehicle-maintenance.ts)
-- Остальной API: [readings-intake.ts](../apps/api/src/services/readings-intake.ts), [reading-times.ts](../apps/api/src/services/reading-times.ts), [vehicle-maintenance.ts](../apps/api/src/services/vehicle-maintenance.ts)
+- Остальной API: [readings-intake.ts](../apps/api/src/services/readings-intake.ts), [reading-times.ts](../apps/api/src/services/reading-times.ts), [vehicle-maintenance.ts](../apps/api/src/services/vehicle-maintenance.ts), [garage-driver-schedule.ts](../apps/api/src/services/garage-driver-schedule.ts) (the «График» window: shifts due a reading by the readings module's own fragments, plus the days a driver is named without paper)
 - Web: [garage](../apps/web/src/pages/garage), [vehicle-reading](../apps/web/src/entities/vehicle-reading)
 - Тесты: `vehicle-readings*.db.test.ts`, `vehicle-maintenance*.db.test.ts`, `garage-*.db.test.ts`
 - Решения: [ADR 0076](adr/0076-garage-day-view.md), [ADR 0103](adr/0103-vehicle-readings.md), [ADR 0126](adr/0126-assignment-periods.md), [ADR 0234](adr/0234-driver-shift-and-stop-times.md)

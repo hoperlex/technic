@@ -517,14 +517,28 @@ client floor.
 документом. Планирование дней прав не потеряло: оно по-прежнему за той же парой, что и рейс, — на
 экране это колонка действий, которой у заказчика нет вовсе.
 
-Раздел **«Гараж»** ([ADR 0076](adr/0076-garage-day-view.md)) — срез дня: вкладки «Техника»,
-«Водители» и «Показания», с общим выбором даты в адресе (`?tab=&date=`). Открыт правом `garage.read`
-и **только на чтение**: действий у самого среза нет ни одного, а номера заявок, рейсов и бланков
-ведут в свои модули — заявка и рейс открываются окном поверх среза (ADR 0120), бланк уводит в
-журнал листов. Права спрашивает каждая ссылка своим правилом (`utils/links.ts` возвращает `null`
-там, где запись роли не положена, и номер остаётся обычным текстом): у механика есть и гараж, и
-листы, а `vehicleRequests.read` нет — номера заявок он читает, но открыть их не может. Тем же
-правом `garage.read` закрыты все четыре ручки `/api/v1/garage`.
+The **«Гараж»** section ([ADR 0076](adr/0076-garage-day-view.md)) is a slice of the day: the tabs
+«Техника», «Водители» and «Показания», with a shared date in the address (`?tab=&date=`). It is
+opened by `garage.read` and is **read-only**: the slice itself has no action at all, and the numbers
+of requests, routes and blanks lead to their own modules — a request and a route open in a window
+over the slice (ADR 0120), a blank leads to the waybill journal. Every link asks for the right by
+its own rule (`utils/links.ts` returns `null` where the record is not the role's, and the number
+stays plain text): a mechanic has both the garage and the waybills, but not
+`vehicleRequests.read`, so he reads request numbers but cannot open them. The same `garage.read`
+closes all five handles of `/api/v1/garage`.
+
+The fifth handle is the «График» window of the «Водители» tab,
+`GET /api/v1/garage/drivers/:personId/schedule?month=YYYY-MM` (owner's decisions of 28.10.2026):
+one driver's month — the shifts the readings module expects a reading for, the status of each, and
+the days the person is named for work without paper on him. It takes **exactly the right and the
+people of the list** `GET /garage/drivers`: `garage.read`, and a person outside the list (not a
+driver by `driverCondition`, or deleted) answers 404, so the handle cannot be used to read the
+month of someone the list does not show. No new permission and no grant change. Two parts of the
+answer go by `vehicleReadings.read`, the way the odometer of the «Техника» row does: the reason a
+shift was closed «нет данных» is readings content and is absent from the answer without the right
+(absent, not `null`); and the window's door to the person's day in the intake registry is shown
+only with it, since the «Показания» tab is closed without it. The reading status itself («передано»,
+«не передано»…) is the garage's, as the readings column of the «Техника» row is.
 
 Вкладка **«Показания»** ([ADR 0103](adr/0103-vehicle-readings.md),
 [ADR 0110](adr/0110-readings-intake-stats-maintenance.md)) — исключение из «только на чтение», и
