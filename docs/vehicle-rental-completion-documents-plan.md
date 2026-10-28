@@ -1,6 +1,6 @@
 # Rental closing: hours, delivery cost and request documents
 
-Status: accepted, in implementation since 28 October 2026. The owner closed forks **D1–D8** by two
+Status: implemented 28 October 2026 ([ADR 0235](adr/0235-rental-completion-and-request-documents.md)), not deployed. The owner closed forks **D1–D8** by two
 surveys on 28 October; the defaults in §5 were chosen by the plan and accepted by the owner on
 28 October with one correction (P4). Implementation started the same day.
 
@@ -83,18 +83,19 @@ four.
 Migration window: old code inserts closings and links without the new columns and gets `NULL` /
 `'attachment'` — the same as before. New data appears only after the restart.
 
-### 4.2 Contracts (`packages/contracts/src/vehicle-requests.ts`)
+### 4.2 Contracts (`vehicle-requests.ts`, `vehicle-rental-completion.ts`, `vehicle-request-documents.ts`)
 
 - `completeVehicleRequestSchema` (the status door) and the completion door body gain optional
   `workedHours`, `workedShifts` (`workedAmountSchema`, nullable) and `deliveryCost`
-  (`vehiclePriceSchema`, nullable). A refine: the count matching `workedUnit` equals `workedAmount`
-  when sent.
-- Predicate `completionAsksRentalFacts(assignment)` — `ownership === 'rental'`; the portal and the
-  server ask it, never their own copy.
-- `hoursPerShift(hours, shifts)` and its label — the D2 average, one function for the window and
-  the card.
+  (`vehiclePriceSchema`, nullable). The count matching `workedUnit` equals `workedAmount` when
+  sent — `completionCountsIssue`, not a refine: the door body extends this object, and a refined
+  object cannot be extended.
+- In `vehicle-rental-completion.ts`, not `vehicle-requests.ts` (that module is in the portal's entry
+  chunk): the predicate `completionAsksRentalFacts(assignment)` — `ownership === 'rental'`, asked by
+  the portal and the server; `hoursPerShift` and its label — the D2 average; the labels
+  `completionWorkedLabel` and `completionFactLabel` with the second count.
 - `VehicleRequestCompletionDto` gains `workedHours`, `workedShifts`, `deliveryCost`;
-  `completionLabel` adds the hours to "3 смены" when known.
+  `completionLabel` is unchanged.
 - Documents: `VEHICLE_REQUEST_DOCUMENT_STATUSES = ['confirmed','done','cancelled']`,
   `addVehicleRequestDocumentSchema` (`fileId`, `docType` 1–100 chars after trim, `docDate` — any date),
   `VehicleRequestDocumentDto` (file, kind, docType, docDate, addedAt, uploadedBy name and id), and

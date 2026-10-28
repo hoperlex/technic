@@ -1073,6 +1073,24 @@ The same split holds for the driver's times of stage 3 ([plan](readings-shifts-m
 No new permission was added, and no role gained one: the change widens what an existing reader of
 the request sees, and it is recorded here because access is a protected area.
 
+### 9.4. Documents of a vehicle request (ADR 0235, 28.10.2026)
+
+The card's documents table ([ADR 0235](adr/0235-rental-completion-and-request-documents.md),
+owner decisions D7, D8) holds the requester's attachments and typed, dated paper in one link
+table, `vehicle_request_files.kind`. No permission was added:
+
+- **Reading** — `GET /vehicle-requests/:id/documents` under `vehicleRequests.read` and the request's
+  own scope (`assertArchiveVisible`, `assertRequestScope`, `assertLessorScope`); downloading a file
+  of either kind follows the same link in `GET /files/:id/download` (§9.2).
+- **Adding** — `POST /vehicle-requests/:id/documents` under `vehicleRequests.status`: adding paper
+  is running the request. The lessor holds the permission through its counterparty type and is
+  held to its own requests by `assertLessorScope`; the status corridor («В работе», «Выполнена»,
+  «Отменена») is checked under the request lock by `canAddVehicleRequestDocument`.
+- **Removing** — `DELETE /vehicle-requests/:id/documents/:fileId`, the same guard; a document only,
+  by its uploader (`files.uploaded_by`) while they may add, or by `role === 'admin'` at any time
+  (`canRemoveVehicleRequestDocument`). A requester's attachment is removed by the request editor
+  alone, and the editor never sees a document.
+
 ## 10. Портал: права приходят с сервера
 
 | Уровень                 | Файл                                                      | Механизм                                                                                                                                          |
