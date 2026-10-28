@@ -1,5 +1,6 @@
 import {
   assignmentTitle,
+  completionWorkedLabel,
   formatMoscowDateTime,
   formatPhone,
   type FreightTransportRequestDto,
@@ -413,9 +414,13 @@ export function diffVehicleAssignment(
   return diff.changes;
 }
 
-/** Отработанное — с единицей: «26 ч» и «26 смен» это разные факты, а число одно. */
+/**
+ * Worked, with the unit — «26 ч» and «26 смен» are different facts with one number — and with the
+ * second count of a rental closing in the same line: one line «3 смены → 3 смены · 27 ч» says a
+ * re-closing added the hours, two lines would repeat the billed count.
+ */
 function worked(c: VehicleRequestCompletionDto | null): string {
-  return c ? workedAmountLabel(c.workedUnit, c.workedAmount) : EMPTY;
+  return c ? completionWorkedLabel(c) : EMPTY;
 }
 
 /**
@@ -435,5 +440,6 @@ export function diffVehicleCompletion(
   diff.changed('worked', worked(before), worked(after));
   diff.changed('rate', rub(before?.rate ?? null), rub(after?.rate ?? null));
   diff.changed('totalCost', rub(before?.totalCost ?? null), rub(after?.totalCost ?? null));
+  diff.changed('deliveryCost', rub(before?.deliveryCost ?? null), rub(after?.deliveryCost ?? null));
   return diff.changes;
 }

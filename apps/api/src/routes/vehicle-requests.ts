@@ -712,6 +712,10 @@ const requestSelect = {
   // 05.08, а разрешали до 09.08» читается строкой факта, а не выводится из соседних событий.
   completionEndedOn: vehicleRequestCompletions.endedOn,
   completionPreviousDateTo: vehicleRequestCompletions.previousDateTo,
+  // Both counts and the delivery of a rental closing (plan vehicle-rental-completion-documents, D1, D3).
+  completionWorkedHours: vehicleRequestCompletions.workedHours,
+  completionWorkedShifts: vehicleRequestCompletions.workedShifts,
+  completionDeliveryCost: vehicleRequestCompletions.deliveryCost,
   // Досрочное завершение (ADR 0044): запрос на сокращение срока и решение по нему.
   earlyEndStatus: vehicleRequestEarlyEndings.status,
   earlyEndNewDateTo: vehicleRequestEarlyEndings.newDateTo,
@@ -1465,6 +1469,9 @@ function toCompletionDto(r: RequestRow): VehicleRequestCompletionDto | null {
     // нет и не появится, поэтому наружу они идут `null`, а не подставленной датой заявки.
     endedOn: r.completionEndedOn,
     previousDateTo: r.completionPreviousDateTo,
+    workedHours: toNum(r.completionWorkedHours),
+    workedShifts: toNum(r.completionWorkedShifts),
+    deliveryCost: toNum(r.completionDeliveryCost),
   };
 }
 
@@ -4369,6 +4376,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           cancelled: sql<number>`count(*) FILTER (WHERE ${vehicleRequests.status} = 'cancelled')`,
           totalCost: sql<string | null>`sum(${vehicleRequestCompletions.totalCost})`,
           withoutCost: sql<number>`count(*) FILTER (WHERE ${vehicleRequests.status} = 'done' AND ${vehicleRequestCompletions.totalCost} IS NULL)`,
+          // Delivery is a separate entity (D3): its own total, never folded into the cost total.
+          deliveryCost: sql<string | null>`sum(${vehicleRequestCompletions.deliveryCost})`,
+          withDelivery: sql<number>`count(*) FILTER (WHERE ${vehicleRequestCompletions.deliveryCost} IS NOT NULL)`,
         })
         .from(vehicleRequests)
         .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
@@ -4397,6 +4407,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         cancelled: Number(agg!.cancelled),
         totalCost: toNum(agg!.totalCost) ?? 0,
         withoutCost: Number(agg!.withoutCost),
+        deliveryCost: toNum(agg!.deliveryCost) ?? 0,
+        withDelivery: Number(agg!.withDelivery),
       } satisfies VehicleRequestHistorySummaryDto;
     },
   );
@@ -6809,10 +6821,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             // change without a status change (ADR 0027), so this is the one that was in work.
             let closed: VehicleRequestCompletionDto | null = null;
             if (completion) {
-              closed = resolveCompletion(before.assignment, completion, {
-                id: p.id,
-                name: p.fullName,
-              });
+              // The previous fact goes along for the delivery an old tab cannot send (§4.3).
+              closed = resolveCompletion(
+                before.assignment,
+                completion,
+                { id: p.id, name: p.fullName },
+                undefined,
+                before.completion,
+              );
               await saveCompletion(tx, before.id, closed);
             }
             // The rollback removes both the assignment and the completion: a «Новая» with a vehicle,

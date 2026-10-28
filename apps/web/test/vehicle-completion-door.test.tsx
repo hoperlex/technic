@@ -91,6 +91,9 @@ const PREVIEW: CompletionPreviewDto = {
     workedAmount: 3,
     rate: 20000,
     totalCost: 60000,
+    workedHours: null,
+    workedShifts: null,
+    deliveryCost: null,
   },
   cancelGroups: [
     {

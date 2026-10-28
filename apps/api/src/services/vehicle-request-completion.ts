@@ -1,5 +1,7 @@
 import {
   calcVehicleRequestCost,
+  completionAsksRentalFacts,
+  completionCountsIssue,
   rateForWorkUnit,
   vehicleWorkUnitRateLabels,
   type CompleteVehicleRequestInput,
@@ -77,7 +79,9 @@ export function resolveCompletion(
   input: CompleteVehicleRequestInput,
   actor: { id: string; name: string },
   dates: CompletionDates = NO_ACTUAL_END,
+  previous: Pick<VehicleRequestCompletionDto, 'deliveryCost'> | null = null,
 ): VehicleRequestCompletionDto {
+  const rental = resolveRentalFacts(assignment, input, previous);
   const rate = rateForWorkUnit(assignment, input.workedUnit);
   const totalCost = input.totalCost ?? calcVehicleRequestCost(rate, input.workedAmount);
   // Аренда — счёт от контрагента (ADR 0027): закрытие без суммы означало бы «сколько заплатили,
@@ -100,6 +104,52 @@ export function resolveCompletion(
     completedAt: new Date().toISOString(),
     endedOn: dates.endedOn,
     previousDateTo: dates.previousDateTo,
+    ...rental,
+  };
+}
+
+/**
+ * Both counts and the delivery of a rental closing (plan `docs/vehicle-rental-completion-documents-plan.md`
+ * §4.3, D1, D3, D4).
+ *
+ * Not a rental: none of the three is stored, and a sent one is refused by name — D4 limits them to
+ * rentals, and an amount dropped in silence would read as accepted.
+ *
+ * A rental: the count matching the unit is `workedAmount` itself; the other one is what was sent.
+ * The wire rule for a tab opened before the release, which knows one count and no delivery: an
+ * absent other count is cleared — the tab re-stated the work, and the paired count of the previous
+ * closing no longer describes it; an absent delivery keeps the stored one — it is a separate fact
+ * the tab could not have been shown, and erasing it would lose an invoice line. `null` clears it.
+ */
+function resolveRentalFacts(
+  assignment: CompletionRates | null,
+  input: CompleteVehicleRequestInput,
+  previous: Pick<VehicleRequestCompletionDto, 'deliveryCost'> | null,
+): Pick<VehicleRequestCompletionDto, 'workedHours' | 'workedShifts' | 'deliveryCost'> {
+  if (!completionAsksRentalFacts(assignment)) {
+    const sent = (['workedHours', 'workedShifts', 'deliveryCost'] as const).filter(
+      (field) => input[field] != null,
+    );
+    if (sent.length > 0) {
+      throw err.unprocessable(
+        'Часы и доставка указываются только при закрытии заявки на арендованную технику',
+        Object.fromEntries(sent.map((field) => [field, 'Только для арендованной техники'])),
+      );
+    }
+    return { workedHours: null, workedShifts: null, deliveryCost: null };
+  }
+  const issue = completionCountsIssue(input);
+  if (issue) {
+    throw err.unprocessable(
+      'Отработанное количество не совпадает с тем, по которому считается стоимость',
+      issue,
+    );
+  }
+  return {
+    workedHours: input.workedUnit === 'hours' ? input.workedAmount : (input.workedHours ?? null),
+    workedShifts: input.workedUnit === 'shifts' ? input.workedAmount : (input.workedShifts ?? null),
+    deliveryCost:
+      input.deliveryCost === undefined ? (previous?.deliveryCost ?? null) : input.deliveryCost,
   };
 }
 
@@ -124,6 +174,9 @@ export async function saveCompletion(
     completedBy: c.completedBy,
     endedOn: c.endedOn,
     previousDateTo: c.previousDateTo,
+    workedHours: numToDb(c.workedHours),
+    workedShifts: numToDb(c.workedShifts),
+    deliveryCost: numToDb(c.deliveryCost),
   };
   await tx
     .insert(vehicleRequestCompletions)

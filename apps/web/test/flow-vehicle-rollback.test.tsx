@@ -98,6 +98,9 @@ const COMPLETION: VehicleRequestCompletionDto = {
   // no snapshot of the previous term either.
   endedOn: null,
   previousDateTo: null,
+  workedHours: null,
+  workedShifts: null,
+  deliveryCost: null,
 };
 
 /**

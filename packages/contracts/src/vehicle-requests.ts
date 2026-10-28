@@ -1758,9 +1758,83 @@ export const completeVehicleRequestSchema = z
     workedUnit: vehicleWorkUnitSchema,
     workedAmount: workedAmountSchema,
     totalCost: vehiclePriceSchema.nullable().optional(),
+    /**
+     * Both counts of a rental closing (plan `docs/vehicle-rental-completion-documents-plan.md`,
+     * D1): the one matching `workedUnit` repeats `workedAmount`, the other is the second fact.
+     * Optional on the wire: a tab opened before this release sends neither, and the server then
+     * records the billed count only (§4.3). The rule binding them is `completionCountsIssue`, not
+     * a refine here — `completionFactSchema` extends this object, and a refined object cannot be
+     * extended.
+     */
+    workedHours: workedAmountSchema.nullable().optional(),
+    workedShifts: workedAmountSchema.nullable().optional(),
+    /**
+     * Delivery to and from the site (D3), apart from `totalCost` and never added to it. Absent —
+     * the stored value stays (an old tab cannot know it); `null` — no delivery.
+     */
+    deliveryCost: vehiclePriceSchema.nullable().optional(),
   })
   .strict();
 export type CompleteVehicleRequestInput = z.infer<typeof completeVehicleRequestSchema>;
+
+/**
+ * Whether a closing asks for both counts and the delivery cost (D1, D3, D4): any request whose
+ * assigned vehicle is rented, an on-site order and a freight request alike. The portal shows the
+ * fields by it and the server refuses them by it on every other closing — a silently dropped amount
+ * would read as accepted.
+ */
+export function completionAsksRentalFacts(
+  assignment: { ownership: VehicleOwnership } | null | undefined,
+): boolean {
+  return assignment?.ownership === 'rental';
+}
+
+/**
+ * Why the counts of a closing body contradict each other, as `{ field: message }`, or `null`.
+ *
+ * The count matching `workedUnit` is `workedAmount` itself, so a different number there is two
+ * answers to one question; the database refuses the same row by CHECK, and this names the field
+ * before it gets that far. Only a sent count is checked: an old tab sends neither (§4.3).
+ */
+export function completionCountsIssue(
+  input: Pick<
+    CompleteVehicleRequestInput,
+    'workedUnit' | 'workedAmount' | 'workedHours' | 'workedShifts'
+  >,
+): Record<string, string> | null {
+  const matching = input.workedUnit === 'hours' ? input.workedHours : input.workedShifts;
+  if (matching == null || matching === input.workedAmount) return null;
+  const field = input.workedUnit === 'hours' ? 'workedHours' : 'workedShifts';
+  return { [field]: 'Не совпадает с отработанным количеством, по которому считается стоимость' };
+}
+
+/**
+ * Hours per shift of a rental closing (D2): the hours divided between the worked shifts, shown live
+ * under the hours field and in the card. `null` when either count is unknown. Rounded to one decimal
+ * (P1): the average explains the hours, it is not billed.
+ */
+export function hoursPerShift(
+  hours: number | null | undefined,
+  shifts: number | null | undefined,
+): number | null {
+  if (hours == null || shifts == null || hours <= 0 || shifts <= 0) return null;
+  return Math.round((hours / shifts) * 10) / 10;
+}
+
+/** «по 9 ч на смену»; `null` — делить нечего. */
+export function hoursPerShiftLabel(
+  hours: number | null | undefined,
+  shifts: number | null | undefined,
+): string | null {
+  const avg = hoursPerShift(hours, shifts);
+  return avg == null ? null : `по ${workedAmountLabel('hours', avg)} на смену`;
+}
+
+/**
+ * Above this many hours per shift the window warns (P1): a shift is not longer than a day, but
+ * fractional shifts make odd averages legal, so it is a warning and never a refusal.
+ */
+export const HOURS_PER_SHIFT_WARNING = 24;
 
 // ── Дверь закрытия фактической датой (план `docs/vehicle-request-actual-end-date-plan.md`) ──
 //
@@ -1892,6 +1966,11 @@ export interface CompletionFactDto {
   rate: number | null;
   /** Итоговая стоимость; `null` — считать было нечем. */
   totalCost: number | null;
+  /** Both counts of a rental closing as the door will store them (D1); `null` — not known. */
+  workedHours: number | null;
+  workedShifts: number | null;
+  /** Delivery cost as the door will store it (D3); `null` — no delivery. */
+  deliveryCost: number | null;
 }
 
 /**
@@ -2296,6 +2375,13 @@ export interface VehicleRequestHistorySummaryDto {
   totalCost: number;
   /** Сколько выполненных заявок не имеет суммы — иначе итог читается как «всё посчитано». */
   withoutCost: number;
+  /**
+   * Delivery to and from the site over the same rows (D3) — a total of its own, never part of
+   * `totalCost`: delivery is a separate entity with its own paperwork.
+   */
+  deliveryCost: number;
+  /** How many closings carry a delivery. */
+  withDelivery: number;
 }
 
 // ── Техника на объекте: вкладка «На объекте» (ADR 0036) ──
@@ -2650,6 +2736,41 @@ export interface VehicleRequestCompletionDto {
    * из соседних полей уже не восстановить.
    */
   previousDateTo: string | null;
+  /**
+   * Both counts of a rental closing (D1); `null` — closings before migration 0391, non-rentals and
+   * a closing sent by an old tab. The one matching `workedUnit` equals `workedAmount`.
+   */
+  workedHours: number | null;
+  workedShifts: number | null;
+  /** Delivery to and from the site (D3), apart from `totalCost`; `null` — no delivery. */
+  deliveryCost: number | null;
+}
+
+/**
+ * What was worked, both counts when known: «3 смены · 27 ч, по 9 ч на смену». The billed count goes
+ * first — the cost is rate × it; the other count and the average follow (D1, D2). One label for the
+ * card, the journal and the history diff, so they cannot word the same closing differently.
+ */
+export function completionWorkedLabel(
+  c: Pick<
+    VehicleRequestCompletionDto,
+    'workedUnit' | 'workedAmount' | 'workedHours' | 'workedShifts'
+  >,
+): string {
+  const billed = workedAmountLabel(c.workedUnit, c.workedAmount);
+  const hours = c.workedUnit === 'hours' ? c.workedAmount : c.workedHours;
+  const shifts = c.workedUnit === 'shifts' ? c.workedAmount : c.workedShifts;
+  const other =
+    c.workedUnit === 'hours'
+      ? shifts == null
+        ? null
+        : workedAmountLabel('shifts', shifts)
+      : hours == null
+        ? null
+        : workedAmountLabel('hours', hours);
+  if (other == null) return billed;
+  const avg = hoursPerShiftLabel(hours, shifts);
+  return `${billed} · ${other}${avg ? `, ${avg}` : ''}`;
 }
 
 /** Отработанное и сумма одной строкой: «3 смены × 18 000 ₽»; без ставки — только отработанное. */
@@ -3075,6 +3196,10 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   worked: 'Отработано',
   rate: 'Ставка закрытия',
   totalCost: 'Стоимость',
+  // Delivery to and from the site (D3): its own line, never folded into «Стоимость».
+  deliveryCost: 'Доставка',
+  // A document added or removed (P8): «УПД от 14.10.2026» next to the file it names.
+  document: 'Документ',
   // Досрочное завершение (ADR 0044). Запрошенный срок — отдельным ключом от `dateTo`: пока визы
   // нет, срок заявки не менялся, и «Дата окончания: 28.07 → 24.07» в событии запроса читалось бы
   // как состоявшееся сокращение. Согласование меняет сам `dateTo` и пишется уже им.

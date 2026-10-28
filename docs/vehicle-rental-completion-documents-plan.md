@@ -1,8 +1,8 @@
 # Rental closing: hours, delivery cost and request documents
 
-Status: proposal, 28 October 2026. Nothing is implemented. The owner closed forks **D1–D8** by two
-surveys on 28 October; the defaults in §5 were chosen by the plan and stand unless the owner
-changes them before implementation.
+Status: accepted, in implementation since 28 October 2026. The owner closed forks **D1–D8** by two
+surveys on 28 October; the defaults in §5 were chosen by the plan and accepted by the owner on
+28 October with one correction (P4). Implementation started the same day.
 
 ## 1. Request
 
@@ -96,7 +96,7 @@ Migration window: old code inserts closings and links without the new columns an
 - `VehicleRequestCompletionDto` gains `workedHours`, `workedShifts`, `deliveryCost`;
   `completionLabel` adds the hours to "3 смены" when known.
 - Documents: `VEHICLE_REQUEST_DOCUMENT_STATUSES = ['confirmed','done','cancelled']`,
-  `addVehicleRequestDocumentSchema` (`fileId`, `docType` 1–100 chars after trim, `docDate`),
+  `addVehicleRequestDocumentSchema` (`fileId`, `docType` 1–100 chars after trim, `docDate` — any date),
   `VehicleRequestDocumentDto` (file, kind, docType, docDate, addedAt, uploadedBy name and id), and
   the predicates `canAddVehicleRequestDocument` / `canRemoveVehicleRequestDocument`, taking `can` from
   the server permission list (ADR 0223).
@@ -179,10 +179,12 @@ down; `permissions.ts` does not change.
   explicit `null` are different on the wire, so an old tab cannot erase the delivery cost (rule in
   §4.3). The portal requires both counts for a rental; the server accepts their absence from an old
   tab, which records the billed count only — the same fact as before this change.
-- **Rollback.** An old API rejects the new keys (`.strict()`): a tab of the new portal left open over
-  a rollback gets a 400 on closing until reloaded. An old API re-closing a request leaves the new
-  columns as they were — stale hours or delivery on a re-closed rental until the next closing by the
-  new code. Both are accepted consequences, recorded in the ADR.
+- **Rollback.** An old image refuses to start on a newer schema (`assertMigrationsApplied`), so a
+  rollback after this migration is `--previous --restore-db`: old code never sees a closing or a
+  document written by the new code, only the migration window, where every new column is still
+  empty. What stays is a tab of the new portal left open over a rollback: the old API rejects the
+  new keys (`.strict()`) with a 400 on closing until the tab is reloaded — an accepted consequence,
+  recorded in the ADR.
 - Migration before restart, additive only; the teardown suite needs no new case beyond the default
   values check.
 
@@ -193,7 +195,7 @@ down; `permissions.ts` does not change.
 | P1  | The average is shown to one decimal («по 8,7 ч на смену»). Above 24 h per shift — a warning, not a refusal: fractional shifts make odd averages legal.              |
 | P2  | Delivery amount is required when the box is ticked and must be above zero; unticking clears it.                                                                     |
 | P3  | The delivery box is never pre-ticked, not even when the request has a 4-P delivery route: a route by its own wheels costs nothing extra, and a guess would bill it. |
-| P4  | Document date is required and not later than today (Moscow); any past date is allowed.                                                                              |
+| P4  | Document date is required (typed by hand) and may be any date, past or future — owner correction of 28.10.2026.                                                     |
 | P5  | Removing a document: its uploader while the request is in the add corridor, an administrator always. Requester attachments are not removed from the table.          |
 | P6  | Documents stay on the request when it is rolled back to «Новая» (ADR 0058); only adding is closed there.                                                            |
 | P7  | A document limit of its own, 50 per request, apart from the attachment limit: a month-long rental collects more paper than 20 files.                                |
@@ -221,7 +223,7 @@ Stages 1 and 2 may be one session if the context allows; 3 and 4 likewise.
 ## 7. Tests
 
 - Contracts: the refine (matching count equals `workedAmount`), `completionAsksRentalFacts`,
-  `hoursPerShift`, the document schema (type trim, date bound) and both document predicates.
+  `hoursPerShift`, the document schema (type trim, date required) and both document predicates.
 - DB: a rental closed by each way stores hours, shifts and delivery; the completion door refuses a
   stale fingerprint after a delivery change; an old-tab body keeps the delivery and clears the other
   count; a non-rental closing with the new fields is refused by name; documents — add in each corridor status,
