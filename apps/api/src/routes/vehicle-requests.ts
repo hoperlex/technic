@@ -1221,7 +1221,15 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
     })
     .from(vehicleRequestFiles)
     .innerJoin(files, eq(vehicleRequestFiles.fileId, files.id))
-    .where(and(inArray(vehicleRequestFiles.vehicleRequestId, ids), eq(files.status, 'active')));
+    // Attachments only: the editor reads this list and removes from it, and a typed document in it
+    // would be one click away from leaving a closed request (D8). Documents have their own read.
+    .where(
+      and(
+        inArray(vehicleRequestFiles.vehicleRequestId, ids),
+        eq(vehicleRequestFiles.kind, 'attachment'),
+        eq(files.status, 'active'),
+      ),
+    );
   for (const row of rows) {
     const list = map.get(row.requestId) ?? [];
     list.push(fileView(row));
@@ -3033,10 +3041,16 @@ async function attachFiles(
   if (fileIds.length === 0) return;
   await assertFilesAttachable(tx, fileIds, uploaderId);
   if (enforceTotal) {
+    // The editor's limit counts its own attachments; documents have a limit of their own (P7).
     const [c] = await tx
       .select({ c: count() })
       .from(vehicleRequestFiles)
-      .where(eq(vehicleRequestFiles.vehicleRequestId, vehicleRequestId));
+      .where(
+        and(
+          eq(vehicleRequestFiles.vehicleRequestId, vehicleRequestId),
+          eq(vehicleRequestFiles.kind, 'attachment'),
+        ),
+      );
     assertTotalWithinLimit(Number(c!.c), fileIds.length);
   }
   await tx
@@ -3045,6 +3059,11 @@ async function attachFiles(
   await markFilesActive(tx, fileIds);
 }
 
+/**
+ * The editor's remove: attachments only. A document id sent here is skipped like an unknown one —
+ * a document is taken off by the documents door, whose rule is who added it (D7, P5), not who
+ * edits the request.
+ */
 async function detachFiles(tx: Tx, vehicleRequestId: string, fileIds: string[]): Promise<void> {
   if (fileIds.length === 0) return;
   const linked = await tx
@@ -3054,6 +3073,7 @@ async function detachFiles(tx: Tx, vehicleRequestId: string, fileIds: string[]):
     .where(
       and(
         eq(vehicleRequestFiles.vehicleRequestId, vehicleRequestId),
+        eq(vehicleRequestFiles.kind, 'attachment'),
         inArray(vehicleRequestFiles.fileId, fileIds),
       ),
     );

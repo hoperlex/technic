@@ -39,6 +39,10 @@ const AUDIT_ACTIONS = [
   // а не текущее состояние строки. Заполнение часов события не пишет: это черновик данных.
   'vehicle_request.shift_approve',
   'vehicle_request.shift_revoke',
+  // Paper added and taken off (rental closing plan, P8): where an invoice went is asked of the
+  // history, not of the table, which shows only what is there now.
+  'vehicle_request.document_add',
+  'vehicle_request.document_remove',
   'vehicle_request.soft_delete',
   'vehicle_request.restore',
 ] as const;
@@ -63,6 +67,8 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'vehicle_request.weekly_extend': 'weeklyExtended',
   'vehicle_request.shift_approve': 'shiftApproved',
   'vehicle_request.shift_revoke': 'shiftApprovalRevoked',
+  'vehicle_request.document_add': 'documentAttached',
+  'vehicle_request.document_remove': 'documentRemoved',
   'vehicle_request.soft_delete': 'deleted',
   'vehicle_request.restore': 'restored',
 };

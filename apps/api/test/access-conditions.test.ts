@@ -1144,6 +1144,14 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
    * минимальное валидное: фактическая дата в схеме необязательна (её спрашивает дверь по ветви,
    * Р3), а без факта и версии схема ответила бы 400 раньше стража, и перебор проверял бы Zod.
    */
+  /*
+   * Documents of a request (rental closing plan): the body is validated before the guard, so the
+   * fixture is a minimal valid one — otherwise «without the right — 403» would test Zod.
+   */
+  'POST /api/v1/vehicle-requests/:id/documents': {
+    payload: { fileId: RECORD_ID, docType: 'УПД', docDate: PAST_DATE },
+  },
+
   'POST /api/v1/vehicle-requests/:id/completion/preview': {
     payload: { version: 0, completion: { workedUnit: 'shifts', workedAmount: 1 } },
   },
