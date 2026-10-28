@@ -11,6 +11,7 @@ import { can, type AccessSubject, type Permission } from './permissions';
 import {
   type BackdateAccess,
   dateKeySpan,
+  monthEndKey,
   shiftDateKey,
   WAYBILL_CORRECTION_DAYS,
   weekStartKey,
@@ -21,7 +22,7 @@ import {
 import { correctionFloorDateKey } from './waybills';
 // Предел разблокировки один на все входы коррекции: 53 недели — календарный год (ADR 0101, Р11).
 // Второй перечень того же числа разошёлся бы с первым при первой же правке.
-import { ESM2_UNLOCK_LIMIT } from './vehicle-requests';
+import { ESM2_UNLOCK_LIMIT, formatVehicleRequestNumber } from './vehicle-requests';
 import { formatVehicleRouteNumber } from './vehicle-routes';
 import type { VehicleOwnership } from './vehicles';
 // Отпечаток и подписи предупреждений — те же, что у дверей истории назначения (ADR 0218 решение 8):
@@ -653,6 +654,62 @@ export function extendBlocker(
   return null;
 }
 
+/**
+ * How the visa cuts an extension of a rental order by the calendar month (ADR 0238).
+ *
+ * The month report takes a rental order as one piece, so a rental term never crosses the last day
+ * of the month it ends in. The part of an extension that lies beyond that day is not refused: it
+ * becomes a new order of the same rented vehicle, which starts on the first of the next month.
+ */
+export interface RentalMonthSplit {
+  /**
+   * The last day the existing order is moved to. `null` — the order is not touched: it already ends
+   * on the last day of its month, and the whole extension belongs to the new order.
+   */
+  extendTo: string | null;
+  /** The new order that carries the extension past the month; `null` — nothing crosses it. */
+  continuation: { dateFrom: string; dateTo: string } | null;
+}
+
+/**
+ * The cut of one extension row. One function for the form's note, the save check and the visa,
+ * because the visa recomputes it under the order lock and the vehicle may have changed hands
+ * between the assembly and the signature: the portal and the server must not give two answers.
+ *
+ * The month is the one the order **ends** in (`last`), not the one it started in. An order that
+ * crossed a month before this rule existed is not cut backwards, and its further extension simply
+ * stays inside the month it ends in.
+ *
+ * Only a rental vehicle is cut (`ownership`): an own machine's month is already cut on the paper
+ * (ADR 0142), and an order with no vehicle never reaches an extension row.
+ *
+ * The date is the week's: at most one month border lies between `last` (not earlier than a week
+ * before the week) and `newDateTo` (not later than its Sunday), so one new order is always enough.
+ */
+export function rentalMonthSplit(
+  ownership: VehicleOwnership | null,
+  last: string,
+  newDateTo: string,
+): RentalMonthSplit {
+  if (ownership !== 'rental') return { extendTo: newDateTo, continuation: null };
+  const border = monthEndKey(last);
+  if (newDateTo <= border) return { extendTo: newDateTo, continuation: null };
+  return {
+    extendTo: last < border ? border : null,
+    continuation: { dateFrom: shiftDateKey(border, 1), dateTo: newDateTo },
+  };
+}
+
+/** The split in words, for the form row and the visa result: the same text in both. */
+export function rentalMonthSplitText(split: RentalMonthSplit): string | null {
+  if (!split.continuation) return null;
+  const { dateFrom, dateTo } = split.continuation;
+  const span = dateFrom === dateTo ? dayMonth(dateFrom) : `${dayMonth(dateFrom)}–${dayMonth(dateTo)}`;
+  return split.extendTo
+    ? `Аренда не идёт за границу месяца: заказ продлится до ${dayMonth(split.extendTo)}, а на ${span} откроется новый заказ той же машины`
+    : `Аренда не идёт за границу месяца: заказ остаётся как есть, а на ${span} откроется новый заказ той же машины`;
+}
+
 /** Строка «нужна дополнительно» — то, что человек выбрал в форме (Р5). */
 export interface WeeklyNewItem {
   vehicleTypeId: string;
@@ -1146,6 +1203,12 @@ export interface WeeklyRequestItemDto {
   /** Порождённый заказ (`new`, результат `created`). */
   createdRequestId: string | null;
   createdRequestNum: number | null;
+  /**
+   * The order that carries a rental extension past the month border (`extend`, ADR 0238): a new
+   * order of the same vehicle opened by the visa. `null` — the row was not cut.
+   */
+  continuationRequestId: string | null;
+  continuationRequestNum: number | null;
 
   result: WeeklyRequestItemResult;
   /** Почему строка пропущена; пусто у всех остальных результатов. */
@@ -1302,6 +1365,20 @@ export interface WeeklySuggestionDto {
   existingRequestId: string | null;
 }
 
+/**
+ * The new order a visa opened for the part of a rental extension past the month border (ADR 0238).
+ * `assigned: false` — the vehicle could not be put on it, so it stands «Новая» with no vehicle and
+ * the dispatcher takes it from there; `note` says why.
+ */
+export interface WeeklyApplyContinuationDto {
+  requestId: string;
+  displayNumber: string;
+  dateFrom: string;
+  dateTo: string;
+  assigned: boolean;
+  note: string;
+}
+
 /** Строка итога применения — по одной на каждую строку состава. */
 export interface WeeklyApplyItemResultDto {
   itemId: string;
@@ -1312,6 +1389,8 @@ export interface WeeklyApplyItemResultDto {
   displayNumber: string | null;
   previousDateTo: string | null;
   newDateTo: string | null;
+  /** Новый заказ за границей месяца у аренды; `null` у остальных строк. */
+  continuation: WeeklyApplyContinuationDto | null;
   /** Почему пропущена; пусто у применённых строк. */
   skipReason: string;
   /**
@@ -1624,6 +1703,12 @@ export interface WeeklyAnnulItem {
    * и разворачивать наше, не тронув их, значило бы отменить чужое решение молча.
    */
   laterWeekRefs: { num: number }[];
+  /**
+   * The rental order this row opened past the month border (ADR 0238); `null` or absent — the row
+   * was not cut. While it lives the row is not reversed: it went into work, and a reversal of the
+   * week has no right to cancel an order somebody is already running.
+   */
+  continuationOrder?: { num: number; status: RequestStatus; deletedAt: string | null } | null;
 }
 
 /**
@@ -1701,6 +1786,20 @@ export function weeklyAnnulItemState(
   // `extend`: the snapshot is mandatory — apply writes it in the same transaction as the term.
   const snapshot = item.previousDateTo;
   if (!snapshot) return reverted('Снимка срока у строки нет — разворачивать нечего');
+
+  // A rental row cut by the month (ADR 0238) also opened an order that went into work. The reversal
+  // shortens the extended term and cancels orders that stand «Новая»; it has no right to roll a
+  // running order back, so the row waits until somebody cancels the continuation by hand.
+  const continuation = item.continuationOrder;
+  if (continuation && !continuation.deletedAt && continuation.status !== 'cancelled') {
+    return blocked(
+      `Заказ ${formatVehicleRequestNumber(continuation.num)} за границей месяца открыт этой ` +
+        `неделей и стоит в статусе «${requestStatusLabels[continuation.status]}» — ` +
+        (continuation.status === 'new'
+          ? 'сначала отмените его'
+          : 'сначала откатите его в «Новую» и отмените'),
+    );
+  }
   if (!order) return reverted('Заказ удалён из портала');
 
   const current = orderEffectiveDateTo(order);
@@ -1719,9 +1818,13 @@ export function weeklyAnnulItemState(
   }
   // The term is compared, not the version: the version grows from editing the contact phone
   // (ADR 0085 item 10), and rows would drop out of the reversal for reasons unrelated to the decision.
-  if (item.dateTo && current !== item.dateTo) {
+  // A cut row moved the order only to the month border, not to the date the human chose.
+  const border = monthEndKey(snapshot);
+  const appliedTo =
+    item.dateTo && item.continuationOrder && item.dateTo > border ? border : item.dateTo;
+  if (appliedTo && current !== appliedTo) {
     return blocked(
-      `Срок заказа изменился после недели: неделя продлила до ${dayMonth(item.dateTo)}, ` +
+      `Срок заказа изменился после недели: неделя продлила до ${dayMonth(appliedTo)}, ` +
         `сейчас ${dayMonth(current)} — сократите срок вручную`,
     );
   }
