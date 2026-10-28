@@ -1,9 +1,10 @@
 # Readings and hours: one source for a day's work
 
-Status: reviewed proposal, 27 October 2026. Nothing is implemented. The owner closed the forks
-marked **D1–D8** by two surveys on 27 October; the questions in §12 are still open. Driver cabinet
-mock-ups (two variants, A and B) are on the canvas
-<https://claude.ai/artifact/65MiduZt4LyhCR19S5pi4c>; the choice between them is open question Q1.
+Status: stages 0–3 were pushed on 28 October 2026 as release 0.1.124.0234; stage 4 (D13–D16, §9)
+is implemented on the integration branch `w28/int` and waits for its release. The owner closed
+every fork, **D1–D17**, by four surveys on 27 and 28 October, and no question in §12 is open. The
+driver cabinet mock-ups (variants A and B; D9 chose A) are on the canvas
+<https://claude.ai/artifact/65MiduZt4LyhCR19S5pi4c>.
 
 ## 1. Problem
 
@@ -518,39 +519,44 @@ because it changes who can read reading-derived data: an access change is never 
 
 ## 12. Open questions
 
-- **Q1.** Driver cabinet: variant A (time fields inside the existing groups) or B (stamp buttons by
-  the course of the day, manual entry as a fallback)? Canvas linked at the top.
-- **Q2.** Stage 2 storage: start/end columns kept for every reading (a derived copy for routes,
-  written in the same transaction as points) — proposed — or derived on read from the points table?
-  The role snapshot and legacy-report compatibility gate in §7.1–§7.3 are required with either
-  choice.
-- **Q3.** Should the summary book switch to the effective day? It changes the numbers of unsigned
-  days and adds driver-only days.
-- **Q4.** Should the garage occupancy view count a driver-only day as filled?
-- **Q5.** Free-text refuelling for own vehicles: keep editable, or show the driver's liters only?
-- **Q6.** D3 makes every day after a day without a reading a manual one. Acceptable, or should the
-  one-click rule follow the garage's continuity (expected shifts) instead?
-- **Q7.** Rounding of freight hours in the completion: two decimals, quarter hours, or whole hours?
-- **Q8.** Access: may everyone who reads a request (site, requester, lessor) see the day's
-  reading-derived hours and refuelling in its shift table, with the diagnostic `driver` block
-  (names, comment, `no_data` reason, report state) only for `vehicleReadings.read`, as §6.4
+All ten are closed; each keeps its wording for the record and names what closed it in §4.
+
+- **Q1.** _Closed by D9 (variant A)._ Driver cabinet: variant A (time fields inside the existing
+  groups) or B (stamp buttons by the course of the day, manual entry as a fallback)? Canvas linked
+  at the top.
+- **Q2.** _Closed: taken as proposed._ Stage 2 storage: start/end columns kept for every reading (a
+  derived copy for routes, written in the same transaction as points) — proposed — or derived on
+  read from the points table? The role snapshot and legacy-report compatibility gate in §7.1–§7.3
+  are required with either choice.
+- **Q3.** _Closed by D14._ Should the summary book switch to the effective day? It changes the
+  numbers of unsigned days and adds driver-only days.
+- **Q4.** _Closed by D15._ Should the garage occupancy view count a driver-only day as filled?
+- **Q5.** _Closed by D17._ Free-text refuelling for own vehicles: keep editable, or show the
+  driver's liters only?
+- **Q6.** _Closed by D16._ D3 makes every day after a day without a reading a manual one.
+  Acceptable, or should the one-click rule follow the garage's continuity (expected shifts) instead?
+- **Q7.** _Closed by D12._ Rounding of freight hours in the completion: two decimals, quarter hours,
+  or whole hours?
+- **Q8.** _Closed by D10._ Access: may everyone who reads a request (site, requester, lessor) see
+  the day's reading-derived hours and refuelling in its shift table, with the diagnostic `driver`
+  block (names, comment, `no_data` reason, report state) only for `vehicleReadings.read`, as §6.4
   proposes? Or should the driver's numbers be visible only to those who already read readings —
   which would leave the site signing a day it cannot see?
-- **Q9.** How a driver "finishes" a shift in stage 2. As written (§7.1–§7.3): an explicit finish
-  action, a `time_finalized_at` column, an optional `finishTime` flag and an acceptance refusal for
-  unfinished `v3` items. Simpler alternative: derive "finished" from the end-of-shift values the
-  cabinet already watches (`ended` in `DriverReadingFields.tsx`, ADR 0163 Р8: odometer, engine
-  hours or end fuel). A submit that carries any of them must carry the end time (ESM-2) or every
-  departure (route); any submit carries the start time or the first arrival. No new column, flag or
-  acceptance gate; a morning-only interim reading still lacks engine hours and is therefore already
-  non-clean for §6.2. The `draft_format` gate of §7.3 is needed either way.
-- **Q10.** A linear special-equipment day that shares a route with freight requests takes the whole
-  route's interval as its shift time and the route item's engine hours as its hours, as stages 1
-  and 3 do today (arrival at stop 1 to departure from the last stop). The freight requests of the
-  same route get their D6 shares of that time (§8), so the vehicle's hours on such a route are
-  counted once for the special-equipment day and again, in part, for the freight. Should such a
-  route's time be split between the special-equipment day and the freight requests instead — the
-  day taking only its D6 share of its own stops? No code change until the owner answers.
+- **Q9.** _Closed by D11._ How a driver "finishes" a shift in stage 2. As written (§7.1–§7.3): an
+  explicit finish action, a `time_finalized_at` column, an optional `finishTime` flag and an
+  acceptance refusal for unfinished `v3` items. Simpler alternative: derive "finished" from the
+  end-of-shift values the cabinet already watches (`ended` in `DriverReadingFields.tsx`, ADR 0163
+  Р8: odometer, engine hours or end fuel). A submit that carries any of them must carry the end time
+  (ESM-2) or every departure (route); any submit carries the start time or the first arrival. No new
+  column, flag or acceptance gate; a morning-only interim reading still lacks engine hours and is
+  therefore already non-clean for §6.2. The `draft_format` gate of §7.3 is needed either way.
+- **Q10.** _Closed by D13._ A linear special-equipment day that shares a route with freight requests
+  takes the whole route's interval as its shift time and the route item's engine hours as its hours,
+  as stages 1 and 3 do today (arrival at stop 1 to departure from the last stop). The freight
+  requests of the same route get their D6 shares of that time (§8), so the vehicle's hours on such a
+  route are counted once for the special-equipment day and again, in part, for the freight. Should
+  such a route's time be split between the special-equipment day and the freight requests instead —
+  the day taking only its D6 share of its own stops? No code change until the owner answers.
 
 ## 13. Out of scope
 
