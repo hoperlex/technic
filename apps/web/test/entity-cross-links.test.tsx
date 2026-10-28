@@ -339,6 +339,7 @@ function vehiclePageRoutes(over: RouteMap = {}): RouteMap {
     'GET /vehicles': () => json(emptyList()),
     'GET /counterparties': () => json(emptyList()),
     'GET /vehicle-requests/:id/history': () => json([]),
+    'GET /vehicle-requests/:id/documents': () => json({ items: [] }),
     'GET /vehicle-requests/:id/waybills': () => json([]),
     'GET /vehicle-requests/:id/relocations': () => json([]),
     ...over,

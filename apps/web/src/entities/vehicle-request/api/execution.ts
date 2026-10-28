@@ -1,4 +1,5 @@
 import type {
+  AddVehicleRequestDocumentInput,
   ApproveVehicleRequestShiftInput,
   CreateRequestRelocationBody,
   DayBatchApplyBody,
@@ -10,6 +11,7 @@ import type {
   SaveVehicleRequestShiftBody,
   VehicleRequestDayBatchResultDto,
   VehicleRequestDaysDto,
+  VehicleRequestDocumentDto,
   VehicleRequestDto,
   VehicleRequestShiftsDto,
   VehicleRouteDto,
@@ -178,4 +180,21 @@ export const vehicleRequestExecution = {
     apiFetch<VehicleRequestDaysDto>(`/vehicle-requests/${id}/days/${date}/route`, {
       method: 'DELETE',
     }),
+  /**
+   * The card's documents table (rental closing plan, D8): the requester's attachments and the typed,
+   * dated paper in one list. Both writes answer with the table whole, so the card shows what the
+   * server holds without a second request.
+   */
+  documents: (id: string) =>
+    apiFetch<{ items: VehicleRequestDocumentDto[] }>(`/vehicle-requests/${id}/documents`),
+  addDocument: (id: string, body: AddVehicleRequestDocumentInput) =>
+    apiFetch<{ items: VehicleRequestDocumentDto[] }>(`/vehicle-requests/${id}/documents`, {
+      method: 'POST',
+      body,
+    }),
+  removeDocument: (id: string, fileId: string) =>
+    apiFetch<{ items: VehicleRequestDocumentDto[] }>(
+      `/vehicle-requests/${id}/documents/${fileId}`,
+      { method: 'DELETE' },
+    ),
 };

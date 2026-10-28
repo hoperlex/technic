@@ -143,6 +143,7 @@ interface CardOptions {
 function renderCard(request: VehicleRequestDto, options: CardOptions = {}) {
   const http = mockHttp({
     'GET /vehicle-requests/:id/history': () => json([]),
+    'GET /vehicle-requests/:id/documents': () => json({ items: [] }),
     'GET /vehicle-requests/:id/driver': () =>
       json({ personId: 'p-1', fullName: 'Тестовый Водитель Первый', phone: '' }),
     'GET /vehicle-requests/:id/waybills': () => json(options.waybills ?? []),

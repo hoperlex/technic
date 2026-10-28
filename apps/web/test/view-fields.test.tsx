@@ -103,6 +103,7 @@ describe('карточка полей просмотра', () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     mockHttp({
       'GET /vehicle-requests/:id/history': () => json([]),
+      'GET /vehicle-requests/:id/documents': () => json({ items: [] }),
       'GET /vehicle-requests/:id/relocations': () => json([]),
       'GET /vehicle-requests/:id/waybills': () => json([]),
     });

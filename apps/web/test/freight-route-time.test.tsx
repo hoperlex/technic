@@ -77,6 +77,7 @@ const WITH_DIAGNOSTICS: RequestRouteTimeDto = {
 function renderCard(request: FreightTransportRequestDto, time?: RequestRouteTimeDto) {
   const http = mockHttp({
     'GET /vehicle-requests/:id/history': () => json([]),
+    'GET /vehicle-requests/:id/documents': () => json({ items: [] }),
     'GET /vehicle-requests/:id/waybills': () => json([]),
     'GET /vehicle-requests/:id/driver': () =>
       json({ personId: 'p-1', fullName: 'Грузов Пётр Иванович', phone: '' }),

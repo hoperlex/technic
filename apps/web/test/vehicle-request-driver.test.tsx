@@ -45,6 +45,7 @@ function renderCard(
 ) {
   const http = mockHttp({
     'GET /vehicle-requests/r1/history': () => json([]),
+    'GET /vehicle-requests/r1/documents': () => json({ items: [] }),
     'GET /vehicle-requests/r1/driver': () => json(driver),
     'GET /vehicle-requests/r1/waybills': () => json([]),
     'GET /vehicle-requests/r1/relocations': () => json([]),
