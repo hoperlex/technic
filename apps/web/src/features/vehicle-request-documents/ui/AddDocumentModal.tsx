@@ -1,29 +1,47 @@
-import { useEffect, useMemo, useState } from 'react';
-import { App, AutoComplete, Button, DatePicker, Form, Typography, Upload } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
-import type { Dayjs } from 'dayjs';
+import { useEffect, useMemo, useRef } from 'react';
+import { App, Form } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  VEHICLE_REQUEST_DOCUMENT_TYPE_MAX,
   VEHICLE_REQUEST_DOCUMENT_TYPE_SUGGESTIONS,
   type VehicleRequestDocumentDto,
 } from '@technic/contracts';
 import { filesApi } from '@entities/file';
 import { vehicleRequestKeys, vehicleRequestsApi } from '@entities/vehicle-request';
-import { FILE_MAX_SIZE } from '@shared/config';
 import { errorMessage } from '@shared/lib';
 import { FormModal, useFormBlockers } from '@shared/ui';
+import { DocumentRows, EMPTY_DOCUMENT_ROW, type DocumentRow } from './DocumentRows';
 
 interface Values {
-  file?: File;
-  docType?: string;
-  docDate?: Dayjs;
+  rows: DocumentRow[];
+}
+
+/** A row the rules let through: all three chosen, the type trimmed, the date as the wire has it. */
+interface ReadyRow {
+  file: File;
+  docType: string;
+  docDate: string;
+}
+
+interface Outcome {
+  /** Rows linked before the run ended, counted from the top. */
+  done: number;
+  /** The row that stopped the run; the rows below it were not tried. */
+  failure: { error: unknown; filename: string } | null;
+  /** The window was closed while the run was going: the form it would touch is not this run's. */
+  stopped: boolean;
 }
 
 /**
- * Adding one document: the file, its type and its date, both typed by hand (D5; the date may be any
- * date — owner correction to P4). The file goes to storage first and is linked second, the order of
- * every attachment in the portal: the server links an id of an object already uploaded.
+ * Adding documents: one row per document — the file, its type and its date, both typed by hand (D5;
+ * the date may be any date — owner correction to P4). Every file goes to storage first and is
+ * linked second, the order of every attachment in the portal: the server links an id of an object
+ * already uploaded.
+ *
+ * The server takes one document per call, so the rows go one after another, in the order of the
+ * window. It is not one transaction and does not pretend to be: the first failure stops the run,
+ * the rows already linked leave the form and the rest stay in it with the reason in a toast, so
+ * the next press of «Добавить» sends only what is still missing. Closing the window stops the run
+ * after the row in flight — «Отмена» must not keep adding paper the person has walked away from.
  *
  * The type is free text with suggestions (P11) — the usual papers and the types this request already
  * has, so the second УПД is spelled like the first one. Nothing outside the list is refused.
@@ -44,15 +62,13 @@ export function AddDocumentModal({
   const blockers = useFormBlockers(form);
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const [file, setFile] = useState<File | null>(null);
+  const running = useRef<{ stopped: boolean } | null>(null);
 
   useEffect(() => {
-    if (!open) return;
-    form.resetFields();
-    setFile(null);
+    if (open) form.resetFields();
   }, [open, form]);
 
-  const options = useMemo(
+  const typeOptions = useMemo(
     () =>
       [...new Set([...usedTypes, ...VEHICLE_REQUEST_DOCUMENT_TYPE_SUGGESTIONS])].map((value) => ({
         value,
@@ -61,86 +77,98 @@ export function AddDocumentModal({
   );
 
   const add = useMutation({
-    mutationFn: async (v: { file: File; docType: string; docDate: string }) => {
-      const uploaded = await filesApi.upload(v.file);
-      return vehicleRequestsApi.addDocument(requestId, {
-        fileId: uploaded.id,
-        docType: v.docType,
-        docDate: v.docDate,
-      });
+    // Never throws: a refusal is an outcome with the rows before it already in place, not a failed
+    // call to roll back.
+    mutationFn: async (batch: ReadyRow[]): Promise<Outcome> => {
+      const run = { stopped: false };
+      running.current = run;
+      let done = 0;
+      try {
+        for (const row of batch) {
+          if (run.stopped) return { done, failure: null, stopped: true };
+          try {
+            const uploaded = await filesApi.upload(row.file);
+            const res = await vehicleRequestsApi.addDocument(requestId, {
+              fileId: uploaded.id,
+              docType: row.docType,
+              docDate: row.docDate,
+            });
+            // The answer is the table whole: put it in place, so the card shows the new row at once.
+            qc.setQueryData<{ items: VehicleRequestDocumentDto[] }>(
+              vehicleRequestKeys.documents(requestId),
+              res,
+            );
+            done += 1;
+          } catch (error) {
+            return { done, failure: { error, filename: row.file.name }, stopped: run.stopped };
+          }
+        }
+        return { done, failure: null, stopped: false };
+      } finally {
+        if (running.current === run) running.current = null;
+      }
     },
-    onSuccess: (res: { items: VehicleRequestDocumentDto[] }) => {
-      // The answer is the table whole: put it in place, so the card shows the new row at once.
-      qc.setQueryData(vehicleRequestKeys.documents(requestId), res);
-      // The request history gained an event. Not the request root: it is the prefix of the table
-      // just put in place, and would fetch it again.
-      void qc.invalidateQueries({ queryKey: vehicleRequestKeys.events(requestId) });
-      message.success('Документ добавлен');
+    onSuccess: ({ done, failure, stopped }, batch) => {
+      // The request history gained an event per document. Not the request root: it is the prefix
+      // of the table put in place above, and would fetch it again.
+      if (done > 0) void qc.invalidateQueries({ queryKey: vehicleRequestKeys.events(requestId) });
+      if (failure) {
+        if (!stopped) {
+          const rows: DocumentRow[] = form.getFieldValue('rows') ?? [];
+          form.setFieldValue('rows', rows.slice(done));
+        }
+        message.error(
+          done === 0 && batch.length === 1
+            ? errorMessage(failure.error)
+            : `Добавлено ${done} из ${batch.length}. «${failure.filename}»: ${errorMessage(failure.error)}`,
+        );
+        return;
+      }
+      if (stopped) {
+        if (done > 0) message.info(`Добавлено ${done} из ${batch.length}`);
+        return;
+      }
+      message.success(done === 1 ? 'Документ добавлен' : `Добавлено документов: ${done}`);
       onClose();
-    },
-    onError: (e) => {
-      if (!blockers.fromApi(e)) message.error(errorMessage(e));
     },
   });
 
-  const submit = (v: Values) => {
-    const docType = (v.docType ?? '').trim();
-    const blocked = blockers.raise({
-      file: !file && 'Выберите файл',
-      docType: !docType && 'Укажите тип документа',
-      docDate: !v.docDate && 'Укажите дату документа',
-    });
-    if (blocked || !file || !v.docDate) return;
-    add.mutate({ file, docType, docDate: v.docDate.format('YYYY-MM-DD') });
+  const submit = ({ rows }: Values) => {
+    const batch: ReadyRow[] = [];
+    for (const { file, docType, docDate } of rows) {
+      // The rules have held every row back by now; the check keeps the types honest.
+      if (!file || !docDate) return;
+      batch.push({ file, docType: (docType ?? '').trim(), docDate: docDate.format('YYYY-MM-DD') });
+    }
+    add.mutate(batch);
+  };
+
+  const close = () => {
+    if (running.current) running.current.stopped = true;
+    onClose();
   };
 
   return (
     <FormModal
-      title="Добавить документ"
+      title="Добавить документы"
       open={open}
-      onCancel={onClose}
+      onCancel={close}
       onSubmit={() => form.submit()}
       confirmLoading={add.isPending}
       okText="Добавить"
+      width={880}
     >
-      <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
-        <Form.Item name="file" label="Файл">
-          <Upload
-            maxCount={1}
-            showUploadList={false}
-            beforeUpload={(picked) => {
-              if (picked.size > FILE_MAX_SIZE) {
-                blockers.raise({ file: 'Файл больше 50 МБ' });
-                return Upload.LIST_IGNORE;
-              }
-              setFile(picked);
-              form.setFieldsValue({ file: picked });
-              return false;
-            }}
-          >
-            <Button icon={<UploadOutlined />}>{file ? 'Выбрать другой' : 'Выбрать файл'}</Button>
-          </Upload>
-        </Form.Item>
-        {file && (
-          <Typography.Paragraph type="secondary" style={{ marginTop: -12 }}>
-            {file.name}
-          </Typography.Paragraph>
-        )}
-        <Form.Item name="docType" label="Тип документа">
-          <AutoComplete
-            options={options}
-            maxLength={VEHICLE_REQUEST_DOCUMENT_TYPE_MAX}
-            placeholder="Например, УПД"
-            filterOption={(input, option) =>
-              String(option?.value ?? '')
-                .toLowerCase()
-                .includes(input.toLowerCase())
-            }
-          />
-        </Form.Item>
-        <Form.Item name="docDate" label="Дата документа">
-          <DatePicker style={{ width: '100%' }} format="DD.MM.YYYY" />
-        </Form.Item>
+      {/* Disabled while a run is going: the rows are indexed, and a row added or removed under it
+          would shift what «the first `done` rows» means. */}
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={{ rows: [{ ...EMPTY_DOCUMENT_ROW }] }}
+        disabled={add.isPending}
+        onFinish={submit}
+        {...blockers.formProps}
+      >
+        <DocumentRows typeOptions={typeOptions} />
       </Form>
     </FormModal>
   );

@@ -23,6 +23,8 @@
   [rental row](../../apps/web/src/pages/vehicle/RentalCompletionFields.tsx),
   [window rules](../../apps/web/src/pages/vehicle/rentalCompletion.ts),
   [documents section](../../apps/web/src/features/vehicle-request-documents/ui/VehicleRequestDocuments.tsx),
+  [adding window](../../apps/web/src/features/vehicle-request-documents/ui/AddDocumentModal.tsx),
+  [window rows](../../apps/web/src/features/vehicle-request-documents/ui/DocumentRows.tsx),
   [resolver tests](../../apps/api/test/vehicle-rental-completion.test.ts),
   [rule tests](../../apps/api/test/vehicle-rental-completion-contracts.test.ts),
   [db tests](../../apps/api/test/vehicle-rental-completion.db.test.ts),
@@ -81,6 +83,13 @@ attachments, added in the editor while the request was new.
 9. **One table in the card (D8, P10).** Attachments («Вложение заявителя», dated by upload) and
    documents in one table File | Type | Date; the table is not drawn while empty, the header with
    «Добавить файл» is, whenever the viewer may add.
+10. **The window adds several documents (owner, 29.10.2026).** One window, one row per document —
+    file, type and date in a line; «Прикрепить ещё документ» appends a row, and a row has a delete
+    button while it is not the only one. The server's door stays one document per call (nothing
+    to migrate, no client floor): the rows go one after another in the window's order, and it is
+    not one transaction. The first refusal stops the run — the rows already linked leave the form,
+    the rest stay with the reason in a toast, so the next press sends only what is missing — and
+    closing the window stops it after the row in flight. Each document is its own history event.
 
 ## Consequences
 
