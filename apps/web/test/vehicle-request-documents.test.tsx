@@ -45,7 +45,6 @@ function typeRowDate(row: number, text: string): void {
   fireEvent.blur(input);
 }
 
-
 function file(id: string, filename: string) {
   return {
     id,
@@ -157,6 +156,17 @@ describe('vehicle request documents', () => {
     expect(within(dialog).queryByRole('button', { name: /Убрать строку/ })).toBeNull();
   });
 
+  it('shows the chosen file on the button only: the native input stays out of sight', async () => {
+    render([]);
+    fireEvent.click(await screen.findByRole('button', { name: /Добавить файл/ }));
+    const dialog = await screen.findByRole('dialog');
+    // The form's own stylesheet gives every file input `display: block`, which beats the `hidden`
+    // attribute: the browser's «Choose file / No file chosen» then sits over the button and, with
+    // the value cleared after the pick, keeps saying that nothing was chosen.
+    const input = dialog.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(window.getComputedStyle(input).display).toBe('none');
+  });
+
   it('adds a row on «Прикрепить ещё документ» and deletes any row once there are several', async () => {
     render([]);
     fireEvent.click(await screen.findByRole('button', { name: /Добавить файл/ }));
@@ -186,7 +196,7 @@ describe('vehicle request documents', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Добавить' }));
     expect(await within(dialog).findByText('Выберите файл')).toBeDefined();
     expect(within(dialog).getByText('Укажите тип документа')).toBeDefined();
-    expect(within(dialog).getByText('Укажите дату документа')).toBeDefined();
+    expect(within(dialog).getByText('Укажите дату')).toBeDefined();
     expect(http.countOf('POST /files/upload-session')).toBe(0);
     expect(http.countOf('POST /vehicle-requests/vr-1/documents')).toBe(0);
   });
@@ -274,7 +284,9 @@ describe('vehicle request documents', () => {
     await waitFor(() => expect(http.countOf('POST /vehicle-requests/vr-1/documents')).toBe(2));
     expect(
       http.calls
-        .filter((call) => call.method === 'POST' && call.path === '/vehicle-requests/vr-1/documents')
+        .filter(
+          (call) => call.method === 'POST' && call.path === '/vehicle-requests/vr-1/documents',
+        )
         .map((call) => call.body),
     ).toEqual([
       { fileId: 'f-new-1', docType: 'УПД', docDate: '2026-10-14' },

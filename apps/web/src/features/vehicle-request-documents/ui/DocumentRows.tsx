@@ -27,7 +27,7 @@ const fileRule: FormRule = {
   },
 };
 const typeRule: FormRule = { required: true, whitespace: true, message: 'Укажите тип документа' };
-const dateRule: FormRule = { required: true, message: 'Укажите дату документа' };
+const dateRule: FormRule = { required: true, message: 'Укажите дату' };
 
 const ELLIPSIS: CSSProperties = {
   minWidth: 0,
@@ -128,7 +128,7 @@ export function DocumentRows({ typeOptions }: { typeOptions: { value: string }[]
 /**
  * The file of a row as a form control: `Form.Item` hands it `value`, `onChange` and `id`. The
  * button shows the chosen name and cuts a long one, so a row keeps its height; the real input is
- * hidden, because the picker widget would not let the button fill its column. The `id` goes on the
+ * out of sight, because the picker widget would not let the button fill its column. The `id` goes on the
  * wrapper — `scrollToField` finds a control without an input ref by it.
  */
 function FileField({
@@ -148,7 +148,10 @@ function FileField({
       <input
         ref={input}
         type="file"
-        hidden
+        // Not the `hidden` attribute: the form's stylesheet gives `input[type="file"]` a
+        // `display: block` that beats it, and the browser's own «No file chosen» input would show
+        // above the button — empty even after a pick, because the value is cleared below.
+        style={{ display: 'none' }}
         aria-label={label}
         onChange={(event) => {
           const picked = event.target.files?.[0];
