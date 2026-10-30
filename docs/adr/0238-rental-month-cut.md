@@ -43,26 +43,38 @@ in work at once.
 
 ## Decisions
 
-1. **The border is the last day of the month the order ends in.** `border = monthEndKey(L)`, where
-   `L` is the order's effective end (`coalesce(date_to, date_from)`). Not the month of `date_from`:
-   an order that crossed a month before this rule existed is not cut backwards, and its further
-   extension stays inside the month it ends in.
+1. **The border is the last day of the source order's starting month.** Owner refinement,
+   30.10.2026: old cross-month production orders are expected inputs, not an exception to the rule.
+   `border = monthEndKey(date_from)`. An old Sunday end of 01.11 must not turn an October rental
+   into a November order. The weekly hotfix normalizes a future legacy tail only when it has no
+   recorded shifts or active assignment changes; a past tail requires the existing correction
+   path. Older orders needing several monthly continuations are refused with a named reason,
+   because a weekly row has one continuation link.
 
 2. **The cut of one row** (`rentalMonthSplit` in the contracts, the only place that knows it). For
    the date `D` the human chose, inside the week:
    - `D ≤ border` — the row is applied as before;
    - otherwise the existing order moves to `border` (`extendTo`; none when `L` is already the
-     border) and a new order runs from `border + 1` to `D` (`continuation`).
+     border) and a new order starts on the first Monday–Friday date after the border and runs to
+     the selected `D` (`continuation`). An entirely weekend-only monthly tail creates no empty
+     order. The selected end itself stays unchanged, including Saturday or Sunday; weekday
+     defaults do not trim it to Friday. Explicit weekend work remains an explicit period/day edit.
 
    Since `D` is inside one week and `L` is not earlier than a week before it, at most one border
    lies between them: one new order is always enough.
 
-   | `L` | `D` | existing order | new order |
-   | :-- | :-- | :-- | :-- |
-   | 26.11 | 30.11 | to 30.11 | — |
-   | 29.11 | 06.12 | to 30.11 | 01.12 – 06.12 |
-   | 30.11 | 06.12 | unchanged | 01.12 – 06.12 |
-   | 30.12 | 03.01 | to 31.12 | 01.01 – 03.01 |
+   | `L`                         | `D`   | existing order | new order     |
+   | :-------------------------- | :---- | :------------- | :------------ |
+   | 26.11                       | 30.11 | to 30.11       | —             |
+   | 29.11                       | 06.12 | to 30.11       | 01.12 – 06.12 |
+   | 30.11                       | 06.12 | unchanged      | 01.12 – 06.12 |
+   | 30.12                       | 03.01 | to 31.12       | 01.01 – 03.01 |
+   | 01.11 (source starts 23.10) | 08.11 | to 31.10       | 02.11 – 08.11 |
+
+   [Migration 0396](../../apps/api/drizzle/0396_rental_month_cut_legacy.sql) adds nullable
+   `applied_date_to`: the source end actually written by the visa. It is necessary because a
+   legacy normalization can shorten the source, and reversal must restore the original 01.11
+   snapshot rather than infer a November border. Previously applied rows retain the old fallback.
 
 3. **The row stays one decision.** The human picks "stays until D"; the cut is not asked about and
    not stored as a second row. A second row would need a new item kind or a second source order in
@@ -111,7 +123,8 @@ in work at once.
    an order that went into work. The new order goes into work at once, so a row with a live new
    order is `blocked` with the order's number and the way out: roll it back to «Новая» and cancel
    it. After it is cancelled (or archived) the row reverses as any `extend` row: the term returns
-   to the snapshot, and the date the week set is the border, not `D`.
+   to the snapshot, including restoring a legacy weekend tail, and the date the week set is the
+   recorded `applied_date_to` (or the old inferred border), not `D`.
 
 9. **"Продления" on the order card does not claim a term change that did not happen.** A row of an
    order that already ended on the border moved nothing; it is left out of that list and the new
@@ -125,7 +138,7 @@ in work at once.
 - Migration `0394` is additive and the portal client floor is not raised: the answers only gain
   fields, and the request of the composition is unchanged. A visa applied by old code during the
   migration window cuts nothing, as before; a draft saved earlier is cut at the visa by the new
-  code. Rollback after the migration is `--previous --restore-db`.
+  code. Rollback after a numbered migration follows the current runbook's PITR procedure.
 - Reversing a week whose rental row was cut needs a manual step first (item 8). It is the same
   rule that already applies to a `new` order the dispatcher took into work.
 - The existing apply tests build rental orders that start the month after the border
@@ -146,8 +159,8 @@ in work at once.
 - **A refusal instead of a cut** ("extend to the border, open the next order yourself"). It leaves
   the days past the border to be ordered by hand every month for every rented vehicle, which is the
   work the owner asked the portal to do.
-- **The month of `date_from` as the border.** It forbids any extension of a legacy order that
-  already crosses, and the new order would have to start the day after its end, not on the first.
+- **Keeping the month of the old end as the border.** Rejected by the owner on 30.10.2026 after
+  TC-1711 / NZ-604: a Sunday carried into November suppressed the October/November split.
 - **A second `new` row generated by the form.** The source order of an extension that ends on the
   border would have no row in the week, and the only row kind that keeps it is "leaves" — which
   hands the dispatcher a task to arrange a pickup of a machine that stays.

@@ -658,8 +658,8 @@ export function extendBlocker(
  * How the visa cuts an extension of a rental order by the calendar month (ADR 0238).
  *
  * The month report takes a rental order as one piece, so a rental term never crosses the last day
- * of the month it ends in. The part of an extension that lies beyond that day is not refused: it
- * becomes a new order of the same rented vehicle, which starts on the first of the next month.
+ * of the month it starts in. The part of an extension that lies beyond that day is not refused: it
+ * becomes a new order of the same rented vehicle, which starts on the first weekday of the next month.
  */
 export interface RentalMonthSplit {
   /**
@@ -676,9 +676,9 @@ export interface RentalMonthSplit {
  * because the visa recomputes it under the order lock and the vehicle may have changed hands
  * between the assembly and the signature: the portal and the server must not give two answers.
  *
- * The month is the one the order **ends** in (`last`), not the one it started in. An order that
- * crossed a month before this rule existed is not cut backwards, and its further extension simply
- * stays inside the month it ends in.
+ * The source order belongs to its starting month, including legacy orders whose old extension
+ * already crossed the boundary. Weekend-only monthly tails do not open an empty rental order;
+ * the selected end itself is retained, even when it is a Saturday or Sunday.
  *
  * Only a rental vehicle is cut (`ownership`): an own machine's month is already cut on the paper
  * (ADR 0142), and an order with no vehicle never reaches an extension row.
@@ -690,13 +690,18 @@ export function rentalMonthSplit(
   ownership: VehicleOwnership | null,
   last: string,
   newDateTo: string,
+  sourceDateFrom: string,
 ): RentalMonthSplit {
   if (ownership !== 'rental') return { extendTo: newDateTo, continuation: null };
-  const border = monthEndKey(last);
+  const border = monthEndKey(sourceDateFrom);
   if (newDateTo <= border) return { extendTo: newDateTo, continuation: null };
+  let dateFrom = shiftDateKey(border, 1);
+  while ([0, 6].includes(new Date(`${dateFrom}T00:00:00Z`).getUTCDay())) {
+    dateFrom = shiftDateKey(dateFrom, 1);
+  }
   return {
-    extendTo: last < border ? border : null,
-    continuation: { dateFrom: shiftDateKey(border, 1), dateTo: newDateTo },
+    extendTo: last !== border ? border : null,
+    continuation: dateFrom <= newDateTo ? { dateFrom, dateTo: newDateTo } : null,
   };
 }
 
@@ -707,7 +712,7 @@ export function rentalMonthSplitText(split: RentalMonthSplit): string | null {
   const span =
     dateFrom === dateTo ? dayMonth(dateFrom) : `${dayMonth(dateFrom)}–${dayMonth(dateTo)}`;
   return split.extendTo
-    ? `Аренда не идёт за границу месяца: заказ продлится до ${dayMonth(split.extendTo)}, а на ${span} откроется новый заказ той же машины`
+    ? `Аренда не идёт за границу месяца: срок заказа будет до ${dayMonth(split.extendTo)}, а на ${span} откроется новый заказ той же машины`
     : `Аренда не идёт за границу месяца: заказ остаётся как есть, а на ${span} откроется новый заказ той же машины`;
 }
 
@@ -886,11 +891,14 @@ export function itemWarnings(
   // the dates of the cut (`rentalMonthSplitText`, which the visa answer carries) would lie after
   // that. It is also the only form of it the portal can show without shipping the cut itself.
   if (newDateTo && order.ownership === 'rental') {
-    const border = monthEndKey(last);
+    const border = monthEndKey(order.dateFrom);
     if (weekly.weekEnd > border) {
+      const split = rentalMonthSplit(order.ownership, last, weekly.weekEnd, order.dateFrom);
       warnings.push({
         kind: 'rental_month_cut',
-        text: `Аренда не идёт за границу месяца: продление после ${dayMonth(border)} откроется новым заказом той же машины`,
+        text: split.continuation
+          ? `Аренда не идёт за границу месяца: продление после ${dayMonth(border)} откроется новым заказом той же машины`
+          : `Срок аренды ограничится ${dayMonth(border)}: в следующем месяце в этой неделе только выходные`,
       });
     }
   }
@@ -1710,6 +1718,8 @@ export function weeklyItemHadEffect(result: WeeklyRequestItemResult): boolean {
 
 /** Строка состава глазами аннулирования — ровно те поля, которые спрашивают правила. */
 export interface WeeklyAnnulItem {
+  /** Actual source end written by apply; absent on weeks applied before the legacy cut fix. */
+  appliedDateTo?: string | null;
   id: string;
   kind: WeeklyRequestItemKind;
   result: WeeklyRequestItemResult;
@@ -1822,11 +1832,14 @@ export function weeklyAnnulItemState(
   if (!order) return reverted('Заказ удалён из портала');
 
   const current = orderEffectiveDateTo(order);
-  // "Already undone" means **not later** than the snapshot, not "equal to it": an early end shortens
-  // the term to any date from today (ADR 0044 item 5), i.e. below the former end too. Requiring
-  // equality would mark a row shortened by hand "blocked: term changed", although the week's
-  // consequence is entirely gone.
-  if (current <= snapshot) {
+  const border = monthEndKey(snapshot);
+  const appliedTo =
+    item.appliedDateTo ??
+    (item.dateTo && item.continuationOrder && item.dateTo > border ? border : item.dateTo);
+  const normalizedLegacy = !!appliedTo && appliedTo < snapshot;
+  // An ordinary extension is gone once the term is at or below its snapshot. A legacy month cut
+  // moved in the opposite direction, so restoring it must instead reach the old, later end.
+  if (normalizedLegacy ? current >= snapshot : current <= snapshot) {
     return reverted(`Срок заказа уже возвращён: идёт до ${dayMonth(current)}`);
   }
   if (order.deletedAt) return blocked('Заказ в архиве — верните его из архива или сократите срок');
@@ -1838,9 +1851,6 @@ export function weeklyAnnulItemState(
   // The term is compared, not the version: the version grows from editing the contact phone
   // (ADR 0085 item 10), and rows would drop out of the reversal for reasons unrelated to the decision.
   // A cut row moved the order only to the month border, not to the date the human chose.
-  const border = monthEndKey(snapshot);
-  const appliedTo =
-    item.dateTo && item.continuationOrder && item.dateTo > border ? border : item.dateTo;
   if (appliedTo && current !== appliedTo) {
     return blocked(
       `Срок заказа изменился после недели: неделя продлила до ${dayMonth(appliedTo)}, ` +
@@ -1894,12 +1904,20 @@ export function weeklyAnnulHeaderBlocker(header: { status: WeeklyRequestStatus }
  * removed days, and the first of them answers "are we rewriting the past" better than any other.
  */
 export function weeklyAnnulEffectiveDate(
-  states: { reverse: WeeklyAnnulReversal; previousDateTo: string | null }[],
+  states: {
+    reverse: WeeklyAnnulReversal;
+    previousDateTo: string | null;
+    appliedDateTo?: string | null;
+  }[],
 ): string | null {
   let earliest: string | null = null;
   for (const row of states) {
     if (row.reverse !== 'shorten_to' || !row.previousDateTo) continue;
-    const firstRemoved = shiftDateKey(row.previousDateTo, 1);
+    const boundary =
+      row.appliedDateTo && row.appliedDateTo < row.previousDateTo
+        ? row.appliedDateTo
+        : row.previousDateTo;
+    const firstRemoved = shiftDateKey(boundary, 1);
     if (!earliest || firstRemoved < earliest) earliest = firstRemoved;
   }
   return earliest;

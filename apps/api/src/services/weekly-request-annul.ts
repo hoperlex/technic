@@ -120,6 +120,7 @@ interface LockedItem {
   position: number;
   dateTo: string | null;
   previousDateTo: string | null;
+  appliedDateTo: string | null;
   sourceRequestId: string | null;
   createdRequestId: string | null;
   continuationRequestId: string | null;
@@ -235,6 +236,7 @@ async function lockPlanRows(
       position: weeklyVehicleRequestItems.position,
       dateTo: weeklyVehicleRequestItems.dateTo,
       previousDateTo: weeklyVehicleRequestItems.previousDateTo,
+      appliedDateTo: weeklyVehicleRequestItems.appliedDateTo,
       sourceRequestId: weeklyVehicleRequestItems.sourceRequestId,
       createdRequestId: weeklyVehicleRequestItems.createdRequestId,
       continuationRequestId: weeklyVehicleRequestItems.continuationRequestId,
@@ -406,6 +408,7 @@ export async function planWeeklyAnnul(
           result: item.result,
           dateTo: item.dateTo,
           previousDateTo: item.previousDateTo,
+          appliedDateTo: item.appliedDateTo,
           orderId: orderIdOf(item),
           continuationRequestId: item.continuationRequestId,
         })),
@@ -604,6 +607,7 @@ export async function planWeeklyAnnul(
       return {
         reverse: state?.reverse ?? 'none',
         previousDateTo: item.previousDateTo,
+        appliedDateTo: item.appliedDateTo,
       };
     }),
   );
@@ -843,9 +847,10 @@ export async function reverseWeeklyEffects(
       door: params.kind,
       requestId: row.requestId,
       asOf: plan.asOf,
-      // The reversal opens no days, it removes them, and tail decisions are not asked: cancelling
-      // the tail group itself creates the very divergence they would be asked about.
-      opensTerm: false,
+      // Restoring a legacy rental snapshot can reopen its old weekend tail. The backstop must
+      // check that range; an ordinary reversal still only removes the days the week added.
+      opensTerm: row.termAfter.dateTo! > (row.termBefore.dateTo ?? row.termBefore.dateFrom),
+      prospectiveDateTo: row.termAfter.dateTo!,
     });
     if (verdict) verdicts.push(verdict);
   }
@@ -926,7 +931,7 @@ export async function reverseWeeklyEffects(
       // cancel someone else's decision.
       dropPendingEarlyEnd: false,
       backstop: 'checked_by_caller',
-      opensTerm: false,
+      opensTerm: termAfter.dateTo! > (row.termBefore.dateTo ?? row.termBefore.dateFrom),
       days: { kind: 'plan' as const, plan: doomed },
       ...(params.correctionId
         ? { correction: { id: params.correctionId, unlockWaybillIds: unlocksOfRequest } }

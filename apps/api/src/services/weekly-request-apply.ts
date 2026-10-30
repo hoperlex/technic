@@ -5,12 +5,14 @@ import {
   formatVehicleRequestNumber,
   formatWeeklyRequestNumber,
   moscowDateKeyOf,
+  monthEndKey,
   movedRequestDateKey,
   newItemBlocker,
   periodsOverlap,
   orderEffectiveDateTo,
   rentalMonthSplit,
   rentalMonthSplitText,
+  shiftDateKey,
   sourceItemBlocker,
   WEEKLY_SELECTABLE_WEEKS,
   weeklyWeekBlocker,
@@ -56,6 +58,7 @@ import { extendSpecialEquipmentPeriod } from './vehicle-request-period';
 import { createSpecialEquipmentRequest } from './vehicle-request-create';
 import { openRentalContinuation } from './weekly-request-continuation';
 import { loadLeftBy } from './weekly-request-blockers';
+import { requestShiftRows } from './vehicle-request-shifts';
 import { esm2SheetsOfRequests, type Esm2SyncResult } from './waybill-esm2';
 // Гейт режима модуля периодов назначения (план §10, решение И1): применение недели продлевает
 // сроки и переоформляет листы, то есть читает историю ради бумаги — дверь класса `history`.
@@ -412,7 +415,51 @@ async function decide(
 
   // The cut is computed here, under the order lock and from the vehicle standing on the order now:
   // the form showed a note by what it saw at assembly, and the machine may have changed hands since.
-  const split = rentalMonthSplit(order.ownership, orderEffectiveDateTo(order), item.dateTo!);
+  const split = rentalMonthSplit(
+    order.ownership,
+    orderEffectiveDateTo(order),
+    item.dateTo!,
+    order.dateFrom,
+  );
+  // The weekly row has one continuation link. Older orders spanning several whole months need
+  // an explicit correction, rather than moving their missing intermediate days into one order.
+  if (split.continuation && split.continuation.dateTo > monthEndKey(split.continuation.dateFrom)) {
+    return {
+      item,
+      order,
+      split: null,
+      skipReason:
+        'Заказ аренды пересекает несколько месяцев — сначала исправьте его срок по месяцам',
+    };
+  }
+  if (split.extendTo && split.extendTo < orderEffectiveDateTo(order)) {
+    const removedFrom = shiftDateKey(split.extendTo, 1);
+    if (scope.today && removedFrom < scope.today) {
+      return {
+        item,
+        order,
+        split: null,
+        skipReason:
+          'Разрез старой аренды затрагивает прошедшие дни — сначала исправьте срок через коррекцию',
+      };
+    }
+    const shifts = await requestShiftRows(tx, order.id);
+    const changes = await tx.execute<{ found: boolean }>(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM vehicle_request_assignment_changes
+         WHERE request_id = ${order.id} AND effective_date >= ${removedFrom}::date
+           AND superseded_at IS NULL
+      ) AS found`);
+    if (shifts.some((row) => row.date >= removedFrom) || changes.rows[0]?.found) {
+      return {
+        item,
+        order,
+        split: null,
+        skipReason:
+          'За границей месяца уже есть смены или изменения назначения — сначала исправьте их по истории заказа',
+      };
+    }
+  }
   if (split.continuation) {
     const refusal = await continuationBlocker(tx, order, scope);
     if (refusal) return { item, skipReason: refusal, order, split: null };
@@ -812,6 +859,7 @@ export async function applyWeeklyRequest(
               // competitor — that one is already waiting on the lock.
               expectedVersion: order!.version,
               newDateTo: split.extendTo,
+              rentalMonthCut: order!.ownership === 'rental',
               actor: params.actor,
               reason: extendReason,
               // The week never drops someone else's early-departure request: a unit with an undecided
@@ -883,6 +931,7 @@ export async function applyWeeklyRequest(
         .set({
           result: 'extended',
           previousDateTo: extended.previousDateTo,
+          appliedDateTo: split.extendTo ?? extended.previousDateTo,
           appliedSourceVersion: order!.version,
           snapshotVehicleId: order!.vehicleId,
           continuationRequestId: continued?.requestId ?? null,

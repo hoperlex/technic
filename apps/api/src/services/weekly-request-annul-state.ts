@@ -176,6 +176,7 @@ export interface AnnulStateInput {
   result: WeeklyAnnulItem['result'];
   dateTo: string | null;
   previousDateTo: string | null;
+  appliedDateTo?: string | null;
   /** Заказ строки: `source_request_id` у `extend`/`leave`, `created_request_id` у `new`. */
   orderId: string | null;
   /** Заказ, открытый строкой `extend` за границей месяца у аренды (ADR 0238). */
@@ -255,6 +256,7 @@ export async function annulStates(
         result: item.result,
         dateTo: item.dateTo,
         previousDateTo: item.previousDateTo,
+        appliedDateTo: item.appliedDateTo,
         laterWeekRefs: item.orderId ? (laterWeeks.get(item.orderId) ?? []) : [],
         continuationOrder: continuation
           ? {

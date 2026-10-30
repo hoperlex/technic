@@ -1,3 +1,4 @@
+import { monthEndKey } from '@technic/contracts';
 import { and, eq } from 'drizzle-orm';
 import type { db } from '../db/client';
 import {
@@ -314,7 +315,9 @@ export interface ExtendHistoryPaper {
  *    approval (ADR 0044), and an extension accepting a date before the current end would bypass
  *    that approval in one step. The caller must check it beforehand (a contracts predicate), but
  *    the check stands here too: a place that changes someone else's term does not rely on the
- *    caller's courtesy.
+ *    caller's courtesy. The narrowly named rental-month flag permits capping a legacy rental at
+ *    its starting month end; the weekly caller first refuses work facts and assignment changes
+ *    on the removed days and records both ends for an exact reversal.
  * 2. **The version moves by its own conditional `UPDATE`.** The order is edited outside the weekly
  *    request too, so the write goes by the version read under the lock: a mismatch is a conflict,
  *    not a silent overwrite.
@@ -334,6 +337,8 @@ export async function extendSpecialEquipmentPeriod(
     /** The order version read under `FOR UPDATE` in this same transaction. */
     expectedVersion: number;
     newDateTo: string;
+    /** Only weekly rental normalization may move a legacy term back to its starting month end. */
+    rentalMonthCut?: boolean;
     actor: { id: string };
     reason: string;
     dropPendingEarlyEnd: boolean;
@@ -359,7 +364,11 @@ export async function extendSpecialEquipmentPeriod(
 ): Promise<ExtendResult> {
   const period = await loadWorkPeriod(tx, params.requestId);
   if (!period) throw err.notFound('Заказ техники не найден');
-  if (params.newDateTo <= period.effectiveDateTo) {
+  const rentalMonthCut =
+    params.rentalMonthCut === true &&
+    params.newDateTo === monthEndKey(period.dateFrom) &&
+    params.newDateTo < period.effectiveDateTo;
+  if (params.newDateTo <= period.effectiveDateTo && !rentalMonthCut) {
     throw err.unprocessable(
       `Продление не удлиняет срок: заказ уже идёт по ${period.effectiveDateTo}`,
       { dateTo: 'Дата не позже нынешнего конца срока' },
@@ -408,6 +417,7 @@ export async function extendSpecialEquipmentPeriod(
     dropPendingEarlyEnd: params.dropPendingEarlyEnd,
     backstop: params.backstop,
     correction: params.correction,
+    opensTerm: !rentalMonthCut,
     ...(params.history
       ? {
           paper: {

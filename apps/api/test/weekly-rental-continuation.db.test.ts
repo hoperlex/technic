@@ -106,7 +106,7 @@ async function rentalOrderInWork(
       await enterWorkWithHistory(tx as never, {
         requestId: id,
         actor: { id: scene.actorId },
-        asOf: '2026-11-23',
+        asOf: term.dateFrom,
         mode: snapshot,
         driverPersonId: null,
         reason: 'ТЕСТ: заказ взят в работу',
@@ -124,20 +124,22 @@ async function applyExtension(
   order: Order,
   from: string,
   dateTo: string,
+  options: { week?: string; now?: Date } = {},
 ): Promise<{ weeklyId: string; result: WeeklyApplyResultDto }> {
   const { applyWeeklyRequest } = await import('../src/services/weekly-request-apply');
+  const week = options.week ?? WEEK;
   const header = await scene.db.execute<{ id: string; version: number }>(sql`
     INSERT INTO weekly_vehicle_requests (object_id, week_start, status, created_by)
-    VALUES (${order.objectId}, ${WEEK}::date, 'pending'::weekly_request_status, ${scene.actorId})
+    VALUES (${order.objectId}, ${week}::date, 'pending'::weekly_request_status, ${scene.actorId})
     RETURNING id, version`);
   const weekly = header.rows[0]!;
   await scene.db.execute(sql`
     INSERT INTO weekly_vehicle_request_items
       (weekly_request_id, week_start, position, kind, source_request_id, date_to, expected_date_to)
-    VALUES (${weekly.id}, ${WEEK}::date, 0, 'extend'::weekly_request_item_kind, ${order.id},
+    VALUES (${weekly.id}, ${week}::date, 0, 'extend'::weekly_request_item_kind, ${order.id},
             ${dateTo}::date, ${from}::date)`);
   vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(PINNED_NOW);
+  vi.setSystemTime(options.now ?? PINNED_NOW);
   try {
     const outcome = await scene.db.transaction((tx) =>
       applyWeeklyRequest(tx, {
@@ -183,9 +185,11 @@ async function itemRow(weeklyId: string) {
   const rows = await scene.db.execute<{
     result: string;
     previous_date_to: string | null;
+    applied_date_to: string | null;
     continuation_request_id: string | null;
   }>(sql`
     SELECT result::text AS result, previous_date_to::text AS previous_date_to,
+           applied_date_to::text AS applied_date_to,
            continuation_request_id
       FROM weekly_vehicle_request_items WHERE weekly_request_id = ${weeklyId}`);
   return rows.rows[0]!;
@@ -258,6 +262,49 @@ describe.skipIf(!readMode.enabled)('аренда: разрез продлени�
   });
 
   describeReadModes(readMode, 'граница месяца', (mode) => {
+    it('ТС-1711: старый конец 1 ноября разрезается, а возврат восстанавливает исходный срок', async () => {
+      const order = await rentalOrderInWork(mode, { dateFrom: '2026-10-23', dateTo: '2026-11-01' });
+      const { weeklyId, result } = await applyExtension(order, '2026-11-01', '2026-11-08', {
+        week: '2026-11-02',
+        now: new Date('2026-10-30T09:00:00+03:00'),
+      });
+      const item = await itemRow(weeklyId);
+      expect(await termOf(order.id)).toEqual({ date_from: '2026-10-23', date_to: '2026-10-31' });
+      expect(item.previous_date_to).toBe('2026-11-01');
+      expect(item.applied_date_to).toBe('2026-10-31');
+      expect(await termOf(item.continuation_request_id!)).toEqual({
+        date_from: '2026-11-02',
+        date_to: '2026-11-08',
+      });
+      expect((await orderRow(item.continuation_request_id!)).vehicle_id).toBe(
+        scene.rentalVehicleId,
+      );
+      expect(result.items[0]?.continuation?.assigned).toBe(true);
+      await scene.db.execute(
+        sql`UPDATE vehicle_requests SET status = 'cancelled' WHERE id = ${item.continuation_request_id}`,
+      );
+      const { openReversalDoor, planWeeklyAnnul, reverseWeeklyEffects } =
+        await import('../src/services/weekly-request-annul');
+      await scene.db.transaction(async (tx) => {
+        const snapshot = await openReversalDoor(tx);
+        const plan = await planWeeklyAnnul(tx, { weeklyId, asOf: '2026-10-30', locked: true });
+        expect(plan.blockers).toEqual([]);
+        expect(plan.extend).toHaveLength(1);
+        expect(plan.effectiveDate).toBe('2026-11-01');
+        await reverseWeeklyEffects(tx, {
+          plan,
+          actor: { id: scene.actorId } as never,
+          reason: 'ТЕСТ возврата',
+          mode: snapshot,
+          correctionId: null,
+          unlockWaybillIds: [],
+          kind: 'weekly_return',
+          baseReason: 'ТЕСТ возврата',
+        });
+      });
+      expect(await termOf(order.id)).toEqual({ date_from: '2026-10-23', date_to: '2026-11-01' });
+    });
+
     it('продление через границу: старый заказ — до конца месяца, новый — с 1-го числа, в работе', async () => {
       const order = await rentalOrderInWork(mode, { dateFrom: '2026-11-23', dateTo: '2026-11-29' });
       const before = await orderRow(order.id);

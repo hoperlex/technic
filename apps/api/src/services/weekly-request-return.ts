@@ -127,6 +127,7 @@ async function applyWeeklyReturn(
       result: 'pending',
       skipReason: '',
       previousDateTo: null,
+      appliedDateTo: null,
       appliedSourceVersion: null,
       snapshotVehicleId: null,
       // `weekly_items_created_check` allows the link only next to `created`; the cancelled order

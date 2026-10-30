@@ -9565,6 +9565,8 @@ export const weeklyVehicleRequestItems = pgTable(
     // Снимок момента применения. Разведён с ожиданием намеренно: одно поле под обе задачи не
     // работает — ожидание и снимок расходятся ровно тогда, когда это важнее всего.
     previousDateTo: date('previous_date_to', { mode: 'string' }),
+    // The monthly cut may shorten a legacy term; reversal needs the actual written boundary.
+    appliedDateTo: date('applied_date_to', { mode: 'string' }),
     appliedSourceVersion: integer('applied_source_version'),
     // Хранится идентичность машины, а не её подпись: вопрос снимка — «та же ли это физическая
     // машина»; госномер и модель берутся join'ом, чтобы карточка показывала их сегодняшними.
