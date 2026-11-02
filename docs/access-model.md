@@ -671,6 +671,7 @@ only with it, since the «Показания» tab is closed without it. The rea
 | контрагент в чужом модуле                             | не видит ничего (явным условием, а не отсутствием права)                              | те же функции                                                                  |
 | работник (`driver`)                                   | только строки про самого себя                                                         | предиката нет: кабинет не принимает `personId` ниоткуда                        |
 | все без `archive.read`                                | удалённая запись по прямому id → **404**                                              | `assertArchiveVisible`                                                         |
+| everyone with an axis                                 | company-wide exports (readings report, analytics summary): 403, never a cut book (ADR 0240) | `assertWholeOrganizationScope`                                                 |
 | без своей оси (`admin`, офис, `observer`, служба ОГМ) | ничем не ограничены (кроме архива)                                                    | —                                                                              |
 
 Общий предикат `isPlaceScopedRole` отвечает «работает ли роль в пределах подразделения» — им заданы
@@ -823,9 +824,12 @@ ACCESS_PROFILES                — 24 различимых поставочны�
 - `NON_GRANTABLE_PERMISSIONS` — пять прав, которые не выдаются набором вовсе (`records.purge`,
   `users.manage`, `waybills.correctBeyondLimit` и оба права кабинета водителя); назначаемых
   поэтому 52;
-- `PERMISSION_REQUIRES` — «что должно быть у субъекта, чтобы право имело смысл»: проверяется по
-  **итоговым** правам учётки, а не внутри набора. Отсутствие строки читается как «требование не
-  объявлено», а не как «право самодостаточно»;
+- `PERMISSION_REQUIRES` — what a subject must hold for a right to make sense: checked against the
+  account's **resulting** permissions, not inside a grant. A missing row reads as "no requirement
+  declared", not as "the right stands alone". The readings report right (`vehicleReadings.export`)
+  requires both `vehicleReadings.read` and `vehicleRequests.read`: its rows are vehicle requests by
+  day ([ADR 0240](adr/0240-readings-report-by-request-days.md), approved by the owner on
+  02.11.2026);
 - `GRANT_CONFLICTS` — что нельзя свести в одном человеке (смету составляет и согласует не один и
   тот же);
 - `GRANT_SCOPE_MATRIX` — «ось роли × модуль»: где у модуля вообще есть предикат области. Клетка

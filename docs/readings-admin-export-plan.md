@@ -1,5 +1,10 @@
 # Административная выгрузка показаний автотранспорта
 
+> **Superseded on 02.11.2026 by [ADR 0240](adr/0240-readings-report-by-request-days.md).** The
+> five-sheet book described here is gone: the export is now a report on the work of equipment by
+> request days («Собственная» and «Аренда»). The right, the route, the period picker and the limits
+> of this plan stay; everything about the sheets, the pivot and the fuel columns is history.
+
 Служебная книга Excel по показаниям техники за произвольный период: свод по машинам,
 построчная детализация переданных показаний и готовая сводная таблица. Открыта пока только
 администратору.
