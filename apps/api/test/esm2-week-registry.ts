@@ -465,6 +465,12 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     note: 'служебная книга показаний (ADR 0180): фикстура смены машиниста называет источник `esm2` и номер листа, разреза недели не касается — строки приходят готовыми из подменённой выборки ожидаемых смен',
   },
   {
+    file: 'readings-report-rows.db.test.ts',
+    klass: 'consumer',
+    status: 'done',
+    note: 'readings report rows (ADR 0240): `esm2` inserts one-day sheets (the segment shape of the read switch), one per day of a week and one outside a term; the rows are read by request day and no assertion takes the period for a Monday-to-Sunday week',
+  },
+  {
     file: 'readings-aggregate-parity.db.test.ts',
     klass: 'consumer',
     status: 'done',
