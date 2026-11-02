@@ -41,7 +41,7 @@ const BOOK: MockResponse = {
 };
 
 /** Приметы панелей: по ним видно, какая книга сейчас показана. */
-const readingsPanel = () => screen.queryByText(/Книга Excel по показаниям автотранспорта/u);
+const readingsPanel = () => screen.queryByText(/Книга Excel о работе техники по дням заявок/u);
 const analyticsPanel = () => screen.queryByText(/Книга Excel по работе трёх модулей/u);
 
 function renderExports(permissions: Permission[], role: Role = 'dispatcher'): HttpMock {
