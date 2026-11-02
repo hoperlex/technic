@@ -918,11 +918,14 @@ export const PERMISSION_REQUIRES: Partial<Record<Permission, readonly Permission
    * состав набора инвариант нарушает, а субъект — нет.
    */
   /*
-   * Служебная выгрузка показаний (`docs/readings-admin-export-plan.md`, Р2). Требование ровно то
-   * же, что у соседей ниже: набор с одной выгрузкой, выданный человеку без чтения показаний, дал
-   * бы книгу по всему парку тому, кому ни одна строка этих данных не показана ни на одном экране.
+   * The readings report of «Администрирование → Выгрузки» (ADR 0240, changing ADR 0180). Its rows
+   * are vehicle requests by day: request number, customer, approver, cargo, object and route. So
+   * it requires reading both modules it carries: a grant with the export alone would hand the
+   * whole fleet's readings, and every request of the period, to someone shown none of them on any
+   * screen. The route also refuses a principal with a narrow area (`assertWholeOrganizationScope`):
+   * the report is company-wide by construction, and cutting it by area is not what it is for.
    */
-  'vehicleReadings.export': ['vehicleReadings.read'],
+  'vehicleReadings.export': ['vehicleReadings.read', 'vehicleRequests.read'],
   /*
    * У `analytics.export` требований нет, и его отсутствие здесь — решение, а не упущение (план,
    * Р2): книга сводит три модуля, требование читать все три закрыло бы её целевому держателю, а
@@ -945,18 +948,18 @@ export const PERMISSION_REQUIRES: Partial<Record<Permission, readonly Permission
   // которой не может подобрать карточку для привязки (Р30).
   'officeEquipment.telemetry': ['officeEquipment.read'],
   /*
-   * Сообщение о технике, которой нет в справочнике (план кандидатов, Р8), — единственная строка
-   * таблицы с ДВУМЯ требованиями, и оба не формальность.
+   * Reporting equipment missing from the directory (candidates plan, Р8): a row with TWO
+   * requirements (like `vehicleReadings.export` above), and neither is a formality.
    *
-   * `serviceRequests.create`: кандидат не существует отдельно от заявки — он объясняет, почему
-   * заявка заведена без предмета, и приезжает тем же `POST /service-requests`. Право без заведения
-   * обещало бы то, чего сервер не пустит, — ровно ошибка, на которой споткнулась первая редакция
-   * плана закупок.
+   * `serviceRequests.create`: a candidate does not exist apart from a request — it explains why the
+   * request has no subject and arrives with the same `POST /service-requests`. The right without
+   * creating would promise what the server refuses, the very mistake the first edition of the
+   * purchasing plan made.
    *
-   * `officeEquipment.read`: «не нашёл в справочнике» — утверждение того, кто мог искать. Без
-   * чтения парка человек не видит ни селектора техники, ни типов, и собранный администратором
-   * набор открыл бы вход, который по построению производит дубли: сообщать об отсутствии стал бы
-   * тот, кому наличие не показывают.
+   * `officeEquipment.read`: «not found in the directory» is a claim of someone who could search.
+   * Without reading the fleet a person sees neither the equipment picker nor the types, and a grant
+   * assembled by an administrator would open an entrance producing duplicates by construction:
+   * absence would be reported by someone not shown what exists.
    */
   'officeEquipment.propose': ['serviceRequests.create', 'officeEquipment.read'],
   /*

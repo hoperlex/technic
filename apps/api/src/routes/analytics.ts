@@ -3,13 +3,10 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import {
   analyticsExportQuerySchema,
   analyticsSummaryQuerySchema,
-  roleScopeAxis,
-  roleScopeAxisLabels,
   type AnalyticsSummaryDto,
 } from '@technic/contracts';
 import { requirePrincipal } from '../auth/plugin';
-import type { Principal } from '../auth/principal';
-import { err } from '../lib/errors';
+import { assertWholeOrganizationScope } from '../lib/access';
 import { buildAnalyticsExport } from '../services/analytics-export';
 import { assertAnalyticsQuery, buildAnalyticsSummary } from '../services/analytics/summary';
 
@@ -29,27 +26,6 @@ import { assertAnalyticsQuery, buildAnalyticsSummary } from '../services/analyti
  */
 
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-
-/**
- * ОБЛАСТЬ СВОДА — ВСЯ ОРГАНИЗАЦИЯ, И ЭТО ПРОВЕРЯЕТСЯ ЯВНО (Р3).
- *
- * Обладателю права с ограниченной областью отвечаем отказом, а не усечённым сводом. Молчаливое
- * усечение здесь опаснее отказа: свод, в котором часть площадок невидима, несравним сам с собой
- * между двумя людьми — два человека выгрузили один период, получили разные итоги и ни в одном
- * файле не написано, почему. Отказ словами оставляет разговор с администратором, усечение —
- * расхождение, которое обнаружат через квартал.
- *
- * Спрашивается ось роли (`roleScopeAxis`), а не список объектов: объектная область — не
- * единственная узкая. У роли от контрагента и у кабинета работника область тоже уже организации, и
- * перечисление осей по одной здесь означало бы забыть очередную при её появлении.
- */
-function assertWholeOrganizationScope(p: Principal): void {
-  const axis = roleScopeAxis(p.role);
-  if (axis === 'none') return;
-  throw err.forbidden(
-    `Выгрузка сводит все площадки; у вашей учётки область ограничена (${roleScopeAxisLabels[axis]})`,
-  );
-}
 
 export default async function analyticsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();

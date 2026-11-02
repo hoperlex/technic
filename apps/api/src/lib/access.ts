@@ -37,6 +37,7 @@ import {
   requestStatusLabels,
   roleLabels,
   roleScopeAxis,
+  roleScopeAxisLabels,
   type ServiceExecutorsRow,
   OFFICE_EQUIPMENT_OPERATOR_GRANT,
   serviceRequestStatusLabels,
@@ -80,6 +81,26 @@ const NEVER_MATCH = '00000000-0000-0000-0000-000000000000';
 /** Право, проверяемое внутри обработчика (когда оно зависит от тела запроса или от записи). */
 export function assertCan(p: Principal, permission: Permission, message?: string): void {
   if (!can(p, permission)) throw err.forbidden(message);
+}
+
+/**
+ * A company-wide export refuses a principal whose area is narrower than the organization, instead
+ * of building a cut-down book (analytics, `docs/analytics-summary-export-plan.md`, Р3; the readings
+ * report, ADR 0240). A silent cut is worse than a refusal: a book missing part of the sites cannot
+ * be compared with itself between two people — two exports of one period give different totals,
+ * and nothing in either file says why. A refusal in words leaves a conversation with the
+ * administrator; a cut leaves a discrepancy found a quarter later.
+ *
+ * The role axis (`roleScopeAxis`) is asked, not the list of objects: the object axis is not the
+ * only narrow one. A counterparty role and a worker's cabinet are narrower than the organization
+ * too, and listing axes one by one here would forget the next axis when it appears.
+ */
+export function assertWholeOrganizationScope(p: Principal): void {
+  const axis = roleScopeAxis(p.role);
+  if (axis === 'none') return;
+  throw err.forbidden(
+    `Выгрузка сводит все площадки; у вашей учётки область ограничена (${roleScopeAxisLabels[axis]})`,
+  );
 }
 
 /**

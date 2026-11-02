@@ -2116,13 +2116,15 @@ export const ACCESS_MANIFEST = {
     allOf: ['vehicleReadings.read'],
   },
   /**
-   * Служебная книга администрирования (`docs/readings-admin-export-plan.md`, Р2). Право своё, и
-   * это не задвоение выгрузки: соседняя ручка отдаёт то, что открыто на экране гаража, а эта —
-   * весь парк за произвольный период вместе с ФИО водителей, то есть выносит данные наружу.
+   * The readings report of the administration (ADR 0240). Its own right, not a duplicate of the
+   * export above: that one gives what is open on the garage screen, this one the whole fleet by
+   * request days for an arbitrary period, with names — it takes data out. Request reading is part
+   * of the condition because the rows are requests; the handler then refuses a narrow area
+   * (`assertWholeOrganizationScope`), which no permission expresses.
    */
   'GET /api/v1/vehicle-readings/admin-export': {
     kind: 'permissions',
-    allOf: ['vehicleReadings.export'],
+    allOf: ['vehicleReadings.export', 'vehicleRequests.read'],
   },
   'POST /api/v1/vehicle-readings/items/:id/rebase': {
     kind: 'permissions',

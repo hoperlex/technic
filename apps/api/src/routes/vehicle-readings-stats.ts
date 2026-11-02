@@ -14,6 +14,7 @@ import {
   type VehicleReadingStatsRow,
 } from '@technic/contracts';
 import { requirePrincipal } from '../auth/plugin';
+import { assertWholeOrganizationScope } from '../lib/access';
 import { err } from '../lib/errors';
 import { loadFleetStats, loadVehicleCard } from '../services/readings-aggregate';
 import { buildAdminReadingsExport } from '../services/readings-admin-export';
@@ -227,14 +228,21 @@ export default async function vehicleReadingsStatsRoutes(app: FastifyInstance): 
   r.get(
     '/admin-export',
     {
-      preHandler: [app.authenticate, app.requirePermission('vehicleReadings.export')],
+      preHandler: [
+        app.authenticate,
+        app.requirePermission('vehicleReadings.export'),
+        // Rows are requests by day (ADR 0240): a grant issued before the requirement existed must
+        // not carry a holder past it, so the route asks for request reading itself.
+        app.requirePermission('vehicleRequests.read'),
+      ],
       schema: { querystring: readingStatsQuerySchema },
     },
     async (req, reply) => {
+      const principal = requirePrincipal(req);
+      assertWholeOrganizationScope(principal);
       const { from, to } = req.query;
       checkPeriod(from, to);
 
-      const principal = requirePrincipal(req);
       const book = await buildAdminReadingsExport({
         from,
         to,

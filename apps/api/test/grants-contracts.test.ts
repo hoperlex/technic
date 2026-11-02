@@ -404,6 +404,34 @@ describe('требования прав друг к другу', () => {
   });
 
   /**
+   * The readings report (ADR 0240) is rows of vehicle requests by day, so its right requires
+   * reading both modules it carries. With the readings requirement alone, a grant holding the
+   * export would hand every request of the period — customer, approver, cargo, route — to someone
+   * who sees none of them on any screen.
+   */
+  it('the readings report requires reading readings and vehicle requests', () => {
+    expect(PERMISSION_REQUIRES['vehicleReadings.export']).toEqual([
+      'vehicleReadings.read',
+      'vehicleRequests.read',
+    ]);
+    const missing = (permissions: Permission[]) =>
+      validateGrantAssignment({
+        permissions: ['vehicleReadings.export'],
+        roles: ['dispatcher'],
+        subjectRole: 'dispatcher',
+        subjectPermissionsAfter: permissions,
+      })
+        .filter((violation) => violation.code === 'requirement_missing')
+        .map((violation) => violation.requires);
+    expect(missing(['vehicleReadings.export', 'vehicleReadings.read'])).toEqual([
+      'vehicleRequests.read',
+    ]);
+    expect(
+      missing(['vehicleReadings.export', 'vehicleReadings.read', 'vehicleRequests.read']),
+    ).toEqual([]);
+  });
+
+  /**
    * Страж поставки: **ни одна должность из коробки не держит права без его требования.** Таблица
    * живёт в `grants.ts`, матрица прав — в `permissions.ts`, и расходятся они молча: строка здесь
    * запрещает не гипотетический набор, а всякий итог, в котором право есть, а требуемого нет, — то

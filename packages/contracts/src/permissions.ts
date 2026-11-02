@@ -629,16 +629,17 @@ export const PERMISSIONS = [
   'vehicleReadings.write',
 
   /**
-   * Служебная выгрузка показаний книгой Excel (`docs/readings-admin-export-plan.md`, Р2).
+   * The readings report as an Excel book: work of equipment by request days (ADR 0240, which
+   * replaced the five-sheet book of ADR 0180).
    *
-   * Право отдельное, а не часть `vehicleReadings.read`, и ни в один ролевой набор не входит:
-   * книга сводит весь парк за произвольный период вместе с ФИО водителей и уходит письмом, то
-   * есть это не «смотреть показания», а выносить их наружу — тем же рассуждением заведён
-   * `directories.export`. Администратор получает его по построению (`admin: [...PERMISSIONS]`);
-   * понадобится главному механику — выдадут полномочием, без выката.
+   * A separate right, not part of `vehicleReadings.read`, and in no role set: the book covers the
+   * whole fleet and every vehicle request of an arbitrary period, with drivers' and customers'
+   * names, and leaves by mail — it is taking data out, not looking at it, the same reasoning as
+   * `directories.export`. The administrator has it by construction (`admin: [...PERMISSIONS]`);
+   * the chief mechanic gets it by a grant, without a release.
    *
-   * Требует `vehicleReadings.read` (`PERMISSION_REQUIRES`): выгружать то, чего не видишь ни на
-   * одном экране портала, нельзя.
+   * Requires `vehicleReadings.read` and `vehicleRequests.read` (`PERMISSION_REQUIRES`): exporting
+   * what one sees on no screen is not allowed. The route also refuses a narrow area.
    */
   'vehicleReadings.export',
 

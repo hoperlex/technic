@@ -268,8 +268,8 @@ const ASSIGN_OPERATOR_REFUSAL = 'Оператора назначает дисп�
  */
 const INITIAL_STOCK_REFUSAL = 'Заведите позицию с нулевым остатком';
 /**
- * Неизменная часть отказа сводной аналитики (`assertWholeOrganizationScope`, план
- * `docs/analytics-summary-export-plan.md`, Р3): «Выгрузка сводит все площадки; у вашей учётки
+ * Неизменная часть отказа сводной аналитики и книги показаний (`assertWholeOrganizationScope`, план
+ * `docs/analytics-summary-export-plan.md`, Р3; ADR 0240): «Выгрузка сводит все площадки; у вашей учётки
  * область ограничена (<ось>)». Правило живёт в обработчике и правом маршрута не выражается вовсе —
  * область у ручки не сужается, а запрещается, — а роль перебора (`driver`) стоит на своей оси, то
  * есть под этот отказ попадает при любом наборе прав. Без строки здесь положительный случай
@@ -1341,7 +1341,12 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'GET /api/v1/vehicle-readings/export': {
     query: `kind=fleetSummary&from=${PAST_DATE}&to=${PAST_DATE}`,
   },
-  'GET /api/v1/vehicle-readings/admin-export': { query: `from=${PAST_DATE}&to=${PAST_DATE}` },
+  // The readings report refuses a narrow area in the handler (ADR 0240), and the sweep's role
+  // (`driver`) stands on the person axis — the same case as the analytics routes below.
+  'GET /api/v1/vehicle-readings/admin-export': {
+    query: `from=${PAST_DATE}&to=${PAST_DATE}`,
+    selfRefusal: WHOLE_ORGANIZATION_REFUSAL,
+  },
   'GET /api/v1/vehicle-readings/intake': { query: `from=${PAST_DATE}&to=${PAST_DATE}` },
   'GET /api/v1/vehicle-readings/journal/:vehicleId': {
     query: `from=${PAST_DATE}&to=${PAST_DATE}`,
