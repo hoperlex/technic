@@ -74,6 +74,15 @@ sides ask them. A copy on the other side diverges silently — prohibitions were
 column is written only by old code: a change must survive that window (see `docs/runbook.md` and
 the teardown suite in `apps/api/teardown/`).
 
+**A block people will notice is pushed with its release entry.** The same push carries a migration
+`NNNN_releases_<topic>.sql` that inserts the `app_releases` entry in the user's words
+([ADR 0077](docs/adr/0077-release-notes.md)) and `VERSION` raised to it; right after the push the
+pusher places and pushes the annotated tag `v<version>` on the commit that brought that migration
+([ADR 0191](docs/adr/0191-version-numbering.md), runbook «Тег выпуска»). `pnpm check:version` checks
+that the three agree. Never "with the deploy window": the entry is dated by the day its migration
+runs, so writing it early costs nothing, while postponed entries were forgotten for five blocks in a
+row (ADR 0235–0240, caught up by migrations 0398–0402).
+
 **A comment explains the reason, not the action, and is written in English.** Delete comments that
 retell the code, repeat the function name or no longer match the implementation. A useful comment
 names the invariant on its own, why this path was chosen and what breaks if it is violated, so an AI
