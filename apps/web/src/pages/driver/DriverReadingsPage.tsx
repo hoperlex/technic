@@ -8,7 +8,7 @@ import { errorMessage } from '@shared/lib';
 import { filesApi } from '@entities/file';
 import { useAuth } from '@entities/session';
 import { DayFailure, DayFooter, DayLine, DayNotice, DayRows, OrphanList } from './DriverDayView';
-import { useSubmitCheck } from './DriverSubmitCheck';
+import { confirmSubmitDiscrepancies } from './DriverSubmitCheck';
 import { type TransferMode } from './DriverOrphanBlock';
 import { useDriverDate } from './DriverLayout';
 import { useAssignment, useAutoOpen, useDayState, useEntryOf, useReadGate } from './dayState';
@@ -74,7 +74,7 @@ const NO_DRAFT: DraftView = { items: {}, savedAt: null, legacy: [], attempts: []
 const STORAGE_REFUSED = 'Не хватило места в памяти телефона — ничего не изменено';
 
 export function DriverReadingsPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const { user } = useAuth();
   const { date, today } = useDriverDate();
   const queryClient = useQueryClient();
@@ -87,7 +87,6 @@ export function DriverReadingsPage() {
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const keyboardInset = useKeyboardInset();
-  const confirmDiscrepancies = useSubmitCheck();
   /** Пока `open` или `submit` в полёте, читающие запросы кабинета выключены (Р7). */
   const gate = useReadGate(date);
 
@@ -273,7 +272,11 @@ export function DriverReadingsPage() {
     }
     // The only way past a discrepancy (ADR 0237). Before the attempt is written: a return to the
     // form must leave no pending key behind that a later, corrected body would have to repeat.
-    if (body.discrepancies.length > 0 && !(await confirmDiscrepancies(body.discrepancies))) return;
+    if (
+      body.discrepancies.length > 0 &&
+      !(await confirmSubmitDiscrepancies(modal, body.discrepancies))
+    )
+      return;
 
     /*
      * Ключ идемпотентности принадлежит попытке, а не дню (Р12а). Незавершённая попытка с тем же

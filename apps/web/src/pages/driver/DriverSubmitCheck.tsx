@@ -1,5 +1,5 @@
-import { useCallback } from 'react';
-import { App, Typography } from 'antd';
+import { Typography } from 'antd';
+import type { HookAPI as ModalApi } from 'antd/es/modal/useModal';
 import type { SubmitDiscrepancy } from './readingsSubmit';
 
 /**
@@ -13,46 +13,47 @@ import type { SubmitDiscrepancy } from './readingsSubmit';
  * return button all resolve `false`, and the page then sends nothing and opens no attempt — the
  * driver goes back to the form. The wording is the owner's request for a formal text; it names no
  * fault, because a discrepancy is often true (a counter replaced, the tank topped up from the side).
+ *
+ * A plain function of the page's `modal`, not a hook: the submit handler calls it, and a hook's
+ * result is a value the cache-invalidation scan cannot open — it left the whole submit unresolved.
  */
-export function useSubmitCheck(): (discrepancies: SubmitDiscrepancy[]) => Promise<boolean> {
-  const { modal } = App.useApp();
-  return useCallback(
-    (discrepancies) =>
-      new Promise<boolean>((resolve) => {
-        modal.confirm({
-          title: 'Проверьте данные перед передачей',
-          centered: true,
-          maskClosable: false,
-          okText: 'Подтверждаю, передать',
-          cancelText: 'Вернуться к исправлению',
-          // Large, as the footer's button: a gloved finger needs the target (the theme gives 60 px).
-          okButtonProps: { size: 'large' },
-          cancelButtonProps: { size: 'large' },
-          content: (
-            <div>
-              <Typography.Paragraph>
-                В указанных данных выявлены следующие расхождения:
-              </Typography.Paragraph>
-              <ol style={{ paddingLeft: 20 }}>
-                {discrepancies.flatMap((entry) =>
-                  entry.notes.map((note, index) => (
-                    <li key={`${entry.itemId}:${index}`}>
-                      <Typography.Text strong>{entry.label}</Typography.Text>
-                      {` — ${note}`}
-                    </li>
-                  )),
-                )}
-              </ol>
-              <Typography.Paragraph>
-                Подтверждаете ли вы, что значения сняты с приборов верно? Если допущена ошибка,
-                вернитесь к форме и исправьте её.
-              </Typography.Paragraph>
-            </div>
-          ),
-          onOk: () => resolve(true),
-          onCancel: () => resolve(false),
-        });
-      }),
-    [modal],
-  );
+export function confirmSubmitDiscrepancies(
+  modal: ModalApi,
+  discrepancies: SubmitDiscrepancy[],
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    modal.confirm({
+      title: 'Проверьте данные перед передачей',
+      centered: true,
+      maskClosable: false,
+      okText: 'Подтверждаю, передать',
+      cancelText: 'Вернуться к исправлению',
+      // Large, as the footer's button: a gloved finger needs the target (the theme gives 60 px).
+      okButtonProps: { size: 'large' },
+      cancelButtonProps: { size: 'large' },
+      content: (
+        <div>
+          <Typography.Paragraph>
+            В указанных данных выявлены следующие расхождения:
+          </Typography.Paragraph>
+          <ol style={{ paddingLeft: 20 }}>
+            {discrepancies.flatMap((entry) =>
+              entry.notes.map((note, index) => (
+                <li key={`${entry.itemId}:${index}`}>
+                  <Typography.Text strong>{entry.label}</Typography.Text>
+                  {` — ${note}`}
+                </li>
+              )),
+            )}
+          </ol>
+          <Typography.Paragraph>
+            Подтверждаете ли вы, что значения сняты с приборов верно? Если допущена ошибка,
+            вернитесь к форме и исправьте её.
+          </Typography.Paragraph>
+        </div>
+      ),
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    });
+  });
 }
