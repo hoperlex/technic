@@ -71,8 +71,10 @@ import {
   type WaybillWarningCode,
 } from './waybill-task-rows';
 import {
+  CARGO_NAME_MESSAGE,
   requestTripSchema,
   requestTripsSchema,
+  storedCargoNameSchema,
   type VehicleRequestTripDto,
 } from './vehicle-request-trips';
 import type { Esm2Period, WaybillFormCode } from './waybills';
@@ -544,24 +546,25 @@ function verifiedAddressIssue(meta: AddressMeta | null): string | null {
 }
 
 /**
- * Ездка в теле правки заявки: та же строка, что при заведении, плюс `id` и послабления Р2а.
+ * A trip in the request edit body: the same row as at creation, plus `id` and the R2a exemptions.
  *
- * Расширением `requestTripSchema`, а не своей записью полей: границы длин, точность количества и
- * рабочее окно своего времени обязаны совпадать с заведением значение в значение — разъедься они,
- * и одна и та же ездка проходила бы форму заведения и не проходила форму правки.
+ * An extension of `requestTripSchema`, not its own field list: length limits, quantity precision
+ * and the trip's work window must match creation value for value — if they diverged, one trip would
+ * pass the creation form and fail the edit form.
  *
- * Послабления ровно три, и все — про то, чего бэкфил принести не мог (§5.7):
+ * The exemptions are four, all about what a backfill or an older schema could not bring (§5.7):
  *
- *   - метаданные адреса допускают `manual` и `null` (у заявок старше ADR 0006 их нет вовсе);
- *   - имя ответственного допускает пустоту (у заявок старше миграции `0062` контакта нет);
- *   - телефон допускает несводимое легаси-значение (ADR 0066 п. 7).
+ *   - address metadata allows `manual` and `null` (requests older than ADR 0006 have none);
+ *   - the responsible name may be empty (requests older than migration `0062` have no contact);
+ *   - the phone may be an irreducible legacy value (ADR 0066 item 7);
+ *   - "what we carry" may be empty or absent (trips older than migration `0397`, ADR 0239).
  *
- * Строки адресов (`fromLocation`, `toLocation`) остаются непустыми, как и были: пустых в базе нет —
- * их не пускали CHECK `freight_loading_not_blank_check` и его пара, — и послаблять тут нечего.
+ * Address strings (`fromLocation`, `toLocation`) stay non-empty as before: the database has no
+ * empty ones — CHECK `freight_loading_not_blank_check` and its pair never let them in.
  *
- * Пара «строка + метаданные» держится самой формой схемы: оба поля обязательны в строке, и
- * отдельная сверка «переданы вместе» (та, что стояла у `updateVehicleRequestSchema`) больше не
- * нужна — она сторожила необязательные поля, которых здесь не осталось.
+ * The "string + metadata" pair is held by the schema shape itself: both fields are required in the
+ * row, so the separate "sent together" check once on `updateVehicleRequestSchema` is gone — it
+ * guarded optional fields that no longer exist here.
  */
 export const updateRequestTripSchema = requestTripSchema
   .extend({
@@ -573,6 +576,12 @@ export const updateRequestTripSchema = requestTripSchema
     id: uuidSchema.optional(),
     fromAddress: addressMetaSchema.nullable(),
     toAddress: addressMetaSchema.nullable(),
+    /**
+     * Unlike the other fields, an existing row may omit it: a tab opened before ADR 0239 rewrites
+     * its trips without the key, and the server keeps the stored value instead of erasing it. An
+     * empty value is the legacy state; whether it may be written decides the server (R2a).
+     */
+    cargoName: storedCargoNameSchema.optional(),
     fromResponsibleName: storedContactNameSchema,
     fromResponsiblePhone: storedContactPhoneSchema,
     toResponsibleName: storedContactNameSchema,
@@ -585,6 +594,7 @@ export const updateRequestTripSchema = requestTripSchema
     // «добавили ездку в старую заявку» стало бы дырой, через которую непроверенный адрес и пустой
     // контакт возвращаются в базу спустя релиз после того, как их оттуда убрали.
     const issues: [string, string | null][] = [
+      ['cargoName', trip.cargoName ? null : CARGO_NAME_MESSAGE],
       ['fromAddress', verifiedAddressIssue(trip.fromAddress)],
       ['toAddress', verifiedAddressIssue(trip.toAddress)],
       ['fromResponsibleName', contactIssue(trip.fromResponsibleName, 'name')],
@@ -3098,6 +3108,7 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   // они про состав заявки, и по форме это те же события-списки, что `filesAdded`/`filesRemoved`.
   'trip.from': 'Место погрузки ездки',
   'trip.to': 'Место разгрузки ездки',
+  'trip.cargoName': 'Что везём в ездке',
   // Объём и масса разными ключами, как и у заявки: это разные единицы, а не разные значения одной.
   'trip.volume': 'Объём ездки',
   'trip.weight': 'Масса ездки',

@@ -33,8 +33,9 @@ import {
   type AssignmentPreviewDto,
   type AssignVehicleInput,
   can,
-  // Контакт ездки: жёсткая модель спрашивается за **изменившееся** значение (Р2а), и спрашивается
-  // теми же схемами, что при заведении, — иначе форма и правка разошлись бы в границах полей.
+  // A trip's contact and cargo name: the strict model applies to a **changed** value (R2a), with
+  // the same schemas as at creation — otherwise the form and the edit would diverge in limits.
+  cargoNameSchema,
   contactNameSchema,
   contactPhoneSchema,
   // Объект затрат (Р25): одна функция на портал и сервер вместо двух десятков мест, разбирающих
@@ -1312,6 +1313,7 @@ async function tripsByRequests(
       toLocation: vehicleRequestTrips.toLocation,
       fromAddress: vehicleRequestTrips.fromAddress,
       toAddress: vehicleRequestTrips.toAddress,
+      cargoName: vehicleRequestTrips.cargoName,
       volumeM3: vehicleRequestTrips.volumeM3,
       weightTons: vehicleRequestTrips.weightTons,
       fromResponsibleName: vehicleRequestTrips.fromResponsibleName,
@@ -1354,6 +1356,7 @@ async function tripsByRequests(
       toLocation: row.toLocation,
       fromAddress: row.fromAddress,
       toAddress: row.toAddress,
+      cargoName: row.cargoName,
       volumeM3: toNum(row.volumeM3),
       weightTons: toNum(row.weightTons),
       fromResponsibleName: row.fromResponsibleName,
@@ -2137,14 +2140,15 @@ function assertAddressWritable(
 }
 
 /**
- * То же для контакта (Р2а): пустое имя и несводимый телефон принимаются, пока их не трогают, —
- * у заявок старше миграции `0062` контакта нет вовсе, а телефон бывает легаси-строкой (ADR 0066).
- * Изменённое значение проверяется той же схемой, что при заведении.
+ * The same for a contact and for "what we carry" (R2a): an empty name, an irreducible phone and an
+ * empty cargo name pass while untouched — requests older than migration `0062` have no contact,
+ * a phone may be a legacy string (ADR 0066), and trips older than migration `0397` name no cargo
+ * (ADR 0239). A changed value is checked by the same schema as at creation.
  */
-function assertContactWritable(
+function assertTextWritable(
   next: string,
   prev: string | null,
-  schema: typeof contactNameSchema | typeof contactPhoneSchema,
+  schema: typeof contactNameSchema | typeof contactPhoneSchema | typeof cargoNameSchema,
   at: { field: string; trip: string },
 ): void {
   if (prev !== null && prev === next) return;
@@ -2162,6 +2166,7 @@ const storedTripColumns = {
   toLocation: vehicleRequestTrips.toLocation,
   fromAddress: vehicleRequestTrips.fromAddress,
   toAddress: vehicleRequestTrips.toAddress,
+  cargoName: vehicleRequestTrips.cargoName,
   volumeM3: vehicleRequestTrips.volumeM3,
   weightTons: vehicleRequestTrips.weightTons,
   fromResponsibleName: vehicleRequestTrips.fromResponsibleName,
@@ -2192,13 +2197,22 @@ async function lockRequestTrips(tx: Tx, requestId: string) {
 
 type StoredTrip = Awaited<ReturnType<typeof lockRequestTrips>>[number];
 
-/** Присланная ездка так, как она ляжет в базу; `num` у новой назначает запись. */
-function tripValues(t: UpdateRequestTripInput): Omit<StoredTrip, 'id' | 'num' | 'deletedAt'> {
+/**
+ * The sent trip as it will be stored; a new trip's `num` is assigned by the insert.
+ *
+ * A missing `cargoName` on an existing row keeps the stored value: only a tab opened before
+ * ADR 0239 omits it, and reading the absence as "cleared" would erase it on every edit there.
+ */
+function tripValues(
+  t: UpdateRequestTripInput,
+  prev: StoredTrip | null,
+): Omit<StoredTrip, 'id' | 'num' | 'deletedAt'> {
   return {
     fromLocation: t.fromLocation,
     toLocation: t.toLocation,
     fromAddress: t.fromAddress ?? null,
     toAddress: t.toAddress ?? null,
+    cargoName: t.cargoName ?? prev?.cargoName ?? '',
     volumeM3: numToDb(t.volumeM3),
     weightTons: numToDb(t.weightTons),
     fromResponsibleName: t.fromResponsibleName,
@@ -2210,15 +2224,19 @@ function tripValues(t: UpdateRequestTripInput): Omit<StoredTrip, 'id' | 'num' | 
   };
 }
 
-/** Ездка изменилась: значение к значению, теми же полями, которыми она и пишется. */
-function tripChanged(next: ReturnType<typeof tripValues>, prev: StoredTrip): boolean {
+/**
+ * The trip changed in what the waybill task is built from (R18): addresses, quantity, contacts,
+ * time and note. `cargoName` is not among them — the waybill does not print it (ADR 0239), so its
+ * edit neither bumps the route version nor meets the frozen-route refusal.
+ */
+function tripDocumentChanged(next: ReturnType<typeof tripValues>, prev: StoredTrip): boolean {
   return (
     next.fromLocation !== prev.fromLocation ||
     next.toLocation !== prev.toLocation ||
     !sameAddressMeta(next.fromAddress, prev.fromAddress) ||
     !sameAddressMeta(next.toAddress, prev.toAddress) ||
-    // Количество сравнивается числами, а не строками numeric: «12» и «12.000» — одно и то же
-    // значение, и записанное обратно оно не должно читаться как правка.
+    // Quantities compare as numbers, not numeric strings: "12" and "12.000" are one value, and
+    // writing it back must not read as an edit.
     toNum(next.volumeM3) !== toNum(prev.volumeM3) ||
     toNum(next.weightTons) !== toNum(prev.weightTons) ||
     next.fromResponsibleName !== prev.fromResponsibleName ||
@@ -2249,8 +2267,9 @@ function tripChanged(next: ReturnType<typeof tripValues>, prev: StoredTrip): boo
  * 5. записывается изменившееся: новые строки получают следующие свободные номера, пропавшие из
  *    списка — `deleted_at`.
  *
- * Возвращает признак «состав или значения ездок изменились»: им правка решает, поднимать ли
- * версию маршрута (Р18) — задание листа собрано ровно из этих полей.
+ * Returns whether the composition or the printed values of the trips changed: by it the edit
+ * decides whether to bump the route version (R18), since the waybill task is built from exactly
+ * these fields. "What we carry" is written but does not count — the waybill does not print it.
  */
 async function applyRequestTrips(
   tx: Tx,
@@ -2306,6 +2325,12 @@ async function applyRequestTrips(
 
   for (const { input, index, label, prev } of pairs) {
     const at = (field: string) => ({ field: tripField(index, field), trip: label });
+    assertTextWritable(
+      input.cargoName ?? prev?.cargoName ?? '',
+      prev?.cargoName ?? null,
+      cargoNameSchema,
+      at('cargoName'),
+    );
     assertAddressWritable(
       { location: input.fromLocation, meta: input.fromAddress ?? null },
       prev ? { location: prev.fromLocation, meta: prev.fromAddress } : null,
@@ -2316,25 +2341,25 @@ async function applyRequestTrips(
       prev ? { location: prev.toLocation, meta: prev.toAddress } : null,
       at('toAddress'),
     );
-    assertContactWritable(
+    assertTextWritable(
       input.fromResponsibleName,
       prev?.fromResponsibleName ?? null,
       contactNameSchema,
       at('fromResponsibleName'),
     );
-    assertContactWritable(
+    assertTextWritable(
       input.fromResponsiblePhone,
       prev?.fromResponsiblePhone ?? null,
       contactPhoneSchema,
       at('fromResponsiblePhone'),
     );
-    assertContactWritable(
+    assertTextWritable(
       input.toResponsibleName,
       prev?.toResponsibleName ?? null,
       contactNameSchema,
       at('toResponsibleName'),
     );
-    assertContactWritable(
+    assertTextWritable(
       input.toResponsiblePhone,
       prev?.toResponsiblePhone ?? null,
       contactPhoneSchema,
@@ -2374,9 +2399,11 @@ async function applyRequestTrips(
   // разное. Счётчик растёт и внутри одной правки: две новые ездки получают два разных номера.
   let maxNum = stored.reduce((max, t) => Math.max(max, t.num), 0);
   for (const { input, index, label, prev } of pairs) {
-    const next = tripValues(input);
-    if (prev && !tripChanged(next, prev)) continue;
-    changed = true;
+    const next = tripValues(input, prev);
+    const documentChanged = !prev || tripDocumentChanged(next, prev);
+    if (!documentChanged && next.cargoName === prev?.cargoName) continue;
+    // A cargo-name-only edit is written but not reported: `changed` speaks for the waybill task.
+    if (documentChanged) changed = true;
     if (
       !prev ||
       next.fromLocation !== prev.fromLocation ||
@@ -3209,15 +3236,15 @@ function editChangesSubstance(
 }
 
 /**
- * Меняют ли ездки суть заявки (ADR 0025): состав, адреса и количество — да, контакты и примечание
- * — нет.
+ * Whether the trips change the substance of the request (ADR 0025): composition, addresses, cargo
+ * and quantity do; contacts and the note do not.
  *
- * Граница та же, что и была у заявки с одной парой адресов, и проведена она по тому же признаку:
- * руководитель строительства визирует, **что и куда везут**, а не то, кто встретит машину на
- * воротах. Уточнённый телефон визу не снимает — иначе исправление опечатки в номере останавливало
- * бы рейс до повторного согласования.
+ * The line is the one drawn for the request with a single address pair, by the same criterion: the
+ * construction manager approves **what is carried and where**, not who meets the vehicle at the
+ * gate. A corrected phone keeps the approval — otherwise fixing a typo in a number would stop the
+ * trip until re-approval. "What we carry" (ADR 0239) is the "what" itself, so its edit resets it.
  *
- * Список не прислан вовсе — ездок не трогали (§7), и суть не менялась.
+ * No list sent at all means the trips were not touched (§7), and the substance did not change.
  */
 function tripsChangeSubstance(
   before: readonly VehicleRequestTripDto[],
@@ -3232,6 +3259,8 @@ function tripsChangeSubstance(
     return (
       t.fromLocation !== prev.fromLocation ||
       t.toLocation !== prev.toLocation ||
+      // An omitted name is kept by the write (`tripValues`), so it changes nothing here either.
+      (t.cargoName !== undefined && t.cargoName !== prev.cargoName) ||
       (t.volumeM3 ?? null) !== prev.volumeM3 ||
       (t.weightTons ?? null) !== prev.weightTons ||
       (t.scheduledAt ? new Date(t.scheduledAt).getTime() : null) !==
@@ -3734,6 +3763,18 @@ function dateFilters(
 }
 
 /**
+ * Search by "what we carry" of the request's live trips (ADR 0239).
+ *
+ * Before the field, cargo was described in the request comment, and the comment is searched — so
+ * moving it onto the trip without this condition would make "sand" stop finding new requests.
+ * The outer table is named explicitly: a bare `"id"` inside the subquery would bind to the trip.
+ */
+function tripCargoSearch(term: string | undefined): SQL | undefined {
+  if (!term) return undefined;
+  return sql`exists (select 1 from ${vehicleRequestTrips} t where t.request_id = ${vehicleRequests}.id and t.deleted_at is null and t.cargo_name ilike ${`%${term}%`})`;
+}
+
+/**
  * Условия журнала закрытых заявок (ADR 0029). Границы видимости те же, что у списка: штаб видит
  * свой объект, архивные заявки — только тот, кому открыт архив. Статус сужается до одного из
  * закрытых; открытая заявка историей ещё не стала, и просить её здесь нечего.
@@ -3769,13 +3810,16 @@ function historyWhere(p: Principal, q: z.infer<typeof vehicleRequestHistoryQuery
     // Обе оси заказчика (Р10а), тем же перечнем, что и в списке: журнал ищут теми же словами,
     // что и работающие заявки, — разойдись эти два места, одна и та же строка находилась бы
     // до закрытия и терялась после.
-    searchCondition(q.search, [
-      vehicleRequests.comment,
-      constructionObjects.name,
-      constructionObjects.code,
-      departments.name,
-      departments.code,
-    ]),
+    or(
+      searchCondition(q.search, [
+        vehicleRequests.comment,
+        constructionObjects.name,
+        constructionObjects.code,
+        departments.name,
+        departments.code,
+      ]),
+      tripCargoSearch(q.search),
+    ),
   )!;
 }
 
@@ -4248,13 +4292,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // Поиск идёт по обеим осям заказчика (ADR 0040, Р10а) — по той же причине, что и порядок:
       // у заявки отдела объекта нет вовсе, и набранное название подразделения не находило бы
       // ничего. Ненаходимость читается как поломка поиска, а не как его граница.
-      searchCondition(q.search, [
-        vehicleRequests.comment,
-        constructionObjects.name,
-        constructionObjects.code,
-        departments.name,
-        departments.code,
-      ]),
+      or(
+        searchCondition(q.search, [
+          vehicleRequests.comment,
+          constructionObjects.name,
+          constructionObjects.code,
+          departments.name,
+          departments.code,
+        ]),
+        tripCargoSearch(q.search),
+      ),
     );
 
   // ── Список (единый по обоим типам; requestType — необязательное сужение) ──

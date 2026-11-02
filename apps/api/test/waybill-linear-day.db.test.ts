@@ -330,6 +330,7 @@ async function freightRequest(): Promise<string> {
           fromAddress: { source: 'object', refId: ctx.objectB.id },
           toAddress: { source: 'object', refId: ctx.objectA.id },
           volumeM3: 12,
+          cargoName: 'Песок',
           fromResponsibleName: LOADING.name,
           fromResponsiblePhone: LOADING.phone,
           toResponsibleName: UNLOADING.name,

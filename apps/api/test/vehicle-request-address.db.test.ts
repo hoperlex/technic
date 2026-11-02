@@ -146,6 +146,7 @@ function freightTrip(): Record<string, unknown> {
     toLocation: OBJECT_ADDRESS,
     toAddress: { source: 'object', refId: ctx.objectId },
     volumeM3: 10,
+    cargoName: 'Песок',
     fromResponsibleName: 'Иванов Иван',
     fromResponsiblePhone: '+79990000001',
     toResponsibleName: 'Петров Пётр',

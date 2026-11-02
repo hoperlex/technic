@@ -170,6 +170,7 @@ function goodTrip(over: TripPayload = {}): TripPayload {
     toLocation: 'г Москва, ул Разгрузочная, д 2',
     fromAddress: VERIFIED,
     toAddress: VERIFIED_2,
+    cargoName: 'Песок',
     volumeM3: 10,
     fromResponsibleName: 'Иванов Иван',
     fromResponsiblePhone: '9990000001',
@@ -193,6 +194,7 @@ function echoTrip(trip: Record<string, unknown>, over: TripPayload = {}): TripPa
     toLocation: trip.toLocation,
     fromAddress: trip.fromAddress,
     toAddress: trip.toAddress,
+    cargoName: trip.cargoName,
     volumeM3: trip.volumeM3,
     weightTons: trip.weightTons,
     fromResponsibleName: trip.fromResponsibleName,
@@ -274,6 +276,7 @@ async function legacyRequest(over: { phone?: string } = {}): Promise<RequestStat
            to_location = ${LEGACY_TO},
            from_address = NULL,
            to_address = NULL,
+           cargo_name = '',
            from_responsible_name = '',
            from_responsible_phone = ${over.phone ?? ''},
            to_responsible_name = '',
@@ -611,6 +614,51 @@ describe.skipIf(!DB_URL)('контакт спрашивается за ново�
 
     expect(res.statusCode, res.body).toBe(422);
     expect(res.json().fields?.['trips.0.toResponsibleName']).toBeTruthy();
+  });
+
+  /**
+   * "What we carry" (ADR 0239, migration 0397) follows the contact rule: a trip older than the
+   * field keeps its empty value through an edit, and a value typed into it is written like any new.
+   */
+  it('пустое «что везём» старой ездки переживает правку, вписанное — записывается', async () => {
+    const request = await legacyRequest();
+    expect(request.trips[0]!.cargoName).toBe('');
+
+    const kept = await patchTrips(request, [echoTrip(request.trips[0]!, { comment: 'Уточнено' })]);
+    expect(kept.statusCode, kept.body).toBe(200);
+    const between = await readRequest(request.id);
+    expect(between.trips[0]!.cargoName).toBe('');
+
+    const filled = await patchTrips(between, [
+      echoTrip(between.trips[0]!, { cargoName: ' Щебень ' }),
+    ]);
+    expect(filled.statusCode, filled.body).toBe(200);
+    expect((await readRequest(request.id)).trips[0]!.cargoName).toBe('Щебень');
+  });
+
+  it('названный груз нельзя стереть', async () => {
+    const request = await createRequest([goodTrip()]);
+
+    const res = await patchTrips(request, [echoTrip(request.trips[0]!, { cargoName: '' })]);
+
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().fields?.['trips.0.cargoName']).toBeTruthy();
+    expect((await readRequest(request.id)).trips[0]!.cargoName).toBe('Песок');
+  });
+
+  /**
+   * A tab opened before ADR 0239 rewrites the trips without the key. Reading the absence as
+   * "cleared" would erase the cargo on every edit made there; the server keeps the stored value.
+   */
+  it('вкладка старше поля не присылает его — сохранённый груз остаётся', async () => {
+    const request = await createRequest([goodTrip()]);
+    const { cargoName: _omitted, ...oldTab } = echoTrip(request.trips[0]!, { comment: 'Уточнено' });
+
+    const res = await patchTrips(request, [oldTab]);
+
+    expect(res.statusCode, res.body).toBe(200);
+    const after = await readRequest(request.id);
+    expect([after.trips[0]!.cargoName, after.trips[0]!.comment]).toEqual(['Песок', 'Уточнено']);
   });
 });
 

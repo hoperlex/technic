@@ -20,6 +20,7 @@ import {
 import { AddressCell } from '@entities/address';
 import { formatDateTimeMaybe } from '@entities/request';
 import { ResponsibleValue } from '@entities/user-account';
+import { requestCargoNames } from '@entities/vehicle-request';
 import { calendarDaysLabel, formatDate, formatDateOnly, formatDateTime } from '@shared/lib';
 import { EntityLink, type ViewField } from '@shared/ui';
 
@@ -115,6 +116,7 @@ export function requestOverviewFields({
   weekly,
   weeklyRequestPath,
 }: OverviewFieldOptions): ViewField[] {
+  const cargo = requestCargoNames(request);
   return [
     {
       key: 'status',
@@ -288,6 +290,7 @@ export function requestOverviewFields({
         ]
       : []),
     // Cargo and addresses exist only for freight: special equipment is ordered for a term.
+    ...(cargo ? [{ key: 'cargo', label: 'Что везём', children: cargo }] : []),
     ...(trips ? [{ key: 'amount', label: 'Объём / масса', children: amountText }] : []),
     /*
      * A single trip is shown as a pair of addresses with contacts, exactly as requests looked

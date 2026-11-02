@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { VehicleClassificationDto, WarehouseDto } from '@technic/contracts';
 import {
+  CARGO_NAME_MESSAGE,
   FREIGHT_VEHICLE_KIND_CODE,
   REQUEST_CUSTOMER_LOCKED_MESSAGE,
   vehicleClassificationKey,
@@ -235,6 +236,13 @@ describe('форма: заказчиком становится подразде
       fireEvent.change(document.querySelector(`#${id}`)!, { target: { value } });
     }
 
+    // "What we carry" is required of every trip (ADR 0239): without it the form stops at the field
+    // and sends nothing.
+    fireEvent.click(screen.getByText('Сохранить'));
+    expect(await screen.findByText(CARGO_NAME_MESSAGE)).toBeTruthy();
+    expect(http.countOf('POST /vehicle-requests/_create-with-receipt')).toBe(0);
+
+    fireEvent.change(document.querySelector('#trips_0_cargoName')!, { target: { value: 'Песок' } });
     fireEvent.click(screen.getByText('Сохранить'));
 
     await waitFor(() =>

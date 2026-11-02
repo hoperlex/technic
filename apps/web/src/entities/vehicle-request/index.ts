@@ -33,6 +33,7 @@ export { canCopyVehicleRequest, vehicleRequestCopyLink } from './model/copyAcces
 export { vehicleRequestErrorMessage } from './model/errorMessage';
 export { vehicleRequestLink, vehicleRequestViewLink } from './model/links';
 export { vehicleRequestTermLabel } from './model/termLabel';
+export { requestCargoNames } from './model/requestCargo';
 export { requestContacts, tripsCountLabel } from './model/requestContacts';
 export type { RequestContact } from './model/requestContacts';
 export { VehicleRequestAssignmentCell, VehicleRequestEarlyEndTag } from './ui/requestCells';

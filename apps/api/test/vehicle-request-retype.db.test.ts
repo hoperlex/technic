@@ -166,6 +166,7 @@ function freightPayload(over: Record<string, unknown> = {}): Record<string, unkn
         fromAddress: RESOLVED_ADDRESS,
         toAddress: RESOLVED_ADDRESS,
         volumeM3: 12,
+        cargoName: 'Песок',
         fromResponsibleName: 'Сидоров Сидор Сидорович',
         fromResponsiblePhone: '+79990000002',
         toResponsibleName: 'Кузнецов Кузьма Кузьмич',

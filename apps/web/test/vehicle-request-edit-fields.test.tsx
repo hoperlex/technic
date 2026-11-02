@@ -104,6 +104,7 @@ const FREIGHT = {
       toLocation: 'Химки, ул. Победы, 10',
       fromAddress: { source: 'resolved', fiasId: 'a', fiasLevel: 8, geoLat: 55, geoLon: 37 },
       toAddress: { source: 'resolved', fiasId: 'b', fiasLevel: 8, geoLat: 55, geoLon: 37 },
+      cargoName: 'Плиты перекрытия',
       volumeM3: null,
       weightTons: 14,
       fromResponsibleName: 'Сидоров С. С.',

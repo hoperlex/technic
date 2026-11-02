@@ -15,6 +15,7 @@ const VEHICLE_REQUEST_ERROR_LABELS: Record<string, string> = {
   workStartTime: 'Начало работы',
   workEndTime: 'Окончание работы',
   trips: 'Ездки',
+  cargoName: 'Что везём',
   loadingLocation: 'Адрес погрузки',
   unloadingLocation: 'Адрес разгрузки',
   volumeM3: 'Объём',

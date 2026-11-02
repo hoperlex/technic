@@ -21,7 +21,7 @@ import {
 } from '@technic/contracts';
 import { FilesCell } from '@entities/file';
 import { requestCustomerLabel } from '@technic/contracts';
-import { vehicleRequestTermLabel } from '@entities/vehicle-request';
+import { requestCargoNames, vehicleRequestTermLabel } from '@entities/vehicle-request';
 import { WeeklyStatusTag, weeklyCountsText } from '@entities/weekly-request';
 import { formatDateTime } from '@shared/lib';
 import { EntityLink, type ActionSheetItem, type CardConfig } from '@shared/ui';
@@ -57,6 +57,10 @@ export function vehicleRequestFeedCard({
         typeName: request.vehicleTypeName,
         categoryName: request.vehicleCategoryName,
       })} · ${vehicleRequestTypeLabels[request.requestType]}`,
+    (request) => {
+      const cargo = requestCargoNames(request);
+      return cargo ? `Что везём: ${cargo}` : null;
+    },
     (request) => `Срок: ${vehicleRequestTermLabel(request)}`,
     (request) =>
       request.assignment

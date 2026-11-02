@@ -188,6 +188,7 @@ export function freightTrip(overrides: Partial<VehicleRequestTripDto> = {}): Veh
     toLocation: 'г. Москва, ул. Северная, 1',
     fromAddress: null,
     toAddress: null,
+    cargoName: 'Песок',
     volumeM3: 12,
     weightTons: null,
     fromResponsibleName: 'Сидоров С. С.',

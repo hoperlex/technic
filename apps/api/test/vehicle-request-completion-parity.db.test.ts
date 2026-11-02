@@ -312,6 +312,7 @@ async function freightInWork(): Promise<RequestDto> {
           fromAddress: { source: 'object', refId: ctx.objectId },
           toAddress: { source: 'object', refId: ctx.objectId },
           volumeM3: 12,
+          cargoName: 'Песок',
           fromResponsibleName: SITE.name,
           fromResponsiblePhone: SITE.phone,
           toResponsibleName: SITE.name,

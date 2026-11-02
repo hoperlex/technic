@@ -106,6 +106,7 @@ const freight = {
       fromAddress: resolvedMeta,
       toAddress: resolvedMeta,
       volumeM3: 12.5,
+      cargoName: 'Песок',
       fromResponsibleName: 'Сидоров С. С.',
       fromResponsiblePhone: '+7 926 000-00-02',
       toResponsibleName: 'Кузнецов К. К.',
@@ -1173,6 +1174,34 @@ describe('vehicle-requests: адрес (DaData, ADR 0006 — жёсткая мо
       ],
     });
     expect(legacy.requestType).toBe('freight_transport');
+  });
+
+  /**
+   * "What we carry" (ADR 0239) in an edit: a new row must name it; an existing row may send it
+   * empty (a trip older than the field) or omit it (a tab older than the field) — what an empty or
+   * omitted value means against the stored one decides the server.
+   */
+  it('update: что везём обязательно у новой ездки, у существующей — послабление', () => {
+    const base = { requestType: 'freight_transport' as const, version: 1 };
+    const { cargoName: _c, ...tripNoCargo } = freight.trips[0];
+    const fresh = updateVehicleRequestSchema.safeParse({ ...base, trips: [tripNoCargo] });
+    expect(fresh.success).toBe(false);
+    expect(fresh.error?.issues[0]?.path).toEqual(['trips', 0, 'cargoName']);
+    expect(
+      updateVehicleRequestSchema.safeParse({ ...base, trips: [{ ...tripNoCargo, cargoName: ' ' }] })
+        .success,
+    ).toBe(false);
+
+    const id = '11111111-2222-4333-8444-555555555555';
+    const omitted = updateVehicleRequestSchema.parse({ ...base, trips: [{ ...tripNoCargo, id }] });
+    if (omitted.requestType !== 'freight_transport') throw new Error('unreachable');
+    expect(omitted.trips?.[0]?.cargoName).toBeUndefined();
+    const legacy = updateVehicleRequestSchema.parse({
+      ...base,
+      trips: [{ ...tripNoCargo, id, cargoName: '' }],
+    });
+    if (legacy.requestType !== 'freight_transport') throw new Error('unreachable');
+    expect(legacy.trips?.[0]?.cargoName).toBe('');
   });
 
   it('addressMeta strict: лишние поля отклоняются', () => {

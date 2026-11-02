@@ -65,6 +65,7 @@ const FREIGHT: FreightTransportRequestDto = {
       toAddress: { source: 'resolved', fiasId: 'a2' },
       volumeM3: 20,
       weightTons: null,
+      cargoName: 'Песок',
       fromResponsibleName: 'Сидоров С. С.',
       fromResponsiblePhone: '+7 926 000-00-02',
       toResponsibleName: 'Кузнецов К. К.',
@@ -209,6 +210,19 @@ describe('дифф правки заявки на технику', () => {
     expect(fields).not.toContain('unloadingLocation');
   });
 
+  // ADR 0239: what the trip carries is the "what" the approval is given for, so its edit is a
+  // history line of its own; a trip older than the field reads as a dash, not an empty string.
+  it('что везём в ездке — своей строкой, пустое у старой ездки — прочерком', () => {
+    const changes = diffVehicleRequests(FREIGHT, freightWithTrip({ cargoName: 'Щебень' }));
+    expect(changes).toEqual([{ field: 'trip.cargoName', from: '1 · Песок', to: '1 · Щебень' }]);
+
+    const filled = diffVehicleRequests(
+      freightWithTrip({ cargoName: '' }),
+      freightWithTrip({ cargoName: 'Щебень' }),
+    );
+    expect(filled).toEqual([{ field: 'trip.cargoName', from: '1 · —', to: '1 · Щебень' }]);
+  });
+
   it('длинный комментарий обрезается', () => {
     const change = diffVehicleRequests(SPECIAL, { ...SPECIAL, comment: 'а'.repeat(400) }).find(
       (c) => c.field === 'comment',
@@ -262,6 +276,7 @@ describe('дифф переоформления заявки', () => {
     expect(added?.to).toContain('1 · ');
     expect(added?.to).toContain('г Москва, ул Тверская, д 1');
     expect(added?.to).toContain('20 м³');
+    expect(added?.to).toContain('Песок');
     expect(changes.some((c) => c.field === 'vehicleType')).toBe(false);
   });
 

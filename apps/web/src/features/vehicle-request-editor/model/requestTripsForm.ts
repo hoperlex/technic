@@ -39,6 +39,8 @@ export interface TripFormValue {
    */
   fromAddress?: AddressMeta | null;
   toAddress?: AddressMeta | null;
+  /** What the trip carries (ADR 0239); empty in a persisted row only for a trip older than it. */
+  cargoName?: string;
   fromResponsibleName?: string;
   fromResponsiblePhone?: string;
   toResponsibleName?: string;
@@ -78,6 +80,7 @@ export function tripToForm(t: VehicleRequestTripDto): TripFormValue {
     toLocation: t.toLocation,
     fromAddress: t.fromAddress,
     toAddress: t.toAddress,
+    cargoName: t.cargoName,
     fromResponsibleName: t.fromResponsibleName,
     fromResponsiblePhone: t.fromResponsiblePhone,
     toResponsibleName: t.toResponsibleName,
@@ -127,7 +130,7 @@ export function copyTrip(t: VehicleRequestTripDto): TripFormValue {
 /**
  * Repeat a row ("repeat N times", §4.1): "six times from the quarry to the site" is entered once.
  *
- * Addresses with metadata, contacts, quantities, and the note are preserved. Two values are
+ * Addresses with metadata, contacts, cargo, quantities, and the note are preserved. Two values are
  * deliberately reset:
  *
  * - the `id` — every repeated row is a new trip numbered by the server (R13a); six rows sharing one
@@ -170,6 +173,9 @@ function tripCommonFields(v: TripFormValue, requestDay: string) {
   return {
     fromLocation: v.fromLocation!,
     toLocation: v.toLocation!,
+    // Always sent, even empty: an omitted key is how the server recognizes a tab older than
+    // ADR 0239 and keeps the stored value, while an empty legacy value comes back unchanged (R2a).
+    cargoName: v.cargoName ?? '',
     volumeM3: v.volumeM3 ?? null,
     weightTons: v.weightTons ?? null,
     fromResponsibleName: v.fromResponsibleName!,

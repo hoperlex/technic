@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CARGO_NAME_MESSAGE,
   MAX_ROUTE_REQUESTS,
   type VehicleRequestTripDto,
   requestCargoTotal,
@@ -27,6 +28,7 @@ const trip = (over: Partial<VehicleRequestTripDto> = {}): VehicleRequestTripDto 
   toAddress: null,
   volumeM3: 10,
   weightTons: null,
+  cargoName: 'Песок',
   fromResponsibleName: 'Иванов И.И.',
   fromResponsiblePhone: '+7 916 123-45-67',
   toResponsibleName: 'Петров П.П.',
@@ -95,6 +97,7 @@ describe('схема ездки', () => {
     fromAddress: { source: 'resolved', fiasId: 'fias-1' },
     toAddress: { source: 'object', refId: '11111111-1111-4111-8111-111111111111' },
     volumeM3: 10,
+    cargoName: 'Песок',
     fromResponsibleName: 'Иванов И.И.',
     fromResponsiblePhone: '+7 916 123-45-67',
     toResponsibleName: 'Петров П.П.',
@@ -106,6 +109,25 @@ describe('схема ездки', () => {
 
     expect(parsed.comment).toBe('');
     expect(parsed.fromResponsiblePhone).toBe('9161234567');
+  });
+
+  /**
+   * "What we carry" is required of every new trip (ADR 0239): missing, blank and over-long values
+   * are refused at the field, and the value is stored trimmed.
+   */
+  it('что везём обязательно, обрезается и не длиннее 200 знаков', () => {
+    const { cargoName: _dropped, ...withoutCargo } = valid;
+    const missing = requestTripSchema.safeParse(withoutCargo);
+    expect(missing.success).toBe(false);
+    expect(missing.error?.issues[0]?.path).toEqual(['cargoName']);
+
+    const blank = requestTripSchema.safeParse({ ...valid, cargoName: '   ' });
+    expect(blank.error?.issues[0]?.message).toBe(CARGO_NAME_MESSAGE);
+
+    expect(requestTripSchema.safeParse({ ...valid, cargoName: 'щ'.repeat(201) }).success).toBe(
+      false,
+    );
+    expect(requestTripSchema.parse({ ...valid, cargoName: '  песок ' }).cargoName).toBe('песок');
   });
 
   /**
@@ -172,6 +194,7 @@ describe('список ездок заявки', () => {
     toLocation: 'Объект',
     fromAddress: { source: 'resolved', fiasId: 'fias-1' },
     toAddress: { source: 'resolved', fiasId: 'fias-2' },
+    cargoName: 'Песок',
     fromResponsibleName: 'Иванов',
     fromResponsiblePhone: '+7 916 123-45-67',
     toResponsibleName: 'Петров',

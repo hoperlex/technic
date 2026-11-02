@@ -209,6 +209,7 @@ function trips(count: number) {
     fromAddress: { source: 'object', refId: ctx.objectId },
     toAddress: { source: 'object', refId: ctx.objectId },
     volumeM3: 12,
+    cargoName: 'Песок',
     fromResponsibleName: LOADING.name,
     fromResponsiblePhone: LOADING.phone,
     toResponsibleName: UNLOADING.name,

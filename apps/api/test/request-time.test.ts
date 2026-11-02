@@ -429,6 +429,7 @@ const freightBase = {
       fromAddress: resolvedMeta,
       toAddress: resolvedMeta,
       volumeM3: 10,
+      cargoName: 'Песок',
       fromResponsibleName: 'Сидоров С. С.',
       fromResponsiblePhone: '+7 926 000-00-02',
       toResponsibleName: 'Кузнецов К. К.',

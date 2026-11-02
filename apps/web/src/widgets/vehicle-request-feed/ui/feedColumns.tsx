@@ -11,6 +11,7 @@ import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import {
   VehicleRequestAssignmentCell,
   VehicleRequestEarlyEndTag,
+  requestCargoNames,
   vehicleRequestTermLabel,
 } from '@entities/vehicle-request';
 import { WeeklyStatusTag } from '@entities/weekly-request';
@@ -115,6 +116,7 @@ export function vehicleRequestFeedColumns({
       render: (_value, row) => {
         if (row.kind === 'weekly') return dash;
         const request = row.order;
+        const cargo = requestCargoNames(request);
         return (
           <div style={{ lineHeight: 1.35 }}>
             {/* The ordered classifier position (ADR 0028): the category, or the type without one.
@@ -139,6 +141,17 @@ export function vehicleRequestFeedColumns({
             >
               {vehicleRequestTypeLabels[request.requestType]}
             </Tag>
+            {/* What a freight order carries (ADR 0239): next to the ordered vehicle, where the
+                dispatcher matches a dump truck against "sand". Hidden when no trip names it. */}
+            {!!cargo && (
+              <Typography.Text
+                type="secondary"
+                title="Что везём"
+                style={{ display: 'block', fontSize: 12, marginTop: 2 }}
+              >
+                {cargo}
+              </Typography.Text>
+            )}
             {/* The order was caught by a linearity switch of its type (migration 0137, ADR 0107):
                 the type now runs orders differently, while this one finishes the way it was
                 opened. Without the tag a dispatcher sees two orders of one type behaving

@@ -280,6 +280,7 @@ function freightTrip(from: { name: string; phone: string }): Record<string, unkn
     fromAddress: { source: 'object', refId: ctx.objectId },
     toAddress: { source: 'object', refId: ctx.objectId },
     volumeM3: 12,
+    cargoName: 'Песок',
     fromResponsibleName: from.name,
     fromResponsiblePhone: from.phone,
     toResponsibleName: UNLOADING.name,

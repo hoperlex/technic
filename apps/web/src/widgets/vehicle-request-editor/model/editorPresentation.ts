@@ -5,7 +5,11 @@ import {
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
 
-/** The hint names what the dispatcher needs to plan: cargo for freight, work for on-site equipment. */
+/**
+ * The hint names what the dispatcher needs to plan: work for on-site equipment, handling conditions
+ * for freight — its cargo has a required field of its own on each trip (ADR 0239), and asking for it
+ * here too would split one answer between two places.
+ */
 export const COMMENT_HINTS: Record<VehicleRequestType, { label: string; placeholder: string }> = {
   special_equipment: {
     label: 'Комментарий (планируемые задачи)',
@@ -13,9 +17,9 @@ export const COMMENT_HINTS: Record<VehicleRequestType, { label: string; placehol
       'Например: разработка котлована под фундамент, погрузка грунта в самосвалы; заезд с ул. Ленина, работы с 08:00',
   },
   freight_transport: {
-    label: 'Комментарий (опишите груз)',
+    label: 'Комментарий',
     placeholder:
-      'Например: плиты перекрытия ПК 60-15, 12 шт, 14 т; погрузка краном поставщика, на объекте нужен манипулятор',
+      'Например: погрузка краном поставщика, на объекте нужен манипулятор; заезд с ул. Ленина',
   },
 };
 

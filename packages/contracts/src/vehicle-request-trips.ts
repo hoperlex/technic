@@ -50,6 +50,11 @@ export interface VehicleRequestTripDto {
   fromAddress: AddressMeta | null;
   toAddress: AddressMeta | null;
   /**
+   * What the trip carries, in the requester's words: "sand", "PK 60-15 slabs" (ADR 0239). Empty
+   * only for trips created before migration 0397; a new value is never empty (`cargoNameSchema`).
+   */
+  cargoName: string;
+  /**
    * Количество **этой** ездки. Оба поля пусты у легкового: груза там не бывает вовсе
    * (`isCargoAmountRequired('leg3') === false`), и требовать число значило бы заставлять
    * заявителя его выдумывать.
@@ -153,6 +158,21 @@ const tripLocationSchema = z.string().trim().min(1).max(1000);
 /** Примечание к ездке — той же длины, что комментарий заявки. */
 const tripCommentSchema = z.string().trim().max(2000);
 
+export const CARGO_NAME_MESSAGE = 'Укажите, что везём';
+
+/**
+ * The stored form of "what the trip carries": empty is legal only as the state of a trip older
+ * than migration 0397. An edit row keeps it (R2a) — the server compares it with the stored value.
+ */
+export const storedCargoNameSchema = z.string().trim().max(200);
+
+/**
+ * "What we carry" as a new value (ADR 0239): free text, required for every freight trip, a
+ * passenger car included — there the answer is "passengers" or "documents", not an invented
+ * number, so the exemption of `isCargoAmountRequired` does not apply.
+ */
+export const cargoNameSchema = storedCargoNameSchema.min(1, CARGO_NAME_MESSAGE);
+
 /** Положительное количество с не более чем 3 знаками после запятой (`numeric(12,3)`). */
 const tripAmountSchema = z
   .number()
@@ -210,6 +230,7 @@ export const requestTripSchema = z
     toLocation: tripLocationSchema,
     fromAddress: verifiedAddressMetaSchema,
     toAddress: verifiedAddressMetaSchema,
+    cargoName: cargoNameSchema,
     volumeM3: tripAmountSchema.nullable().optional(),
     weightTons: tripAmountSchema.nullable().optional(),
     /**

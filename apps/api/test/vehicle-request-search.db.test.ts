@@ -67,6 +67,12 @@ const NOBODY_TERM = 'Зарянка-которой-нет';
 /** Комментарий заявок: намеренно без слов, по которым файл ищет, — иначе искали бы его, а не заказчика. */
 const COMMENT = 'Плиты перекрытия';
 
+/**
+ * What the object request carries (ADR 0239): a word found nowhere else in the file, so finding it
+ * proves the trip column is searched; the department request carries the plain default.
+ */
+const OBJECT_CARGO = `Керамзит ${FIXTURE_PREFIX}`;
+
 /** Верифицированный адрес: у грузоперевозки оба конца маршрута обязаны быть выбраны, а не набраны. */
 const RESOLVED_ADDRESS = {
   source: 'resolved',
@@ -166,10 +172,13 @@ async function login(email: string): Promise<{ authorization: string }> {
 }
 
 /** Тело грузоперевозки: заказчик — объект либо отдел, остальное заведомо годное. */
-function freightPayload(customer: {
-  objectId?: string;
-  departmentId?: string;
-}): Record<string, unknown> {
+function freightPayload(
+  customer: {
+    objectId?: string;
+    departmentId?: string;
+  },
+  cargoName = 'Песок',
+): Record<string, unknown> {
   return {
     requestType: 'freight_transport',
     ...customer,
@@ -183,6 +192,7 @@ function freightPayload(customer: {
         fromAddress: RESOLVED_ADDRESS,
         toAddress: RESOLVED_ADDRESS,
         volumeM3: 12,
+        cargoName,
         fromResponsibleName: 'Сидоров Сидор Сидорович',
         fromResponsiblePhone: '+79990000002',
         toResponsibleName: 'Кузнецов Кузьма Кузьмич',
@@ -280,7 +290,9 @@ describe.skipIf(!DB_URL)('поиск заявок на технику: отде�
     ctx.departmentRequestId = await createRequest(
       freightPayload({ departmentId: ctx.departmentId }),
     );
-    ctx.objectRequestId = await createRequest(freightPayload({ objectId: ctx.objectId }));
+    ctx.objectRequestId = await createRequest(
+      freightPayload({ objectId: ctx.objectId }, OBJECT_CARGO),
+    );
   }, 120_000);
 
   afterAll(async () => {
@@ -308,6 +320,13 @@ describe.skipIf(!DB_URL)('поиск заявок на технику: отде�
     // `searchCondition` собирает их через `OR`, и ошибка здесь читалась бы как «поиск сломали».
     expect(await searchList('Северная')).toEqual([ctx.objectRequestId]);
     expect(await searchList(OBJECT_CODE)).toEqual([ctx.objectRequestId]);
+  });
+
+  it('заявка находится по тому, что везёт её ездка, — и в списке, и в ленте', async () => {
+    // Before ADR 0239 cargo was written into the searched request comment; moved onto the trip, it
+    // must stay findable, or "керамзит" would stop finding new requests.
+    expect(await searchList('керамзит')).toEqual([ctx.objectRequestId]);
+    expect(await searchFeed('керамзит')).toEqual([ctx.objectRequestId]);
   });
 
   it('поиск по чужому названию не находит ни одной заявки', async () => {

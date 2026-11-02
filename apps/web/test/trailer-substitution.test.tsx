@@ -530,6 +530,7 @@ const REQUEST: FreightTransportRequestDto = {
       toLocation: 'Объект Химки',
       fromAddress: null,
       toAddress: null,
+      cargoName: 'Песок',
       volumeM3: 20,
       weightTons: null,
       fromResponsibleName: 'Петров П. П.',

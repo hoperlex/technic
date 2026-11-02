@@ -87,11 +87,14 @@ export function RequestTripsTable({ trips }: { trips: VehicleRequestTripDto[] })
           key: 'cargo',
           title: 'Груз',
           width: 160,
-          // The cargo label is the one the form prints (tripCargoLabel): different units on the
-          // card and on the waybill would start an argument about what was carried. The trip note
-          // goes on the second line; it is what explains "sand, call an hour ahead".
+          // What is carried comes first (ADR 0239); a trip older than the field has none, and its
+          // line is skipped rather than dashed. The quantity is the one the form prints
+          // (tripCargoLabel): different units on the card and on the waybill would start an
+          // argument about what was carried. The trip note goes last; it is what explains "call an
+          // hour ahead".
           render: (_value, trip) => (
             <div style={{ lineHeight: 1.35 }}>
+              {!!trip.cargoName && <div>{trip.cargoName}</div>}
               <div>{tripCargoLabel(trip) || '—'}</div>
               {!!trip.comment && (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>

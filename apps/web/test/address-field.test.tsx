@@ -286,6 +286,7 @@ describe('адресное поле: выбор из справочника (ADR
     // подчёркивания. У заявки с одной ездкой форма выглядит как прежде, но имена полей уже её.
     fireEvent.change(document.querySelector('#trips_0_volumeM3')!, { target: { value: '12' } });
     for (const [id, value] of [
+      ['trips_0_cargoName', 'Песок'],
       ['trips_0_fromResponsibleName', 'Сидоров Сергей'],
       ['trips_0_fromResponsiblePhone', '9260000002'],
       ['trips_0_toResponsibleName', 'Кузнецов Кирилл'],
@@ -305,6 +306,7 @@ describe('адресное поле: выбор из справочника (ADR
     // Адреса уехали с заявки на ездку (Р2): у заведённой их ровно одна, и пара с метаданными
     // приходит в ней. Верификация проверяется тем же: строка и метаданные ходят вместе.
     const [trip] = body.trips as Record<string, unknown>[];
+    expect(trip!.cargoName).toBe('Песок');
     expect(trip!.fromLocation).toBe('г Москва, ул Складская, д 7');
     expect(trip!.fromAddress).toEqual({ source: 'warehouse', refId: 'wh-1' });
     expect(trip!.toLocation).toBe('г Москва, ул Южная, д 2');

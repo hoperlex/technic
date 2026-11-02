@@ -6657,6 +6657,12 @@ export const vehicleRequestTrips = pgTable(
     fromAddress: jsonb('from_address').$type<AddressMeta>(),
     toAddress: jsonb('to_address').$type<AddressMeta>(),
     /**
+     * What the trip carries, free text (migration 0397, ADR 0239). No not-blank CHECK: trips older
+     * than the column keep '' and must stay editable (R2a), so non-emptiness of a new value is held
+     * by the contract and `applyRequestTrips`.
+     */
+    cargoName: text('cargo_name').notNull().default(''),
+    /**
      * Количество ЭТОЙ ездки, а не всей заявки: у заявки с ездками A→B и A→C общего количества не
      * существует, итог по ней считается суммой. CHECK «объём или масса заполнены» здесь не стоит:
      * у легкового количества может не быть вовсе, и обязательность остаётся условной, серверной.

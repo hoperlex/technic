@@ -27,6 +27,7 @@ export function retypeErases(request: VehicleRequestDto, dropsApproval: boolean)
     if (request.trips.length === 1 && single) {
       items.push(`Место погрузки: ${single.fromLocation}`);
       items.push(`Место разгрузки: ${single.toLocation}`);
+      if (single.cargoName) items.push(`Что везём: ${single.cargoName}`);
       if (single.volumeM3 != null) items.push(`Объём: ${single.volumeM3} м³`);
       if (single.weightTons != null) items.push(`Масса: ${single.weightTons} т`);
     } else {
@@ -34,7 +35,7 @@ export function retypeErases(request: VehicleRequestDto, dropsApproval: boolean)
         // The trip number both names the trip and keeps lines distinct: rows produced by "repeat
         // N times" (§4.1) share addresses and cargo to the character, and the list is keyed by
         // line.
-        const cargo = tripCargoLabel(trip);
+        const cargo = [trip.cargoName, tripCargoLabel(trip)].filter(Boolean).join(' · ');
         items.push(
           `Ездка ${trip.num}: ${trip.fromLocation} → ${trip.toLocation}${cargo ? ` · ${cargo}` : ''}`,
         );

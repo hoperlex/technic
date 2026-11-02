@@ -1,5 +1,9 @@
 import { Form, Input, InputNumber } from 'antd';
-import { isAddressVerified, type VehicleRequestTripDto } from '@technic/contracts';
+import {
+  CARGO_NAME_MESSAGE,
+  isAddressVerified,
+  type VehicleRequestTripDto,
+} from '@technic/contracts';
 import { FormGrid } from '@shared/ui';
 import { AddressField } from '@features/address-input';
 import { PhoneInput } from '@entities/user-account';
@@ -135,7 +139,7 @@ interface Props {
 }
 
 /**
- * Trip fields in reading order: quantity, time, origin, and destination.
+ * Trip fields in reading order: cargo, quantity, time, origin, and destination.
  *
  * Returned as a fragment, not a block: in compact mode these fields are direct cells of the form
  * grid (`FormGrid`), and a wrapper would turn them into one cell spanning both columns. Expanded
@@ -148,8 +152,28 @@ export function RequestTripFields({
   cargoRequired,
   detailed,
 }: Props) {
+  // A trip older than ADR 0239 names no cargo and stays editable without inventing one (R2a); the
+  // server keeps that empty value by the same rule. Once named, the cargo cannot be cleared.
+  const keepsEmptyCargo = saved?.cargoName === '';
   return (
     <>
+      {/* Required for every freight trip, a passenger car included ("passengers", "documents"):
+          unlike the quantity, naming what is carried never makes the requester invent a number. */}
+      <FormGrid.Full>
+        <Form.Item
+          name={['trips', index, 'cargoName']}
+          label="Что везём"
+          rules={[
+            {
+              required: !keepsEmptyCargo,
+              whitespace: true,
+              message: CARGO_NAME_MESSAGE,
+            },
+          ]}
+        >
+          <Input maxLength={200} placeholder="Например: песок, щебень, плиты ПК 60-15" />
+        </Form.Item>
+      </FormGrid.Full>
       {/* Either cargo measure is sufficient. Whether it is required at all is conditional and
           decided by the server; here it is only a hint of what the field expects. */}
       <Form.Item

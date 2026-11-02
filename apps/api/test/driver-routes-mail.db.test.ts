@@ -174,6 +174,7 @@ async function makeRequest(
     fromLocation: fixture.loading,
     toLocation: fixture.unloading,
     volumeM3: '10.000',
+    cargoName: 'Песок',
     fromResponsibleName: fixture.loadingName ?? '',
     fromResponsiblePhone: fixture.loadingPhone ?? '',
     toResponsibleName: fixture.unloadingName ?? '',

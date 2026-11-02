@@ -70,16 +70,18 @@ function tripValue(num: number, text: string): string {
 }
 
 /**
- * Ездка целиком — одной строкой для событий состава (`tripAdded` / `tripRemoved`): номер, пара
- * адресов и количество. По форме это те же события-списки, что `filesAdded`/`filesRemoved`, и
- * значима у них только правая часть — «было» у появившейся ездки не бывает.
+ * A whole trip as one line for composition events (`tripAdded` / `tripRemoved`): number, address
+ * pair, what is carried and quantity. In form these are the same list events as
+ * `filesAdded`/`filesRemoved`, and only their right side matters — an added trip has no "before".
  *
- * Количество печатается тем же правилом, что и в бланке (`tripCargoLabel`): у легкового его нет
- * вовсе, и пустая часть в строку не попадает.
+ * The quantity is printed by the waybill rule (`tripCargoLabel`): a passenger car has none, and an
+ * empty part — like the cargo name of a trip older than ADR 0239 — stays out of the line.
  */
 function tripSummary(t: VehicleRequestTripDto): string {
   const cargo = tripCargoLabel(t);
-  return [`${t.num} · ${t.fromLocation} → ${t.toLocation}`, cargo].filter(Boolean).join(' · ');
+  return [`${t.num} · ${t.fromLocation} → ${t.toLocation}`, short(t.cargoName), cargo]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /**
@@ -115,6 +117,11 @@ function diffTrips(
       'trip.to',
       tripValue(b.num, short(b.toLocation)),
       tripValue(a.num, short(a.toLocation)),
+    );
+    diff.changed(
+      'trip.cargoName',
+      tripValue(b.num, short(b.cargoName)),
+      tripValue(a.num, short(a.cargoName)),
     );
     // Объём и масса разными ключами: это разные единицы, а не разные значения одной.
     diff.changed(

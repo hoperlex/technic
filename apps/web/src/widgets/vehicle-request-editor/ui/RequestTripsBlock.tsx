@@ -153,6 +153,7 @@ export function RequestTripsBlock({
     form.setFields(
       next.flatMap((_row, i) =>
         [
+          'cargoName',
           'fromLocation',
           'toLocation',
           'fromResponsibleName',
