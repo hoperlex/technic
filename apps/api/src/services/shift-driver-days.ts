@@ -22,6 +22,7 @@ import {
   persons,
   vehicleReadings,
   vehicleRouteRequests,
+  vehicleRoutes,
   waybills,
 } from '../db/schema';
 import { sha256hex } from '../lib/crypto';
@@ -387,8 +388,56 @@ export async function loadDriverShiftDaysByRequest(
         and(common, eq(driverDailyReportItems.sourceKind, 'route'), inArray(member.requestId, ids)),
       ),
   ]);
-  const rows = [...esm2Rows, ...routeRows];
-  if (rows.length === 0) return result;
+  const byRequestDate = await readingsByRequestDay(reader, [...esm2Rows, ...routeRows]);
+  for (const [requestId, days] of byRequestDate) {
+    const byDay = new Map<string, DriverShiftDay>();
+    for (const [date, readings] of days) byDay.set(date, driverShiftDayOf(date, readings));
+    result.set(requestId, byDay);
+  }
+  return result;
+}
+
+/** One reading row as both request readers select it: `readingColumns` plus the request found. */
+interface ReadingRow {
+  readingId: string;
+  version: number;
+  kind: ReadingKind;
+  engineHours: string | null;
+  engineHoursAnomaly: ReadingAnomaly | null;
+  fuelFilledLiters: string | null;
+  noDataReason: string;
+  comment: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  previousId: string | null;
+  previousEngineHours: string | null;
+  previousDate: string | null;
+  itemId: string;
+  sourceKind: ReadingSourceKind;
+  routeId: string | null;
+  waybillId: string | null;
+  vehicleId: string;
+  reportDate: string;
+  reportId: string;
+  reportState: DriverReportState;
+  personId: string;
+  personName: string;
+  requestId: string;
+  routeServesOthers: boolean;
+}
+
+/**
+ * The readings of the found rows by request and day, judged once: discrepancies against the live
+ * sources and the garage's decisions, the recorded stops, and the continuity of each engine-hour
+ * pair (D16). Shared by the special-equipment reader and the freight reader so a reading means the
+ * same in a shift table, a summary book and the readings report.
+ */
+async function readingsByRequestDay(
+  reader: ReadingsReader,
+  rows: readonly ReadingRow[],
+): Promise<Map<string, Map<string, DriverShiftReading[]>>> {
+  const byRequestDate = new Map<string, Map<string, DriverShiftReading[]>>();
+  if (rows.length === 0) return byRequestDate;
 
   // Everything below is per item or per reading, read once however many requests share them.
   const items = new Map<string, DiscrepancyItem & { reportId: string; personId: string }>();
@@ -428,7 +477,6 @@ export async function loadDriverShiftDaysByRequest(
     );
   }
 
-  const byRequestDate = new Map<string, Map<string, DriverShiftReading[]>>();
   const snapshots: SnapshotOf[] = [];
   for (const row of rows) {
     const ref = itemRef(row);
@@ -474,12 +522,7 @@ export async function loadDriverShiftDaysByRequest(
     snapshots.push({ reading, vehicleId: row.vehicleId, date: row.reportDate });
   }
   await markBrokenPairs(reader, snapshots);
-  for (const [requestId, days] of byRequestDate) {
-    const byDay = new Map<string, DriverShiftDay>();
-    for (const [date, readings] of days) byDay.set(date, driverShiftDayOf(date, readings));
-    result.set(requestId, byDay);
-  }
-  return result;
+  return byRequestDate;
 }
 
 /** The driver days of one request over a range of days, by day: the batch reader for one. */
@@ -491,6 +534,60 @@ export async function loadDriverShiftDays(
   return (
     (await loadDriverShiftDaysByRequest(reader, [requestId], range)).get(requestId) ?? new Map()
   );
+}
+
+/** The composition row that makes a route reading a freight request's: no `work_date`. */
+const freightMember = alias(vehicleRouteRequests, 'sd_freight_member');
+
+/**
+ * The submitted readings of freight routes by freight request and day (ADR 0240, the readings
+ * report). A freight request stands in exactly one route, on a composition row without
+ * `work_date`; a reading of that route's item belongs to every freight request of the composition.
+ * Which of them carries the counters is the report's question, not this reader's.
+ *
+ * The same report states (`SUBMITTED_REPORT_STATES`, D2), reading columns and judgement as the
+ * special-equipment reader (`readingsByRequestDay`): one answer to "which readings count". The
+ * composition is read live, as there: a request detached after the reading no longer carries it.
+ * Whether a request is live is the caller's question; the reader returns what the routes hold.
+ */
+export async function loadFreightRouteReadings(
+  reader: ReadingsReader,
+  range: { from: string; to: string },
+): Promise<Map<string, Map<string, DriverShiftReading[]>>> {
+  if (range.to < range.from) return new Map();
+  const rows = await reader
+    .select({
+      ...readingColumns,
+      requestId: freightMember.requestId,
+      routeServesOthers: sql<boolean>`EXISTS (
+        SELECT 1 FROM vehicle_route_requests sd_fo
+         WHERE sd_fo.route_id = ${driverDailyReportItems.routeId}
+           AND sd_fo.request_id <> ${freightMember.requestId})`,
+    })
+    .from(vehicleReadings)
+    .innerJoin(driverDailyReportItems, eq(driverDailyReportItems.id, vehicleReadings.itemId))
+    .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
+    .innerJoin(persons, eq(persons.id, driverDailyReports.personId))
+    .leftJoin(previous, eq(previous.id, vehicleReadings.previousEngineHoursId))
+    .innerJoin(
+      vehicleRoutes,
+      and(
+        eq(vehicleRoutes.id, driverDailyReportItems.routeId),
+        eq(vehicleRoutes.purpose, 'freight'),
+      ),
+    )
+    .innerJoin(
+      freightMember,
+      and(eq(freightMember.routeId, vehicleRoutes.id), sql`${freightMember.workDate} IS NULL`),
+    )
+    .where(
+      and(
+        inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
+        between(driverDailyReportItems.reportDate, range.from, range.to),
+        eq(driverDailyReportItems.sourceKind, 'route'),
+      ),
+    );
+  return readingsByRequestDay(reader, rows);
 }
 
 /**

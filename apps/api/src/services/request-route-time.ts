@@ -1,14 +1,14 @@
-import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import {
   requestRouteStops,
   ROUTE_TIME_ISSUES,
   routeTimeByRequest,
   SUBMITTED_REPORT_STATES,
+  type DriverReportState,
   type RequestRouteReadingDto,
   type ReadingKind,
   type RequestRouteTimeDto,
 } from '@technic/contracts';
-import { driverDailyReportItems, driverDailyReports, persons, vehicleReadings } from '../db/schema';
 import { loadReadingPoints, type StoredPoint } from './reading-points';
 import type { ReadingsReader } from './readings-discrepancies';
 
@@ -56,6 +56,119 @@ export function readingRouteFact(
   return { ...base, stops, seconds: allocation.byRequest[requestId] ?? 0, issue: null };
 }
 
+/** A candidate reading of a request: what the D6 split and the diagnostics read from it. */
+interface RequestReadingRow extends CandidateRow {
+  requestId: string;
+  noDataReason: string;
+  comment: string;
+  reportState: DriverReportState;
+  personName: string;
+}
+
+/**
+ * The candidate readings of several requests in one query, in report order per request. A reading
+ * is a request's when its stop snapshot names the request, or when it belongs to the route the
+ * request stands in now (see the module header). Both branches are matched against the asked ids,
+ * so the readings report reads every freight request of a period without a query per request.
+ */
+async function loadCandidateRows(
+  reader: ReadingsReader,
+  requestIds: readonly string[],
+): Promise<RequestReadingRow[]> {
+  const ids = [...new Set(requestIds)];
+  if (ids.length === 0) return [];
+  const asked = sql`ARRAY[${sql.join(
+    ids.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  )}]`;
+  const result = await reader.execute<{
+    request_id: string;
+    reading_id: string;
+    kind: ReadingKind;
+    no_data_reason: string;
+    comment: string;
+    report_date: string;
+    report_state: DriverReportState;
+    person_name: string;
+  }>(sql`
+WITH candidate AS (
+    SELECT rt_pr.reading_id, rt_pr.request_id
+      FROM vehicle_reading_point_requests rt_pr
+     WHERE rt_pr.request_id = ANY(${asked})
+    UNION
+    SELECT vr.id, rt_rr.request_id
+      FROM vehicle_readings vr
+      JOIN driver_daily_report_items i ON i.id = vr.item_id
+      JOIN vehicle_route_requests rt_rr ON rt_rr.route_id = i.route_id
+     WHERE i.source_kind = 'route'
+       AND rt_rr.request_id = ANY(${asked})
+)
+SELECT c.request_id::text   AS request_id,
+       vr.id::text          AS reading_id,
+       vr.kind::text        AS kind,
+       vr.no_data_reason    AS no_data_reason,
+       vr.comment           AS comment,
+       i.report_date::text  AS report_date,
+       rep.state::text      AS report_state,
+       p.full_name          AS person_name
+  FROM candidate c
+  JOIN vehicle_readings vr          ON vr.id = c.reading_id
+  JOIN driver_daily_report_items i  ON i.id = vr.item_id
+  JOIN driver_daily_reports rep     ON rep.id = i.report_id
+  JOIN persons p                    ON p.id = rep.person_id
+ WHERE rep.state::text = ANY(${sql.param([...SUBMITTED_REPORT_STATES])}::text[])
+ ORDER BY c.request_id, i.report_date, i.shift_order, vr.id`);
+  return result.rows.map((row) => ({
+    requestId: row.request_id,
+    readingId: row.reading_id,
+    kind: row.kind,
+    noDataReason: row.no_data_reason,
+    comment: row.comment,
+    reportDate: row.report_date,
+    reportState: row.report_state,
+    personName: row.person_name,
+  }));
+}
+
+/** The route time of one request from its candidate rows and the recorded stops. */
+function routeTimeOf(
+  requestId: string,
+  rows: readonly RequestReadingRow[],
+  points: ReadonlyMap<string, StoredPoint[]>,
+): RequestRouteTimeDto {
+  const readings = rows.map((row) =>
+    readingRouteFact(row, points.get(row.readingId) ?? [], requestId),
+  );
+  const issues =
+    readings.length === 0
+      ? (['no_readings'] as const)
+      : ROUTE_TIME_ISSUES.filter((issue) => readings.some((reading) => reading.issue === issue));
+  const seconds =
+    issues.length === 0 ? readings.reduce((sum, reading) => sum + (reading.seconds ?? 0), 0) : null;
+  return { readings, seconds, issues: [...issues] };
+}
+
+/**
+ * The route times of several freight requests, by request: one candidate query and one read of the
+ * recorded stops for all of them. A request without readings answers `no_readings`, as one does.
+ */
+export async function loadRequestRouteTimes(
+  reader: ReadingsReader,
+  requestIds: readonly string[],
+): Promise<Map<string, RequestRouteTimeDto>> {
+  const rows = await loadCandidateRows(reader, requestIds);
+  const points = await loadReadingPoints(reader, [...new Set(rows.map((row) => row.readingId))]);
+  const byRequest = new Map<string, RequestReadingRow[]>();
+  for (const row of rows) {
+    const list = byRequest.get(row.requestId);
+    if (list) list.push(row);
+    else byRequest.set(row.requestId, [row]);
+  }
+  return new Map(
+    [...new Set(requestIds)].map((id) => [id, routeTimeOf(id, byRequest.get(id) ?? [], points)]),
+  );
+}
+
 /**
  * The route time of a freight request: the facts of every reading, the exact total in seconds and
  * the reasons it is missing. Diagnostics (names, report states, the `no_data` reason and the
@@ -66,62 +179,13 @@ export async function loadRequestRouteTime(
   requestId: string,
   options: { diagnostics?: boolean } = {},
 ): Promise<RequestRouteTimeDto> {
-  const rows = await reader
-    .select({
-      readingId: vehicleReadings.id,
-      kind: vehicleReadings.kind,
-      noDataReason: vehicleReadings.noDataReason,
-      comment: vehicleReadings.comment,
-      reportDate: driverDailyReportItems.reportDate,
-      reportState: driverDailyReports.state,
-      personName: persons.fullName,
-    })
-    .from(vehicleReadings)
-    .innerJoin(driverDailyReportItems, eq(driverDailyReportItems.id, vehicleReadings.itemId))
-    .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
-    .innerJoin(persons, eq(persons.id, driverDailyReports.personId))
-    .where(
-      and(
-        inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
-        // A joined query: drizzle qualifies the outer columns, so the correlations below cannot
-        // collapse into a tautology (the single-table trap of `buildSelection`).
-        or(
-          sql`EXISTS (SELECT 1 FROM vehicle_reading_point_requests rt_pr
-                       WHERE rt_pr.reading_id = ${vehicleReadings.id}
-                         AND rt_pr.request_id = ${requestId})`,
-          and(
-            eq(driverDailyReportItems.sourceKind, 'route'),
-            sql`EXISTS (SELECT 1 FROM vehicle_route_requests rt_rr
-                         WHERE rt_rr.route_id = ${driverDailyReportItems.routeId}
-                           AND rt_rr.request_id = ${requestId})`,
-          ),
-        ),
-      ),
-    )
-    .orderBy(
-      asc(driverDailyReportItems.reportDate),
-      asc(driverDailyReportItems.shiftOrder),
-      asc(vehicleReadings.id),
-    );
-
+  const rows = await loadCandidateRows(reader, [requestId]);
   const points = await loadReadingPoints(
     reader,
     rows.map((row) => row.readingId),
   );
-  const readings = rows.map((row) =>
-    readingRouteFact(row, points.get(row.readingId) ?? [], requestId),
-  );
-  const issues =
-    readings.length === 0
-      ? (['no_readings'] as const)
-      : ROUTE_TIME_ISSUES.filter((issue) => readings.some((reading) => reading.issue === issue));
-  const seconds =
-    issues.length === 0 ? readings.reduce((sum, reading) => sum + (reading.seconds ?? 0), 0) : null;
-
   return {
-    readings,
-    seconds,
-    issues: [...issues],
+    ...routeTimeOf(requestId, rows, points),
     ...(options.diagnostics
       ? {
           driver: {
