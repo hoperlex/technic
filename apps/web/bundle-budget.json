@@ -60,23 +60,23 @@
     },
     "garage": {
       "source": "src/pages/garage/GaragePage.tsx",
-      "gzip": 628338,
+      "gzip": 629403,
       "tabs": [
         {
           "source": "src/pages/garage/GarageVehiclesTab.tsx",
-          "gzip": 618001
+          "gzip": 619084
         },
         {
           "source": "src/pages/garage/GarageDriversTab.tsx",
-          "gzip": 589356
+          "gzip": 590395
         },
         {
           "source": "src/pages/garage/ReadingsTab.tsx",
-          "gzip": 628338
+          "gzip": 629403
         },
         {
           "source": "src/pages/garage/AutoPartsTab.tsx",
-          "gzip": 616213
+          "gzip": 618859
         }
       ]
     },
@@ -194,7 +194,7 @@
         },
         {
           "source": "src/pages/admin/ExportsTab.tsx",
-          "gzip": 576222
+          "gzip": 576627
         },
         {
           "source": "src/widgets/user-audit/ui/UsersAuditTab.tsx",
