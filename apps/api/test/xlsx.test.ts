@@ -710,6 +710,11 @@ describe('писатель: графики', () => {
     );
     // Ни одной части графиков в книге без графиков: они стоят денег даже пустыми.
     expect(Object.keys(unzipSync(book)).filter((name) => name.includes('chart'))).toEqual([]);
+    // Formulas, column looks and conditional formats add records only to books that use them:
+    // a book without them asks for no recalculation and carries no differential styles.
+    expect(partOf(book, 'xl/workbook.xml')).not.toContain('calcPr');
+    expect(partOf(book, 'xl/styles.xml')).not.toContain('<dxfs');
+    expect(partOf(book, 'xl/styles.xml')).toContain('<cellXfs count="27">');
   });
 
   it('график приезжает своей частью, рисунком и связями листа', () => {
@@ -920,5 +925,168 @@ describe('писатель: графики', () => {
     expect(() => withChart({ anchor: { column: 1, row: 0, width: 8, height: 15 } })).toThrow(
       /клетками/u,
     );
+  });
+});
+
+describe('writer: formulas, column looks and conditional formats', () => {
+  const partOf = (bytes: Uint8Array, name: string): string =>
+    strFromU8(unzipSync(bytes)[name] ?? new Uint8Array());
+
+  const report = (): Uint8Array =>
+    writeWorkbook([
+      {
+        name: 'Отчёт',
+        headerRow: 3,
+        gridLines: false,
+        widths: [5, 20, 12, 12, 12],
+        rowStyles: [{ title: true, height: 26 }, undefined, { height: 45 }],
+        columnStyles: [
+          { tone: 'index' },
+          { tone: 'input' },
+          { tone: 'computed' },
+          { tone: 'input', header: 'slate' },
+          { tone: 'input', header: 'slate' },
+        ],
+        conditionalFormats: [
+          { ref: 'C4:C5', containsText: 'Проверить' },
+          { ref: 'C2', expression: 'COUNTIF(C4:C5,"Проверить")>0' },
+        ],
+        rows: [
+          ['Отчет о работе строительной техники'],
+          ['Пробег по фильтру, км:', '', { formula: 'SUBTOTAL(109,C4:C5)', value: 25, digits: 1 }],
+          ['№', 'Техника', 'Пробег', 'Начало', 'Конец'],
+          [
+            { num: 1 },
+            'КамАЗ 65115',
+            { formula: 'IF(OR(D4="",E4=""),"",E4-D4)', value: 25, digits: 1 },
+            { num: 100 },
+            { num: 125 },
+          ],
+          [
+            { num: 2 },
+            'Экскаватор',
+            { formula: 'IF(E5<D5,"Проверить",E5-D5)', value: 'Проверить', digits: 1 },
+            { num: 300 },
+            '',
+          ],
+        ],
+      },
+    ]);
+
+  it('a formula cell keeps the server-computed value next to the formula', () => {
+    const sheet = firstSheetXml(report());
+
+    // Quotes and comparison signs of the formula are escaped: raw they would end the element.
+    expect(sheet).toMatch(
+      /<c r="C4" s="\d+"><f>IF\(OR\(D4=&quot;&quot;,E4=&quot;&quot;\),&quot;&quot;,E4-D4\)<\/f><v>25<\/v><\/c>/u,
+    );
+    // A text result is a string formula cell, or editors read the stored value as a number.
+    expect(sheet).toMatch(
+      /<c r="C5" s="\d+" t="str"><f>IF\(E5&lt;D5,&quot;Проверить&quot;,E5-D5\)<\/f><v>Проверить<\/v><\/c>/u,
+    );
+    // The book asks the editor to recalculate on open: a filter must move the totals at once.
+    expect(partOf(report(), 'xl/workbook.xml')).toContain(
+      '<calcPr calcId="0" fullCalcOnLoad="1"/>',
+    );
+  });
+
+  it('readWorkbook returns the cached values of formulas', () => {
+    const [sheet] = readWorkbook(report());
+
+    expect(sheet?.rows[1]?.[2]).toBe('25');
+    expect(sheet?.rows[3]?.[2]).toBe('25');
+    expect(sheet?.rows[4]?.[2]).toBe('Проверить');
+  });
+
+  it('a formula without a known value is written without a stored value', () => {
+    const book = writeWorkbook([
+      { name: 'Лист', rows: [[{ formula: 'SUM(B1:B2)', value: null }]] },
+    ]);
+
+    expect(firstSheetXml(book)).toContain('<f>SUM(B1:B2)</f></c>');
+    expect(readWorkbook(book)[0]?.rows).toEqual([]);
+  });
+
+  it('paints the header dark and wrapped, data rows by column tone in two bands', () => {
+    const book = report();
+    const styles = partOf(book, 'xl/styles.xml');
+    const sheet = firstSheetXml(book);
+    const styleOf = (ref: string): number =>
+      Number(new RegExp(`<c r="${ref}" s="(\\d+)"`, 'u').exec(sheet)?.[1]);
+    const xfs = [
+      ...(/<cellXfs[^>]*>(.*)<\/cellXfs>/u.exec(styles)?.[1] ?? '').matchAll(
+        /<xf\b[^>]*?(?:\/>|>.*?<\/xf>)/gu,
+      ),
+    ].map((match) => match[0]);
+    const fills = [
+      ...(/<fills[^>]*>(.*)<\/fills>/u.exec(styles)?.[1] ?? '').matchAll(/<fill>.*?<\/fill>/gu),
+    ].map((match) => match[0]);
+    const fillOf = (ref: string): string => {
+      const xf = xfs[styleOf(ref)] ?? '';
+      return fills[Number(/fillId="(\d+)"/u.exec(xf)?.[1])] ?? '';
+    };
+
+    expect(fillOf('B3')).toContain('FF263E58');
+    expect(fillOf('D3')).toContain('FF596B7D');
+    expect(xfs[styleOf('B3')]).toContain('wrapText="1"');
+    expect(fillOf('B4')).toContain('FFFFFDF5');
+    expect(fillOf('B5')).toContain('FFFFF8E6');
+    expect(fillOf('C4')).toContain('FFEEF5FF');
+    expect(fillOf('A5')).toContain('FFF1F4F8');
+    // An empty input cell is written with its fill, or the column has holes where readings lack.
+    expect(sheet).toMatch(/<c r="E5" s="\d+"\/>/u);
+    // The title gets the larger font, rows their heights, the sheet loses its grid.
+    expect(styles).toContain(
+      '<font><b/><sz val="16"/><color rgb="FF263E58"/><name val="Calibri"/></font>',
+    );
+    expect(sheet).toContain('<row r="1" ht="26" customHeight="1">');
+    expect(sheet).toContain('<row r="3" ht="45" customHeight="1">');
+    expect(sheet).toContain('<sheetView showGridLines="0" workbookViewId="0"><pane ySplit="3"');
+    expect(sheet).toContain('<autoFilter ref="A3:E3"/>');
+  });
+
+  it('conditional formats paint «Проверить» cells and the total above them', () => {
+    const book = report();
+    const sheet = firstSheetXml(book);
+
+    expect(sheet).toContain(
+      '<conditionalFormatting sqref="C4:C5"><cfRule type="containsText" dxfId="0" priority="1" ' +
+        'operator="containsText" text="Проверить"><formula>NOT(ISERROR(SEARCH(&quot;Проверить&quot;,C4)))</formula>' +
+        '</cfRule></conditionalFormatting>',
+    );
+    expect(sheet).toContain(
+      '<conditionalFormatting sqref="C2"><cfRule type="expression" dxfId="0" priority="2">' +
+        '<formula>COUNTIF(C4:C5,&quot;Проверить&quot;)&gt;0</formula></cfRule></conditionalFormatting>',
+    );
+    expect(partOf(book, 'xl/styles.xml')).toContain(
+      '<dxfs count="1"><dxf><font><b/><color rgb="FFAD2921"/></font>',
+    );
+  });
+
+  it('a rate cell shows its unit through the format and stays a number', () => {
+    const book = writeWorkbook([
+      {
+        name: 'Аренда',
+        rows: [
+          [
+            { num: 1500, digits: 2, suffix: '₽/ч' },
+            { num: 12000, digits: 2, suffix: '₽/смену' },
+          ],
+          [{ num: 1500, digits: 2, suffix: '₽/ч' }],
+        ],
+      },
+    ]);
+    const styles = partOf(book, 'xl/styles.xml');
+
+    expect(styles).toContain('<numFmt numFmtId="167" formatCode="#,##0.00&quot; ₽/ч&quot;"/>');
+    expect(styles).toContain('<numFmt numFmtId="168" formatCode="#,##0.00&quot; ₽/смену&quot;"/>');
+    // One record per distinct look: the second ₽/ч cell reuses the first one's style.
+    const sheet = firstSheetXml(book);
+    const style = (ref: string): string | undefined =>
+      new RegExp(`<c r="${ref}" s="(\\d+)"`, 'u').exec(sheet)?.[1];
+    expect(style('A2')).toBe(style('A1'));
+    expect(style('B1')).not.toBe(style('A1'));
+    // The unit is a format, not text: the reader multiplies the rate by hours.
+    expect(readWorkbook(book)[0]?.rows[0]).toEqual(['1500', '12000']);
   });
 });

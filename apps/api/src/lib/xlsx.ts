@@ -88,19 +88,38 @@ function columnName(index: number): string {
 }
 
 /**
- * Ячейка листа. Строка — как было: текст с форматом «Текстовый». Число и дата пришли с
- * административной книгой показаний (план `readings-admin-export-plan.md`, Р4): по текстовым
- * ячейкам не считает ни формула, ни сводная таблица, а «1 234,5», набранное строкой, не станет
- * числом и после ручного переформатирования колонки.
+ * A sheet cell. A string is text with the «Text» number format. Numbers and dates are real number
+ * cells: neither a formula nor a pivot table counts over text, and «1 234,5» typed as a string does
+ * not become a number even after the column is reformatted by hand.
  *
- * Прочерк неизвестного значения остаётся **строкой** и в числовой колонке: пустая ячейка сводную
- * не искажает, а ноль исказил бы. Поэтому тип ячейки решает вызывающий, а не колонка.
+ * A dash for an unknown value stays a **string** even in a numeric column: an empty cell does not
+ * distort a pivot, a zero would. So the caller decides the cell type, not the column.
  *
- * `digits` — сколько знаков после запятой **показывать**. В ячейке лежит точное число: округление
- * хранимого значения развело бы напечатанный итог и сумму, которую даёт выделенная колонка.
+ * `digits` is how many decimals to **show**. The cell keeps the exact number: rounding the stored
+ * value would make a printed total disagree with the sum the reader gets by selecting the column.
+ * `suffix` is a unit shown after the number by the cell format (`₽/ч`) while the value stays a
+ * number that formulas can multiply.
+ *
+ * A formula cell carries the value the server already computed. Excel recalculates on open
+ * (`fullCalcOnLoad`), but mail and phone previews, and `readWorkbook`, show the stored value only:
+ * a formula without it would read as an empty cell everywhere except a desktop editor.
  */
 export type CellInput =
-  string | { readonly num: number; readonly digits?: 0 | 1 } | { readonly date: string };
+  | string
+  | NumberCell
+  | { readonly date: string }
+  | {
+      readonly formula: string;
+      readonly value: number | string | null;
+      readonly digits?: NumberCell['digits'];
+      readonly suffix?: string;
+    };
+
+interface NumberCell {
+  readonly num: number;
+  readonly digits?: 0 | 1 | 2;
+  readonly suffix?: string;
+}
 
 /** Заливка строки. Зелёная — «нареканий нет», серая — заголовок группы. */
 export type RowFill = 'green' | 'grey';
@@ -108,7 +127,36 @@ export type RowFill = 'green' | 'grey';
 export interface RowStyle {
   fill?: RowFill;
   bold?: boolean;
+  /** A report title: a larger bold font in the sample's dark blue. */
+  title?: boolean;
+  /** Row height in points: a wrapped header needs room an editor does not always make by itself. */
+  height?: number;
 }
+
+/**
+ * How a column of a report table looks (the owner's daily equipment report sample): the reader
+ * tells the columns they fill in from the columns the book computes by colour alone. `input` is a
+ * light-yellow cell, `computed` a light-blue bold one, `index` the grey running number. Data rows
+ * alternate two shades of the same tone so a long row stays traceable across the sheet.
+ *
+ * `header: 'slate'` paints the header of a column lighter than the rest — the sample marks the
+ * counter readings that way, apart from the columns computed from them.
+ */
+export type ColumnTone = 'index' | 'input' | 'computed';
+
+export interface ColumnStyle {
+  tone: ColumnTone;
+  header?: 'dark' | 'slate';
+}
+
+/**
+ * A conditional format that paints matching cells red (the sample's «Проверить» highlight).
+ * `containsText` paints the cells of `ref` holding that text; `expression` paints `ref` when the
+ * formula, written for the top-left cell of `ref`, is true.
+ */
+export type ConditionalFormat =
+  | { readonly ref: string; readonly containsText: string }
+  | { readonly ref: string; readonly expression: string };
 
 export interface SheetInput {
   /** Имя листа как его увидит человек. */
@@ -143,6 +191,14 @@ export interface SheetInput {
   summaryBelow?: boolean;
   /** Лист-источник сводной таблицы человеку не нужен — он скрыт. */
   hidden?: boolean;
+  /**
+   * Per-column look of the table under `headerRow` (see `ColumnStyle`). With it the header row is
+   * the sample's dark wrapped header and every data row below it is painted, empty cells included.
+   */
+  columnStyles?: readonly (ColumnStyle | undefined)[];
+  /** `false` hides the editor's grid: a painted report reads as a form, not as a raw table. */
+  gridLines?: boolean;
+  conditionalFormats?: readonly ConditionalFormat[];
   /**
    * Графики листа. Они рисуются по его же клеткам: и данные, и график живут на одном листе,
    * поэтому у графика нет поля «с какого листа брать» — взять с чужого значило бы завести вторую
@@ -220,7 +276,7 @@ function colsXml(widths: number[] | undefined): string {
 // ── Стили ──
 
 /**
- * Вид ячейки: чем она набрана. Текст — прежний формат «Текстовый» (см. `STYLES_XML`), число и
+ * Вид ячейки: чем она набрана. Текст — прежний формат «Текстовый» (см. `BASE_XFS`), число и
  * дата — свои форматы, без которых Excel показал бы дату числом 46 234, а число — как получится.
  */
 const CELL_KINDS = ['text', 'int', 'dec', 'date'] as const;
@@ -286,25 +342,145 @@ function numberXml(value: number): string {
   return value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 20 });
 }
 
-function cellXml(value: CellInput, ref: string, row: RowKind): string {
+/**
+ * Number format of a number or formula cell. Zero or one decimal without a unit is one of the base
+ * formats, and such a cell keeps its base style number; anything else is an extended format.
+ */
+function numberFormatCode(digits: 0 | 1 | 2, suffix: string | undefined): string {
+  const base = digits === 0 ? '#,##0' : digits === 1 ? '#,##0.0' : '#,##0.00';
+  // A quote would end the literal inside the format code and break the whole styles part.
+  const unit = suffix === undefined ? '' : sanitizeText(suffix).replace(/"/gu, '');
+  return unit === '' ? base : `${base}" ${unit}"`;
+}
+
+function numberStyle(
+  digits: 0 | 1 | 2,
+  suffix: string | undefined,
+  row: RowKind,
+  look: Look | undefined,
+  styles: StyleBook,
+): number {
+  if (look === undefined && suffix === undefined && digits !== 2) {
+    return styleIndex(digits === 0 ? 'int' : 'dec', row);
+  }
+  return styles.xf(styles.numFmt(numberFormatCode(digits, suffix)), look ?? rowLook(row));
+}
+
+function cellXml(
+  value: CellInput,
+  ref: string,
+  row: RowKind,
+  look: Look | undefined,
+  styles: StyleBook,
+): string {
   if (typeof value === 'string') {
     // Пустая ячейка не пишется вовсе: разрежённая строка — это меньше байт и ровно тот же
     // лист. Координата остальных проставляется явно, поэтому пропуск ничего не сдвигает.
-    if (value === '') return '';
+    // A painted table is the exception: its empty cells carry the fill, or the column breaks
+    // into holes exactly where a reading is missing.
+    const style = look === undefined ? styleIndex('text', row) : styles.xf(TEXT_FMT, look);
+    if (value === '') return look === undefined ? '' : `<c r="${ref}" s="${style}"/>`;
     const text = escapeXml(sanitizeText(value));
-    return `<c r="${ref}" s="${styleIndex('text', row)}" t="inlineStr"><is><t xml:space="preserve">${text}</t></is></c>`;
+    return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${text}</t></is></c>`;
+  }
+  if ('formula' in value) {
+    const style = numberStyle(value.digits ?? 0, value.suffix, row, look, styles);
+    const formula = `<f>${escapeXml(sanitizeText(value.formula))}</f>`;
+    const cached = value.value;
+    if (typeof cached === 'number' && Number.isFinite(cached)) {
+      return `<c r="${ref}" s="${style}">${formula}<v>${numberXml(cached)}</v></c>`;
+    }
+    if (typeof cached === 'string' && cached !== '') {
+      return `<c r="${ref}" s="${style}" t="str">${formula}<v>${escapeXml(sanitizeText(cached))}</v></c>`;
+    }
+    return `<c r="${ref}" s="${style}">${formula}</c>`;
   }
   if ('num' in value) {
     if (!Number.isFinite(value.num)) return '';
-    const digits = value.digits ?? 0;
-    return `<c r="${ref}" s="${styleIndex(digits === 0 ? 'int' : 'dec', row)}"><v>${numberXml(value.num)}</v></c>`;
+    const style = numberStyle(value.digits ?? 0, value.suffix, row, look, styles);
+    return `<c r="${ref}" s="${style}"><v>${numberXml(value.num)}</v></c>`;
   }
   const serial = excelSerial(value.date);
   if (serial === null) return '';
-  return `<c r="${ref}" s="${styleIndex('date', row)}"><v>${serial}</v></c>`;
+  const style =
+    look === undefined
+      ? styleIndex('date', row)
+      : styles.xf(styles.numFmt(DATE_FORMAT), { ...look, horizontal: 'center' });
+  return `<c r="${ref}" s="${style}"><v>${serial}</v></c>`;
 }
 
-function sheetXml(sheet: SheetInput, drawingRelId: string | undefined): string {
+/**
+ * The extended look of one cell, or `undefined` for the base styles. Only a title row and a sheet
+ * with `columnStyles` have one, so every existing book keeps its base style numbers.
+ */
+function cellLook(
+  sheet: SheetInput,
+  rowIndex: number,
+  columnIndex: number,
+  headerRow: number,
+  hasHeader: boolean,
+): Look | undefined {
+  if (sheet.rowStyles?.[rowIndex]?.title === true) return { font: 'title', vertical: true };
+  const columns = sheet.columnStyles;
+  if (columns === undefined || !hasHeader || rowIndex < headerRow - 1) return undefined;
+  const column = columns[columnIndex];
+  if (rowIndex === headerRow - 1) {
+    if (columnIndex >= columns.length) return undefined;
+    return {
+      font: 'header',
+      fill: column?.header === 'slate' ? 'FF596B7D' : 'FF263E58',
+      separators: true,
+      horizontal: 'center',
+      vertical: true,
+      wrap: true,
+    };
+  }
+  if (column === undefined) return undefined;
+  const even = (rowIndex - headerRow) % 2 === 1;
+  if (column.tone === 'index') {
+    return {
+      font: 'index',
+      fill: even ? 'FFF1F4F8' : 'FFFAFBFD',
+      horizontal: 'center',
+      vertical: true,
+    };
+  }
+  if (column.tone === 'computed') {
+    return { font: 'computed', fill: 'FFEEF5FF', horizontal: 'right', vertical: true };
+  }
+  return { font: 'body', fill: even ? 'FFFFF8E6' : 'FFFFFDF5', vertical: true, wrap: true };
+}
+
+/**
+ * Conditional formats of a sheet. A `containsText` rule carries its own `SEARCH` formula: Excel
+ * evaluates the formula, not the `text` attribute, and a rule without it paints nothing there.
+ */
+function conditionalXml(formats: readonly ConditionalFormat[], styles: StyleBook): string {
+  return formats
+    .map((format, index) => {
+      const dxf = styles.alert();
+      const priority = index + 1;
+      if ('containsText' in format) {
+        const text = sanitizeText(format.containsText).replace(/"/gu, '""');
+        const first = format.ref.split(':')[0] ?? format.ref;
+        return (
+          `<conditionalFormatting sqref="${format.ref}">` +
+          `<cfRule type="containsText" dxfId="${dxf}" priority="${priority}" operator="containsText" text="${escapeXml(text)}">` +
+          `<formula>${escapeXml(`NOT(ISERROR(SEARCH("${text}",${first})))`)}</formula></cfRule>` +
+          '</conditionalFormatting>'
+        );
+      }
+      return (
+        `<conditionalFormatting sqref="${format.ref}">` +
+        `<cfRule type="expression" dxfId="${dxf}" priority="${priority}">` +
+        `<formula>${escapeXml(sanitizeText(format.expression))}</formula></cfRule>` +
+        '</conditionalFormatting>'
+      );
+    })
+    .join('');
+}
+
+function sheetXml(sheet: SheetInput, drawingRelId: string | undefined, styles: StyleBook): string {
   const width = rowWidth(sheet.rows);
   const headerRow = sheet.headerRow ?? (sheet.freezeHeader === true ? 1 : 0);
   const hasHeader = headerRow > 0 && sheet.rows.length > 0 && width > 0;
@@ -314,7 +490,7 @@ function sheetXml(sheet: SheetInput, drawingRelId: string | undefined): string {
   const parts = [XML_HEAD, `<worksheet xmlns="${NS_MAIN}" xmlns:r="${NS_REL}">`];
 
   // Порядок частей листа задан схемой и произволу не подлежит: `sheetPr`, `dimension`,
-  // `sheetViews`, `cols`, `sheetData`, `autoFilter`, `mergeCells`.
+  // `sheetViews`, `cols`, `sheetData`, `autoFilter`, `mergeCells`, `conditionalFormatting`.
   if (grouped) {
     const summaryBelow = sheet.summaryBelow === false ? '0' : '1';
     parts.push(`<sheetPr><outlinePr summaryBelow="${summaryBelow}"/></sheetPr>`);
@@ -322,24 +498,35 @@ function sheetXml(sheet: SheetInput, drawingRelId: string | undefined): string {
   if (width > 0 && sheet.rows.length > 0) {
     parts.push(`<dimension ref="A1:${columnName(width)}${sheet.rows.length}"/>`);
   }
-  if (hasHeader) {
-    parts.push(
-      '<sheetViews><sheetView workbookViewId="0">' +
-        `<pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/>` +
-        '</sheetView></sheetViews>',
-    );
+  if (hasHeader || sheet.gridLines === false) {
+    const grid = sheet.gridLines === false ? ' showGridLines="0"' : '';
+    const pane = hasHeader
+      ? `<pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/>`
+      : '';
+    parts.push(`<sheetViews><sheetView${grid} workbookViewId="0">${pane}</sheetView></sheetViews>`);
   }
   parts.push(colsXml(sheet.widths), '<sheetData>');
 
   sheet.rows.forEach((row, rowIndex) => {
-    const kind = rowKindOf(sheet.rowStyles?.[rowIndex], hasHeader && rowIndex === headerRow - 1);
+    const style = sheet.rowStyles?.[rowIndex];
+    const kind = rowKindOf(style, hasHeader && rowIndex === headerRow - 1);
     const cells = row
       .map((value, columnIndex) =>
-        cellXml(value, `${columnName(columnIndex + 1)}${rowIndex + 1}`, kind),
+        cellXml(
+          value,
+          `${columnName(columnIndex + 1)}${rowIndex + 1}`,
+          kind,
+          cellLook(sheet, rowIndex, columnIndex, headerRow, hasHeader),
+          styles,
+        ),
       )
       .join('');
     const level = outline[rowIndex] ?? 0;
-    const attrs = `r="${rowIndex + 1}"${level > 0 ? ` outlineLevel="${level}"` : ''}`;
+    const height =
+      style?.height !== undefined && style.height > 0
+        ? ` ht="${style.height}" customHeight="1"`
+        : '';
+    const attrs = `r="${rowIndex + 1}"${height}${level > 0 ? ` outlineLevel="${level}"` : ''}`;
     parts.push(cells === '' ? `<row ${attrs}/>` : `<row ${attrs}>${cells}</row>`);
   });
 
@@ -350,6 +537,9 @@ function sheetXml(sheet: SheetInput, drawingRelId: string | undefined): string {
   if (sheet.merges && sheet.merges.length > 0) {
     const merges = sheet.merges.map((ref) => `<mergeCell ref="${ref}"/>`).join('');
     parts.push(`<mergeCells count="${sheet.merges.length}">${merges}</mergeCells>`);
+  }
+  if (sheet.conditionalFormats && sheet.conditionalFormats.length > 0) {
+    parts.push(conditionalXml(sheet.conditionalFormats, styles));
   }
   // Рисунок с графиками объявляется последним: порядок частей листа задан схемой, и `drawing`
   // стоит в ней после слитых ячеек.
@@ -374,12 +564,161 @@ function sheetXml(sheet: SheetInput, drawingRelId: string | undefined): string {
  * «Хорошо»: книгу читают рядом с его собственными таблицами, и свой оттенок зелёного читался бы
  * как другая пометка.
  */
-const NUM_FMTS =
-  '<numFmts count="3">' +
-  '<numFmt numFmtId="164" formatCode="DD.MM.YYYY"/>' +
-  '<numFmt numFmtId="165" formatCode="#,##0"/>' +
-  '<numFmt numFmtId="166" formatCode="#,##0.0"/>' +
-  '</numFmts>';
+const DATE_FORMAT = 'DD.MM.YYYY';
+const BASE_NUM_FMTS = [DATE_FORMAT, '#,##0', '#,##0.0'];
+const FIRST_NUM_FMT = 164;
+const TEXT_FMT = 49;
+
+const BASE_FONTS =
+  '<font><sz val="11"/><name val="Calibri"/></font>' +
+  '<font><b/><sz val="11"/><name val="Calibri"/></font>' +
+  '<font><color rgb="FF006100"/><sz val="11"/><name val="Calibri"/></font>' +
+  '<font><b/><color rgb="FF006100"/><sz val="11"/><name val="Calibri"/></font>';
+const BASE_FONT_COUNT = 4;
+
+// Второй заливкой обязан быть gray125: Excel считает книгу без него повреждённой.
+const BASE_FILLS =
+  '<fill><patternFill patternType="none"/></fill>' +
+  '<fill><patternFill patternType="gray125"/></fill>' +
+  '<fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill>' +
+  '<fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/><bgColor indexed="64"/></patternFill></fill>';
+const BASE_FILL_COUNT = 4;
+
+const BASE_BORDERS = '<border><left/><right/><top/><bottom/><diagonal/></border>';
+
+/**
+ * Fonts of the report looks, in the sample's colours. The face stays Calibri, the base font of
+ * the book: the period and totals rows use base styles, and two faces on one sheet read as two
+ * documents glued together.
+ */
+const LOOK_FONTS = {
+  title: '<font><b/><sz val="16"/><color rgb="FF263E58"/><name val="Calibri"/></font>',
+  header: '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>',
+  body: '<font><sz val="11"/><color rgb="FF253446"/><name val="Calibri"/></font>',
+  index: '<font><sz val="10"/><color rgb="FF657487"/><name val="Calibri"/></font>',
+  computed: '<font><b/><sz val="11"/><color rgb="FF1D4D7F"/><name val="Calibri"/></font>',
+} as const;
+
+/** White hairlines between dark header cells: without them adjacent headers merge into one bar. */
+const SEPARATOR_BORDER =
+  '<border><left style="thin"><color rgb="FFFFFFFF"/></left>' +
+  '<right style="thin"><color rgb="FFFFFFFF"/></right><top/><bottom/><diagonal/></border>';
+
+/** The sample's red «Проверить» highlight. */
+const ALERT_DXF =
+  '<dxf><font><b/><color rgb="FFAD2921"/></font>' +
+  '<fill><patternFill patternType="solid"><bgColor rgb="FFFCE7E6"/></patternFill></fill></dxf>';
+
+/**
+ * An extended cell look: a font and fill of the report (`LOOK_FONTS`, an ARGB fill) or, for a
+ * base row that needs an extended number format, the base font and fill numbers of that row.
+ */
+interface Look {
+  font: keyof typeof LOOK_FONTS | { readonly id: number };
+  fill?: string | { readonly id: number };
+  separators?: boolean;
+  horizontal?: 'center' | 'right';
+  vertical?: boolean;
+  wrap?: boolean;
+}
+
+function rowLook(row: RowKind): Look {
+  return { font: { id: ROW_FONT[row] }, fill: { id: ROW_FILL[row] } };
+}
+
+/**
+ * Styles one book adds to the base ones: report fonts, fills and alignments, two-decimal and unit
+ * number formats, the red highlight of conditional formats. Records are numbered after the base
+ * ones in order of first use and written only into a book that uses them: a book without them gets
+ * the base styles part byte for byte as before, and an identical export keeps giving identical bytes.
+ */
+class StyleBook {
+  private readonly formats: string[] = [];
+  private readonly fonts: string[] = [];
+  private readonly fills: string[] = [];
+  private readonly borders: string[] = [];
+  private readonly xfs: string[] = [];
+  private readonly xfIds = new Map<string, number>();
+  private alertUsed = false;
+
+  numFmt(code: string): number {
+    const base = BASE_NUM_FMTS.indexOf(code);
+    if (base >= 0) return FIRST_NUM_FMT + base;
+    return FIRST_NUM_FMT + BASE_NUM_FMTS.length + StyleBook.slot(this.formats, code);
+  }
+
+  xf(numFmtId: number, look: Look): number {
+    const fontId =
+      typeof look.font === 'string'
+        ? BASE_FONT_COUNT + StyleBook.slot(this.fonts, LOOK_FONTS[look.font])
+        : look.font.id;
+    const fillId =
+      look.fill === undefined
+        ? 0
+        : typeof look.fill === 'string'
+          ? BASE_FILL_COUNT +
+            StyleBook.slot(
+              this.fills,
+              `<fill><patternFill patternType="solid"><fgColor rgb="${look.fill}"/><bgColor indexed="64"/></patternFill></fill>`,
+            )
+          : look.fill.id;
+    const borderId =
+      look.separators === true ? 1 + StyleBook.slot(this.borders, SEPARATOR_BORDER) : 0;
+    const align = [
+      look.horizontal === undefined ? '' : ` horizontal="${look.horizontal}"`,
+      look.vertical === true ? ' vertical="center"' : '',
+      look.wrap === true ? ' wrapText="1"' : '',
+    ].join('');
+    const xml =
+      `<xf numFmtId="${numFmtId}" fontId="${fontId}" fillId="${fillId}" borderId="${borderId}" xfId="0"` +
+      ' applyNumberFormat="1" applyFont="1" applyFill="1"' +
+      (borderId === 0 ? '' : ' applyBorder="1"') +
+      (align === '' ? '/>' : ` applyAlignment="1"><alignment${align}/></xf>`);
+    const known = this.xfIds.get(xml);
+    if (known !== undefined) return known;
+    const id = BASE_XF_COUNT + this.xfs.length;
+    this.xfs.push(xml);
+    this.xfIds.set(xml, id);
+    return id;
+  }
+
+  /** The differential style of conditional formats; there is one, so its number is zero. */
+  alert(): number {
+    this.alertUsed = true;
+    return 0;
+  }
+
+  xml(): string {
+    const formats = [...BASE_NUM_FMTS, ...this.formats]
+      .map(
+        (code, index) =>
+          `<numFmt numFmtId="${FIRST_NUM_FMT + index}" formatCode="${escapeXml(code)}"/>`,
+      )
+      .join('');
+    const fonts = BASE_FONTS + this.fonts.join('');
+    const fills = BASE_FILLS + this.fills.join('');
+    const borders = BASE_BORDERS + this.borders.join('');
+    return (
+      XML_HEAD +
+      `<styleSheet xmlns="${NS_MAIN}">` +
+      `<numFmts count="${BASE_NUM_FMTS.length + this.formats.length}">${formats}</numFmts>` +
+      `<fonts count="${BASE_FONT_COUNT + this.fonts.length}">${fonts}</fonts>` +
+      `<fills count="${BASE_FILL_COUNT + this.fills.length}">${fills}</fills>` +
+      `<borders count="${1 + this.borders.length}">${borders}</borders>` +
+      '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+      cellXfsXml(this.xfs) +
+      (this.alertUsed ? `<dxfs count="1">${ALERT_DXF}</dxfs>` : '') +
+      '</styleSheet>'
+    );
+  }
+
+  private static slot(list: string[], item: string): number {
+    const index = list.indexOf(item);
+    if (index >= 0) return index;
+    list.push(item);
+    return list.length - 1;
+  }
+}
 
 const KIND_FMT: Record<CellKind, number> = { text: 49, int: 165, dec: 166, date: 164 };
 const ROW_FONT: Record<RowKind, number> = {
@@ -399,40 +738,24 @@ const ROW_FILL: Record<RowKind, number> = {
   greyBold: 3,
 };
 
-function cellXfsXml(): string {
-  const base = [
-    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>',
-    '<xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>',
-    '<xf numFmtId="49" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>',
-  ];
-  const rest = ROW_KINDS.flatMap((row) =>
+const BASE_XFS = [
+  '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>',
+  '<xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>',
+  '<xf numFmtId="49" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>',
+  ...ROW_KINDS.flatMap((row) =>
     CELL_KINDS.map(
       (kind) =>
         `<xf numFmtId="${KIND_FMT[kind]}" fontId="${ROW_FONT[row]}" fillId="${ROW_FILL[row]}" borderId="0" xfId="0"` +
         ' applyNumberFormat="1" applyFont="1" applyFill="1"/>',
     ),
-  );
-  const all = [...base, ...rest];
+  ),
+];
+const BASE_XF_COUNT = BASE_XFS.length;
+
+function cellXfsXml(extra: readonly string[]): string {
+  const all = [...BASE_XFS, ...extra];
   return `<cellXfs count="${all.length}">${all.join('')}</cellXfs>`;
 }
-
-const STYLES_XML =
-  XML_HEAD +
-  `<styleSheet xmlns="${NS_MAIN}">` +
-  NUM_FMTS +
-  '<fonts count="4"><font><sz val="11"/><name val="Calibri"/></font>' +
-  '<font><b/><sz val="11"/><name val="Calibri"/></font>' +
-  '<font><color rgb="FF006100"/><sz val="11"/><name val="Calibri"/></font>' +
-  '<font><b/><color rgb="FF006100"/><sz val="11"/><name val="Calibri"/></font></fonts>' +
-  // Второй заливкой обязан быть gray125: Excel считает книгу без него повреждённой.
-  '<fills count="4"><fill><patternFill patternType="none"/></fill>' +
-  '<fill><patternFill patternType="gray125"/></fill>' +
-  '<fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill>' +
-  '<fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/><bgColor indexed="64"/></patternFill></fill></fills>' +
-  '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
-  '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-  cellXfsXml() +
-  '</styleSheet>';
 
 // ── Сводная таблица ──
 
@@ -487,6 +810,7 @@ const CT_PIVOT_TABLE = 'application/vnd.openxmlformats-officedocument.spreadshee
 function cacheValue(cell: CellInput | undefined): number | string | null {
   if (cell === undefined || cell === '') return null;
   if (typeof cell === 'string') return cell;
+  if ('formula' in cell) return cell.value === '' ? null : cell.value;
   if ('num' in cell) return Number.isFinite(cell.num) ? cell.num : null;
   return cell.date;
 }
@@ -1174,12 +1498,21 @@ function workbookXml(
         `${sheets_[index]?.hidden === true ? ' state="hidden"' : ''} r:id="rId${index + 1}"/>`,
     )
     .join('');
+  // A book with formulas asks the editor to recalculate them on open: the stored values are the
+  // server's, and a filter or a hand edit must move the totals from the first click.
+  const calc = sheets_.some(hasFormula) ? '<calcPr calcId="0" fullCalcOnLoad="1"/>' : '';
   // Связь кэша идёт последней в списке связей книги — после листов и стилей.
   const caches =
     pivotRelId === null
       ? ''
       : `<pivotCaches><pivotCache cacheId="1" r:id="rId${pivotRelId}"/></pivotCaches>`;
-  return `${XML_HEAD}<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_REL}"><sheets>${sheets}</sheets>${caches}</workbook>`;
+  return `${XML_HEAD}<workbook xmlns="${NS_MAIN}" xmlns:r="${NS_REL}"><sheets>${sheets}</sheets>${calc}${caches}</workbook>`;
+}
+
+function hasFormula(sheet: SheetInput): boolean {
+  return sheet.rows.some((row) =>
+    row.some((cell) => typeof cell !== 'string' && 'formula' in cell),
+  );
 }
 
 function workbookRelsXml(count: number, withPivot: boolean): string {
@@ -1226,6 +1559,12 @@ export function writeWorkbook(sheets: SheetInput[], pivot?: PivotInput): Uint8Ar
     [...(parts === null ? [] : [parts.relation]), ...(drawings?.relations ?? [])],
     input.length,
   );
+  // Sheets are rendered before the styles part: the styles a book adds are those its cells used.
+  // The parts still enter the archive in the old order, or identical books would change bytes.
+  const styles = new StyleBook();
+  const sheetParts = input.map((sheet, index) =>
+    encoder.encode(sheetXml(sheet, rels.drawingIds.get(index), styles)),
+  );
   const files: Record<string, Uint8Array> = {
     '[Content_Types].xml': encoder.encode(
       contentTypesXml(input.length, (parts?.contentTypes ?? '') + (drawings?.contentTypes ?? '')),
@@ -1239,12 +1578,10 @@ export function writeWorkbook(sheets: SheetInput[], pivot?: PivotInput): Uint8Ar
       workbookXml(titles, input, parts === null ? null : input.length + 2),
     ),
     'xl/_rels/workbook.xml.rels': encoder.encode(workbookRelsXml(input.length, parts !== null)),
-    'xl/styles.xml': encoder.encode(STYLES_XML),
+    'xl/styles.xml': encoder.encode(styles.xml()),
   };
-  input.forEach((sheet, index) => {
-    files[`xl/worksheets/sheet${index + 1}.xml`] = encoder.encode(
-      sheetXml(sheet, rels.drawingIds.get(index)),
-    );
+  sheetParts.forEach((part, index) => {
+    files[`xl/worksheets/sheet${index + 1}.xml`] = part;
   });
   if (parts !== null) Object.assign(files, parts.files);
   if (drawings !== null) Object.assign(files, drawings.files);
