@@ -6,6 +6,7 @@ import {
 } from '@technic/contracts';
 import { err } from '../lib/errors';
 import {
+  columnName,
   writeWorkbook,
   type CellInput,
   type ColumnStyle,
@@ -500,6 +501,25 @@ function checkFormats(columns: readonly string[], last: number): ConditionalForm
   ]);
 }
 
+/**
+ * Weekend rows (ADR 0241, the owner's request of 02.11.2026): Saturday and Sunday in two different
+ * light shades across the whole data row. A rule on the row's date rather than a fill per cell: it
+ * follows the row through sorting and filtering, and the column looks of other rows stay intact.
+ * The rules come after «Проверить» in the list, so the red highlight wins on a weekend row.
+ */
+const SATURDAY_FILL = 'FFEDE7F6';
+const SUNDAY_FILL = 'FFFFE0B2';
+
+function weekendFormats(lastColumn: string, last: number): ConditionalFormat[] {
+  if (last < FIRST_DATA_ROW) return [];
+  const ref = `A${FIRST_DATA_ROW}:${lastColumn}${last}`;
+  const day = `WEEKDAY($B${FIRST_DATA_ROW},2)`;
+  return [
+    { ref, expression: `${day}=6`, fill: SATURDAY_FILL },
+    { ref, expression: `${day}=7`, fill: SUNDAY_FILL },
+  ];
+}
+
 function head(width: number, period: string, totals: CellInput[]): CellInput[][] {
   const pad = (cells: CellInput[]) => [...cells, ...Array<string>(width - cells.length).fill('')];
   return [pad([TITLE]), pad(['', 'Период отчета:', period]), pad(totals)];
@@ -525,7 +545,10 @@ function ownSheet(rows: readonly ReportRow[], period: string): SheetInput {
       OWN_HEADER,
       ...lines.map((line) => line.cells),
     ],
-    conditionalFormats: checkFormats(['H', 'K'], last),
+    conditionalFormats: [
+      ...checkFormats(['H', 'K'], last),
+      ...weekendFormats(columnName(OWN_HEADER.length), last),
+    ],
   };
 }
 
@@ -551,6 +574,7 @@ function rentalSheet(rows: readonly ReportRow[], period: string): SheetInput {
       RENTAL_HEADER,
       ...lines.map((line) => line.cells),
     ],
+    conditionalFormats: weekendFormats(columnName(RENTAL_HEADER.length), last),
   };
 }
 

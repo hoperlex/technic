@@ -9,7 +9,9 @@
 - Связано: [ADR 0110](0110-readings-intake-stats-maintenance.md) (the mechanics' maintenance form
   without readings, now with them), [ADR 0121](0121-portal-sections-registry.md) (start order of
   sections), [ADR 0076](0076-garage-day-view.md) (the garage)
-- Область: [button and window](../../apps/web/src/features/readings-report-export),
+- Область: [book writer](../../apps/api/src/lib/xlsx.ts),
+  [book](../../apps/api/src/services/readings-admin-export.ts),
+  [button and window](../../apps/web/src/features/readings-report-export),
   [garage page](../../apps/web/src/pages/garage/GaragePage.tsx),
   [tab strip](../../apps/web/src/shared/ui/PageTabs.tsx),
   [exports tab](../../apps/web/src/pages/admin/ExportsTab.tsx),
@@ -25,7 +27,8 @@ held by the administrator and by grants. On 02.11.2026 the owner asked, urgently
 downloadable from a button in the garage header — at the right end of the tab strip, pushing the
 day and the counters to the left — with a window that explains the book and picks the period on a
 calendar, one export without a choice of kind; available to administrators, managers and mechanics
-in full. A survey the same day fixed the two forks below.
+in full. A survey the same day fixed the two forks below. Right after it, the same day, the owner
+asked for the weekends to stand out in the book: Saturday in one shade, Sunday in another.
 
 ## Decision
 
@@ -51,6 +54,14 @@ in full. A survey the same day fixed the two forks below.
    «Заказ ТС» (start order 3) instead of the garage (4), so the two swap places. Every other role
    holding both sections starts at «Вывоз мусора», so the swap moves nobody else.
 
+6. **Weekend rows are painted in the book**, on both sheets: Saturday light lilac (`EDE7F6`),
+   Sunday light apricot (`FFE0B2`), across the whole data row. It is a conditional format on the
+   row's date (`WEEKDAY($B5,2)=6` / `=7`), not a fill per cell: it follows the row through sorting
+   and filtering and leaves the column looks of weekdays intact. The weekend rules come after the
+   red «Проверить» ones, so the alert wins on a weekend row. The writer gained a fill-only
+   conditional format; its differential styles are numbered in order of first use, so the red one
+   stays first and books without conditional formats are byte-identical as before.
+
 ## Consequences
 
 - Mechanics see the «Показания» tab — intake, journals, statistics and dashboard photos — and the
@@ -62,4 +73,4 @@ in full. A survey the same day fixed the two forks below.
   without `garage.read` would have no door to the book. None is known: the dev data has no grant
   with the right, and the roles the owner named now hold it by role.
 - No migration of the schema and no client floor change: the role sets are computed by the server
-  on each request. The release entry is migration `0403`.
+  on each request. The release entries are migrations `0403` (the button) and `0404` (weekends).

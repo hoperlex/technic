@@ -73,10 +73,10 @@ function sanitizeText(value: string): string {
 }
 
 /**
- * Имя колонки по её номеру: 1 → `A`, 27 → `AA`, 703 → `AAA`. Это не 26-ричная система — разряда
- * «ноль» в ней нет, поэтому единица вычитается на каждом шаге.
+ * A column's name by its number: 1 → `A`, 27 → `AA`, 703 → `AAA`. Not base 26 — there is no zero
+ * digit, so one is subtracted at every step.
  */
-function columnName(index: number): string {
+export function columnName(index: number): string {
   let rest = index;
   let name = '';
   while (rest > 0) {
@@ -150,13 +150,15 @@ export interface ColumnStyle {
 }
 
 /**
- * A conditional format that paints matching cells red (the sample's «Проверить» highlight).
- * `containsText` paints the cells of `ref` holding that text; `expression` paints `ref` when the
- * formula, written for the top-left cell of `ref`, is true.
+ * A conditional format. `containsText` paints the cells of `ref` holding that text; `expression`
+ * paints `ref` when the formula, written for the top-left cell of `ref`, is true. The paint is the
+ * sample's red «Проверить» highlight, or only a background when `fill` (ARGB) is given — the
+ * weekend rows of the readings report (ADR 0241). The order of the list is the rules' priority:
+ * where two rules paint one cell, the earlier one wins.
  */
 export type ConditionalFormat =
   | { readonly ref: string; readonly containsText: string }
-  | { readonly ref: string; readonly expression: string };
+  | { readonly ref: string; readonly expression: string; readonly fill?: string };
 
 export interface SheetInput {
   /** Имя листа как его увидит человек. */
@@ -458,7 +460,10 @@ function cellLook(
 function conditionalXml(formats: readonly ConditionalFormat[], styles: StyleBook): string {
   return formats
     .map((format, index) => {
-      const dxf = styles.alert();
+      const dxf =
+        'expression' in format && format.fill !== undefined
+          ? styles.tint(format.fill)
+          : styles.alert();
       const priority = index + 1;
       if ('containsText' in format) {
         const text = sanitizeText(format.containsText).replace(/"/gu, '""');
@@ -628,7 +633,7 @@ function rowLook(row: RowKind): Look {
 
 /**
  * Styles one book adds to the base ones: report fonts, fills and alignments, two-decimal and unit
- * number formats, the red highlight of conditional formats. Records are numbered after the base
+ * number formats, the differential styles of conditional formats (numbered in order of first use). Records are numbered after the base
  * ones in order of first use and written only into a book that uses them: a book without them gets
  * the base styles part byte for byte as before, and an identical export keeps giving identical bytes.
  */
@@ -639,7 +644,7 @@ class StyleBook {
   private readonly borders: string[] = [];
   private readonly xfs: string[] = [];
   private readonly xfIds = new Map<string, number>();
-  private alertUsed = false;
+  private readonly dxfs: string[] = [];
 
   numFmt(code: string): number {
     const base = BASE_NUM_FMTS.indexOf(code);
@@ -682,10 +687,17 @@ class StyleBook {
     return id;
   }
 
-  /** The differential style of conditional formats; there is one, so its number is zero. */
+  /** The red differential style of «Проверить». */
   alert(): number {
-    this.alertUsed = true;
-    return 0;
+    return StyleBook.slot(this.dxfs, ALERT_DXF);
+  }
+
+  /** A differential style that only fills the background, in ARGB. */
+  tint(argb: string): number {
+    return StyleBook.slot(
+      this.dxfs,
+      `<dxf><fill><patternFill patternType="solid"><bgColor rgb="${argb}"/></patternFill></fill></dxf>`,
+    );
   }
 
   xml(): string {
@@ -707,7 +719,9 @@ class StyleBook {
       `<borders count="${1 + this.borders.length}">${borders}</borders>` +
       '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
       cellXfsXml(this.xfs) +
-      (this.alertUsed ? `<dxfs count="1">${ALERT_DXF}</dxfs>` : '') +
+      (this.dxfs.length > 0
+        ? `<dxfs count="${this.dxfs.length}">${this.dxfs.join('')}</dxfs>`
+        : '') +
       '</styleSheet>'
     );
   }

@@ -176,7 +176,32 @@ describe('книга показаний: листы, шапка и порядо�
       { ref: 'H3', expression: 'COUNTIF(H5:H6,"Проверить")>0' },
       { ref: 'K5:K6', containsText: 'Проверить' },
       { ref: 'K3', expression: 'COUNTIF(K5:K6,"Проверить")>0' },
+      { ref: 'A5:M6', expression: 'WEEKDAY($B5,2)=6', fill: 'FFEDE7F6' },
+      { ref: 'A5:M6', expression: 'WEEKDAY($B5,2)=7', fill: 'FFFFE0B2' },
     ]);
+  });
+
+  /**
+   * Weekends (ADR 0241): Saturday and Sunday rows in two shades across the whole data row, by the
+   * row's date, after the red «Проверить» so the alert wins on a weekend row. An empty sheet has no
+   * data range and no rules.
+   */
+  it('weekend rows of both sheets are painted by the date, Saturday and Sunday apart', () => {
+    const rented = row({
+      vehicle: vehicle({ id: 'v-rent', ownership: 'rental', lessorName: 'ООО «Аренда»' }),
+      readings: [],
+      readingPersons: [],
+    });
+    const [own, rental] = sheets([row(), rented, { ...rented, date: '2026-10-04' }]);
+    expect(own!.conditionalFormats!.slice(4)).toEqual([
+      { ref: 'A5:M5', expression: 'WEEKDAY($B5,2)=6', fill: 'FFEDE7F6' },
+      { ref: 'A5:M5', expression: 'WEEKDAY($B5,2)=7', fill: 'FFFFE0B2' },
+    ]);
+    expect(rental!.conditionalFormats).toEqual([
+      { ref: 'A5:K6', expression: 'WEEKDAY($B5,2)=6', fill: 'FFEDE7F6' },
+      { ref: 'A5:K6', expression: 'WEEKDAY($B5,2)=7', fill: 'FFFFE0B2' },
+    ]);
+    expect(sheets([row()])[1]!.conditionalFormats).toEqual([]);
   });
 
   it('rows go by vehicle, then day, then request number; № runs per sheet', () => {

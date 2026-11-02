@@ -1063,6 +1063,38 @@ describe('writer: formulas, column looks and conditional formats', () => {
     );
   });
 
+  /**
+   * A fill-only rule (the weekend rows of ADR 0241) gets its own differential style after the red
+   * one; two rules with one colour share a style, and the list order is the priority.
+   */
+  it('a rule with a fill paints only the background, with its own differential style', () => {
+    const book = writeWorkbook([
+      {
+        name: 'Неделя',
+        rows: [['Дата'], [{ date: '2026-10-31' }], [{ date: '2026-11-01' }]],
+        conditionalFormats: [
+          { ref: 'A2:A3', containsText: 'Проверить' },
+          { ref: 'A2:A3', expression: 'WEEKDAY($A2,2)=6', fill: 'FFEDE7F6' },
+          { ref: 'A2:A3', expression: 'WEEKDAY($A2,2)=7', fill: 'FFFFE0B2' },
+          { ref: 'A1', expression: 'TRUE', fill: 'FFEDE7F6' },
+        ],
+      },
+    ]);
+    const sheet = firstSheetXml(book);
+    expect(sheet).toContain(
+      '<conditionalFormatting sqref="A2:A3"><cfRule type="expression" dxfId="1" priority="2">' +
+        '<formula>WEEKDAY($A2,2)=6</formula></cfRule></conditionalFormatting>',
+    );
+    expect(sheet).toContain('<cfRule type="expression" dxfId="2" priority="3">');
+    expect(sheet).toContain('<cfRule type="expression" dxfId="1" priority="4">');
+    const styles = partOf(book, 'xl/styles.xml');
+    expect(styles).toContain('<dxfs count="3"><dxf><font><b/><color rgb="FFAD2921"/></font>');
+    expect(styles).toContain(
+      '<dxf><fill><patternFill patternType="solid"><bgColor rgb="FFEDE7F6"/></patternFill></fill></dxf>' +
+        '<dxf><fill><patternFill patternType="solid"><bgColor rgb="FFFFE0B2"/></patternFill></fill></dxf></dxfs>',
+    );
+  });
+
   it('a rate cell shows its unit through the format and stays a number', () => {
     const book = writeWorkbook([
       {
