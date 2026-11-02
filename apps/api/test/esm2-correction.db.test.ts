@@ -584,9 +584,8 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
   });
 
   /**
-   * Р5: подпись объекта под днём работы снимается коррекцией — и только ею. Обычная смена машины
-   * об эту подпись по-прежнему разбивается (ADR 0048), а прежние `approvedBy`/`approvedAt`
-   * остаются в снимке операции: «кто принял часы» спрашивают через два месяца.
+   * Legacy changes the whole assignment, so even an earlier signature still blocks a plain swap.
+   * A correction clears it and preserves its previous author and timestamp in the operation log.
    */
   it('подтверждённый день снимается коррекцией, а обычной смене техники мешает', async () => {
     const request = await confirm(await backdatedRequest(ctx.plainTypeId), {
@@ -610,7 +609,8 @@ describe.skipIf(!DB_URL)('коррекция назначения задним �
 
     const plain = await changeAssignment(request, { vehicleId: ctx.otherVehicleId });
     expect(plain.statusCode, plain.body).toBe(422);
-    expect(plain.json().message).toContain('подтверждённые дни');
+    expect(plain.json().message).toContain('последнего подписанного дня');
+    expect(plain.json().fields.vehicleId).toBe('Есть согласованные смены');
 
     const res = await changeAssignment(request, {
       vehicleId: ctx.otherVehicleId,
