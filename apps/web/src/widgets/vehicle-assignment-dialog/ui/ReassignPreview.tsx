@@ -48,19 +48,21 @@ export function ReassignPreview({ preview, staleReason }: Props) {
       )}
 
       {/* The signed-days lock comes first: nothing below happens while it holds, and reading the
-        paper list before the ban would be reading in vain. The way out is named directly: the
-        signature is removed not by a vehicle change but by a backdated correction. */}
+        paper list before the ban would be reading in vain. The way out is named directly: a later
+        change date (the days before it stay with the previous vehicle, ADR 0243), or the
+        correction, which removes the signature instead of locking on it. */}
       {blocked.length > 0 && (
         <Alert
           type="error"
           showIcon
-          title="Сменить технику нельзя: дни уже подписаны объектом"
+          title="Сменить технику нельзя: с этой даты есть дни, подписанные объектом"
           description={
             <>
               <div>
                 Часы этих дней приняты, и смена машины переписала бы задним числом то, под чем стоит
-                подпись. Снять её можно только коррекцией — вернитесь и отметьте «Исправить задним
-                числом: работала другая машина».
+                подпись. Вернитесь и выберите дату после последнего из них — дни до неё останутся за
+                прежней машиной. Если работала другая машина, подпись снимает только коррекция:
+                отметьте «Исправить задним числом».
               </div>
               <ul style={listStyle}>
                 {blocked.map((day) => (

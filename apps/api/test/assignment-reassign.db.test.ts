@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import {
   moscowDateKeyOf,
+  BACKDATE_PERMISSION_MESSAGE,
   shiftDateKey,
   weekStartKey,
   type AssignmentIssueWarningsDto,
@@ -202,6 +203,8 @@ interface Scene {
 interface SceneOptions {
   /** Подписанный объектом день внутри отработанной недели. */
   approvedPastDay?: boolean;
+  /** Signed dates let the test distinguish the previous vehicle’s days from the changed range. */
+  approvedDays?: string[];
 }
 
 /**
@@ -263,6 +266,7 @@ async function makeScene(options: SceneOptions = {}): Promise<Scene> {
   if (options.approvedPastDay) {
     await insertShift(requestId, PAST_DAY, 8, true);
   }
+  for (const day of options.approvedDays ?? []) await insertShift(requestId, day, 8, true);
 
   const [sheet] = (
     await ctx.db.execute<{ id: string }>(sql`
@@ -401,17 +405,25 @@ function correctionBlock(scene: Scene): Record<string, unknown> {
 }
 
 describeReadModes(readMode, 'предпросмотр смены техники', (mode) => {
-  it('предпросмотр не пишет ничего и показывает подписанные дни, запирающие обычную смену', async () => {
-    const scene = await makeScene({ approvedPastDay: true });
+  it('предпросмотр не пишет ничего и показывает подписанные дни с даты смены, запирающие обычную смену', async () => {
+    // History leaves the worked week with the previous vehicle; legacy still changes the whole term.
+    const scene = await makeScene({ approvedDays: [PAST_DAY, FUTURE_DAY] });
     const before = await snapshotOf(scene.requestId);
 
     const res = await previewOf(scene, {});
     expect(res.statusCode, res.body).toBe(200);
     const dto = res.json<AssignmentPreviewDto>();
 
-    // Первое множество Р18: подпись объекта под днём работы — то, из-за чего обычная смена
-    // невозможна. Часы показываются рядом с днём, чтобы цена была видна, а не подразумевалась.
-    expect(dto.blockedShiftDays).toEqual([{ date: PAST_DAY, hours: 8 }]);
+    // The preview names each blocking signature with its hours, not just a count.
+    expect(dto.blockedShiftDays).toEqual(
+      byReadMode(mode, {
+        legacy: [
+          { date: PAST_DAY, hours: 8 },
+          { date: FUTURE_DAY, hours: 8 },
+        ],
+        history: [{ date: FUTURE_DAY, hours: 8 }],
+      }),
+    );
     // Второе множество пусто: обычная смена подписей не снимает — она об них разбивается.
     expect(dto.clearedShiftDays).toEqual([]);
     expect(dto.clearedShiftsFingerprint).toBeNull();
@@ -430,6 +442,188 @@ describeReadModes(readMode, 'предпросмотр смены техники'
     expect(dto.operationRequirement).toBeNull();
 
     expect(await snapshotOf(scene.requestId)).toEqual(before);
+  });
+
+  it('дата смены после последнего подписанного дня снимает замок; прежняя машина за свои дни не отвечает', async () => {
+    const scene = await makeScene({ approvedDays: [PAST_DAY, FUTURE_DAY] });
+    const later = shiftDateKey(FUTURE_DAY, 1);
+    const res = await previewOf(scene, { effectiveDate: later });
+    // Legacy has one whole-term assignment and cannot honour an explicit date.
+    const expected = byReadMode(mode, { legacy: 422, history: 200 });
+    expect(res.statusCode, res.body).toBe(expected);
+    if (expected === 200) {
+      const dto = res.json<AssignmentPreviewDto>();
+      expect(dto.blockedShiftDays).toEqual([]);
+      // No sheet of the new vehicle may cover a day before the chosen date.
+      const forNew = dto.plan.issue.filter((sheet) => sheet.vehicleId === ctx.vehicleB.id);
+      expect(forNew.length).toBeGreaterThan(0);
+      expect(forNew.every((sheet) => sheet.from >= later)).toBe(true);
+    }
+  });
+
+  it('дата смены вне срока заявки — 422 в обоих режимах, ничего не записано', async () => {
+    const scene = await makeScene();
+    const before = await snapshotOf(scene.requestId);
+    for (const effectiveDate of [shiftDateKey(TERM_FROM, -1), shiftDateKey(TERM_TO, 1)]) {
+      const preview = await previewOf(scene, { effectiveDate });
+      expect(preview.statusCode, preview.body).toBe(422);
+      const apply = await applyOf(scene, { effectiveDate });
+      expect(apply.statusCode, apply.body).toBe(422);
+      expect(apply.json<{ message: string }>().message).toContain('вне срока заявки');
+    }
+    expect(await snapshotOf(scene.requestId)).toEqual(before);
+  });
+
+  it('дата, которую дверь берёт и так, — та же команда: отпечаток не зависит от того, прислали ли её', async () => {
+    const scene = await makeScene();
+    const without = (await previewOf(scene, {})).json<AssignmentPreviewDto>();
+    const withDate = await previewOf(scene, { effectiveDate: TODAY });
+    expect(withDate.statusCode, withDate.body).toBe(200);
+    expect(withDate.json<AssignmentPreviewDto>().fingerprint).toBe(without.fingerprint);
+  });
+
+  it('смена с будущей даты: дни до неё остаются за прежней машиной, с неё работает новая', async () => {
+    const scene = await makeScene();
+    const effectiveDate = shiftDateKey(MONDAY, 8);
+    const preview = await previewOf(scene, { effectiveDate });
+    const expected = byReadMode(mode, { legacy: 422, history: 200 });
+    expect(preview.statusCode, preview.body).toBe(expected);
+    const refusal = await applyOf(scene, { effectiveDate });
+    if (expected === 422) {
+      // A legacy refusal prevents silently changing the whole term.
+      expect(refusal.statusCode, refusal.body).toBe(422);
+      expect(await assignedVehicleOf(scene.requestId)).toBe(ctx.vehicleA.id);
+      return;
+    }
+    const dto = preview.json<AssignmentPreviewDto>();
+    const res = await applyOf(scene, {
+      effectiveDate,
+      previewFingerprint: dto.fingerprint,
+      acknowledgements: acknowledgementsOf(dto.issues),
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await assignedVehicleOf(scene.requestId)).toBe(ctx.vehicleB.id);
+    // The history row of the new vehicle lies on the chosen day, not on today.
+    const rows = (
+      await ctx.db.execute<{ effective_date: string }>(sql`
+        SELECT effective_date::text FROM vehicle_request_assignment_changes
+         WHERE request_id = ${scene.requestId} AND dimension = 'vehicle'
+           AND vehicle_id = ${ctx.vehicleB.id} AND superseded_at IS NULL`)
+    ).rows;
+    expect(rows.map((row) => row.effective_date)).toEqual([effectiveDate]);
+    // No sheet of the new vehicle starts before that day.
+    const early = (
+      await ctx.db.execute<{ n: string }>(sql`
+        SELECT count(*) AS n FROM waybills
+         WHERE source_request_id = ${scene.requestId} AND status <> 'cancelled'
+           AND vehicle_id = ${ctx.vehicleB.id} AND period_from < ${effectiveDate}`)
+    ).rows;
+    expect(Number(early[0]!.n)).toBe(0);
+  });
+
+  it('дата в отработанной неделе: нужны причина и право, а листы закончившейся недели — только коррекцией', async () => {
+    const scene = await makeScene();
+    const before = await snapshotOf(scene.requestId);
+    // The backdate guard must refuse a missing reason before any write.
+    const noReason = await applyOf(scene, { effectiveDate: PAST_DAY });
+    expect(noReason.statusCode, noReason.body).toBe(422);
+    expect(noReason.json<{ message: string }>().message).toMatch(/причин/iu);
+    expect(await snapshotOf(scene.requestId)).toEqual(before);
+
+    // A reason does not unlock worked weeks: their sheets still require the correction block.
+    const reasoned = await previewOf(scene, {
+      effectiveDate: PAST_DAY,
+      backdateReason: 'ехала другая машина — проверено по журналу объекта',
+    });
+    expect(reasoned.statusCode, reasoned.body).toBe(
+      byReadMode(mode, { legacy: 422, history: 200 }),
+    );
+    const refused = await applyOf(scene, {
+      effectiveDate: PAST_DAY,
+      backdateReason: 'ехала другая машина — проверено по журналу объекта',
+      ...(mode === 'history'
+        ? {
+            previewFingerprint: reasoned.json<AssignmentPreviewDto>().fingerprint,
+            acknowledgements: acknowledgementsOf(reasoned.json<AssignmentPreviewDto>().issues),
+          }
+        : {}),
+    });
+    expect(refused.statusCode, refused.body).toBe(422);
+    expect(await snapshotOf(scene.requestId)).toEqual(before);
+  });
+
+  it('право менять технику не разрешает смену с прошедшей даты без права коррекции', async () => {
+    const originalAdmin = ctx.admin;
+    try {
+      ctx.admin = await newAccount('manager');
+      const scene = await makeScene();
+      const before = await snapshotOf(scene.requestId);
+      const res = await applyOf(scene, {
+        effectiveDate: PAST_DAY,
+        backdateReason: 'Вчера работала другая машина',
+      });
+      expect(res.statusCode, res.body).toBe(403);
+      expect(res.json<{ message: string }>().message).toBe(BACKDATE_PERMISSION_MESSAGE);
+      expect(await snapshotOf(scene.requestId)).toEqual(before);
+    } finally {
+      ctx.admin = originalAdmin;
+    }
+  });
+
+  it('прошедшая дата текущей недели сохраняет предыдущую машину до неё и записывает причину в историю', async () => {
+    if (mode !== 'history') return;
+    const originalAdmin = ctx.admin;
+    // Freeze Date alone: HTTP and database timers must continue while the scene is on Thursday.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(`${shiftDateKey(MONDAY, 3)}T09:00:00+03:00`));
+    try {
+      ctx.admin = await newAccount('admin');
+      const scene = await makeScene({ approvedDays: [MONDAY] });
+      const effectiveDate = shiftDateKey(MONDAY, 1);
+      const backdateReason = 'По журналу объекта со вторника работала другая машина';
+      const preview = await previewOf(scene, { effectiveDate });
+      expect(preview.statusCode, preview.body).toBe(200);
+      const dto = preview.json<AssignmentPreviewDto>();
+      expect(dto.blockedShiftDays).toEqual([]);
+      const res = await applyOf(scene, {
+        effectiveDate,
+        backdateReason,
+        previewFingerprint: dto.fingerprint,
+        acknowledgements: acknowledgementsOf(dto.issues),
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      const history = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/vehicle-requests/${scene.requestId}/history`,
+        headers: ctx.admin.auth,
+      });
+      expect(history.statusCode, history.body).toBe(200);
+      expect(history.body).toContain(backdateReason);
+      expect(history.body).toContain('effectiveDate');
+      const [signed] = (
+        await ctx.db.execute<{ approved: boolean }>(sql`
+        SELECT approved_at IS NOT NULL AS approved FROM vehicle_request_shifts
+         WHERE request_id = ${scene.requestId} AND shift_date = ${MONDAY}`)
+      ).rows;
+      expect(signed?.approved).toBe(true);
+      const sheets = (
+        await ctx.db.execute<{ vehicle_id: string; period_from: string; period_to: string }>(sql`
+        SELECT vehicle_id, period_from::text, period_to::text FROM waybills
+         WHERE source_request_id = ${scene.requestId} AND status <> 'cancelled'
+           AND period_from <= ${effectiveDate} AND period_to >= ${MONDAY}`)
+      ).rows;
+      expect(
+        sheets.some((sheet) => sheet.vehicle_id === ctx.vehicleA.id && sheet.period_to === MONDAY),
+      ).toBe(true);
+      expect(
+        sheets.some(
+          (sheet) => sheet.vehicle_id === ctx.vehicleB.id && sheet.period_from === effectiveDate,
+        ),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      ctx.admin = originalAdmin;
+    }
   });
 
   it('предпросмотр коррекции показывает снимаемые подписи и листы под разблокировку', async () => {

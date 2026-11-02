@@ -233,16 +233,16 @@ describe('подтверждённые дни: что запирают и о ч�
     ).toBeNull();
   });
 
-  it('предикат смены машины знает про подтверждённые дни — кнопка не ведёт в 422', () => {
+  it('кнопка смены машины не зависит от подписей: замок считается от выбранной даты (ADR 0243)', () => {
     const assignment = { vehicleId: 'v-1' } as never;
     const inWork = { status: 'confirmed' as const, assignment, deletedAt: null };
     expect(canReassignVehicle(inWork)).toBe(true);
+    // List counts cannot identify the dated lock; the preview must decide it.
     expect(
-      canReassignVehicle({ ...inWork, shifts: { approvedDays: 1, unapprovedPastDays: 0 } }),
-    ).toBe(false);
-    // Незаполненные дни машину не запирают: подпись объекта под ними ещё не стоит.
-    expect(
-      canReassignVehicle({ ...inWork, shifts: { approvedDays: 0, unapprovedPastDays: 4 } }),
+      canReassignVehicle({
+        ...inWork,
+        shifts: { approvedDays: 1, unapprovedPastDays: 0 },
+      } as never),
     ).toBe(true);
   });
 });

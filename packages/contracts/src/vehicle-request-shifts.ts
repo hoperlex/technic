@@ -392,8 +392,8 @@ export function shiftsCompletionWarning(r: ShiftSubject): string | null {
  * its hours and the object's sign-off would go with the rest. Without this lock the rollback would
  * also be a one-step way around the lock of a plain reassignment.
  *
- * It is no longer the lock of a plain reassignment: that one counts only the days under the
- * assignment's vehicle (`reassignApprovedShiftsBlocker`, ADR 0210).
+ * It is not the lock of a plain reassignment: that one counts only the days under the assignment's
+ * vehicle from the change date on, and the server reads them by date (ADR 0210, ADR 0243).
  */
 export function approvedShiftsBlocker(r: ShiftSubject): string | null {
   if (r.requestType !== 'special_equipment') return null;
@@ -415,41 +415,6 @@ export function approvedShiftsBlocker(r: ShiftSubject): string | null {
  */
 export function dayRoutesKeptWith(ownership: VehicleOwnership): boolean {
   return ownership === 'own';
-}
-
-/**
- * How many approved days lock a plain reassignment to a vehicle of `nextOwnership` (ADR 0210):
- * the days without their own route; with a rented vehicle — all of them, see `dayRoutesKeptWith`.
- *
- * `nextOwnership` defaults to `own` for a list row, where the next vehicle is not chosen yet: the
- * button is offered by the optimistic case, and the door re-checks with the real vehicle.
- * A summary without `approvedDaysWithoutRoute` (a server older than ADR 0210) counts every approved
- * day — the old, conservative lock.
- */
-export function reassignLockingApprovedDays(
-  shifts: VehicleRequestShiftsSummaryDto | null | undefined,
-  nextOwnership: VehicleOwnership = 'own',
-): number {
-  if (!shifts) return 0;
-  if (!dayRoutesKeptWith(nextOwnership)) return shifts.approvedDays;
-  return shifts.approvedDaysWithoutRoute ?? shifts.approvedDays;
-}
-
-/**
- * Why a plain reassignment is refused: approved days stand under the work of the assigned vehicle,
- * and swapping it would turn the object's sign-off into a sign-off under someone else's hours.
- * Unlike `approvedShiftsBlocker`, a day that sat in its own day route does not count — its vehicle
- * is the route's (ADR 0210). The rollback to "new" keeps the older, wider lock on purpose: it erases
- * the shifts themselves, route or not.
- */
-export function reassignApprovedShiftsBlocker(
-  r: ShiftSubject,
-  nextOwnership: VehicleOwnership = 'own',
-): string | null {
-  if (r.requestType !== 'special_equipment') return null;
-  const locking = reassignLockingApprovedDays(r.shifts, nextOwnership);
-  if (locking <= 0) return null;
-  return `По заявке согласовано смен: ${locking} — сначала снимите согласование`;
 }
 
 /** «3 смены», «11 смен» — количество с русским склонением. */

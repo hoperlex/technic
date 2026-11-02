@@ -2,6 +2,8 @@ import { useEffect, useEffectEvent } from 'react';
 import dayjs from 'dayjs';
 import {
   DEFAULT_COMMUNICATION_KIND,
+  moscowDateKeyOf,
+  reassignEffectiveDateRange,
   type VehicleOwnership,
   type VehicleRequestDto,
 } from '@technic/contracts';
@@ -39,6 +41,13 @@ export function useAssignmentFormReset(
           ? dayjs(request.dateTo)
           : null,
       scheduledDate: scheduled,
+      // A vehicle change opens on the day the server takes without a date (ADR 0243), and the reason
+      // of a past date is never carried over from a neighbouring request.
+      changeDate:
+        request.requestType === 'special_equipment'
+          ? dayjs(reassignEffectiveDateRange(request, moscowDateKeyOf(new Date())).initial)
+          : null,
+      backdateReason: '',
       // A request "for the date" opens with an empty time: this is where it is set.
       scheduledTime:
         request.requestType === 'freight_transport' && !request.scheduledTimeUnspecified

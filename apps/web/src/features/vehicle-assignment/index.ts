@@ -2,6 +2,7 @@ export {
   assignCommandBody,
   assignScheduleOf,
   NEW_ROUTE,
+  reassignEffectiveDateOf,
   reassignRequestBody,
   type AssignCommand,
   type AssignmentCommandContext,

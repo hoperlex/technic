@@ -132,7 +132,8 @@ import {
   type RequestWaybillDto,
   approveVehicleRequestShiftSchema,
   dayRoutesKeptWith,
-  reassignApprovedShiftsBlocker,
+  reassignEffectiveDateRange,
+  weekStartKey,
   saveVehicleRequestShiftSchema,
   shiftDayBlocker,
   shiftsCompletionWarning,
@@ -372,6 +373,7 @@ import type { AssignmentWriteResult } from '../services/assignment-write';
 import {
   assertReassignPreviewFingerprint,
   lockedReassignRequest,
+  assertReassignEffectiveDate,
   planReassignCommand,
   REASSIGN_PREVIEW_STALE,
   reassignPreviewDto,
@@ -3573,40 +3575,38 @@ async function planAssignmentCorrection(
   };
 }
 
-/** The refusal of a plain reassignment locked by approved days — one text for both checks. */
-function reassignLockedError(blocker: string): Error {
-  return err.unprocessable(`${blocker}: подтверждённые дни — это работа нынешней машины`, {
-    vehicleId: 'Есть согласованные смены',
-  });
+/**
+ * The refusal of a plain reassignment locked by approved days from the change date on. It names
+ * the last signed day: the way out is a date after it, and the dialog cannot guess one.
+ */
+function reassignLockedError(days: readonly string[], fromDate: string): Error {
+  const last = days[days.length - 1]!;
+  return err.unprocessable(
+    `С ${dateKeyRu(fromDate)} по заявке согласовано смен: ${days.length} — подпись объекта стоит под работой нынешней машины. Выберите дату после последнего подписанного дня (${dateKeyRu(last)}) или сначала снимите согласование`,
+    { vehicleId: 'Есть согласованные смены' },
+  );
 }
 
 /**
  * The lock of a plain reassignment, asked inside its transaction after the request's routes and
- * row are locked (ADR 0210). The count comes from the same predicate the list summary uses
- * (`approvalsLockingReassignment`), so the answer is the one the portal would give with the named
- * vehicle — only now from a snapshot `touchLockInputs` has proven current.
+ * row are locked (ADR 0210): the approved days under the assignment's vehicle from the change date
+ * on (ADR 0243). It is the one place that refuses — the preview names the same days
+ * (`planReassignCommand`), and both read them through `approvalsLockingReassignment` — only here
+ * from a snapshot `touchLockInputs` has proven current.
  */
 async function assertReassignNotLocked(
   tx: Tx,
   before: VehicleRequestDto,
   nextOwnership: VehicleOwnership,
+  fromDate: string,
 ): Promise<void> {
   if (before.requestType !== 'special_equipment') return;
   const locking = await approvalsLockingReassignment(tx, {
     requestId: before.id,
     dayRoutesKept: dayRoutesKeptWith(nextOwnership),
+    fromDate,
   });
-  // The fresh count goes through the contract blocker for its wording: the refusal must read the
-  // same whether it came before the transaction or from here.
-  const count = locking.length;
-  const blocker = reassignApprovedShiftsBlocker(
-    {
-      ...before,
-      shifts: { approvedDays: count, approvedDaysWithoutRoute: count, unapprovedPastDays: 0 },
-    },
-    nextOwnership,
-  );
-  if (blocker) throw reassignLockedError(blocker);
+  if (locking.length > 0) throw reassignLockedError(locking, fromDate);
 }
 
 /**
@@ -7368,8 +7368,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       // Рукопожатия вынуты из `rates` намеренно: остаток уходит в `resolveAssignment` как
       // назначение, и им там не место — они про разговор с человеком, а не про машину.
-      const { version, route, correction, previewFingerprint, acknowledgements, ...rates } =
-        req.body;
+      const {
+        version,
+        route,
+        correction,
+        previewFingerprint,
+        acknowledgements,
+        effectiveDate: requestedDate,
+        backdateReason,
+        ...rates
+      } = req.body;
       /** Ownership of the vehicle the plain reassignment names; decides whether day routes survive. */
       let nextOwnership: VehicleOwnership = 'own';
       const before = await getDto(req.params.id);
@@ -7391,23 +7399,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           );
         }
         /*
-         * The lock of approved days (ADR 0210), asked here with the vehicle actually named — the
-         * list row's `canReassignVehicle` cannot know it. An approved day without its own day
-         * route was worked by the assigned vehicle, and a swap would rewrite what the object
-         * signed; a day in its own route was worked by the route's vehicle and does not lock. With
-         * a rented vehicle the day sync below sweeps the routes, those days fall under the
-         * assignment, and every approved day locks again: the list offers the button by the own
-         * case, the preview already names the rented case's days (`blockedShiftDays`), and this is
-         * the refusal behind both. It reads the summary taken before the transaction; the
-         * authoritative answer comes again under the locks (`assertReassignNotLocked`).
+         * The next vehicle's ownership decides which approved days fall under the assignment
+         * (ADR 0210): a rented vehicle sweeps the day routes, so every approved day counts. The
+         * lock itself is asked only under the locks (`assertReassignNotLocked`), by days from the
+         * change date on (ADR 0243) — the summary taken here has counts without dates and cannot
+         * tell a sign-off of the previous vehicle's days from one of the new vehicle's.
          */
         const [next] = await db
           .select({ ownership: vehicles.ownership })
           .from(vehicles)
           .where(eq(vehicles.id, rates.vehicleId));
         nextOwnership = next?.ownership ?? 'own';
-        const approvedShifts = reassignApprovedShiftsBlocker(before, nextOwnership);
-        if (approvedShifts) throw reassignLockedError(approvedShifts);
       } else if (!canCorrectAssignment(before)) {
         // A correction lifts exactly one of the two refusals — the lock of approved days (R5): the
         // sign-offs under the assignment's vehicle are what it clears on purpose. The state of the
@@ -7424,6 +7426,53 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       }
 
       const today = moscowDateKeyOf(new Date());
+      /*
+       * The change date named in the dialog (ADR 0243). Refused here, before the transaction and in
+       * every read mode, so a date the term cannot hold never reaches the planner.
+       *
+       * The date the door would take anyway is the same command as no date: `customDate` stays
+       * empty for it, the fingerprint and the paper do not depend on whether the field was sent,
+       * and `legacy` keeps working for a client that always sends it.
+       *
+       * A date before today edits past days. The engine already calls that outcome `crew` (R32) —
+       * the right, the depth and the reason — and the verdict is asked from the same guard the
+       * correction block uses, by the date itself. Without it any role with the right to change the
+       * vehicle could rewrite past days without a reason in the journal.
+       */
+      let customDate: string | undefined;
+      if (requestedDate !== undefined) {
+        if (before.requestType !== 'special_equipment') {
+          throw err.unprocessable('У грузоперевозки нет срока работ: дату смены не называют', {
+            effectiveDate: 'Не заказ спецтехники',
+          });
+        }
+        if (correction) {
+          throw err.unprocessable(
+            'Коррекция задним числом сама определяет, с какого дня правит назначение, — дату смены с ней не называют',
+            { effectiveDate: 'Несовместимо с коррекцией' },
+          );
+        }
+        assertReassignEffectiveDate(before, today, requestedDate);
+        if (requestedDate !== reassignEffectiveDateRange(before, today).initial) {
+          customDate = requestedDate;
+        }
+      }
+      if (customDate !== undefined) {
+        backdateOrThrow(
+          checkBackdate({
+            effectiveDate: customDate,
+            today,
+            subject: p,
+            hasReason: (backdateReason ?? '').trim() !== '',
+          }),
+        );
+      }
+      /** The day from which approved days lock the plain change — the planner's own default. */
+      const lockFrom =
+        customDate ??
+        (before.requestType === 'special_equipment'
+          ? reassignEffectiveDateRange(before, today).initial
+          : today);
       /*
        * Повтор уже выполненной операции узнаётся **до** всех расчётов, и это не оптимизация (Р31).
        * Первая попытка сожгла названные листы: пересчитанный по нынешнему состоянию план не нашёл
@@ -7473,6 +7522,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const semanticCommand = (): ReassignCommand => ({
         vehicleId: rates.vehicleId,
         driverPersonId: rates.driverPersonId,
+        ...(customDate !== undefined ? { effectiveDate: customDate } : {}),
         // Коррекционная половина: список названных листов и глубина, посчитанная `planAssignmentCorrection`
         // до первой правки (Р36). На повторе операции `plan` пуст — но туда мы и не доходим:
         // `perform` при найденном ключе не зовётся вовсе.
@@ -7576,6 +7626,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // Шаг 0 — гейт режима (§10): смена техники и её коррекция и есть та дверь, ради которой
         // класс `history` заведён, — она пишет назначение и переоформляет листы.
         const mode = await requireOpenDoor(tx, 'history');
+        // A date inside the term needs history to cut by: with `legacy` the assignment is one for
+        // the whole term, and the vehicle would silently start on the first day instead.
+        if (customDate !== undefined && !historyIsAuthoritative(mode)) {
+          throw err.unprocessable(
+            'Смена техники с выбранной даты сейчас недоступна: заявки ведутся по прежним правилам — машина меняется на весь срок',
+            { effectiveDate: 'Недоступно в этом режиме' },
+          );
+        }
         /*
          * Канонический порядок Р17 — первым делом и до всякой правки: сначала все рейсы заявки
          * (нынешний, названный телом целевой и перегоны) по возрастанию `id`, затем её строка.
@@ -7601,7 +7659,32 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         if (correctionId !== null && plan) await assertCorrectionApprovalsUnchanged(tx, plan);
         // The plain reassignment's lock, answered again under the locks: the check before the
         // transaction read a summary that a sign-off or a route change may have outdated since.
-        if (correctionId === null) await assertReassignNotLocked(tx, before, nextOwnership);
+        if (correctionId === null) {
+          await assertReassignNotLocked(
+            tx,
+            before,
+            nextOwnership,
+            historyIsAuthoritative(mode) || before.requestType !== 'special_equipment'
+              ? lockFrom
+              : before.dateFrom,
+          );
+        }
+        // A date that reaches back into weeks already worked would burn their numbers, and only the
+        // correction names them one by one (R11). The plain change refuses and says where to go.
+        if (customDate !== undefined && planned) {
+          const endedWeek = weekStartKey(today);
+          const burned = planned.plan.requiredUnlocks.map((sheet) => `№ ${sheet.displayNumber}`);
+          // A past week without a sheet is not "unlocked" by anyone, yet the plan would issue a
+          // sheet for it afterwards — a number spent on an ended week, which only the correction
+          // may do (ADR 0101).
+          const backIssued = planned.plan.preview.issue.some((sheet) => sheet.to < endedWeek);
+          if (burned.length > 0 || backIssued) {
+            throw err.unprocessable(
+              `С ${dateKeyRu(customDate)} в смену попадают уже закончившиеся недели${burned.length > 0 ? ` (листы ЭСМ-2 ${burned.join(', ')})` : ''}: их бумагу переоформляет только коррекция — отметьте «Исправить задним числом» или выберите дату позже`,
+              { effectiveDate: 'Затронуты закончившиеся недели' },
+            );
+          }
+        }
         /*
          * In `history` this door is a history command (ADR 0212, decision 3): the plan above is the
          * one it executes, and an own segment of its range left without a person is refused here,
@@ -7675,7 +7758,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         const reason =
           correctionId && correction
             ? correction.reason
-            : 'Заявке назначена другая техника — путевые листы переоформлены';
+            : customDate !== undefined && customDate < today
+              ? (backdateReason ?? '').trim()
+              : 'Заявке назначена другая техника — путевые листы переоформлены';
         // In `history` the history rows go first and the paper follows them (ADR 0212); a linear
         // request gets its vehicle row here and keeps the weekly sweep below for its paper.
         const byHistory = historyPlan
@@ -7712,6 +7797,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         days = await syncLinearRouteDays(tx, {
           requestId: before.id,
           actor: { id: p.id },
+          ...(historyPlan && correctionId === null ? { fromDate: lockFrom } : {}),
           reason: correctionId
             ? 'Коррекция назначения задним числом'
             : 'Заявке назначена другая техника',
@@ -7853,7 +7939,15 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         entityId: before.id,
         metadata: {
           vehicleId: assigned.vehicleId,
-          changes: diffVehicleAssignment(before.assignment, assigned),
+          changes: [
+            ...diffVehicleAssignment(before.assignment, assigned),
+            ...(customDate !== undefined
+              ? [{ field: 'effectiveDate', from: null, to: dateKeyRu(customDate) }]
+              : []),
+            ...(customDate !== undefined && customDate < today
+              ? [{ field: 'backdateReason', from: null, to: backdateReason! }]
+              : []),
+          ],
           // Задний ход — и в ленте аудита: журнал коррекций отвечает «почему», а лента остаётся
           // местом, где события заявки видны подряд и в одном порядке.
           ...(correction && plan
@@ -7863,6 +7957,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
                 effectiveDate: plan.effectiveDate,
                 unlockedWaybills: plan.unlocked.map((s) => s.number),
                 clearedShiftApprovals: plan.approvals.map((a) => a.date),
+              }
+            : {}),
+          // A plain change from a named date: the feed must say from which day the vehicle works,
+          // and, for a past date, why (ADR 0243).
+          ...(customDate !== undefined
+            ? {
+                effectiveDate: customDate,
+                ...(customDate < today ? { backdated: true, backdateReason: backdateReason! } : {}),
               }
             : {}),
         },
@@ -7915,7 +8017,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     { ...canChangeStatus, schema: { params: idParams, body: changeVehicleAssignmentSchema } },
     async (req): Promise<AssignmentPreviewDto> => {
       const p = requirePrincipal(req);
-      const { correction, vehicleId, driverPersonId } = req.body;
+      const { correction, vehicleId, driverPersonId, effectiveDate: requestedDate } = req.body;
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, before);
@@ -7932,6 +8034,27 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       }
 
       const today = moscowDateKeyOf(new Date());
+      // The same refusals as the door's, in the same words (ADR 0243): the window must hear that a
+      // date is impossible from the preview, not after the press. The right and the reason of a
+      // past date are not asked here — the preview shows what the date costs, and the door asks them.
+      let customDate: string | undefined;
+      if (requestedDate !== undefined) {
+        if (before.requestType !== 'special_equipment') {
+          throw err.unprocessable('У грузоперевозки нет срока работ: дату смены не называют', {
+            effectiveDate: 'Не заказ спецтехники',
+          });
+        }
+        if (correction) {
+          throw err.unprocessable(
+            'Коррекция задним числом сама определяет, с какого дня правит назначение, — дату смены с ней не называют',
+            { effectiveDate: 'Несовместимо с коррекцией' },
+          );
+        }
+        assertReassignEffectiveDate(before, today, requestedDate);
+        if (requestedDate !== reassignEffectiveDateRange(before, today).initial) {
+          customDate = requestedDate;
+        }
+      }
       /*
        * Коррекционная половина считается тем же расчётом, что и у боевой ручки (Р36): её отказы —
        * чужой лист, неделя с двумя листами, пустая коррекция — человек обязан услышать в
@@ -7944,10 +8067,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         requestId: req.params.id,
         actor: { id: p.id },
         asOf: today,
-        plan: (ctx) =>
-          planReassignCommand(ctx, {
+        plan: (ctx) => {
+          if (customDate !== undefined && !historyIsAuthoritative(ctx.mode)) {
+            throw err.unprocessable(
+              'Смена техники с выбранной даты сейчас недоступна: заявки ведутся по прежним правилам — машина меняется на весь срок',
+              { effectiveDate: 'Недоступно в этом режиме' },
+            );
+          }
+          return planReassignCommand(ctx, {
             vehicleId,
             driverPersonId,
+            ...(customDate !== undefined ? { effectiveDate: customDate } : {}),
             ...(correction && plan
               ? {
                   correction: {
@@ -7956,7 +8086,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
                   },
                 }
               : {}),
-          }),
+          });
+        },
       });
       return reassignPreviewDto(preview.effects, preview.plan, preview.fingerprint, preview.asOf);
     },

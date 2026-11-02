@@ -11,6 +11,7 @@ import {
   CLASSIFICATION_FILTER_MAX,
   classificationFilterKey,
   changeVehicleAssignmentSchema,
+  reassignEffectiveDateRange,
   changeVehicleRequestStatusSchema,
   changeVehicleRequestTypeSchema,
   CLOSED_REQUEST_STATUSES,
@@ -877,6 +878,70 @@ describe('vehicle-requests: смена назначенной техники (AD
     rejects({ schedule: { requestType: 'special_equipment', dateFrom: '2026-08-10' } });
     // Устаревшие поля перевода в работу здесь не принимаются: действие заведено после маршрутов.
     rejects({ waybill: { withTrailer: false } });
+  });
+
+  it('дата смены и причина заднего числа — необязательные поля тела (ADR 0243)', () => {
+    const parsed = changeVehicleAssignmentSchema.parse({
+      vehicleId: VEHICLE,
+      version: 3,
+      effectiveDate: '2026-11-02',
+      backdateReason: 'работала другая машина',
+    });
+    expect(parsed.effectiveDate).toBe('2026-11-02');
+    expect(parsed.backdateReason).toBe('работала другая машина');
+    // The optional date preserves the body sent by an older tab.
+    expect(
+      changeVehicleAssignmentSchema.parse({ vehicleId: VEHICLE, version: 3 }).effectiveDate,
+    ).toBeUndefined();
+    expect(() =>
+      changeVehicleAssignmentSchema.parse({
+        vehicleId: VEHICLE,
+        version: 3,
+        effectiveDate: 'вчера',
+      }),
+    ).toThrow();
+    // Whitespace must not satisfy the reason requirement.
+    expect(() =>
+      changeVehicleAssignmentSchema.parse({ vehicleId: VEHICLE, version: 3, backdateReason: '  ' }),
+    ).toThrow();
+  });
+
+  describe('диапазон даты смены', () => {
+    const term = { dateFrom: '2026-10-26', dateTo: '2026-11-08' };
+
+    it('открывается сегодня, а концом служит конец срока', () => {
+      expect(reassignEffectiveDateRange(term, '2026-11-02')).toEqual({
+        from: '2026-10-26',
+        to: '2026-11-08',
+        initial: '2026-11-02',
+      });
+    });
+
+    it('срок, который ещё не начался, открывается с первого дня: дата по умолчанию — законная', () => {
+      expect(reassignEffectiveDateRange(term, '2026-10-20')).toEqual({
+        from: '2026-10-26',
+        to: '2026-11-08',
+        initial: '2026-10-26',
+      });
+    });
+
+    it('заявка в работе после конца срока держит конец на дне, который дверь берёт и так', () => {
+      expect(reassignEffectiveDateRange(term, '2026-11-12')).toEqual({
+        from: '2026-10-26',
+        to: '2026-11-12',
+        initial: '2026-11-12',
+      });
+    });
+
+    it('срок без конца — один день', () => {
+      expect(
+        reassignEffectiveDateRange({ dateFrom: '2026-11-02', dateTo: null }, '2026-11-02'),
+      ).toEqual({
+        from: '2026-11-02',
+        to: '2026-11-02',
+        initial: '2026-11-02',
+      });
+    });
   });
 
   /**

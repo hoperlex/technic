@@ -9,6 +9,7 @@ import {
   assignScheduleOf,
   assignmentBlockers,
   canBatchAssignmentDays,
+  reassignEffectiveDateOf,
   RollbackPreview,
 } from '@features/vehicle-assignment';
 import { FormGrid, FormModal, useFormBlockers } from '@shared/ui';
@@ -180,7 +181,15 @@ export function VehicleAssignModal({
       }),
     );
     if (blocked || !values.vehicleId) return;
+    // The change date goes only when it is not the day the server takes anyway (ADR 0243), and a
+    // date before today brings its reason: the server asks both, the form has already made the
+    // reason required at its field.
+    const today = moscowDateKeyOf(new Date());
+    const effectiveDate = reassign ? reassignEffectiveDateOf(request, values, today) : null;
     const payload = assignCommandBody(values, {
+      effectiveDate,
+      backdateReason:
+        effectiveDate && effectiveDate < today ? (values.backdateReason ?? '').trim() : null,
       schedule,
       needsMachinist: crew.needsMachinist,
       needsRoute: crew.routeModel.needsRoute,

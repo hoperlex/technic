@@ -5,8 +5,6 @@ import {
   approvedShiftsBlocker,
   canReassignVehicle,
   dayRoutesKeptWith,
-  reassignApprovedShiftsBlocker,
-  reassignLockingApprovedDays,
   type VehicleRequestShiftsSummaryDto,
 } from '@technic/contracts';
 import * as schema from '../src/db/schema';
@@ -41,33 +39,18 @@ const inWork = {
   deletedAt: null,
 };
 
-describe('lock of a plain reassignment (ADR 0210)', () => {
-  it('a sign-off of a day in its own route does not lock; a route-less one does', () => {
-    // Two approved days, both in routes: the assigned vehicle did not work them.
-    expect(canReassignVehicle({ ...inWork, shifts: summary(2, 0) })).toBe(true);
-    expect(reassignApprovedShiftsBlocker({ ...inWork, shifts: summary(2, 0) })).toBeNull();
-    // One of them without a route: the assigned vehicle worked it, and a swap would rewrite it.
-    expect(canReassignVehicle({ ...inWork, shifts: summary(2, 1) })).toBe(false);
-    expect(reassignApprovedShiftsBlocker({ ...inWork, shifts: summary(2, 1) })).toMatch(
-      /согласовано смен: 1/,
-    );
+describe('lock of a plain reassignment (ADR 0210, ADR 0243)', () => {
+  it('the button does not depend on sign-offs: the lock is asked by date, from the change date on', () => {
+    // A list row has counts without dates, and which days lock depends on the date picked in the
+    // dialog. The preview names the days and the door refuses by them — `shift-approval-scope.db`.
+    expect(canReassignVehicle({ ...inWork, shifts: summary(2, 1) } as never)).toBe(true);
+    expect(canReassignVehicle({ ...inWork, shifts: summary(1) } as never)).toBe(true);
+    expect(canReassignVehicle({ ...inWork, shifts: summary(0) } as never)).toBe(true);
   });
 
-  it('a rented next vehicle sweeps the day routes, so every approved day locks again', () => {
+  it('a rented next vehicle sweeps the day routes, so every approved day counts again', () => {
     expect(dayRoutesKeptWith('own')).toBe(true);
     expect(dayRoutesKeptWith('rental')).toBe(false);
-    expect(reassignLockingApprovedDays(summary(2, 0), 'rental')).toBe(2);
-    expect(reassignApprovedShiftsBlocker({ ...inWork, shifts: summary(2, 0) }, 'rental')).toMatch(
-      /согласовано смен: 2/,
-    );
-  });
-
-  it('a summary from a server older than ADR 0210 locks by every approved day', () => {
-    // No `approvedDaysWithoutRoute` means "unknown", not zero: offering the button would lead the
-    // person into the old server's refusal.
-    expect(reassignLockingApprovedDays(summary(1))).toBe(1);
-    expect(canReassignVehicle({ ...inWork, shifts: summary(1) })).toBe(false);
-    expect(canReassignVehicle({ ...inWork, shifts: summary(0) })).toBe(true);
   });
 
   it('the rollback lock stays wider: it erases the shifts themselves, route or not', () => {

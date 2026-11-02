@@ -86,15 +86,16 @@ export function useReassignConsequences({
 
   const mut = useMutation({
     /*
-     * The same body the command will carry: the plan is computed from the vehicle, the driver and
-     * the correction block, and a second assembly would drift from the first — and the fingerprint
-     * with it.
+     * The same body the command will carry: the plan is computed from the vehicle, the driver, the
+     * change date and the correction block, and a second assembly would drift from the first — and
+     * the fingerprint with it. The reason of a past date is not part of the plan and stays out.
      */
     mutationFn: async (v: { payload: AssignCommand; stale: string | null }) => ({
       ...v,
       preview: await vehicleRequestsApi.assignmentPreview(request!.id, {
         ...v.payload.assignment,
         version: request!.version,
+        ...(v.payload.effectiveDate ? { effectiveDate: v.payload.effectiveDate } : {}),
         ...(v.payload.correction ? { correction: v.payload.correction } : {}),
       }),
     }),

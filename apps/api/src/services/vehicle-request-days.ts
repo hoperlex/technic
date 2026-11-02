@@ -637,6 +637,8 @@ export async function syncLinearRouteDays(
     actor: { id: string };
     /** Почему сверка: попадёт в журнал аудита рядом с перечнем снятых дней. */
     reason: string;
+    /** A dated vehicle change leaves the previous vehicle's earlier days in their routes. */
+    fromDate?: string;
   },
 ): Promise<LinearDaysSyncResult> {
   if (!(await hasPlannedDays(tx, params.requestId))) return EMPTY;
@@ -649,7 +651,10 @@ export async function syncLinearRouteDays(
     eligibilitySubject: request,
     retainCompletedDays: false,
   });
-  return applyLinearRouteDaysPlan(tx, [...plan.detachable, ...plan.frozen], {
+  const affected = [...plan.detachable, ...plan.frozen].filter(
+    (day) => params.fromDate === undefined || day.date >= params.fromDate,
+  );
+  return applyLinearRouteDaysPlan(tx, affected, {
     requestId: params.requestId,
     actor: params.actor,
   });

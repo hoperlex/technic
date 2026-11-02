@@ -1,4 +1,4 @@
-import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { and, eq, gte, sql, type SQL } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type * as schema from '../db/schema';
 import {
@@ -28,10 +28,11 @@ import type { ShiftApproval } from './vehicle-route-correction';
  *   another;
  * - the period correction (`planVehicleCorrection`, `assignment-correction.ts`) clears the same set
  *   inside its own `approvalClearRange`;
- * - the shift summary of a list row (`shiftSummaries`, `vehicle-request-shifts.ts`) counts the lock
- *   as `approvedDaysWithoutRoute` through `approvalLockingReassignmentSql`; the contract predicates
- *   `canReassignVehicle` / `reassignApprovedShiftsBlocker` offer the button and refuse by it, and
- *   the door re-reads the same set under its locks (`approvalsLockingReassignment`).
+ * - the shift summary of a list row (`shiftSummaries`, `vehicle-request-shifts.ts`) counts the same
+ *   days as `approvedDaysWithoutRoute` through `approvalLockingReassignmentSql`. The button no
+ *   longer reads that count (ADR 0243): the lock depends on the change date, which a list row does
+ *   not know, so the preview names the days and the door re-reads them under its locks, both by
+ *   date (`approvalsLockingReassignment`).
  *
  * Before ADR 0210 these were separate hand-written variants and had drifted apart: the reassign
  * door skipped linear requests, the preview read linearity by another expression, the period
@@ -201,10 +202,15 @@ export async function approvalsUnderAssignment(
  * The days whose sign-off locks a plain reassignment of this request to a vehicle that keeps (or
  * sweeps) the day routes — by date, in order. The preview names them as `blockedShiftDays`, the
  * door refuses by them after taking its locks.
+ *
+ * `fromDate` is the day the new vehicle starts (ADR 0243): a sign-off before it stands under the
+ * previous vehicle's work, which the change leaves alone, so only the days from it on lock. Without
+ * it every day of the term would lock, which is what made a request with one signed day
+ * unchangeable for the rest of its term.
  */
 export async function approvalsLockingReassignment(
   reader: Reader,
-  scope: { requestId: string; dayRoutesKept: boolean },
+  scope: { requestId: string; dayRoutesKept: boolean; fromDate: string },
 ): Promise<string[]> {
   const rows = await reader
     .select({ shiftDate: vehicleRequestShifts.shiftDate })
@@ -217,6 +223,7 @@ export async function approvalsLockingReassignment(
       and(
         eq(vehicleRequestShifts.requestId, scope.requestId),
         approvalLockingReassignmentSql(scope.dayRoutesKept),
+        gte(vehicleRequestShifts.shiftDate, scope.fromDate),
       ),
     )
     .orderBy(vehicleRequestShifts.shiftDate);

@@ -16,6 +16,25 @@ describe('тело смены техники', () => {
     expect(reassignRequestBody(command, 5)).toEqual({ ...command.assignment, version: 5 });
   });
 
+  it('дата смены и причина заднего числа уезжают в тело только когда окно их назвало', () => {
+    expect(reassignRequestBody({ ...command, effectiveDate: '2026-11-04' }, 5)).toEqual({
+      ...command.assignment,
+      version: 5,
+      effectiveDate: '2026-11-04',
+    });
+    expect(
+      reassignRequestBody(
+        { ...command, effectiveDate: '2026-10-30', backdateReason: 'ехала другая машина' },
+        5,
+      ),
+    ).toEqual({
+      ...command.assignment,
+      version: 5,
+      effectiveDate: '2026-10-30',
+      backdateReason: 'ехала другая машина',
+    });
+  });
+
   it('после подтверждения несёт отпечаток и подписи по листам', () => {
     expect(
       reassignRequestBody(

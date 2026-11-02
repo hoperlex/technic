@@ -87,10 +87,7 @@ import {
   moscowMinutesOf,
   shiftDateKey,
 } from './time';
-import {
-  reassignLockingApprovedDays,
-  type VehicleRequestShiftsSummaryDto,
-} from './vehicle-request-shifts';
+import type { VehicleRequestShiftsSummaryDto } from './vehicle-request-shifts';
 import {
   classificationFilterSchema,
   withSingleClassificationForm,
@@ -1421,30 +1418,42 @@ export type AssignVehicleBody = z.input<typeof assignVehicleSchema>;
 // ── Смена назначенной техники у заявки в работе (ADR 0048) ──
 
 /**
- * Whether the portal offers "change vehicle" on a list row: a request in work — and only one — whose
- * approved days do not lock the swap. A "new" request gets its vehicle from the move into work; a
- * closed or cancelled one is history, corrected by a rollback, not by a backdated swap.
+ * Whether the portal offers "change vehicle" on a list row: a request in work — and only one. A
+ * "new" request gets its vehicle from the move into work; a closed or cancelled one is history,
+ * corrected by a rollback, not by a backdated swap.
  *
- * The portal's half of the rule, not the server's gate. The next vehicle is not chosen yet, so the
- * lock is counted for an own one (`reassignLockingApprovedDays`); for a rented one the button is
- * still offered, the preview names the days that would lock it (`blockedShiftDays`), and the door
- * refuses by the same predicate with the real vehicle (`canCorrectAssignment` for the state,
- * `reassignApprovedShiftsBlocker` for the lock).
+ * Approved days no longer hide the button (ADR 0243). The object's sign-off stands under the work of
+ * a specific unit, and a swap would turn it into a sign-off under someone else's hours — but only
+ * for the days the new vehicle takes over. Which days those are depends on the date the person
+ * picks in the dialog, which a list row cannot know, so the lock is asked by the preview
+ * (`blockedShiftDays`) and by the door under its locks, both from the chosen date.
  */
 export function canReassignVehicle(request: {
   status: RequestStatus;
   assignment: VehicleRequestAssignmentDto | null;
   deletedAt: string | null;
-  /** Сводка смен; у грузоперевозки её не бывает — подтверждать там нечего. */
-  shifts?: VehicleRequestShiftsSummaryDto | null;
 }): boolean {
-  if (!canCorrectAssignment(request)) return false;
-  // An approved day locks the vehicle: the object's sign-off stands under the work of a specific
-  // unit, and a swap would turn it into a sign-off under someone else's hours. Only days without
-  // their own day route count (ADR 0210) — the rest were worked by the route's vehicle. The next
-  // vehicle is not known here, so the optimistic own case is asked; the door re-checks with the
-  // real one (`reassignApprovedShiftsBlocker`).
-  return reassignLockingApprovedDays(request.shifts) === 0;
+  return canCorrectAssignment(request);
+}
+
+/**
+ * The dates a vehicle change of a running on-site request may start from (ADR 0243).
+ *
+ * `from`/`to` bound the picker and the server's refusal alike: before the term there is no work to
+ * hand over, after it there is nothing left to change. `initial` is what the door takes when the
+ * body names no date — today, or the first day of a term that has not begun — so a dialog that
+ * leaves the field alone sends the same command as before the field existed.
+ *
+ * A request still in work after its term ended keeps `to` at the day the door would take anyway:
+ * the default must stay a legal answer.
+ */
+export function reassignEffectiveDateRange(
+  term: { dateFrom: string; dateTo?: string | null },
+  today: string,
+): { from: string; to: string; initial: string } {
+  const initial = today < term.dateFrom ? term.dateFrom : today;
+  const termEnd = term.dateTo && term.dateTo > term.dateFrom ? term.dateTo : term.dateFrom;
+  return { from: term.dateFrom, to: termEnd > initial ? termEnd : initial, initial };
 }
 
 // ── Коррекция назначения задним числом (ADR 0101, Р8) ──
@@ -1550,6 +1559,25 @@ export const changeVehicleAssignmentSchema = z
      */
     driverPersonId: uuidSchema.optional(),
     version: z.number().int().nonnegative(),
+    /**
+     * The day the new vehicle starts to work (ADR 0243). Absent — as before the field existed:
+     * today, or the first day of a term that has not begun. Days before it stay with the previous
+     * vehicle, from it to the end of the term the new one works, and the paper is cut on this day
+     * (ADR 0212, decision 3).
+     *
+     * The range is `reassignEffectiveDateRange`; outside it — 422. A date before today edits past
+     * days, and the server asks for it what it asks for any backdated operation (R32): the
+     * `waybills.correct` right, no deeper than thirty days without `waybills.correctBeyondLimit`,
+     * and a reason in `backdateReason`. Days signed by the site lock the change only from this date
+     * on — the previous vehicle answers for its own days.
+     *
+     * Only for an on-site order in the `history` read mode: freight has no work term, and in
+     * `legacy` the assignment is one for the whole term with nothing to cut it by — the server
+     * refuses instead of silently putting the vehicle on the whole term.
+     */
+    effectiveDate: dateOnlySchema.optional(),
+    /** Reason of a backdated change; required when `effectiveDate` is before today. */
+    backdateReason: backdateReasonSchema.optional(),
     /**
      * Смена машины задним числом (ADR 0101, Р8): под правом снимает замок подтверждённых дней,
      * переписывает листы ЭСМ-2 названных отработанных недель и заводит запись операции. Блока нет
@@ -3133,6 +3161,8 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   // Назначение техники (ADR 0027): событие не правки, но поля у него те же по форме — «было →
   // стало», и в истории они читаются одним списком.
   vehicle: 'Техника',
+  effectiveDate: 'Новая техника работает с',
+  backdateReason: 'Причина заднего числа',
   pricePerHour: 'Ставка за час',
   pricePerShift: 'Ставка за смену',
   shiftHours: 'Часов в смене',

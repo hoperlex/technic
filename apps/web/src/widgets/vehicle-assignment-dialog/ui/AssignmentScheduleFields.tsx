@@ -1,14 +1,18 @@
 import { Alert, Checkbox, DatePicker, Form, Input, Typography } from 'antd';
+import dayjs, { type Dayjs } from 'dayjs';
 import {
   WAYBILL_CORRECTION_CONFIRM,
+  correctionFloorDateKey,
   assignmentRateLabel,
   assignmentTitle,
   formatMoscowDateTime,
+  reassignEffectiveDateRange,
   requestCustomerName,
   weekStartKey,
   type VehicleRequestDto,
 } from '@technic/contracts';
 import { TimeInput, optionalWorkTimeRule } from '@entities/request';
+import { useAuth } from '@entities/session';
 import { formatDateOnly, useIsMobile } from '@shared/lib';
 import { AutoSelect, FormGrid } from '@shared/ui';
 import type { AssignmentCorrectionController } from '../model/useAssignmentCorrection';
@@ -43,6 +47,8 @@ export function AssignmentScheduleFields({
   today: string;
 }) {
   const isMobile = useIsMobile();
+  const { can } = useAuth();
+  const changeDate = Form.useWatch('changeDate', form);
   const dateFrom = Form.useWatch('dateFrom', form);
   const dateTo = Form.useWatch('dateTo', form);
   const machinistId = Form.useWatch('machinistId', form);
@@ -66,6 +72,21 @@ export function AssignmentScheduleFields({
               : ''}
           </Typography.Paragraph>
         </FormGrid.Full>
+      )}
+
+      {/* The day the new vehicle starts (ADR 0243). Before the correction checkbox: the date answers
+          "from when", and only a change of past weeks needs the checkbox. Under a correction the
+          field goes away — the correction names its own date from the sheets it reissues, and the
+          server refuses both together. */}
+      {reassign && request.requestType === 'special_equipment' && !correction.correctionEnabled && (
+        <ChangeDateFields
+          request={request}
+          today={today}
+          changeDate={changeDate}
+          canBackdate={can('waybills.correct')}
+          canBackdateFar={can('waybills.correctBeyondLimit')}
+          isMobile={isMobile}
+        />
       )}
 
       {/* Backdated correction (ADR 0101, R8). First in the vehicle-change dialog because it changes
@@ -254,6 +275,91 @@ export function AssignmentScheduleFields({
           enabled={dayBatchEnabled}
           toggleLabel="Выписать 4-П на весь период"
         />
+      )}
+    </>
+  );
+}
+
+/**
+ * The change date and, for a past date, its reason.
+ *
+ * A date before today is offered only to who may edit past days (`waybills.correct`), and no
+ * deeper than the thirty days the server allows without `waybills.correctBeyondLimit` — the picker
+ * greys out what the door would answer with a refusal. The reason is mandatory at its field: the
+ * door asks for it, and an empty one would end in a toast after the press instead of under the
+ * date it belongs to.
+ */
+function ChangeDateFields({
+  request,
+  today,
+  changeDate,
+  canBackdate,
+  canBackdateFar,
+  isMobile,
+}: {
+  request: VehicleRequestDto;
+  today: string;
+  changeDate: Dayjs | null | undefined;
+  canBackdate: boolean;
+  canBackdateFar: boolean;
+  isMobile: boolean;
+}) {
+  if (request.requestType !== 'special_equipment') return null;
+  const range = reassignEffectiveDateRange(request, today);
+  // Earliest pickable day: the start of the term, and for a role without the deep right no
+  // earlier than the server's depth limit; without the right at all — the day the server takes.
+  const depthLimit = canBackdateFar ? range.from : correctionFloorDateKey(today);
+  const earliest = !canBackdate ? range.initial : depthLimit > range.from ? depthLimit : range.from;
+  const key = changeDate ? changeDate.format('YYYY-MM-DD') : null;
+  const backdated = key !== null && key < today;
+  return (
+    <>
+      <FormGrid.Full>
+        <Form.Item
+          name="changeDate"
+          label="Новая техника работает с"
+          rules={[{ required: true, message: 'Укажите дату, с которой меняется техника' }]}
+          extra={`Дни до этой даты остаются за прежней машиной, с неё и до конца срока (${formatDateOnly(range.to)}) работает новая. Срок заявки: с ${formatDateOnly(range.from)}`}
+        >
+          <DatePicker
+            format="DD.MM.YYYY"
+            style={{ width: '100%' }}
+            inputReadOnly={isMobile}
+            allowClear={false}
+            disabledDate={(day) => {
+              const dayKey = day.format('YYYY-MM-DD');
+              return dayKey < earliest || dayKey > range.to;
+            }}
+            defaultPickerValue={dayjs(range.initial)}
+          />
+        </Form.Item>
+      </FormGrid.Full>
+      {backdated && (
+        <>
+          <FormGrid.Full>
+            <Alert
+              type="warning"
+              showIcon
+              title="Правка прошедших дней"
+              description={`Дни с ${formatDateOnly(key)} по сегодня уже прошли: машина в них будет заменена на новую, листы ЭСМ-2 текущей недели переоформятся. Если с этой даты объект подписал дни — смена не пройдёт, их сначала снимают. Листы закончившихся недель переоформляет только «Исправить задним числом».`}
+            />
+          </FormGrid.Full>
+          <FormGrid.Full>
+            <Form.Item
+              name="backdateReason"
+              label="Причина заднего числа"
+              rules={[{ required: true, whitespace: true, message: 'Укажите причину' }]}
+              extra="Попадёт в ленту заявки и в причину переоформления листов"
+            >
+              <Input.TextArea
+                rows={2}
+                maxLength={2000}
+                showCount
+                placeholder="Что произошло на самом деле"
+              />
+            </Form.Item>
+          </FormGrid.Full>
+        </>
       )}
     </>
   );

@@ -1,7 +1,8 @@
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type { VehicleDto } from '@technic/contracts';
+import { moscowDateKeyOf, shiftDateKey, type VehicleDto } from '@technic/contracts';
+import { dateInput, typeDate } from './antd';
 import { apiError, json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
@@ -152,6 +153,8 @@ function renderModal(
      * тип обязан это отражать — иначе тест перестанет ловить смену сигнатуры пропса.
      */
     onSubmit?: ComponentProps<typeof VehicleAssignModal>['onSubmit'];
+    /** Override the expired default term when testing a running request. */
+    request?: typeof REQUEST;
   } = {},
 ) {
   const onSubmit =
@@ -165,7 +168,7 @@ function renderModal(
   });
   renderWithUser(
     <VehicleAssignModal
-      request={REQUEST}
+      request={options.request ?? REQUEST}
       mode="reassign"
       confirmLoading={false}
       onCancel={() => {}}
@@ -282,9 +285,10 @@ describe('последствия смены техники', () => {
     });
     await pressChange();
 
-    await screen.findByText('Сменить технику нельзя: дни уже подписаны объектом');
-    // Выход назван прямо: подпись снимает не смена техники, а коррекция задним числом.
-    await screen.findByText(/Снять её можно только коррекцией/);
+    await screen.findByText('Сменить технику нельзя: с этой даты есть дни, подписанные объектом');
+    // The preview offers a later date or a correction that clears the signature.
+    await screen.findByText(/выберите дату после последнего из них/);
+    await screen.findByText(/подпись снимает только коррекция/);
     const confirm = screen.getByRole('button', { name: 'Подтвердить смену' });
     expect((confirm as HTMLButtonElement).disabled).toBe(true);
     expect(onSubmit).not.toHaveBeenCalled();
@@ -378,5 +382,82 @@ describe('смена техники: предупреждения по выпи�
     fireEvent.click(screen.getByRole('button', { name: 'Подтвердить смену' }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
     expect(payload(onSubmit).acknowledgements).toEqual({ '0': 'fp-warn-2' });
+  });
+});
+
+/**
+ * The day the new vehicle starts (ADR 0243). The window used to say nothing about it: the server
+ * took "today", and a dispatcher who needed another day had no way to say so. Now the field is
+ * there, opens on the day the server takes anyway, and a date before today brings its reason.
+ */
+describe('дата смены техники', () => {
+  const TODAY = moscowDateKeyOf(new Date());
+  const typed = (key: string) => key.split('-').reverse().join('.');
+  const LABEL = 'Новая техника работает с';
+  /** A live term makes both past and future selections available. */
+  const RUNNING = vehicleRequest({
+    ...REQUEST,
+    dateFrom: shiftDateKey(TODAY, -10),
+    dateTo: shiftDateKey(TODAY, 20),
+  });
+  const PREVIEW = 'POST /vehicle-requests/:id/assignment/preview';
+
+  it('окно называет дату и открывается на сегодняшнем дне; без правки даты в запросе нет', async () => {
+    const { http, onSubmit } = renderModal({ request: RUNNING });
+    await screen.findByLabelText('Машинист');
+    expect(dateInput(LABEL).value).toBe(typed(TODAY));
+
+    await pressChange();
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    // Leaving the default date sends the same command as an older client.
+    expect(http.lastCall(PREVIEW)!.body).not.toHaveProperty('effectiveDate');
+    expect(vi.mocked(onSubmit).mock.calls.at(-1)![0]).not.toHaveProperty('effectiveDate');
+  });
+
+  it('дата вперёд уходит и в просмотр последствий, и в команду, причины не требует', async () => {
+    const day = shiftDateKey(TODAY, 3);
+    const { http, onSubmit } = renderModal({ request: RUNNING });
+    await screen.findByLabelText('Машинист');
+
+    typeDate(LABEL, typed(day));
+    await waitFor(() => expect(dateInput(LABEL).value).toBe(typed(day)));
+    await pressChange();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(http.lastCall(PREVIEW)!.body).toMatchObject({ effectiveDate: day });
+    expect(vi.mocked(onSubmit).mock.calls.at(-1)![0]).toMatchObject({ effectiveDate: day });
+    expect(screen.queryByLabelText('Причина заднего числа')).toBeNull();
+  });
+
+  it('дата в прошлом требует причину у самого поля и несёт её в команде', async () => {
+    const day = shiftDateKey(TODAY, -2);
+    const { http, onSubmit } = renderModal({ request: RUNNING });
+    await screen.findByLabelText('Машинист');
+
+    typeDate(LABEL, typed(day));
+    const reason = await screen.findByLabelText('Причина заднего числа');
+    await pressChange();
+    // The missing reason must stop the command at its field before any preview request.
+    await screen.findByText('Укажите причину');
+    expect(http.countOf(PREVIEW)).toBe(0);
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.change(reason, { target: { value: 'ехала другая машина' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сменить технику' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(vi.mocked(onSubmit).mock.calls.at(-1)![0]).toMatchObject({
+      effectiveDate: day,
+      backdateReason: 'ехала другая машина',
+    });
+    // The reason is excluded from the preview because it does not change the consequences.
+    expect(http.lastCall(PREVIEW)!.body).toMatchObject({ effectiveDate: day });
+    expect(http.lastCall(PREVIEW)!.body).not.toHaveProperty('backdateReason');
+  });
+
+  it('под коррекцией задним числом поле даты уходит: дату она берёт из листов', async () => {
+    renderModal({ request: RUNNING });
+    await screen.findByLabelText(LABEL);
+    fireEvent.click(screen.getByLabelText('Исправить задним числом: работала другая машина'));
+    await waitFor(() => expect(screen.queryByLabelText(LABEL)).toBeNull());
   });
 });

@@ -88,6 +88,13 @@ const PAST_FROM = shiftDateKey(MONDAY, -7);
 const ROUTE_DAY = shiftDateKey(PAST_FROM, 1);
 /** Signed off with no route — worked by the assignment's vehicle, its sign-off must go. */
 const PLAIN_DAY = shiftDateKey(PAST_FROM, 2);
+/**
+ * The same two roles for the lock of a plain reassignment (ADR 0243): a sign-off locks only from
+ * the change date on, and a plain change takes today, so the days that lock sit on and after it.
+ * The term of those scenes is stretched to `LOCK_ROUTE_DAY`.
+ */
+const LOCK_PLAIN_DAY = TODAY;
+const LOCK_ROUTE_DAY = shiftDateKey(TODAY, 1);
 
 interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -256,9 +263,12 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
   it(
     'обычная смена: подписи только дней в рейсах не запирают — и портал, и дверь',
     async () => {
-      const request = await confirmed(ctx.plainTypeId, { driverPersonId: ctx.driver });
-      await signOff(request.id, ROUTE_DAY);
-      await putIntoRoute(request.id, ROUTE_DAY, ctx.vehicleB);
+      const request = await confirmed(ctx.plainTypeId, {
+        driverPersonId: ctx.driver,
+        dateTo: LOCK_ROUTE_DAY,
+      });
+      await signOff(request.id, LOCK_ROUTE_DAY);
+      await putIntoRoute(request.id, LOCK_ROUTE_DAY, ctx.vehicleB);
 
       // The summary the portal locks by: one approved day, none of them the assignment's.
       const dto = await requestDto(request.id);
@@ -269,7 +279,7 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
       const res = await reassignPlain(request, ctx.vehicleC, preview.fingerprint);
       expect(res.statusCode, res.body).toBe(200);
       // The route day keeps its sign-off: a plain reassignment never clears one.
-      expect(await approvedDays(request.id)).toEqual([ROUTE_DAY]);
+      expect(await approvedDays(request.id)).toEqual([LOCK_ROUTE_DAY]);
     },
     SLOW,
   );
@@ -277,15 +287,18 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
   it(
     'обычная смена: подписанный день без рейса запирает',
     async () => {
-      const request = await confirmed(ctx.plainTypeId, { driverPersonId: ctx.driver });
-      await signOff(request.id, ROUTE_DAY);
-      await signOff(request.id, PLAIN_DAY);
-      await putIntoRoute(request.id, ROUTE_DAY, ctx.vehicleB);
+      const request = await confirmed(ctx.plainTypeId, {
+        driverPersonId: ctx.driver,
+        dateTo: LOCK_ROUTE_DAY,
+      });
+      await signOff(request.id, LOCK_ROUTE_DAY);
+      await signOff(request.id, LOCK_PLAIN_DAY);
+      await putIntoRoute(request.id, LOCK_ROUTE_DAY, ctx.vehicleB);
 
       const dto = await requestDto(request.id);
       expect(dto.shifts).toMatchObject({ approvedDays: 2, approvedDaysWithoutRoute: 1 });
       const preview = await previewPlain(request, ctx.vehicleC);
-      expect(preview.blockedShiftDays.map((day) => day.date)).toEqual([PLAIN_DAY]);
+      expect(preview.blockedShiftDays.map((day) => day.date)).toEqual([LOCK_PLAIN_DAY]);
 
       const res = await reassignPlain(request, ctx.vehicleC);
       expect(res.statusCode, res.body).toBe(422);
@@ -298,17 +311,17 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
   it(
     'линейный заказ: тот же замок — день в рейсе не запирает, день без рейса запирает',
     async () => {
-      const routed = await confirmed(ctx.linearTypeId);
-      await signOff(routed.id, ROUTE_DAY);
-      await putIntoRoute(routed.id, ROUTE_DAY, ctx.vehicleB);
+      const routed = await confirmed(ctx.linearTypeId, { dateTo: LOCK_ROUTE_DAY });
+      await signOff(routed.id, LOCK_ROUTE_DAY);
+      await putIntoRoute(routed.id, LOCK_ROUTE_DAY, ctx.vehicleB);
       const passed = await reassignPlain(routed, ctx.vehicleC);
       expect(passed.statusCode, passed.body).toBe(200);
 
-      const plain = await confirmed(ctx.linearTypeId);
-      await signOff(plain.id, PLAIN_DAY);
+      const plain = await confirmed(ctx.linearTypeId, { dateTo: LOCK_ROUTE_DAY });
+      await signOff(plain.id, LOCK_PLAIN_DAY);
       const refused = await reassignPlain(plain, ctx.vehicleC);
       expect(refused.statusCode, refused.body).toBe(422);
-      expect(refused.json<{ message: string }>().message).toContain('подтверждённые дни');
+      expect(refused.json<{ message: string }>().message).toContain('согласовано смен: 1');
     },
     SLOW,
   );
@@ -318,17 +331,17 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
     async () => {
       // The portal offers the button (it cannot know the next vehicle), the door refuses: with a
       // rented vehicle the day sync sweeps the route, and the approved day would fall under it.
-      const request = await confirmed(ctx.linearTypeId);
-      await signOff(request.id, ROUTE_DAY);
-      await putIntoRoute(request.id, ROUTE_DAY, ctx.vehicleB);
+      const request = await confirmed(ctx.linearTypeId, { dateTo: LOCK_ROUTE_DAY });
+      await signOff(request.id, LOCK_ROUTE_DAY);
+      await putIntoRoute(request.id, LOCK_ROUTE_DAY, ctx.vehicleB);
 
       const preview = await previewPlain(request, ctx.rentalVehicle, { pricePerHour: 1000 });
-      expect(preview.blockedShiftDays.map((day) => day.date)).toEqual([ROUTE_DAY]);
+      expect(preview.blockedShiftDays.map((day) => day.date)).toEqual([LOCK_ROUTE_DAY]);
       const res = await reassignPlain(request, ctx.rentalVehicle, undefined, {
         pricePerHour: 1000,
       });
       expect(res.statusCode, res.body).toBe(422);
-      expect(await routeDays(request.id)).toEqual([ROUTE_DAY]);
+      expect(await routeDays(request.id)).toEqual([LOCK_ROUTE_DAY]);
     },
     SLOW,
   );
@@ -397,6 +410,50 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
   );
 
   it(
+    'подпись дня до даты смены не запирает обычную смену: прежняя машина отвечает за свои дни (ADR 0243)',
+    async () => {
+      await readMode.setReadMode('history');
+      try {
+        // The day was worked by the vehicle that is being replaced, and the change starts today — its
+        // sign-off stays as it is. The term-wide lock used to refuse this request until the object
+        // took the signature back.
+        const request = await confirmed(ctx.plainTypeId, { driverPersonId: ctx.driver });
+        await signOff(request.id, PLAIN_DAY);
+        await putIntoRoute(request.id, ROUTE_DAY, ctx.vehicleB);
+        await signOff(request.id, ROUTE_DAY);
+
+        const rates = { pricePerHour: 2000 };
+        const preview = await previewPlain(request, ctx.rentalVehicle, rates);
+        expect(preview.blockedShiftDays).toEqual([]);
+
+        const res = await ctx.app.inject({
+          method: 'PATCH',
+          url: `/api/v1/vehicle-requests/${request.id}/assignment`,
+          headers: ctx.auth,
+          payload: {
+            vehicleId: ctx.rentalVehicle,
+            version: request.version,
+            ...rates,
+            previewFingerprint: preview.fingerprint,
+            acknowledgements: Object.fromEntries(
+              preview.issues
+                .filter((issue) => issue.warningFingerprint)
+                .map((issue) => [String(issue.issueKey), issue.warningFingerprint]),
+            ),
+          },
+        });
+        expect(res.statusCode, res.body).toBe(200);
+        expect(await assignedVehicle(request.id)).toBe(ctx.rentalVehicle);
+        expect(await approvedDays(request.id)).toEqual([ROUTE_DAY, PLAIN_DAY]);
+        expect(await routeDays(request.id)).toEqual([ROUTE_DAY]);
+      } finally {
+        await readMode.setReadMode('legacy');
+      }
+    },
+    SLOW,
+  );
+
+  it(
     'подпись дня без рейса, поставленная пока обычная смена ждёт блокировку, запирает её',
     async () => {
       /*
@@ -408,10 +465,13 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
        * the request row untouched. Without the locking read the swap answered 200 from its old
        * snapshot, over the fresh signature.
        */
-      const request = await confirmed(ctx.plainTypeId, { driverPersonId: ctx.driver });
+      const request = await confirmed(ctx.plainTypeId, {
+        driverPersonId: ctx.driver,
+        dateTo: LOCK_ROUTE_DAY,
+      });
       await ctx.db.execute(sql`
         INSERT INTO vehicle_request_shifts (request_id, shift_date, machine_hours, comment, filled_by)
-        VALUES (${request.id}, ${PLAIN_DAY}, 8, '', ${ctx.adminId})`);
+        VALUES (${request.id}, ${LOCK_PLAIN_DAY}, 8, '', ${ctx.adminId})`);
       await ctx.db.execute(
         sql`UPDATE vehicle_requests SET assignment_history_dirty = true WHERE id = ${request.id}`,
       );
@@ -434,7 +494,7 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
         await holder.query(
           `UPDATE vehicle_request_shifts SET approved_by = $3, approved_at = now()
             WHERE request_id = $1 AND shift_date = $2`,
-          [request.id, PLAIN_DAY, ctx.adminId],
+          [request.id, LOCK_PLAIN_DAY, ctx.adminId],
         );
         await holder.query('COMMIT');
         res = await inFlight;
@@ -446,7 +506,7 @@ describe.skipIf(!DB_URL)('подписи объекта при коррекци�
       expect(res.statusCode, res.body).toBe(422);
       expect(res.json<{ message: string }>().message).toContain('согласовано смен: 1');
       expect(await assignedVehicle(request.id)).toBe(ctx.vehicleA);
-      expect(await approvedDays(request.id)).toEqual([PLAIN_DAY]);
+      expect(await approvedDays(request.id)).toEqual([LOCK_PLAIN_DAY]);
     },
     SLOW,
   );
@@ -562,8 +622,9 @@ async function createType(kindId: string, isLinear: boolean): Promise<string> {
  */
 async function confirmed(
   typeId: string,
-  options: { driverPersonId?: string } = {},
+  options: { driverPersonId?: string; dateTo?: string } = {},
 ): Promise<{ id: string; version: number }> {
+  const dateTo = options.dateTo ?? TODAY;
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -573,7 +634,7 @@ async function confirmed(
       objectId: ctx.objectId,
       vehicleTypeId: typeId,
       dateFrom: PAST_FROM,
-      dateTo: TODAY,
+      dateTo,
       responsibleName: 'Иванов Иван Иванович',
       responsiblePhone: '+79990000000',
       backdateReason: 'Техника вышла раньше, чем оформили заявку',
@@ -606,7 +667,7 @@ async function confirmed(
         shiftHours: null,
         ...(options.driverPersonId ? { driverPersonId: options.driverPersonId } : {}),
       },
-      schedule: { requestType: 'special_equipment', dateFrom: PAST_FROM, dateTo: TODAY },
+      schedule: { requestType: 'special_equipment', dateFrom: PAST_FROM, dateTo },
     },
   });
   expect(res.statusCode, res.body).toBe(200);

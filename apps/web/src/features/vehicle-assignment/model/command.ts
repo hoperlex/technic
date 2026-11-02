@@ -5,6 +5,7 @@ import {
   type ConfirmScheduleBody,
   type CorrectAssignmentBody,
   normalizeTimeInput,
+  reassignEffectiveDateRange,
   RELOCATION_COMMUNICATION_KIND,
   type VehicleRequestDto,
 } from '@technic/contracts';
@@ -69,6 +70,11 @@ export interface AssignFormValues {
    * documents and licence category for the vehicle, while here any driver of the directory fits.
    */
   machinistId?: string;
+  // ── The day a vehicle change starts (ADR 0243): only when changing a running on-site request ──
+  /** The day the new vehicle starts to work; opens on the day the server takes without a date. */
+  changeDate?: Dayjs | null;
+  /** Why past days are changed; asked only when `changeDate` is before today. */
+  backdateReason?: string;
   // ── Backdated correction (ADR 0101, R8): only when changing the vehicle of a running request ──
   /**
    * The vehicle changes not "from today" but because the wrong one was recorded: another plate
@@ -96,8 +102,16 @@ export interface AssignCommand {
   /** Signatures per warned sheet (B4) of the shown vehicle-change preview; see `warnings`. */
   acknowledgements?: Record<string, string>;
   assignment: AssignVehicleBody;
+  /** Reason of a vehicle change from a past date (ADR 0243); absent for a date from today on. */
+  backdateReason?: string;
   /** Backdated vehicle change (ADR 0101, R8): reason, operation key and forms to reissue. */
   correction?: CorrectAssignmentBody;
+  /**
+   * The day the new vehicle starts (ADR 0243). Absent when the person left the day the server
+   * takes anyway: that is the command as it was before the field existed, and an old server needs
+   * nothing more.
+   */
+  effectiveDate?: string;
   /**
    * Fingerprint of the consequences shown in the dialog's second step: the server checks under its
    * locks that what was promised still holds. Absent where there was no preview at all — for
@@ -115,6 +129,10 @@ export interface AssignmentCommandContext {
   /** Whether a route is kept: rentals and on-site orders have none (ADR 0041). */
   needsRoute: boolean;
   schedule: ConfirmScheduleBody | null;
+  /** Reason of a change from a past date, already trimmed; `null` — not asked. */
+  backdateReason?: string | null;
+  /** The change date to send; `null` — the server's own day (see `reassignEffectiveDateOf`). */
+  effectiveDate?: string | null;
   /** Whether a delivery relocation to the site is created (migration 0082). */
   wantsDelivery: boolean;
 }
@@ -134,6 +152,8 @@ export function reassignRequestBody(
   return {
     ...command.assignment,
     version,
+    ...(command.effectiveDate ? { effectiveDate: command.effectiveDate } : {}),
+    ...(command.backdateReason ? { backdateReason: command.backdateReason } : {}),
     ...(command.correction ? { correction: command.correction } : {}),
     ...(command.previewFingerprint ? { previewFingerprint: command.previewFingerprint } : {}),
     ...(command.acknowledgements ? { acknowledgements: command.acknowledgements } : {}),
@@ -167,6 +187,24 @@ export function assignScheduleOf(
       .format('YYYY-MM-DDTHH:mm:ssZ'),
     scheduledTimeUnspecified: time === undefined,
   };
+}
+
+/**
+ * The change date the dialog sends, or `null` when it should not travel (ADR 0243).
+ *
+ * `null` for the day the server takes anyway — today, or the first day of a term that has not
+ * begun. A correction also sends no date because its selected sheets determine the boundary;
+ * the server refuses both together.
+ */
+export function reassignEffectiveDateOf(
+  request: VehicleRequestDto | null,
+  values: AssignFormValues,
+  today: string,
+): string | null {
+  if (request?.requestType !== 'special_equipment' || !values.changeDate) return null;
+  if (values.correctionEnabled) return null;
+  const date = values.changeDate.format('YYYY-MM-DD');
+  return date === reassignEffectiveDateRange(request, today).initial ? null : date;
 }
 
 /** The whole assignment command: vehicle, rates, person, route, relocation and correction flag. */
@@ -237,6 +275,8 @@ export function assignCommandBody(
         : {}),
     },
     schedule: context.schedule,
+    ...(context.effectiveDate ? { effectiveDate: context.effectiveDate } : {}),
+    ...(context.backdateReason ? { backdateReason: context.backdateReason } : {}),
     // The correction flag is a separate block, not an assignment field: it is not about how the
     // request is carried out but about what the request claims about past days (ADR 0101, R8).
     ...(context.correctionId

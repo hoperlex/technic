@@ -5,6 +5,7 @@ import {
   esm2SyncPlan,
   formatVehicleRequestNumber,
   periodsOverlap,
+  reassignEffectiveDateRange,
   type AssignmentIssueWarningsDto,
   type AssignmentPlanCancelDto,
   type AssignmentPlanIssueDto,
@@ -23,6 +24,7 @@ import {
   vehicles,
 } from '../db/schema';
 import { err } from '../lib/errors';
+import { dateKeyRu } from './request-diff';
 import { evaluateAssignmentBackstop } from './assignment-backstop';
 import type {
   AssignmentCommandTx,
@@ -128,13 +130,38 @@ export interface ReassignCorrection {
   effectiveDate: string;
 }
 
-/** Семантическая команда двери: что ставим и с какой даты. Ставки и рейс последствий не меняют. */
+/** Rates and the freight route do not change the dated history and paper consequences. */
 export interface ReassignCommand {
   vehicleId: string;
-  /** Машинист, названный этим же запросом; не назван — сверка возьмёт его с прежнего листа. */
+  /** Without an explicit machinist, paper reconciliation inherits the previous sheet's person. */
   driverPersonId?: string | undefined;
-  /** Блок коррекции; его отсутствие и есть «обычная смена техники». */
+  /**
+   * The day the new vehicle starts, named by the person (ADR 0243). Absent — today, or the start of
+   * a term that has not begun. Never together with `correction`: a correction takes its date from
+   * the sheets it names.
+   */
+  effectiveDate?: string | undefined;
+  /** Only a correction can explicitly unlock worked sheets. */
   correction?: ReassignCorrection | undefined;
+}
+
+/**
+ * Refuse a change date the term cannot hold (ADR 0243). One function for the route, which refuses
+ * before its transaction in every read mode, and for the planner, which both the preview and the
+ * executing door run — two spellings of "inside the term" would let the preview accept a date the
+ * door then refuses.
+ */
+export function assertReassignEffectiveDate(
+  term: { dateFrom: string; dateTo?: string | null },
+  today: string,
+  effectiveDate: string,
+): void {
+  const range = reassignEffectiveDateRange(term, today);
+  if (effectiveDate >= range.from && effectiveDate <= range.to) return;
+  throw err.unprocessable(
+    `Дата смены вне срока заявки: машину можно менять с ${dateKeyRu(range.from)} по ${dateKeyRu(range.to)}`,
+    { effectiveDate: 'Дата вне срока заявки' },
+  );
 }
 
 // ── Что посчитано ──
@@ -229,20 +256,17 @@ export async function planReassignCommand(
   const sheets = baseInput.existing;
 
   /*
-   * Логическая дата команды (Р11, Р32).
-   *
-   * У обычной смены это день расчёта: машину меняют «с сегодня», прошлого она не касается и
-   * коррекционных прав не требует. Срок, который ещё не начался, подтягивает дату к своему началу —
-   * иначе диапазон эффекта оказался бы пустым у команды, которая переписывает весь срок.
-   *
-   * У коррекции дату называет её собственный план: она и есть глубина, которую спрашивает
-   * `backdateGuard`, и она же делает диапазон историческим, то есть исход — `crew`.
+   * The command date determines both its history boundary and its backdate requirement (R11, R32).
+   * A plain change defaults to today, or the start of a term not begun. A named earlier date
+   * requires the same right, depth and reason as a correction; the route checks them before the
+   * transaction. A correction takes its date from the sheets selected by its own plan.
    */
+  if (input.effectiveDate !== undefined) {
+    assertReassignEffectiveDate(term, asOf, input.effectiveDate);
+  }
   const effectiveDate = input.correction
     ? input.correction.effectiveDate
-    : asOf < term.dateFrom
-      ? term.dateFrom
-      : asOf;
+    : (input.effectiveDate ?? reassignEffectiveDateRange(term, asOf).initial);
 
   /** The weekly-sweep computation: `legacy`, and linear requests in both modes. */
   async function legacyPaper() {
@@ -359,12 +383,12 @@ export async function planReassignCommand(
    * routes, so every approved day counts. Linearity plays no part. A local copy of that rule would
    * make this window and the door name different days while the fingerprint still matched.
    *
-   * - A plain reassignment is locked by such a day ANYWHERE inside the term, not by one inside the
-   *   command's range. The range lock is R18 and changes together with the R6 split and only with
-   *   it (§15: weakening an existing protection is the customer's call). The set is read by
-   *   `approvalsLockingReassignment` — the predicate the shift summary counts and the door
-   *   re-reads under its locks, term bound included; a wider set here would grey the button out
-   *   where the door would let the command through.
+   * - A plain reassignment is locked by such a day from the change date to the end of the term
+   *   (ADR 0243). It used to be locked by one ANYWHERE inside the term, and the range lock (R18)
+   *   waited for the R6 split as the customer's call (§15: weakening an existing protection). The
+   *   owner made that call on 02.11.2026: the date is named in the dialog, and the days before it
+   *   stay with the previous vehicle. The set is read by `approvalsLockingReassignment` — the
+   *   door re-reads it under its locks, term bound included.
    * - A correction does not lock those days — it CLEARS their sign-off (`clearShiftApprovals`),
    *   inside the term or not, as it always has: the hours stay, but the object has to accept them
    *   again, by the vehicle that actually worked. Hours are shown next to each day so the price of
@@ -386,7 +410,14 @@ export async function planReassignCommand(
             dayRoutesKept,
           })
         ).map((approval) => approval.date)
-      : await approvalsLockingReassignment(tx, { requestId: request.id, dayRoutesKept }),
+      : await approvalsLockingReassignment(tx, {
+          requestId: request.id,
+          dayRoutesKept,
+          // Only the days the new vehicle takes over lock the change (ADR 0243): a sign-off before
+          // the change date stands under the previous vehicle's work, which stays as it is.
+          // Legacy changes the whole assignment, so its past signed days remain protected.
+          fromDate: historyIsAuthoritative(ctx.mode) ? effectiveDate : term.dateFrom,
+        }),
   );
   const namedDays = shifts.filter((row) => named.has(row.date)).map(toAssignmentShiftDay);
   const blockedShiftDays = input.correction ? [] : namedDays;
