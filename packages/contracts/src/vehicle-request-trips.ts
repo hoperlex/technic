@@ -173,6 +173,23 @@ export const storedCargoNameSchema = z.string().trim().max(200);
  */
 export const cargoNameSchema = storedCargoNameSchema.min(1, CARGO_NAME_MESSAGE);
 
+/**
+ * The refusal of a NEW trip that does not carry the key at all. The current portal always sends it,
+ * empty or not; only a tab opened before ADR 0239 omits it, and the generic "validation error: cargoName"
+ * would tell its user nothing — this text says what to do.
+ */
+export const CARGO_NAME_STALE_TAB_MESSAGE =
+  'Портал обновился: у ездки появилось обязательное поле «Что везём», а эта вкладка его не знает. Обновите страницу (Ctrl+R) — заполненное останется в черновике — и укажите, что везём';
+
+/**
+ * The first trip of a new command without the `cargoName` key, or -1. Not a schema rule: a body
+ * sent before ADR 0239 must still pass the stable schema so that its receipt can be replayed and
+ * reconciled (`createVehicleRequestStableSchema`) — the requirement applies to new commands only.
+ */
+export function firstTripWithoutCargoName(trips: readonly { cargoName?: string }[]): number {
+  return trips.findIndex((trip) => trip.cargoName === undefined);
+}
+
 /** Положительное количество с не более чем 3 знаками после запятой (`numeric(12,3)`). */
 const tripAmountSchema = z
   .number()
@@ -230,7 +247,12 @@ export const requestTripSchema = z
     toLocation: tripLocationSchema,
     fromAddress: verifiedAddressMetaSchema,
     toAddress: verifiedAddressMetaSchema,
-    cargoName: cargoNameSchema,
+    /**
+     * Optional as a key, never empty as a value (ADR 0239). A body sent before the field must stay
+     * valid for a receipt replay and reconciliation, with the fingerprint it was stored under; a
+     * new command without the key is refused by the server (`firstTripWithoutCargoName`).
+     */
+    cargoName: cargoNameSchema.optional(),
     volumeM3: tripAmountSchema.nullable().optional(),
     weightTons: tripAmountSchema.nullable().optional(),
     /**

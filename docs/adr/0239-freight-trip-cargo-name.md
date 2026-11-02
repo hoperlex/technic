@@ -50,13 +50,19 @@ freight trip, a passenger car included.
    field required except on such a trip. There is no not-blank CHECK in the database for this
    reason.
 
-4. **An omitted key on an existing row keeps the stored value.** Trips are edited as a full list
-   (§7 of the route-trips plan), and a tab opened before this release rewrites them without the key.
-   Reading the absence as "cleared" would erase the cargo on every edit made from such a tab, so
-   the server writes the stored value back. The new portal always sends the key. A creation from
-   such a tab is refused with a validation error, as an unknown required field must be; the update
-   banner is already shown there and the local draft (ADR 0230) survives the reload. The client
-   floor is not raised for this.
+4. **An omitted key is a body older than the field, not an empty answer.** The portal always sends
+   the key; only a tab opened before this release, or a body it froze for a retry, lacks it.
+   - On an existing row the server writes the stored value back: trips are edited as a full list
+     (§7 of the route-trips plan), and reading the absence as "cleared" would erase the cargo on
+     every edit from such a tab.
+   - The stable create schema accepts it: a creation sent before the release whose answer was lost
+     is sent again as is (ADR 0231), and it must still replay its saved response and reconcile under
+     the fingerprint it was stored with. So `cargoName` is optional as a key and never empty as a
+     value in `requestTripSchema`.
+   - A new command without it — a creation, or a new row of an edit or a conversion — is refused
+     with 422 and a text that says what to do (`CARGO_NAME_STALE_TAB_MESSAGE`: reload, the draft
+     of ADR 0230 keeps the input), before any write. Not 426: the new portal itself resends a frozen
+     old body, and a mandatory reload on it would loop. The client floor is not raised for this.
 
 5. **Not printed; the route version does not move.** The waybill «Груз» column keeps printing the
    quantity and the note (ADR 0071), and the driver cabinet is unchanged. So an edit of the cargo

@@ -1,8 +1,13 @@
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf, updateRequestTripSchema } from '@technic/contracts';
+import {
+  CARGO_NAME_STALE_TAB_MESSAGE,
+  createVehicleRequestStableSchema,
+  moscowDateKeyOf,
+  updateRequestTripSchema,
+} from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -366,6 +371,10 @@ afterAll(async () => {
   await ctx?.db.execute(sql`
     DELETE FROM audit_log
      WHERE actor_user_id IN (SELECT id FROM users WHERE email = ${ADMIN_EMAIL})`);
+  // Receipts of the keyed creations below: they outlive their requests (no FK to the request).
+  await ctx?.db.execute(sql`
+    DELETE FROM request_create_attempts
+     WHERE actor_user_id IN (SELECT id FROM users WHERE email = ${ADMIN_EMAIL})`);
   await ctx?.app.close();
   await ctx?.closeDb();
 });
@@ -659,6 +668,98 @@ describe.skipIf(!DB_URL)('контакт спрашивается за ново�
     expect(res.statusCode, res.body).toBe(200);
     const after = await readRequest(request.id);
     expect([after.trips[0]!.cargoName, after.trips[0]!.comment]).toEqual(['Песок', 'Уточнено']);
+  });
+});
+
+describe.skipIf(!DB_URL)('тело без «Что везём» — от вкладки старше поля (ADR 0239)', () => {
+  /** A freight body as a tab opened before the field sends it: the trip has no `cargoName` key. */
+  function staleBody(): Record<string, unknown> {
+    const { cargoName: _omitted, ...trip } = goodTrip();
+    return {
+      requestType: 'freight_transport',
+      objectId: ctx.objectId,
+      vehicleTypeId: ctx.vehicleTypeId,
+      vehicleCategoryId: ctx.vehicleCategoryId,
+      scheduledAt: ctx.scheduledAt,
+      trips: [trip],
+    };
+  }
+
+  it('новая заявка получает отказ «обновите страницу», и ничего не создаётся', async () => {
+    const before = await ctx.db.execute<{ n: string }>(
+      sql`SELECT count(*)::text AS n FROM vehicle_requests`,
+    );
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/vehicle-requests',
+      headers: ctx.auth,
+      payload: staleBody(),
+    });
+
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().message).toBe(CARGO_NAME_STALE_TAB_MESSAGE);
+    expect(res.json().fields?.['trips.0.cargoName']).toBeTruthy();
+    const after = await ctx.db.execute<{ n: string }>(
+      sql`SELECT count(*)::text AS n FROM vehicle_requests`,
+    );
+    expect(after.rows[0]!.n).toBe(before.rows[0]!.n);
+  });
+
+  it('новая ездка в правке — тот же отказ, а сохранённая без ключа остаётся как была', async () => {
+    const request = await createRequest([goodTrip()]);
+    const { cargoName: _omitted, ...added } = goodTrip();
+
+    const res = await patchTrips(request, [echoTrip(request.trips[0]!), added]);
+
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().message).toContain(CARGO_NAME_STALE_TAB_MESSAGE);
+    expect(res.json().fields?.['trips.1.cargoName']).toBeTruthy();
+  });
+
+  /**
+   * A body sent before the release whose answer was lost stays in the portal draft and is sent
+   * again as is (the receipt protocol, ADR 0231). It must pass the stable schema: its reconciliation
+   * answers, and a committed one replays its saved response — under the fingerprint it was stored
+   * with. Refusing it would leave the person unable to learn whether the request exists.
+   */
+  it('тело, отправленное до выпуска, сверяется и повторяется по квитанции', async () => {
+    const { createAttemptFingerprint } = await import('../src/services/request-create-attempt');
+    const old = staleBody();
+
+    const lost = randomUUID();
+    const reconciled = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/vehicle-requests/_create-attempts/reconcile',
+      headers: { ...ctx.auth, 'idempotency-key': lost },
+      payload: { originalBody: old },
+    });
+    expect(reconciled.statusCode, reconciled.body).toBe(200);
+    expect(reconciled.json().state).toBe('not-created');
+
+    // A committed pre-release attempt: created now, then its receipt is given the fingerprint the
+    // old body had — exactly what a receipt stored before the release holds.
+    const key = randomUUID();
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/vehicle-requests/_create-with-receipt',
+      headers: { ...ctx.auth, 'idempotency-key': key },
+      payload: { ...old, trips: [goodTrip()] },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    createdRequests.push(created.json().id as string);
+    const oldFingerprint = createAttemptFingerprint(createVehicleRequestStableSchema.parse(old));
+    await ctx.db.execute(
+      sql`UPDATE request_create_attempts SET fingerprint = ${oldFingerprint} WHERE key = ${key}`,
+    );
+
+    const replayed = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/vehicle-requests/_create-with-receipt',
+      headers: { ...ctx.auth, 'idempotency-key': key },
+      payload: old,
+    });
+    expect(replayed.statusCode, replayed.body).toBe(200);
+    expect(replayed.json().id).toBe(created.json().id);
   });
 });
 

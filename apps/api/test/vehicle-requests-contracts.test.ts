@@ -1177,20 +1177,22 @@ describe('vehicle-requests: адрес (DaData, ADR 0006 — жёсткая мо
   });
 
   /**
-   * "What we carry" (ADR 0239) in an edit: a new row must name it; an existing row may send it
-   * empty (a trip older than the field) or omit it (a tab older than the field) — what an empty or
-   * omitted value means against the stored one decides the server.
+   * "What we carry" (ADR 0239) in an edit: a new row may not send it empty; an existing row may
+   * send it empty (a trip older than the field). An omitted key passes on both — the server keeps
+   * the stored value of an existing row and refuses a new one with a "reload the page" text.
    */
-  it('update: что везём обязательно у новой ездки, у существующей — послабление', () => {
+  it('update: пустое «что везём» у новой ездки не проходит, у существующей — послабление', () => {
     const base = { requestType: 'freight_transport' as const, version: 1 };
     const { cargoName: _c, ...tripNoCargo } = freight.trips[0];
-    const fresh = updateVehicleRequestSchema.safeParse({ ...base, trips: [tripNoCargo] });
-    expect(fresh.success).toBe(false);
-    expect(fresh.error?.issues[0]?.path).toEqual(['trips', 0, 'cargoName']);
-    expect(
-      updateVehicleRequestSchema.safeParse({ ...base, trips: [{ ...tripNoCargo, cargoName: ' ' }] })
-        .success,
-    ).toBe(false);
+    const blank = updateVehicleRequestSchema.safeParse({
+      ...base,
+      trips: [{ ...tripNoCargo, cargoName: ' ' }],
+    });
+    expect(blank.success).toBe(false);
+    expect(blank.error?.issues[0]?.path).toEqual(['trips', 0, 'cargoName']);
+    expect(updateVehicleRequestSchema.safeParse({ ...base, trips: [tripNoCargo] }).success).toBe(
+      true,
+    );
 
     const id = '11111111-2222-4333-8444-555555555555';
     const omitted = updateVehicleRequestSchema.parse({ ...base, trips: [{ ...tripNoCargo, id }] });

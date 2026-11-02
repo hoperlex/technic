@@ -577,9 +577,10 @@ export const updateRequestTripSchema = requestTripSchema
     fromAddress: addressMetaSchema.nullable(),
     toAddress: addressMetaSchema.nullable(),
     /**
-     * Unlike the other fields, an existing row may omit it: a tab opened before ADR 0239 rewrites
-     * its trips without the key, and the server keeps the stored value instead of erasing it. An
-     * empty value is the legacy state; whether it may be written decides the server (R2a).
+     * Unlike the other fields, a row may omit it: a tab opened before ADR 0239 rewrites its trips
+     * without the key, and the server keeps the stored value of an existing row instead of erasing
+     * it, and refuses a new one with a "reload the page" text. An empty value is the legacy state;
+     * whether it may be written decides the server (R2a).
      */
     cargoName: storedCargoNameSchema.optional(),
     fromResponsibleName: storedContactNameSchema,
@@ -594,7 +595,9 @@ export const updateRequestTripSchema = requestTripSchema
     // «добавили ездку в старую заявку» стало бы дырой, через которую непроверенный адрес и пустой
     // контакт возвращаются в базу спустя релиз после того, как их оттуда убрали.
     const issues: [string, string | null][] = [
-      ['cargoName', trip.cargoName ? null : CARGO_NAME_MESSAGE],
+      // An empty value is refused here; an absent key on a new row is the server's refusal of a tab
+      // older than the field (`firstTripWithoutCargoName`), with a text that tells what to do.
+      ['cargoName', trip.cargoName === '' ? CARGO_NAME_MESSAGE : null],
       ['fromAddress', verifiedAddressIssue(trip.fromAddress)],
       ['toAddress', verifiedAddressIssue(trip.toAddress)],
       ['fromResponsibleName', contactIssue(trip.fromResponsibleName, 'name')],

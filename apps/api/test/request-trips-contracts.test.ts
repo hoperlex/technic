@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CARGO_NAME_MESSAGE,
+  firstTripWithoutCargoName,
   MAX_ROUTE_REQUESTS,
   type VehicleRequestTripDto,
   requestCargoTotal,
@@ -112,18 +113,21 @@ describe('схема ездки', () => {
   });
 
   /**
-   * "What we carry" is required of every new trip (ADR 0239): missing, blank and over-long values
-   * are refused at the field, and the value is stored trimmed.
+   * "What we carry" (ADR 0239): a present value is non-empty, trimmed and at most 200 characters.
+   * An absent key passes the schema on purpose — a body sent before the field must stay valid for
+   * a receipt replay; a new command without it is the server's refusal.
    */
-  it('что везём обязательно, обрезается и не длиннее 200 знаков', () => {
+  it('что везём: пустое и длинное не проходят, отсутствие ключа — забота сервера', () => {
     const { cargoName: _dropped, ...withoutCargo } = valid;
-    const missing = requestTripSchema.safeParse(withoutCargo);
-    expect(missing.success).toBe(false);
-    expect(missing.error?.issues[0]?.path).toEqual(['cargoName']);
+    expect(requestTripSchema.safeParse(withoutCargo).success).toBe(true);
+    expect(firstTripWithoutCargoName([valid, withoutCargo])).toBe(1);
+    expect(firstTripWithoutCargoName([valid])).toBe(-1);
 
     const blank = requestTripSchema.safeParse({ ...valid, cargoName: '   ' });
-    expect(blank.error?.issues[0]?.message).toBe(CARGO_NAME_MESSAGE);
-
+    expect(blank.error?.issues[0]).toMatchObject({
+      path: ['cargoName'],
+      message: CARGO_NAME_MESSAGE,
+    });
     expect(requestTripSchema.safeParse({ ...valid, cargoName: 'щ'.repeat(201) }).success).toBe(
       false,
     );

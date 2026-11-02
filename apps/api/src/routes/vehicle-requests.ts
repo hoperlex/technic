@@ -109,6 +109,9 @@ import {
   isCargoAmountRequired,
   isDirectoryAddressSource,
   CARGO_AMOUNT_MESSAGE,
+  CARGO_NAME_MESSAGE,
+  CARGO_NAME_STALE_TAB_MESSAGE,
+  firstTripWithoutCargoName,
   moscowDateKeyOf,
   // Какую дату двигает правка и какая из них решает глубину (ADR 0101, §4) — одной функцией на
   // портал и сервер: форма спрашивает причину ровно там, где её спросит ручка.
@@ -2325,6 +2328,13 @@ async function applyRequestTrips(
 
   for (const { input, index, label, prev } of pairs) {
     const at = (field: string) => ({ field: tripField(index, field), trip: label });
+    // An absent key keeps an existing row's cargo (`tripValues`); on a new row it means a tab
+    // older than the field, and the refusal tells its user to reload rather than "required".
+    if (!prev && input.cargoName === undefined) {
+      throw err.unprocessable(`${label}: ${CARGO_NAME_STALE_TAB_MESSAGE}`, {
+        [tripField(index, 'cargoName')]: CARGO_NAME_MESSAGE,
+      });
+    }
     assertTextWritable(
       input.cargoName ?? prev?.cargoName ?? '',
       prev?.cargoName ?? null,
@@ -4881,6 +4891,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // A receipt may survive Moscow midnight. New commands still pass the full date gate before
       // any database mutation, while an exact replay returns its saved response first.
       const checked = createVehicleRequestSchema.safeParse(body);
+      // The same order for "what we carry" (ADR 0239): a body sent before the field is replayed
+      // above, a new command without it is refused here, before any write.
+      if (body.requestType === 'freight_transport') {
+        const stale = firstTripWithoutCargoName(body.trips);
+        if (stale >= 0) {
+          throw err.unprocessable(CARGO_NAME_STALE_TAB_MESSAGE, {
+            [tripField(stale, 'cargoName')]: CARGO_NAME_MESSAGE,
+          });
+        }
+      }
       if (!checked.success) {
         throw err.validation(
           Object.fromEntries(
