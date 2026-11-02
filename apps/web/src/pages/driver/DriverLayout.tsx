@@ -14,6 +14,7 @@ import { useAuth } from '@entities/session';
 import { PortalLogo } from '@shared/ui';
 import { UserAvatar } from '@shared/ui';
 import { cabinetRead, driverCabinetApi, driverCabinetKeys } from '@entities/driver-cabinet';
+import { asksReadings } from './dayState';
 import { clearUserDrafts, pruneDrafts } from './draftStore';
 import { DRIVER_FONT_SCALE, DRIVER_NUMBER_SCALE, driverTheme } from './theme';
 
@@ -222,7 +223,7 @@ function usePendingDays(today: string, shown: string): string[] {
     const report = reports[index];
     // Пока ответ не пришёл, дня в списке нет: строка, мигнувшая и пропавшая, читается как сбой.
     if (!assignment?.isSuccess || !report?.isSuccess) return false;
-    if (assignment.data.entries.length === 0) return false;
+    if (!asksReadings(assignment.data)) return false;
     // `null` — форму дня не открывали вовсе, `draft` — открыли и не отправили. Прочие состояния
     // водителя не ждут: принятый и повторно принимаемый ведёт персонал, аннулированный закрыт.
     return report.data === null || report.data.state === 'draft';

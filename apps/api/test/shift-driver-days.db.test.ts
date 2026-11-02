@@ -6,6 +6,7 @@ import type { LightMyRequestResponse } from 'fastify';
 import {
   moscowDateKeyOf,
   shiftDateKey,
+  weekStartKey,
   type ReadingInput,
   type ReportItemSubmit,
   type VehicleRequestShiftDto,
@@ -57,6 +58,12 @@ const WAYBILL_NUMBER_BASE = 940_000_000 + Math.floor(Math.random() * 900) * 1_00
 
 const TODAY = moscowDateKeyOf(new Date());
 const ago = (days: number): string => shiftDateKey(TODAY, -days);
+/**
+ * A day of a past week by its weekday, Monday = 0. Scenarios whose missed day must be a working day
+ * — or a Sunday on purpose — take their dates here: Sunday is a rest day (ADR 0242), and an offset
+ * from today lands on one once a week.
+ */
+const weekday = (index: number): string => shiftDateKey(weekStartKey(ago(13)), index);
 const STAFF = { mode: 'staff' as const };
 
 interface Auth {
@@ -598,9 +605,10 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
   it('рейсы дня: разрыв цепочки, дверь сохранения и строка площадки под днём водителя', async () => {
     const person = await newPerson('Рейсовый');
     const vehicleId = await newVehicle();
-    const [d6, d5, d4, d3, d2] = [ago(6), ago(5), ago(4), ago(3), ago(2)];
+    // Monday to Saturday of a past week: the unsubmitted d5 is a working day, so it breaks the pair.
+    const [d7, d6, d5, d4, d3, d2] = [0, 1, 2, 3, 4, 5].map(weekday);
     const requestId = await newRequest(vehicleId, d6, d2);
-    for (const date of [ago(7), d6, d5, d4, d3, d2])
+    for (const date of [d7, d6, d5, d4, d3, d2])
       await dayRoute(requestId, vehicleId, person.id, date);
 
     await submitDay(person.id, d6, values({ engineHours: 500, fuelFilledLiters: 40 }));
@@ -634,12 +642,12 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
     // The linear days table reads the same effective day inside the term, and only the row outside.
     await ctx.db.execute(sql`
       INSERT INTO vehicle_request_shifts (request_id, shift_date, machine_hours, refuel, comment, filled_by)
-      VALUES (${requestId}, ${ago(7)}, 5, '', '', ${ctx.adminId})`);
+      VALUES (${requestId}, ${d7}, 5, '', '', ${ctx.adminId})`);
     const state = await ctx.days.loadLinearRequest(ctx.db, requestId);
     const linear = new Map(
       (await ctx.days.loadRequestDays(ctx.db, state!)).map((item) => [item.date, item]),
     );
-    expect(linear.get(ago(7))).toMatchObject({
+    expect(linear.get(d7)).toMatchObject({
       outOfTerm: true,
       shift: { machineHours: 5, source: 'site' },
     });
@@ -706,7 +714,7 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
    * numbers (Р13б), as the garage counts it.
    */
   it('непрерывность пары — правило гаража: выходные без смен не рвут, открытый пустой день рвёт', async () => {
-    const [friday, saturday, sunday, monday] = [ago(5), ago(4), ago(3), ago(2)];
+    const [friday, saturday, sunday, monday] = [4, 5, 6, 7].map(weekday);
     const person = await newPerson('Понедельничный');
     const vehicleId = await newVehicle();
     const requestId = await newRequest(vehicleId, friday, monday);
@@ -726,9 +734,13 @@ describe.skipIf(!DB_URL)('смены заявки по показаниям во
     await issueEsm2(requestId, vehicleId, person.id, saturday);
     expect((await dayOf(requestId, monday)).source).toBe('driver');
 
-    // Sunday's report opened without numbers is: the delta now covers a shift with no reading.
+    // Sunday opened without numbers is not one either: a rest day asks nothing (ADR 0242).
     await issueEsm2(requestId, vehicleId, person.id, sunday);
     await ctx.readings.openReport(person.id, sunday, ctx.adminId, STAFF);
+    expect((await dayOf(requestId, monday)).source).toBe('driver');
+
+    // Saturday's report opened without numbers is: the delta now covers a shift with no reading.
+    await ctx.readings.openReport(person.id, saturday, ctx.adminId, STAFF);
     expect(await dayOf(requestId, monday)).toMatchObject({
       source: null,
       machineHours: 0,

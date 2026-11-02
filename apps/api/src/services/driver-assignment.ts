@@ -34,7 +34,7 @@ import {
   waybillSeries,
 } from '../db/schema';
 import { daysBetween, type Tx } from './readings-chain';
-import { servedRequestSql } from './readings-expected';
+import { isRestDayShift, servedRequestSql } from './readings-expected';
 import { loadRoutePoints, loadRoutePointsByRoute } from './route-points';
 import { loadRouteDtos, routeQuery } from './vehicle-routes';
 
@@ -438,6 +438,12 @@ function routeEntry(
     // Прошлый снимок счётчиков заполняет кабинет, и только он: письму сравнивать нечего — оно
     // ничего не вводит, и лишний запрос ради непечатаемого поля был бы платой ни за что.
     previous: null,
+    // A trip is a relocation or a freight row (no `work_date`); site-day rows alone are the
+    // calendar's (ADR 0242). The composition here is already the served one (`routeSources`).
+    readingOptional: isRestDayShift(
+      route.routeDate,
+      relocation || route.requests.some((request) => !request.workDate),
+    ),
     relocation,
     basisLabel: route.sourceRequest
       ? `${route.sourceRequest.displayNumber} · ${route.sourceRequest.customerName}`
@@ -661,6 +667,7 @@ async function esm2Sources(
       comment: '',
       // Снимок счётчиков подставляет сборка дня — одним запросом на все машины сразу.
       previous: null,
+      readingOptional: isRestDayShift(date, false),
     },
   }));
 }

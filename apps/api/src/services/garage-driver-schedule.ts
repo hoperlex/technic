@@ -24,7 +24,7 @@ import { ASSIGNMENT_READINESS_POPULATION } from './assignment-mode';
 import { readActualChanges, readHistoryIsAuthoritative } from './assignment-read';
 import { driverCondition } from './drivers';
 import { routeHasWork } from './garage';
-import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER } from './readings-expected';
+import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER, restDayExemptSql } from './readings-expected';
 
 /**
  * A driver's month for the garage's «График» window (owner's decisions of 28.10.2026; contract in
@@ -71,6 +71,9 @@ type ShiftSqlRow = {
  * waybill) and no live waybill names this driver — either none was issued yet, or the issued one
  * names someone else and the reassignment was not reissued. Nothing is expected of such a route
  * (`EXPECTED_ROUTE_FILTER` rejects it), so its reading columns stay empty.
+ *
+ * A rest-day shift without a reading (ADR 0242) is no shift of the schedule: a Sunday of a weekly
+ * sheet or of a site-day route shows as a day off unless the driver submitted it.
  */
 function shiftRowsSql(personId: string, from: string, to: string) {
   return sql`
@@ -109,6 +112,7 @@ SELECT 'route'::text                AS source,
  WHERE vr.driver_person_id = ${personId}::uuid
    AND vr.route_date BETWEEN ${from}::date AND ${to}::date
    AND ${EXPECTED_ROUTE_FILTER}
+   AND NOT ${restDayExemptSql({ day: sql`vr.route_date`, routeId: sql`vr.id`, waybillId: sql`NULL` })}
 UNION ALL
 SELECT 'esm2'::text, NULL, NULL, gs.day::date::text, w.vehicle_id,
        w.id, w.form_code::text, w.number, ws.prefix, ws.number_width,
@@ -136,6 +140,7 @@ SELECT 'esm2'::text, NULL, NULL, gs.day::date::text, w.vehicle_id,
    AND ${EXPECTED_ESM2_FILTER}
    AND w.period_from <= ${to}::date
    AND w.period_to >= ${from}::date
+   AND NOT ${restDayExemptSql({ day: sql`gs.day::date`, routeId: sql`NULL`, waybillId: sql`w.id` })}
 UNION ALL
 SELECT 'no_paper'::text, vr.id, vr.num, vr.route_date::text, vr.vehicle_id,
        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL

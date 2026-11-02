@@ -176,6 +176,20 @@ function day(offset: number): string {
   return shiftDateKey(ctx.base, offset);
 }
 
+function isSunday(date: string): boolean {
+  return new Date(`${date}T00:00:00Z`).getUTCDay() === 0;
+}
+
+/**
+ * A working day near `day(offset)`. The base moves with the calendar, and a Sunday is a rest day
+ * (ADR 0242) that expects nothing of a weekly sheet or a site-day route: a scenario about
+ * working-day rules must not land on one, or it turns red one day a week.
+ */
+function workday(offset: number): string {
+  const date = day(offset);
+  return isSunday(date) ? shiftDateKey(date, -1) : date;
+}
+
 async function newPerson(firstName: string): Promise<string> {
   const [person] = await ctx.db
     .insert(ctx.schema.persons)
@@ -792,7 +806,7 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       expect(await stateOf(date, bare)).toBeNull();
     });
 
-    it('недельный лист ждут каждый день действия — и ни днём раньше, ни днём позже', async () => {
+    it('недельный лист ждут каждый день действия, кроме воскресенья, — и ни днём раньше, ни днём позже', async () => {
       const person = await newPerson('Недельный');
       const vehicle = await newVehicle();
       const from = weekStartKey(day(5));
@@ -805,7 +819,8 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
        */
       const span = await esm2Span(vehicle);
       for (let cursor = span.from; cursor <= span.to; cursor = shiftDateKey(cursor, 1)) {
-        expect(await isPending(cursor, vehicle), `день ${cursor} листа`).toBe(true);
+        // Воскресенье — выходной (ADR 0242): лист кладёт его календарём, а не заданием.
+        expect(await isPending(cursor, vehicle), `день ${cursor} листа`).toBe(!isSunday(cursor));
       }
       // Границы строгие с обеих сторон: до листа и после него ждать нечего.
       expect(await isPending(shiftDateKey(span.from, -1), vehicle)).toBe(false);
@@ -846,7 +861,9 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
         cursor <= shiftDateKey(monday, 6);
         cursor = shiftDateKey(cursor, 1)
       ) {
-        expect(await isPending(cursor, vehicle), `день ${cursor} разрезанной недели`).toBe(true);
+        expect(await isPending(cursor, vehicle), `день ${cursor} разрезанной недели`).toBe(
+          !isSunday(cursor),
+        );
       }
       expect(await isPending(shiftDateKey(monday, -1), vehicle)).toBe(false);
       expect(await isPending(shiftDateKey(monday, 7), vehicle)).toBe(false);
@@ -908,7 +925,7 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       const person = await newPerson('Двубумажный');
       const vehicle = await newVehicle();
       const request = await newRequest();
-      const date = day(9);
+      const date = workday(9);
       const esm2 = await newEsm2(vehicle, person, date, { requestId: request });
       await newDayRoute(vehicle, date, person, request);
 
@@ -923,7 +940,7 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       const person = await newPerson('Однострочный');
       const vehicle = await newVehicle();
       const request = await newRequest();
-      const date = day(10);
+      const date = workday(10);
       const esm2 = await newEsm2(vehicle, person, date, { requestId: request });
       await newDayRoute(vehicle, date, person, request);
 
@@ -947,7 +964,7 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       const standIn = await newPerson('Подменный');
       const vehicle = await newVehicle();
       const request = await newRequest();
-      const date = day(11);
+      const date = workday(11);
       // The week was reissued to the stand-in; the day 4-P stayed on the original driver.
       const esm2 = await newEsm2(vehicle, standIn, date, { requestId: request });
       await newDayRoute(vehicle, date, dayDriver, request);
@@ -973,7 +990,7 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
      */
     it('подавление узкое: грузовая строка, чужая заявка, чужая машина и аннулированный ЭСМ-2 рейс не гасят', async () => {
       const person = await newPerson('Контрольный');
-      const date = day(12);
+      const date = workday(12);
 
       // A freight composition row of the same request: no `work_date`, so no day to match. A
       // week on the site does not cover a freight run.
@@ -1042,7 +1059,7 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       const person = await newPerson('Перегонный');
       const vehicle = await newVehicle();
       const request = await newRequest();
-      const date = day(13);
+      const date = workday(13);
       const esm2 = await newEsm2(vehicle, person, date, { requestId: request });
       const relocation = await newRoute(vehicle, date, person, { sourceRequestId: request });
 
@@ -1081,6 +1098,105 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
    * Сводка и журнал (Р27, Р28). Пробег и наработка — суммы разностей соседних снимков по готовой
    * цепочке; заправленное топливо — сумма литров, и ничего производного рядом с ней.
    */
+  /*
+   * ADR 0242. Sunday is a rest day: a shift the calendar alone lays on it — a day of a weekly sheet,
+   * a site-day route of the day batch — is not asked for unless a reading came. A trip on Sunday is
+   * a task for that very day and stays asked for. The dates are fixed weekdays of a past week, not
+   * offsets from the base, so the scenarios do not move with the calendar.
+   */
+  describe('воскресенье — выходной (ADR 0242)', () => {
+    const monday = () => weekStartKey(day(5));
+    const saturday = () => shiftDateKey(monday(), 5);
+    const sunday = () => shiftDateKey(monday(), 6);
+
+    it('воскресенье недельного листа не ждут, пока его не сдали; сданное считается как обычно', async () => {
+      const person = await newPerson('Выходной');
+      const vehicle = await newVehicle();
+      await newEsm2(vehicle, person, monday());
+
+      expect(await isPending(sunday(), vehicle)).toBe(false);
+      expect(await isPending(saturday(), vehicle)).toBe(true);
+      expect(await statsOf(vehicle, monday(), sunday())).toMatchObject({
+        shifts: 6,
+        missingReadings: 6,
+      });
+      expect(
+        (await ctx.aggregate.loadLastExpectedShiftDays([vehicle], monday(), sunday())).get(vehicle),
+      ).toBe(saturday());
+
+      // The cabinet opens the day on view: a Sunday glanced at leaves an empty row, and that row is
+      // no unsubmitted shift either.
+      const opened = await report(person, sunday());
+      expect(opened.items).toHaveLength(1);
+      expect(await isPending(sunday(), vehicle)).toBe(false);
+      expect(await statsOf(vehicle, monday(), sunday())).toMatchObject({ shifts: 6 });
+
+      // The cabinet marks the shift optional on Sunday only.
+      const [sundayEntry] = await ctx.assignment.loadDayEntries(person, sunday());
+      const [saturdayEntry] = await ctx.assignment.loadDayEntries(person, saturday());
+      expect(sundayEntry).toMatchObject({ sourceKind: 'esm2', readingOptional: true });
+      expect(saturdayEntry).toMatchObject({ sourceKind: 'esm2', readingOptional: false });
+
+      // A driver who worked submits: the Sunday is then an expected shift with its reading.
+      await submit(person, sunday(), [line(opened.items[0]!.id, values({ engineHours: 40 }))]);
+      expect(await statsOf(vehicle, monday(), sunday())).toMatchObject({
+        shifts: 7,
+        missingReadings: 6,
+      });
+      expect(
+        (await ctx.aggregate.loadLastExpectedShiftDays([vehicle], monday(), sunday())).get(vehicle),
+      ).toBe(sunday());
+    });
+
+    it('воскресный день объекта по 4-П не ждут, а рейс с поездкой — ждут', async () => {
+      const person = await newPerson('Воскресный');
+      const siteVehicle = await newVehicle();
+      const freightVehicle = await newVehicle();
+      const relocationVehicle = await newVehicle();
+      const siteRoute = await newDayRoute(siteVehicle, sunday(), person, await newRequest());
+      const freightRoute = await newDayRoute(freightVehicle, sunday(), person, await newRequest(), {
+        freightRow: true,
+      });
+      const relocationRoute = await newRoute(relocationVehicle, sunday(), person);
+
+      expect(await isPending(sunday(), siteVehicle)).toBe(false);
+      expect(await isPending(sunday(), freightVehicle)).toBe(true);
+      expect(await isPending(sunday(), relocationVehicle)).toBe(true);
+
+      const entries = await ctx.assignment.loadDayEntries(person, sunday());
+      const optional = new Map(entries.map((entry) => [entry.sourceId, entry.readingOptional]));
+      expect(optional).toEqual(
+        new Map([
+          [siteRoute, true],
+          [freightRoute, false],
+          [relocationRoute, false],
+        ]),
+      );
+    });
+
+    it('открытое пустым воскресенье не рвёт пару счётчиков понедельника и не красит день машины', async () => {
+      const person = await newPerson('Непрерывный');
+      const vehicle = await newVehicle();
+      await newEsm2(vehicle, person, monday());
+      const nextMonday = shiftDateKey(monday(), 7);
+      await newEsm2(vehicle, person, nextMonday);
+
+      const sat = await report(person, saturday());
+      await submit(person, saturday(), [line(sat.items[0]!.id, values({ engineHours: 100 }))]);
+      // A weekly sheet's day opened without numbers broke the pair before (Р13б).
+      await report(person, sunday());
+      const mon = await report(person, nextMonday);
+      await submit(person, nextMonday, [line(mon.items[0]!.id, values({ engineHours: 108 }))]);
+
+      const { loadBrokenCounterPairs } = await import('../src/services/readings-expected');
+      const broken = await loadBrokenCounterPairs(ctx.db, 'engineHours', [
+        { vehicleId: vehicle, previousDate: saturday(), date: nextMonday },
+      ]);
+      expect(broken.size).toBe(0);
+      expect(await stateOf(sunday(), vehicle)).toBeNull();
+    });
+  });
+
   describe('сводка по парку и журнал машины', () => {
     /** Машина с рядом на три дня: её же читает журнал — цепочка у обоих одна. */
     const chain: { person: string; vehicle: string; days: string[] } = {

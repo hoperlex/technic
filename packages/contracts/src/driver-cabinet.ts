@@ -217,6 +217,13 @@ export interface DriverAssignmentEntry {
    * второе правило.
    */
   previous: DriverPreviousReading | null;
+  /**
+   * The reading of this shift is not asked for on this day (ADR 0242): a Sunday of a weekly sheet or
+   * of a site-day route without a trip. The block stays and is sent as any other if the vehicle
+   * worked; the cabinet only stops calling the day a debt. Optional: a server older than the field
+   * does not send it, and absence reads as "asked for", the old behaviour.
+   */
+  readingOptional?: boolean;
 }
 
 /**

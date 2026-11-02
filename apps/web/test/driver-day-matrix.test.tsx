@@ -151,7 +151,11 @@ function reportOf(items: ReportItemDto[], state: DriverReportDto['state']): Driv
   };
 }
 
-function assignmentOf(items: ReportItemDto[], canSubmit: boolean): DriverAssignmentDto {
+function assignmentOf(
+  items: ReportItemDto[],
+  canSubmit: boolean,
+  readingOptional?: boolean,
+): DriverAssignmentDto {
   return {
     date: today,
     canSubmit,
@@ -170,6 +174,7 @@ function assignmentOf(items: ReportItemDto[], canSubmit: boolean): DriverAssignm
       moveTo: '',
       comment: '',
       previous: null,
+      readingOptional,
     })),
   };
 }
@@ -183,12 +188,15 @@ interface CabinetOptions {
   canSubmit?: boolean;
   /** Что вернёт `open`, если он всё-таки уйдёт. */
   opened?: ReportItemDto[];
+  /** Признак выходного у каждой строки задания (ADR 0242). */
+  readingOptional?: boolean;
 }
 
 function renderCabinet(options: CabinetOptions = {}) {
   const entries = options.entries ?? [routeItem];
   const http = mockHttp({
-    'GET /driver/assignment': () => json(assignmentOf(entries, options.canSubmit ?? true)),
+    'GET /driver/assignment': () =>
+      json(assignmentOf(entries, options.canSubmit ?? true, options.readingOptional)),
     'GET /driver/reports/:date': () => json(options.stored ?? null),
     'POST /driver/reports/:date/open': () => json(reportOf(options.opened ?? entries, 'draft')),
     'POST /driver/reports/:date/submit': () => json(reportOf(entries, 'submitted')),
@@ -285,6 +293,20 @@ describe('кабинет водителя: матрица состояний д�
     expect(document.querySelectorAll('[id^="reading-"]')).toHaveLength(0);
     // Подвала нет вовсе: называть причину дважды незачем, а кнопке нечего передавать.
     expect(document.querySelector('.driver-footer')).toBeNull();
+  });
+
+  it('выходной день называет себя словами, а форма остаётся для тех, кто работал', async () => {
+    // ADR 0242: every shift of the day is optional — the day line says so instead of «Передать
+    // показания», and nothing else changes: the day opens, the fields take input, the button stays.
+    const { http } = renderCabinet({ stored: null, readingOptional: true });
+    await waitForBlocks();
+
+    expect(screen.getByText('Выходной')).toBeDefined();
+    expect(screen.getByText('Показания нужны, только если техника работала')).toBeDefined();
+    expect(screen.queryByText('Передать показания')).toBeNull();
+    expect(opens(http)).toBe(1);
+    expect(field(blockOf(routeItem.id), 'Одометр').disabled).toBe(false);
+    expect(submitButton()).not.toBeNull();
   });
 
   it('черновик в окне записи открывается — тот же `open` синхронизирует состав', async () => {

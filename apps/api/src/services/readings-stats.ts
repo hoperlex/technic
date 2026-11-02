@@ -38,7 +38,7 @@ import {
 } from '../db/schema';
 import { attachedFileView } from './file-view';
 import { clockTime, loadReadingPoints, pointDto } from './reading-times';
-import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER } from './readings-expected';
+import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER, restDayShiftSql } from './readings-expected';
 
 /**
  * Показания глазами гаража (ADR 0103, Р27/Р28): состояние дня машины, её журнал и лист выгрузки для
@@ -201,6 +201,9 @@ function sourceClosedSql(match: SQL): SQL {
  *
  * Report rows are not searched here at all: their index on `(report_date, vehicle_id)` is no longer
  * needed by this query — a row is reached from the source found, not the other way round.
+ *
+ * A rest-day shift (ADR 0242) is never pending: closed it is not pending anyway, and unclosed it is
+ * not asked for. Hence `restDayShiftSql`, not the reading-aware `restDayExemptSql`.
  */
 export function pendingReadingsSql(on: string): SQL {
   return sql`EXISTS (
@@ -209,12 +212,14 @@ export function pendingReadingsSql(on: string): SQL {
       WHERE vr.vehicle_id = ${vehicles.id}
         AND vr.route_date = ${on}::date
         AND ${EXPECTED_ROUTE_FILTER}
+        AND NOT ${restDayShiftSql(sql`vr.route_date`, sql`vr.id`)}
         AND NOT ${sourceClosedSql(sql`pr_i.route_id = vr.id`)}
       UNION ALL
       SELECT 1 FROM ${waybills} w
       WHERE w.vehicle_id = ${vehicles.id}
         AND ${EXPECTED_ESM2_FILTER}
         AND w.period_from <= ${on}::date AND w.period_to >= ${on}::date
+        AND NOT ${restDayShiftSql(sql`${on}::date`, sql`NULL`)}
         AND NOT ${sourceClosedSql(sql`pr_i.waybill_id = w.id AND pr_i.report_date = ${on}::date`)}
     ) pending_shift
   )`;
@@ -255,6 +260,8 @@ function missingSourceResolvedSql(source: 'route' | 'waybill', sourceId: SQL): S
  * The vehicle is taken from the source, not from the report: what stayed unsubmitted is a concrete
  * trip, and the row that turns red must be the row of the vehicle that worked that day.
  *
+ * A rest-day source (ADR 0242) is not asked for, so a Sunday report without it is no discrepancy.
+ *
  * The source asked is the **expected** one, by the same fragments as the "not submitted" filter
  * (Р26а, Р26б). The route branch used to require no issued waybill at all, and the garage painted a
  * route the driver did not see in the cabinet: nobody could be asked for a reading, yet the day was
@@ -278,6 +285,7 @@ async function loadMissingSourceVehicles(on: string, vehicleIds: string[]): Prom
           inArray(expectedRoute.vehicleId, vehicleIds),
           eq(expectedRoute.routeDate, on),
           sql`(${EXPECTED_ROUTE_FILTER})`,
+          sql`NOT ${restDayShiftSql(sql`${on}::date`, sql`${expectedRoute.id}`)}`,
           inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
           sql`NOT EXISTS (
             SELECT 1 FROM ${driverDailyReportItems} ms_i WHERE ms_i.route_id = ${expectedRoute.id}
@@ -300,6 +308,7 @@ async function loadMissingSourceVehicles(on: string, vehicleIds: string[]): Prom
           inArray(expectedEsm2.vehicleId, vehicleIds),
           sql`(${EXPECTED_ESM2_FILTER})`,
           sql`${expectedEsm2.periodFrom} <= ${on}::date AND ${expectedEsm2.periodTo} >= ${on}::date`,
+          sql`NOT ${restDayShiftSql(sql`${on}::date`, sql`NULL`)}`,
           inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
           sql`NOT EXISTS (
             SELECT 1 FROM ${driverDailyReportItems} ms_i
@@ -348,6 +357,10 @@ export async function loadVehicleReadingStates(
           inArray(driverDailyReportItems.vehicleId, vehicleIds),
           eq(driverDailyReportItems.reportDate, on),
           ne(driverDailyReports.state, 'voided'),
+          // An empty row of a rest-day shift (ADR 0242) is no unsubmitted shift: the cabinet opens
+          // the day on view, and a Sunday glanced at must not paint the vehicle "not submitted".
+          sql`NOT (${restDayShiftSql(sql`${on}::date`, sql`${driverDailyReportItems.routeId}`)}
+                   AND ${vehicleReadings.id} IS NULL)`,
         ),
       )
       .groupBy(driverDailyReportItems.vehicleId),

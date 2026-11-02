@@ -46,6 +46,16 @@ type DayFacts = Omit<DayState, 'report'>;
 
 const WINDOW_HINT = `Показания принимаются за сегодня и ${DRIVER_SUBMIT_PAST_DAYS} предыдущих дней`;
 
+/**
+ * Whether the day's task asks for any reading (ADR 0242). The server marks a Sunday shift of a
+ * weekly sheet or of a site-day route optional; a day of optional shifts only is a rest day — no
+ * debt in the header, «Выходной» over the form. The portal holds no weekday rule of its own, and the
+ * day line and the debt line ask this one function.
+ */
+export function asksReadings(assignment: DriverAssignmentDto): boolean {
+  return assignment.entries.some((entry) => entry.readingOptional !== true);
+}
+
 /** Читающий день: ввод закрыт, кнопки «Передать» нет, причину называет подвал теми же словами. */
 const reading = (label: string, hint: string, draft: DraftUse): DayFacts => ({
   label,
@@ -93,6 +103,7 @@ function stateOf(
   hasLocalDraft: boolean,
   canSubmit: boolean,
   hasAssignment: boolean,
+  restDay: boolean,
 ): DayFacts {
   // После приёмки водитель отчёт не правит (ADR 0103, Р23): правки вносит персонал, и строка это
   // говорит. Локальное на такие числа не накладывается — в учёте лежат не они (Р10).
@@ -137,9 +148,15 @@ function stateOf(
    */
   const rows = report?.items ?? [];
   const filled = hasLocalDraft || rows.some((item) => item.reading !== null);
+  // A rest day asks nothing (ADR 0242), and the line says so instead of «Передать показания»: the
+  // block stays for a vehicle that did work, and is sent the usual way.
   return {
-    label: filled ? 'Черновик' : 'Передать показания',
-    hint: filled ? 'Заполнено, но не передано' : '',
+    label: filled ? 'Черновик' : restDay ? 'Выходной' : 'Передать показания',
+    hint: filled
+      ? 'Заполнено, но не передано'
+      : restDay
+        ? 'Показания нужны, только если техника работала'
+        : '',
     submittable: true,
     /*
      * Вторая половина Р2 — «есть что открывать»: непустое задание или уже заведённые строки. Без
@@ -227,7 +244,13 @@ export function useDayState(
   if (stored.isPending || !assignment) return null;
   const report = stored.data ?? null;
   return {
-    ...stateOf(report, hasLocalDraft, assignment.canSubmit, assignment.entries.length > 0),
+    ...stateOf(
+      report,
+      hasLocalDraft,
+      assignment.canSubmit,
+      assignment.entries.length > 0,
+      assignment.entries.length > 0 && !asksReadings(assignment),
+    ),
     report,
   };
 }

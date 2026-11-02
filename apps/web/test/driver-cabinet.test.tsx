@@ -495,6 +495,26 @@ describe('кабинет водителя: задание на дату', () => 
     expect(link.textContent).toContain(dayjs(dayBefore).format('D MMM'));
   });
 
+  it('выходной по календарю за долг не считается, а поездка в тот же день — считается', async () => {
+    /*
+     * ADR 0242: the server marks a Sunday of a weekly sheet or of a site-day route optional. A day
+     * of optional shifts only is no debt; one asked-for shift in it makes the day a debt again.
+     */
+    const restSheet = { ...esm2Entry, readingOptional: true };
+    renderCabinet({
+      entriesFor: (date) =>
+        date === yesterday
+          ? [restSheet]
+          : date === dayBefore
+            ? [restSheet, { ...routeEntry, readingOptional: false }]
+            : [],
+    });
+
+    const link = await screen.findByText(/Не переданы показания/);
+    expect(link.getAttribute('href')).toBe(`/driver?date=${dayBefore}`);
+    expect(link.textContent).not.toContain('и раньше');
+  });
+
   it('карточки задания идут по позиции смены, а не по порядку ответа', async () => {
     // Порядок на экране — свойство экрана: день читают сверху вниз так же, как его работают.
     const second: DriverAssignmentEntry = { ...routeEntry, shiftOrder: 2 };

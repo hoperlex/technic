@@ -15,6 +15,7 @@ import {
   EXPECTED_POINTS_CTE,
   EXPECTED_ROUTE_FILTER,
   expectedRelationCte,
+  restDayExemptSql,
 } from './readings-expected';
 import {
   driverDailyReports,
@@ -773,6 +774,11 @@ export async function loadLastOdometers(
  * месяцами парка: оба читателя спрашивают `EXPECTED_ROUTE_FILTER` и `EXPECTED_ESM2_FILTER`.
  *
  * Машина без единой ожидаемой смены в периоде в ответе отсутствует — это не ноль, а «не ждали».
+ *
+ * A rest-day shift without a reading (ADR 0242) is not expected here either. For a weekly sheet
+ * only its last day can be one — the sheet ends on Sunday by construction (Р34) and Saturday is a
+ * working day — so the last expected day steps back by one, and a sheet that is that Sunday alone
+ * drops out.
  */
 export async function loadLastExpectedShiftDays(
   vehicleIds: readonly string[],
@@ -795,14 +801,21 @@ export async function loadLastExpectedShiftDays(
              WHERE vr.vehicle_id IN (${list})
                AND vr.route_date BETWEEN ${from}::date AND ${to}::date
                AND ${EXPECTED_ROUTE_FILTER}
+               AND NOT ${restDayExemptSql({ day: sql`vr.route_date`, routeId: sql`vr.id`, waybillId: sql`NULL` })}
             UNION ALL
             /* День действия листа, а не выезда (Р34): в неделю с двумя простоями ждут всю неделю. */
-            SELECT w.vehicle_id, least(w.period_to, ${to}::date)
+            SELECT w.vehicle_id, ld.day
               FROM waybills w
+             CROSS JOIN LATERAL (SELECT least(w.period_to, ${to}::date) AS day) edge
+             CROSS JOIN LATERAL (
+                     SELECT CASE WHEN ${restDayExemptSql({ day: sql`edge.day`, routeId: sql`NULL`, waybillId: sql`w.id` })}
+                                 THEN edge.day - 1
+                                 ELSE edge.day END AS day) ld
              WHERE w.vehicle_id IN (${list})
                AND ${EXPECTED_ESM2_FILTER}
                AND w.period_from <= ${to}::date
-               AND w.period_to >= ${from}::date) t
+               AND w.period_to >= ${from}::date
+               AND ld.day >= greatest(w.period_from, ${from}::date)) t
      GROUP BY vehicle_id`);
   for (const row of result.rows) found.set(row.vehicle_id, row.last_day);
   return found;

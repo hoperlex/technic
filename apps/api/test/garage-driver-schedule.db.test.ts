@@ -502,7 +502,7 @@ describe.skipIf(!DB_URL)('гараж: график водителя на жив�
     });
   });
 
-  it('недельный ЭСМ-2 даёт смену на каждый день и делится границей месяца', async () => {
+  it('недельный ЭСМ-2 даёт смену на каждый день, кроме несданного воскресенья, и делится границей месяца', async () => {
     const driver = await newPerson('Недельный');
     const vehicle = await newVehicle(ctx.specialTypeId);
     const request = await newRequest();
@@ -517,12 +517,8 @@ describe.skipIf(!DB_URL)('гараж: график водителя на жив�
     const october = await scheduleOf(driver, '2026-10');
     expect(september).toMatchObject({ month: '2026-09', from: '2026-09-01', to: '2026-09-30' });
     expect(september.shifts.map((s) => s.date)).toEqual(['2026-09-28', '2026-09-29', '2026-09-30']);
-    expect(october.shifts.map((s) => s.date)).toEqual([
-      '2026-10-01',
-      '2026-10-02',
-      '2026-10-03',
-      '2026-10-04',
-    ]);
+    // 04.10 is the sheet's Sunday: a rest day nobody submitted is no shift of the schedule (ADR 0242).
+    expect(october.shifts.map((s) => s.date)).toEqual(['2026-10-01', '2026-10-02', '2026-10-03']);
     for (const shift of [...september.shifts, ...october.shifts]) {
       expect(shift).toMatchObject({
         key: `esm2:${waybill}:${shift.date}`,

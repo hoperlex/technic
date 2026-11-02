@@ -129,6 +129,62 @@ export const EXPECTED_ESM2_FILTER = sql`
        AND w.period_to IS NOT NULL`;
 
 /**
+ * Whether the shift of a source on a day is a calendar shift of a rest day (ADR 0242): a Sunday of
+ * a weekly ESM-2, or a Sunday route with no trip of its own — every served row of its composition is
+ * a day of site work (`work_date` set). Such a Sunday was laid by the calendar, not by a task: the
+ * ESM-2 covers its week to Sunday by construction (Р34), and the day batch of ADR 0207 issues a
+ * 4-П for every day of the term, Sundays included. A trip — a freight row, a delivery, a pickup —
+ * is a task for that very day and stays asked for.
+ *
+ * `routeId` is the route's id, or NULL for a weekly waybill: the route lookup then finds nothing,
+ * and the waybill's Sunday is a rest-day shift. The cabinet asks the same rule in TypeScript
+ * (`isRestDayShift` below); were the two to drift, the garage would demand a Sunday the driver's
+ * debt line keeps silent about, or the other way round.
+ */
+export function restDayShiftSql(day: SQL, routeId: SQL): SQL {
+  return sql`(extract(isodow FROM ${day}) = 7
+       AND NOT EXISTS (SELECT 1 FROM vehicle_routes rd_vr
+                        WHERE rd_vr.id = ${routeId}
+                          AND (rd_vr.purpose <> 'freight'
+                               OR EXISTS (SELECT 1
+                                            FROM vehicle_route_requests rd_rr
+                                            JOIN vehicle_requests rd_q ON rd_q.id = rd_rr.request_id
+                                           WHERE rd_rr.route_id = rd_vr.id
+                                             AND rd_rr.work_date IS NULL
+                                             AND ${servedRequestSql('rd_q')}))))`;
+}
+
+/**
+ * A rest-day shift nobody submitted a reading for (ADR 0242): not an expected shift. Every reader
+ * of expected shifts subtracts it — the relation below (the intake, the fleet months, the counter
+ * continuity), the "not submitted" filter, the driver schedule and the maintenance tail.
+ *
+ * A reading in any non-voided report ends the exemption, `no_data` included: a driver who worked
+ * on Sunday says so by submitting, and the shift is then counted and checked like any other. So
+ * the hotfix takes nothing away from the ledger — only the demand for a Sunday nobody worked.
+ */
+export function restDayExemptSql(source: { day: SQL; routeId: SQL; waybillId: SQL }): SQL {
+  return sql`(${restDayShiftSql(source.day, source.routeId)}
+       AND NOT EXISTS (SELECT 1
+                         FROM driver_daily_report_items rd_i
+                         JOIN driver_daily_reports rd_rep
+                           ON rd_rep.id = rd_i.report_id AND rd_rep.state <> 'voided'
+                         JOIN vehicle_readings rd_v ON rd_v.item_id = rd_i.id
+                        WHERE rd_i.route_id = ${source.routeId}
+                           OR (rd_i.waybill_id = ${source.waybillId}
+                               AND rd_i.report_date = ${source.day})))`;
+}
+
+/**
+ * The cabinet's side of `restDayShiftSql`: a Sunday shift without a trip. `date` is a Moscow
+ * calendar key, which is what every date of the cabinet is; read as UTC midnight, its weekday does
+ * not depend on the server's zone.
+ */
+export function isRestDayShift(date: string, hasTrip: boolean): boolean {
+  return !hasTrip && new Date(`${date}T00:00:00Z`).getUTCDay() === 0;
+}
+
+/**
  * `AND column IN (...)` over the given vehicles, or nothing for the whole fleet. An empty list is a
  * question about no vehicle and answers nothing, rather than an `IN ()` that does not parse.
  */
@@ -302,6 +358,18 @@ relation AS (
                     AND o.obs_date = e.exp_date, false) AS aligned
       FROM expected e
       FULL OUTER JOIN observed o USING (join_id, join_date)
+     /*
+      * A rest-day shift without a reading is neither expected nor observed (ADR 0242). Dropped
+      * after the join, so both halves go: a Sunday nobody opened (an expectation alone) and a
+      * Sunday the cabinet opened on view and nobody filled (the expectation with an empty row).
+      * The latter matters most: a weekly sheet's day "opened without numbers" breaks the counter
+      * pair of the Monday after it (Р13б).
+      */
+     WHERE NOT ${restDayExemptSql({
+       day: sql`coalesce(e.exp_date, o.obs_date)`,
+       routeId: sql`CASE WHEN coalesce(e.source_kind, o.source_kind) = 'route' THEN join_id END`,
+       waybillId: sql`CASE WHEN coalesce(e.source_kind, o.source_kind) = 'esm2' THEN join_id END`,
+     })}
 )`;
 }
 
