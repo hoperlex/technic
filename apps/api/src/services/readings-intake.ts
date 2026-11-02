@@ -62,7 +62,7 @@ import { loadReportById } from './readings';
  * Строка ответа SQL: обе координаты смены (Р32), показание с предшественниками и всё, из чего
  * собираются подписи. Псевдоним, а не `interface`: `db.execute` требует индексную сигнатуру.
  */
-export type IntakeSqlRow = {
+type IntakeSqlRow = {
   source_id: string;
   source_kind: ReadingSourceKind;
   /** Живая координата: машина, день и работник источника **сегодня**. */
@@ -127,11 +127,9 @@ export type IntakeSqlRow = {
 };
 
 /**
- * Строки периода целиком, без страницы. Наружу отданы затем, что по ним собирается служебная
- * книга показаний (`readings-admin-export.ts`): ей нужны **ожидаемые смены**, а не строки
- * открытых отчётов, — иначе смена машиниста, чей день никто не открывал, в книгу не попадает
- * вовсе, вместе с его именем. Второго правила «что такое смена периода» в проекте нет, и
- * заводить его ради книги нельзя.
+ * The rows of the period whole, without a page: the expected shifts with their readings. The
+ * registry pages them; the reading-times db test reads one row's stops from here. The readings
+ * report no longer reads them (ADR 0240): its rows are request days, not expected shifts.
  */
 export async function loadIntakeRows(from: string, to: string): Promise<IntakeSqlRow[]> {
   return db.transaction(async (tx) => {

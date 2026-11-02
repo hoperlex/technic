@@ -410,8 +410,7 @@ function readingStateText(row: JournalRow): string {
  * второй его колонки в книге быть не должно.
  *
  * The shift time (ADR 0234) is appended after the fuel levels by the same rule: start, end and the
- * duration in hours, the columns of the readings book (`readings-admin-export.ts`) under the same
- * names and by the same helper (`readingShiftHours`).
+ * duration in hours, computed by the shared helper (`readingShiftHours`).
  */
 const JOURNAL_HEADER = [
   'День',

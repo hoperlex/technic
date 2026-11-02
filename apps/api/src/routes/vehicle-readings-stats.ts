@@ -214,16 +214,17 @@ export default async function vehicleReadingsStatsRoutes(app: FastifyInstance): 
   );
 
   /**
-   * Служебная книга показаний (`docs/readings-admin-export-plan.md`): свод, детализация по сменам,
-   * сводная таблица и параметры выгрузки — одним файлом, за период, который выбрал человек.
+   * The readings report (ADR 0240): the work of equipment by request days — own vehicles with
+   * their counters, rented ones with hours and rates — for the period a person picked.
    *
-   * Право своё — `vehicleReadings.export`, и охраняет оно не «посмотреть», а «вынести»: книга
-   * сводит весь парк вместе с ФИО водителей и уходит письмом (Р2, Р12). Гараж свои шесть книг
-   * выгружает по-прежнему под `vehicleReadings.read` — там выгружают ровно то, что открыто на
-   * экране.
+   * Its own right, `vehicleReadings.export`, guards taking data out, not looking at it: the book
+   * covers the whole fleet and every request of the period with names and leaves by mail. The
+   * garage exports its six books under `vehicleReadings.read` — those carry what is open on screen.
+   * The area is checked before the period: a principal limited to an object, a department or a
+   * counterparty is refused whatever the dates.
    *
-   * Потолок периода тот же, что у соседей: длина проверяется здесь, число строк — в сборщике, до
-   * сборки книги (Р11).
+   * The period ceiling is the neighbours': its length is checked here, the row count in the
+   * builder, before the book is built.
    */
   r.get(
     '/admin-export',
@@ -243,14 +244,7 @@ export default async function vehicleReadingsStatsRoutes(app: FastifyInstance): 
       const { from, to } = req.query;
       checkPeriod(from, to);
 
-      const book = await buildAdminReadingsExport({
-        from,
-        to,
-        // Подпись — ФИО и почта того, кто нажал: книгу читают в чужой папке через месяц (Р10).
-        actor: `${principal.fullName} (${principal.email})`,
-        at: new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }),
-        season: await loadFuelNormSeason(),
-      });
+      const book = await buildAdminReadingsExport({ from, to });
       return sendWorkbook(reply, book);
     },
   );

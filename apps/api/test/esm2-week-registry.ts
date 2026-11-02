@@ -462,7 +462,7 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
     file: 'readings-admin-export.test.ts',
     klass: 'mention',
     status: 'done',
-    note: 'служебная книга показаний (ADR 0180): фикстура смены машиниста называет источник `esm2` и номер листа, разреза недели не касается — строки приходят готовыми из подменённой выборки ожидаемых смен',
+    note: 'readings report book (ADR 0240, replacing ADR 0180): a reading fixture names its source `esm2` and a sheet number; rows come ready from the mocked selection, and no period or week is read',
   },
   {
     file: 'readings-report-rows.db.test.ts',

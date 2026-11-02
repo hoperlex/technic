@@ -1,36 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { unzipSync } from 'fflate';
-import type { VehicleReadingStatsRow } from '@technic/contracts';
+import { strFromU8, unzipSync } from 'fflate';
+import type { CellInput, SheetInput } from '../src/lib/xlsx';
 import { readWorkbook } from '../src/lib/xlsx';
+import type {
+  ReportReading,
+  ReportRequest,
+  ReportRow,
+  ReportVehicle,
+} from '../src/services/readings-report-rows';
 
 /**
- * Служебная книга показаний (`docs/readings-admin-export-plan.md`).
+ * The readings report book (ADR 0240) on rows in memory.
  *
- * Проверяется состав книги, а не расчёт: пробег, наработку и счётчики смен считает агрегат
- * (`readings-aggregate.db.test.ts`), строки смен собирает выборка журнала. Здесь оба подменены,
- * поэтому книга собирается из известных чисел — и утверждать можно про неё саму: какие листы, в
- * каком порядке машины, где зелёная строка, как посчитан расход и что попало в сводную.
- *
- * Разбирается книга тем же `readWorkbook`, которым портал читает чужие книги: проверять байты zip
- * бессмысленно, а состав листов — ровно то, что увидит человек, открывший файл.
+ * Which rows exist, which vehicle stands on them and which readings they carry is the selection's
+ * and has its own test on the live schema (`readings-report-rows.db.test.ts`). Here the rows are
+ * given, and the test asserts the book itself: the order and numbering, the header and totals, the
+ * formula of every row next to the value the server computed, the marks of the task column, the
+ * hours, rates and costs of «Аренда», and the refusal above the row limit.
  */
 
-const V1 = '11111111-1111-4111-8111-111111111111';
-const V2 = '22222222-2222-4222-8222-222222222222';
-
 const state = vi.hoisted(() => ({
-  stats: [] as unknown[],
-  rows: [] as Record<string, unknown>[],
+  rows: [] as unknown[],
   limit: 50_000,
 }));
 
-vi.mock('../src/services/readings-aggregate', () => ({
-  loadFleetStats: async () => state.stats,
+vi.mock('../src/services/readings-report-rows', () => ({
+  loadReportRows: async () => ({ rows: state.rows, coveredTo: '2026-10-31' }),
 }));
 
 /*
- * Предел строк — из подменённого модуля, и он читается на каждый вызов (геттер): книга сверяется
- * с ним внутри сборки, а поднимать в тесте пятьдесят тысяч строк ради одного отказа незачем.
+ * The row limit comes from the mocked module and is read on every call (a getter): the builder
+ * checks it inside, and raising fifty thousand rows for one refusal is not needed.
  */
 vi.mock('../src/services/readings-export', () => ({
   get READING_EXPORT_ROW_LIMIT() {
@@ -38,358 +38,529 @@ vi.mock('../src/services/readings-export', () => ({
   },
 }));
 
-/*
- * Строки книги — ожидаемые смены периода, те же, что показывает реестр приёма. Подменяется именно
- * их выборка: своего правила «что такое смена» у книги нет, и тест не должен заводить второе.
- */
-vi.mock('../src/services/readings-intake', () => ({
-  loadIntakeRows: async () => state.rows,
-}));
+const { buildAdminReadingsExport, readingsReportSheets } =
+  await import('../src/services/readings-admin-export');
 
-const { buildAdminReadingsExport } = await import('../src/services/readings-admin-export');
+const FROM = '2026-10-01';
+const TO = '2026-10-31';
 
-/** Машина «без нареканий»: все смены закрыты, ряд цел, отчёты приняты. */
-function cleanVehicle(): VehicleReadingStatsRow {
+function vehicle(patch: Partial<ReportVehicle> = {}): ReportVehicle {
   return {
-    vehicleId: V1,
-    vehicleLabel: 'А123БВ797',
-    distanceKm: 493,
-    engineHours: 17,
-    lastOdometer: { value: 213_268, measuredOn: '2026-08-04' },
-    lastEngineHours: { value: 4798.5, measuredOn: '2026-08-04' },
-    hasNorm: false,
-    fuelFilledLiters: 200,
-    gaps: 0,
+    id: 'v-kamaz',
+    ownership: 'own',
     typeName: 'Самосвал',
     modelName: 'КамАЗ 65115',
-    ownership: 'own',
-    shifts: 2,
-    missingReadings: 0,
-    unacceptedShifts: 0,
-    fuelSpentLiters: 0,
-    fuelNormLiters: 0,
-    verifiedShifts: 0,
-    shiftsWithFuel: 0,
-  };
-}
-
-/** Машина с вопросами: смена не сдана, ряд рвался, отчёт не принят. */
-function dirtyVehicle(): VehicleReadingStatsRow {
-  return {
-    vehicleId: V2,
-    vehicleLabel: 'М456ОР197',
-    distanceKm: null,
-    engineHours: 6,
-    lastOdometer: null,
-    lastEngineHours: { value: 2980, measuredOn: '2026-08-06' },
-    hasNorm: false,
-    fuelFilledLiters: 300,
-    gaps: 2,
-    typeName: 'Самосвал',
-    modelName: 'КамАЗ 6520',
-    ownership: 'own',
-    shifts: 3,
-    missingReadings: 1,
-    unacceptedShifts: 1,
-    fuelSpentLiters: 0,
-    fuelNormLiters: 0,
-    verifiedShifts: 0,
-    shiftsWithFuel: 0,
-  };
-}
-
-function shift(over: Record<string, unknown>): Record<string, unknown> {
-  return {
-    source_id: 's1',
-    source_kind: 'route',
-    exp_vehicle: V1,
-    exp_date: '2026-08-03',
-    exp_person: 'p1',
-    exp_report_id: 'rep1',
-    exp_state: 'accepted',
-    exp_report_version: 1,
-    item_id: 'i1',
-    obs_vehicle: V1,
-    obs_date: '2026-08-03',
-    obs_shift_order: 1,
-    obs_report_id: 'rep1',
-    obs_state: 'accepted',
-    obs_report_version: 1,
-    aligned: true,
-    row_date: '2026-08-03',
-    row_vehicle: V1,
-    row_person: 'p1',
-    person_name: 'Иванов Иван Иванович',
-    route_num: 145,
-    waybill_number: null,
-    waybill_prefix: null,
-    waybill_number_width: null,
-    ownership: 'own',
+    categoryName: null,
     description: '',
-    registration_number: 'А123БВ797',
-    category_name: 'Самосвал',
-    type_name: 'Самосвал',
-    model_name: 'КамАЗ 65115',
-    reading_id: 'r1',
-    reading_kind: 'values',
-    odometer_km: 213_020,
-    engine_hours: '4790.0',
-    fuel_start_liters: '180.0',
-    fuel_filled_liters: '200.0',
-    fuel_end_liters: '150.0',
-    no_data_reason: null,
-    comment: null,
-    reading_source: 'driver',
-    recorded_at: '2026-08-03T10:00:00.000Z',
-    odometer_anomaly: null,
-    odometer_anomaly_confirmed: false,
-    engine_hours_anomaly: null,
-    engine_hours_anomaly_confirmed: false,
-    previous_odometer_km: 212_775,
-    previous_odometer_date: '2026-08-02',
-    previous_engine_hours: '4781.5',
-    previous_engine_hours_date: '2026-08-02',
-    ...over,
+    registrationNumber: 'А123БВ797',
+    inventoryNumber: '00123',
+    lessorName: null,
+    ...patch,
   };
 }
 
-/**
- * Смена машиниста по недельному ЭСМ-2, чей день никто не открывал: отчёта нет, показаний нет,
- * человек известен из самого листа. Ради неё книга и переехала на ожидаемые смены (Р13).
- */
-function machinistShift(over: Record<string, unknown> = {}): Record<string, unknown> {
-  return shift({
-    source_id: 'w1',
-    source_kind: 'esm2',
-    exp_report_id: null,
-    exp_state: null,
-    exp_report_version: null,
-    item_id: null,
-    obs_vehicle: null,
-    obs_date: null,
-    obs_shift_order: null,
-    obs_report_id: null,
-    obs_state: null,
-    obs_report_version: null,
-    aligned: false,
-    person_name: 'Сидоров Семён Семёнович',
-    route_num: null,
-    waybill_number: 123,
-    waybill_prefix: 'ЭСМ',
-    waybill_number_width: 6,
-    reading_id: null,
-    reading_kind: null,
-    odometer_km: null,
-    engine_hours: null,
-    fuel_start_liters: null,
-    fuel_filled_liters: null,
-    fuel_end_liters: null,
-    reading_source: null,
-    recorded_at: null,
-    previous_odometer_km: null,
-    previous_odometer_date: null,
-    previous_engine_hours: null,
-    previous_engine_hours_date: null,
-    ...over,
-  });
+function request(patch: Partial<ReportRequest> = {}): ReportRequest {
+  return {
+    id: 'q-40',
+    num: 40,
+    type: 'special_equipment',
+    customerName: 'ЖК Северный',
+    authorName: 'Иванов Иван Иванович',
+    approverName: 'Петров Пётр Петрович',
+    comment: 'котлован под секцию 2',
+    trips: [],
+    termFrom: '2026-10-01',
+    termTo: '2026-10-31',
+    assignment: { pricePerHour: null, pricePerShift: null, shiftHours: null },
+    completion: null,
+    ...patch,
+  };
 }
 
-async function book() {
-  const result = await buildAdminReadingsExport({
-    from: '2026-08-01',
-    to: '2026-08-31',
-    actor: 'Петров П.П. (admin@dev.local)',
-    at: '10.09.2026, 14:32',
-    // Настройки сверки книга получает решёнными — как `actor` и `at` (docs/fuel-norms-plan.md).
-    season: { winterFromMd: '11-01', winterToMd: '03-31', tolerancePercent: 5 },
-  });
-  return { result, sheets: readWorkbook(result.bytes) };
+function reading(patch: Partial<ReportReading> = {}): ReportReading {
+  return {
+    readingId: 'r-1',
+    vehicleId: 'v-kamaz',
+    date: '2026-10-05',
+    shiftOrder: 1,
+    kind: 'values',
+    noDataReason: '',
+    personName: 'Сидоров Сидор Сидорович',
+    sourceKind: 'esm2',
+    sourceLabel: 'ЭСМ-2 № 000123',
+    odometer: { value: 1250, previous: 1200, previousDate: '2026-10-04', continuous: true },
+    engineHours: { value: 108.5, previous: 100, previousDate: '2026-10-04', continuous: true },
+    engineHoursReset: false,
+    ...patch,
+  };
 }
 
-function sheet(sheets: { name: string; rows: string[][] }[], name: string) {
-  const found = sheets.find((s) => s.name === name);
-  if (!found) throw new Error(`нет листа «${name}»: ${sheets.map((s) => s.name).join(', ')}`);
-  return found.rows;
+function row(patch: Partial<ReportRow> = {}): ReportRow {
+  return {
+    kind: 'request',
+    date: '2026-10-05',
+    vehicle: vehicle(),
+    request: request(),
+    readings: [reading()],
+    sharedRoutes: [],
+    readingPersons: ['Сидоров Сидор Сидорович'],
+    sourcePerson: null,
+    sourceLabel: null,
+    relocation: null,
+    outOfTerm: false,
+    swapped: false,
+    shift: null,
+    routeTime: null,
+    ...patch,
+  };
+}
+
+function sheets(rows: ReportRow[]): SheetInput[] {
+  return readingsReportSheets(rows, FROM, TO);
+}
+
+/** A data row of a sheet by its running number (data starts under the header, row 5). */
+function dataRow(sheet: SheetInput, index: number): CellInput[] {
+  return sheet.rows[4 + index - 1]!;
+}
+
+function text(cell: CellInput | undefined): string {
+  return typeof cell === 'string' ? cell : JSON.stringify(cell);
+}
+
+function taskOf(sheet: SheetInput, index: number): string {
+  return text(dataRow(sheet, index)[6]);
 }
 
 beforeEach(() => {
-  // Порядок в ответе агрегата намеренно «неправильный»: книга обязана поставить чистую машину
-  // первой сама (Р7), а не унаследовать порядок расчёта.
-  state.stats = [dirtyVehicle(), cleanVehicle()];
-  state.rows = [
-    shift({}),
-    shift({
-      row_date: '2026-08-04',
-      exp_date: '2026-08-04',
-      obs_date: '2026-08-04',
-      odometer_km: 213_268,
-      previous_odometer_km: 213_020,
-    }),
-    shift({
-      source_id: 's3',
-      exp_vehicle: V2,
-      obs_vehicle: V2,
-      row_vehicle: V2,
-      registration_number: 'М456ОР197',
-      model_name: 'КамАЗ 6520',
-      row_date: '2026-08-06',
-      exp_date: '2026-08-06',
-      obs_date: '2026-08-06',
-      person_name: 'Кузнецов Алексей Алексеевич',
-      odometer_km: 187_100,
-      previous_odometer_km: null,
-      engine_hours: '2980.0',
-      previous_engine_hours: '2974.0',
-      fuel_start_liters: null,
-      fuel_end_liters: null,
-      fuel_filled_liters: '300.0',
-      odometer_anomaly: 'counter_reset',
-      reading_source: 'staff',
-      comment: 'замена прибора',
-    }),
-  ];
+  state.rows = [];
   state.limit = 50_000;
 });
 
-describe('служебная книга показаний', () => {
-  it('собирает пять листов и называет файл периодом', async () => {
-    const { result, sheets } = await book();
-
-    expect(sheets.map((s) => s.name)).toEqual([
-      'Свод',
-      'Детализация',
-      'Сводная',
-      'Параметры',
-      'Данные',
-    ]);
-    expect(result.filename).toBe('Показания автотранспорта 01.08.2026 – 31.08.2026.xlsx');
-  });
-
-  it('ставит машину без нареканий первой и называет нарекания словами', async () => {
-    const rows = sheet((await book()).sheets, 'Свод');
-
-    // Строка 1 — заголовок с периодом, строка 3 — шапка, машины с четвёртой (§3.1).
-    expect(rows[0]?.[0]).toBe('Показания автотранспорта за 01.08.2026 – 31.08.2026');
-    expect(rows[2]?.[0]).toBe('Техника');
-    expect(rows[3]?.[0]).toBe('А123БВ797');
-    expect(rows[3]?.at(-1)).toBe('—');
-    expect(rows[4]?.[0]).toBe('М456ОР197');
-    expect(rows[4]?.at(-1)).toBe(
-      'не сдано 1 смену; 2 разрыва ряда; 1 аномалия; не принято 1 отчёт',
-    );
-  });
-
-  it('считает расход по сменам с остатками и называет охват', async () => {
-    const rows = sheet((await book()).sheets, 'Свод');
-    const clean = rows[3] ?? [];
-    const dirty = rows[4] ?? [];
-
-    // 180 + 200 − 150 = 230 за смену, двумя сменами — 460.
-    expect(clean[15]).toBe('460');
-    expect(clean[16]).toBe('2 из 2');
-    // Остатков не передавали ни разу: прочерк, а не ноль, и охват это объясняет.
-    expect(dirty[15]).toBe('—');
-    expect(dirty[16]).toBe('0 из 1');
-  });
-
-  it('прочерк неизвестного не превращается в ноль', async () => {
-    const rows = sheet((await book()).sheets, 'Свод');
-
-    // У машины с разорванным рядом пробега нет вовсе, а последнего одометра в периоде не снимали.
-    expect(rows[4]?.[8]).toBe('—');
-    expect(rows[4]?.[10]).toBe('—');
-  });
-
-  it('детализацию делит по машинам заголовком и итогом, без колонки «Техника»', async () => {
-    const rows = sheet((await book()).sheets, 'Детализация');
-
-    expect(rows[2]?.[0]).toBe('Дата');
-    expect(rows[2]).not.toContain('Техника');
-    expect(rows[3]?.[0]).toBe(
-      'А123БВ797 — КамАЗ 65115, Самосвал · смен 2, отчитались 2 · нареканий нет',
-    );
-    expect(rows[4]?.[0]).toBe('03.08.2026');
-    expect(rows[4]?.[2]).toBe('Иванов И.И.');
-    expect(rows[6]?.[0]).toBe('Итого по машине');
-    // Заголовок второй машины несёт её нарекания — теми же словами, что колонка свода.
-    expect(rows[8]?.[0]).toContain('не сдано 1 смену');
-  });
-
-  /**
-   * Тот самый дефект, ради которого книга переехала на ожидаемые смены (Р13): машинист сдаёт
-   * работу недельным ЭСМ-2, дни таких листов никто не открывает — и в первой редакции книги ни
-   * смены, ни имени не было, хотя «Смен по плану» их считало. Проверяется по всем трём местам
-   * сразу: детализация, колонка людей в своде и источник сводной.
-   */
-  it('смену машиниста без отчёта книга показывает вместе с его именем', async () => {
-    state.rows = [...state.rows, machinistShift()];
-
-    const { sheets } = await book();
-    const detail = sheet(sheets, 'Детализация');
-    const summary = sheet(sheets, 'Свод');
-    const source = sheet(sheets, 'Данные');
-
-    const shiftRow = detail.find((row) => row[2] === 'Сидоров С.С.');
-    expect(shiftRow?.[3]).toBe('ЭСМ000123 (ЭСМ-2)');
-    // Позиции смены у неоткрытого дня нет, показаний нет, отчёта нет — и книга говорит это
-    // словами: «не открыт» и «не сдано» — разные ответы, и ни один не ноль.
-    expect(shiftRow?.[1]).toBe('—');
-    expect(shiftRow?.at(-1)).toBe('не открыт');
-    expect(shiftRow?.at(-2)).toBe('не сдано');
-    // Колонка водителей уехала на четыре позиции: перед ней встала сверка с нормой
-    // (docs/fuel-norms-plan.md, §4.3) — расход сверки, норма, отклонение и охват.
-    expect(summary[3]?.[23]).toContain('Сидоров С.С.');
-    expect(source.some((row) => row[4] === 'Сидоров С.С.')).toBe(true);
-  });
-
-  it('в скрытом источнике сводной машина стоит колонкой, а неизвестное — пусто', async () => {
-    const rows = sheet((await book()).sheets, 'Данные');
-
-    expect(rows[0]).toEqual([
-      'Техника',
-      'Тип',
-      'Месяц',
+describe('книга показаний: листы, шапка и порядок', () => {
+  it('two sheets, own first; the empty «Аренда» is still there with its header', () => {
+    const [own, rental] = sheets([row()]);
+    expect(own!.name).toBe('Собственная');
+    expect(rental!.name).toBe('Аренда');
+    expect(rental!.rows).toHaveLength(4);
+    expect(rental!.rows[3]).toEqual([
+      '№',
       'Дата',
-      'Водитель',
-      'Пробег, км',
-      'Наработка, м/ч',
-      'Заправлено, л',
-      'Расход, л',
-      'Показание',
-      'Отчёт',
+      'Техника (вид, марка / модель)',
+      'Госномер / инв. номер',
+      'Арендодатель',
+      'Объект / маршрут',
+      'Выполненная задача',
+      'Время смены',
+      'Часы',
+      'Ставка',
+      'Стоимость дня',
     ]);
-    expect(rows[1]?.[0]).toBe('А123БВ797');
-    expect(rows[1]?.[2]).toBe('08.2026');
-    // У строки со сброшенным счётчиком прироста нет: в источнике это пустая ячейка, иначе поле
-    // кэша стало бы смешанным и сводная перестала бы складывать колонку.
-    expect(rows[3]?.[5]).toBe('');
+    // An empty sheet has no range to total: its totals are plain zeros, not formulas over nothing.
+    expect(rental!.rows[2]![8]).toEqual({ num: 0, digits: 1 });
   });
 
-  it('кладёт в книгу части сводной таблицы', async () => {
-    const { result } = await book();
-    const files = Object.keys(unzipSync(result.bytes));
-
-    expect(files).toContain('xl/pivotCache/pivotCacheDefinition1.xml');
-    expect(files).toContain('xl/pivotCache/pivotCacheRecords1.xml');
-    expect(files).toContain('xl/pivotTables/pivotTable1.xml');
+  it('title, period and totals stand above the frozen, filtered header', () => {
+    const [own] = sheets([row(), row({ date: '2026-10-06' })]);
+    expect(own!.rows[0]![0]).toBe('Отчет о работе строительной техники');
+    expect(own!.rows[1]!.slice(0, 3)).toEqual(['', 'Период отчета:', '01.10.2026 – 31.10.2026']);
+    expect(own!.headerRow).toBe(4);
+    expect(own!.gridLines).toBe(false);
+    expect(own!.rows[3]![12]).toBe('Моточасы: конец, ч');
+    expect(own!.rows[2]![6]).toBe('Пробег по фильтру, км:');
+    expect(own!.rows[2]![7]).toEqual({ formula: 'SUBTOTAL(109,H5:H6)', value: 100, digits: 0 });
+    expect(own!.rows[2]![9]).toBe('Моточасы по фильтру, ч:');
+    expect(own!.rows[2]![10]).toEqual({ formula: 'SUBTOTAL(109,K5:K6)', value: 17, digits: 1 });
+    expect(own!.conditionalFormats).toEqual([
+      { ref: 'H5:H6', containsText: 'Проверить' },
+      { ref: 'H3', expression: 'COUNTIF(H5:H6,"Проверить")>0' },
+      { ref: 'K5:K6', containsText: 'Проверить' },
+      { ref: 'K3', expression: 'COUNTIF(K5:K6,"Проверить")>0' },
+    ]);
   });
 
-  it('на листе параметров стоят период, автор и правила счёта', async () => {
-    const rows = sheet((await book()).sheets, 'Параметры');
-    const values = new Map(rows.map((row) => [row[0], row[1]]));
+  it('rows go by vehicle, then day, then request number; № runs per sheet', () => {
+    const excavator = vehicle({ id: 'v-jcb', typeName: 'Экскаватор', modelName: 'JCB 3CX' });
+    const rental = vehicle({
+      id: 'v-rent',
+      ownership: 'rental',
+      modelName: null,
+      description: 'Кран',
+    });
+    const [own, rented] = sheets([
+      row({ vehicle: excavator, date: '2026-10-07', request: request({ num: 41 }) }),
+      row({ date: '2026-10-07', request: request({ num: 52 }) }),
+      row({ date: '2026-10-07', request: request({ num: 45 }) }),
+      row({ date: '2026-10-06', request: request({ num: 60 }) }),
+      row({ vehicle: rental, request: request({ num: 70 }), readings: [] }),
+    ]);
+    const order = own!.rows
+      .slice(4)
+      .map((cells) => [cells[0], cells[2], text(cells[6]).split(' · ')[0]]);
+    expect(order).toEqual([
+      [{ num: 1 }, 'Самосвал КамАЗ 65115', 'ТС-60'],
+      [{ num: 2 }, 'Самосвал КамАЗ 65115', 'ТС-45'],
+      [{ num: 3 }, 'Самосвал КамАЗ 65115', 'ТС-52'],
+      [{ num: 4 }, 'Экскаватор JCB 3CX', 'ТС-41'],
+    ]);
+    expect(dataRow(rented!, 1)[0]).toEqual({ num: 1 });
+    expect(dataRow(rented!, 1)[2]).toBe('Самосвал Кран');
+  });
+});
 
-    expect(values.get('Период с')).toBe('01.08.2026');
-    expect(values.get('Период по')).toBe('31.08.2026');
-    expect(values.get('Выгрузил')).toBe('Петров П.П. (admin@dev.local)');
-    expect(values.get('Смен ожидалось')).toBe('5');
-    expect(values.get('Расход')).toContain('остаток на начало');
+describe('книга показаний: «Собственная»', () => {
+  it('a row: date, plate and inventory, person, object, task and the counters', () => {
+    const [own] = sheets([row()]);
+    const cells = dataRow(own!, 1);
+    expect(cells.slice(1, 6)).toEqual([
+      { date: '2026-10-05' },
+      'Самосвал КамАЗ 65115',
+      'А123БВ797 / 00123',
+      'Сидоров Сидор Сидорович',
+      'ЖК Северный',
+    ]);
+    expect(cells[6]).toBe('ТС-40 · авт. Иванов И.И., согл. Петров П.П. · котлован под секцию 2');
+    expect(cells.slice(8)).toEqual([
+      { num: 1200, digits: 0 },
+      { num: 1250, digits: 0 },
+      { formula: expect.any(String), value: 8.5, digits: 1 },
+      { num: 100, digits: 1 },
+      { num: 108.5, digits: 1 },
+    ]);
   });
 
-  it('отказывает до сборки, когда строк больше предела', async () => {
-    state.limit = 2;
+  it('the formula of each row is the sample one, on its own row, next to its computed value', () => {
+    const [own] = sheets([row(), row({ date: '2026-10-06' })]);
+    expect(dataRow(own!, 2)[7]).toEqual({
+      formula:
+        'IF(AND(I6="—",J6="—"),"—",IF(OR(I6="",J6=""),"",IF(COUNT(I6:J6)<>2,"Проверить",' +
+        'IF(OR(I6<0,J6<I6),"Проверить",J6-I6))))',
+      value: 50,
+      digits: 0,
+    });
+    expect(dataRow(own!, 2)[10]).toMatchObject({
+      formula:
+        'IF(AND(L6="—",M6="—"),"—",IF(OR(L6="",M6=""),"",IF(COUNT(L6:M6)<>2,"Проверить",' +
+        'IF(OR(L6<0,M6<L6),"Проверить",M6-L6))))',
+    });
+  });
 
-    // Строк три — ровно на одну больше предела; книга не собирается вовсе, а отказ говорит, что
-    // делать дальше. Молчаливое обрезание здесь было бы худшим: подписывают выгрузку целиком.
-    await expect(book()).rejects.toThrow(/В выгрузку попадает 3 строк.*сузьте период/i);
+  it('several readings of one vehicle: start of the earliest, end of the latest', () => {
+    const [own] = sheets([
+      row({
+        readings: [
+          reading({ readingId: 'r-1', shiftOrder: 1 }),
+          reading({
+            readingId: 'r-2',
+            shiftOrder: 2,
+            odometer: { value: 1300, previous: 1250, previousDate: '2026-10-05', continuous: true },
+            engineHours: {
+              value: 112,
+              previous: 108.5,
+              previousDate: '2026-10-05',
+              continuous: true,
+            },
+          }),
+        ],
+      }),
+    ]);
+    const cells = dataRow(own!, 1);
+    expect(cells[7]).toMatchObject({ value: 100 });
+    expect(cells.slice(8, 10)).toEqual([
+      { num: 1200, digits: 0 },
+      { num: 1300, digits: 0 },
+    ]);
+    expect(cells[10]).toMatchObject({ value: 12 });
+  });
+
+  it('a counter the reading lacks is a dash in both cells; a reversed one asks to check', () => {
+    const [own] = sheets([
+      row({
+        readings: [
+          reading({
+            odometer: { value: null, previous: null, previousDate: null, continuous: true },
+            engineHours: { value: 90, previous: 100, previousDate: '2026-10-04', continuous: true },
+          }),
+        ],
+      }),
+    ]);
+    const cells = dataRow(own!, 1);
+    expect(cells.slice(7, 10)).toEqual([expect.objectContaining({ value: '—' }), '—', '—']);
+    expect(cells[10]).toMatchObject({ value: 'Проверить' });
+    // The total skips text: a dash and «Проверить» are not numbers.
+    expect(own!.rows[2]![7]).toMatchObject({ value: 0 });
+  });
+
+  it('counters of a shared route stay on the carrier row; the others name the route', () => {
+    const [own] = sheets([
+      row({ request: request({ num: 40 }) }),
+      row({
+        request: request({ num: 41, type: 'freight_transport' }),
+        readings: [],
+        sharedRoutes: ['Р-12'],
+      }),
+    ]);
+    expect(dataRow(own!, 2).slice(7, 13)).toEqual([
+      expect.objectContaining({ value: '' }),
+      '',
+      '',
+      expect.objectContaining({ value: '' }),
+      '',
+      '',
+    ]);
+    expect(taskOf(own!, 2)).toContain('рейс общий Р-12');
+    expect(taskOf(own!, 2)).not.toContain('показания не сданы');
+    expect(taskOf(own!, 1)).not.toContain('рейс общий');
+  });
+
+  it('a freight row: trips as the route, cargo in the task, no comment', () => {
+    const [own] = sheets([
+      row({
+        request: request({
+          type: 'freight_transport',
+          comment: 'не показывать',
+          trips: [
+            { from: 'Карьер', to: 'Площадка', cargo: 'щебень' },
+            { from: 'Площадка', to: 'Полигон', cargo: 'грунт' },
+          ],
+        }),
+      }),
+    ]);
+    expect(dataRow(own!, 1)[5]).toBe('Карьер → Площадка; Площадка → Полигон');
+    expect(taskOf(own!, 1)).toBe(
+      'ТС-40 · авт. Иванов И.И., согл. Петров П.П. · груз: щебень, грунт',
+    );
+  });
+
+  it('every mark of the task column, in the decided order', () => {
+    const [own] = sheets([
+      row({
+        kind: 'relocation',
+        relocation: { from: 'База', to: 'Площадка' },
+        sharedRoutes: ['Р-12'],
+        outOfTerm: true,
+        swapped: true,
+        shift: { machineHours: 7, signed: true, startedAt: null, endedAt: null },
+        readings: [
+          reading({
+            readingId: 'r-1',
+            engineHoursReset: true,
+            odometer: {
+              value: 1250,
+              previous: 1200,
+              previousDate: '2026-10-28',
+              continuous: false,
+            },
+          }),
+          reading({
+            readingId: 'r-2',
+            shiftOrder: 2,
+            kind: 'no_data',
+            noDataReason: 'сломан датчик',
+          }),
+        ],
+      }),
+    ]);
+    expect(taskOf(own!, 1).split(' · ').at(-1)).toBe(
+      'рейс общий Р-12; перегон; вне срока заявки; машина заменена в течение дня; ' +
+        'нет данных: сломан датчик; начало от 28.10; сброс счётчика; подписано 7 ч',
+    );
+    expect(dataRow(own!, 1)[5]).toBe('База → Площадка');
+  });
+
+  it('no reading — empty counters and «показания не сданы», with the source person', () => {
+    const [own] = sheets([
+      row({ readings: [], readingPersons: [], sourcePerson: 'Машинистов Ян Янович' }),
+    ]);
+    expect(dataRow(own!, 1)[4]).toBe('Машинистов Ян Янович');
+    expect(dataRow(own!, 1).slice(8, 10)).toEqual(['', '']);
+    expect(taskOf(own!, 1)).toContain('показания не сданы');
+  });
+
+  it('a no-data reading — empty counters and its reason', () => {
+    const [own] = sheets([
+      row({ readings: [reading({ kind: 'no_data', noDataReason: 'простой' })] }),
+    ]);
+    expect(dataRow(own!, 1).slice(8, 10)).toEqual(['', '']);
+    expect(taskOf(own!, 1)).toContain('нет данных: простой');
+    expect(taskOf(own!, 1)).not.toContain('показания не сданы');
+  });
+
+  it('a signed day equal to the counters carries no «подписано» mark', () => {
+    const [own] = sheets([
+      row({ shift: { machineHours: 8.5, signed: true, startedAt: null, endedAt: null } }),
+    ]);
+    expect(taskOf(own!, 1)).not.toContain('подписано');
+  });
+
+  it('«без заявки»: the source in the task, a dash for the object and the person when none', () => {
+    const [own] = sheets([
+      row({ kind: 'noRequest', request: null, sourceLabel: 'Р-77', readingPersons: [] }),
+    ]);
+    expect(dataRow(own!, 1)[4]).toBe('—');
+    expect(dataRow(own!, 1)[5]).toBe('—');
+    expect(taskOf(own!, 1)).toBe('без заявки · Р-77');
+  });
+
+  it('a vehicle without plate and inventory number prints a dash', () => {
+    const [own] = sheets([
+      row({ vehicle: vehicle({ registrationNumber: null, inventoryNumber: ' ' }) }),
+    ]);
+    expect(dataRow(own!, 1)[3]).toBe('—');
+  });
+});
+
+describe('книга показаний: «Аренда»', () => {
+  const rented = (patch: Partial<ReportRow> = {}) =>
+    row({
+      vehicle: vehicle({
+        id: 'v-rent',
+        ownership: 'rental',
+        modelName: null,
+        registrationNumber: null,
+        inventoryNumber: null,
+        description: 'Кран 25 т',
+        lessorName: 'ООО «Аренда-Кран»',
+      }),
+      readings: [],
+      readingPersons: [],
+      ...patch,
+    });
+  const rentalRow = (patch: Partial<ReportRow>) => dataRow(sheets([rented(patch)])[1]!, 1);
+
+  it('a signed special day: the site time and confirmed hours, the hourly cost formula', () => {
+    const cells = rentalRow({
+      request: request({ assignment: { pricePerHour: 2500, pricePerShift: null, shiftHours: 8 } }),
+      shift: { machineHours: 7, signed: true, startedAt: '08:00', endedAt: '15:00' },
+    });
+    expect(cells.slice(2, 11)).toEqual([
+      'Самосвал Кран 25 т',
+      '—',
+      'ООО «Аренда-Кран»',
+      'ЖК Северный',
+      'ТС-40 · авт. Иванов И.И., согл. Петров П.П. · котлован под секцию 2',
+      '08:00–15:00',
+      { num: 7, digits: 1 },
+      { num: 2500, digits: 2, suffix: '₽/ч' },
+      { formula: 'IF(OR(I5="",J5=""),"",I5*J5)', value: 17500, digits: 2, suffix: '₽' },
+    ]);
+  });
+
+  it('an unsigned special day: planned hours with a mark; no plan — empty with a mark', () => {
+    const planned = rentalRow({
+      request: request({
+        assignment: { pricePerHour: null, pricePerShift: 20000, shiftHours: 10 },
+      }),
+      shift: { machineHours: 9, signed: false, startedAt: '08:00', endedAt: '17:00' },
+    });
+    expect(planned[8]).toEqual({ num: 10, digits: 1 });
+    expect(text(planned[6])).toContain('часы по плану');
+    // A shift price wins as the unit of an estimate, as the closing window starts from it.
+    expect(planned[9]).toEqual({ num: 20000, digits: 2, suffix: '₽/смену' });
+    expect(planned[10]).toEqual({
+      formula: 'IF(J5="","",J5)',
+      value: 20000,
+      digits: 2,
+      suffix: '₽',
+    });
+
+    const noPlan = rentalRow({ request: request({ assignment: null }) });
+    expect(noPlan[8]).toBe('');
+    expect(noPlan[9]).toBe('');
+    expect(text(noPlan[6])).toContain('часы по плану; план не задан');
+  });
+
+  it('a freight request closed in hours: confirmed hours and the completion rate', () => {
+    const cells = rentalRow({
+      request: request({
+        type: 'freight_transport',
+        assignment: { pricePerHour: 1800, pricePerShift: 15000, shiftHours: 8 },
+        completion: { unit: 'hours', amount: 5, workedHours: 5, rate: 1900 },
+      }),
+      routeTime: { hours: 3, startedAt: '09:10', endedAt: '12:05' },
+    });
+    expect(cells[7]).toBe('09:10–12:05');
+    expect(cells[8]).toEqual({ num: 5, digits: 1 });
+    expect(cells[9]).toEqual({ num: 1900, digits: 2, suffix: '₽/ч' });
+    expect(cells[10]).toMatchObject({ value: 9500 });
+    expect(text(cells[6])).not.toContain('по плану');
+  });
+
+  it('a freight request closed in shifts: the plan, marked as closed in shifts', () => {
+    const cells = rentalRow({
+      request: request({
+        type: 'freight_transport',
+        assignment: { pricePerHour: null, pricePerShift: 15000, shiftHours: 8 },
+        completion: { unit: 'shifts', amount: 1, workedHours: null, rate: 15000 },
+      }),
+      routeTime: { hours: 3, startedAt: null, endedAt: null },
+    });
+    expect(cells[8]).toEqual({ num: 3, digits: 1 });
+    expect(cells[9]).toEqual({ num: 15000, digits: 2, suffix: '₽/смену' });
+    expect(text(cells[6])).toContain('закрыто в сменах');
+  });
+
+  it('an open freight request: route time as the plan, else the shift length, else nothing', () => {
+    const freight = (routeHours: number | null, shiftHours: number | null) =>
+      rentalRow({
+        request: request({
+          type: 'freight_transport',
+          assignment: { pricePerHour: 1800, pricePerShift: null, shiftHours },
+        }),
+        routeTime: { hours: routeHours, startedAt: null, endedAt: null },
+      });
+    expect(freight(3, 8)[8]).toEqual({ num: 3, digits: 1 });
+    // No stop times — a lessor's driver has no cabinet: the assignment's shift length.
+    expect(freight(null, 8)[8]).toEqual({ num: 8, digits: 1 });
+    expect(text(freight(null, 8)[6])).toContain('часы по плану');
+    expect(freight(null, null)[8]).toBe('');
+    expect(text(freight(null, null)[6])).toContain('план не задан');
+  });
+
+  it('a rented vehicle with driver readings says so', () => {
+    const cells = rentalRow({ readings: [reading({ vehicleId: 'v-rent' })] });
+    expect(text(cells[6])).toContain('есть показания водителя');
+  });
+
+  it('totals of hours and cost follow the filter', () => {
+    const rental = sheets([
+      rented({
+        request: request({
+          assignment: { pricePerHour: 1000, pricePerShift: null, shiftHours: 8 },
+        }),
+      }),
+    ])[1]!;
+    expect(rental.rows[2]!.slice(7, 11)).toEqual([
+      'Часов по фильтру:',
+      { formula: 'SUBTOTAL(109,I5:I5)', value: 8, digits: 1 },
+      'Стоимость по фильтру, ₽:',
+      { formula: 'SUBTOTAL(109,K5:K5)', value: 8000, digits: 2, suffix: '₽' },
+    ]);
+  });
+});
+
+describe('книга показаний: файл', () => {
+  it('opens on «Собственная», reads back with the computed values, and is named by the period', async () => {
+    state.rows = [row()];
+    const result = await buildAdminReadingsExport({ from: FROM, to: TO });
+    expect(result.filename).toBe('Показания автотранспорта 01.10.2026 – 31.10.2026.xlsx');
+    const book = readWorkbook(result.bytes);
+    expect(book.map((sheet) => sheet.name)).toEqual(['Собственная', 'Аренда']);
+    const own = book[0]!;
+    expect(own.rows[2]![7]).toBe('50');
+    expect(own.rows[4]!.slice(7, 13)).toEqual(['50', '1200', '1250', '8.5', '100', '108.5']);
+    const workbook = strFromU8(unzipSync(result.bytes)['xl/workbook.xml']!);
+    expect(workbook).toContain('fullCalcOnLoad="1"');
+    const sheet = strFromU8(unzipSync(result.bytes)['xl/worksheets/sheet1.xml']!);
+    expect(sheet).toContain('<autoFilter ref="A4:M4"/>');
+    expect(sheet).toContain('<pane ySplit="4" topLeftCell="A5"');
+  });
+
+  it('refuses a period above the row limit, counting both sheets', async () => {
+    state.limit = 1;
+    state.rows = [row(), row({ vehicle: vehicle({ id: 'v-rent', ownership: 'rental' }) })];
+    await expect(buildAdminReadingsExport({ from: FROM, to: TO })).rejects.toMatchObject({
+      message: expect.stringContaining('предел — 1'),
+    });
   });
 });

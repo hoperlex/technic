@@ -38,10 +38,11 @@ import type { AnalyticsAtom, AnalyticsRange } from './analytics/types';
  * Сводная книга по заказчикам: заказ техники, вывоз мусора и механизация за период
  * (план `docs/analytics-summary-export-plan.md`, §3).
  *
- * Вторая служебная книга «Администрирования» после показаний автотранспорта
- * (`readings-admin-export.ts`), и приёмы у неё те же: ячейка-число против ячейки-прочерка,
- * заголовок группы слитой строкой, уровни группировки, скрытый лист-двойник как источник сводной,
- * лист параметров. Отличие одно и оно важнее сходства: **книга не считает ничего сама**.
+ * The second service book of «Администрирование», next to the readings report
+ * (`readings-admin-export.ts`, ADR 0240). Its techniques are those of the five-sheet readings book
+ * it was modelled on (ADR 0180, replaced by ADR 0240): a number cell against a dash cell, a group
+ * header as a merged row, outline levels, a hidden twin sheet as the pivot source, a parameters
+ * sheet. One difference matters more than the likeness: **the book computes nothing itself**.
  *
  * Четыре правила, которые здесь нельзя нарушить:
  *

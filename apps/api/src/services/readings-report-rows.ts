@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   formatVehicleRouteNumber,
   moscowDateKeyOf,
+  routeTimePrefill,
   shiftDaysOf,
   SUBMITTED_REPORT_STATES,
   waybillDisplayNumber,
@@ -148,8 +149,12 @@ export interface ReportRow {
     startedAt: string | null;
     endedAt: string | null;
   } | null;
-  /** A rented vehicle's freight day: the request's share of the route time and its span. */
-  routeTime: { seconds: number | null; startedAt: string | null; endedAt: string | null } | null;
+  /**
+   * A rented vehicle's freight day: the planned hours from the request's share of the route time,
+   * rounded up as the completion prefill rounds them (`routeTimePrefill`, D12), and the span of its
+   * stops. `hours` is `null` when the times cannot give it — a lessor's driver has no cabinet.
+   */
+  routeTime: { hours: number | null; startedAt: string | null; endedAt: string | null } | null;
 }
 
 // ── Queries ──
@@ -981,20 +986,20 @@ function stripReading(reading: PeriodReading): ReportReading {
 }
 
 /**
- * A freight day of a rented vehicle: the request's share of the route time (D6) and its span —
- * from where its first stop's segment starts to the departure from its last stop. `null` seconds
- * when any reading cannot be split, as the request card says.
+ * A freight day of a rented vehicle: the planned hours of the request's route time (D6, D12) and
+ * its span — from where its first stop's segment starts to the departure from its last stop.
  */
 function routeTimeOfDay(
   time: RequestRouteTimeDto | undefined,
   date: string,
 ): ReportRow['routeTime'] {
-  if (!time) return { seconds: null, startedAt: null, endedAt: null };
+  if (!time) return { hours: null, startedAt: null, endedAt: null };
   const stops = time.readings
     .filter((reading) => reading.reportDate === date)
     .flatMap((reading) => reading.stops);
+  const prefill = routeTimePrefill(time);
   return {
-    seconds: time.seconds,
+    hours: prefill.ok ? prefill.hours : null,
     startedAt: stops[0]?.segmentFrom ?? null,
     endedAt: stops[stops.length - 1]?.departedAt ?? null,
   };

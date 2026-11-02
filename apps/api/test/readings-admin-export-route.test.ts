@@ -66,15 +66,6 @@ vi.mock('../src/auth/principal', () => ({
   }),
 }));
 
-// The route still reads the fuel-norm season for the old book; the mock goes with that call.
-vi.mock('../src/services/fuel-norms', () => ({
-  loadFuelNormSeason: async () => ({
-    winterFromMd: '11-01',
-    winterToMd: '03-31',
-    tolerancePercent: 5,
-  }),
-}));
-
 vi.mock('../src/services/readings-admin-export', () => ({
   buildAdminReadingsExport: async () => {
     state.built += 1;
