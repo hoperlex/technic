@@ -11,7 +11,8 @@ import type {
 } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
-import { authUser } from './factories/auth';
+import type { authUser } from './factories/auth';
+import { readingsBlindMechanic } from './factories/auth';
 import { emptyList } from './factories/common';
 import { maintenanceRecord, maintenanceSummary } from './factories/maintenance';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
@@ -268,9 +269,9 @@ describe('гараж: переход из строки в карточку ма�
   });
 
   it('без права на показания ссылки в строке нет', async () => {
-    // Механику гараж положен (`garage.read`), показания — нет (Р14): статистика машины — это её
-    // пробег, наработка и топливо, то есть данные модуля показаний.
-    renderPage({ user: authUser({ role: 'mechanic' }) });
+    // The garage without readings (Р14): a vehicle's statistics are its mileage, engine hours
+    // and fuel, that is, readings data.
+    renderPage({ user: readingsBlindMechanic() });
 
     expect(await screen.findByText(LABEL)).toBeDefined();
     expect(screen.queryByText('статистика')).toBeNull();

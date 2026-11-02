@@ -34,7 +34,7 @@
 | `operator`        | Оператор (внешний исполнитель) | Внешний исполнитель: что именно исполняет — решает тип его контрагента         | только заявки своего контрагента |
 | `observer`        | Наблюдатель                    | Сквозной просмотр без единого действия                                         | все объекты, без архива          |
 | `driver`          | Водитель                       | Кабинет водителя (ADR 0102): своё задание на дату и свои показания             | только строки про самого себя    |
-| `mechanic`        | Механик                        | Служба главного механика: смотрит парк и листы, ведёт журнал ТО                | весь парк, без ограничений       |
+| `mechanic`        | Механик                        | Служба главного механика: смотрит парк, листы, показания и заявки ТС, ведёт журнал ТО, выгружает отчёт о работе техники | весь парк, без ограничений       |
 | `chief_mechanic`  | Главный механик                | Глава ОГМ: то же плюс ведение водителей и списание бланка                      | весь парк, без ограничений       |
 | —                 | учётка без роли                | Зарегистрирована, не активирована                                              | ничего                           |
 
@@ -60,21 +60,23 @@
 даёт и в расчёте доступа не участвует вовсе. Роль осталась и различается с «Отделом» ровно правом
 визы — до этапа 9, когда она переедет в набор «Виза отдела».
 
-**Служба главного механика** (миграция `0138`) — пара ролей вокруг парка, и своей оси области у них
-нет намеренно: механик отвечает за технику компании, а не за площадку. Открыто им чтение
-справочников (`directories.read`), срез дня (`garage.read`), журнал листов с печатью
-(`waybills.read`) и карточки водителей (`drivers.read`); главный механик сверх этого ведёт водителей
-(`drivers.write`) и списывает испорченный бланк (`waybills.cancel`). Ведения справочника техники нет
-ни у одной из ролей: отдельного права на технику в модели нет, а `directories.write` открывает весь
-раздел — от объектов до тарифов.
+**The chief mechanic's service** (migration `0138`) is a pair of roles around the fleet, with no
+area axis on purpose: a mechanic answers for the company's equipment, not for a site. They read
+the directories (`directories.read`), the day's snapshot (`garage.read`), the waybill journal with
+printing (`waybills.read`) and driver cards (`drivers.read`); the chief mechanic also runs drivers
+(`drivers.write`) and cancels a spoiled blank (`waybills.cancel`). Neither runs the equipment
+directory: the model has no right for equipment alone, and `directories.write` opens the whole
+section, from objects to tariffs.
 
-Единственное **действие** обеих ролей — журнал техобслуживания
-([ADR 0110](adr/0110-readings-intake-stats-maintenance.md)), и приходит оно своей парой прав
-`vehicleMaintenance.read` / `.write`, а не чтением показаний. `vehicleReadings.read` службе не
-выдаётся намеренно: механику нужна форма обслуживания, а это право открыло бы вместе с ней приёмку,
-журналы, выгрузки и фотографии приборных панелей — весь модуль показаний ради одной формы. Вкладка
-«Показания» механику поэтому не видна вовсе, а сводку ТО он открывает из строки «Техника» гаража и
-из справочника техники.
+The roles' **actions** are the maintenance journal
+([ADR 0110](adr/0110-readings-intake-stats-maintenance.md)), which comes as its own pair
+`vehicleMaintenance.read` / `.write` rather than through reading readings, and auto-part receipts
+(`autoParts.manage`). Since [ADR 0241](adr/0241-readings-report-in-garage-header.md) both roles
+also hold the readings report (`vehicleReadings.export`, the «Отчёт» button of the garage header)
+with the two reads it requires — `vehicleReadings.read` and `vehicleRequests.read`, the owner's
+choice of 02.11.2026: the service sees the «Показания» tab and the «Заказ ТС» section read-only,
+and still neither accepts a day nor corrects a reading (`vehicleReadings.write`). The maintenance
+right itself still implies no readings.
 
 **Права выдаются не роли, а субъекту доступа** — четвёрке «роль, тип контрагента учётки,
 надстройки, назначенные наборы» ([ADR 0038](adr/0038-executor-permissions-by-counterparty-type.md),
@@ -193,10 +195,11 @@ client floor.
 администратора и ничего не открывает. У роли `site` по той же причине пусты заказ ТС,
 недельная заявка и обе визы: они уехали в наборы «Заказ техники» и «Виза объекта».
 
-Прав в словаре 83, ролей 14. Полный набор — только у администратора; дальше по убыванию: менеджер
-44, диспетчер 42, руководитель строительства 26, штаб и руководитель отдела по 23, отдел 21,
-площадка 12, комендант и главный механик по 9, наблюдатель и механик по 7, водитель 2, внешний
-исполнитель 1 (остальное ему даёт тип контрагента).
+The dictionary holds 86 rights, 14 roles. Only the administrator has the full set; then, in
+descending order (02.11.2026, after ADR 0241): manager 45, dispatcher 42, construction head 26,
+shtab and department head 23 each, department 21, site and chief mechanic 12 each, mechanic 10,
+commandant 9, observer 7, driver 2, external executor 1 (the rest comes from the counterparty
+type).
 
 **Менеджер обошёл диспетчера в этом ряду 10.09.2026** ([ADR 0181](adr/0181-manager-service-requester.md)):
 круг заказчика оргтехники выдан ему матрицей роли, а диспетчеру тот же круг по-прежнему приходит
@@ -277,12 +280,13 @@ client floor.
 исполнителя приходят из типа его контрагента (см. ниже), поэтому в клетке прочерк с пометкой, а не
 пустое место: право у такой учётки бывает, но не от роли.
 
-² Колонок службы главного механика и водителя в таблице нет: `mechanic`, `chief_mechanic` и `driver`
-работают не в модулях заявок, и их наборы целиком описаны в §1. Помечены строки, которые входят в
-эти наборы сверх общего для всех `directories.read`: механик — `garage.read`, `waybills.read`,
-`drivers.read`, `autoParts.manage` и пара `vehicleMaintenance.*`; главный механик сверх того `waybills.cancel` и
-`drivers.write`; водитель — ровно два права кабинета и **ни одного** больше, включая
-`directories.read`.
+² The table has no columns for the chief mechanic's service and the driver: `mechanic`,
+`chief_mechanic` and `driver` do not work in request modules, and their sets are described in §1.
+Beyond the common `directories.read`: the mechanic — `garage.read`, `waybills.read`,
+`drivers.read`, `autoParts.manage`, the pair `vehicleMaintenance.*` and, since ADR 0241,
+`vehicleReadings.read`, `vehicleRequests.read` and `vehicleReadings.export`; the chief mechanic also
+`waybills.cancel` and `drivers.write`; the driver — exactly the two cabinet rights and **nothing**
+else, `directories.read` included.
 
 Модульные права исполнителя перечислены своей матрицей — `COUNTERPARTY_TYPE_PERMISSIONS` в том же
 файле:
@@ -416,12 +420,12 @@ client floor.
   `vehicleRequests.read`» ответила бы на «есть ли из чего собрать», а не на «положен ли человеку
   раздел», и закрыть гараж, оставив справочник водителей, стало бы нечем. Право только на чтение:
   действий в разделе нет вовсе.
-- **Право на ТО не открывает показания**
-  ([ADR 0110](adr/0110-readings-intake-stats-maintenance.md)). `vehicleMaintenance.read` даёт
-  журнал обслуживания, сводку по машине и скан акта; `vehicleReadings.read` — приёмку, статистику,
-  журнал показаний, выгрузки и фотографии приборных панелей. Выдать службе механика чтение
-  показаний ради формы ТО значило бы открыть весь модуль ради одной формы, поэтому границу держат
-  **разные ручки**, а не условные поля: сводка `/vehicle-maintenance/vehicles/:id/summary`
+- **The maintenance right does not open readings**
+  ([ADR 0110](adr/0110-readings-intake-stats-maintenance.md)). `vehicleMaintenance.read` gives the
+  maintenance journal, the vehicle summary and the act scan; `vehicleReadings.read` gives intake,
+  statistics, the readings journal, the books and dashboard photos. The mechanics hold both since
+  ADR 0241, but for the readings report, not for the form; the boundary is still held by
+  **separate routes**, not conditional fields: сводка `/vehicle-maintenance/vehicles/:id/summary`
   самодостаточна и отдаёт даже последний одометр с датой (без него «8 340 км с ТО» нечем
   проверить), а полную карточку машины портал собирает композицией двух ответов. Поле, исчезающее
   по чужому праву, было бы тем же смешением прав, только спрятанным в сериализатор.
@@ -523,8 +527,8 @@ opened by `garage.read` and is **read-only**: the slice itself has no action at 
 of requests, routes and blanks lead to their own modules — a request and a route open in a window
 over the slice (ADR 0120), a blank leads to the waybill journal. Every link asks for the right by
 its own rule (`utils/links.ts` returns `null` where the record is not the role's, and the number
-stays plain text): a mechanic has both the garage and the waybills, but not
-`vehicleRequests.read`, so he reads request numbers but cannot open them. The same `garage.read`
+stays plain text): an account with the garage but without `vehicleRequests.read` reads request
+numbers but cannot open them (the mechanics read requests since ADR 0241). The same `garage.read`
 closes all five handles of `/api/v1/garage`.
 
 The fifth handle is the «График» window of the «Водители» tab,
@@ -544,7 +548,8 @@ only with it, since the «Показания» tab is closed without it. The rea
 [ADR 0110](adr/0110-readings-intake-stats-maintenance.md)) — исключение из «только на чтение», и
 живёт она под своими правами: сама вкладка и обе её подвкладки («Приём» и «Статистика») открыты
 `vehicleReadings.read`, кнопки приёма дня и правки чужого показания — `vehicleReadings.write`.
-Механику вкладка не показывается вовсе. Колонки строки «Техника» идут каждая за своим правом:
+The mechanics see the tab read-only since ADR 0241: without `vehicleReadings.write` they neither
+accept a day nor correct a reading. Колонки строки «Техника» идут каждая за своим правом:
 одометр — при `vehicleReadings.read` (без права поля нет в ответе вообще: `null` означал бы
 «показаний не было», то есть неправду про парк), состояние ТО — при `vehicleMaintenance.read` и
 своей ручкой `/api/v1/vehicle-maintenance/snapshot`. Из той же строки открывается сводка ТО
@@ -556,7 +561,9 @@ only with it, since the «Показания» tab is closed without it. The rea
 (`portal-sections.ts`) — первый открытый учётке по полю `startOrder`, тем же предикатом
 `isSectionOpen`, каким раздел попадает в меню и пропускает гейт; водителю так достаётся его кабинет,
 службе главного механика — «Гараж». Стартовый порядок намеренно не совпадает с порядком меню: это
-разные вопросы, и «Орг.техника», пятая в меню, замыкает стартовый перебор (ADR 0121).
+разные вопросы, и «Орг.техника», пятая в меню, замыкает стартовый перебор (ADR 0121). Since ADR 0241
+the garage precedes «Заказ ТС» in the start order: the mechanics read requests now and must still
+land in the garage; every other role with both sections starts at «Вывоз мусора».
 
 Учётке, которой не открыт **ни один** раздел, портал показывает экран
 (`apps/web/src/pages/no-sections/NoSectionsPage.tsx`) — «разделы вам пока не назначены», внутри каркаса, с

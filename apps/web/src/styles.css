@@ -829,6 +829,26 @@ body,
   padding: 6px 0 2px;
 }
 
+/* Section buttons beside the tab widget (PageTabs `actions`): the widget takes the room, the
+   buttons keep the row's end. */
+.tabs-extra-row,
+.mobile-tabs-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mobile-tabs-slot-row {
+  justify-content: space-between;
+  padding: 6px 0 2px;
+}
+
+.mobile-tabs-slot-row > .mobile-tabs-slot {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+}
+
 /* A tab's empty state: on the phone the message needs less air around it. */
 .page-empty {
   display: flex;

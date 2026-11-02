@@ -189,6 +189,9 @@ describe('права ролей', () => {
       // workflow. The permission includes receipt creation and editing, but permanent deletion
       // remains administrator-only under `autoParts.delete`.
       'autoParts.manage',
+      // The readings report of the garage header (ADR 0241): the owner named managers, not the
+      // dispatcher's desk.
+      'vehicleReadings.export',
     ];
     expect(
       [...ROLE_PERMISSIONS.dispatcher].filter((p) => !DISPATCHER_ONLY.includes(p)).sort(),
@@ -813,14 +816,14 @@ describe('механизация: аренда малой механизации
  */
 describe('служба главного механика: механик смотрит, главный механик ведёт', () => {
   /**
-   * Набор механика — перечислением, а не выборочными проверками: смысл роли в том, чего у неё нет,
-   * и право, дописанное сюда по недосмотру, обязано уронить тест. Четыре чтения выбраны не по
-   * разделам портала, а по одному вопросу: что нужно, чтобы отвечать за технику, — сама техника
-   * (справочники), где она сегодня (гараж), с каким заданием выехала (журнал листов) и кто за
-   * рулём (карточки водителей). Своего чтения у автозапчастей в перечне нет и не будет: список
-   * чеков открывает тот же `garage.read` (`docs/auto-parts-plan.md`, Р10; план чеков, Р4).
+   * The mechanic's set is listed, not sampled: the role is defined by what it lacks, and a right
+   * added here by oversight must fail the test. The reads answer one question — what it takes to
+   * answer for the equipment: the equipment itself (directories), where it is today (garage), with
+   * which task it left (waybills), who drives (driver cards); and since ADR 0241 the readings and
+   * vehicle requests the readings report carries. Auto parts have no read of their own: the receipt
+   * list opens by the same `garage.read` (`docs/auto-parts-plan.md`, Р10; receipts plan, Р4).
    */
-  it('механик читает четыре списка и ведёт два — журнал ТО и чеки на автозапчасти', () => {
+  it('the mechanic reads, runs maintenance and receipts, and exports the readings report', () => {
     expect([...permissionsFor(of('mechanic'))].sort()).toEqual([
       'autoParts.manage',
       'directories.read',
@@ -828,37 +831,37 @@ describe('служба главного механика: механик смо�
       'garage.read',
       'vehicleMaintenance.read',
       'vehicleMaintenance.write',
+      'vehicleReadings.export',
+      'vehicleReadings.read',
+      'vehicleRequests.read',
       'waybills.read',
     ]);
-    // Действий у роли два — техобслуживание (план «Показания техники», Р14) и чеки на
-    // автозапчасти (`docs/auto-parts-plan.md`, Р10; план чеков, Р4), — и правило, по которому
-    // собран перечень выше, теперь такое: всё остальное у механика чтение. Прежде тут стояло «ни
-    // одного права, которое не кончается на `.read`»; ТО сняло это осознанно (акты заводит служба
-    // главного механика, а не тот, кто её об этом попросит), автозапчасти — по той же причине:
-    // заказчик назвал держателем учёта механиков. Прав в этом действии было два, пока у модуля
-    // был склад; движение остатка ушло из словаря вместе с ним (план чеков, Р4), и осталось одно
-    // ведение — уже чеков. Список исключений именно поимённый: третье действие обязано попасть в
-    // ревью, а не приехать молча.
+    // Everything else is reading. The exceptions are named: maintenance (readings plan, Р14) and
+    // receipts (receipts plan, Р4) — the customer named the service as their keeper — and the
+    // readings report (ADR 0241), which takes data out rather than changing it. A fourth exception
+    // must reach review by name, not arrive silently.
     for (const permission of permissionsFor(of('mechanic'))) {
       expect(
         permission.endsWith('.read') ||
           permission.startsWith('vehicleMaintenance.') ||
-          permission.startsWith('autoParts.'),
+          permission.startsWith('autoParts.') ||
+          permission === 'vehicleReadings.export',
+        permission,
       ).toBe(true);
     }
   });
 
   /**
-   * Право на ТО самодостаточно (Р14), и проверяется здесь именно это: показания службе не выданы.
-   * Выдай их — и вместе с формой обслуживания откроются приёмка, журналы, выгрузки и фотографии
-   * приборных панелей, то есть весь модуль показаний ради одной формы. Независимое право, которое
-   * нельзя получить, не взяв соседнее, независимо только на бумаге.
+   * The maintenance right stays self-sufficient (Р14): it is given as its own pair, and the
+   * readings the service reads since ADR 0241 come with the report, not with the form. The
+   * service still neither accepts a day nor corrects someone's reading.
    */
-  it('журнал ТО у службы есть, а показания парка — нет', () => {
+  it('the service runs maintenance and reads readings, but does not write them', () => {
     for (const role of ['mechanic', 'chief_mechanic'] as Role[]) {
       expect(can(of(role), 'vehicleMaintenance.read'), role).toBe(true);
       expect(can(of(role), 'vehicleMaintenance.write'), role).toBe(true);
-      expect(can(of(role), 'vehicleReadings.read'), role).toBe(false);
+      expect(can(of(role), 'vehicleReadings.read'), role).toBe(true);
+      expect(can(of(role), 'vehicleReadings.export'), role).toBe(true);
       expect(can(of(role), 'vehicleReadings.write'), role).toBe(false);
     }
   });
@@ -881,20 +884,24 @@ describe('служба главного механика: механик смо�
   });
 
   /**
-   * Граница службы целиком: заявок она не ведёт ни в одном модуле, справочники не правит и чужую
-   * работу задним числом не переписывает. Модули — полным перебором прав по префиксу, а не
-   * выборочно: право, добавленное в «Заказ ТС» или «Вывоз мусора» завтра, попадёт в этот перебор
-   * само, и служба обязана остаться вне его.
+   * The service's whole boundary: it runs requests in no module, does not edit directories and
+   * does not rewrite others' work after the fact. Modules are swept by prefix, not sampled: a right
+   * added to «Заказ ТС» or «Вывоз мусора» tomorrow joins the sweep by itself, and the service must
+   * stay out of it. The one exception is reading vehicle requests (ADR 0241), which the readings
+   * report carries.
    *
-   * `directories.write` закрыт не по забывчивости: отдельного права на технику в модели нет, а это
-   * одно открывает **весь** раздел — объекты, контрагентов, тарифы. Пока право не разделено,
-   * механик технику читает, а заводит её тот, кто ведёт справочники целиком. Коррекция задним
-   * числом (ADR 0101) — правка чужой работы, и остаётся она у диспетчера с администратором.
+   * `directories.write` is closed on purpose: the model has no right for equipment alone, and this
+   * one opens the **whole** section — objects, counterparties, tariffs. Until the right is split, a
+   * mechanic reads equipment and whoever runs the directories registers it. Correction after the
+   * fact (ADR 0101) edits others' work and stays with the dispatcher and the administrator.
    */
-  it('заявки, ведение справочников и коррекция задним числом службе закрыты', () => {
+  it('requests beyond reading, directory editing and backdated correction are closed to the service', () => {
     for (const role of ['mechanic', 'chief_mechanic'] as Role[]) {
+      expect(can(of(role), 'vehicleRequests.read'), role).toBe(true);
       for (const permission of PERMISSIONS.filter(
-        (p) => p.startsWith('vehicleRequests.') || p.startsWith('wasteRequests.'),
+        (p) =>
+          (p.startsWith('vehicleRequests.') && p !== 'vehicleRequests.read') ||
+          p.startsWith('wasteRequests.'),
       )) {
         expect(can(of(role), permission), `${role}: ${permission}`).toBe(false);
       }

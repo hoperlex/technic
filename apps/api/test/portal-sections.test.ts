@@ -122,8 +122,10 @@ describe('состав реестра', () => {
     expect(byStart).toEqual([
       'driver-cabinet',
       'waste',
-      'vehicle-requests',
+      // The garage before «Заказ ТС» since ADR 0241: the mechanics read requests now and must
+      // still land in the garage. Every role holding both opens «Вывоз мусора» first.
       'garage',
+      'vehicle-requests',
       'waybills',
       'directories',
       'admin',
@@ -304,10 +306,8 @@ describe('совместимость с сегодняшним homePath', () => 
    * им обоим стартовым остаётся «Вывоз мусора».
    */
   /*
-   * Служебная выгрузка показаний (`vehicleReadings.export`) вошла в `ADMIN_PAGE_PERMISSIONS`, и
-   * список подрос на три пары — тем же расхождением и по той же причине, что соседние строки:
-   * держателю справочников «Справочники» открыты и стоят выше «Администрирования». Живых учёток
-   * это не двигает: право есть только у администратора, а ему стартовым остаётся «Вывоз мусора».
+   * The readings report (`vehicleReadings.export`) left `ADMIN_PAGE_PERMISSIONS` with ADR 0241 (its
+   * home is the garage header), and its three pairs left this list with it.
    */
   /*
    * Сводная аналитика (`analytics.export`, план `docs/analytics-summary-export-plan.md`, Р1) —
@@ -337,17 +337,17 @@ describe('совместимость с сегодняшним homePath', () => 
       'directories.export + officeEquipment.write: /admin → /directories',
       'directories.export + officeEquipmentConsumables.manage: /admin → /directories',
       'directories.export + officeEquipmentConsumables.stock: /admin → /directories',
-      'officeEquipment.write + vehicleReadings.export: /admin → /directories',
+      // ADR 0241: the garage precedes «Заказ ТС» as a start page. The mechanics hold exactly this
+      // pair without waste since they read requests, and they keep landing in the garage.
+      'vehicleRequests.read + garage.read: /vehicle-requests → /garage',
       'officeEquipment.write + analytics.export: /admin → /directories',
       'officeEquipment.write + users.manage: /admin → /directories',
       'officeEquipment.write + mailings.read: /admin → /directories',
       'officeEquipment.write + manuals.manage: /admin → /directories',
-      'officeEquipmentConsumables.manage + vehicleReadings.export: /admin → /directories',
       'officeEquipmentConsumables.manage + analytics.export: /admin → /directories',
       'officeEquipmentConsumables.manage + users.manage: /admin → /directories',
       'officeEquipmentConsumables.manage + mailings.read: /admin → /directories',
       'officeEquipmentConsumables.manage + manuals.manage: /admin → /directories',
-      'officeEquipmentConsumables.stock + vehicleReadings.export: /admin → /directories',
       'officeEquipmentConsumables.stock + analytics.export: /admin → /directories',
       'officeEquipmentConsumables.stock + users.manage: /admin → /directories',
       'officeEquipmentConsumables.stock + mailings.read: /admin → /directories',

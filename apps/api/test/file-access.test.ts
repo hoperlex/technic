@@ -131,7 +131,7 @@ const serviceExecutor = (id = 'other') => principal('operator', id, 'service');
 /** Водитель (ADR 0102): роль второго контура, её область — сам человек, а не объект. */
 const driver = (id = 'driver-user', personId: string | null = PERSON) =>
   principal('driver', id, null, personId);
-/** Служба главного механика (Р14): её единственный модуль — журнал ТО. */
+/** The chief mechanic's service (Р14): maintenance, and since ADR 0241 readings and vehicle requests. */
 const mechanic = (id = 'mechanic-user') => principal('mechanic', id);
 
 const NOWHERE = {
@@ -358,12 +358,29 @@ describe('скан акта техобслуживания (Р14)', () => {
     expect(decideFileAccess(m, UPLOADER, IN_INVISIBLE_REQUEST)).toBe(false);
   });
 
+  /**
+   * The maintenance right alone (§9). Since ADR 0241 the mechanic roles also read readings and
+   * vehicle requests, so the boundary is checked on a principal holding the maintenance pair and
+   * nothing else: an operator without a counterparty type (no module from the role) with a grant.
+   */
   it('право на ТО не открывает ни фотографий показаний, ни вложений заявок (§9)', () => {
+    const maintenanceOnly: Principal = {
+      ...principal('operator', 'maintenance-only'),
+      grantPermissions: ['vehicleMaintenance.read', 'vehicleMaintenance.write'],
+    };
+    expect(decideFileAccess(maintenanceOnly, UPLOADER, IN_MAINTENANCE)).toBe(true);
     for (const linkage of [IN_READING, IN_OWN_READING, IN_WASTE, IN_VEHICLE, IN_SERVICE]) {
+      expect(decideFileAccess(maintenanceOnly, UPLOADER, linkage)).toBe(false);
+    }
+  });
+
+  it('механик открывает фото показаний и вложения видимых заявок ТС (ADR 0241), но не чужих модулей', () => {
+    expect(decideFileAccess(mechanic(), UPLOADER, IN_READING)).toBe(true);
+    expect(decideFileAccess(mechanic(), UPLOADER, IN_VEHICLE)).toBe(true);
+    for (const linkage of [IN_OWN_READING, IN_WASTE, IN_SERVICE]) {
       expect(decideFileAccess(mechanic(), UPLOADER, linkage)).toBe(false);
     }
-    // Путевые листы — исключение и не про ТО: `waybills.read` у службы механика своё (ADR 0037),
-    // и открывает скан листа именно оно.
+    // Waybills are the service's own (`waybills.read`, ADR 0037), not a maintenance matter.
     expect(decideFileAccess(mechanic(), UPLOADER, IN_WAYBILL)).toBe(true);
   });
 });

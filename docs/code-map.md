@@ -72,9 +72,9 @@
 - Разделы портала: `garage`
 - API-маршруты: [garage.ts](../apps/api/src/routes/garage.ts), [vehicle-readings.ts](../apps/api/src/routes/vehicle-readings.ts), [vehicle-readings-stats.ts](../apps/api/src/routes/vehicle-readings-stats.ts), [vehicle-maintenance.ts](../apps/api/src/routes/vehicle-maintenance.ts)
 - Остальной API: [readings-intake.ts](../apps/api/src/services/readings-intake.ts), [reading-times.ts](../apps/api/src/services/reading-times.ts), [vehicle-maintenance.ts](../apps/api/src/services/vehicle-maintenance.ts), [garage-driver-schedule.ts](../apps/api/src/services/garage-driver-schedule.ts) (the «График» window: shifts due a reading by the readings module's own fragments, plus the days a driver is named without paper)
-- Web: [garage](../apps/web/src/pages/garage), [vehicle-reading](../apps/web/src/entities/vehicle-reading)
+- Web: [garage](../apps/web/src/pages/garage), [vehicle-reading](../apps/web/src/entities/vehicle-reading), [readings-report-export](../apps/web/src/features/readings-report-export) (the «Отчёт» button of the header and the readings report form, shared with «Выгрузки»)
 - Тесты: `vehicle-readings*.db.test.ts`, `vehicle-maintenance*.db.test.ts`, `garage-*.db.test.ts`
-- Решения: [ADR 0076](adr/0076-garage-day-view.md), [ADR 0103](adr/0103-vehicle-readings.md), [ADR 0126](adr/0126-assignment-periods.md), [ADR 0234](adr/0234-driver-shift-and-stop-times.md)
+- Решения: [ADR 0076](adr/0076-garage-day-view.md), [ADR 0103](adr/0103-vehicle-readings.md), [ADR 0126](adr/0126-assignment-periods.md), [ADR 0234](adr/0234-driver-shift-and-stop-times.md), [ADR 0240](adr/0240-readings-report-by-request-days.md), [ADR 0241](adr/0241-readings-report-in-garage-header.md)
 
 ## Кабинет водителя
 

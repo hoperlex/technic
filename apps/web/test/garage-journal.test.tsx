@@ -12,7 +12,7 @@ import type {
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
-import { authUser } from './factories/auth';
+import { authUser, readingsBlindMechanic } from './factories/auth';
 import { list as listOf } from './factories/common';
 import { classification } from './factories/vehicle';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
@@ -288,10 +288,10 @@ describe('гараж: вход в журнал показаний', () => {
   });
 
   it('без права на показания ссылки нет, и адрес журнала ничего не открывает', async () => {
-    // Механику гараж положен (`garage.read`), показания — нет (Р14): ни ссылки, ни окна, ни
-    // запроса, даже если адрес с параметром прислали.
+    // The garage without readings (Р14): no link, no window, no request, even if the address
+    // came with the parameter.
     const http = renderPage({
-      user: authUser({ role: 'mechanic' }),
+      user: readingsBlindMechanic(),
       route: `/garage?tab=vehicles&date=${ON_DATE}&journal=v1`,
     });
 
@@ -344,11 +344,11 @@ describe('гараж: вход в журнал показаний', () => {
   });
 
   it('без права на показания номер машины в строке водителя остаётся текстом', async () => {
-    // Механику гараж положен (`garage.read`), показания — нет (Р14). Номер машины из строки
-    // водителя ему нужен по-прежнему — он говорит, на чём человек сегодня, — но остаётся текстом:
-    // ссылка вела бы в окно, которому нечего показать.
+    // The garage without readings (Р14). The vehicle number in the driver's row is still needed —
+    // it says what the person drives today — but stays text: a link would lead to a window with
+    // nothing to show.
     const http = renderPage({
-      user: authUser({ role: 'mechanic' }),
+      user: readingsBlindMechanic(),
       route: `/garage?tab=drivers&date=${ON_DATE}&journal=v2`,
     });
 

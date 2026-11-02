@@ -283,7 +283,7 @@ const driverSummary: GarageDriversSummaryDto = {
 /** Смотрит администратор: у него открыты все три раздела, куда ведут номера из среза. */
 const admin = authUser({ role: 'admin' });
 
-function renderPage(options: { viewport?: Viewport } = {}) {
+function renderPage(options: { viewport?: Viewport; user?: ReturnType<typeof authUser> } = {}) {
   const http = mockHttp({
     'GET /garage/vehicles': () => json(vehicleList),
     'GET /garage/vehicles/summary': () => json(vehicleSummary),
@@ -304,7 +304,7 @@ function renderPage(options: { viewport?: Viewport } = {}) {
       json({ to: query.get('to') ?? '', items: [] }),
   });
   const rendered = renderWithUser(<GaragePage />, {
-    user: admin,
+    user: options.user ?? admin,
     viewport: options.viewport,
     route: `/garage?tab=vehicles&date=${ON_DATE}`,
   });
@@ -552,5 +552,38 @@ describe('гараж: срез дня', () => {
     expect(document.querySelectorAll('.list-card')).toHaveLength(4);
     // Пустой день говорит об этом словами: карточке нечего показать, кроме состояния.
     expect(screen.getAllByText('на этот день ничего не назначено').length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The readings report button of the garage header (ADR 0241): one book, one window — the
+ * explanation and the period, no choice of export. Who sees the button follows the right, which
+ * the administrator, the manager and both mechanic roles hold.
+ */
+describe('гараж: кнопка отчёта о работе техники', () => {
+  const REPORT = 'Отчёт о работе строительной техники';
+
+  for (const role of ['admin', 'manager', 'mechanic', 'chief_mechanic'] as const) {
+    it(`${role}: кнопка в шапке есть`, async () => {
+      renderPage({ user: authUser({ role }) });
+      expect(await screen.findByRole('button', { name: REPORT })).toBeDefined();
+    });
+  }
+
+  it('диспетчер кнопки не видит: права выгрузки у него нет', async () => {
+    renderPage({ user: authUser({ role: 'dispatcher' }) });
+    expect(await screen.findByText('Е646СК799')).toBeDefined();
+    expect(screen.queryByRole('button', { name: REPORT })).toBeNull();
+  });
+
+  it('окно — пояснение и период, без выбора вида выгрузки', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: REPORT }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(REPORT)).toBeDefined();
+    expect(within(dialog).getByText(/Книга Excel о работе техники по дням заявок/u)).toBeDefined();
+    expect(within(dialog).getByText('Период')).toBeDefined();
+    expect(within(dialog).getByRole('button', { name: /Скачать книгу/u })).toBeDefined();
+    expect(within(dialog).queryByText('Вид выгрузки')).toBeNull();
   });
 });

@@ -102,7 +102,9 @@ export const SHELL_SECTIONS: readonly PortalShellSection[] = [
     short: 'Заказ ТС',
     // Оператор вывоза — внешний перевозчик: заказ ТС к его работе отношения не имеет (ADR 0010).
     permissions: ['vehicleRequests.read'],
-    startOrder: 3,
+    // After the garage since ADR 0241: the mechanics read requests now, and their first page
+    // stays the fleet on a date (see the garage below).
+    startOrder: 4,
   },
   {
     id: 'mechanization',
@@ -143,11 +145,14 @@ export const SHELL_SECTIONS: readonly PortalShellSection[] = [
     path: '/garage',
     label: 'Гараж',
     short: 'Гараж',
-    // Гараж (ADR 0076) — срез дня: чем заняты свои машины и водители. В меню стоит после листов,
-    // рядом с тем, из чего собран, а стартовым раздел роли становится раньше них: служба главного
-    // механика заявок не ведёт вовсе, и парк на дату — её первая страница.
+    // The garage (ADR 0076) is the day's snapshot: what own vehicles and drivers are busy with. In
+    // the menu it follows the waybills it is built from, but as a start page it comes before them
+    // and before «Заказ ТС»: the chief mechanic's service runs no requests, and the fleet on a date
+    // is its first page. Since ADR 0241 the service reads requests too, so the garage must precede
+    // them or mechanics would land in a list they only look at. Every role with both sections opens
+    // «Вывоз мусора» first, so the order between these two moves nobody else.
     permissions: ['garage.read'],
-    startOrder: 4,
+    startOrder: 3,
   },
   {
     id: 'office-equipment',

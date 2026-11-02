@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Alert, Select, Space, Typography } from 'antd';
 import type { Permission } from '@technic/contracts';
 import { useAuth } from '@entities/session';
-import { ReadingsExportTab } from './ReadingsExportTab';
+import { ReadingsReportForm } from '@features/readings-report-export';
 import { AnalyticsExportTab } from './AnalyticsExportTab';
 
 /**
@@ -17,6 +17,9 @@ import { AnalyticsExportTab } from './AnalyticsExportTab';
  *
  * **Следующая выгрузка добавляется строкой в `EXPORTS` и больше нигде** — кроме строки в
  * `ADMIN_PAGE_PERMISSIONS`, без которой её право не открывало бы саму страницу.
+ *
+ * The readings report is the exception (ADR 0241): its home is the garage header, its right is not
+ * in `ADMIN_PAGE_PERMISSIONS`, and it is listed here for those the page admits by another right.
  */
 
 interface ExportEntry {
@@ -40,7 +43,11 @@ const EXPORTS: ExportEntry[] = [
     permission: 'vehicleReadings.export',
     description:
       'Работа техники по дням заявок за период: пробег и моточасы своих машин, часы и стоимость аренды.',
-    panel: <ReadingsExportTab />,
+    panel: (
+      <div style={{ padding: 16, maxWidth: 760 }}>
+        <ReadingsReportForm />
+      </div>
+    ),
   },
   {
     key: 'analytics-summary',

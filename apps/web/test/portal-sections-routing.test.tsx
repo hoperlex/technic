@@ -139,17 +139,19 @@ describe('вход приводит в раздел роли, а не на сл�
     expect(screen.queryByText('Смена пароля')).toBeNull();
   });
 
-  it('механик приземляется в «Гараж», хотя в меню выше стоят «Путевые листы»', async () => {
-    // Порядок меню и порядок стартовой страницы — разные вопросы и разные поля реестра
-    // (`startOrder`). Механик их и разводит: заявок он не ведёт вовсе, и первой страницей ему
-    // нужен парк на дату, а не журнал листов, который стоит в меню выше.
+  it('механик приземляется в «Гараж», хотя в меню выше стоят «Заказ ТС» и «Путевые листы»', async () => {
+    // The menu order and the start order are different questions and different registry fields
+    // (`startOrder`). The mechanic tells them apart: the service runs no requests, and its first
+    // page is the fleet on a date, not the request list it only reads since ADR 0241 nor the
+    // waybill journal, both above the garage in the menu.
     renderPortal(authUser({ id: 'user-mechanic', role: 'mechanic' }));
 
     expect(await screen.findByText(sectionPage('Гараж'))).toBeDefined();
     expect(screen.queryByText(sectionPage('Путевые листы'))).toBeNull();
-    // Само меню при этом прежнее: листы в нём выше гаража — иначе проверка сводилась бы к тому,
-    // что оба порядка одинаковы, и подмены одного другим она бы не заметила.
-    expect(sectionMenuLabels()).toEqual(['Путевые листы', 'Гараж']);
+    expect(screen.queryByText(sectionPage('Заказ ТС'))).toBeNull();
+    // The menu keeps its own order: otherwise the check would only prove both orders equal and
+    // would not notice one replaced by the other.
+    expect(sectionMenuLabels()).toEqual(['Заказ ТС', 'Путевые листы', 'Гараж']);
   });
 
   it('водитель приземляется в кабинет: разделов основного портала у роли нет', async () => {

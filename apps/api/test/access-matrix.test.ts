@@ -519,9 +519,8 @@ const CASES: Case[] = [
     title: 'план по дням — правом на саму заявку: его читает и заказчик',
     method: 'GET',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/days`,
-    // Перечень тот же, что у списка заявок. Службы главного механика в нём нет вовсе:
-    // `vehicleRequests.read` ей не положен — заявок она не ведёт, а свои машины и своих водителей
-    // видит в гараже и в журнале листов.
+    // The same list as the request list. The chief mechanic's service reads requests since
+    // ADR 0241 (the readings report carries them), so it is in.
     allowed: [
       'admin',
       'manager',
@@ -532,6 +531,7 @@ const CASES: Case[] = [
       'department_head',
       'operator/vehicle_lessor',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
@@ -1282,6 +1282,7 @@ const CASES: Case[] = [
       'department_head',
       'operator/vehicle_lessor',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
@@ -1298,6 +1299,7 @@ const CASES: Case[] = [
       'department_head',
       'operator/vehicle_lessor',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
@@ -1316,13 +1318,14 @@ const CASES: Case[] = [
       'department_head',
       'operator/vehicle_lessor',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
-    // Контакт водителя (ADR 0122) — правом на заявку, а не на листы: имя и телефон того, кто
-    // приедет, нужны прежде всего тому, кто машину встречает. Персональные данные бланка —
-    // СНИЛС и удостоверение — остались за `drivers.read` и `waybills.read`, и служба главного
-    // механика в перечне поэтому не стоит: заявок она не ведёт вовсе.
+    // The driver's contact (ADR 0122) goes by the right on the request, not on waybills: the name
+    // and phone of who is coming are needed first by whoever meets the vehicle. The blank's
+    // personal data — SNILS and licence — stay behind `drivers.read` and `waybills.read`. The
+    // mechanics read requests since ADR 0241 and so see the contact too.
     title: 'заказ ТС — контакт водителя в карточке',
     method: 'GET',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/driver`,
@@ -1336,6 +1339,7 @@ const CASES: Case[] = [
       'department_head',
       'operator/vehicle_lessor',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
@@ -1352,6 +1356,7 @@ const CASES: Case[] = [
       'department_head',
       'operator/vehicle_lessor',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
@@ -1437,6 +1442,7 @@ const CASES: Case[] = [
       'department_head',
       'observer',
       'operator/vehicle_lessor',
+      ...MECHANICS,
     ],
   },
   {
@@ -1615,16 +1621,16 @@ const CASES: Case[] = [
     title: 'показания парка — журнал машины',
     method: 'GET',
     url: `/api/v1/vehicle-readings/journal/${RECORD_ID}?from=2026-08-01&to=2026-08-12`,
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
-    // Реестр приёма (план «Показания техники», Р26) — тем же правом, что журнал и карточка: это
-    // те же данные модуля показаний, только разрезом «с кого сегодня ждут». Службе главного
-    // механика он закрыт по той же причине, что и остальной модуль (Р14).
+    // The intake registry (readings plan, Р26) goes by the same right as the journal and the card:
+    // the same readings data cut by «whom we expect today». The mechanics read it since ADR 0241,
+    // with the rest of the module.
     title: 'показания парка — реестр приёма',
     method: 'GET',
     url: '/api/v1/vehicle-readings/intake?from=2026-08-01&to=2026-08-12',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     // Пакетный приём (план «Показания техники», Р8, Р9) — правом правки, а не чтения: реестр
@@ -1639,33 +1645,33 @@ const CASES: Case[] = [
     allowed: ['admin', 'manager', 'dispatcher'],
   },
   {
-    // Карточка машины (план «Показания техники», Р14а) — тем же правом, что журнал: в ответе
-    // только статистика показаний. Службе главного механика она закрыта, и это не недосмотр:
-    // сводка обслуживания приходит ей своей ручкой под `vehicleMaintenance.read`, а `vehicleReadings.read`
-    // открыло бы заодно приёмку, журналы и фотографии приборных панелей (Р14).
+    // The vehicle card (readings plan, Р14а) goes by the same right as the journal: the answer is
+    // readings statistics only. The maintenance summary comes by its own route under
+    // `vehicleMaintenance.read` (Р14); the mechanics see this card since ADR 0241 because they
+    // read readings, not because of maintenance.
     title: 'показания парка — карточка машины',
     method: 'GET',
     url: `/api/v1/vehicle-readings/vehicles/${RECORD_ID}/card?from=2026-08-01&to=2026-08-12`,
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     /**
-     * Выгрузки (план «Показания техники», Р18) — тем же правом, что сводка и журнал: выгружают
-     * ровно то, что видят на экране. Колонки ТО в варианте «Срез на дату» приходят под своим
-     * правом (Р14а) уже внутри обработчика, и службе главного механика эта ручка закрыта целиком:
-     * `vehicleMaintenance.read` не открывает ни журналов, ни выгрузок.
+     * The garage books (readings plan, Р18) go by the same right as the summary and the journal:
+     * one exports exactly what one sees. The maintenance columns of «Срез на дату» come under
+     * their own right (Р14а) inside the handler. The mechanics have the route since ADR 0241 by
+     * reading readings; `vehicleMaintenance.read` alone still opens neither journals nor books.
      */
     title: 'показания парка — выгрузка',
     method: 'GET',
     url: '/api/v1/vehicle-readings/export?kind=fleetSummary&from=2026-08-01&to=2026-08-12',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
 
-  // ── Техобслуживание по пробегу (план «Показания техники», Р14) ──
-  // Зеркало предыдущей пары кейсов, и в этом весь смысл перечня: службе главного механика открыты
-  // все шесть ручек ТО и закрыты все ручки показаний, а `vehicleReadings.read` ни одной из этих
-  // ручек не открывает. Разъедься эти два перечня — и «независимое право» осталось бы независимым
-  // только на бумаге.
+  // ── Maintenance by mileage (readings plan, Р14) ──
+  // The mirror of the readings cases above. Since ADR 0241 every profile holding one of the two
+  // rights holds the other, so the matrix no longer tells them apart: the independence is held by
+  // the guards themselves (the maintenance routes ask `vehicleMaintenance.*` only), and the file
+  // test below pins that the maintenance right alone opens no reading photo.
   {
     title: 'ТО — сводка по машине',
     method: 'GET',

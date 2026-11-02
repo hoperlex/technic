@@ -632,11 +632,12 @@ export const PERMISSIONS = [
    * The readings report as an Excel book: work of equipment by request days (ADR 0240, which
    * replaced the five-sheet book of ADR 0180).
    *
-   * A separate right, not part of `vehicleReadings.read`, and in no role set: the book covers the
-   * whole fleet and every vehicle request of an arbitrary period, with drivers' and customers'
-   * names, and leaves by mail — it is taking data out, not looking at it, the same reasoning as
-   * `directories.export`. The administrator has it by construction (`admin: [...PERMISSIONS]`);
-   * the chief mechanic gets it by a grant, without a release.
+   * A separate right, not part of `vehicleReadings.read`: the book covers the whole fleet and every
+   * vehicle request of an arbitrary period, with drivers' and customers' names, and leaves by mail
+   * — it is taking data out, not looking at it, the same reasoning as `directories.export`. Since
+   * ADR 0241 it opens the «Отчёт» button in the garage header, and the roles the owner named carry
+   * it: the manager and both mechanic roles by their sets, the administrator by construction
+   * (`admin: [...PERMISSIONS]`); anyone else gets it by a grant.
    *
    * Requires `vehicleReadings.read` and `vehicleRequests.read` (`PERMISSION_REQUIRES`): exporting
    * what one sees on no screen is not allowed. The route also refuses a narrow area.
@@ -810,6 +811,18 @@ const VEHICLE_MAINTENANCE_PERMISSIONS = [
  * manager-only copy that could drift from the route guards.
  */
 const AUTO_PARTS_PERMISSIONS = ['autoParts.manage'] as const;
+
+/**
+ * The readings report for both mechanic roles (ADR 0241), with the two reads the book requires:
+ * the owner gave the mechanics the book «in full», so they see what it carries — the garage's
+ * «Показания» tab and vehicle requests — rather than an export of screens they lack. One list, so
+ * the two roles cannot drift apart on it.
+ */
+const MECHANIC_READINGS_REPORT_PERMISSIONS = [
+  'vehicleRequests.read',
+  'vehicleReadings.read',
+  'vehicleReadings.export',
+] as const;
 
 /**
  * Журнал путевых листов ведут те же, кто выписывает листы и ведёт водителей (ADR 0037).
@@ -1003,6 +1016,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     // irreversible deletion is still excluded by the separate `autoParts.delete` permission.
     ...AUTO_PARTS_PERMISSIONS,
     ...VEHICLE_READING_PERMISSIONS,
+    // The readings report of the garage header (ADR 0241): the manager reads both modules the
+    // book carries already, so the right adds the button and nothing else.
+    'vehicleReadings.export',
     // Журнал ТО (Р14) — там же, где день парка: акт привозят диспетчерской, и заводит его тот, кто
     // ведёт машину в портале. У службы главного механика это право тоже есть, и оно не «её»: ТО
     // одной машины ведут с двух сторон, а не двумя журналами.
@@ -1320,27 +1336,30 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   driver: ['driverCabinet.read', 'driverCabinet.submit'],
 
   /*
-   * Служба главного механика (ОГМ). Обе роли смотрят парк целиком: своей оси области у них нет —
-   * механик отвечает за технику компании, а не за площадку, и «свой» объект у него отсутствует по
-   * должности. В `OBJECT_SCOPED_ROLES` они поэтому не входят.
+   * The chief mechanic's service (ОГМ). Both roles see the whole fleet: they have no area axis — a
+   * mechanic answers for the company's equipment, not for a site, and has no «own» object by
+   * position. That is why they are not in `OBJECT_SCOPED_ROLES`.
    *
-   * Механик читает четыре списка и ведёт два — техобслуживание и чеки на автозапчасти. Справочники
-   * (техника со всем, что к ней привязано: виды, типы, модели, ТТХ, категории; плюс объекты и отделы) открывает
-   * `directories.read`, парк на дату — `garage.read`, журнал листов с печатью — `waybills.read`,
-   * карточки водителей — `drivers.read`.
+   * What the service reads: the directories (equipment with everything bound to it — kinds, types,
+   * models, specifications, categories — plus objects and departments) by `directories.read`, the
+   * fleet on a date by `garage.read`, the waybill journal with printing by `waybills.read`, driver
+   * cards by `drivers.read`, and since ADR 0241 readings and vehicle requests (below).
    *
-   * Ведения справочника техники нет ни у одной из двух ролей, и это не забывчивость: отдельного
-   * права на технику в модели нет, а `directories.write` открывает **весь** раздел — объекты,
-   * контрагентов, тарифы. Пока право не разделено, механик технику читает, а заводит её тот, кто
-   * ведёт справочники целиком.
+   * Neither role runs the equipment directory, and that is not an oversight: the model has no
+   * right for equipment alone, and `directories.write` opens the **whole** section — objects,
+   * counterparties, tariffs. Until the right is split, a mechanic reads equipment and whoever runs
+   * the directories registers it.
    *
-   * Действий у роли два, и первое — журнал ТО (Р14): он приходит своей парой прав, а не чтением
-   * показаний, потому что механику нужна форма обслуживания, а `vehicleReadings.read` открыл бы
-   * вместе с ней приёмку, журналы, выгрузки и фотографии приборных панелей. Вкладка «Показания»
-   * ему поэтому не показывается вовсе — сводку ТО он открывает из строки «Техника» гаража и
-   * справочника (Р14в). Второе — чеки на автозапчасти (план чеков, Р4): держателем заказчик
-   * назвал службу, а не человека, поэтому право стоит здесь ролью, и набора полномочий у модуля
-   * нет.
+   * The service runs two things. The maintenance journal (Р14) comes as its own pair of rights,
+   * not through reading readings: the maintenance form must not depend on the readings module.
+   * Auto-part receipts (receipts plan, Р4): the customer named the service, not a person, so the
+   * right is given by role and the module has no grant set.
+   *
+   * Readings and vehicle requests came with the readings report (ADR 0241): the owner gave the book
+   * to the mechanics «in full», and the book carries both modules (`PERMISSION_REQUIRES` of
+   * `vehicleReadings.export`). So the service sees the garage's «Показания» tab and the «Заказ ТС»
+   * section read-only; it still neither corrects a reading nor accepts a day
+   * (`vehicleReadings.write` stays with those who run the fleet's day).
    */
   mechanic: [
     'directories.read',
@@ -1348,11 +1367,11 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'waybills.read',
     'drivers.read',
     ...VEHICLE_MAINTENANCE_PERMISSIONS,
-    // Чеки на автозапчасти (план чеков, Р4) — второе действие роли, и приходит оно ролью, а не
-    // набором полномочий: заказчик назвал механиков, а не человека поимённо. Менеджеру и
-    // диспетчеру права нет намеренно: акт обслуживания они правят, а расходы на запчасти ведёт
-    // служба главного механика.
+    // Auto-part receipts (receipts plan, Р4) come by role, not by a grant set: the customer named
+    // the mechanics, not a person. The dispatcher deliberately lacks them: the dispatcher corrects
+    // a maintenance act, while spending on parts is run by the chief mechanic's service.
     ...AUTO_PARTS_PERMISSIONS,
+    ...MECHANIC_READINGS_REPORT_PERMISSIONS,
   ],
 
   /*
@@ -1370,8 +1389,10 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'drivers.write',
     // Журнал ТО у обоих одинаковый: обслуживание ведёт служба, а не её глава (Р14).
     ...VEHICLE_MAINTENANCE_PERMISSIONS,
-    // Чеки на автозапчасти — по той же причине и тем же составом (план чеков, Р4).
+    // Auto-part receipts — for the same reason and with the same list (receipts plan, Р4).
     ...AUTO_PARTS_PERMISSIONS,
+    // The readings report with its two reads (ADR 0241), the same list as the mechanic's.
+    ...MECHANIC_READINGS_REPORT_PERMISSIONS,
   ],
 };
 

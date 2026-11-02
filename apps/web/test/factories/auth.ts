@@ -115,3 +115,23 @@ export function departmentUser(
 export function loginResponse(user: AuthUser = authUser()) {
   return { accessToken: `token-${user.id}`, user };
 }
+
+/**
+ * A garage account without readings: the mechanic's set as it was before ADR 0241 — garage,
+ * waybills, drivers, maintenance and receipts, without reading readings or vehicle requests and
+ * without the readings report. The mechanic roles hold readings now, so tests of «the garage
+ * without the readings right» take this account instead of the role alone.
+ */
+export function readingsBlindMechanic(overrides: Partial<AuthUser> = {}): AuthUser {
+  const hidden = new Set<string>([
+    'vehicleReadings.read',
+    'vehicleRequests.read',
+    'vehicleReadings.export',
+  ]);
+  const base = authUser({ role: 'mechanic' as Role });
+  return authUser({
+    role: 'mechanic' as Role,
+    permissions: base.permissions.filter((permission) => !hidden.has(permission)),
+    ...overrides,
+  });
+}

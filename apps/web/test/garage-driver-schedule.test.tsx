@@ -13,7 +13,7 @@ import {
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
-import { authUser } from './factories/auth';
+import { authUser, readingsBlindMechanic } from './factories/auth';
 import { list as listOf } from './factories/common';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { GaragePage } from '../src/pages/garage';
@@ -310,7 +310,7 @@ describe('гараж: график водителя', () => {
   });
 
   it('без права на показания окно открывается, а двери в приём нет', async () => {
-    renderPage({ user: authUser({ role: 'mechanic' }) });
+    renderPage({ user: readingsBlindMechanic() });
     fireEvent.click(within(await driverRow()).getByText('График'));
     const dialog = await scheduleWindow();
     await within(dialog).findByText('Р-12');

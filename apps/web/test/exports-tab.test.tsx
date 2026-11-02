@@ -83,16 +83,34 @@ beforeAll(() => {
   URL.revokeObjectURL = () => {};
 });
 
-describe('вкладка «Выгрузки» открывается любым из двух прав', () => {
-  for (const permission of ['vehicleReadings.export', 'analytics.export'] as const) {
-    it(`${permission}: вкладка есть`, async () => {
-      mockHttp({ 'GET /objects': () => json(list(OBJECTS)) });
-      renderWithUser(<AdministrationPage />, { user: authUser({ permissions: [permission] }) });
-      // Права независимы: у держателя одного из них это единственная вкладка страницы, и не
-      // покажи её страница — выданное право осталось бы без двери.
-      expect(await screen.findByRole('tab', { name: 'Выгрузки' })).toBeDefined();
+describe('вкладка «Выгрузки»', () => {
+  it('analytics.export: вкладка есть', async () => {
+    mockHttp({ 'GET /objects': () => json(list(OBJECTS)) });
+    renderWithUser(<AdministrationPage />, {
+      user: authUser({ permissions: ['analytics.export'] }),
     });
-  }
+    // The analytics right opens the section by itself: for its holder this is the page's only
+    // tab, and without it the granted right would have no door.
+    expect(await screen.findByRole('tab', { name: 'Выгрузки' })).toBeDefined();
+  });
+
+  /**
+   * The readings report's home is the garage header (ADR 0241), and its right is not in
+   * `ADMIN_PAGE_PERMISSIONS`: alone it opens no tab here, so managers and mechanics who hold it by
+   * role get no «Администрирование». With a right that admits the page, the tab is there.
+   */
+  it('vehicleReadings.export: только вместе с правом, пускающим на страницу', async () => {
+    mockHttp({ 'GET /objects': () => json(list(OBJECTS)) });
+    const { unmount } = renderWithUser(<AdministrationPage />, {
+      user: authUser({ permissions: ['vehicleReadings.export'] }),
+    });
+    expect(screen.queryByRole('tab', { name: 'Выгрузки' })).toBeNull();
+    unmount();
+    renderWithUser(<AdministrationPage />, {
+      user: authUser({ permissions: ['vehicleReadings.export', 'manuals.manage'] }),
+    });
+    expect(await screen.findByRole('tab', { name: 'Выгрузки' })).toBeDefined();
+  });
 });
 
 describe('реестр выгрузок', () => {

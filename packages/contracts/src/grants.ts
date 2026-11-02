@@ -918,12 +918,13 @@ export const PERMISSION_REQUIRES: Partial<Record<Permission, readonly Permission
    * состав набора инвариант нарушает, а субъект — нет.
    */
   /*
-   * The readings report of «Администрирование → Выгрузки» (ADR 0240, changing ADR 0180). Its rows
+   * The readings report of the garage header and «Выгрузки» (ADR 0240, ADR 0241). Its rows
    * are vehicle requests by day: request number, customer, approver, cargo, object and route. So
    * it requires reading both modules it carries: a grant with the export alone would hand the
    * whole fleet's readings, and every request of the period, to someone shown none of them on any
    * screen. The route also refuses a principal with a narrow area (`assertWholeOrganizationScope`):
    * the report is company-wide by construction, and cutting it by area is not what it is for.
+   * The roles that hold the right by their sets carry both reads with it (ADR 0241).
    */
   'vehicleReadings.export': ['vehicleReadings.read', 'vehicleRequests.read'],
   /*

@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
 import { shouldRefreshSectionTabQuery } from '@shared/config';
 import { useAuth } from '@entities/session';
+import { ADMIN_PAGE_PERMISSIONS } from '@technic/contracts';
 
 const UsersTab = lazy(() => import('./UsersTab').then((module) => ({ default: module.UsersTab })));
 const AccessTab = lazy(() =>
@@ -69,11 +70,12 @@ export function AdministrationPage() {
       ? [{ key: 'manuals', label: 'Руководства', children: <ManualsTab /> }]
       : []),
     // Operational exports share one tab (docs/analytics-summary-export-plan.md, R1); its own
-    // registry selects the workbook. The two grants are independent and neither belongs to
-    // role bundles, so either must open the tab; its registry decides which books are visible.
-    // Both belong to ADMIN_PAGE_PERMISSIONS and independently open the section, just like
-    // manuals.manage.
-    ...(can('vehicleReadings.export') || can('analytics.export')
+    // registry selects the workbook. analytics.export opens the section by itself, like
+    // manuals.manage. The readings report does not (ADR 0241): its home is the garage header and
+    // managers and mechanics hold it by role, so it shows here only to someone the page admits by
+    // another right — otherwise its right alone would open a page outside ADMIN_PAGE_PERMISSIONS.
+    ...(can('analytics.export') ||
+    (can('vehicleReadings.export') && ADMIN_PAGE_PERMISSIONS.some((permission) => can(permission)))
       ? [{ key: 'exports', label: 'Выгрузки', children: <ExportsTab /> }]
       : []),
   ];

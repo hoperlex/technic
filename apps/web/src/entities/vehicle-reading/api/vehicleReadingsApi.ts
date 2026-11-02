@@ -154,13 +154,12 @@ export const vehicleReadingsApi = {
   exportBook: (kind: ReadingExportKind, query: Query) =>
     apiDownload(`${BASE}/export`, 'Показания техники.xlsx', { query: { ...query, kind } }),
   /**
-   * Служебная книга администрирования (`docs/readings-admin-export-plan.md`): свод, детализация,
-   * сводная таблица и параметры одним файлом.
+   * The readings report (ADR 0240): work of equipment by request days, two sheets.
    *
-   * Отдельный метод, а не седьмой `kind` у соседа: у книги своё право (`vehicleReadings.export`),
-   * своя ручка и свой период — тот, что человек выбрал в форме, а не тот, что открыт на экране
-   * гаража. Склей их — и «kind, который виден не всем» пришлось бы объяснять и в окне выгрузки, и
-   * в схеме запроса.
+   * A method of its own, not a seventh `kind` of the neighbour: the book has its own right
+   * (`vehicleReadings.export`), its own route and its own period — the one picked in its form, not
+   * the one open on a garage screen. Merged, «a kind not everyone sees» would have to be explained
+   * both in the export window and in the query schema.
    */
   adminExport: (query: Query) =>
     apiDownload(`${BASE}/admin-export`, 'Показания автотранспорта.xlsx', { query }),

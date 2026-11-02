@@ -649,9 +649,10 @@ export const ADMIN_PAGE_PERMISSIONS = [
   'mailings.read',
   'directories.export',
   'manuals.manage',
-  // Выгрузка показаний живёт вкладкой «Администрирования» (план, Р1), и без строки здесь раздел не
-  // открылся бы тому, у кого из административных прав есть только она.
-  'vehicleReadings.export',
+  // The readings report (`vehicleReadings.export`) is deliberately absent: its home is the garage
+  // header (ADR 0241), and the manager and both mechanic roles hold it by role — listed here, it
+  // would give them «Администрирование» with a single tab. The book stays in «Выгрузки» for those
+  // the page admits by another right.
   // Сводная аналитика — вторая выгрузка той же вкладки (план, Р1): без строки здесь раздел не
   // открылся бы тому, у кого из административных прав есть только она.
   'analytics.export',

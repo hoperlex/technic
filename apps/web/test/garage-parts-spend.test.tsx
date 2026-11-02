@@ -10,7 +10,7 @@ import type {
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
-import { authUser } from './factories/auth';
+import { authUser, readingsBlindMechanic } from './factories/auth';
 import { emptyList } from './factories/common';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { VehiclePartsSpendBlock } from '../src/features/vehicle-parts-spend';
@@ -33,7 +33,7 @@ import { GaragePage } from '../src/pages/garage';
  * чеков ещё не завели, — одно и то же незнание, а ноль был бы утверждением.
  *
  * **Право — на гараж, а не на показания** (Р5): «сколько вложено в эту машину» спрашивает всякий,
- * кому виден гараж, — и у механика, которому одометр не виден вовсе, колонка стоит ровно такая же.
+ * кому виден гараж, — и у учётки без показаний, которой одометр не виден вовсе, колонка та же.
  *
  * **Обе цифры блока — из одного ответа** (Р16): «за период» и «всего» стоят рядом и читаются как
  * одно утверждение, а вторым запросом они стали бы парой снимков, снятых в разные моменты.
@@ -210,10 +210,10 @@ describe('гараж: колонка «Запчасти, ₽»', () => {
     expect(within(cells).queryByText('0,00 ₽')).toBeNull();
   });
 
-  it('стоит и у механика, которому показания не видны', async () => {
-    // Право на суммы — `garage.read` и только оно (Р5): механик читает их наравне с диспетчером,
-    // хотя цифр приборов не видит вовсе.
-    const http = renderPage({ user: authUser({ role: 'mechanic' }) });
+  it('стоит и у учётки, которой показания не видны', async () => {
+    // The amounts go by `garage.read` alone (Р5): an account without readings reads them as the
+    // dispatcher does, though it sees no counter at all.
+    const http = renderPage({ user: readingsBlindMechanic() });
 
     expect(await screen.findByText('Е646СК799')).toBeDefined();
     await waitFor(() => expect(http.countOf(SNAPSHOT)).toBe(1));

@@ -9,7 +9,7 @@ import type {
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
-import { authUser } from './factories/auth';
+import { authUser, readingsBlindMechanic } from './factories/auth';
 import { emptyList } from './factories/common';
 import { maintenanceSummary } from './factories/maintenance';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
@@ -301,9 +301,10 @@ describe('гараж: сводка ТО механика', () => {
   });
 
   it('механик видит ТО и не видит ни одометра, ни вкладки показаний', async () => {
-    // Единственное право роли — обслуживание (Р14): `vehicleReadings.read` открыл бы вместе с
-    // формой ТО приёмку, журналы, выгрузки и фотографии приборных панелей.
-    const http = renderPage({ rows: [FIRST], user: authUser({ role: 'mechanic' }) });
+    // Maintenance does not imply readings (Р14): an account with the maintenance pair but without
+    // `vehicleReadings.read` (the mechanic's set before ADR 0241) gets the form and nothing of the
+    // readings module.
+    const http = renderPage({ rows: [FIRST], user: readingsBlindMechanic() });
 
     expect(await screen.findByText('Е646СК799')).toBeDefined();
     await waitFor(() => expect(http.countOf(SNAPSHOT)).toBe(1));
@@ -320,7 +321,7 @@ describe('гараж: сводка ТО механика', () => {
   it('на телефоне сводка открывается пунктом действий строки', async () => {
     const http = renderPage({
       rows: [FIRST],
-      user: authUser({ role: 'mechanic' }),
+      user: readingsBlindMechanic(),
       viewport: MOBILE_VIEWPORT,
     });
     await waitFor(() => expect(http.countOf(SNAPSHOT)).toBe(1));

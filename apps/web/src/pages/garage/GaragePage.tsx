@@ -6,6 +6,7 @@ import { useSearchParams } from 'react-router';
 import { useIsMobile } from '@shared/lib';
 import { garageKeys } from '@entities/garage';
 import { useAuth } from '@entities/session';
+import { ReadingsReportButton } from '@features/readings-report-export';
 import { PageTabs } from '@shared/ui';
 import { readingsSub } from './readingsAddress';
 
@@ -163,6 +164,9 @@ export function GaragePage() {
         // this the day would come back from cache as it was before the neighbour's work.
         refreshQueryKey={garageKeys.root}
         items={items}
+        // The readings report for a period (ADR 0241) belongs to the section, not to a tab: its
+        // period is its own, unlike the day or the period the tabs show.
+        actions={can('vehicleReadings.export') ? <ReadingsReportButton /> : undefined}
       />
     </div>
   );

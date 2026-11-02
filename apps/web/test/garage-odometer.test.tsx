@@ -7,7 +7,7 @@ import type {
 } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
-import { authUser } from './factories/auth';
+import { authUser, readingsBlindMechanic } from './factories/auth';
 import { emptyList } from './factories/common';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { GaragePage } from '../src/pages/garage';
@@ -22,9 +22,10 @@ import { GaragePage } from '../src/pages/garage';
  * Дата рядом с числом — не подпись-украшение: одометр без неё читается как сегодняшний и врёт тем
  * сильнее, чем дольше машина стоит. Поэтому она здесь проверяется наравне с числом.
  *
- * Право проверяется двумя рендерами, а не подменой поля: механику гараж виден (`garage.read`), а
- * показания — нет, и сервер поля ему не присылает вовсе. Портал в этом случае обязан убрать
- * колонку целиком: столбец прочерков означал бы «показаний нет», то есть неправду про парк.
+ * The right is checked by two renders, not by a swapped field: a garage account without readings
+ * (the mechanic's set before ADR 0241) sees the garage (`garage.read`) but not readings, and the
+ * server does not send the field at all. The portal must then drop the column entirely: a column
+ * of dashes would mean «no readings», which is untrue about the fleet.
  */
 
 const ON_DATE = '2026-07-24';
@@ -134,9 +135,9 @@ describe('гараж: колонка одометра', () => {
   });
 
   it('без права на показания колонки нет вовсе', async () => {
-    // Механик: гараж ему положен, показания — нет (Р14), и сервер поля в строке не присылает.
+    // The garage without readings (Р14): the server does not send the field in the row.
     const rows = [vehicle({ id: 'v1', label: 'Е646СК799' })];
-    renderPage({ rows, user: authUser({ role: 'mechanic' }) });
+    renderPage({ rows, user: readingsBlindMechanic() });
 
     expect(await screen.findByText('Е646СК799')).toBeDefined();
     // Заголовков у колонки в разметке таблицы бывает два (видимый и мерный) — нет ни одного.

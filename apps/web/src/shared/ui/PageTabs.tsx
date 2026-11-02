@@ -17,13 +17,18 @@ interface Props extends Omit<TabsProps, 'activeKey'> {
   activeKey: string;
   /** Section query root: switching tabs refreshes its data without resetting tab state. */
   refreshQueryKey?: readonly unknown[];
+  /**
+   * Section-wide buttons at the strip's right end, after the active tab's widget (ADR 0241). They
+   * belong to the page, not to a tab, so they stay put while tabs switch and the widget moves left.
+   */
+  actions?: ReactNode;
 }
 
 /**
  * Page tabs with a widget slot beside the strip. The tab owns its counts because they depend
  * on its filters, but renders them above the toolbar so they do not take height from the table.
  */
-export function PageTabs({ activeKey, refreshQueryKey, onChange, ...rest }: Props) {
+export function PageTabs({ activeKey, refreshQueryKey, onChange, actions, ...rest }: Props) {
   // State, not a ref, lets the portal render when its container arrives. Keep the callback stable
   // or React would detach the container and reset the slot on every render.
   const [el, setEl] = useState<HTMLDivElement | null>(null);
@@ -48,7 +53,7 @@ export function PageTabs({ activeKey, refreshQueryKey, onChange, ...rest }: Prop
 
   /**
    * On phones the widget moves below the strip: at 360 px it cannot fit beside tabs, and the
-   * tabs need the full width to scroll (ADR 0030).
+   * tabs need the full width to scroll (ADR 0030). Section buttons go with it, at the row's end.
    */
   const slotProps: Partial<TabsProps> = isMobile
     ? {
@@ -56,11 +61,29 @@ export function PageTabs({ activeKey, refreshQueryKey, onChange, ...rest }: Prop
         renderTabBar: (tabBarProps, DefaultTabBar) => (
           <>
             <DefaultTabBar {...tabBarProps} />
-            <div ref={slotRef} className="mobile-tabs-slot" />
+            {actions ? (
+              <div className="mobile-tabs-slot-row">
+                <div ref={slotRef} className="mobile-tabs-slot" />
+                {actions}
+              </div>
+            ) : (
+              <div ref={slotRef} className="mobile-tabs-slot" />
+            )}
           </>
         ),
       }
-    : { tabBarExtraContent: { right: <div ref={slotRef} /> } };
+    : {
+        tabBarExtraContent: {
+          right: actions ? (
+            <div className="tabs-extra-row">
+              <div ref={slotRef} />
+              {actions}
+            </div>
+          ) : (
+            <div ref={slotRef} />
+          ),
+        },
+      };
 
   return (
     <SlotContext.Provider value={{ el, activeKey }}>
