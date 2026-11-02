@@ -71,6 +71,22 @@ const CUTOVER = '0136_route_trips.sql';
 /** Позиция роли внутри точки: заведена после ревью и едет отдельным обычным деплоем (§12б). */
 const ROLE_POSITIONS = '0146_route_role_positions.sql';
 
+/** The tables the `0136` teardown drops whole; whatever later migrations hung on them goes too. */
+const TEARDOWN_TABLES = [
+  'waybill_trips',
+  'vehicle_route_point_trips',
+  'vehicle_route_points',
+  'vehicle_request_trips',
+] as const;
+
+/**
+ * Later migrations that only ADD columns to the tables above. The teardown takes their columns with
+ * the table and the replay of `0136` does not bring them back, while their journal rows stay — so
+ * the copy is completed by running their files again after the replay. A migration that hangs
+ * anything else on these tables needs its own step: `assertTeardownTablesRestored` names it.
+ */
+const LATER_COLUMN_MIGRATIONS = ['0397_vehicle_request_trip_cargo_name.sql'] as const;
+
 /**
  * Действующие лица сценария — свои: автор заявок и водитель выданного листа.
  *
@@ -522,32 +538,134 @@ function expectedRelease(): { seq: number; version: string } {
   return { seq: Number(match[1]), version: match[2]! };
 }
 
+/** A foreign key from a surviving table into a table the teardown drops. */
+interface OutsideForeignKey {
+  table: string;
+  name: string;
+  definition: string;
+  columns: string[];
+}
+
 /**
- * Возврат копии за границу `0136` — тем же путём, каким её откатывал бы выкат.
- *
- * Прямым `psql -f teardown` откат не зовут: файл выполняется вне транзакции, и обрыв посередине
- * оставил бы схему полуразобранной, а тест после этого проверял бы не миграцию, а обломки
- * (протокол выката §7). Штатная команда делает teardown и снятие записи журнала одной транзакцией.
- *
- * Двух препятствий, которые здесь приходится обойти, в плане нет ни одного, и оба — находки:
- *
- * 1. **У `0146` teardown'а не существует**, и так задумано (§12б): позиция роли едет обычным
- *    деплоем, а обратный ход полагается только необратимому бандлу. Но снять `0136`, не сняв
- *    `0146`, нельзя: колонка `0146` живёт в таблице, которую teardown `0136` удаляет целиком, и
- *    запись `0146` осталась бы в журнале без объекта — повторный накат пропустил бы её, а колонки
- *    после него не было бы. Поэтому `0146` снимается здесь руками и **одной транзакцией**, как
- *    протокол требует от всякого снятия миграции.
- * 2. **Копия помнит прежний номер ADR.** В журнале выпусков стоит `0.1.18.0107`, а нынешний файл
- *    `0136` вставляет `0.1.18.0108`; teardown ищет строку выпуска по паре «`seq` + версия» и на
- *    расхождении отказывает целиком. Это ровно тот отказ, о котором §12б предупреждает словами
- *    «накатанный файл миграции неизменяем, правка ломает собственный откат», — и он уже случился:
- *    файл поправили после того, как его накатили на тестовую базу. На копии лечится приведением
- *    строки к тому, что вставит нынешний файл; в проде миграция не накатывалась, и строки нет вовсе.
+ * Foreign keys of later migrations that point INTO the dropped tables from outside (0389:
+ * `vehicle_reading_points.route_point_id`). The teardown is a file of its time and knows none of
+ * them, so `DROP TABLE` refuses while they stand. They are taken off for the rollback and put back
+ * after the replay; their columns are nulled first — that is what the keys' own `ON DELETE SET NULL`
+ * would do to the rows when the points go, and the replay gives the points new ids anyway. A key of
+ * any other delete rule would mean losing or keeping rows the migration never decided about, so it
+ * stops the file with its name instead.
  */
-async function rollbackBeforeCutover(db: pg.Client, copyUrl: string): Promise<void> {
-  const release = expectedRelease();
+async function detachOutsideForeignKeys(db: pg.Client): Promise<OutsideForeignKey[]> {
+  const { rows } = await db.query<OutsideForeignKey & { on_delete: string }>(
+    `SELECT c.conrelid::regclass::text AS table, c.conname AS name,
+            pg_get_constraintdef(c.oid) AS definition, c.confdeltype AS on_delete,
+            array(SELECT a.attname::text FROM pg_attribute a
+                   WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)) AS columns
+     FROM pg_constraint c
+     WHERE c.contype = 'f'
+       AND c.confrelid::regclass::text = ANY ($1)
+       AND NOT (c.conrelid::regclass::text = ANY ($1))`,
+    [TEARDOWN_TABLES],
+  );
+  for (const key of rows) {
+    if (key.on_delete !== 'n') {
+      throw new Error(
+        `${key.table}.${key.name} ссылается на таблицу, которую сносит откат ${CUTOVER}, ` +
+          `и не ON DELETE SET NULL — решите, что с его строками, прежде чем снимать ключ`,
+      );
+    }
+    await db.query(
+      `UPDATE ${key.table} SET ${key.columns.map((c) => `${c} = NULL`).join(', ')}`,
+    );
+    await db.query(`ALTER TABLE ${key.table} DROP CONSTRAINT ${key.name}`);
+  }
+  return rows.map(({ table, name, definition, columns }) => ({ table, name, definition, columns }));
+}
+
+/** Columns of the dropped tables, as one comparable list. */
+async function teardownTableColumns(db: pg.Client): Promise<string[]> {
+  const { rows } = await db.query<{ column: string }>(
+    `SELECT table_name || '.' || column_name AS column FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = ANY ($1)
+     ORDER BY table_name, column_name`,
+    [TEARDOWN_TABLES],
+  );
+  return rows.map((r) => r.column);
+}
+
+/**
+ * Put back what later migrations had on the dropped tables, after the replay of `0136`/`0146`:
+ * their columns (by running the files again) and the outside keys. One transaction, as any change
+ * of the copy's schema here.
+ */
+async function restoreLaterDependents(
+  db: pg.Client,
+  keys: readonly OutsideForeignKey[],
+): Promise<void> {
   await db.query('BEGIN');
   try {
+    for (const name of LATER_COLUMN_MIGRATIONS) await db.query(readMigration(name));
+    for (const key of keys) {
+      await db.query(`ALTER TABLE ${key.table} ADD CONSTRAINT ${key.name} ${key.definition}`);
+    }
+    await db.query('COMMIT');
+  } catch (e) {
+    await db.query('ROLLBACK');
+    throw e;
+  }
+}
+
+/**
+ * The copy after the replay must have the head's columns on the dropped tables. A later migration
+ * that added one and is missing from `LATER_COLUMN_MIGRATIONS` shows here by its column, instead of
+ * as a schema error deep inside the verifier.
+ */
+function assertTeardownTablesRestored(head: readonly string[], after: readonly string[]): void {
+  const missing = head.filter((c) => !after.includes(c));
+  if (missing.length > 0) {
+    throw new Error(
+      `После наката копии нет колонок ${missing.join(', ')}: их завела миграция позже ${CUTOVER} ` +
+        '— добавьте её в LATER_COLUMN_MIGRATIONS',
+    );
+  }
+}
+
+/**
+ * The copy is taken back past `0136` the way a rollout would take it: by the regular command.
+ *
+ * Not by `psql -f teardown`: the file runs outside a transaction, and a break in the middle would
+ * leave the schema half-dismantled, after which the test would check debris, not the migration
+ * (rollout protocol §7). The regular command runs the teardown and removes the journal row in one
+ * transaction.
+ *
+ * Three obstacles have to be cleared here, none of them in the plan, all of them findings:
+ *
+ * 1. **`0146` has no teardown**, by design (§12b): the role position ships with a regular deploy,
+ *    and only the irreversible bundle gets a way back. But `0136` cannot be taken off without
+ *    `0146`: its column lives in a table the `0136` teardown drops whole, and the `0146` row would
+ *    stay in the journal without its object — the replay would skip it and leave no column. So
+ *    `0146` is removed here by hand and **in one transaction**, as the protocol requires of any
+ *    removal of a migration.
+ * 2. **The copy remembers the old ADR number.** The release journal holds `0.1.18.0107`, while the
+ *    current `0136` file inserts `0.1.18.0108`; the teardown looks the release row up by "`seq` +
+ *    version" and refuses entirely on a mismatch. That is exactly the refusal §12b warns about
+ *    ("an applied migration file is immutable, an edit breaks its own rollback"), and it happened:
+ *    the file was edited after it had been applied to the test base. On the copy the row is brought
+ *    to what the current file inserts; in production the migration was never applied before the fix.
+ * 3. **Later migrations hang on the dropped tables** — an outside foreign key (0389) stops
+ *    `DROP TABLE`, and an added column (0397) would vanish with its table. The keys are taken off in
+ *    the same transaction (`detachOutsideForeignKeys`) and returned to the caller, which puts them
+ *    and the columns back after the replay (`restoreLaterDependents`).
+ */
+async function rollbackBeforeCutover(
+  db: pg.Client,
+  copyUrl: string,
+): Promise<OutsideForeignKey[]> {
+  const release = expectedRelease();
+  let outsideKeys: OutsideForeignKey[];
+  await db.query('BEGIN');
+  try {
+    outsideKeys = await detachOutsideForeignKeys(db);
     await db.query('ALTER TABLE vehicle_route_point_trips DROP COLUMN position');
     const removed = await db.query('DELETE FROM _migrations WHERE name = $1', [ROLE_POSITIONS]);
     if (removed.rowCount !== 1) {
@@ -573,6 +691,7 @@ async function rollbackBeforeCutover(db: pg.Client, copyUrl: string): Promise<vo
     env,
   });
   if (code !== 0) throw new Error(`db:cutover-down ${CUTOVER} отказал: ${out}`);
+  return outsideKeys;
 }
 
 // ── Сценарии «как в проде»: заявки в старой форме, собранный маршрут, выданный лист ───────────
@@ -887,7 +1006,8 @@ beforeAll(async () => {
   // До отката: скелеты соседей откат и роняют, а после него их уже не распознать — колонок ездок
   // в откаченной схеме нет.
   const skeletons = await dropSkeletonRequests(db, DB_URL);
-  await rollbackBeforeCutover(db, copyUrl);
+  const headColumns = await teardownTableColumns(db);
+  const outsideKeys = await rollbackBeforeCutover(db, copyUrl);
 
   const scenario = await seedLegacy(db);
   const detailsBefore = await detailsSnapshot(db);
@@ -936,6 +1056,8 @@ beforeAll(async () => {
   await db.query(`DELETE FROM vehicle_requests WHERE id = $1`, [orphanRequest.rows[0]!.id]);
 
   const applied = await applyMigrations(db);
+  await restoreLaterDependents(db, outsideKeys);
+  assertTeardownTablesRestored(headColumns, await teardownTableColumns(db));
 
   const { rows: trips } = await db.query<MigratedTrip>(`
     SELECT request_id::text AS request_id, num, from_location, to_location,
