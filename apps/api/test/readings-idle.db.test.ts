@@ -209,7 +209,12 @@ async function newDelivery(vehicleId: string, date: string, personId: string): P
   return route!.id;
 }
 
-/** A weekly ESM-2 from Monday to Sunday of the scenario week, for the given request. */
+/**
+ * A weekly ESM-2 from Monday to Sunday of the scenario week, for the given request.
+ *
+ * ЭСМ2-РАЗРЕЗ: the week only gives Monday–Wednesday an ESM-2 source; every assertion reads a day,
+ * a counter pair or the intake rows of a day, and segments after the read switch serve the same.
+ */
 async function newEsm2(vehicleId: string, personId: string, requestId: string): Promise<string> {
   waybillNo += 1;
   const [waybill] = await ctx.db
