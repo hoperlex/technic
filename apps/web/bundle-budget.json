@@ -64,11 +64,11 @@
       "tabs": [
         {
           "source": "src/pages/garage/GarageVehiclesTab.tsx",
-          "gzip": 619084
+          "gzip": 619088
         },
         {
           "source": "src/pages/garage/GarageDriversTab.tsx",
-          "gzip": 590395
+          "gzip": 590400
         },
         {
           "source": "src/pages/garage/ReadingsTab.tsx",
