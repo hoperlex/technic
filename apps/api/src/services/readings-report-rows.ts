@@ -6,6 +6,7 @@ import {
   shiftDaysOf,
   SUBMITTED_REPORT_STATES,
   waybillDisplayNumber,
+  type IdleReason,
   type ReadingKind,
   type ReadingSourceKind,
   type RequestRouteTimeDto,
@@ -76,6 +77,8 @@ export interface ReportReading {
   shiftOrder: number;
   kind: ReadingKind;
   noDataReason: string;
+  /** Set on «Не работал» (ADR 0244); the report names the category, not the driver's word. */
+  idleReason: IdleReason | null;
   personName: string;
   sourceKind: ReadingSourceKind;
   /** `Р-12` or `ЭСМ-2 № …`, as the registry and the cabinet name the source. */
@@ -181,6 +184,7 @@ type ReadingSqlRow = {
   shift_order: number;
   kind: ReadingKind;
   no_data_reason: string;
+  idle_reason: IdleReason | null;
   person_name: string | null;
   source_kind: ReadingSourceKind;
   route_id: string | null;
@@ -233,6 +237,7 @@ SELECT vr.id::text                AS reading_id,
        vr.shift_order             AS shift_order,
        vr.kind::text              AS kind,
        vr.no_data_reason          AS no_data_reason,
+       vr.idle_reason::text       AS idle_reason,
        p.full_name                AS person_name,
        i.source_kind::text        AS source_kind,
        i.route_id::text           AS route_id,
@@ -275,6 +280,7 @@ SELECT vr.id::text                AS reading_id,
     shiftOrder: row.shift_order,
     kind: row.kind,
     noDataReason: row.no_data_reason ?? '',
+    idleReason: row.idle_reason,
     personName: row.person_name ?? '',
     sourceKind: row.source_kind,
     sourceLabel: sourceLabelOf(row),
@@ -976,6 +982,7 @@ function stripReading(reading: PeriodReading): ReportReading {
     shiftOrder: reading.shiftOrder,
     kind: reading.kind,
     noDataReason: reading.noDataReason,
+    idleReason: reading.idleReason,
     personName: reading.personName,
     sourceKind: reading.sourceKind,
     sourceLabel: reading.sourceLabel,

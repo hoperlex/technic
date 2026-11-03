@@ -3,6 +3,7 @@ import {
   DRIVER_CLIENT_OUTDATED_CODE,
   DRIVER_DRAFT_FORMAT,
   DRIVER_SUBMIT_PAST_DAYS,
+  IDLE_READINGS_OPEN,
   driverReadingTimeIssues,
   readingTimeIssues,
   moscowDateKeyOf,
@@ -203,6 +204,22 @@ function assertNoDataIsStaffOnly(input: ReportSubmitInput, actor: ReadingsActor)
   throw err.forbidden(
     'Отметку «нет возможности снять показания» ставит диспетчер: оставьте эту строку незаполненной и отправьте остальные — её закроет диспетчер с причиной',
   );
+}
+
+/**
+ * «Не работал» is written only once release 1B opens it (`IDLE_READINGS_OPEN`, ADR 0244): until the
+ * client floor shuts out tabs that do not know the kind, such a tab would drop it from its draft and
+ * resend the hidden numbers as `values`. Refused for staff as well — the garage form of an old tab
+ * is the same risk — and before the transaction, so a refusal leaves no trace.
+ *
+ * Unlike `no_data`, `idle` is the driver's own answer once open (owner decision D3, changing Р4 of
+ * the cabinet plan): a shift without work is something only the driver knows on the day, and the
+ * garage sees every contradiction of it in the intake (`readings-intake.ts`).
+ */
+function assertIdleOpen(input: ReportSubmitInput): void {
+  if (IDLE_READINGS_OPEN) return;
+  if (!input.items.some((line) => line.reading.kind === 'idle')) return;
+  throw err.badRequest('Отметка «Не работал» пока недоступна: обновите страницу позже');
 }
 
 /** Подписи машин: правило одно на портал и сервер (`vehicleLabel`), а не своё в каждом модуле. */
@@ -666,6 +683,25 @@ function readingColumns(
       startedAt: null,
       endedAt: null,
       noDataReason: reading.noDataReason,
+      idleReason: null,
+      comment: reading.comment,
+    };
+  }
+  if (reading.kind === 'idle') {
+    // «Не работал» (ADR 0244) clears every number and time like `no_data`, and for the same reason
+    // "keep as is" does not apply: a shift without work has no tank level to keep. The chain
+    // rebuild of this transaction then drops the counter links and anomaly confirmations.
+    return {
+      kind: 'idle' as const,
+      odometerKm: null,
+      engineHours: null,
+      fuelStartLiters: null,
+      fuelFilledLiters: null,
+      fuelEndLiters: null,
+      startedAt: null,
+      endedAt: null,
+      noDataReason: '',
+      idleReason: reading.idleReason,
       comment: reading.comment,
     };
   }
@@ -681,6 +717,7 @@ function readingColumns(
     startedAt: times.startedAt,
     endedAt: times.endedAt,
     noDataReason: '',
+    idleReason: null,
     comment: reading.comment,
   };
 }
@@ -758,6 +795,7 @@ export async function submitReport(
   assertWriteWindow(date, actor);
   // До транзакции: отказ обязан не оставить следа — ни строки показаний, ни сдвинутой версии.
   assertNoDataIsStaffOnly(input, actor);
+  assertIdleOpen(input);
   const fingerprint = submitFingerprint(input);
   const entries: DayEntry[] = await loadDayEntries(personId, date);
 
@@ -1041,6 +1079,7 @@ function contentSnapshot(
     | 'fuelFilledLiters'
     | 'fuelEndLiters'
     | 'noDataReason'
+    | 'idleReason'
     | 'comment'
   >,
   times: ResolvedReadingTimes,
@@ -1053,6 +1092,8 @@ function contentSnapshot(
     fuelFilledLiters: row.fuelFilledLiters,
     fuelEndLiters: row.fuelEndLiters,
     noDataReason: row.noDataReason,
+    // A change of the idle reason is content like any other: it reopens acceptance (ADR 0244).
+    idleReason: row.idleReason,
     comment: row.comment,
     ...timesSnapshot(times),
   };
@@ -2005,6 +2046,7 @@ function readingDto(
     endedAt: clockTime(row.endedAt),
     points: points.map(pointDto),
     noDataReason: row.noDataReason,
+    idleReason: row.idleReason,
     comment: row.comment,
     source: row.source,
     recordedAt: row.recordedAt.toISOString(),

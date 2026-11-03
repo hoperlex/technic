@@ -72,10 +72,48 @@ export const SUBMITTED_REPORT_STATES: readonly DriverReportState[] = [
 /**
  * Вид показания. `no_data` — «работали, но снять нечего»: счётчик неисправен, машину увёл
  * сменщик, кабина опечатана. Это закрытие строки, а не пропуск, и причина у него обязательна.
+ *
+ * `idle` — «Не работал» (ADR 0244): the vehicle did not work this shift (a holiday, idle time on
+ * the site, a repair). It is the driver's answer, unlike `no_data`: it closes the expected shift,
+ * has zero engine hours and no fuel, and the counter chain passes through it — the next numbers
+ * are compared with the last real ones. Every reader of the kind must answer it on purpose: a
+ * fallback `kind !== 'no_data'` would treat it as numbers.
  */
-export const READING_KINDS = ['values', 'no_data'] as const;
+export const READING_KINDS = ['values', 'no_data', 'idle'] as const;
 export type ReadingKind = (typeof READING_KINDS)[number];
 export const readingKindSchema = z.enum(READING_KINDS);
+
+/**
+ * Whether the server accepts `idle` writes and the portal shows the switch (ADR 0244).
+ *
+ * `false` in release 1A, the compatibility release: every reader already understands `idle`, but no
+ * one can create it while tabs older than client contract 8 may still be open — such a tab drops
+ * the unknown kind and would resend the hidden numbers as `values`. Release 1B turns it on together
+ * with `REQUIRED_CLIENT_FLOOR = 8`, after the operator raised the floor (ADR 0226 order). One
+ * constant for both sides, so the switch cannot be shown where the server refuses it.
+ */
+export const IDLE_READINGS_OPEN = false;
+
+/** Why a shift was not worked; «Другое» requires its word in the comment (owner decision D4). */
+export const IDLE_REASONS = ['day_off', 'site_idle', 'repair', 'other'] as const;
+export type IdleReason = (typeof IDLE_REASONS)[number];
+export const idleReasonSchema = z.enum(IDLE_REASONS);
+
+export const idleReasonLabels: Record<IdleReason, string> = {
+  day_off: 'Выходной или праздник',
+  site_idle: 'Простой на объекте',
+  repair: 'Ремонт',
+  other: 'Другое',
+};
+
+/**
+ * How an `idle` reading reads in every table, export and report: «Не работал: <причина>», with the
+ * driver's own word for «Другое». One wording for the garage, the exports and the readings report.
+ */
+export function idleReadingText(reason: IdleReason | null, comment: string): string {
+  if (reason === 'other' && comment.trim() !== '') return `Не работал: ${comment.trim()}`;
+  return reason === null ? 'Не работал' : `Не работал: ${idleReasonLabels[reason].toLowerCase()}`;
+}
 
 /** Кто внёс: сам работник из кабинета или сотрудник за него (ADR 0103). */
 export const READING_SOURCES = ['driver', 'staff'] as const;
@@ -211,9 +249,27 @@ export const readingNoDataSchema = z.object({
   comment: z.string().trim().max(500).default(''),
 });
 
+/**
+ * «Не работал» (ADR 0244): no numbers and no times by construction — the whole-shift completeness
+ * of ADR 0237 does not apply to a shift that was not worked. «Другое» is not a reason without its
+ * word, and the word lives in the ordinary comment.
+ */
+export const readingIdleSchema = z
+  .object({
+    kind: z.literal('idle'),
+    idleReason: idleReasonSchema,
+    comment: z.string().trim().max(500).default(''),
+  })
+  .superRefine((v, ctx) => {
+    if (v.idleReason === 'other' && v.comment === '') {
+      ctx.addIssue({ code: 'custom', message: 'Напишите, почему не работали', path: ['comment'] });
+    }
+  });
+
 export const readingInputSchema = z.discriminatedUnion('kind', [
   readingValuesSchema,
   readingNoDataSchema,
+  readingIdleSchema,
 ]);
 export type ReadingInput = z.infer<typeof readingInputSchema>;
 
@@ -400,6 +456,8 @@ export interface VehicleReadingDto {
   /** Recorded stops of a route item in order; empty for an ESM-2 item, a relocation and `no_data`. */
   points: VehicleReadingPointDto[];
   noDataReason: string;
+  /** Set exactly on an `idle` reading (ADR 0244). */
+  idleReason: IdleReason | null;
   comment: string;
   source: ReadingSource;
   recordedAt: string;
@@ -820,7 +878,8 @@ export const READING_OVERDUE_DAYS = 3;
 export interface IntakeIssue {
   /**
    * Что случилось: `overdue`, `waiting`, `no_data`, `shift_tail_missing` (у показания нет ни
-   * одного числа конца смены), `anomaly_*` либо вид расхождения.
+   * одного числа конца смены), `anomaly_*`, `idle_*` (a «Не работал» contradicted by a trip, signed
+   * site hours or another reading with numbers, ADR 0244) либо вид расхождения.
    */
   code: string;
   level: 'yellow' | 'red';
@@ -930,6 +989,11 @@ export interface ReadingTotals {
   missingReadings: number;
   /** Ожидаемые смены (Р26в), а не строки отчёта: у неоткрытого дня строк нет, а смены были. */
   shifts: number;
+  /**
+   * Of `shifts`, closed as «Не работал» (ADR 0244): closed, never missing, and named apart so the
+   * data quality does not read a holiday as work.
+   */
+  idleShifts: number;
   /**
    * Качество данных (Р27): статистика оперативная, считает всё непринятое наравне с принятым.
    * Цифра рядом с итогом честнее предупреждения мелким шрифтом — она называет, сколько именно.

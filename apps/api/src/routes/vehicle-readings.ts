@@ -27,6 +27,7 @@ import {
   resolveDiscrepancy,
   submitReport,
 } from '../services/readings';
+import { idleContradictedReports } from '../services/readings-idle';
 
 /**
  * Показания техники со стороны портала (ADR 0103): приёмка дня, правка за водителя, разбор
@@ -153,7 +154,19 @@ export default async function vehicleReadingsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const accepted: string[] = [];
       const failed: ReportAcceptFailureDto[] = [];
+      // A contradicted «Не работал» is yellow (ADR 0244): singly acceptable, never in a batch. Asked
+      // now, not trusted from the page — a site may have signed hours since it was drawn.
+      const contradicted = await idleContradictedReports(req.body.reports.map((r) => r.id));
       for (const { id, version } of req.body.reports) {
+        if (contradicted.has(id)) {
+          failed.push({
+            id,
+            code: 'blocked',
+            reason:
+              'Отчёт принять пакетом нельзя: отметке «Не работал» есть противоречие — примите его отдельно',
+          });
+          continue;
+        }
         try {
           await acceptReport(id, version, p.id);
           accepted.push(id);

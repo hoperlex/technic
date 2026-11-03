@@ -5,6 +5,7 @@ import {
   formatVehicleRouteNumber,
   maintenanceStateLabels,
   type ReadingAnomaly,
+  idleReadingText,
   readingAnomalyLabels,
   type ReadingExportKind,
   readingExportKindLabels,
@@ -301,6 +302,7 @@ async function loadJournalRows(from: string, to: string, vehicleId: string | nul
       fuelStartLiters: vehicleReadings.fuelStartLiters,
       fuelEndLiters: vehicleReadings.fuelEndLiters,
       noDataReason: vehicleReadings.noDataReason,
+      idleReason: vehicleReadings.idleReason,
       comment: vehicleReadings.comment,
       source: vehicleReadings.source,
       odometerAnomaly: vehicleReadings.odometerAnomaly,
@@ -393,6 +395,8 @@ function readingStateText(row: JournalRow): string {
   if (row.kind === 'no_data') {
     return `нет данных${row.noDataReason ? `: ${row.noDataReason}` : ''}`;
   }
+  // «Не работал: <причина>» (ADR 0244) — the same words as the garage and the readings report.
+  if (row.kind === 'idle') return idleReadingText(row.idleReason, row.comment ?? '');
   const who = row.source === 'staff' ? 'внесено персоналом' : 'передано водителем';
   return row.comment ? `${who} · ${row.comment}` : who;
 }

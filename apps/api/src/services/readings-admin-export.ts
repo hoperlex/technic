@@ -1,6 +1,7 @@
 import {
   formatNameWithInitials,
   formatVehicleRequestNumber,
+  idleReadingText,
   rateForWorkUnit,
   type VehicleWorkUnit,
 } from '@technic/contracts';
@@ -215,6 +216,14 @@ function noDataMarks(row: ReportRow): string[] {
   return [...new Set(reasons)].map((reason) => `нет данных: ${reason}`);
 }
 
+/** «Не работал: <причина>» of the row's idle shifts (ADR 0244), once per category. */
+function idleMarks(row: ReportRow): string[] {
+  const marks = row.readings
+    .filter((reading) => reading.kind === 'idle')
+    .map((reading) => idleReadingText(reading.idleReason, ''));
+  return [...new Set(marks)];
+}
+
 function hasAnyReading(row: ReportRow): boolean {
   return row.readings.length > 0 || row.sharedRoutes.length > 0;
 }
@@ -276,6 +285,7 @@ function ownLine(row: ReportRow, index: number, sheetRow: number): OwnLine {
     ...commonMarks(row),
     hasAnyReading(row) ? '' : 'показания не сданы',
     ...noDataMarks(row),
+    ...idleMarks(row),
     broken ? `начало от ${shortDay(broken)}` : '',
     row.readings.some((reading) => reading.engineHoursReset) ? 'сброс счётчика' : '',
     signed !== null && (typeof hours !== 'number' || Math.abs(hours - signed) >= 0.05)

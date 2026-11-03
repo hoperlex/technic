@@ -10,6 +10,8 @@ import {
   type GarageDriverShiftDto,
   monthRange,
   moscowDateKeyOf,
+  idleReadingText,
+  type IdleReason,
   type ReadingKind,
   vehicleLabel,
   type VehicleOwnership,
@@ -60,6 +62,7 @@ type ShiftSqlRow = {
   report_state: DriverReportState | null;
   reading_kind: ReadingKind | null;
   no_data_reason: string | null;
+  idle_reason: IdleReason | null;
 };
 
 /**
@@ -90,7 +93,8 @@ SELECT 'route'::text                AS source,
        rep.id                       AS report_id,
        rep.state::text              AS report_state,
        rd.kind::text                AS reading_kind,
-       rd.no_data_reason
+       rd.no_data_reason,
+       rd.idle_reason::text         AS idle_reason
   FROM vehicle_routes vr
   /* The filter guarantees exactly one live waybill on this driver: one per route by index. */
   JOIN LATERAL (SELECT sw.id, sw.form_code, sw.number, sw.series_id
@@ -116,7 +120,7 @@ SELECT 'route'::text                AS source,
 UNION ALL
 SELECT 'esm2'::text, NULL, NULL, gs.day::date::text, w.vehicle_id,
        w.id, w.form_code::text, w.number, ws.prefix, ws.number_width,
-       rep.id, rep.state::text, rd.kind::text, rd.no_data_reason
+       rep.id, rep.state::text, rd.kind::text, rd.no_data_reason, rd.idle_reason::text
   FROM waybills w
   JOIN waybill_series ws ON ws.id = w.series_id
   /*
@@ -143,7 +147,7 @@ SELECT 'esm2'::text, NULL, NULL, gs.day::date::text, w.vehicle_id,
    AND NOT ${restDayExemptSql({ day: sql`gs.day::date`, routeId: sql`NULL`, waybillId: sql`w.id` })}
 UNION ALL
 SELECT 'no_paper'::text, vr.id, vr.num, vr.route_date::text, vr.vehicle_id,
-       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
   FROM vehicle_routes vr
  WHERE vr.driver_person_id = ${personId}::uuid
    AND vr.route_date BETWEEN ${from}::date AND ${to}::date
@@ -326,9 +330,7 @@ export async function loadDriverSchedule(
       vehicleLabel: vehicleInfo.get(row.vehicle_id)?.label ?? '',
       readingStatus,
       reportId: row.source === 'no_paper' ? null : row.report_id,
-      ...(options.canReadReadings
-        ? { noDataReason: readingStatus === 'no_data' ? (row.no_data_reason ?? '') : null }
-        : {}),
+      ...(options.canReadReadings ? { noDataReason: reasonOf(readingStatus, row) } : {}),
       order: row.route_num ?? row.waybill_number ?? 0,
     };
   });
@@ -373,4 +375,15 @@ export async function loadDriverSchedule(
     shifts: ordered,
     summary: driverScheduleSummary(ordered.map((s) => s.readingStatus)),
   };
+}
+
+/**
+ * The answer a closed shift carries in the month: the dispatcher's `no_data` reason, or the
+ * «Не работал» reason (ADR 0244) without the driver's free word — the schedule names the category,
+ * the intake shows the rest.
+ */
+function reasonOf(status: string, row: ShiftSqlRow): string | null {
+  if (status === 'no_data') return row.no_data_reason ?? '';
+  if (status === 'idle') return idleReadingText(row.idle_reason, '');
+  return null;
 }

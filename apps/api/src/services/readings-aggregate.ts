@@ -15,6 +15,7 @@ import {
   EXPECTED_POINTS_CTE,
   EXPECTED_ROUTE_FILTER,
   expectedRelationCte,
+  idleClosedSql,
   restDayExemptSql,
 } from './readings-expected';
 import {
@@ -156,6 +157,7 @@ type AggregateRow = {
   row_gaps: number;
   missing_readings: number;
   shifts: number;
+  idle_shifts: number;
   unaccepted_shifts: number;
   /** Сверка: суммы приходят строками (`numeric`), счётчики — числами. */
   fuel_spent_liters: string | null;
@@ -250,7 +252,8 @@ shift_facts AS (
             * проекция чисел по снимочной координате: разрыв принадлежит той строке, в которой он
             * случился, а не сегодняшнему виду её источника.
             */
-           (p.kind IS DISTINCT FROM 'values'
+           /* An aligned «Не работал» breaks nothing: the vehicle stood (ADR 0244). */
+           ((p.kind IS DISTINCT FROM 'values' AND NOT (p.kind = 'idle' AND p.aligned))
             OR coalesce(p.odometer_anomaly = 'counter_reset', false)
             OR coalesce(p.engine_hours_anomaly = 'counter_reset', false)) AS row_gap,
            /*
@@ -352,6 +355,7 @@ observed_metrics AS (
            c.row_gap,
            false AS missing,
            false AS shift,
+           false AS idle,
            false AS unaccepted,
            /*
             * Расход сверяемых смен — ровно то, из чего посчитана норма рядом (Р9а). Смена, не
@@ -395,6 +399,11 @@ expected_quality AS (
            (NOT p.aligned OR p.reading_id IS NULL OR p.kind = 'no_data') AS missing,
            true          AS shift,
            /*
+            * Closed as «Не работал» (ADR 0244): not missing (the line above), and counted apart so
+            * the data quality does not read a holiday as work. Only an aligned one closes the shift.
+            */
+           (p.aligned AND p.kind = 'idle') AS idle,
+           /*
             * Непринятая смена (Р27). IS DISTINCT FROM ловит и неоткрытый день: отчёта нет вовсе,
             * состояние пустое — ровно та строка, которую сводка по строкам отчёта теряла.
             */
@@ -423,6 +432,7 @@ totals AS (
            (count(*) FILTER (WHERE u.row_gap))::int             AS row_gaps,
            (count(*) FILTER (WHERE u.missing))::int             AS missing_readings,
            (count(*) FILTER (WHERE u.shift))::int               AS shifts,
+           (count(*) FILTER (WHERE u.idle))::int                AS idle_shifts,
            (count(*) FILTER (WHERE u.unaccepted))::int          AS unaccepted_shifts,
            /* Сверка с нормой — четыре аддитивных числа (Р12а), из которых считается отклонение. */
            sum(u.fuel_spent_verified)                           AS fuel_spent_liters,
@@ -489,6 +499,7 @@ function monthOf(row: AggregateRow): ReadingMonthRow {
     engineHoursGaps: row.engine_hours_gaps,
     missingReadings: row.missing_readings,
     shifts: row.shifts,
+    idleShifts: row.idle_shifts,
     unacceptedShifts: row.unaccepted_shifts,
   };
 }
@@ -513,6 +524,7 @@ function sumMonths(months: readonly ReadingMonthRow[]): ReadingTotals {
     engineHoursGaps: 0,
     missingReadings: 0,
     shifts: 0,
+    idleShifts: 0,
     unacceptedShifts: 0,
   };
   for (const month of months) {
@@ -529,6 +541,7 @@ function sumMonths(months: readonly ReadingMonthRow[]): ReadingTotals {
     total.engineHoursGaps += month.engineHoursGaps;
     total.missingReadings += month.missingReadings;
     total.shifts += month.shifts;
+    total.idleShifts += month.idleShifts;
     total.unacceptedShifts += month.unacceptedShifts;
   }
   total.engineHours = total.engineHours === null ? null : round(total.engineHours, 1);
@@ -775,10 +788,11 @@ export async function loadLastOdometers(
  *
  * Машина без единой ожидаемой смены в периоде в ответе отсутствует — это не ноль, а «не ждали».
  *
- * A rest-day shift without a reading (ADR 0242) is not expected here either. For a weekly sheet
- * only its last day can be one — the sheet ends on Sunday by construction (Р34) and Saturday is a
- * working day — so the last expected day steps back by one, and a sheet that is that Sunday alone
- * drops out.
+ * A rest-day shift without a reading (ADR 0242) is not expected here either, and neither is a shift
+ * closed as «Не работал» (ADR 0244): it closes the work expectation without a numerical snapshot,
+ * so trailing idle days — a long holiday — must not raise `lowerBound`. A weekly sheet is therefore
+ * laid out by day after all (at most the period's intersection with the sheet), and the last day
+ * that is neither exempt nor closed idle answers. A misaligned or missing shift still counts.
  */
 export async function loadLastExpectedShiftDays(
   vehicleIds: readonly string[],
@@ -802,20 +816,32 @@ export async function loadLastExpectedShiftDays(
                AND vr.route_date BETWEEN ${from}::date AND ${to}::date
                AND ${EXPECTED_ROUTE_FILTER}
                AND NOT ${restDayExemptSql({ day: sql`vr.route_date`, routeId: sql`vr.id`, waybillId: sql`NULL` })}
+               AND NOT ${idleClosedSql({
+                 day: sql`vr.route_date`,
+                 vehicle: sql`vr.vehicle_id`,
+                 person: sql`vr.driver_person_id`,
+                 routeId: sql`vr.id`,
+                 waybillId: sql`NULL`,
+               })}
             UNION ALL
             /* День действия листа, а не выезда (Р34): в неделю с двумя простоями ждут всю неделю. */
-            SELECT w.vehicle_id, ld.day
+            SELECT w.vehicle_id, gs.day::date AS day
               FROM waybills w
-             CROSS JOIN LATERAL (SELECT least(w.period_to, ${to}::date) AS day) edge
-             CROSS JOIN LATERAL (
-                     SELECT CASE WHEN ${restDayExemptSql({ day: sql`edge.day`, routeId: sql`NULL`, waybillId: sql`w.id` })}
-                                 THEN edge.day - 1
-                                 ELSE edge.day END AS day) ld
+             CROSS JOIN LATERAL generate_series(greatest(w.period_from, ${from}::date)::timestamp,
+                                                least(w.period_to, ${to}::date)::timestamp,
+                                                interval '1 day') AS gs(day)
              WHERE w.vehicle_id IN (${list})
                AND ${EXPECTED_ESM2_FILTER}
                AND w.period_from <= ${to}::date
                AND w.period_to >= ${from}::date
-               AND ld.day >= greatest(w.period_from, ${from}::date)) t
+               AND NOT ${restDayExemptSql({ day: sql`gs.day::date`, routeId: sql`NULL`, waybillId: sql`w.id` })}
+               AND NOT ${idleClosedSql({
+                 day: sql`gs.day::date`,
+                 vehicle: sql`w.vehicle_id`,
+                 person: sql`w.driver_person_id`,
+                 routeId: sql`NULL`,
+                 waybillId: sql`w.id`,
+               })}) t
      GROUP BY vehicle_id`);
   for (const row of result.rows) found.set(row.vehicle_id, row.last_day);
   return found;

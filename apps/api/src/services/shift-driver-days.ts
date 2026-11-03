@@ -10,6 +10,7 @@ import {
   type DriverDayIssue,
   type DriverReportState,
   type ReadingAnomaly,
+  type IdleReason,
   type ReadingKind,
   type ReadingSourceKind,
   type ReadingTimes,
@@ -86,6 +87,7 @@ export interface DriverShiftReading {
   continuous: boolean;
   fuelFilledLiters: number | null;
   noDataReason: string;
+  idleReason: IdleReason | null;
   comment: string;
   discrepancies: { kind: DiscrepancyKind; resolved: boolean }[];
   /**
@@ -115,6 +117,9 @@ function tenthsOf(value: number): number {
 }
 
 function readingHours(r: DriverShiftReading): number | null {
+  // A shift that was not worked (ADR 0244) has zero hours by its meaning, not by a delta: its
+  // counters are empty, and the next numbers are compared with the last real ones.
+  if (r.kind === 'idle') return 0;
   if (r.kind !== 'values' || r.engineHours === null || r.previousEngineHours === null) return null;
   if (r.engineHoursAnomaly === 'counter_reset') return null;
   return (tenthsOf(r.engineHours) - tenthsOf(r.previousEngineHours)) / 10;
@@ -124,6 +129,15 @@ function readingHours(r: DriverShiftReading): number | null {
 function readingIssues(r: DriverShiftReading): DriverDayIssue[] {
   if (r.kind === 'no_data') return ['no_data'];
   const issues: DriverDayIssue[] = [];
+  // «Не работал» has no counter to miss, no first snapshot and no pair to break (ADR 0244); what
+  // it keeps is the source guard — a reading at a coordinate its source no longer names is not
+  // this request day's answer, idle or not.
+  if (r.kind === 'idle') {
+    if (r.discrepancies.some((d) => !d.resolved && BLOCKING_DISCREPANCIES.has(d.kind))) {
+      issues.push('discrepancy');
+    }
+    return issues;
+  }
   if (r.engineHours === null) issues.push('missing_engine_hours');
   else if (r.engineHoursAnomaly === 'counter_reset') issues.push('counter_reset');
   else if (r.previousId === null || r.previousEngineHours === null) issues.push('first_snapshot');
@@ -189,6 +203,8 @@ export function driverShiftDayOf(
     const hours = readingHours(r);
     if (hours !== null) hoursTenths = (hoursTenths ?? 0) + tenthsOf(hours);
     if (r.kind === 'values') refuelTenths = (refuelTenths ?? 0) + tenthsOf(r.fuelFilledLiters ?? 0);
+    // An idle shift took no fuel: it says «0», so an all-idle day is not "refuel unknown".
+    if (r.kind === 'idle') refuelTenths = refuelTenths ?? 0;
     if (!r.continuous && r.previousDate !== null) gaps.push(r.previousDate);
   }
   const since = gaps.length === 0 ? null : gaps.sort()[0]!;
@@ -257,9 +273,10 @@ export function driverDiagnosticsDto(day: DriverShiftDay): ShiftDriverDiagnostic
       sourceLabel: r.sourceLabel,
       kind: r.kind,
       machineHours: readingHours(r),
-      refuelLiters: r.kind === 'values' ? (r.fuelFilledLiters ?? 0) : null,
+      refuelLiters: r.kind === 'values' ? (r.fuelFilledLiters ?? 0) : r.kind === 'idle' ? 0 : null,
       previousDate: r.previousDate,
       noDataReason: r.noDataReason,
+      idleReason: r.idleReason,
       comment: r.comment,
       discrepancies: r.discrepancies,
     })),
@@ -284,6 +301,7 @@ const readingColumns = {
   engineHoursAnomaly: vehicleReadings.engineHoursAnomaly,
   fuelFilledLiters: vehicleReadings.fuelFilledLiters,
   noDataReason: vehicleReadings.noDataReason,
+  idleReason: vehicleReadings.idleReason,
   comment: vehicleReadings.comment,
   startedAt: vehicleReadings.startedAt,
   endedAt: vehicleReadings.endedAt,
@@ -406,6 +424,7 @@ interface ReadingRow {
   engineHoursAnomaly: ReadingAnomaly | null;
   fuelFilledLiters: string | null;
   noDataReason: string;
+  idleReason: IdleReason | null;
   comment: string;
   startedAt: string | null;
   endedAt: string | null;
@@ -507,6 +526,7 @@ async function readingsByRequestDay(
       continuous: true,
       fuelFilledLiters: numberOrNull(row.fuelFilledLiters),
       noDataReason: row.noDataReason,
+      idleReason: row.idleReason,
       comment: row.comment,
       discrepancies: discrepanciesByItem.get(row.itemId) ?? [],
       times: span

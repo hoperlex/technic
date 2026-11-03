@@ -9,7 +9,12 @@ import {
 } from './time';
 import type { ReadingSourceKind } from './driver-cabinet';
 import type { DriverDayTimeIssue, ShiftInterval } from './reading-times';
-import type { DiscrepancyKind, DriverReportState, ReadingKind } from './vehicle-readings';
+import type {
+  DiscrepancyKind,
+  DriverReportState,
+  IdleReason,
+  ReadingKind,
+} from './vehicle-readings';
 import type { VehicleOwnership } from './vehicles';
 
 // ── Подтверждение смен по заказу спецтехники ──
@@ -161,6 +166,8 @@ export interface ShiftDriverReadingDto {
   /** Day of the engine-hour predecessor; `null` — the first snapshot of the vehicle. */
   previousDate: string | null;
   noDataReason: string;
+  /** Set on «Не работал» (ADR 0244); private like the comment — this block is behind the right. */
+  idleReason: IdleReason | null;
   comment: string;
   discrepancies: { kind: DiscrepancyKind; resolved: boolean }[];
 }

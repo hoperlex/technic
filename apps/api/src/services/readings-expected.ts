@@ -54,7 +54,13 @@ const ROUTE_JOIN_DATE = sql`DATE '-infinity'`;
  * the vehicle and the day of the route. Every reader names it so, `readings-stats.ts` included, where
  * the alias is set by `alias(vehicleRoutes, 'vr')` for this fragment.
  */
-export const EXPECTED_ROUTE_FILTER = sql`
+/**
+ * The part of `EXPECTED_ROUTE_FILTER` that makes a route a task at all — a driver, his valid paper
+ * and a live composition — without the ESM-2 suppression. The «Не работал» checks of the intake ask
+ * it for the routes an ESM-2 suppresses (`readings-idle.ts`): such a route is still a real task of
+ * that day, only its reading is asked for by the weekly waybill.
+ */
+export const ROUTE_TASK_FILTER = sql`
        vr.driver_person_id IS NOT NULL
        /*
         * A valid waybill is required, and for THIS driver: the paper is personal, and a route
@@ -77,7 +83,10 @@ export const EXPECTED_ROUTE_FILTER = sql`
                          FROM vehicle_route_requests rr
                          JOIN vehicle_requests q ON q.id = rr.request_id
                         WHERE rr.route_id = vr.id
-                          AND ${servedRequestSql('q')}))
+                          AND ${servedRequestSql('q')}))`;
+
+export const EXPECTED_ROUTE_FILTER = sql`
+       ${ROUTE_TASK_FILTER}
        /*
         * Two papers for a day, one shift. For a special-equipment request on a site the portal
         * issues both the weekly ESM-2 and the daily 4-П for the same day of the same vehicle
@@ -145,13 +154,24 @@ export function restDayShiftSql(day: SQL, routeId: SQL): SQL {
   return sql`(extract(isodow FROM ${day}) = 7
        AND NOT EXISTS (SELECT 1 FROM vehicle_routes rd_vr
                         WHERE rd_vr.id = ${routeId}
-                          AND (rd_vr.purpose <> 'freight'
-                               OR EXISTS (SELECT 1
-                                            FROM vehicle_route_requests rd_rr
-                                            JOIN vehicle_requests rd_q ON rd_q.id = rd_rr.request_id
-                                           WHERE rd_rr.route_id = rd_vr.id
-                                             AND rd_rr.work_date IS NULL
-                                             AND ${servedRequestSql('rd_q')}))))`;
+                          AND ${routeHasTripSql('rd_vr')}))`;
+}
+
+/**
+ * Whether a route carries a trip of its own: a relocation, or a served freight row (`work_date`
+ * empty) — a task for that very day, unlike a day of site work. One rule for the rest day of
+ * ADR 0242 and the «Не работал» contradiction of ADR 0244 («назначен рейс»); `route` is the alias of
+ * the `vehicle_routes` row. Its subquery aliases are prefixed so that it nests in any reader.
+ */
+export function routeHasTripSql(route: string): SQL {
+  const r = sql.raw(route);
+  return sql`(${r}.purpose <> 'freight'
+         OR EXISTS (SELECT 1
+                      FROM vehicle_route_requests trip_rr
+                      JOIN vehicle_requests trip_q ON trip_q.id = trip_rr.request_id
+                     WHERE trip_rr.route_id = ${r}.id
+                       AND trip_rr.work_date IS NULL
+                       AND ${servedRequestSql('trip_q')}))`;
 }
 
 /**
@@ -173,6 +193,33 @@ export function restDayExemptSql(source: { day: SQL; routeId: SQL; waybillId: SQ
                         WHERE rd_i.route_id = ${source.routeId}
                            OR (rd_i.waybill_id = ${source.waybillId}
                                AND rd_i.report_date = ${source.day})))`;
+}
+
+/**
+ * Whether the shift of a source on a day was closed as «Не работал» (ADR 0244) — ALIGNED: a reading
+ * `idle` in a non-voided report of the person, vehicle and day the source names today. Only such a
+ * reading closes the work expectation without a numerical snapshot; one left at an old coordinate
+ * after a reassignment closes nothing of what the source asks now. The relation answers the same
+ * question by its `aligned` mark; this is the form for readers that walk the sources themselves
+ * (the maintenance tail). A route is found by its id, a weekly waybill by its id and day.
+ */
+export function idleClosedSql(source: {
+  day: SQL;
+  vehicle: SQL;
+  person: SQL;
+  routeId: SQL;
+  waybillId: SQL;
+}): SQL {
+  return sql`EXISTS (SELECT 1
+                  FROM driver_daily_report_items ic_i
+                  JOIN driver_daily_reports ic_rep
+                    ON ic_rep.id = ic_i.report_id AND ic_rep.state <> 'voided'
+                  JOIN vehicle_readings ic_v ON ic_v.item_id = ic_i.id AND ic_v.kind = 'idle'
+                 WHERE (ic_i.route_id = ${source.routeId}
+                        OR (ic_i.waybill_id = ${source.waybillId} AND ic_i.report_date = ${source.day}))
+                   AND ic_rep.person_id = ${source.person}
+                   AND ic_i.vehicle_id = ${source.vehicle}
+                   AND ic_i.report_date = ${source.day})`;
 }
 
 /**
@@ -440,6 +487,11 @@ const PAIR_COUNTER_COLUMN: Record<PairCounter, SQL> = {
  * asymmetry the plan names: an unsubmitted second shift of the same day breaks the pair, a second
  * shift of the predecessor's day does not; an expectation has no shift position.
  *
+ * A shift closed as «Не работал» (`idle`, ADR 0244) is transparent to the pair when it is ALIGNED
+ * with its live source and day: the vehicle stood, so the difference across it is the work of the
+ * shifts on its ends. A misaligned one stays a gap like any shift without numbers — what it closes
+ * is not the shift the expectation asks about.
+ *
  * Strictness depends on the document (Р13б): a route's day of expectation means work, a weekly
  * ESM-2's means only that the waybill is in force, so it breaks only on a day whose report was
  * opened without numbers. Otherwise all the machinery on weekly waybills — everything normed in
@@ -454,8 +506,9 @@ export function counterPairBrokenSql(
                 WHERE q.exp_vehicle = ${pair.vehicle}
                   AND q.exp_date > ${pair.previousDate}
                   AND q.exp_date <= ${pair.date}
-                  AND (NOT q.aligned OR q.reading_id IS NULL OR q.kind = 'no_data'
-                       OR ${PAIR_COUNTER_COLUMN[counter]} IS NULL)
+                  AND (NOT q.aligned OR q.reading_id IS NULL
+                       OR (q.kind <> 'idle'
+                           AND (q.kind = 'no_data' OR ${PAIR_COUNTER_COLUMN[counter]} IS NULL)))
                   AND (q.source_kind = 'route' OR q.exp_report_id IS NOT NULL)
            )`;
 }

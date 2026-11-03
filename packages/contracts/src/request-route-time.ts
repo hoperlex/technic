@@ -18,6 +18,8 @@ import type { DriverReportState, ReadingKind } from './vehicle-readings';
  *
  * - `no_readings` — no submitted reading of the request's route yet;
  * - `no_data` — the shift was closed without values (`no_data`), so nothing was timed;
+ * - `idle` — the driver closed the trip's shift as «Не работал» (ADR 0244): the trip did not happen
+ *   by his word, and the garage sorts the contradiction out — no time is proposed meanwhile;
  * - `no_times` — a reading without stop times: recorded before times existed (`v2`) or entered by
  *   staff without them (D5);
  * - `incomplete` — the stops are timed partly: an interim reading, the evening not submitted yet;
@@ -29,6 +31,7 @@ import type { DriverReportState, ReadingKind } from './vehicle-readings';
 export const ROUTE_TIME_ISSUES = [
   'no_readings',
   'no_data',
+  'idle',
   'no_times',
   'incomplete',
   'order',
@@ -39,6 +42,7 @@ export type RouteTimeIssue = (typeof ROUTE_TIME_ISSUES)[number];
 export const routeTimeIssueLabels: Record<RouteTimeIssue, string> = {
   no_readings: 'водитель ещё не сдал показания по рейсу',
   no_data: 'смена рейса закрыта без показаний',
+  idle: 'водитель отметил смену рейса «Не работал»',
   no_times: 'в показаниях рейса нет времени по точкам',
   incomplete: 'время по точкам записано не полностью',
   order: 'время по точкам идёт не по порядку',

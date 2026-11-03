@@ -43,6 +43,7 @@ export function readingRouteFact(
 ): RequestRouteReadingDto {
   const base = { readingId: row.readingId, reportDate: row.reportDate };
   if (row.kind === 'no_data') return { ...base, stops: [], seconds: null, issue: 'no_data' };
+  if (row.kind === 'idle') return { ...base, stops: [], seconds: null, issue: 'idle' };
   if (points.length === 0) return { ...base, stops: [], seconds: null, issue: 'no_times' };
   const stops = requestRouteStops(points, requestId);
   // The live route serves the request, but the recorded stops do not name it: the time was

@@ -53,6 +53,7 @@ export const DRIVER_SHIFT_READING_STATUSES = [
   'accepted',
   'needs_reacceptance',
   'no_data',
+  'idle',
   'upcoming',
   'not_expected',
 ] as const;
@@ -64,6 +65,7 @@ export const driverShiftReadingStatusLabels: Record<DriverShiftReadingStatus, st
   accepted: 'принято',
   needs_reacceptance: 'требует повторного приёма',
   no_data: 'нет данных',
+  idle: 'не работал',
   upcoming: 'день не наступил',
   not_expected: 'показаний не ждут',
 };
@@ -78,16 +80,21 @@ export const driverShiftReadingStatusColors: Record<DriverShiftReadingStatus, st
   accepted: 'green',
   needs_reacceptance: 'orange',
   no_data: 'gold',
+  idle: 'cyan',
   upcoming: 'default',
   not_expected: 'default',
 };
 
-/** Statuses of a shift whose reading has been handed in; `no_data` is an answer, not a gap. */
+/**
+ * Statuses of a shift whose reading has been handed in; `no_data` is an answer, not a gap, and so is
+ * «Не работал» (ADR 0244).
+ */
 const HANDED_IN: ReadonlySet<DriverShiftReadingStatus> = new Set([
   'submitted',
   'accepted',
   'needs_reacceptance',
   'no_data',
+  'idle',
 ]);
 
 /**
@@ -117,6 +124,8 @@ export function driverShiftReadingStatus(shift: {
     SUBMITTED_REPORT_STATES.includes(shift.reportState);
   if (counted) {
     if (shift.readingKind === 'no_data') return 'no_data';
+    // «Не работал» wins for the same reason: the reader needs the answer, not the acceptance.
+    if (shift.readingKind === 'idle') return 'idle';
     if (shift.reportState === 'accepted') return 'accepted';
     if (shift.reportState === 'needs_reacceptance') return 'needs_reacceptance';
     return 'submitted';

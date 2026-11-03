@@ -113,8 +113,10 @@ export async function resolveReadingTimes(
   },
 ): Promise<ResolvedReadingTimes> {
   const { sourceKind, routeId, reading, existing, saved } = params;
-  // A shift closed without values was not timed either: the times go with the numbers.
-  if (reading.kind === 'no_data') return { startedAt: null, endedAt: null, points: [] };
+  // A shift closed without values was not timed either: the times go with the numbers. A shift
+  // that was not worked (`idle`, ADR 0244) has none for the same reason, and switching a timed
+  // reading to it clears the saved stops in the same transaction.
+  if (reading.kind !== 'values') return { startedAt: null, endedAt: null, points: [] };
 
   if (sourceKind === 'esm2') {
     if (reading.points && reading.points.length > 0) {

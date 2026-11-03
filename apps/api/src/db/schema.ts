@@ -9871,8 +9871,19 @@ export const driverReportStateEnum = pgEnum('driver_report_state', [
 ]);
 /** Чем задан выезд. Третьего не бывает: у 4-П и формы № 3 источник — сам рейс. */
 export const readingSourceKindEnum = pgEnum('reading_source_kind', ['route', 'esm2']);
-/** `no_data` — «работали, но снять нечего»: это закрытие строки с причиной, а не пропуск. */
-export const readingKindEnum = pgEnum('reading_kind', ['values', 'no_data']);
+/**
+ * `no_data` — «работали, но снять нечего»: это закрытие строки с причиной, а не пропуск. `idle` —
+ * «техника не работала эту смену» (ADR 0244): no numbers because there was no work, not because the
+ * counter could not be read; the counter chain passes through it.
+ */
+export const readingKindEnum = pgEnum('reading_kind', ['values', 'no_data', 'idle']);
+/** Why a shift was not worked (ADR 0244); `other` carries its word in the reading's comment. */
+export const readingIdleReasonEnum = pgEnum('reading_idle_reason', [
+  'day_off',
+  'site_idle',
+  'repair',
+  'other',
+]);
 export const readingSourceEnum = pgEnum('reading_source', ['driver', 'staff']);
 /** Начала ряда здесь нет: «предшественника не было» — состояние, а не отклонение. */
 export const readingAnomalyEnum = pgEnum('reading_anomaly', ['counter_reset', 'implausible_jump']);
@@ -10112,6 +10123,8 @@ export const vehicleReadings = pgTable(
     fuelFilledLiters: numeric('fuel_filled_liters', { precision: 7, scale: 1 }),
     fuelEndLiters: numeric('fuel_end_liters', { precision: 7, scale: 1 }),
     noDataReason: text('no_data_reason').notNull().default(''),
+    /** Set exactly on an `idle` reading (ADR 0244); its free word lives in `comment`. */
+    idleReason: readingIdleReasonEnum('idle_reason'),
     comment: text('comment').notNull().default(''),
     /**
      * Shift time (ADR 0234). `time`, not `timestamptz`: the day is `report_date`, and a second copy
@@ -10179,7 +10192,16 @@ export const vehicleReadings = pgTable(
                  OR ${t.fuelEndLiters} IS NOT NULL))
         OR (${t.kind} = 'no_data' AND ${t.odometerKm} IS NULL AND ${t.engineHours} IS NULL
             AND ${t.fuelFilledLiters} IS NULL AND ${t.fuelStartLiters} IS NULL
-            AND ${t.fuelEndLiters} IS NULL AND btrim(${t.noDataReason}) <> '')`,
+            AND ${t.fuelEndLiters} IS NULL AND btrim(${t.noDataReason}) <> '')
+        OR (${t.kind} = 'idle' AND ${t.odometerKm} IS NULL AND ${t.engineHours} IS NULL
+            AND ${t.fuelFilledLiters} IS NULL AND ${t.fuelStartLiters} IS NULL
+            AND ${t.fuelEndLiters} IS NULL AND ${t.noDataReason} = '')`,
+    ),
+    // The reason belongs to `idle` alone, and «Другое» is not a reason without its word (ADR 0244).
+    idleShape: check(
+      'vehicle_readings_idle_check',
+      sql`(${t.kind} = 'idle') = (${t.idleReason} IS NOT NULL)
+        AND (${t.idleReason} IS DISTINCT FROM 'other' OR btrim(${t.comment}) <> '')`,
     ),
     // An end without a start has no day to belong to, and a shift closed as `no_data` was not
     // timed either.

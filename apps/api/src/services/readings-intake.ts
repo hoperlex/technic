@@ -3,6 +3,7 @@ import {
   ENGINE_HOURS_JUMP_PER_DAY,
   formatVehicleRouteNumber,
   type DriverReportState,
+  type IdleReason,
   type IntakeIssue,
   intakeLevel,
   jumpLimit,
@@ -14,6 +15,7 @@ import {
   type ReadingIntakeDto,
   type ReadingIntakeReport,
   type ReadingIntakeRow,
+  type ReadingKind,
   type ReadingSourceKind,
   type ReportDiscrepancyDto,
   vehicleLabel,
@@ -27,6 +29,7 @@ import { vehicleReadingFiles } from '../db/schema';
 import { daysBetween } from './readings-chain';
 import { expectedRelationCte } from './readings-expected';
 import { loadReportById } from './readings';
+import { loadIdleContradictions, type IdleShift } from './readings-idle';
 
 /**
  * The readings intake registry (plan «Показания техники», §5, §6; decisions Р5—Р9а, Р22—Р26, Р32).
@@ -96,7 +99,7 @@ type IntakeSqlRow = {
   type_name: string;
   model_name: string | null;
   reading_id: string | null;
-  reading_kind: 'values' | 'no_data' | null;
+  reading_kind: ReadingKind | null;
   odometer_km: number | null;
   engine_hours: string | null;
   /* Три числа топлива идут порядком смены: остаток на начало, заправлено, остаток на конец. */
@@ -112,6 +115,7 @@ type IntakeSqlRow = {
    */
   reading_points: VehicleReadingPointDto[];
   no_data_reason: string | null;
+  idle_reason: IdleReason | null;
   comment: string | null;
   reading_source: 'driver' | 'staff' | null;
   /** Уже готовая ISO-строка: приведение живёт в запросе, а не в разборе. */
@@ -193,6 +197,7 @@ SELECT r.source_id,
           FROM vehicle_reading_points rp
          WHERE rp.reading_id = vr.id) AS reading_points,
        vr.no_data_reason,
+       vr.idle_reason::text      AS idle_reason,
        vr.comment,
        vr.source::text           AS reading_source,
        /*
@@ -280,6 +285,7 @@ function readingOf(row: IntakeSqlRow): VehicleReadingDto | null {
     endedAt: row.ended_at,
     points: row.reading_points ?? [],
     noDataReason: row.no_data_reason ?? '',
+    idleReason: row.idle_reason,
     comment: row.comment ?? '',
     source: row.reading_source ?? 'staff',
     recordedAt: row.recorded_at ?? '',
@@ -387,6 +393,8 @@ function anomalyIssue(
 
 interface IssueContext {
   today: string;
+  /** Contradictions of the period's «Не работал» shifts, by reading id (`readings-idle.ts`). */
+  idle: Map<string, IntakeIssue[]>;
   /** Неразобранные расхождения отчётов периода — по строке ожидания и по источнику дня. */
   byItem: Map<string, ReportDiscrepancyDto[]>;
   bySource: Map<string, ReportDiscrepancyDto[]>;
@@ -469,6 +477,10 @@ function issuesOf(row: IntakeSqlRow, reading: VehicleReadingDto | null, ctx: Iss
       message: 'вечерние показания не переданы',
     });
   }
+
+  // «Не работал» is a closed shift (D5): green, unless something contradicts it (ADR 0244). Its
+  // contradictions stand beside the source discrepancies above, never instead of them.
+  if (!missing && reading.kind === 'idle') issues.push(...(ctx.idle.get(reading.id) ?? []));
 
   if (reading?.odometerAnomaly) {
     const issue = anomalyIssue(
@@ -628,6 +640,26 @@ function reportsOf(
     }));
 }
 
+/** The «Не работал» readings of the set at their own coordinate, for `loadIdleContradictions`. */
+function idleShiftsOf(rows: readonly IntakeSqlRow[]): IdleShift[] {
+  return rows.flatMap((row) =>
+    row.reading_kind === 'idle' &&
+    row.reading_id !== null &&
+    row.obs_vehicle !== null &&
+    row.obs_date !== null
+      ? [
+          {
+            readingId: row.reading_id,
+            sourceKind: row.source_kind,
+            sourceId: row.source_id,
+            vehicleId: row.obs_vehicle,
+            day: row.obs_date,
+          },
+        ]
+      : [],
+  );
+}
+
 // ── Наружу ──
 
 /**
@@ -643,7 +675,11 @@ export async function loadReadingIntake(
 ): Promise<ReadingIntakeDto> {
   const today = moscowDateKeyOf(now);
   const rows = await loadIntakeRows(period.from, period.to);
-  const ctx: IssueContext = { today, ...(await loadDiscrepancies(rows)) };
+  const ctx: IssueContext = {
+    today,
+    idle: await loadIdleContradictions(idleShiftsOf(rows)),
+    ...(await loadDiscrepancies(rows)),
+  };
 
   const built = rows.map((row) => {
     const reading = readingOf(row);
