@@ -10,6 +10,7 @@ import {
 import { errorMessage } from '@shared/lib';
 import { cabinetRead, driverCabinetApi, driverCabinetKeys } from '@entities/driver-cabinet';
 import { sourceKey } from './readingsDraft';
+import { asksReadings } from './restDay';
 
 /**
  * Что делать с локальным черновиком в этом дне (план `docs/driver-readings-first-plan.md`, Р10).
@@ -45,16 +46,6 @@ export interface DayState {
 type DayFacts = Omit<DayState, 'report'>;
 
 const WINDOW_HINT = `Показания принимаются за сегодня и ${DRIVER_SUBMIT_PAST_DAYS} предыдущих дней`;
-
-/**
- * Whether the day's task asks for any reading (ADR 0242). The server marks a Sunday shift of a
- * weekly sheet or of a site-day route optional; a day of optional shifts only is a rest day — no
- * debt in the header, «Выходной» over the form. The portal holds no weekday rule of its own, and the
- * day line and the debt line ask this one function.
- */
-export function asksReadings(assignment: DriverAssignmentDto): boolean {
-  return assignment.entries.some((entry) => entry.readingOptional !== true);
-}
 
 /** Читающий день: ввод закрыт, кнопки «Передать» нет, причину называет подвал теми же словами. */
 const reading = (label: string, hint: string, draft: DraftUse): DayFacts => ({

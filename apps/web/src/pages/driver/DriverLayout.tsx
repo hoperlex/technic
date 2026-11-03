@@ -14,7 +14,7 @@ import { useAuth } from '@entities/session';
 import { PortalLogo } from '@shared/ui';
 import { UserAvatar } from '@shared/ui';
 import { cabinetRead, driverCabinetApi, driverCabinetKeys } from '@entities/driver-cabinet';
-import { asksReadings } from './dayState';
+import { asksReadings } from './restDay';
 import { clearUserDrafts, pruneDrafts } from './draftStore';
 import { DRIVER_FONT_SCALE, DRIVER_NUMBER_SCALE, driverTheme } from './theme';
 
