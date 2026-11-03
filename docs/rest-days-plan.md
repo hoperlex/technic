@@ -1,10 +1,10 @@
 # Rest days: Sunday by default, a working Sunday by mark, «Не работал» for the rest
 
-Status: plan, revision 4 of 03.11.2026. Stage 1A (compatible readers, `v4` draft, client contract
-8, idle writes closed) is implemented in [ADR 0244](adr/0244-idle-shift-reading.md); stages 2–4
-(working Sunday, day batch, rental cut) in [ADR 0246](adr/0246-working-sunday-mark.md), release
-0.1.138.0246. Stage 1B (idle writes open, `REQUIRED_CLIENT_FLOOR = 8`) waits for 1A to be served and
-the floor operation `deploy-auto --client-floor=8`.
+Status: plan, revision 4 of 03.11.2026. Implemented: stage 1 in
+[ADR 0244](adr/0244-idle-shift-reading.md) as two releases — 1A (compatible readers, `v4` draft,
+client contract 8, idle writes closed) and 1B (idle writes open, `REQUIRED_CLIENT_FLOOR = 8`,
+release 0.1.139.0244) with the floor operation between them; stages 2–4 (working Sunday, day batch,
+rental cut) in [ADR 0246](adr/0246-working-sunday-mark.md), release 0.1.138.0246.
 
 ## 1. Problem
 

@@ -1,8 +1,9 @@
 # ADR 0244. «Не работал»: the driver closes a shift without work, the garage checks it
 
-- Статус: Принято (03.11.2026). Release 1A (compatible readers, `v4` draft, client contract 8,
-  writes closed) implemented, not pushed; the floor operation `deploy-auto --client-floor=8` and
-  release 1B (writes and the switch open) are pending
+- Статус: Реализовано (03.11.2026). Release 1A (compatible readers, `v4` draft, client contract
+  8, writes closed) and release 1B (`IDLE_READINGS_OPEN = true`, `REQUIRED_CLIENT_FLOOR = 8`,
+  release 0.1.139.0244) implemented, not pushed; 1B ships only after 1A is served and the operator
+  ran `deploy-auto --client-floor=8`
 - Домены: кабинет-водителя, гараж, схема-и-выкат
 - Изменяет: [ADR 0105](0105-driver-cabinet-documentary.md) — decision 3 (the driver has no way to
   close a row without numbers): «Не работал» is the driver's own answer for a shift without work,

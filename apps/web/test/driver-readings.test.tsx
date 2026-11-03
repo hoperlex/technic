@@ -49,16 +49,16 @@ import type { DraftItem } from '../src/pages/driver/api';
  */
 
 /**
- * The release switch of «Не работал» (ADR 0244) is a contracts constant: `false` in release 1A, so
- * the suite turns it on where it tests the switch itself, and keeps the shipped value elsewhere.
+ * The release switch of «Не работал» (ADR 0244) is a contracts constant. The suite keeps the shipped
+ * value (`null` here) and overrides it only where a case is about one state of the switch.
  */
-const idleGate = vi.hoisted(() => ({ open: false }));
+const idleGate = vi.hoisted(() => ({ open: null as boolean | null }));
 vi.mock('@technic/contracts', async (importOriginal) => {
   const original = await importOriginal<typeof Contracts>();
   return {
     ...original,
     get IDLE_READINGS_OPEN() {
-      return idleGate.open;
+      return idleGate.open ?? original.IDLE_READINGS_OPEN;
     },
   };
 });
@@ -509,9 +509,11 @@ describe('кабинет водителя: передача показаний',
     await waitForBlocks();
     const block = blockOf(routeItem.id);
 
-    // Р4: строку без показаний закрывает персонал с причиной, которую знает человек. У водителя
-    // поля, которым можно отписаться от ввода, нет вовсе — ни переключателя, ни причины.
-    expect(block.querySelector('button[role="switch"]')).toBeNull();
+    // Р4: строку, где снять нечего, закрывает персонал с причиной, которую знает человек. The only
+    // switch the driver has is «Не работал» (ADR 0244) — a shift without work, not a broken counter —
+    // and its reasons appear only once it is on.
+    expect(block.querySelectorAll('button[role="switch"]')).toHaveLength(1);
+    expect(within(block).getByText('Не работал')).toBeDefined();
     expect(within(block).queryByText('Нет возможности снять показания')).toBeNull();
     expect(within(block).queryByText('Причина')).toBeNull();
     // Числовые поля при этом на месте и не спрятаны ни за каким видом показания.
@@ -1149,7 +1151,7 @@ describe('кабинет водителя: «Не работал» (ADR 0244)', 
     idleGate.open = true;
   });
   afterEach(() => {
-    idleGate.open = false;
+    idleGate.open = null;
   });
 
   it('переключатель прячет числа, требует причину и отправляет одну отметку', async () => {

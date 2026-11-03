@@ -86,13 +86,13 @@ export const readingKindSchema = z.enum(READING_KINDS);
 /**
  * Whether the server accepts `idle` writes and the portal shows the switch (ADR 0244).
  *
- * `false` in release 1A, the compatibility release: every reader already understands `idle`, but no
- * one can create it while tabs older than client contract 8 may still be open — such a tab drops
- * the unknown kind and would resend the hidden numbers as `values`. Release 1B turns it on together
- * with `REQUIRED_CLIENT_FLOOR = 8`, after the operator raised the floor (ADR 0226 order). One
- * constant for both sides, so the switch cannot be shown where the server refuses it.
+ * It was `false` in release 1A, the compatibility release: every reader already understood `idle`,
+ * but no one could create it while tabs older than client contract 8 might still be open — such a
+ * tab drops the unknown kind and would resend the hidden numbers as `values`. Release 1B turns it on
+ * together with `REQUIRED_CLIENT_FLOOR = 8`, after the operator raised the floor (ADR 0226 order).
+ * One constant for both sides, so the switch cannot be shown where the server refuses it.
  */
-export const IDLE_READINGS_OPEN = false;
+export const IDLE_READINGS_OPEN = true;
 
 /** Why a shift was not worked; «Другое» requires its word in the comment (owner decision D4). */
 export const IDLE_REASONS = ['day_off', 'site_idle', 'repair', 'other'] as const;

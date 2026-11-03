@@ -28,8 +28,12 @@ import { z } from 'zod';
  *
  * 3 — release 2 "Заморозка" removed `parts` from the maintenance act DTO and the `/auto-parts`
  * routes (`docs/auto-part-receipts-plan.md`, R22, R23).
+ *
+ * 8 — release 1B of «Не работал» (ADR 0244) opens the reading kind `idle`: a tab older than client
+ * contract 8 drops it from its draft and would resend the numbers hidden under the switch as
+ * `values`, and shows an idle row as an empty reading.
  */
-export const REQUIRED_CLIENT_FLOOR = 3;
+export const REQUIRED_CLIENT_FLOOR = 8;
 
 /**
  * What a tab below the floor would hit. Printed by both refusals and rewritten together with
@@ -37,7 +41,7 @@ export const REQUIRED_CLIENT_FLOOR = 3;
  * a reason left over from the previous raise would describe the wrong release.
  */
 export const REQUIRED_CLIENT_FLOOR_REASON =
-  'старые вкладки получат ответ без `parts` и 404 на `/auto-parts` (выпуск «Заморозка») — то есть белый экран журнала ТО';
+  'старые вкладки не знают показания «Не работал»: черновик потеряет отметку и отправит скрытые под ней числа как показания (ADR 0244)';
 
 /**
  * `MIN_CLIENT_CONTRACT` exactly as the API parses it; `src/config.ts` uses this schema, so the

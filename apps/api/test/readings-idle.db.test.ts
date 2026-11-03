@@ -27,21 +27,22 @@ import type * as AssignmentNs from '../src/services/driver-assignment';
 /**
  * «Не работал» in the ledger and in the garage (ADR 0244, plan docs/rest-days-plan.md §4.1, §4.3).
  *
- * The write is closed in release 1A (`IDLE_READINGS_OPEN = false`), so the suite opens it through
- * the contracts module where it needs idle rows, and checks the refusal with the shipped value.
+ * The write was closed in release 1A (`IDLE_READINGS_OPEN = false`) and is open since 1B; the suite
+ * sets the switch through the contracts module where a case depends on it, and checks the refusal
+ * with the switch closed.
  *
  * Every scenario lives in the week that holds `day(0)`, Monday to Wednesday: a Sunday is a rest day
  * (ADR 0242) and would exempt the very shift a scenario is about. Each scenario has its own vehicle
  * and person, so they share the dates without touching each other.
  */
 
-const idleGate = vi.hoisted(() => ({ open: false }));
+const idleGate = vi.hoisted(() => ({ open: null as boolean | null }));
 vi.mock('@technic/contracts', async (importOriginal) => {
   const original = await importOriginal<typeof Contracts>();
   return {
     ...original,
     get IDLE_READINGS_OPEN() {
-      return idleGate.open;
+      return idleGate.open ?? original.IDLE_READINGS_OPEN;
     },
   };
 });
@@ -431,7 +432,7 @@ describe.skipIf(!DB_URL)('показания: «Не работал» (ADR 0244)
   }, 180_000);
 
   afterEach(() => {
-    idleGate.open = false;
+    idleGate.open = null;
   });
 
   afterAll(async () => {
@@ -442,7 +443,8 @@ describe.skipIf(!DB_URL)('показания: «Не работал» (ADR 0244)
   });
 
   describe('запись', () => {
-    it('до выпуска 1B отметка не записывается ни водителем, ни персоналом', async () => {
+    it('закрытый переключатель выпуска не даёт записать отметку ни водителю, ни персоналу', async () => {
+      idleGate.open = false;
       const person = await newPerson('Закрытый');
       const vehicle = await newVehicle();
       await newEsm2(vehicle, person, (await newRequest()).id);
