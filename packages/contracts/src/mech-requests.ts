@@ -1,7 +1,5 @@
 import { z } from 'zod';
 import {
-  isDepartmentScopedRole,
-  isObjectScopedRole,
   isPlaceScopedRole,
   mechRateUnitSchema,
   requestStatusSchema,
@@ -18,8 +16,6 @@ import {
   dateOnlySchema,
   uuidSchema,
 } from './common';
-import { can, type Permission } from './permissions';
-import { visaLimitedToApprovalDepartments, type VisaSubject } from './visa-scope';
 import {
   costTargetKey,
   parseCostTargetKey,
@@ -30,6 +26,11 @@ import {
 } from './cost-target';
 import type { CounterpartyType } from './counterparties';
 import type { FileDto } from './files';
+import {
+  canApproveMechRequest,
+  type MechApprovalSubject,
+  type MechApprovalTarget,
+} from './mech-approval';
 import type { MechExtensionStatus, MechRequestExtensionDto } from './mech-request-extensions';
 import { dateKeySpan, moscowDateKeyOf } from './time';
 import { isClosedRequestStatus, workedAmountLabel } from './vehicle-requests';
@@ -695,85 +696,16 @@ export type RevokeMechIssueInput = z.infer<typeof revokeMechIssueSchema>;
 
 // ── Виза площадки (план `docs/mechanization-approval-and-grants-plan.md`, Р1–Р6) ──
 
-/**
- * The subject asking about a visa: permissions plus every scope a visa is compared with. A plain
- * `ScopedSubject` does not fit — it lacks `departmentIds`, which answer "did this department file
- * the request", and the visa departments of an axis-less role (ADR 0245). The server principal and
- * the portal's current user both fit as they are.
+/*
+ * The visa circle (`MechApprovalSubject`, `MechApprovalTarget`, `canApproveMechRequest`) lives in
+ * `mech-approval.ts`: the lessor receipt's decisions ask it too, and that file must not import this
+ * one at runtime (see the header there). Re-exported here so that every caller keeps its import.
  */
-export type MechApprovalSubject = VisaSubject;
-
-/** Стороны заявки, по которым считается виза: место эксплуатации и необязательный заявитель. */
-export interface MechApprovalTarget {
-  objectId: string;
-  departmentId: string | null;
-}
-
-/**
- * May the subject sign the site visa of this rental (visa plan, R5): the visa permission plus the
- * subject's own side of the request.
- *
- * **One function for the portal and the server** — otherwise the item would appear where the
- * handler answers 403.
- *
- * The module is built differently from the vehicle order, so `canApproveRequest` does not fit here.
- * There the customer is an object **or** a department (`num_nonnulls(object_id, department_id) =
- * 1`), and the role's axis picks unambiguously what to compare. A rental ALWAYS has a site, while
- * the department is an optional requester on top of it, and both columns are often filled at once:
- * that is the customer's answer «the site or the department head, whoever is first».
- *
- * The branch goes **by the role's axis**, not by the disjunction «object matched OR department
- * matched». A department role has a derived list of sites (`departmentObjectIds`, ADR 0062/0144),
- * and asked by it the department head would sign requests filed by the SITE ITSELF, which his
- * department never filed. So the department branch needs both halves: his department filed the
- * request AND the site is attached to the department now. A request with an empty `departmentId`
- * stays unsignable for him — the second branch has nothing to compare.
- *
- * `has` answers the permission, as in `canApproveMechExtension`. The server leaves the default (the
- * matrix over its own principal is exactly what it builds the session list with); the portal passes
- * its `can`, which reads the list the server computed (ADR 0223) — the scope rule stays here, the
- * permission comes from one oracle.
- */
-export function canApproveMechRequest(
-  subject: MechApprovalSubject | null | undefined,
-  row: MechApprovalTarget,
-  has: (permission: Permission) => boolean = (permission) => can(subject, permission),
-): boolean {
-  if (!has('mechRequests.approve')) return false;
-  const role = subject?.role;
-  if (isObjectScopedRole(role))
-    return (subject?.constructionObjectIds ?? []).includes(row.objectId);
-  if (isDepartmentScopedRole(role)) {
-    return departmentsOwnMechRequest(subject?.departmentIds, subject?.departmentObjectIds, row);
-  }
-  // An axis-less role whose visa came from a grant signs as the department head (ADR 0245, owner
-  // decision 05.11.2026): its visa department filed the request AND the site is attached to it.
-  if (visaLimitedToApprovalDepartments(role, 'mechRequests.approve')) {
-    return departmentsOwnMechRequest(
-      subject?.approvalDepartmentIds,
-      subject?.approvalDepartmentObjectIds,
-      row,
-    );
-  }
-  // A role whose matrix carries the visa (administrator) is not limited by anything.
-  return true;
-}
-
-/**
- * Both halves of the department branch: the department filed the request AND the site is attached
- * to it now. A request with an empty `departmentId` is never the department's to sign.
- */
-function departmentsOwnMechRequest(
-  departmentIds: readonly string[] | undefined,
-  departmentObjectIds: readonly string[] | undefined,
-  row: MechApprovalTarget,
-): boolean {
-  return (
-    !!row.departmentId &&
-    (departmentIds ?? []).includes(row.departmentId) &&
-    (departmentObjectIds ?? []).includes(row.objectId)
-  );
-}
+export {
+  canApproveMechRequest,
+  type MechApprovalSubject,
+  type MechApprovalTarget,
+} from './mech-approval';
 
 /**
  * Визируется ли аренда сразу, самой подачей (план визы, Р6) — дословно правило ADR 0025 п. 5 и
