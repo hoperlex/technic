@@ -4,6 +4,7 @@ import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import {
   driverReportStateLabels,
+  idleReadingText,
   type ReadingAnomalyDto,
   readingAnomalyLabels,
   type VehicleReadingJournalRow,
@@ -154,6 +155,21 @@ function ReadingStateCell({ row }: { row: VehicleReadingJournalRow }) {
         </Tag>
         <Typography.Text type="secondary" style={secondary}>
           {row.reading.noDataReason}
+        </Typography.Text>
+      </Space>
+    );
+  }
+  if (row.reading.kind === 'idle') {
+    return (
+      <Space orientation="vertical" size={0}>
+        <Tag color="cyan" style={{ marginInlineEnd: 0 }}>
+          не работал
+        </Tag>
+        <Typography.Text type="secondary" style={secondary}>
+          {idleReadingText(row.reading.idleReason, row.reading.comment).replace(
+            /^Не работал: /u,
+            '',
+          )}
         </Typography.Text>
       </Space>
     );

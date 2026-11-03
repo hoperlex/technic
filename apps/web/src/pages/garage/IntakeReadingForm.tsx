@@ -1,11 +1,13 @@
 import { Alert, App, Form, Input, Radio, Typography } from 'antd';
-import dayjs from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  IDLE_READINGS_OPEN,
+  IDLE_REASONS,
+  idleReasonLabels,
   readingInputSchema,
-  type DriverPreviousReading,
   type DriverReportDto,
   type ReadingInput,
+  type IdleReason,
   type ReadingKind,
   type ReportItemDto,
 } from '@technic/contracts';
@@ -21,6 +23,7 @@ import { vehicleRequestKeys } from '@entities/vehicle-request';
 import { isApiError } from '@shared/api';
 import { errorMessage } from '@shared/lib';
 import { FormModal } from '@shared/ui';
+import { normalizeDecimal, previousOf } from './intakeReadingInput';
 import { IntakeTimeFields, timeInitialValues, timeKeys, type TimeValues } from './IntakeTimeFields';
 
 /**
@@ -43,7 +46,8 @@ import { IntakeTimeFields, timeInitialValues, timeKeys, type TimeValues } from '
  *    правдой, а аномалию всё равно запишет сервер, и день без её подтверждения не примут.
  * 3. **Вид «нет возможности снять показания» ставит персонал, и только он** (план кабинета, Р4).
  *    Это закрытие строки с причиной, которую знает человек, а не пропуск: у водителя такого поля
- *    нет вовсе, и сервер его отправку с этим видом отклоняет.
+ *    нет вовсе, и сервер его отправку с этим видом отклоняет. «Не работал» (ADR 0244) is the
+ *    driver's own answer, which staff may also enter for him: the same kind and reason list.
  *
  * Times (ADR 0234) are the driver's fields here too, all optional (D5): see `IntakeTimeFields`.
  *
@@ -55,43 +59,6 @@ import { IntakeTimeFields, timeInitialValues, timeKeys, type TimeValues } from '
 /** Числа показания — обратно в строку поля. Пусто — счётчика нет, а не ноль. */
 const show = (value: number | null | undefined): string => (value == null ? '' : String(value));
 
-/**
- * Предыдущий снимок счётчиков — тот, **с которым сравнивал сервер**.
- *
- * В кабинете он приходит в задании (`DriverAssignmentEntry.previous`) и есть всегда; в отчёте дня
- * его нет — `ReportItemDto` предшественника не несёт. Известен он ровно там, где сервер уже нашёл
- * аномалию: тогда в ответе лежит и значение, и его дата. Этого хватает на подсказку под полем и на
- * предупреждение о приросте там, где прирост уже вызвал вопросы.
- *
- * Где сравнения не было, остаются абсолютные границы — и это не потеря: суточный порог сервер
- * применит сам при записи, а портальные пороги предупреждают, а не решают (см. `readingLimits`).
- */
-function previousOf(item: ReportItemDto, reportDate: string): DriverPreviousReading | null {
-  const odometer = item.reading?.odometerAnomaly ?? null;
-  const engineHours = item.reading?.engineHoursAnomaly ?? null;
-  const measuredOn = odometer?.previousDate ?? engineHours?.previousDate ?? null;
-  if (!measuredOn) return null;
-  return {
-    odometerKm: odometer?.previousValue ?? null,
-    engineHours: engineHours?.previousValue ?? null,
-    measuredOn,
-    // Расстояние до предшественника масштабирует порог. Отрицательным оно не бывает: снимок
-    // прошлого дня не может оказаться позже своего.
-    daysAgo: Math.max(0, dayjs(reportDate).diff(dayjs(measuredOn), 'day')),
-  };
-}
-
-/**
- * Запятая нормализуется в точку прямо на вводе: десятичный разделитель зависит от раскладки, и
- * отказывать за него нельзя. Целое поле отбрасывает дробную часть, а не склеивает её с целой:
- * «145 320,7» без разделителя стало бы «1453207» — молча выросшим в десять раз пробегом.
- */
-function normalizeDecimal(raw: string, integer: boolean): string {
-  const cleaned = raw.replace(/\s/gu, '').replace(',', '.');
-  if (!integer) return cleaned.replace(/[^\d.]/gu, '');
-  return cleaned.split('.')[0]!.replace(/\D/gu, '');
-}
-
 interface Values extends TimeValues {
   kind: ReadingKind;
   odometerKm?: string;
@@ -100,6 +67,7 @@ interface Values extends TimeValues {
   fuelFilledLiters?: string;
   fuelEndLiters?: string;
   noDataReason?: string;
+  idleReason?: IdleReason;
   comment?: string;
   reason?: string;
 }
@@ -210,18 +178,20 @@ export function IntakeReadingForm({
     const parsed = readingInputSchema.safeParse(
       v.kind === 'no_data'
         ? { kind: 'no_data', noDataReason: v.noDataReason ?? '', comment: v.comment ?? '' }
-        : {
-            kind: 'values',
-            ...times.keys,
-            odometerKm: numberOf(v.odometerKm),
-            engineHours: numberOf(v.engineHours),
-            // Остатки уходят явными ключами, в том числе пустыми: форма их показывает, значит
-            // очищенное поле — решение вносящего, а не незнание сборки (ADR 0163, Р13).
-            fuelStartLiters: numberOf(v.fuelStartLiters),
-            fuelFilledLiters: numberOf(v.fuelFilledLiters),
-            fuelEndLiters: numberOf(v.fuelEndLiters),
-            comment: v.comment ?? '',
-          },
+        : v.kind === 'idle'
+          ? { kind: 'idle', idleReason: v.idleReason, comment: v.comment ?? '' }
+          : {
+              kind: 'values',
+              ...times.keys,
+              odometerKm: numberOf(v.odometerKm),
+              engineHours: numberOf(v.engineHours),
+              // Остатки уходят явными ключами, в том числе пустыми: форма их показывает, значит
+              // очищенное поле — решение вносящего, а не незнание сборки (ADR 0163, Р13).
+              fuelStartLiters: numberOf(v.fuelStartLiters),
+              fuelFilledLiters: numberOf(v.fuelFilledLiters),
+              fuelEndLiters: numberOf(v.fuelEndLiters),
+              comment: v.comment ?? '',
+            },
     );
     if (!parsed.success) {
       // Отказ схемы называет поле и встаёт под ним: «заполните хотя бы одно значение» относится
@@ -259,6 +229,7 @@ export function IntakeReadingForm({
           fuelFilledLiters: show(reading?.fuelFilledLiters),
           fuelEndLiters: show(reading?.fuelEndLiters),
           noDataReason: reading?.noDataReason ?? '',
+          idleReason: reading?.idleReason ?? undefined,
           comment: reading?.comment ?? '',
           reason: '',
           ...timeInitialValues(item),
@@ -275,6 +246,11 @@ export function IntakeReadingForm({
               { value: 'values', label: 'Показания' },
               // Закрытие строки с причиной — право персонала (Р4): у водителя такого поля нет.
               { value: 'no_data', label: 'Нет возможности снять' },
+              // «Не работал» (ADR 0244): the same answer the driver gives, entered for him; offered
+              // once release 1B opens it, and kept on a row already saved so.
+              ...(IDLE_READINGS_OPEN || reading?.kind === 'idle'
+                ? [{ value: 'idle', label: 'Не работал' }]
+                : []),
             ]}
             optionType="button"
           />
@@ -332,6 +308,16 @@ export function IntakeReadingForm({
               <Input inputMode="decimal" suffix="л" />
             </Form.Item>
           </>
+        ) : kind === 'idle' ? (
+          <Form.Item
+            name="idleReason"
+            label="Причина"
+            rules={[{ required: true, message: 'Выберите причину' }]}
+          >
+            <Radio.Group
+              options={IDLE_REASONS.map((value) => ({ value, label: idleReasonLabels[value] }))}
+            />
+          </Form.Item>
         ) : (
           <Form.Item
             name="noDataReason"

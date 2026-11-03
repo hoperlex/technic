@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import dayjs from 'dayjs';
 import type {
@@ -9,6 +9,7 @@ import type {
   ReportSubmitBody,
   VehicleReadingDto,
 } from '@technic/contracts';
+import type * as Contracts from '@technic/contracts';
 import { MOSCOW_TZ } from '@shared/config';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
@@ -46,6 +47,21 @@ import type { DraftItem } from '../src/pages/driver/api';
  * под полем и считаются оба мягких предупреждения. Его может не быть — начало ряда законно, и форма
  * обязана работать без него.
  */
+
+/**
+ * The release switch of «Не работал» (ADR 0244) is a contracts constant: `false` in release 1A, so
+ * the suite turns it on where it tests the switch itself, and keeps the shipped value elsewhere.
+ */
+const idleGate = vi.hoisted(() => ({ open: false }));
+vi.mock('@technic/contracts', async (importOriginal) => {
+  const original = await importOriginal<typeof Contracts>();
+  return {
+    ...original,
+    get IDLE_READINGS_OPEN() {
+      return idleGate.open;
+    },
+  };
+});
 
 const today = dayjs().tz(MOSCOW_TZ).format('YYYY-MM-DD');
 
@@ -120,6 +136,7 @@ const jumpedReading: VehicleReadingDto = {
   endedAt: null,
   points: [],
   noDataReason: '',
+  idleReason: null,
   comment: '',
   source: 'driver',
   recordedAt: `${today}T10:00:00.000Z`,
@@ -142,6 +159,7 @@ const staffNoData: VehicleReadingDto = {
   kind: 'no_data',
   odometerKm: null,
   noDataReason: 'Счётчик неисправен, машину увёл сменщик',
+  idleReason: null,
   source: 'staff',
   odometerAnomaly: null,
   odometerDelta: null,
@@ -173,10 +191,12 @@ const draftItem = (patch: Partial<DraftItem> = {}): DraftItem => ({
   comment: '',
   files: [],
   confirmAnomaly: false,
+  idle: false,
+  idleReason: '',
   ...patch,
 });
 
-const DRAFT_PREFIX = `technic:driver-draft-v3:${driver.id}:${today}:`;
+const DRAFT_PREFIX = `technic:driver-draft-v4:${driver.id}:${today}:`;
 
 /**
  * Ветка черновика соседней загрузки страницы — ячейка хранилища, написанная руками. Своя ветка у
@@ -1099,5 +1119,127 @@ describe('кабинет водителя: передача показаний',
       .map((r) => r.headers['Idempotency-Key']);
     expect(keys[0]).toBeDefined();
     expect(keys[1]).not.toBe(keys[0]);
+  });
+});
+
+/** A shift the driver closed as «Не работал» (ADR 0244): no numbers, a reason from the list. */
+const savedIdle: VehicleReadingDto = {
+  ...storedValues,
+  id: 'reading-idle',
+  kind: 'idle',
+  odometerKm: null,
+  engineHours: null,
+  fuelStartLiters: null,
+  fuelFilledLiters: null,
+  fuelEndLiters: null,
+  idleReason: 'day_off',
+  comment: '',
+  source: 'driver',
+};
+
+const idleSwitch = (itemId: string): HTMLElement => {
+  const element = blockOf(itemId).querySelector('button[role="switch"]');
+  if (!element) throw new Error('Переключателя «Не работал» в блоке нет');
+  return element as HTMLElement;
+};
+
+describe('кабинет водителя: «Не работал» (ADR 0244)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    idleGate.open = true;
+  });
+  afterEach(() => {
+    idleGate.open = false;
+  });
+
+  it('переключатель прячет числа, требует причину и отправляет одну отметку', async () => {
+    const { http } = renderCabinet([routeItem]);
+    await waitForBlocks();
+    type(field(blockOf(routeItem.id), 'Одометр'), '145400');
+
+    fireEvent.click(idleSwitch(routeItem.id));
+    expect(within(blockOf(routeItem.id)).queryByText('Одометр')).toBeNull();
+    await submitSheet();
+    expect(await within(blockOf(routeItem.id)).findByText('Выберите причину')).toBeDefined();
+    expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
+
+    fireEvent.click(within(blockOf(routeItem.id)).getByLabelText('Выходной или праздник'));
+    await submitSheet();
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    // The hidden odometer stays in the draft, never in the body: the kind goes alone.
+    expect(submitBody(http).items).toEqual([
+      expect.objectContaining({
+        itemId: routeItem.id,
+        reading: { kind: 'idle', idleReason: 'day_off', comment: '' },
+      }),
+    ]);
+  });
+
+  it('выключенный переключатель возвращает набранные числа', async () => {
+    renderCabinet([routeItem]);
+    await waitForBlocks();
+    type(field(blockOf(routeItem.id), 'Одометр'), '145400');
+    fireEvent.click(idleSwitch(routeItem.id));
+    fireEvent.click(idleSwitch(routeItem.id));
+    expect(field(blockOf(routeItem.id), 'Одометр').value).toBe('145400');
+  });
+
+  it('«Другое» не уходит без слова в комментарии', async () => {
+    const { http } = renderCabinet([routeItem]);
+    await waitForBlocks();
+    fireEvent.click(idleSwitch(routeItem.id));
+    fireEvent.click(within(blockOf(routeItem.id)).getByLabelText('Другое'));
+    await submitSheet();
+    expect(
+      await within(blockOf(routeItem.id)).findByText('Напишите, почему не работали'),
+    ).toBeDefined();
+    expect(http.countOf('POST /driver/reports/:date/submit')).toBe(0);
+
+    type(field(blockOf(routeItem.id), 'Почему не работали'), 'Не было фронта работ');
+    await submitSheet();
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    expect(submitBody(http).items[0]?.reading).toEqual({
+      kind: 'idle',
+      idleReason: 'other',
+      comment: 'Не было фронта работ',
+    });
+  });
+
+  it('вторая смена не сверяется со скрытыми числами первой, отмеченной «Не работал»', async () => {
+    const secondRoute: ReportItemDto = {
+      ...routeItem,
+      id: 'item-route-2',
+      sourceId: 'route-2',
+      sourceLabel: 'Рейс Р-143',
+      shiftOrder: 2,
+    };
+    renderCabinet([routeItem, secondRoute]);
+    await waitForBlocks();
+    fillFuel(routeItem.id, '120', '90');
+    const hint = `в конце прошлой смены: 90 л (${dayjs(today).format('DD.MM')})`;
+    expect(within(blockOf(secondRoute.id)).getByText(hint)).toBeDefined();
+
+    fireEvent.click(idleSwitch(routeItem.id));
+    expect(within(blockOf(secondRoute.id)).queryByText(hint)).toBeNull();
+  });
+
+  it('сборка без отметки показывает сохранённое «Не работал» и отправляет его как есть', async () => {
+    idleGate.open = false;
+    const { http } = renderCabinet([{ ...routeItem, reading: savedIdle }, esm2Item]);
+    await waitForBlocks();
+
+    // Release 1A cannot create the kind, but a row saved so must read as it is, not as empty numbers.
+    expect(idleSwitch(routeItem.id).getAttribute('aria-checked')).toBe('true');
+    expect(within(blockOf(routeItem.id)).queryByText('Одометр')).toBeNull();
+
+    fillFuel(esm2Item.id);
+    type(field(blockOf(esm2Item.id), 'Моточасы'), '9812.5');
+    await submitSheet();
+    await waitFor(() => expect(http.countOf('POST /driver/reports/:date/submit')).toBe(1));
+    expect(submitBody(http).items.find((entry) => entry.itemId === routeItem.id)?.reading).toEqual({
+      kind: 'idle',
+      idleReason: 'day_off',
+      comment: '',
+    });
   });
 });

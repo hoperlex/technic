@@ -101,6 +101,7 @@ function buildItem(
   changed: boolean,
   timesRequired: boolean,
 ): BuiltItem {
+  if (value.idle) return buildIdleItem(item, value);
   const numbers = readingNumbers(value);
   // Time refusals stand next to the number refusals, not after them: a driver fixing an odometer
   // typo should not learn only on the next tap that the end time is missing too (ADR 0234, D11).
@@ -163,6 +164,23 @@ function buildItem(
   return { submit: submitItem(item.id, parsed.data, value, notes.length > 0), notes };
 }
 
+/**
+ * «Не работал» (ADR 0244): the kind, its reason and the comment — nothing else leaves the block, the
+ * hidden numbers and times included. Whole-shift completeness (ADR 0237) does not apply to a shift
+ * that was not worked, and an idle block resent unchanged goes like any other: the server compares
+ * the content and changes nothing, so it never holds the day.
+ */
+function buildIdleItem(item: ReportItemDto, value: DraftItem): BuiltItem {
+  if (value.idleReason === '') return { errors: { idleReason: 'Выберите причину' } };
+  const parsed = readingInputSchema.safeParse({
+    kind: 'idle',
+    idleReason: value.idleReason,
+    comment: value.comment,
+  });
+  if (!parsed.success) return { errors: issueMessages(parsed.error.issues) };
+  return { submit: submitItem(item.id, parsed.data, value, false), notes: [] };
+}
+
 const NUMBER_FIELDS = [
   'odometerKm',
   'engineHours',
@@ -180,7 +198,7 @@ const NUMBER_FIELDS = [
  * Read as the server stores it: numbers to the column's tenth, times and stops as the rules read
  * them, the comment trimmed as the schema trims it. Files never count — they move no content
  * version (Р22). A block without a saved reading, or over a staff `no_data` one, is always the
- * driver's word.
+ * driver's word, and so is any change of the «Не работал» switch (ADR 0244).
  */
 export function blockChanged(
   item: ReportItemDto,
@@ -188,7 +206,7 @@ export function blockChanged(
   stops: readonly ShownStop[],
 ): boolean {
   const saved = savedItem(item);
-  if (!saved || item.reading?.kind !== 'values') return true;
+  if (!saved || item.reading?.kind !== 'values' || value.idle) return true;
   const tenths = (raw: string) => {
     const number = parseReadingNumber(raw);
     return typeof number === 'number' ? Math.round(number * 10) : number;

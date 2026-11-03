@@ -47,11 +47,13 @@ const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
   comment: '',
   files: [],
   confirmAnomaly: false,
+  idle: false,
+  idleReason: '',
   ...patch,
 });
 
 const v1Key = `technic:driver-draft:${USER}:${DAY}`;
-const dayPrefix = `technic:driver-draft-v3:${USER}:${DAY}:`;
+const dayPrefix = `technic:driver-draft-v4:${USER}:${DAY}:`;
 /** Branches of the previous format (`v2`, before ADR 0234): read-only input for this build. */
 const v2Prefix = `technic:driver-draft-v2:${USER}:${DAY}:`;
 const branchKey = (tab: Tab): string => `${dayPrefix}${tab.draftBranch()}`;
@@ -149,6 +151,8 @@ describe('черновик показаний: ключи и совместна�
               comment: 'набрано прежней сборкой',
               files: [],
               confirmAnomaly: false,
+              idle: false,
+              idleReason: '',
             },
           },
         },
@@ -171,6 +175,8 @@ describe('черновик показаний: ключи и совместна�
             comment: '',
             files: [],
             confirmAnomaly: false,
+            idle: false,
+            idleReason: '',
           },
         },
       }),
@@ -842,6 +848,138 @@ describe('черновик показаний v3: время и ветки пр�
     const tab = await openTab();
     tab.writeDraft(USER, DAY, { items: [{ key: WEEK, item: item({ startedAt: '08:00' }) }] });
 
+    tab.clearUserDrafts(USER);
+    expect(keys()).toEqual([]);
+  });
+});
+
+/** Branches of the `v3` format (ADR 0234, before ADR 0244): read-only input for this build. */
+const v3Prefix = `technic:driver-draft-v3:${USER}:${DAY}:`;
+
+/** A `v3` branch as that build writes it: the times, no «Не работал» keys, optional attempts. */
+function putV3(
+  branch: string,
+  entries: Record<string, Partial<DraftItem> | null>,
+  extra: { counter?: number; legacy?: string[]; attempts?: unknown[] } = {},
+) {
+  const savedAt = Date.now();
+  const counter = extra.counter ?? 1;
+  const plain = (raw: Partial<DraftItem>) => {
+    const { idle: _i, idleReason: _r, ...rest } = item(raw);
+    return rest;
+  };
+  localStorage.setItem(
+    `${v3Prefix}${branch}`,
+    JSON.stringify({
+      savedAt,
+      entries: Object.fromEntries(
+        Object.entries(entries).map(([key, raw]) => [
+          key,
+          { clock: { counter, branch }, savedAt, item: raw === null ? null : plain(raw) },
+        ]),
+      ),
+      legacy: extra.legacy ?? [],
+      attempts: extra.attempts ?? [],
+    }),
+  );
+}
+
+describe('черновик показаний v4: «Не работал» и ветки v3 (ADR 0244)', () => {
+  it('«Не работал» с причиной переживает перезагрузку, а скрытые числа остаются в строке', async () => {
+    const tab = await openTab();
+    const idle = item({ odometerKm: '145320', idle: true, idleReason: 'day_off' });
+    tab.writeDraft(USER, DAY, { items: [{ key: ROUTE, item: idle }] });
+    // Own prefix: a `v3` build drops the switch in its normalizer, so it must never see this cell.
+    expect(keys()).toEqual([branchKey(tab)]);
+    expect(branchKey(tab).startsWith('technic:driver-draft-v3:')).toBe(false);
+
+    const reloaded = await openTab();
+    expect(reloaded.readDraft(USER, DAY).items[ROUTE]?.item).toEqual(idle);
+  });
+
+  it('причина вне списка читается как не выбранная, а не роняет блок', async () => {
+    const tab = await openTab();
+    localStorage.setItem(
+      `${dayPrefix}other-tab`,
+      JSON.stringify({
+        savedAt: Date.now(),
+        entries: {
+          [ROUTE]: {
+            clock: { counter: 1, branch: 'other-tab' },
+            savedAt: Date.now(),
+            item: { ...item(), idle: true, idleReason: 'holiday' },
+          },
+        },
+        legacy: [],
+        attempts: [],
+      }),
+    );
+    expect(tab.readDraft(USER, DAY).items[ROUTE]?.item).toMatchObject({
+      idle: true,
+      idleReason: '',
+    });
+  });
+
+  it('строка v3 перенимается в v4, а ячейка v3 не трогается', async () => {
+    putV3('old-tab', { [ROUTE]: { odometerKm: '145320', startedAt: '08:00' } });
+    const before = localStorage.getItem(`${v3Prefix}old-tab`);
+    const tab = await openTab();
+
+    const view = tab.readDraft(USER, DAY);
+    expect(view.items[ROUTE]?.item).toMatchObject({
+      odometerKm: '145320',
+      startedAt: '08:00',
+      idle: false,
+    });
+    expect(view.legacy).toHaveLength(0);
+    expect(localStorage.getItem(`${v3Prefix}old-tab`)).toBe(before);
+  });
+
+  it('незавершённая попытка v3 переезжает с тем же ключом: повтор не станет второй отправкой', async () => {
+    putV3(
+      'old-tab',
+      { [ROUTE]: { odometerKm: '145320' } },
+      {
+        attempts: [
+          {
+            key: 'attempt-v3',
+            reportVersion: 4,
+            fingerprint: 'body-mark',
+            clock: { counter: 1, branch: 'old-tab' },
+            state: 'pending',
+          },
+        ],
+      },
+    );
+    const tab = await openTab();
+    const view = tab.readDraft(USER, DAY);
+    expect(tab.pendingAttempt(view, 'body-mark')).toMatchObject({
+      key: 'attempt-v3',
+      reportVersion: 4,
+    });
+  });
+
+  it('строка v2, уже перенятая сборкой v3, не возвращается второй раз', async () => {
+    // The `v3` build adopted the `v2` row and journaled its mark; the row was then sent and
+    // tombstoned there. The `v4` build must read that journal, or the sent number comes back.
+    const { fingerprint } = await import('../src/pages/driver/draftMerge');
+    putV2('older-tab', { [ROUTE]: { odometerKm: '100' } });
+    putV3('old-tab', { [ROUTE]: null }, { legacy: [fingerprint(['v2', ROUTE, 1, 'older-tab'])] });
+
+    const tab = await openTab();
+    const view = tab.readDraft(USER, DAY);
+    expect(view.items[ROUTE]).toBeUndefined();
+    expect(view.legacy).toHaveLength(0);
+  });
+
+  it('событие storage узнаёт и ветки v3', async () => {
+    const tab = await openTab();
+    expect(tab.isDayDraftKey(USER, DAY, `${v3Prefix}old-tab`)).toBe(true);
+  });
+
+  it('выход из учётной записи чистит и v3', async () => {
+    putV3('old-tab', { [ROUTE]: { odometerKm: '145320' } });
+    const tab = await openTab();
     tab.clearUserDrafts(USER);
     expect(keys()).toEqual([]);
   });

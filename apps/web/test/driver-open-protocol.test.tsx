@@ -91,6 +91,7 @@ function readingOf(itemId: string, odometerKm: number): VehicleReadingDto {
     endedAt: null,
     points: [],
     noDataReason: '',
+    idleReason: null,
     comment: '',
     source: 'driver',
     recordedAt: `${today}T10:00:00.000Z`,

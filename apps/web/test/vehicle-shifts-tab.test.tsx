@@ -193,6 +193,7 @@ describe('вкладка «Смены» в карточке заявки', () =>
                 refuelLiters: 60,
                 previousDate: '2026-08-04',
                 noDataReason: '',
+                idleReason: null,
                 comment: '',
                 discrepancies: [],
               },

@@ -3,6 +3,7 @@ import { Button, Empty, Space, Tag, Typography } from 'antd';
 import { EditOutlined, SwapOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
+  idleReadingText,
   readingAnomalyLabels,
   type DriverReportDto,
   type ReadingAnomalyDto,
@@ -155,6 +156,9 @@ function Reading({
         <Typography.Text>
           Нет возможности снять показания: {reading.noDataReason || 'причина не указана'}
         </Typography.Text>
+      ) : reading.kind === 'idle' ? (
+        // «Не работал» (ADR 0244) stands where the numbers would: a closed shift with its reason.
+        <Typography.Text>{idleReadingText(reading.idleReason, reading.comment)}</Typography.Text>
       ) : (
         <Space size={24} wrap>
           <Counter

@@ -84,7 +84,7 @@ function fuelStartWarning(
  * an EARLIER block of the same report and not sent yet — a day with two shifts of one vehicle is
  * filled and sent in one go — so such a block wins when it carries a number: the second shift opens
  * with what the first one is about to say it left. A block with no counter and no fuel end is not a
- * shift with data and is passed over, as the server passes over `no_data`.
+ * shift with data and is passed over, as the server passes over `no_data` and `idle`.
  *
  * Like the server's snapshot, it is one row: a field the earlier block left empty is `null`
  * ("nothing to compare with"), not the value of an older shift.
@@ -99,7 +99,11 @@ export function previousOfItem(
     .filter((other) => other.vehicleId === item.vehicleId && other.shiftOrder < item.shiftOrder)
     .sort((a, b) => b.shiftOrder - a.shiftOrder);
   for (const other of earlier) {
-    const typed = readingNumbers(values[sourceKey(other)] ?? emptyItem());
+    const value = values[sourceKey(other)] ?? emptyItem();
+    // An earlier block switched to «Не работал» is no shift with data (ADR 0244), however many
+    // hidden numbers its draft keeps: they will not be sent, so nothing may be compared with them.
+    if (value.idle) continue;
+    const typed = readingNumbers(value);
     const snapshot = {
       odometerKm: numberOrNull(typed.odometerKm),
       engineHours: numberOrNull(typed.engineHours),

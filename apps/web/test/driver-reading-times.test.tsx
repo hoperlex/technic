@@ -497,6 +497,7 @@ describe('кабинет водителя: время смены и остано
       endedAt: null,
       points: [],
       noDataReason: '',
+      idleReason: null,
       comment: '',
       source: 'staff',
       recordedAt: `${today}T09:00:00.000Z`,
@@ -619,7 +620,7 @@ describe('кабинет водителя: время смены и остано
     type(field(stop(1), 'Прибытие'), '07:40');
 
     const keys = Object.keys(localStorage).filter((key) => key.includes('driver-draft'));
-    expect(keys.every((key) => key.startsWith('technic:driver-draft-v3:'))).toBe(true);
+    expect(keys.every((key) => key.startsWith('technic:driver-draft-v4:'))).toBe(true);
     expect(keys.map((key) => localStorage.getItem(key)).join('')).toContain('07:40');
 
     first.unmount();
@@ -658,6 +659,7 @@ describe('кабинет водителя: время смены и остано
         },
       ],
       noDataReason: '',
+      idleReason: null,
       comment: '',
       source: 'driver',
       recordedAt: `${today}T08:00:00.000Z`,

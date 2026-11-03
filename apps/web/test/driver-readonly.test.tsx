@@ -55,6 +55,8 @@ const draft = (patch: Partial<DraftItem> = {}): DraftItem => ({
   comment: '',
   files: [],
   confirmAnomaly: false,
+  idle: false,
+  idleReason: '',
   ...patch,
 });
 
@@ -77,6 +79,7 @@ const jumped: VehicleReadingDto = {
   endedAt: null,
   points: [],
   noDataReason: '',
+  idleReason: null,
   comment: '',
   source: 'driver',
   recordedAt: '2026-08-19T10:00:00.000Z',

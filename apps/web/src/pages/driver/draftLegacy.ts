@@ -3,14 +3,16 @@ import {
   fingerprint,
   legacyDraftKey,
   normalizeItem,
+  orderAttempts,
   type BranchState,
   type DraftEntry,
 } from './draftMerge';
 
 /**
- * Drafts of the formats before the current one: `v1` cells (ADR 0129, Р11б) and `v2` branches (ADR
- * 0234). Both are read here and never written: an old build may still be open in a tab and keeps
- * writing its own cells, so the only safe writer of an old cell is that old build.
+ * Drafts of the formats before the current one: `v1` cells (ADR 0129, Р11б), `v2` branches (ADR
+ * 0234) and `v3` branches (ADR 0244). All are read here and never written: an old build may still be
+ * open in a tab and keeps writing its own cells, so the only safe writer of an old cell is that old
+ * build.
  *
  * The rule is the one ADR 0129 set for `v1`: what a person typed in an old format is never dropped
  * and never guessed at. A `v2` row is addressed by its source key — the same address `v3` uses — so
@@ -32,38 +34,45 @@ export interface LegacyRecord {
 }
 
 /**
- * Mark of one VERSION of a `v2` row. The clock alone names it: a `v2` version is born with a new
- * counter in its writer's branch, and copies carry the same clock. The content stays out on purpose
- * — the normalizer gains keys with every format, and a mark over content would change for every
- * handled row at once and bring them all back (the reason `legacyFingerprint` freezes its fields).
+ * Mark of one VERSION of an older-format row. The clock alone names it: a version is born with a
+ * new counter in its writer's branch, and copies carry the same clock. The content stays out on
+ * purpose — the normalizer gains keys with every format, and a mark over content would change for
+ * every handled row at once and bring them all back (the reason `legacyFingerprint` freezes its
+ * fields). The `v2` form is unchanged, so marks a `v3` build journaled still match.
  */
-function v2Mark(key: string, entry: DraftEntry): string {
-  return fingerprint(['v2', key, entry.clock.counter, entry.clock.branch]);
+function olderMark(format: 'v2' | 'v3', key: string, entry: DraftEntry): string {
+  return fingerprint([format, key, entry.clock.counter, entry.clock.branch]);
 }
 
 /**
- * Takes the `v2` rows over (see the module header). `own` is the merged `v3` state; the result is
- * that state with the adopted rows and their marks, plus the rows left for the person to place.
+ * Takes the rows of an older format over (see the module header). `own` is the merged current
+ * state; the result is that state with the adopted rows and their marks, plus the rows left for the
+ * person to place. `handled` are marks journaled by an intermediate format: a `v2` row that a `v3`
+ * build already took over lives on as that `v3` row, and must not come a second time.
  *
- * An adopted row gets the first counter in this branch: `v3` holds no version of that key, so there
- * is nothing to be newer than. Two tabs adopting the same row write equal content under two
- * branches, and the merge picks one of them deterministically.
+ * An adopted row gets the first counter in this branch: the current format holds no version of
+ * that key, so there is nothing to be newer than. Two tabs adopting the same row write equal content
+ * under two branches, and the merge picks one of them deterministically.
  *
- * A `v2` tombstone is not carried over: it is the old build's record of a sent row, and the server
- * already holds that reading.
+ * A tombstone is not carried over: it is the old build's record of a sent row, and the server
+ * already holds that reading. An attempt still `pending` IS carried over (ADR 0244): its key and
+ * body fingerprint are what lets a retry after the upgrade replay the old command instead of
+ * becoming a second one; the body of an unchanged day fingerprints the same in both builds.
  */
-export function adoptV2(
+export function adoptOlder(
   own: BranchState,
-  v2: BranchState,
+  old: BranchState,
   branch: string,
+  format: 'v2' | 'v3',
+  handled: ReadonlySet<string> = new Set(),
 ): { state: BranchState; records: LegacyRecord[] } {
   const entries = { ...own.entries };
   const legacy = new Set(own.legacy);
   const records: LegacyRecord[] = [];
-  for (const [key, entry] of Object.entries(v2.entries)) {
+  for (const [key, entry] of Object.entries(old.entries)) {
     if (!entry.item) continue;
-    const mark = v2Mark(key, entry);
-    if (own.legacy.includes(mark)) continue;
+    const mark = olderMark(format, key, entry);
+    if (own.legacy.includes(mark) || handled.has(mark)) continue;
     if (own.entries[key] === undefined) {
       entries[key] = { clock: { counter: 1, branch }, savedAt: entry.savedAt, item: entry.item };
       legacy.add(mark);
@@ -71,7 +80,15 @@ export function adoptV2(
       records.push({ itemId: key, item: entry.item, fingerprint: mark, savedAt: entry.savedAt });
     }
   }
-  return { state: { ...own, entries, legacy: [...legacy].sort() }, records };
+  const known = new Set(own.attempts.map((attempt) => attempt.key));
+  const attempts = [
+    ...own.attempts,
+    ...old.attempts.filter((attempt) => attempt.state === 'pending' && !known.has(attempt.key)),
+  ];
+  return {
+    state: { ...own, entries, legacy: [...legacy].sort(), attempts: orderAttempts(attempts) },
+    records,
+  };
 }
 
 /**
@@ -79,8 +96,8 @@ export function adoptV2(
  * разошёлся отпечаток — старая вкладка переписала запись, и это новая правка человека, а не
  * воскресший призрак (Р11б).
  *
- * `handled` joins the `v3` journal with the `v2` ones: a `v1` record placed by the `v2` build was
- * journaled there, and it must not come back only because the format moved on.
+ * `handled` joins the current journal with the older ones: a `v1` record placed by a `v2` or `v3`
+ * build was journaled there, and it must not come back only because the format moved on.
  */
 export function readLegacy(
   userId: string,

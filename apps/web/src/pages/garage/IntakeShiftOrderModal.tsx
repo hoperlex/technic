@@ -46,6 +46,7 @@ function readingLabel(row: VehicleReadingJournalRow): string {
   const reading = row.reading;
   if (!reading) return 'показания нет';
   if (reading.kind === 'no_data') return 'нет возможности снять';
+  if (reading.kind === 'idle') return 'не работал';
   const parts = [
     reading.odometerKm === null ? null : `${formatReading(reading.odometerKm)} км`,
     reading.engineHours === null ? null : `${formatReading(reading.engineHours)} ч`,

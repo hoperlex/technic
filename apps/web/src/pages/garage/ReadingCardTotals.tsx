@@ -71,6 +71,13 @@ export function ReadingCardTotals({
       value: hinted(total.missingReadings, 'Смена была, чисел по ней не передали'),
     },
     {
+      label: 'Не работал',
+      value: hinted(
+        total.idleShifts,
+        'Смена закрыта отметкой «Не работал»: выходной, праздник, простой или ремонт',
+      ),
+    },
+    {
       label: 'Не принято',
       value: hinted(
         total.unacceptedShifts,

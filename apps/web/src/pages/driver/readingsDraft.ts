@@ -1,4 +1,9 @@
-import type { DriverReportDto, ReportItemDto, VehicleReadingDto } from '@technic/contracts';
+import {
+  idleReasonLabels,
+  type DriverReportDto,
+  type ReportItemDto,
+  type VehicleReadingDto,
+} from '@technic/contracts';
 import type { DraftFile, DraftItem, DraftStopTimes } from './api';
 import type { DraftChange, DraftPatch, DraftView } from './draftStore';
 import type { TransferTarget } from './DriverOrphanBlock';
@@ -28,6 +33,8 @@ export const emptyItem = (): DraftItem => ({
   comment: '',
   files: [],
   confirmAnomaly: false,
+  idle: false,
+  idleReason: '',
 });
 
 /**
@@ -73,6 +80,16 @@ function savedTimes(item: ReportItemDto, reading: VehicleReadingDto) {
 export function savedItem(item: ReportItemDto): DraftItem | null {
   const reading = item.reading;
   if (!reading) return null;
+  // «Не работал» (ADR 0244) comes back as the switch on, with its reason and word; it has no numbers
+  // to show, so switching it off on screen starts from empty fields.
+  if (reading.kind === 'idle') {
+    return {
+      ...emptyItem(),
+      comment: reading.comment,
+      idle: true,
+      idleReason: reading.idleReason ?? '',
+    };
+  }
   // Строка, закрытая персоналом видом `no_data`, приходит без чисел — и поля остаются пустыми:
   // причину её закрытия водитель читает, но не редактирует (Р4).
   return {
@@ -89,6 +106,8 @@ export function savedItem(item: ReportItemDto): DraftItem | null {
     // Подтверждение не наследуется от прошлой отправки: подтверждают показанную аномалию,
     // а показывают её заново — вместе с числами, к которым она относится.
     confirmAnomaly: false,
+    idle: false,
+    idleReason: '',
   };
 }
 
@@ -161,6 +180,7 @@ export function orphansOf(report: DriverReportDto | null, draft: DraftView): Orp
  * times count for the same reason: a morning start typed alone is the driver's input too.
  */
 const filled = (item: DraftItem): boolean =>
+  item.idle ||
   Boolean(
     item.odometerKm ||
     item.engineHours ||
@@ -248,6 +268,11 @@ export interface PendingRow {
  * диктуют диспетчеру вслух, и переставленные числа он запишет в том порядке, в каком услышал.
  */
 function pendingText(item: DraftItem, stops: readonly ShownStop[]): string {
+  // An idle row says that alone: the hidden numbers typed before the switch are not its answer.
+  if (item.idle) {
+    const reason = item.idleReason ? idleReasonLabels[item.idleReason].toLowerCase() : '';
+    return ['не работал', reason, item.comment].filter(Boolean).join(' · ');
+  }
   const parts: string[] = [];
   if (item.startedAt) parts.push(`начало ${item.startedAt}`);
   if (item.endedAt) parts.push(`окончание ${item.endedAt}`);

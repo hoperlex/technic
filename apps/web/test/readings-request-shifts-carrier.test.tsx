@@ -141,6 +141,7 @@ describe('request shifts carried from the readings intake', () => {
         endedAt: null,
         points: [],
         noDataReason: '',
+        idleReason: null,
         comment: '',
         source: 'driver',
         recordedAt: '2026-08-14T17:20:00.000Z',

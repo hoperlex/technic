@@ -11,6 +11,8 @@
  * ровно один, и держится это тем, что писать отсюда больше нечем: обеих функций тут нет.
  */
 
+import type { IdleReason } from '@technic/contracts';
+
 /** Файл, уже загруженный в хранилище и ещё ни к чему не привязанный. */
 export interface DraftFile {
   id: string;
@@ -25,8 +27,11 @@ export interface DraftFile {
  * сворачивании браузера человек не простит.
  *
  * Вида `no_data` здесь нет: строку без показаний закрывает персонал с причиной (план кабинета,
- * Р4), а у водителя поля, которым можно отписаться от ввода, больше нет. Старые черновики с этими
- * ключами читаются как обычные — лишние поля просто не смотрят.
+ * Р4). Старые черновики с этими ключами читаются как обычные — лишние поля просто не смотрят.
+ *
+ * «Не работал» is here (`idle`, ADR 0244): the driver's own answer for a shift without work. The
+ * numbers and times typed before the switch stay in the draft, hidden — switching back brings them
+ * back — and never leave it while `idle` is on: the submit sends the kind alone.
  */
 export interface DraftItem {
   odometerKm: string;
@@ -63,6 +68,10 @@ export interface DraftItem {
    * «цифра верная» относится к ним же.
    */
   confirmAnomaly: boolean;
+  /** «Не работал» is on (ADR 0244); a draft of an older format reads `false`. */
+  idle: boolean;
+  /** Its reason; empty until chosen. «Другое» takes its word from `comment`. */
+  idleReason: IdleReason | '';
 }
 
 /** Times typed at one stop. Only stop 1 has an arrival; its key stays empty elsewhere (D6). */

@@ -1,5 +1,6 @@
 import { Fragment, useState } from 'react';
 import { Alert, Button, Radio, Space, Typography } from 'antd';
+import { idleReasonLabels } from '@technic/contracts';
 import { ViewModal } from '@shared/ui';
 import { formatDateTime } from '@shared/lib';
 import type { DraftItem } from './api';
@@ -35,6 +36,12 @@ const withUnit = (value: string, unit: string): string => (value ? `${value} ${u
  * разглядывать снимки по одному здесь незачем — блок про то, что введённое не пропало.
  */
 const FIELDS: { label: string; text: (item: DraftItem) => string }[] = [
+  // «Не работал» moves with the record like the rest (ADR 0244), and so must be seen before a move.
+  {
+    label: 'Не работал',
+    text: (item) =>
+      item.idle ? (item.idleReason ? idleReasonLabels[item.idleReason] : 'да') : DASH,
+  },
   { label: 'Одометр', text: (item) => withUnit(item.odometerKm, 'км') },
   { label: 'Моточасы', text: (item) => withUnit(item.engineHours, 'ч') },
   // Топливо тремя строками в порядке смены (ADR 0163) — тем же, каким его вводят и каким его

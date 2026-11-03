@@ -88,6 +88,7 @@ function reading(over: Partial<VehicleReadingDto> = {}): VehicleReadingDto {
     endedAt: null,
     points: [],
     noDataReason: '',
+    idleReason: null,
     comment: '',
     source: 'driver',
     recordedAt: '2026-08-14T05:20:00.000Z',

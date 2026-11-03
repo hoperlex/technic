@@ -49,7 +49,7 @@ const driver = authUser({
 });
 
 const V1_KEY = `technic:driver-draft:${driver.id}:${today}`;
-const DRAFT_PREFIX = `technic:driver-draft-v3:${driver.id}:${today}:`;
+const DRAFT_PREFIX = `technic:driver-draft-v4:${driver.id}:${today}:`;
 
 const routeItem: ReportItemDto = {
   id: 'item-route',
@@ -88,6 +88,8 @@ const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
   comment: '',
   files: [],
   confirmAnomaly: false,
+  idle: false,
+  idleReason: '',
   ...patch,
 });
 
@@ -108,6 +110,7 @@ function readingOf(odometerKm: number): VehicleReadingDto {
     endedAt: null,
     points: [],
     noDataReason: '',
+    idleReason: null,
     comment: '',
     source: 'driver',
     recordedAt: `${today}T10:00:00.000Z`,
@@ -448,6 +451,8 @@ describe('кабинет водителя: черновик по источни�
       comment: 'снято у КамАЗа',
       // Подтверждают показанное, а показывают его заново — галочка сбрасывается (Р14а п. 3).
       confirmAnomaly: false,
+      idle: false,
+      idleReason: '',
       files: [file('f-new')],
     });
     // Источник погашен надгробием, а не вычеркнут: ячейка соседней ветки на месте, и вернуть из неё

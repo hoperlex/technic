@@ -51,7 +51,7 @@ const driver = authUser({
   fullName: 'Водителев Виктор Иванович',
 });
 
-const DRAFT_PREFIX = `technic:driver-draft-v3:${driver.id}:${today}:`;
+const DRAFT_PREFIX = `technic:driver-draft-v4:${driver.id}:${today}:`;
 
 const routeItem: ReportItemDto = {
   id: 'item-route',
@@ -78,6 +78,7 @@ const stored145320: VehicleReadingDto = {
   endedAt: null,
   points: [],
   noDataReason: '',
+  idleReason: null,
   comment: '',
   source: 'driver',
   recordedAt: `${today}T10:00:00.000Z`,
@@ -106,6 +107,8 @@ const item = (patch: Partial<DraftItem> = {}): DraftItem => ({
   comment: '',
   files: [],
   confirmAnomaly: false,
+  idle: false,
+  idleReason: '',
   ...patch,
 });
 

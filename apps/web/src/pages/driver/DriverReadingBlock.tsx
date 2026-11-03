@@ -1,9 +1,14 @@
 import { Alert, Button, Input, Typography, Upload } from 'antd';
 import { PaperClipOutlined } from '@ant-design/icons';
-import type { DriverPreviousReading, ReportItemDto } from '@technic/contracts';
+import {
+  IDLE_READINGS_OPEN,
+  type DriverPreviousReading,
+  type ReportItemDto,
+} from '@technic/contracts';
 import { type ReadingField } from '@entities/vehicle-reading';
 import { FileLinkList } from '@entities/file';
 import type { DraftItem } from './api';
+import { IdleSwitch } from './DriverIdleSwitch';
 import { ReadingFields } from './DriverReadingFields';
 import { RouteTimes } from './DriverRouteTimes';
 import { fieldLabelStyle, hintStyle, keepVisible } from './readingFieldStyles';
@@ -24,8 +29,12 @@ import type { ShownStop } from './readingStops';
  * иначе восстановление после закрытия вкладки восстанавливало бы половину.
  *
  * Переключателя «нет возможности снять показания» здесь нет намеренно (план кабинета, Р4): такую
- * строку закрывает персонал видом `no_data` и с причиной, а у водителя поля, которым можно
- * отписаться от ввода, больше нет.
+ * строку закрывает персонал видом `no_data` и с причиной.
+ *
+ * «Не работал» is here (ADR 0244, owner decision D3 — a change of Р4 for a shift without work): the
+ * switch hides the numbers and times and asks for the reason. Shown once release 1B opens it
+ * (`IDLE_READINGS_OPEN`), and on a row already saved as idle in any case — a build that cannot
+ * create the kind must still show it and send it back unchanged.
  *
  * Читающий режим — свойство блока, а не одного подвала (план кабинета, Р10): принятый, повторно
  * принимаемый и аннулированный день правит диспетчер, а день старше семи суток не принимают вовсе.
@@ -98,6 +107,7 @@ export function ReadingBlock({
   const hardOf = (field: ReadingField): string | undefined =>
     hard.find((warning) => warning.field === field)?.text;
   const closedByStaff = item.reading?.kind === 'no_data';
+  const idleShown = IDLE_READINGS_OPEN || value.idle;
 
   return (
     <div
@@ -145,7 +155,17 @@ export function ReadingBlock({
           is not accepted, Р22) and a mismatch with the previous shift both happen to be true — a
           counter was replaced, the tank was topped up from the side. The answer is the window at
           «Передать» (ADR 0237); the block only says in advance that it will be asked. */}
-      {notes.length > 0 && (
+      {idleShown && (
+        <IdleSwitch
+          idle={value.idle}
+          reason={value.idleReason}
+          error={errors.idleReason}
+          disabled={readOnly}
+          onChange={edit}
+        />
+      )}
+
+      {!value.idle && notes.length > 0 && (
         <Alert
           type="warning"
           showIcon
@@ -166,7 +186,7 @@ export function ReadingBlock({
           разом — выключать их поимённо значило бы однажды забыть шестое. */}
       {/* The route's stops above the counters (ADR 0234, D9): the day is filled against the task,
           stop by stop, and the counters close it. */}
-      {stops.length > 0 && (
+      {!value.idle && stops.length > 0 && (
         <RouteTimes
           stops={stops}
           value={value.stops}
@@ -182,18 +202,22 @@ export function ReadingBlock({
           }
         />
       )}
-      <ReadingFields
-        value={value}
-        previous={previous}
-        errors={errors}
-        hardOf={hardOf}
-        disabled={readOnly}
-        timed={item.sourceKind === 'esm2'}
-        onChange={edit}
-      />
+      {!value.idle && (
+        <ReadingFields
+          value={value}
+          previous={previous}
+          errors={errors}
+          hardOf={hardOf}
+          disabled={readOnly}
+          timed={item.sourceKind === 'esm2'}
+          onChange={edit}
+        />
+      )}
 
       <label style={{ display: 'block' }}>
-        <Typography.Text style={fieldLabelStyle}>Комментарий</Typography.Text>
+        <Typography.Text style={fieldLabelStyle}>
+          {value.idle && value.idleReason === 'other' ? 'Почему не работали' : 'Комментарий'}
+        </Typography.Text>
         <Input.TextArea
           value={value.comment}
           autoSize={{ minRows: 1 }}
@@ -202,6 +226,7 @@ export function ReadingBlock({
           onFocus={keepVisible}
           onChange={(e) => edit({ comment: e.target.value })}
         />
+        {errors.comment && <Typography.Text type="danger">{errors.comment}</Typography.Text>}
       </label>
 
       {/* Файлы грузятся сразу и по одному, независимо от чисел: сорвавшаяся десятая фотография не

@@ -74,6 +74,7 @@ const FUEL_READING: VehicleReadingDto = {
   endedAt: null,
   points: [],
   noDataReason: '',
+  idleReason: null,
   comment: '',
   source: 'driver',
   recordedAt: '2026-07-20T17:20:00.000Z',

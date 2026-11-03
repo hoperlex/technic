@@ -272,6 +272,7 @@ function totals(): ReadingTotals {
     engineHoursGaps: 0,
     missingReadings: 0,
     shifts: 30,
+    idleShifts: 0,
     unacceptedShifts: 0,
     fuelSpentLiters: 0,
     fuelNormLiters: 0,

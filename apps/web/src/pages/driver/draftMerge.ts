@@ -1,3 +1,4 @@
+import { IDLE_REASONS, type IdleReason } from '@technic/contracts';
 import type { DraftItem, DraftStopTimes } from './api';
 
 /**
@@ -22,15 +23,26 @@ import type { DraftItem, DraftStopTimes } from './api';
  * result back with the ORIGINAL clocks: with one shared prefix its copy would tie with ours and win
  * the merge by storage order, erasing typed times without a trace. Under `v3` the old build sees
  * nothing of ours, and `v2` branches become read-only input here (`draftLegacy.ts`).
+ *
+ * `v4` (ADR 0244) moved for the «Не работал» switch. A `v3` build drops `idle` and `idleReason` in
+ * its normalizer and consolidates with the original clocks, and the numbers a driver typed before
+ * switching to «Не работал» stay in the row, hidden: on a shared prefix the old tab would turn an
+ * idle row back into those numbers and send them as `values`. A client floor does not reach local
+ * storage — an offline old tab writes it all the same — so the old format becomes read-only input
+ * here, like `v2` before it.
  */
-export const PREFIX = 'technic:driver-draft-v3:';
+export const PREFIX = 'technic:driver-draft-v4:';
+export const V3_PREFIX = 'technic:driver-draft-v3:';
 export const V2_PREFIX = 'technic:driver-draft-v2:';
 export const V1_PREFIX = 'technic:driver-draft:';
 
 /** Общее начало ключей дня: им же событие `storage` узнаёт, что перерисовывать (Р11в). */
 export const draftPrefix = (userId: string, date: string): string => `${PREFIX}${userId}:${date}:`;
 
-/** The same for the `v2` branches of the day: read-only here, but an old tab may still write them. */
+/** The same for the `v3` and `v2` branches of the day: read-only here, an old tab may still write. */
+export const v3DraftPrefix = (userId: string, date: string): string =>
+  `${V3_PREFIX}${userId}:${date}:`;
+
 export const v2DraftPrefix = (userId: string, date: string): string =>
   `${V2_PREFIX}${userId}:${date}:`;
 
@@ -121,8 +133,8 @@ const isClock = (value: unknown): value is DraftClock =>
  * `sameContent` признаёт её отличной от слияния, и консолидация один раз перепишет её полной
  * формой (Р11в). Дефект здесь только кажущийся — переписывание однократно и само себя гасит.
  *
- * The inputs are three since `v3`: its own branches, the read-only `v2` branches and `v1` cells
- * (`draftLegacy.ts`) — still through this one normalizer.
+ * The inputs are four since `v4`: its own branches, the read-only `v3` and `v2` branches and `v1`
+ * cells (`draftLegacy.ts`) — still through this one normalizer.
  */
 export function normalizeItem(raw: unknown): DraftItem {
   const item = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<DraftItem>;
@@ -140,6 +152,12 @@ export function normalizeItem(raw: unknown): DraftItem {
     comment: text(item.comment),
     files: Array.isArray(item.files) ? item.files : [],
     confirmAnomaly: item.confirmAnomaly === true,
+    // «Не работал» (ADR 0244): a record of an older format has neither key and reads as a shift
+    // with numbers; a reason outside the list reads as not chosen rather than breaking the block.
+    idle: item.idle === true,
+    idleReason: IDLE_REASONS.includes(item.idleReason as IdleReason)
+      ? (item.idleReason as IdleReason)
+      : '',
   };
 }
 

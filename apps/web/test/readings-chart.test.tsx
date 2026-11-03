@@ -79,6 +79,7 @@ function totals(over: Partial<ReadingTotals> = {}): ReadingTotals {
     engineHoursGaps: 0,
     missingReadings: 4,
     shifts: 30,
+    idleShifts: 0,
     unacceptedShifts: 6,
     fuelSpentLiters: 0,
     fuelNormLiters: 0,

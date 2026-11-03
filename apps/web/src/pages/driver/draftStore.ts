@@ -14,7 +14,9 @@ import {
   sameContent,
   V1_PREFIX,
   V2_PREFIX,
+  V3_PREFIX,
   v2DraftPrefix,
+  v3DraftPrefix,
   type Branch,
   type BranchState,
   type DraftClock,
@@ -22,13 +24,13 @@ import {
   type DraftRow,
   type SubmitAttempt,
 } from './draftMerge';
-import { adoptV2, legacySavedAt, readLegacy, TTL_MS, type LegacyRecord } from './draftLegacy';
+import { adoptOlder, legacySavedAt, readLegacy, TTL_MS, type LegacyRecord } from './draftLegacy';
 
 /**
  * Черновик показаний: адресуется источником, пишется ветками, сливается при чтении (план кабинета
- * водителя — Р11, Р11б, Р11в, Р11г, Р12а, Р14). The format is `v3` since ADR 0234: the `v2`
- * machinery under its own prefix, with the shift and stop times; older formats are read-only input
- * (`draftLegacy.ts`).
+ * водителя — Р11, Р11б, Р11в, Р11г, Р12а, Р14). The format is `v4` since ADR 0244: the `v3`
+ * machinery (ADR 0234: shift and stop times) under its own prefix, with «Не работал»; older formats
+ * are read-only input (`draftLegacy.ts`).
  *
  * Три решения, из которых следует всё остальное.
  *
@@ -127,6 +129,7 @@ const ownKey = (userId: string, date: string): string => `${draftPrefix(userId, 
 export function isDayDraftKey(userId: string, date: string, key: string): boolean {
   return (
     key.startsWith(draftPrefix(userId, date)) ||
+    key.startsWith(v3DraftPrefix(userId, date)) ||
     key.startsWith(v2DraftPrefix(userId, date)) ||
     key === legacyDraftKey(userId, date)
   );
@@ -143,14 +146,23 @@ function readBranches(prefix: string): Branch[] {
 }
 
 /**
- * The day as both reading and writing see it: the merged `v3` branches with the `v2` rows taken over
- * (`adoptV2`). One loader for both, so that a write never builds on a state the screen did not show.
+ * The day as both reading and writing see it: the merged `v4` branches with the `v3` rows and then
+ * the `v2` rows taken over (`adoptOlder`). One loader for both, so that a write never builds on a
+ * state the screen did not show. A `v2` row the `v3` build adopted is journaled there and comes
+ * along as that `v3` row, not twice.
  */
 function loadDay(userId: string, date: string) {
   const branches = readBranches(draftPrefix(userId, date));
-  const old = mergeBranches(readBranches(v2DraftPrefix(userId, date)));
-  const { state, records } = adoptV2(mergeBranches(branches), old, BRANCH);
-  return { branches, merged: state, records, oldJournal: old.legacy };
+  const v3 = mergeBranches(readBranches(v3DraftPrefix(userId, date)));
+  const v2 = mergeBranches(readBranches(v2DraftPrefix(userId, date)));
+  const fromV3 = adoptOlder(mergeBranches(branches), v3, BRANCH, 'v3');
+  const fromV2 = adoptOlder(fromV3.state, v2, BRANCH, 'v2', new Set(v3.legacy));
+  return {
+    branches,
+    merged: fromV2.state,
+    records: [...fromV3.records, ...fromV2.records],
+    oldJournal: [...v3.legacy, ...v2.legacy],
+  };
 }
 
 // ── Чтение ──
@@ -284,10 +296,12 @@ export function pruneDrafts(): void {
     if (savedAt === null || now - savedAt > TTL_MS) localStorage.removeItem(key);
     else legacyDays.add(key.slice(V1_PREFIX.length));
   }
-  // `v2` before `v3`, by the same rule one step later: a `v3` journal holds the marks of adopted
-  // `v2` rows, and it stays while the day still has `v2` branches that would otherwise come back.
+  // `v2` before `v3` before `v4`, by the same rule one step later each time: a journal holds the
+  // marks of adopted older rows, and it stays while the day still has the branches that would
+  // otherwise come back.
   const v2Days = pruneBranches(V2_PREFIX, now, (day) => legacyDays.has(day));
-  pruneBranches(PREFIX, now, (day) => legacyDays.has(day) || v2Days.has(day));
+  const v3Days = pruneBranches(V3_PREFIX, now, (day) => legacyDays.has(day) || v2Days.has(day));
+  pruneBranches(PREFIX, now, (day) => legacyDays.has(day) || v2Days.has(day) || v3Days.has(day));
 }
 
 /**
@@ -352,10 +366,10 @@ function gates(state: BranchState, kept: readonly { state: BranchState }[]): boo
 
 /**
  * Выход из учётной записи чистит все префиксы: на общем телефоне чужие показания не должны
- * пережить смену человека (Р11б). The old build clears only its own, so ours clears all three.
+ * пережить смену человека (Р11б). An old build clears only its own, so ours clears all four.
  */
 export function clearUserDrafts(userId: string): void {
-  const prefixes = [V1_PREFIX, V2_PREFIX, PREFIX].map((prefix) => `${prefix}${userId}:`);
+  const prefixes = [V1_PREFIX, V2_PREFIX, V3_PREFIX, PREFIX].map((prefix) => `${prefix}${userId}:`);
   for (const key of Object.keys(localStorage)) {
     if (prefixes.some((prefix) => key.startsWith(prefix))) {
       localStorage.removeItem(key);

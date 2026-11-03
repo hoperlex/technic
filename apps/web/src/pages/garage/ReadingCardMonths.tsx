@@ -106,6 +106,13 @@ const METRICS: Metric[] = [
     value: (r) => count(r.missingReadings),
   },
   {
+    key: 'idleShifts',
+    title: 'Не работал',
+    hint: 'Смена закрыта отметкой «Не работал»: закрыта, но без работы',
+    width: 120,
+    value: (r) => count(r.idleShifts),
+  },
+  {
     key: 'unacceptedShifts',
     title: 'Не принято',
     hint: 'Показания переданы, день ещё не принят — в числа месяца они всё равно вошли',

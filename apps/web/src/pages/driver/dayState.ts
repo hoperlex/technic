@@ -48,6 +48,10 @@ type DayFacts = Omit<DayState, 'report'>;
 const WINDOW_HINT = `Показания принимаются за сегодня и ${DRIVER_SUBMIT_PAST_DAYS} предыдущих дней`;
 
 /** Читающий день: ввод закрыт, кнопки «Передать» нет, причину называет подвал теми же словами. */
+/** Every row of the day saved as «Не работал» (ADR 0244): the line says so rather than a bare «Передано». */
+const allIdle = (report: DriverReportDto): boolean =>
+  report.items.length > 0 && report.items.every((item) => item.reading?.kind === 'idle');
+
 const reading = (label: string, hint: string, draft: DraftUse): DayFacts => ({
   label,
   hint,
@@ -115,12 +119,15 @@ function stateOf(
 
   // Окно записи уже окна чтения: читать — 30 дней назад, передавать — сегодня и семь предыдущих.
   // Держит его сервер (`canSubmit`), портал границу не вычисляет.
-  if (!canSubmit)
-    return reading(report?.state === 'submitted' ? 'Передано' : 'Черновик', WINDOW_HINT, 'aside');
+  if (!canSubmit) {
+    const sent = report?.state === 'submitted';
+    const label = sent ? (allIdle(report) ? 'Передано · Не работал' : 'Передано') : 'Черновик';
+    return reading(label, WINDOW_HINT, 'aside');
+  }
 
   if (report?.state === 'submitted')
     return {
-      label: 'Передано',
+      label: allIdle(report) ? 'Передано · Не работал' : 'Передано',
       hint: 'Можно поправить, пока день не приняли',
       submittable: true,
       // Состав отправленного дня заморожен, и `syncDraftItems` его не тронет: открывать нечего.

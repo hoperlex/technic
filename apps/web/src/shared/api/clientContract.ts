@@ -78,8 +78,16 @@
  * served, and only then may a release set `REQUIRED_CLIENT_FLOOR = 7` and remove the debts
  * (`docs/runbook.md`). The promise binds whoever removes a debt: the removal is safe at floor 7
  * only if a contract-7 bundle no longer depends on what is removed.
+ *
+ * **7 → 8 («Не работал», ADR 0244).** Ahead of the breakage again, as 2 → 3: this build knows the
+ * reading kind `idle` everywhere — the cabinet keeps it in a `v4` draft, the garage shows and edits
+ * it — while the server still refuses to write it (`IDLE_READINGS_OPEN = false`). A contract-7 tab
+ * would drop the kind from its draft and resend the numbers hidden under the switch as `values`, and
+ * would show an idle row as an empty reading. So the operator raises the floor with
+ * `deploy-auto --client-floor=8` once this build is verifiably served, and only the next release
+ * (1B) requires 8 and opens idle writes.
  */
-export const CLIENT_CONTRACT = 7;
+export const CLIENT_CONTRACT = 8;
 
 /** Диагностика: какая сборка прислала запрос. Гейт этот заголовок не толкует. */
 export const CLIENT_BUILD_HEADER = 'X-Client-Build';

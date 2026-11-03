@@ -43,7 +43,8 @@ function stopLine(
 
 export function ShiftTimeCell({ row }: { row: VehicleReadingJournalRow }) {
   const reading = row.reading;
-  if (!reading || reading.kind === 'no_data') return DASH;
+  // An idle shift (ADR 0244) was not timed, like `no_data`.
+  if (!reading || reading.kind !== 'values') return DASH;
   const timed = reading.startedAt !== null || reading.points.length > 0;
   if (!timed) {
     if (row.draftFormat === 'v2') return <Tag style={{ marginInlineEnd: 0 }}>до учёта времени</Tag>;

@@ -80,6 +80,7 @@ const READING: VehicleReadingDto = {
   endedAt: null,
   points: [],
   noDataReason: '',
+  idleReason: null,
   comment: 'сдал вечером',
   source: 'driver',
   recordedAt: '2026-08-14T17:20:00.000Z',
