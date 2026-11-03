@@ -252,8 +252,12 @@ shift_facts AS (
             * проекция чисел по снимочной координате: разрыв принадлежит той строке, в которой он
             * случился, а не сегодняшнему виду её источника.
             */
-           /* An aligned «Не работал» breaks nothing: the vehicle stood (ADR 0244). */
-           ((p.kind IS DISTINCT FROM 'values' AND NOT (p.kind = 'idle' AND p.aligned))
+           /*
+            * An aligned «Не работал» breaks nothing: the vehicle stood (ADR 0244). coalesce is
+            * required: without a reading p.kind = 'idle' is NULL, and NOT NULL would drop the
+            * unsubmitted shift from the gaps — the very row the column exists for.
+            */
+           ((p.kind IS DISTINCT FROM 'values' AND NOT coalesce(p.kind = 'idle' AND p.aligned, false))
             OR coalesce(p.odometer_anomaly = 'counter_reset', false)
             OR coalesce(p.engine_hours_anomaly = 'counter_reset', false)) AS row_gap,
            /*
@@ -402,7 +406,7 @@ expected_quality AS (
             * Closed as «Не работал» (ADR 0244): not missing (the line above), and counted apart so
             * the data quality does not read a holiday as work. Only an aligned one closes the shift.
             */
-           (p.aligned AND p.kind = 'idle') AS idle,
+           coalesce(p.aligned AND p.kind = 'idle', false) AS idle,
            /*
             * Непринятая смена (Р27). IS DISTINCT FROM ловит и неоткрытый день: отчёта нет вовсе,
             * состояние пустое — ровно та строка, которую сводка по строкам отчёта теряла.

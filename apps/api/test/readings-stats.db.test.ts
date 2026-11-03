@@ -1524,6 +1524,7 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
         'fuelFilledLiters',
         'fuelNormLiters',
         'fuelSpentLiters',
+        'idleShifts',
         'missingReadings',
         'month',
         'odometerGaps',

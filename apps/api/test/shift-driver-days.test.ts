@@ -34,6 +34,7 @@ function reading(over: Partial<DriverShiftReading> = {}): DriverShiftReading {
     continuous: true,
     fuelFilledLiters: 120,
     noDataReason: '',
+    idleReason: null,
     comment: '',
     discrepancies: [],
     times: { startedAt: null, endedAt: null, points: [] },
@@ -224,5 +225,55 @@ describe('день водителя', () => {
     // The comment lives in the diagnostics only: the day carries no reading text the doors could
     // copy into the public shift row (D10).
     expect(day).not.toHaveProperty('comment');
+  });
+});
+
+/** «Не работал» (ADR 0244): zero hours by meaning, no counter checks, the source guard kept. */
+const idleReading = (over: Partial<DriverShiftReading> = {}) =>
+  reading({
+    kind: 'idle',
+    idleReason: 'day_off',
+    engineHours: null,
+    previousId: null,
+    previousEngineHours: null,
+    previousDate: null,
+    fuelFilledLiters: null,
+    ...over,
+  });
+
+describe('день водителя: «Не работал»', () => {
+  it('a day closed as idle is a clean zero day with zero refuelling', () => {
+    expect(driverShiftDayOf(DAY, [idleReading()])).toMatchObject({
+      machineHours: 0,
+      refuelLiters: 0,
+      clean: true,
+      issues: [],
+    });
+  });
+
+  it('idle next to a worked shift adds nothing: the day has the worked hours alone', () => {
+    const day = driverShiftDayOf(DAY, [
+      reading(),
+      idleReading({ readingId: 'reading-2', itemId: 'item-2' }),
+    ]);
+    expect(day).toMatchObject({ machineHours: 8.5, refuelLiters: 120, clean: true });
+  });
+
+  it('an unresolved source discrepancy still holds an idle day', () => {
+    const day = driverShiftDayOf(DAY, [
+      idleReading({ discrepancies: [{ kind: 'date', resolved: false }] }),
+    ]);
+    expect(day.clean).toBe(false);
+    expect(day.issues).toEqual(['discrepancy']);
+  });
+
+  it('the diagnostics name the idle reason with zero hours and fuel', () => {
+    const day = driverShiftDayOf(DAY, [idleReading()]);
+    expect(driverDiagnosticsDto(day).readings[0]).toMatchObject({
+      kind: 'idle',
+      idleReason: 'day_off',
+      machineHours: 0,
+      refuelLiters: 0,
+    });
   });
 });

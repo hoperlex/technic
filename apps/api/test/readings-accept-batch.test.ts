@@ -55,6 +55,8 @@ const state = vi.hoisted(() => ({
   role: 'admin' as Role | null,
   /** Журнал обращений к приёму: им проверяются и порядок, и то, что до приёма вообще дошли. */
   calls: [] as { id: string; version: number; actorUserId: string }[],
+  /** Reports holding a contradicted «Не работал» now (ADR 0244), as `readings-idle.ts` answers. */
+  contradicted: new Set<string>(),
 }));
 
 /** Ответ приёма: ручка его не читает вовсе, но подмена обязана отвечать формой сервиса. */
@@ -135,6 +137,11 @@ vi.mock('../src/auth/principal', () => ({
  * Ошибки подмена бросает те же, теми же текстами и с тем же кодом, какими отвечает настоящий
  * приём: ручка различает исходы кодом 409, и выдуманный отказ проверял бы разбор по выдумке.
  */
+vi.mock('../src/services/readings-idle', () => ({
+  idleContradictedReports: async (ids: readonly string[]) =>
+    new Set(ids.filter((id) => state.contradicted.has(id))),
+}));
+
 vi.mock('../src/services/readings', async (importOriginal) => {
   const { err } = await import('../src/lib/errors');
   return {
@@ -243,6 +250,28 @@ describe('пакетный приём отчётов дня', () => {
     expect(body.failed.map((row) => row.id)).toEqual([STALE, ALREADY]);
     // До приёма дошли все пятеро: строка после отказавшей не пропускается.
     expect(state.calls.map((call) => call.id)).toEqual([OK_1, STALE, OK_2, ALREADY, OK_3]);
+  });
+
+  it('отчёт с противоречием «Не работал» в пакет не идёт, соседи приняты (ADR 0244)', async () => {
+    state.calls.length = 0;
+    state.contradicted = new Set([OK_2]);
+    try {
+      const res = await post([at(OK_1, 1), at(OK_2, 1), at(OK_3, 1)]);
+      const body = res.json<ReportAcceptBatchDto>();
+      expect(body.accepted).toEqual([OK_1, OK_3]);
+      expect(body.failed).toEqual([
+        {
+          id: OK_2,
+          code: 'blocked',
+          reason:
+            'Отчёт принять пакетом нельзя: отметке «Не работал» есть противоречие — примите его отдельно',
+        },
+      ]);
+      // Refused before acceptance, asked at this moment: the page's colour is not trusted.
+      expect(state.calls.map((call) => call.id)).toEqual([OK_1, OK_3]);
+    } finally {
+      state.contradicted = new Set();
+    }
   });
 
   it('причины различимы и приходят текстом приёма, а не пересказом', async () => {
