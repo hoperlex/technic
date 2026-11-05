@@ -138,23 +138,78 @@ export const EXPECTED_ESM2_FILTER = sql`
        AND w.period_to IS NOT NULL`;
 
 /**
- * Whether the shift of a source on a day is a calendar shift of a rest day (ADR 0242): a Sunday of
- * a weekly ESM-2, or a Sunday route with no trip of its own — every served row of its composition is
- * a day of site work (`work_date` set). Such a Sunday was laid by the calendar, not by a task: the
- * ESM-2 covers its week to Sunday by construction (Р34), and the day batch of ADR 0207 issues a
- * 4-П for every day of the term, Sundays included. A trip — a freight row, a delivery, a pickup —
- * is a task for that very day and stays asked for.
- *
- * `routeId` is the route's id, or NULL for a weekly waybill: the route lookup then finds nothing,
- * and the waybill's Sunday is a rest-day shift. The cabinet asks the same rule in TypeScript
- * (`isRestDayShift` below); were the two to drift, the garage would demand a Sunday the driver's
- * debt line keeps silent about, or the other way round.
+ * The source of a shift: its day, and the route OR the weekly waybill it is (the other is NULL).
+ * Both ids are SQL so that each reader passes its own columns.
  */
-export function restDayShiftSql(day: SQL, routeId: SQL): SQL {
+export interface ShiftSourceSql {
+  day: SQL;
+  routeId: SQL;
+  waybillId: SQL;
+}
+
+/**
+ * Whether the shift of a source on a day is a calendar shift of a rest day (ADR 0242, ADR 0246):
+ * a Sunday the calendar laid, not a task. The ESM-2 covers its week to Sunday by construction (Р34)
+ * and the day batch of ADR 0207 may issue a 4-П for a Sunday, so a Sunday of either is asked for
+ * only when something makes it a working day:
+ *
+ * - a trip of the route itself — a freight row, a delivery, a pickup (`routeHasTripSql`);
+ * - a working mark of a served request of that day (`vehicle_request_working_days`, D2): for a
+ *   route, any composition request whose row carries the day; for an ESM-2, its own request;
+ * - for an ESM-2, the demand of a route it suppresses (one shift for two papers, ADR 0207): such a
+ *   route asks for no reading of its own, so its trip or its members' marks reach the sheet. Route
+ *   A+B under the ESM-2 of A with only B marked makes the sheet's Sunday a working one; no second
+ *   expectation is created to carry the mark.
+ *
+ * ONE rule for every reader of expected shifts, the driver cabinet included (`loadRestDayShifts`):
+ * were two copies to drift, the garage would demand a Sunday the driver's debt line keeps silent
+ * about. A cancelled or archived request gives no demand (`servedRequestSql`).
+ *
+ * The sheet branch walks routes under the alias `vr` (`ROUTE_TASK_FILTER` names it so): for an
+ * ESM-2 source `day` must not be an expression over an outer `vr`. Route sources pass a NULL
+ * waybill, and that branch then reads no row at all.
+ */
+export function restDayShiftSql(source: ShiftSourceSql): SQL {
+  const { day } = source;
   return sql`(extract(isodow FROM ${day}) = 7
        AND NOT EXISTS (SELECT 1 FROM vehicle_routes rd_vr
-                        WHERE rd_vr.id = ${routeId}
-                          AND ${routeHasTripSql('rd_vr')}))`;
+                        WHERE rd_vr.id = ${source.routeId}
+                          AND (${routeHasTripSql('rd_vr')} OR ${routeMarkedSql('rd_vr', day)}))
+       AND NOT EXISTS (SELECT 1 FROM waybills rd_w
+                        WHERE rd_w.id = ${source.waybillId}
+                          AND (EXISTS (SELECT 1
+                                         FROM vehicle_request_working_days rd_wd
+                                         JOIN vehicle_requests rd_wq ON rd_wq.id = rd_wd.request_id
+                                        WHERE rd_wd.request_id = rd_w.source_request_id
+                                          AND rd_wd.work_date = ${day}
+                                          AND ${servedRequestSql('rd_wq')})
+                               OR EXISTS (SELECT 1 FROM vehicle_routes vr
+                                           WHERE vr.vehicle_id = rd_w.vehicle_id
+                                             AND vr.route_date = ${day}
+                                             AND ${ROUTE_TASK_FILTER}
+                                             AND EXISTS (SELECT 1
+                                                           FROM vehicle_route_requests rd_sr
+                                                          WHERE rd_sr.route_id = vr.id
+                                                            AND rd_sr.request_id = rd_w.source_request_id
+                                                            AND rd_sr.work_date = vr.route_date)
+                                             AND (${routeHasTripSql('vr')}
+                                                  OR ${routeMarkedSql('vr', day)})))))`;
+}
+
+/**
+ * Whether a served composition request of a route has a working mark on the route's day (D2): a
+ * site-day row carries that day, and ANY marked member makes the shared route a working one.
+ */
+function routeMarkedSql(route: string, day: SQL): SQL {
+  const r = sql.raw(route);
+  return sql`EXISTS (SELECT 1
+                  FROM vehicle_route_requests mk_rr
+                  JOIN vehicle_requests mk_q ON mk_q.id = mk_rr.request_id
+                  JOIN vehicle_request_working_days mk_wd
+                    ON mk_wd.request_id = mk_rr.request_id AND mk_wd.work_date = ${day}
+                 WHERE mk_rr.route_id = ${r}.id
+                   AND mk_rr.work_date = ${day}
+                   AND ${servedRequestSql('mk_q')})`;
 }
 
 /**
@@ -183,8 +238,8 @@ export function routeHasTripSql(route: string): SQL {
  * on Sunday says so by submitting, and the shift is then counted and checked like any other. So
  * the hotfix takes nothing away from the ledger — only the demand for a Sunday nobody worked.
  */
-export function restDayExemptSql(source: { day: SQL; routeId: SQL; waybillId: SQL }): SQL {
-  return sql`(${restDayShiftSql(source.day, source.routeId)}
+export function restDayExemptSql(source: ShiftSourceSql): SQL {
+  return sql`(${restDayShiftSql(source)}
        AND NOT EXISTS (SELECT 1
                          FROM driver_daily_report_items rd_i
                          JOIN driver_daily_reports rd_rep
@@ -223,12 +278,33 @@ export function idleClosedSql(source: {
 }
 
 /**
- * The cabinet's side of `restDayShiftSql`: a Sunday shift without a trip. `date` is a Moscow
- * calendar key, which is what every date of the cabinet is; read as UTC midnight, its weekday does
- * not depend on the server's zone.
+ * The cabinet's question to `restDayShiftSql`: which of the given shifts are calendar rest-day
+ * shifts (`readingOptional`). Asked of the database rather than answered in TypeScript, because
+ * the answer needs the working marks and the routes a sheet suppresses — the same context the
+ * garage reads — and a second copy of the rule in the cabinet would drift from it. Keys are
+ * `route:<id>` / `esm2:<id>`, the day being the one asked.
  */
-export function isRestDayShift(date: string, hasTrip: boolean): boolean {
-  return !hasTrip && new Date(`${date}T00:00:00Z`).getUTCDay() === 0;
+export async function loadRestDayShifts(
+  reader: Reader,
+  day: string,
+  sources: readonly { sourceKind: 'route' | 'esm2'; sourceId: string }[],
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  if (sources.length === 0 || new Date(`${day}T00:00:00Z`).getUTCDay() !== 0) return found;
+  const values = sql.join(
+    sources.map((s) => sql`(${s.sourceKind}::text, ${s.sourceId}::uuid)`),
+    sql`, `,
+  );
+  const result = await reader.execute<{ kind: string; id: string }>(sql`
+SELECT s.kind, s.id::text AS id
+  FROM (VALUES ${values}) AS s (kind, id)
+ WHERE ${restDayShiftSql({
+   day: sql`${day}::date`,
+   routeId: sql`CASE WHEN s.kind = 'route' THEN s.id END`,
+   waybillId: sql`CASE WHEN s.kind = 'esm2' THEN s.id END`,
+ })}`);
+  for (const row of result.rows) found.add(`${row.kind}:${row.id}`);
+  return found;
 }
 
 /**

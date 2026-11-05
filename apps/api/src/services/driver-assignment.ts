@@ -34,7 +34,7 @@ import {
   waybillSeries,
 } from '../db/schema';
 import { daysBetween, type Tx } from './readings-chain';
-import { isRestDayShift, servedRequestSql } from './readings-expected';
+import { loadRestDayShifts, servedRequestSql } from './readings-expected';
 import { loadRoutePoints, loadRoutePointsByRoute } from './route-points';
 import { loadRouteDtos, routeQuery } from './vehicle-routes';
 
@@ -438,12 +438,6 @@ function routeEntry(
     // Прошлый снимок счётчиков заполняет кабинет, и только он: письму сравнивать нечего — оно
     // ничего не вводит, и лишний запрос ради непечатаемого поля был бы платой ни за что.
     previous: null,
-    // A trip is a relocation or a freight row (no `work_date`); site-day rows alone are the
-    // calendar's (ADR 0242). The composition here is already the served one (`routeSources`).
-    readingOptional: isRestDayShift(
-      route.routeDate,
-      relocation || route.requests.some((request) => !request.workDate),
-    ),
     relocation,
     basisLabel: route.sourceRequest
       ? `${route.sourceRequest.displayNumber} · ${route.sourceRequest.customerName}`
@@ -667,7 +661,6 @@ async function esm2Sources(
       comment: '',
       // Снимок счётчиков подставляет сборка дня — одним запросом на все машины сразу.
       previous: null,
-      readingOptional: isRestDayShift(date, false),
     },
   }));
 }
@@ -929,8 +922,21 @@ export async function loadDayEntries(
   ];
   if (sources.length === 0) return [];
 
-  const previous = await previousReadings(sources, date);
-  return sources.map(({ entry }) => ({ ...entry, previous: previous.get(entry) ?? null }));
+  // A calendar Sunday asks for nothing (ADR 0242) unless a trip or a working mark makes it a
+  // working day (ADR 0246): the garage's own rule, asked of the database with the same context.
+  const [previous, restDays] = await Promise.all([
+    previousReadings(sources, date),
+    loadRestDayShifts(
+      db,
+      date,
+      sources.map(({ entry }) => entry),
+    ),
+  ]);
+  return sources.map(({ entry }) => ({
+    ...entry,
+    previous: previous.get(entry) ?? null,
+    readingOptional: restDays.has(`${entry.sourceKind}:${entry.sourceId}`),
+  }));
 }
 
 /**

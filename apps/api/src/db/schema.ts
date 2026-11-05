@@ -7052,6 +7052,39 @@ export const vehicleRequestShifts = pgTable(
   }),
 );
 
+/**
+ * A Sunday the dispatcher marked a working shift of the request (ADR 0246, plan
+ * docs/rest-days-plan.md D2). Sunday is a rest day by default (ADR 0242): its calendar shift of a
+ * weekly ESM-2 or of a site-day 4-П is not asked for. A mark makes that Sunday an ordinary working
+ * day of THIS request — its sheet and its site-day route are asked for again, the cabinet calls it
+ * a debt. The mark belongs to the request and the date, not to a vehicle, driver or paper: a
+ * reassignment or a reissue keeps it, and it resolves through the current sources.
+ *
+ * No row means "a rest day", so an empty table is exactly the hotfix; the primary key makes a
+ * repeated set a no-op and the lookup of the expected-shift queries an index probe.
+ */
+export const vehicleRequestWorkingDays = pgTable(
+  'vehicle_request_working_days',
+  {
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    workDate: date('work_date', { mode: 'string' }).notNull(),
+    setBy: uuid('set_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    setAt: timestamp('set_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.requestId, t.workDate] }),
+    // Only a Sunday is a rest day (D1): a mark on any other day would mean nothing and hide a bug.
+    sunday: check(
+      'vehicle_request_working_days_sunday_check',
+      sql`extract(isodow FROM ${t.workDate}) = 7`,
+    ),
+  }),
+);
+
 // Vehicle request ↔ files link. UNIQUE(file_id): a file is in at most one vehicle request; uniqueness
 // across modules is kept by the shared file service.
 export const vehicleRequestFiles = pgTable(

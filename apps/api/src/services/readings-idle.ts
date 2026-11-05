@@ -15,8 +15,9 @@ import { ROUTE_TASK_FILTER, routeHasTripSql, servedRequestSql } from './readings
  * D5): the garage accepts an `idle` reading as a submitted shift, green when nothing contradicts
  * it and yellow, with one line per contradiction, when something does.
  *
- * Three contradictions in stage 1; the working-Sunday mark of stage 2 adds a fourth:
+ * Four contradictions; the first came with the working-Sunday mark (ADR 0246):
  *
+ * - `idle_marked` — a working mark stood on that day for a request the shift answers for;
  * - `idle_trip` — the source, or a route it suppresses, carries a trip (`routeHasTripSql`);
  * - `idle_signed` — the site recorded nonzero hours for a served request of the source that day;
  * - `idle_worked` — another submitted reading of the same vehicle that day has numbers.
@@ -44,7 +45,7 @@ export interface IdleShift {
 
 type ContradictionRow = {
   reading_id: string;
-  kind: 'trip' | 'signed' | 'worked';
+  kind: 'trip' | 'signed' | 'worked' | 'marked';
   route_num: number | null;
   request_num: number | null;
   hours: string | null;
@@ -120,6 +121,24 @@ requests AS (
       JOIN waybills ew ON i.source_kind = 'esm2' AND ew.id = i.source_id
       JOIN vehicle_requests q ON q.id = ew.source_request_id
      WHERE ${servedRequestSql('q')}
+),
+/*
+ * The requests whose working mark makes the day a working one (ADR 0246): a covered route's
+ * member whose row carries the day, and the sheet's own request — the rule of restDayShiftSql.
+ */
+day_requests AS (
+    SELECT c.reading_id, rr.request_id
+      FROM covered c
+      JOIN idle_shift i ON i.reading_id = c.reading_id
+      JOIN vehicle_route_requests rr ON rr.route_id = c.route_id AND rr.work_date = i.day
+      JOIN vehicle_requests q ON q.id = rr.request_id
+     WHERE ${servedRequestSql('q')}
+    UNION
+    SELECT i.reading_id, ew.source_request_id
+      FROM idle_shift i
+      JOIN waybills ew ON i.source_kind = 'esm2' AND ew.id = i.source_id
+      JOIN vehicle_requests q ON q.id = ew.source_request_id
+     WHERE ${servedRequestSql('q')}
 )
 SELECT c.reading_id, 'trip'::text AS kind, vr.num AS route_num, NULL::integer AS request_num,
        NULL::numeric AS hours, NULL::boolean AS approved, NULL::text AS source_kind,
@@ -148,6 +167,12 @@ SELECT i.reading_id, 'worked', rt.num, NULL, NULL, NULL, oi.source_kind::text,
   LEFT JOIN vehicle_routes rt ON rt.id = oi.route_id
   LEFT JOIN waybills wb ON wb.id = oi.waybill_id
   LEFT JOIN waybill_series ws ON ws.id = wb.series_id
+UNION ALL
+SELECT d.reading_id, 'marked', NULL, q.num, NULL, NULL, NULL, NULL, NULL, NULL
+  FROM day_requests d
+  JOIN idle_shift i ON i.reading_id = d.reading_id
+  JOIN vehicle_requests q ON q.id = d.request_id
+  JOIN vehicle_request_working_days wd ON wd.request_id = d.request_id AND wd.work_date = i.day
  ORDER BY 1, 2, 3, 4`);
 
   for (const row of result.rows) {
@@ -158,18 +183,25 @@ SELECT i.reading_id, 'worked', rt.num, NULL, NULL, NULL, oi.source_kind::text,
             level: 'yellow',
             message: `назначен рейс${row.route_num === null ? '' : ` ${formatVehicleRouteNumber(row.route_num)}`}, водитель отметил: не работал`,
           }
-        : row.kind === 'signed'
+        : row.kind === 'marked'
           ? {
-              code: 'idle_signed',
+              code: 'idle_marked',
               level: 'yellow',
               message:
-                `объект ${row.approved ? 'подписал' : 'записал'} ${hoursText(row.hours)} ч по заявке ${row.request_num === null ? '' : formatVehicleRequestNumber(row.request_num)}`.trim(),
+                `на этот день стояла рабочая смена по заявке ${row.request_num === null ? '' : formatVehicleRequestNumber(row.request_num)}`.trim(),
             }
-          : {
-              code: 'idle_worked',
-              level: 'yellow',
-              message: `машина в этот день работала: ${workedLabel(row)}`,
-            };
+          : row.kind === 'signed'
+            ? {
+                code: 'idle_signed',
+                level: 'yellow',
+                message:
+                  `объект ${row.approved ? 'подписал' : 'записал'} ${hoursText(row.hours)} ч по заявке ${row.request_num === null ? '' : formatVehicleRequestNumber(row.request_num)}`.trim(),
+              }
+            : {
+                code: 'idle_worked',
+                level: 'yellow',
+                message: `машина в этот день работала: ${workedLabel(row)}`,
+              };
     const list = found.get(row.reading_id) ?? [];
     if (!list.some((known) => known.message === issue.message)) list.push(issue);
     found.set(row.reading_id, list);

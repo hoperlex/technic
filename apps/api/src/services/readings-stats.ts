@@ -212,14 +212,14 @@ export function pendingReadingsSql(on: string): SQL {
       WHERE vr.vehicle_id = ${vehicles.id}
         AND vr.route_date = ${on}::date
         AND ${EXPECTED_ROUTE_FILTER}
-        AND NOT ${restDayShiftSql(sql`vr.route_date`, sql`vr.id`)}
+        AND NOT ${restDayShiftSql({ day: sql`vr.route_date`, routeId: sql`vr.id`, waybillId: sql`NULL` })}
         AND NOT ${sourceClosedSql(sql`pr_i.route_id = vr.id`)}
       UNION ALL
       SELECT 1 FROM ${waybills} w
       WHERE w.vehicle_id = ${vehicles.id}
         AND ${EXPECTED_ESM2_FILTER}
         AND w.period_from <= ${on}::date AND w.period_to >= ${on}::date
-        AND NOT ${restDayShiftSql(sql`${on}::date`, sql`NULL`)}
+        AND NOT ${restDayShiftSql({ day: sql`${on}::date`, routeId: sql`NULL`, waybillId: sql`w.id` })}
         AND NOT ${sourceClosedSql(sql`pr_i.waybill_id = w.id AND pr_i.report_date = ${on}::date`)}
     ) pending_shift
   )`;
@@ -285,7 +285,7 @@ async function loadMissingSourceVehicles(on: string, vehicleIds: string[]): Prom
           inArray(expectedRoute.vehicleId, vehicleIds),
           eq(expectedRoute.routeDate, on),
           sql`(${EXPECTED_ROUTE_FILTER})`,
-          sql`NOT ${restDayShiftSql(sql`${on}::date`, sql`${expectedRoute.id}`)}`,
+          sql`NOT ${restDayShiftSql({ day: sql`${on}::date`, routeId: sql`${expectedRoute.id}`, waybillId: sql`NULL` })}`,
           inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
           sql`NOT EXISTS (
             SELECT 1 FROM ${driverDailyReportItems} ms_i WHERE ms_i.route_id = ${expectedRoute.id}
@@ -308,7 +308,7 @@ async function loadMissingSourceVehicles(on: string, vehicleIds: string[]): Prom
           inArray(expectedEsm2.vehicleId, vehicleIds),
           sql`(${EXPECTED_ESM2_FILTER})`,
           sql`${expectedEsm2.periodFrom} <= ${on}::date AND ${expectedEsm2.periodTo} >= ${on}::date`,
-          sql`NOT ${restDayShiftSql(sql`${on}::date`, sql`NULL`)}`,
+          sql`NOT ${restDayShiftSql({ day: sql`${on}::date`, routeId: sql`NULL`, waybillId: sql`${expectedEsm2.id}` })}`,
           inArray(driverDailyReports.state, [...SUBMITTED_REPORT_STATES]),
           sql`NOT EXISTS (
             SELECT 1 FROM ${driverDailyReportItems} ms_i
@@ -359,7 +359,7 @@ export async function loadVehicleReadingStates(
           ne(driverDailyReports.state, 'voided'),
           // An empty row of a rest-day shift (ADR 0242) is no unsubmitted shift: the cabinet opens
           // the day on view, and a Sunday glanced at must not paint the vehicle "not submitted".
-          sql`NOT (${restDayShiftSql(sql`${on}::date`, sql`${driverDailyReportItems.routeId}`)}
+          sql`NOT (${restDayShiftSql({ day: sql`${on}::date`, routeId: sql`${driverDailyReportItems.routeId}`, waybillId: sql`${driverDailyReportItems.waybillId}` })}
                    AND ${vehicleReadings.id} IS NULL)`,
         ),
       )
