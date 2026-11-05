@@ -1,12 +1,19 @@
 /**
  * Short instruction for the driver and the machinist.
  *
- * Facts and captions are checked against the interface as of 28.10.2026:
+ * Facts and captions are checked against the interface as of 05.11.2026:
  * - RegisterPage.tsx;
  * - DriverLayout.tsx, DriverDayView.tsx, DriverReadingsPage.tsx, DriverReadingFields.tsx,
- *   DriverRouteTimes.tsx, DriverSubmitCheck.tsx, readingChecks.ts;
+ *   DriverRouteTimes.tsx, DriverSubmitCheck.tsx, readingChecks.ts, dayState.ts;
  * - ADR 0237: readings go as a whole shift at its end, the previous shift is checked in a window
- *   before sending, and the time fields have no «сейчас» button.
+ *   before sending, and the time fields have no «сейчас» button;
+ * - ADR 0242: Sunday is a rest day («Выходной»).
+ *
+ * The confirmation window has its own page: drivers took it for a refusal, pressed «Вернуться к
+ * исправлению» and the day was never sent. Nothing blocks a day whose earlier shifts are unsent —
+ * the previous snapshot is just older, so the window shows up almost always; the guide says so. On
+ * a 360×640 phone the real window puts «Подтверждаю, передать» below the screen edge (checked in a
+ * headless browser), hence the «прокрутите окно вниз» line.
  *
  * A page is drawn in SVG, the system librsvg turns it into PNG, and pdf-lib assembles A4. The other
  * illustrated instructions of the project use the same route; it needs no browser and makes the
@@ -27,8 +34,8 @@ const OUTPUT = resolve(process.argv[2] ?? 'docs/Инструкция_водит�
 const WORK = mkdtempSync(join(tmpdir(), 'driver-guide-'));
 const W = 1123;
 const H = 1588;
-const TOTAL = 5;
-const REVISION = '28 октября 2026';
+const TOTAL = 6;
+const REVISION = '5 ноября 2026';
 
 const C = {
   ink: '#172033',
@@ -425,7 +432,7 @@ function page2() {
   body += step(615, 381, '2', 'Переключайте экран', '«Задание» открывает маршрут. На нём ссылка меняется на «Показания».', 453, {
     height: 133,
   });
-  body += step(615, 532, '3', 'Закройте прошлые дни', 'Оранжевая строка ведёт к ближайшему дню, где показания ещё не переданы.', 453, {
+  body += step(615, 532, '3', 'Прошлые дни', 'Оранжевая строка ведёт к дню без показаний. Сегодняшние передавайте всё равно.', 453, {
     fill: C.orangeSoft,
     stroke: '#ffd591',
     dotFill: C.orange,
@@ -529,7 +536,7 @@ function page3() {
   body += dot('2', sx + sw - 20, sy + 427, { fill: C.orange });
   body += dot('3', sx + sw - 20, sy + 704, { fill: C.green });
   body += dot('4', sx + sw - 20, sy + 471);
-  body += dot('5', sx + sw - 20, sy + 1174);
+  body += dot('5', sx + sw - 20, sy + 1174, { fill: C.red });
 
   body += step(635, 226, '1', 'Проверьте машину', 'Госномер стоит первым; ниже указан источник и смена.', 433, { height: 126 });
   body += step(635, 370, '2', 'Обязательные поля', 'Все, кроме «Заправлено». Не заправлялись — оставьте пустым.', 433, {
@@ -547,7 +554,10 @@ function page3() {
   body += step(635, 658, '4', 'Сверьте с подсказками', 'Под топливом — остаток с конца прошлой смены, под счётчиками — их прошлые значения.', 433, {
     height: 126,
   });
-  body += step(635, 802, '5', 'Нажмите «Передать»', 'После успеха появится состояние «Передано». Фото и комментарий — по желанию.', 433, {
+  body += step(635, 802, '5', 'Нажмите «Передать»', 'В окне проверки нажмите «Подтверждаю, передать» — подробно на странице 4.', 433, {
+    fill: C.redSoft,
+    stroke: '#ff4d4f',
+    dotFill: C.red,
     height: 126,
   });
 
@@ -593,7 +603,7 @@ function windowCard(mx, my, mw, mh) {
   output += paragraph(
     mx + 52,
     my + 196,
-    'Топливо на начало смены (80 л) не совпадает с остатком на конец прошлой смены (92 л, 27.10)',
+    'Топливо на начало смены (40 л) не совпадает с остатком на конец прошлой смены (92 л, 27.10)',
     mw - 80,
     15,
     { lineHeight: 22 },
@@ -611,71 +621,130 @@ function windowCard(mx, my, mw, mh) {
     15,
     { lineHeight: 22 },
   );
+  // The real window stacks its two large buttons on a phone: the return first, the confirmation
+  // under it — at the very bottom, where a small screen hides it until the window is scrolled.
   output += button(mx + 28, my + 480, mw - 56, 'Вернуться к исправлению', { primary: false });
   output += button(mx + 28, my + 540, mw - 56, 'Подтверждаю, передать');
+  output += rect(mx + 21, my + 474, mw - 42, 60, { stroke: C.orange, sw: 3, r: 10 });
+  output += rect(mx + 19, my + 533, mw - 38, 62, { stroke: '#52c41a', sw: 5, r: 11 });
   return output;
 }
 
+/** A tinted box with a bold title and a paragraph: the guide's callout for one rule. */
+function callout(x, y, width, height, titleValue, body, tone, options = {}) {
+  const { titleSize = 18, size = 16, lineHeight = 23 } = options;
+  let output = rect(x, y, width, height, { fill: tone.fill, stroke: tone.stroke, sw: tone.sw ?? 1, r: 14 });
+  output += text(x + 25, y + 38, titleValue, titleSize, { fill: tone.color, weight: 700 });
+  output += paragraph(x + 25, y + 38 + titleSize + 18, body, width - 50, size, { lineHeight });
+  return output;
+}
+
+const TONE = {
+  red: { fill: C.redSoft, stroke: '#ff4d4f', color: C.red, sw: 2 },
+  orange: { fill: C.orangeSoft, stroke: '#ffd591', color: C.orange },
+  gold: { fill: C.goldSoft, stroke: '#ffe58f', color: C.gold },
+  green: { fill: C.greenSoft, stroke: '#b7eb8f', color: C.green },
+  blue: { fill: C.bluePale, stroke: '#bae0ff', color: C.blueDark },
+};
+
+/**
+ * The confirmation window gets a page of its own (owner's request, 05.11.2026): drivers read it as
+ * a refusal and went back to the form, so the day was never sent. The page says first that nothing
+ * is sent until «Подтверждаю, передать», then where that button hides on a small screen, then why
+ * the window is the usual thing when earlier shifts were not sent.
+ */
 function page4() {
-  let body = pageHeader(4, 'Проверка данных и время', 'АВТО · ВОДИТЕЛЬ / МАШИНИСТ');
+  let body = pageHeader(4, 'Окно подтверждения', 'ВАЖНО · ВОДИТЕЛЬ / МАШИНИСТ');
+  body += rect(55, 145, 1013, 132, { fill: C.redSoft, stroke: '#ff4d4f', sw: 3, r: 18 });
+  body += circle(108, 211, 30, { fill: '#ff4d4f' });
+  body += text(108, 224, '!', 36, { fill: '#fff', weight: 700, anchor: 'middle' });
+  body += text(156, 200, 'Показания НЕ переданы, пока вы не нажали', 27, { fill: C.red, weight: 700 });
+  body += text(156, 242, 'синюю кнопку «Подтверждаю, передать»', 27, { fill: C.red, weight: 700 });
+
+  const sx = 55;
+  const sy = 305;
+  const sw = 540;
+  const sh = 730;
+  body += rect(sx, sy, sw, sh, { fill: '#e9edf3', stroke: '#d6deea', r: 22, shadow: true });
+  // The form behind the window, dimmed: the window opens over it and changes nothing in it.
+  body += rect(sx + 24, sy + 18, sw - 48, 22, { fill: '#dde3ec', r: 8 });
+  body += rect(sx + 24, sy + 684, sw - 48, 30, { fill: '#cfd8e6', r: 8 });
+  const mx = sx + 36;
+  const my = sy + 52;
+  const mw = sw - 72;
+  body += windowCard(mx, my, mw, 620);
+  body += dot('1', sx + sw - 18, my + 46);
+  body += dot('2', sx + sw - 18, my + 190);
+  body += dot('3', sx + sw - 18, my + 504, { fill: C.orange });
+  body += dot('4', sx + sw - 18, my + 564, { fill: C.green });
+
+  body += step(635, 305, '1', 'Окно открылось само', 'Вы нажали «Передать», а числа расходятся с прошлой сменой. Пока ничего не передано.', 433);
+  body += step(635, 449, '2', 'Сверьте с прибором', 'Проверьте каждую строку списка. Дата в скобках — день, с которым сравнивали.', 433);
+  body += step(635, 593, '3', 'Ошибка? Вернитесь', '«Вернуться к исправлению»: ничего не передано, день остаётся «Черновиком».', 433, {
+    fill: C.orangeSoft,
+    stroke: '#ffd591',
+    dotFill: C.orange,
+  });
+  body += step(635, 737, '4', 'Всё верно? Подтвердите', 'Нажмите «Подтверждаю, передать». Только после этого показания переданы.', 433, {
+    fill: C.greenSoft,
+    stroke: '#52c41a',
+    dotFill: C.green,
+  });
+  body += callout(
+    635,
+    881,
+    433,
+    154,
+    'Синей кнопки не видно?',
+    'Прокрутите окно вниз: на небольшом экране кнопка «Подтверждаю, передать» уходит под текст.',
+    TONE.red,
+  );
+
+  body += callout(
+    55,
+    1065,
+    1013,
+    206,
+    'Прошлые смены не переданы? Сегодняшние передавайте всё равно',
+    'Передача за день не зависит от прошлых дней. Портал сравнивает новые числа с последним ПЕРЕДАННЫМ показанием: если дни пропущены, оно старое, и расхождение по топливу будет почти всегда. Это нормально — сверьте числа с приборами и нажмите «Подтверждаю, передать». Пропущенные дни передайте отдельно: к ним ведёт оранжевая строка «Не переданы показания за …» под датой.',
+    TONE.orange,
+    { titleSize: 20, size: 17, lineHeight: 25 },
+  );
+  body += callout(
+    55,
+    1293,
+    496,
+    184,
+    'Расхождение — не всегда ошибка',
+    'Счётчик могли заменить, топливо — слить или долить. Подтверждайте, только если значения списаны с приборов.',
+    TONE.gold,
+  );
+  body += callout(
+    572,
+    1293,
+    496,
+    184,
+    'Как понять, что передано',
+    'Внизу появится «Показания переданы», над формой — «Передано». Видите «Черновик» — данные остались на телефоне.',
+    TONE.green,
+  );
+  body += footer();
+  return document(body);
+}
+
+function page5() {
+  let body = pageHeader(5, 'Время смены и статусы', 'АВТО · ВОДИТЕЛЬ / МАШИНИСТ');
   body += paragraph(
     55,
     163,
-    'Если введённое расходится с прошлой сменой, портал спросит один раз — при нажатии «Передать». Время смены вводится вручную.',
+    'Время вводится вручную, кнопки «сейчас» нет. Строка над формой показывает, что сейчас с показаниями дня.',
     1000,
     20,
     { fill: C.muted, lineHeight: 28 },
   );
 
-  const sx = 55;
-  const sy = 226;
-  const sw = 540;
-  const sh = 760;
-  body += rect(sx, sy, sw, sh, { fill: '#e9edf3', stroke: '#d6deea', r: 22, shadow: true });
-  // The form behind the window, dimmed: the window opens over it and changes nothing in it.
-  body += rect(sx + 24, sy + 24, sw - 48, 36, { fill: '#dde3ec', r: 8 });
-  body += rect(sx + 24, sy + 76, sw - 48, 22, { fill: '#dde3ec', r: 8 });
-  body += rect(sx + 24, sy + 700, sw - 48, 36, { fill: '#cfd8e6', r: 8 });
-  const mx = sx + 36;
-  const my = sy + 80;
-  const mw = sw - 72;
-  body += windowCard(mx, my, mw, 620);
-  body += dot('1', sx + sw - 18, my + 46);
-  body += dot('2', sx + sw - 18, my + 190);
-  body += dot('3', sx + sw - 18, my + 503, { fill: C.orange });
-  body += dot('4', sx + sw - 18, my + 563, { fill: C.green });
-
-  body += step(635, 226, '1', 'Окно появляется само', 'Если данные расходятся с прошлой сменой, при «Передать» откроется список.', 433, {
-    height: 126,
-  });
-  body += step(635, 370, '2', 'Сверьте с прибором', 'Проверьте каждую строку списка по показаниям на машине.', 433, { height: 126 });
-  body += step(635, 514, '3', 'Ошибка? Вернитесь', 'Нажмите «Вернуться к исправлению»: ничего не будет передано.', 433, {
-    fill: C.orangeSoft,
-    stroke: '#ffd591',
-    dotFill: C.orange,
-    height: 126,
-  });
-  body += step(635, 658, '4', 'Всё верно? Подтвердите', 'Нажмите «Подтверждаю, передать»: показания будут переданы.', 433, {
-    fill: C.greenSoft,
-    stroke: '#b7eb8f',
-    dotFill: C.green,
-    height: 126,
-  });
-  body += rect(635, 806, 433, 180, { fill: C.goldSoft, stroke: '#ffe58f', r: 14 });
-  body += text(660, 847, 'Расхождение — не всегда ошибка', 17, { fill: C.gold, weight: 700 });
-  body += paragraph(
-    660,
-    883,
-    'Счётчик могли заменить, топливо — слить или долить. Подтверждайте, только если значения списаны с приборов.',
-    383,
-    16,
-    { lineHeight: 23 },
-  );
-
-  body += text(55, 1052, 'Время смены и маршрута', 25, { fill: C.ink, weight: 700 });
-
   // Недельный лист: пара «начало — конец».
-  const cy = 1084;
+  const cy = 226;
   body += rect(55, cy, 497, 410, { fill: C.bluePale, stroke: '#bae0ff', r: 14 });
   body += text(81, cy + 42, 'Недельный лист (ЭСМ-2)', 18, { fill: C.blueDark, weight: 700 });
   body += field(81, cy + 75, 210, 'Время начала', '08:00');
@@ -713,12 +782,64 @@ function page4() {
     16,
     { lineHeight: 23 },
   );
+
+  body += text(55, 706, 'Что означают статусы показаний', 25, { fill: C.ink, weight: 700 });
+  // Label and hint are the cabinet's own words (dayState.ts); the right column says what to do.
+  const statuses = [
+    {
+      label: 'Черновик',
+      hint: 'Заполнено, но не передано',
+      tone: TONE.orange,
+      body: 'Введено на телефоне, но НЕ передано. Нажмите «Передать», а в окне — «Подтверждаю, передать».',
+    },
+    {
+      label: 'Передано',
+      hint: 'Можно поправить, пока день не приняли',
+      tone: TONE.blue,
+      body: 'Показания у диспетчера. Поправить их можно, пока он не принял день.',
+    },
+    {
+      label: 'Принято',
+      hint: 'Показания приняты — правки вносит диспетчер',
+      tone: TONE.green,
+      body: 'Правки теперь вносит только диспетчер.',
+    },
+    {
+      label: 'На повторном приёме',
+      hint: 'День уже принимали — правки вносит диспетчер',
+      tone: { fill: C.redSoft, stroke: '#ffccc7', color: C.red },
+      body: 'Диспетчер исправил принятый день и проверяет его снова.',
+    },
+    {
+      label: 'Выходной',
+      hint: 'Показания нужны, только если техника работала',
+      tone: { fill: C.surface, stroke: C.line, color: C.muted },
+      body: 'Воскресенье. Передавайте показания, только если машина в этот день работала.',
+    },
+  ];
+  for (const [index, status] of statuses.entries()) {
+    const y = 735 + index * 120;
+    body += rect(55, y, 1013, 104, { fill: status.tone.fill, stroke: status.tone.stroke, r: 13 });
+    body += text(80, y + 42, status.label, 20, { fill: status.tone.color, weight: 700 });
+    body += text(80, y + 76, status.hint, 14, { fill: C.muted });
+    body += paragraph(520, y + 44, status.body, 520, 17, { lineHeight: 24, maxLines: 3 });
+  }
+
+  body += callout(
+    55,
+    1355,
+    1013,
+    140,
+    'Оранжевая строка «Не переданы показания за …»',
+    'Она стоит под датой и ведёт к ближайшему прошлому дню без показаний. Передать сегодняшние она не мешает: передавайте их как обычно.',
+    TONE.orange,
+  );
   body += footer();
   return document(body);
 }
 
-function page5() {
-  let body = pageHeader(5, 'Задание и статусы', 'АВТО · ВОДИТЕЛЬ / МАШИНИСТ');
+function page6() {
+  let body = pageHeader(6, 'Задание', 'АВТО · ВОДИТЕЛЬ / МАШИНИСТ');
   body += paragraph(
     55,
     163,
@@ -802,51 +923,47 @@ function page5() {
     { fill: C.orangeSoft, stroke: '#ffd591', color: C.orange },
   );
 
-  body += text(55, 1218, 'Что означают статусы показаний', 25, { fill: C.ink, weight: 700 });
-  const statuses = [
+  // The whole guide in four boxes: the last page is the one a driver keeps open, and the window
+  // rule is repeated here in red because it is the one that was missed.
+  body += text(55, 1222, 'Главное', 25, { fill: C.ink, weight: 700 });
+  const rules = [
     {
       x: 55,
-      label: 'Черновик',
-      color: C.orange,
-      fill: C.orangeSoft,
-      stroke: '#ffd591',
-      body: 'Введено на телефоне, но ещё не передано.',
+      y: 1245,
+      title: 'Смена — целиком, в конце',
+      body: 'Все поля, кроме «Заправлено». Один раз, когда смена закончилась.',
+      tone: TONE.blue,
     },
     {
-      x: 307,
-      label: 'Передано',
-      color: C.blueDark,
-      fill: C.bluePale,
-      stroke: '#bae0ff',
-      body: 'Можно поправить, пока диспетчер не принял день.',
+      x: 572,
+      y: 1245,
+      title: 'Окно — «Подтверждаю, передать»',
+      body: 'Без этой кнопки ничего не передано. Не видно — прокрутите окно вниз.',
+      tone: TONE.red,
     },
     {
-      x: 559,
-      label: 'Принято',
-      color: C.green,
-      fill: C.greenSoft,
-      stroke: '#b7eb8f',
-      body: 'Правки теперь вносит только диспетчер.',
+      x: 55,
+      y: 1385,
+      title: 'Прошлые дни не мешают',
+      body: 'Сегодняшние передавайте всегда. Пропущенные — по оранжевой строке.',
+      tone: TONE.orange,
     },
     {
-      x: 811,
-      label: 'На повторном приёме',
-      color: C.red,
-      fill: C.redSoft,
-      stroke: '#ffccc7',
-      body: 'Диспетчер исправил принятый день и проверяет его снова.',
+      x: 572,
+      y: 1385,
+      title: 'Задание правит диспетчер',
+      body: 'Не совпадает машина, адрес или время — позвоните диспетчеру.',
+      tone: TONE.green,
     },
   ];
-  for (const status of statuses) {
-    body += rect(status.x, 1255, 237, 181, { fill: status.fill, stroke: status.stroke, r: 13 });
-    body += text(status.x + 18, 1291, status.label, 16, { fill: status.color, weight: 700 });
-    body += paragraph(status.x + 18, 1328, status.body, 201, 15, { lineHeight: 22 });
+  for (const rule of rules) {
+    body += callout(rule.x, rule.y, 496, 122, rule.title, rule.body, rule.tone, { size: 16, lineHeight: 22 });
   }
   body += footer();
   return document(body);
 }
 
-const pages = [page1(), page2(), page3(), page4(), page5()];
+const pages = [page1(), page2(), page3(), page4(), page5(), page6()];
 
 for (const [index, svg] of pages.entries()) {
   const stem = `driver-guide-${String(index + 1).padStart(2, '0')}`;
@@ -870,7 +987,7 @@ pdf.setKeywords(['водитель', 'машинист', 'задание', 'по
 pdf.setAuthor('АВТО');
 pdf.setCreator('SVG guide generator + librsvg + pdf-lib');
 pdf.setProducer('pdf-lib');
-const fixedDate = new Date('2026-10-28T20:00:00+05:00');
+const fixedDate = new Date('2026-11-05T12:00:00+05:00');
 pdf.setCreationDate(fixedDate);
 pdf.setModificationDate(fixedDate);
 
