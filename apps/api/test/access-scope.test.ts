@@ -79,6 +79,8 @@ function principal(role: Role | null, extra: Partial<Principal> = {}): Principal
     constructionObjectIds: [],
     departmentIds: [],
     departmentObjectIds: [],
+    approvalDepartmentIds: [],
+    approvalDepartmentObjectIds: [],
     counterpartyId: null,
     counterpartyType: null,
     // Назначенные полномочия (ADR 0106, шаг 1c): по кодам наборов читается сквозная область модуля,
@@ -588,6 +590,74 @@ describe('виза на заявке ТС (ADR 0025, 0032)', () => {
     // Право визы автовизы не даёт: администратор заводит заявку не за себя, и она ждёт визы.
     expect(canApproveRequest(principal('admin'), onObject(OBJECT_A))).toBe(true);
     expect(approvesOwnRequestOnCreate(principal('admin'), onObject(OBJECT_A))).toBe(false);
+  });
+});
+
+describe('department visa of an axis-less role (ADR 0245)', () => {
+  // «Виза отдела» held by a manager: the grant's two permissions, the account's visa department
+  // and the site attached to it. The manager's own matrix row carries no visa.
+  const visa = ['vehicleRequests.approve', 'mechRequests.approve'] as const;
+  const manager = (extra: Partial<Principal> = {}) =>
+    principal('manager', {
+      grantCodes: ['department_approval'],
+      grantPermissions: [...visa],
+      approvalDepartmentIds: [DEPARTMENT_A],
+      approvalDepartmentObjectIds: [OBJECT_A],
+      ...extra,
+    });
+
+  it('signs the orders of its visa department and of the sites attached to it', () => {
+    expect(canApproveRequest(manager(), onDepartment(DEPARTMENT_A))).toBe(true);
+    expect(canApproveRequest(manager(), onObject(OBJECT_A))).toBe(true);
+  });
+
+  it('does not sign a foreign department or a site not attached to its visa departments', () => {
+    expect(canApproveRequest(manager(), onDepartment(DEPARTMENT_B))).toBe(false);
+    expect(canApproveRequest(manager(), onObject(OBJECT_B))).toBe(false);
+  });
+
+  it('signs nothing without visa departments: the grant alone is not company-wide', () => {
+    const bare = manager({ approvalDepartmentIds: [], approvalDepartmentObjectIds: [] });
+    expect(canApproveRequest(bare, onDepartment(DEPARTMENT_A))).toBe(false);
+    expect(canApproveRequest(bare, onObject(OBJECT_A))).toBe(false);
+  });
+
+  it('visa departments without the grant give nothing', () => {
+    const noGrant = manager({ grantCodes: [], grantPermissions: [] });
+    expect(canApproveRequest(noGrant, onDepartment(DEPARTMENT_A))).toBe(false);
+  });
+
+  it('is never an auto-visa on create (ADR 0032): the manager files for someone else', () => {
+    expect(approvesOwnRequestOnCreate(manager(), onDepartment(DEPARTMENT_A))).toBe(false);
+    expect(approvesOwnRequestOnCreate(manager(), onObject(OBJECT_A))).toBe(false);
+  });
+
+  it('keeps the company-wide visibility of the role: visa departments are not a scope axis', () => {
+    expect(
+      vehicleRequestVisibilityWhere(
+        manager(),
+        vehicleRequests.objectId,
+        vehicleRequests.departmentId,
+      ),
+    ).toBeUndefined();
+    expect(statusOf(() => assertRequestScope(manager(), onDepartment(DEPARTMENT_B)))).toBe(200);
+  });
+
+  it('leaves the administrator unchanged: his visa comes from the matrix', () => {
+    const admin = principal('admin', { approvalDepartmentIds: [DEPARTMENT_A] });
+    expect(canApproveRequest(admin, onDepartment(DEPARTMENT_B))).toBe(true);
+    expect(canApproveRequest(admin, onObject(OBJECT_B))).toBe(true);
+  });
+
+  it('leaves the department head unchanged: visa departments do not widen a department role', () => {
+    const head = principal('department', {
+      grantCodes: ['department_approval'],
+      grantPermissions: [...visa],
+      departmentIds: [DEPARTMENT_A],
+      approvalDepartmentIds: [DEPARTMENT_B],
+    });
+    expect(canApproveRequest(head, onDepartment(DEPARTMENT_A))).toBe(true);
+    expect(canApproveRequest(head, onDepartment(DEPARTMENT_B))).toBe(false);
   });
 });
 

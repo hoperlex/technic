@@ -164,6 +164,31 @@ describe('область визы (Р5)', () => {
     expect(canApproveMechRequest(subject('admin'), target)).toBe(true);
   });
 
+  /**
+   * «Виза отдела» on a manager (ADR 0245): the permission comes from the grant (the oracle passed
+   * in, as the portal does), the scope from the visa departments — the department head's answer,
+   * both halves of it.
+   */
+  it('a manager with a department visa signs as the department head of its visa departments', () => {
+    const has = (permission: string) => permission === 'mechRequests.approve';
+    const manager: MechApprovalSubject = {
+      role: 'manager',
+      approvalDepartmentIds: [DEPARTMENT_ID],
+      approvalDepartmentObjectIds: [OBJECT_ID],
+    };
+    expect(canApproveMechRequest(manager, departmentTarget, has)).toBe(true);
+    // The site's own request has no requesting department: not his to sign.
+    expect(canApproveMechRequest(manager, target, has)).toBe(false);
+    // The site was detached from the department: the signature goes with it.
+    expect(
+      canApproveMechRequest({ ...manager, approvalDepartmentObjectIds: [] }, departmentTarget, has),
+    ).toBe(false);
+    // Without visa departments the grant gives nothing — it is not company-wide.
+    expect(canApproveMechRequest(subject('manager'), departmentTarget, has)).toBe(false);
+    // And never an auto-visa on create.
+    expect(approvesOwnMechRequestOnCreate(manager, departmentTarget)).toBe(false);
+  });
+
   it('субъекта нет вовсе — визы нет', () => {
     expect(canApproveMechRequest(null, target)).toBe(false);
   });

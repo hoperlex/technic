@@ -79,6 +79,18 @@ describe('who decides an extension (R10)', () => {
     expect(canApproveMechExtension(head, { objectId: OBJECT_ID })).toBe(false);
   });
 
+  /** «Виза отдела» on a manager (ADR 0245) acts as the department head's, who never decides. */
+  it('a manager with a department visa never decides an extension', () => {
+    const manager: MechApprovalSubject = {
+      role: 'manager',
+      approvalDepartmentIds: [DEPARTMENT_ID],
+      approvalDepartmentObjectIds: [OBJECT_ID],
+    };
+    expect(
+      canApproveMechExtension(manager, { objectId: OBJECT_ID }, listOf('mechRequests.approve')),
+    ).toBe(false);
+  });
+
   it('the axis-less administrator decides; a role without the visa does not', () => {
     expect(canApproveMechExtension(subject('admin'), { objectId: OBJECT_ID })).toBe(true);
     expect(canApproveMechExtension(subject('dispatcher'), { objectId: OBJECT_ID })).toBe(false);
