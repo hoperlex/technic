@@ -1,12 +1,10 @@
 # Rest days: Sunday by default, a working Sunday by mark, «Не работал» for the rest
 
 Status: plan, revision 4 of 03.11.2026. Stage 1A (compatible readers, `v4` draft, client contract
-8, idle writes closed) is implemented in [ADR 0244](adr/0244-idle-shift-reading.md), not pushed;
-the floor operation, 1B and stages 2–4 are not implemented. The owner closed
-the product forks by two surveys on 03.11.2026 (§2). The hotfix this plan grows from —
-[ADR 0242](adr/0242-sunday-rest-day-readings.md), release 0.1.135.0242 — is in prod (build
-`64a31d73`). Revision 1 (a company calendar with holidays) is withdrawn: holidays are answered by
-the driver, not by a calendar.
+8, idle writes closed) is implemented in [ADR 0244](adr/0244-idle-shift-reading.md); stages 2–4
+(working Sunday, day batch, rental cut) in [ADR 0246](adr/0246-working-sunday-mark.md), release
+0.1.138.0246. Stage 1B (idle writes open, `REQUIRED_CLIENT_FLOOR = 8`) waits for 1A to be served and
+the floor operation `deploy-auto --client-floor=8`.
 
 ## 1. Problem
 
