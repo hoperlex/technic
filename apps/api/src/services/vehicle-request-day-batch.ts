@@ -407,7 +407,7 @@ export async function runVehicleRequestDayBatch(
           // The length of the TERM, not of the portion: the snapshot explains which period was
           // papered with a past date, and "50" instead of "90" on a quarterly request would read
           // as a trimmed request term. What this very click did is listed below by name — waybills.
-          days: termDays.length,
+          days: allTermDays.length,
         },
         waybills: backdatedWaybills,
       });

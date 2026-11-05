@@ -11,10 +11,14 @@ import {
   DAY_BATCH_SKIP_FROZEN,
   DAY_BATCH_SKIP_NO_ROOM,
   DAY_BATCH_SKIP_PLANNED,
+  DAY_BATCH_SKIP_SUNDAY,
+  DAY_BATCH_SKIP_SUNDAY_PAST,
   ROLLBACK_WAYBILL_MESSAGE,
   WAYBILL_CORRECTION_DAYS,
+  isSundayKey,
   moscowDateKeyOf,
   shiftDateKey,
+  weekStartKey,
   type VehicleRequestDayBatchResultDto,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -357,6 +361,7 @@ interface BatchBody {
   issueWaybills?: boolean;
   reason?: string;
   operationId?: string;
+  includeSundays?: boolean;
 }
 
 function batch(
@@ -364,9 +369,15 @@ function batch(
   body: BatchBody = {},
   auth: Auth = ctx.admin,
 ): Promise<LightMyRequestResponse> {
+  /*
+   * Every case of this file walks ALL days of a term, so the helper takes the Sundays by default
+   * (ADR 0246): the dates float with the calendar, and without the inclusion a term crossing a
+   * Sunday would lose a day only on some weekdays. The Sunday rule has its own cases below.
+   */
   return inject('POST', `/api/v1/vehicle-requests/${requestId}/days/batch`, auth, {
     driverPersonId: ctx.driverId,
     issueWaybills: true,
+    includeSundays: true,
     ...body,
   });
 }
@@ -943,8 +954,11 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     expect(result.issued + result.planned + result.failed).toBe(0);
     for (const row of result.rows) {
       // One text for "no right" and "too long ago" would send half the people to the wrong place:
-      // here the right is absent entirely, and it is granted the ordinary way.
-      expect(row.reason).toBe(DAY_BATCH_SKIP_BACKDATED);
+      // here the right is absent entirely, and it is granted the ordinary way. A Sunday this deep
+      // is past the driver's window and is skipped by its own rule before any right is asked.
+      expect(row.reason).toBe(
+        isSundayKey(row.date) ? DAY_BATCH_SKIP_SUNDAY_PAST : DAY_BATCH_SKIP_BACKDATED,
+      );
     }
     expect(await routesOfVehicle(vehicleId)).toBe(0);
     expect(await dayWaybills(request.id)).toHaveLength(0);
@@ -964,7 +978,11 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     const dateFrom = shiftDateKey(ctx.today, -(WAYBILL_CORRECTION_DAYS + 2));
     const dateTo = shiftDateKey(ctx.today, -(WAYBILL_CORRECTION_DAYS - 1));
     const deep = [dateFrom, shiftDateKey(ctx.today, -(WAYBILL_CORRECTION_DAYS + 1))];
-    const allowed = [shiftDateKey(ctx.today, -WAYBILL_CORRECTION_DAYS), dateTo];
+    // The dates float with the calendar: a Sunday among them is older than the driver's window and
+    // is skipped by its own rule (ADR 0246), whichever side of the depth limit it falls on.
+    const allowed = [shiftDateKey(ctx.today, -WAYBILL_CORRECTION_DAYS), dateTo].filter(
+      (date) => !isSundayKey(date),
+    );
     const request = await requestInProgress({
       typeId: ctx.linearTypeId,
       vehicleId,
@@ -982,10 +1000,12 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
     for (const date of deep) {
       const row = result.rows.find((r) => r.date === date)!;
       expect(row.outcome).toBe('skipped');
-      expect(row.reason).toBe(DAY_BATCH_SKIP_BEYOND_LIMIT);
+      expect(row.reason).toBe(
+        isSundayKey(date) ? DAY_BATCH_SKIP_SUNDAY_PAST : DAY_BATCH_SKIP_BEYOND_LIMIT,
+      );
     }
-    expect(result.skipped).toBe(2);
-    expect(result.issued).toBe(2);
+    expect(result.skipped).toBe(4 - allowed.length);
+    expect(result.issued).toBe(allowed.length);
     expect(result.rows.filter((r) => r.outcome === 'issued').map((r) => r.date)).toEqual(allowed);
 
     // There is exactly one operation row for the whole batch — that is what §9 introduced its own
@@ -1254,5 +1274,104 @@ describe.skipIf(!DB_URL)('пачка «4-П на весь период» (жив
       expect(row.reason).toBe(DAY_BATCH_SKIP_PLANNED);
     }
     expect(second.days.items.filter((item) => item.route === null)).toHaveLength(0);
+  });
+
+  describe('воскресенья (ADR 0246)', () => {
+    async function marksOf(requestId: string): Promise<string[]> {
+      const rows = await ctx.db.execute<{ d: string }>(sql`
+        SELECT work_date::text AS d FROM vehicle_request_working_days
+         WHERE request_id = ${requestId} ORDER BY work_date`);
+      return rows.rows.map((row) => row.d);
+    }
+
+    /** Monday of the week `weeks` after the current one: dates no other case of the file uses. */
+    const mondayIn = (weeks: number) => shiftDateKey(weekStartKey(ctx.today), 7 * weeks);
+
+    it('без галочки воскресенье не выписано, стоит в отчёте и не отмечено', async () => {
+      const vehicleId = ctx.vehicles[14]!;
+      const monday = mondayIn(1);
+      const sunday = shiftDateKey(monday, 6);
+      const request = await requestInProgress({ vehicleId, dateFrom: monday, dateTo: sunday });
+
+      const result = await batchOk(request.id, { includeSundays: false });
+
+      expect(result.issued).toBe(6);
+      expect(result.skipped).toBe(1);
+      expect(result.remaining).toBe(0);
+      expect(result.rows.map((row) => row.date)).toEqual(
+        [0, 1, 2, 3, 4, 5, 6].map((n) => shiftDateKey(monday, n)),
+      );
+      expect(result.rows.find((row) => row.date === sunday)).toMatchObject({
+        outcome: 'skipped',
+        reason: DAY_BATCH_SKIP_SUNDAY,
+      });
+      expect(await routeCount(vehicleId, sunday)).toBe(0);
+      expect(await marksOf(request.id)).toEqual([]);
+    });
+
+    it('с галочкой воскресенье выписано и отмечено рабочей сменой заявки', async () => {
+      const vehicleId = ctx.vehicles[14]!;
+      const monday = mondayIn(2);
+      const sunday = shiftDateKey(monday, 6);
+      const request = await requestInProgress({ vehicleId, dateFrom: monday, dateTo: sunday });
+
+      const result = await batchOk(request.id, { includeSundays: true });
+
+      expect(result.issued).toBe(7);
+      expect(await routeCount(vehicleId, sunday)).toBe(1);
+      expect(await marksOf(request.id)).toEqual([sunday]);
+    });
+
+    it('пропущенные воскресенья не занимают порцию и не идут в остаток', async () => {
+      const vehicleId = ctx.vehicles[0]!;
+      const monday = mondayIn(20);
+      // Ten weeks: 60 working days and 10 Sundays — longer than one portion of fifty.
+      const dateTo = shiftDateKey(monday, 69);
+      const request = await requestInProgress({ vehicleId, dateFrom: monday, dateTo });
+
+      const first = await batchOk(request.id, { includeSundays: false, issueWaybills: false });
+      expect(first.planned).toBe(DAY_BATCH_LIMIT);
+      expect(first.remaining).toBe(60 - DAY_BATCH_LIMIT);
+      expect(first.rows.filter((row) => row.reason === DAY_BATCH_SKIP_SUNDAY)).toHaveLength(8);
+
+      const second = await batchOk(request.id, { includeSundays: false, issueWaybills: false });
+      expect(second.planned).toBe(60 - DAY_BATCH_LIMIT);
+      expect(second.remaining).toBe(0);
+      expect(second.rows.filter((row) => row.reason === DAY_BATCH_SKIP_SUNDAY)).toHaveLength(10);
+      expect(second.days.items.filter((item) => item.route === null).map((i) => i.date)).toEqual(
+        [6, 13, 20, 27, 34, 41, 48, 55, 62, 69].map((n) => shiftDateKey(monday, n)),
+      );
+    });
+
+    it('воскресенье старше окна водителя с галочкой пропускается своей причиной', async () => {
+      const vehicleId = ctx.vehicles[14]!;
+      const floor = shiftDateKey(ctx.today, -8);
+      let sunday = shiftDateKey(weekStartKey(floor), 6);
+      if (sunday > floor) sunday = shiftDateKey(sunday, -7);
+      const request = await requestInProgress({
+        vehicleId,
+        dateFrom: shiftDateKey(sunday, -1),
+        dateTo: shiftDateKey(sunday, 1),
+        backdateReason: 'работы шли на прошлой неделе, оформляем сейчас',
+      });
+
+      const result = await batchOk(
+        request.id,
+        {
+          includeSundays: true,
+          reason: 'оформляем прошедшую неделю',
+          operationId: randomUUID(),
+        },
+        ctx.dispatcher,
+      );
+
+      expect(result.rows.find((row) => row.date === sunday)).toMatchObject({
+        outcome: 'skipped',
+        reason: DAY_BATCH_SKIP_SUNDAY_PAST,
+      });
+      expect(result.issued).toBe(2);
+      expect(await routeCount(vehicleId, sunday)).toBe(0);
+      expect(await marksOf(request.id)).toEqual([]);
+    });
   });
 });
