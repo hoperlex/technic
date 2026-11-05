@@ -21,6 +21,8 @@ import type * as AggregateNs from '../src/services/readings-aggregate';
 import type * as ExpectedNs from '../src/services/readings-expected';
 import type * as IntakeNs from '../src/services/readings-intake';
 import type * as IdleNs from '../src/services/readings-idle';
+import type * as StatsNs from '../src/services/readings-stats';
+import type * as AssignmentNs from '../src/services/driver-assignment';
 
 /**
  * «Не работал» in the ledger and in the garage (ADR 0244, plan docs/rest-days-plan.md §4.1, §4.3).
@@ -60,6 +62,8 @@ interface Ctx {
   expected: typeof ExpectedNs;
   intake: typeof IntakeNs;
   idle: typeof IdleNs;
+  stats: typeof StatsNs;
+  assignment: typeof AssignmentNs;
   closeDb: () => Promise<void>;
   adminId: string;
   objectId: string;
@@ -348,6 +352,28 @@ async function intakeRowsOf(vehicleId: string, date: string) {
   return { rows: intake.items.filter((row) => row.vehicleId === vehicleId), intake };
 }
 
+/** A working mark on a request's Sunday (ADR 0246), as the card's switch leaves it. */
+async function markSunday(requestId: string, date: string): Promise<void> {
+  await ctx.db
+    .insert(ctx.schema.vehicleRequestWorkingDays)
+    .values({ requestId, workDate: date, setBy: ctx.adminId });
+}
+
+/** Whether the garage's «не сданы» filter keeps the vehicle on the day. */
+async function isPending(date: string, vehicleId: string): Promise<boolean> {
+  const rows = await ctx.db
+    .select({ id: ctx.schema.vehicles.id })
+    .from(ctx.schema.vehicles)
+    .where(sql`${ctx.schema.vehicles.id} = ${vehicleId} AND ${ctx.stats.pendingReadingsSql(date)}`);
+  return rows.length > 0;
+}
+
+/** The cabinet's word on each source of the day: `true` when the shift is optional. */
+async function optionalOf(personId: string, date: string): Promise<Record<string, boolean>> {
+  const entries = await ctx.assignment.loadDayEntries(personId, date);
+  return Object.fromEntries(entries.map((e) => [e.sourceKind, e.readingOptional === true]));
+}
+
 describe.skipIf(!DB_URL)('показания: «Не работал» (ADR 0244)', () => {
   beforeAll(async () => {
     prepareEnv(DB_URL!);
@@ -360,6 +386,8 @@ describe.skipIf(!DB_URL)('показания: «Не работал» (ADR 0244)
     const expected = await import('../src/services/readings-expected');
     const intake = await import('../src/services/readings-intake');
     const idleModule = await import('../src/services/readings-idle');
+    const stats = await import('../src/services/readings-stats');
+    const assignment = await import('../src/services/driver-assignment');
     await purgeStale(db);
 
     const adminId = await seedAdmin(db, schema);
@@ -390,6 +418,8 @@ describe.skipIf(!DB_URL)('показания: «Не работал» (ADR 0244)
       expected,
       intake,
       idle: idleModule,
+      stats,
+      assignment,
       closeDb,
       adminId,
       objectId: objects.rows[0].id,
@@ -654,6 +684,89 @@ describe.skipIf(!DB_URL)('показания: «Не работал» (ADR 0244)
       expect((await ctx.idle.idleContradictedReports([sent.id])).has(sent.id)).toBe(false);
       await signHours(request.id, weekday(2), 3);
       expect((await ctx.idle.idleContradictedReports([sent.id])).has(sent.id)).toBe(true);
+    });
+  });
+
+  describe('рабочее воскресенье (ADR 0246)', () => {
+    const sunday = () => weekday(6);
+
+    it('воскресенье листа без отметки не спрашивается, с отметкой его заявки — спрашивается', async () => {
+      const person = await newPerson('Воскресный');
+      const vehicle = await newVehicle();
+      const request = await newRequest();
+      await newEsm2(vehicle, person, request.id);
+      expect(await isPending(sunday(), vehicle)).toBe(false);
+      expect(await optionalOf(person, sunday())).toEqual({ esm2: true });
+
+      await markSunday(request.id, sunday());
+      expect(await isPending(sunday(), vehicle)).toBe(true);
+      expect(await optionalOf(person, sunday())).toEqual({ esm2: false });
+    });
+
+    it('лист A прячет рейс A+B: отметка B делает воскресенье листа рабочим, рейс остаётся спрятан', async () => {
+      const person = await newPerson('Общевоскресный');
+      const vehicle = await newVehicle();
+      const a = await newRequest();
+      const b = await newRequest();
+      await newEsm2(vehicle, person, a.id);
+      await newSharedRoute(vehicle, sunday(), person, [
+        { requestId: a.id, site: true },
+        { requestId: b.id, site: true },
+      ]);
+      expect(await isPending(sunday(), vehicle)).toBe(false);
+
+      await markSunday(b.id, sunday());
+      expect(await isPending(sunday(), vehicle)).toBe(true);
+      // One shift for two papers (ADR 0207): the mark reaches the sheet, no second block appears.
+      expect(await optionalOf(person, sunday())).toEqual({ esm2: false });
+    });
+
+    it('перевозка в рейсе под листом делает воскресенье листа рабочим и без отметки', async () => {
+      const person = await newPerson('Перевозочный');
+      const vehicle = await newVehicle();
+      const a = await newRequest();
+      const b = await newRequest();
+      await newEsm2(vehicle, person, a.id);
+      await newSharedRoute(vehicle, sunday(), person, [
+        { requestId: a.id, site: true },
+        { requestId: b.id, site: false },
+      ]);
+      expect(await isPending(sunday(), vehicle)).toBe(true);
+      expect(await optionalOf(person, sunday())).toEqual({ esm2: false });
+    });
+
+    it('отметка снятой заявки рабочим воскресенье не делает', async () => {
+      const person = await newPerson('Снятый');
+      const vehicle = await newVehicle();
+      const request = await newRequest();
+      await newEsm2(vehicle, person, request.id);
+      await markSunday(request.id, sunday());
+      await ctx.db
+        .update(ctx.schema.vehicleRequests)
+        .set({ status: 'cancelled' })
+        .where(eq(ctx.schema.vehicleRequests.id, request.id));
+      expect(await isPending(sunday(), vehicle)).toBe(false);
+    });
+
+    it('«Не работал» в отмеченное воскресенье — жёлтое: «стояла рабочая смена»', async () => {
+      idleGate.open = true;
+      const person = await newPerson('Отмеченный');
+      const vehicle = await newVehicle();
+      const request = await newRequest();
+      await newEsm2(vehicle, person, request.id);
+      await markSunday(request.id, sunday());
+      await sendDay(person, sunday(), idle());
+
+      const { rows } = await intakeRowsOf(vehicle, sunday());
+      expect(rows[0]?.issues.map((issue) => issue.code)).toEqual(['idle_marked']);
+      expect(rows[0]?.issues[0]?.message).toMatch(/^на этот день стояла рабочая смена по заявке /u);
+    });
+
+    it('база не принимает отметку не на воскресенье', async () => {
+      const request = await newRequest();
+      await expect(markSunday(request.id, weekday(5))).rejects.toMatchObject({
+        cause: { constraint: 'vehicle_request_working_days_sunday_check' },
+      });
     });
   });
 });
