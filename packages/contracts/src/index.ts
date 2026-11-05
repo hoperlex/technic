@@ -109,6 +109,7 @@ export * from './waybill-task-rows';
 export * from './vehicle-request-shifts';
 export * from './vehicle-request-days';
 export * from './vehicle-request-documents';
+export * from './vehicle-request-working-days';
 export * from './vehicle-rental-completion';
 export * from './vehicle-requests';
 export * from './vehicle-request-feed';

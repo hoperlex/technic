@@ -297,6 +297,7 @@ import {
   shiftSummaries,
   unapprovedPastShiftDates,
 } from '../services/vehicle-request-shifts';
+import { dropAllWorkingDays } from '../services/vehicle-request-working-days';
 import { loadRequestRouteTime } from '../services/request-route-time';
 // The refusal of a term that drops a filled shift day: one helper for this edit and the term door.
 import { assertTermKeepsFilledShifts } from '../services/assignment-shifts';
@@ -5876,6 +5877,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             .delete(vehicleRequestEarlyEndings)
             .where(eq(vehicleRequestEarlyEndings.requestId, id));
           await dropRequestShifts(tx, id);
+          // Working Sundays belong to site days (ADR 0246): a freight request has none.
+          await dropAllWorkingDays(tx, id);
           const scheduledAt = new Date(body.scheduledAt);
           await tx.insert(freightTransportRequestDetails).values({
             requestId: id,
@@ -7062,6 +7065,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               // inside the term cannot be here — the rollback was refused above — so what goes are
               // hour drafts (and any approved row left outside the term, which the preview names).
               await dropRequestShifts(tx, before.id);
+              // So do the working Sundays (ADR 0246, plan §5.1): they were decisions about this work.
+              await dropAllWorkingDays(tx, before.id);
             }
             const [updated] = await tx
               .update(vehicleRequests)

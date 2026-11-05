@@ -1,6 +1,7 @@
 import { Spin, Tabs, Typography } from 'antd';
 import { RequestHistoryTable } from '@entities/request-history';
 import { VehicleRequestDocuments } from '@features/vehicle-request-documents';
+import { WorkingSundaysView } from '@features/vehicle-request-working-days';
 import { vehicleRequestChangeLabels } from '@technic/contracts';
 import { ViewFields, ViewModal } from '@shared/ui';
 import type { VehicleRequestViewModalProps } from '../model/types';
@@ -181,6 +182,16 @@ export function VehicleRequestViewModal({
                   // on the site today. People come here for them without a link to the site: to
                   // check an invoice or settle a dispute about hours.
                   children: <VehicleShiftsView requestId={request.id} />,
+                },
+                /*
+                 * Working Sundays (ADR 0246): Sunday is a rest day, and this is where one of them
+                 * is made a working day of the request. readOnly passes through for the reason of
+                 * the days tab: the overlay opened from a route is no place to change the demand.
+                 */
+                {
+                  key: 'sundays',
+                  label: 'Воскресенья',
+                  children: <WorkingSundaysView requestId={request.id} readOnly={readOnly} />,
                 },
               ]}
             />

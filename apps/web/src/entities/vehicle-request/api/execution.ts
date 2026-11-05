@@ -16,6 +16,7 @@ import type {
   VehicleRequestShiftsDto,
   VehicleRouteDto,
   WaybillFormCode,
+  VehicleRequestWorkingDaysDto,
 } from '@technic/contracts';
 import { apiFetch } from '@shared/api';
 
@@ -197,4 +198,12 @@ export const vehicleRequestExecution = {
       `/vehicle-requests/${id}/documents/${fileId}`,
       { method: 'DELETE' },
     ),
+  /** The term's Sundays with their working marks (ADR 0246); the write answers with the list whole. */
+  workingDays: (id: string) =>
+    apiFetch<VehicleRequestWorkingDaysDto>(`/vehicle-requests/${id}/working-days`),
+  setWorkingDay: (id: string, date: string, working: boolean) =>
+    apiFetch<VehicleRequestWorkingDaysDto>(`/vehicle-requests/${id}/working-days/${date}`, {
+      method: 'PUT',
+      body: { working },
+    }),
 };

@@ -1704,6 +1704,15 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['vehicleRequests.status'],
   },
+  // Working Sundays of a request (ADR 0246): read with the card, set by whoever assigns vehicles.
+  'GET /api/v1/vehicle-requests/:id/working-days': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read'],
+  },
+  'PUT /api/v1/vehicle-requests/:id/working-days/:date': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status'],
+  },
   /*
    * Предпросмотр смены техники (`docs/assignment-periods-plan.md` §8, «новая ручка у старой двери»).
    *

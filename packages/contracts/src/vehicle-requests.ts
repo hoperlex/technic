@@ -3175,6 +3175,8 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   deliveryCost: 'Доставка',
   // A document added or removed (P8): «УПД от 14.10.2026» next to the file it names.
   document: 'Документ',
+  // A working Sunday (ADR 0246): the date set or taken off.
+  workingDay: 'Рабочая смена',
   // Досрочное завершение (ADR 0044). Запрошенный срок — отдельным ключом от `dateTo`: пока визы
   // нет, срок заявки не менялся, и «Дата окончания: 28.07 → 24.07» в событии запроса читалось бы
   // как состоявшееся сокращение. Согласование меняет сам `dateTo` и пишется уже им.

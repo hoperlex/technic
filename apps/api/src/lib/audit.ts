@@ -166,6 +166,12 @@ export async function writeAudit(entry: AuditEntry): Promise<void> {
  * не о чем: склад заморожен, ручки сняты (план `docs/auto-part-receipts-plan.md`, Р2), и писать в
  * журнал остатка некому.
  *
+ * `vehicle_request.working_day_remove` written by a term change (ADR 0246) is here for the reason of
+ * the first rows: the marks a shortened term takes away are a consequence of that term write, and a
+ * row lost to a failed after-commit write would leave the reader of the history with a Sunday that
+ * stopped being asked for without a word. The door that sets and removes a mark by hand writes after
+ * commit like every other card door.
+ *
  * Перевод всего портального журнала — своя работа со своими рисками, и делать её попутно нельзя
  * (§2 «Граница»). Молча расширять перечень тоже нельзя — на то он и перечислен.
  */

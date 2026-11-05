@@ -166,6 +166,11 @@ export const vehicleRequestKeys = createQueryKeys('vehicle-requests', {
    * invalidation must reach it.
    */
   documents: (id: string) => [id, 'documents'],
+  /**
+   * The card's working Sundays (ADR 0246). Under the card's prefix: a term edit moves which Sundays
+   * there are and drops marks, and the request root invalidation must reach it.
+   */
+  workingDays: (id: string) => [id, 'working-days'],
   // Ниже — история назначения (план `docs/assignment-periods-plan.md`, §9): кто и с какой даты
   // работал на заявке, что в этой истории чинить и чем обернётся правка срока. Имя `history`
   // закреплено за ней давно и потому занято; события самой заявки живут выше, под именем `events`.

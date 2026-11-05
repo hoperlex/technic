@@ -119,6 +119,13 @@ export type RequestHistoryKind =
    */
   | 'documentRemoved'
   /**
+   * A Sunday marked a working shift of the request and the mark taken off (ADR 0246), by hand or by
+   * a term that no longer holds the day. Its own kinds: the mark changes what the driver owes, and
+   * «why was a reading asked for that Sunday» is answered by the history.
+   */
+  | 'workingDaySet'
+  | 'workingDayRemoved'
+  /**
    * Виза отдела ИТ и отказ по ней (план модернизации оргтехники, Р51, Р53). Два вида, а не один:
    * состоявшееся согласование и закрытая заявка — разные новости для читателя истории, и «решение
    * ИТ» одним словом не отвечает, чем кончилось.

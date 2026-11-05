@@ -43,6 +43,9 @@ const AUDIT_ACTIONS = [
   // history, not of the table, which shows only what is there now.
   'vehicle_request.document_add',
   'vehicle_request.document_remove',
+  // A working Sunday (ADR 0246): the mark decides whether the driver owes a reading that day.
+  'vehicle_request.working_day_set',
+  'vehicle_request.working_day_remove',
   'vehicle_request.soft_delete',
   'vehicle_request.restore',
 ] as const;
@@ -69,6 +72,8 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'vehicle_request.shift_revoke': 'shiftApprovalRevoked',
   'vehicle_request.document_add': 'documentAttached',
   'vehicle_request.document_remove': 'documentRemoved',
+  'vehicle_request.working_day_set': 'workingDaySet',
+  'vehicle_request.working_day_remove': 'workingDayRemoved',
   'vehicle_request.soft_delete': 'deleted',
   'vehicle_request.restore': 'restored',
 };

@@ -24,6 +24,7 @@ import {
   type Esm2ExecutionContext,
   type Esm2SyncResult,
 } from './waybill-esm2';
+import { dropWorkingDaysOutsideTerm } from './vehicle-request-working-days';
 
 /**
  * Срок работ заказа спецтехники: его изменение и всё, что за ним следует.
@@ -153,6 +154,8 @@ export interface WorkPeriodChangeResult {
   esm2: Esm2SyncResult;
   /** Дни линейного заказа, ушедшие за новый срок (ADR 0100 §11); у прочих заявок пусто. */
   days: LinearDaysSyncResult;
+  /** Working Sunday marks the new term no longer holds (ADR 0246); dropped and recorded here. */
+  workingDaysDropped: string[];
 }
 
 /**
@@ -262,7 +265,13 @@ export async function afterWorkPeriodChanged(
           actor: params.actor,
           reason: params.reason,
         });
-  return { earlyEndDropped, esm2, days };
+  // Marks outside the new term go with it (ADR 0246, plan §5.1): one place for every term writer.
+  const workingDaysDropped = await dropWorkingDaysOutsideTerm(
+    tx,
+    params.requestId,
+    params.actor.id,
+  );
+  return { earlyEndDropped, esm2, days, workingDaysDropped };
 }
 
 /** Срок заказа, каким он записан сейчас. `dateTo` пуст у однодневного — читается `dateFrom`. */

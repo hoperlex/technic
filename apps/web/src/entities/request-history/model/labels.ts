@@ -61,6 +61,9 @@ export const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
   documentAttached: 'Подшит документ',
   // A typed document taken off a vehicle request (rental closing plan, P8).
   documentRemoved: 'Снят документ',
+  // A working Sunday of the request (ADR 0246).
+  workingDaySet: 'Воскресенье отмечено рабочей сменой',
+  workingDayRemoved: 'Снята отметка рабочей смены',
   // Виза ИТ (Р51): решение о том, звать ли внешний сервис. Отказ читается отдельно от обычной
   // отмены — заявку закрыл не заказчик и не оператор.
   //
