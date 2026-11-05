@@ -157,7 +157,7 @@ client floor.
 | Бланки строгой отчётности         | `strict_report_blanks`         | диспетчер, менеджер                        | `waybills.issueBlank`                                                                                                                                                                                |
 | Заказ техники                     | `vehicle_ordering`             | площадка                                   | ведение заказов ТС (4 права) и недельных заявок (3 права)                                                                                                                                            |
 | Виза объекта                      | `site_approval`                | площадка                                   | `vehicleRequests.approve`, `weeklyRequests.approve`                                                                                                                                                  |
-| Виза отдела                       | `department_approval`          | отдел                                      | `vehicleRequests.approve`                                                                                                                                                                            |
+| Виза отдела                       | `department_approval`          | отдел, менеджер                            | `vehicleRequests.approve`, `mechRequests.approve`; у менеджера — в пределах «Отделов визы» учётки и их площадок (ADR 0245, §9.1)                                                                      |
 | Оргтехника: номенклатура          | `office_equipment_consumables` | штаб, площадка, отдел                      | `officeEquipmentConsumables.manage` / `.stock`                                                                                                                                                       |
 | Оргтехника: исполнитель           | `office_equipment_executor`    | штаб, площадка, отдел                      | работа руками по назначению: `serviceRequests.read` / `.execute` / `.files`                                                                                                                          |
 | Оргтехника: заявитель             | `office_equipment_requester`   | диспетчер                                  | круг заказчика роли без своей оси (7 прав); изменяющие действия сужены авторством (§8). Менеджера в списке нет с 10.09.2026 (ADR 0181): круг у него в матрице, и набор не добавил бы ни одного права |
@@ -1013,6 +1013,16 @@ const canApprove = {
   визирующего применяется сразу (`approvesOwnRequestOnCreate`, как и автовиза при заведении).
   Сокращение `date_to` обычной правкой у заявки «В работе» → **422**: иначе виза обходится в один
   шаг.
+- **A grant-given visa of an axis-less role acts within visa departments**
+  ([ADR 0245](adr/0245-manager-department-visa.md)). «Виза отдела» is compatible with `manager`;
+  when a role has no axis and its matrix row lacks the visa (`visaLimitedToApprovalDepartments` in
+  `packages/contracts/src/visa-scope.ts`), the visa is limited to the account's «Отделы визы»
+  (`user_approval_departments`) and their sites — the department head's answer: department and site
+  orders, mechanization rentals filed by the department on its site, never an extension. The
+  administrator (visa from the matrix) is unchanged. Visa departments are not a scope axis: the
+  manager still sees the whole company. `PATCH /:id/approval` asks `canApproveRequest` on top of the
+  scope check, because for an axis-less role the scope check passes every row. A held visa needs at
+  least one visa department (account form and point assignment refuse otherwise); no auto-visa.
 
 ### 9.2. Доступ к файлу (ADR 0021 п. 11)
 
