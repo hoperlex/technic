@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
+import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 import { issueRouteWaybill } from './waybill-issue-helper';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -979,5 +979,127 @@ describe.skipIf(!DB_URL)('дни линейного заказа в рейсах
     const plan = await daysOf(freight.id);
     expect(plan.items).toEqual([]);
     expect(plan.blocker).toContain('грузоперевозки');
+  });
+
+  describe('рабочее воскресенье заявки (ADR 0246)', () => {
+    const sundayOfTerm = () => shiftDateKey(weekStartKey(ctx.dateFrom), 6);
+
+    async function workingDays(requestId: string) {
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/vehicle-requests/${requestId}/working-days`,
+        headers: ctx.auth,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json() as {
+        sundays: { date: string; working: boolean; blocker: string | null }[];
+      };
+    }
+
+    function setWorking(requestId: string, date: string, working: boolean) {
+      return ctx.app.inject({
+        method: 'PUT',
+        url: `/api/v1/vehicle-requests/${requestId}/working-days/${date}`,
+        headers: ctx.auth,
+        payload: { working },
+      });
+    }
+
+    async function auditCount(requestId: string): Promise<number> {
+      const rows = await ctx.db.execute<{ c: number }>(sql`
+        SELECT count(*)::int AS c FROM audit_log
+         WHERE entity_type = 'vehicle_request' AND entity_id = ${requestId}
+           AND action LIKE 'vehicle_request.working_day_%'`);
+      return rows.rows[0]!.c;
+    }
+
+    it('воскресенье срока отмечается и снимается, повтор не пишет истории', async () => {
+      const request = await requestInProgress(ctx.plainTypeId);
+      const sunday = sundayOfTerm();
+      expect((await workingDays(request.id)).sundays).toEqual([
+        { date: sunday, working: false, blocker: null },
+      ]);
+
+      const set = await setWorking(request.id, sunday, true);
+      expect(set.statusCode, set.body).toBe(200);
+      expect(set.json().sundays[0]).toMatchObject({ date: sunday, working: true });
+      expect(await auditCount(request.id)).toBe(1);
+
+      const again = await setWorking(request.id, sunday, true);
+      expect(again.statusCode, again.body).toBe(200);
+      expect(await auditCount(request.id)).toBe(1);
+
+      const off = await setWorking(request.id, sunday, false);
+      expect(off.json().sundays[0]).toMatchObject({ working: false });
+      expect(await auditCount(request.id)).toBe(2);
+    });
+
+    it('будний день и воскресенье вне срока не отмечаются', async () => {
+      const request = await requestInProgress(ctx.plainTypeId);
+      const weekdayOfTerm = shiftDateKey(sundayOfTerm(), -1);
+      const res = await setWorking(request.id, weekdayOfTerm, true);
+      expect(res.statusCode).toBe(422);
+      expect(res.json().message).toMatch(/только воскресенье/u);
+      const outside = await setWorking(request.id, shiftDateKey(sundayOfTerm(), 14), true);
+      expect(outside.statusCode).toBe(422);
+      expect(outside.json().message).toMatch(/вне срока/u);
+    });
+
+    it('возврат в «Новую» снимает отметки вместе с работой', async () => {
+      const request = await requestInProgress(ctx.plainTypeId);
+      expect((await setWorking(request.id, sundayOfTerm(), true)).statusCode).toBe(200);
+      const versionNow = async () =>
+        (
+          await ctx.db.execute<{ version: number }>(
+            sql`SELECT version FROM vehicle_requests WHERE id = ${request.id}`,
+          )
+        ).rows[0]!.version;
+      const preview = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/vehicle-requests/${request.id}/rollback/preview`,
+        headers: ctx.auth,
+        payload: { version: await versionNow() },
+      });
+      expect(preview.statusCode, preview.body).toBe(200);
+      const rolled = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/vehicle-requests/${request.id}/status`,
+        headers: ctx.auth,
+        payload: {
+          status: 'new',
+          comment: 'Исполнитель отказался',
+          version: await versionNow(),
+          previewFingerprint: preview.json().fingerprint,
+        },
+      });
+      expect(rolled.statusCode, rolled.body).toBe(200);
+      const marks = await ctx.db.execute<{ c: number }>(sql`
+        SELECT count(*)::int AS c FROM vehicle_request_working_days WHERE request_id = ${request.id}`);
+      expect(marks.rows[0]!.c).toBe(0);
+    });
+
+    it('срок, переставший включать воскресенье, снимает его отметку и пишет это в историю', async () => {
+      const request = await requestInProgress(ctx.plainTypeId);
+      const sunday = sundayOfTerm();
+      expect((await setWorking(request.id, sunday, true)).statusCode).toBe(200);
+      const { dropWorkingDaysOutsideTerm } =
+        await import('../src/services/vehicle-request-working-days');
+      const adminId = (
+        await ctx.db.execute<{ id: string }>(sql`SELECT id FROM users WHERE email = ${ADMIN_EMAIL}`)
+      ).rows[0]!.id;
+      const dropped = await ctx.db.transaction(async (tx) => {
+        // The term writer's own write: the new end before the Sunday; the hook runs after it.
+        await tx.execute(sql`
+          UPDATE special_equipment_request_details SET date_to = ${shiftDateKey(sunday, -1)}::date
+           WHERE request_id = ${request.id} AND date_from <= ${shiftDateKey(sunday, -1)}::date`);
+        return dropWorkingDaysOutsideTerm(tx, request.id, adminId);
+      });
+      // A term starting on the Sunday itself cannot end before it; nothing to drop then.
+      if (ctx.dateFrom === sunday) expect(dropped).toEqual([]);
+      else {
+        expect(dropped).toEqual([sunday]);
+        expect(await auditCount(request.id)).toBe(2);
+      }
+    });
   });
 });
