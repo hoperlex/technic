@@ -85,6 +85,16 @@ export const constructionObjectIdsSchema = z.array(uuidSchema).max(50);
 export const departmentIdsSchema = z.array(uuidSchema).max(50);
 
 /**
+ * Visa departments of the account (ADR 0245): where a visa that an axis-less role received from a
+ * grant acts. A separate field, not `departmentIds`: the department axis would make the account a
+ * department member everywhere (visibility, mail audiences, the department card), and the old
+ * account form sends `departmentIds: []` for every axis-less role — reusing it would let an edit
+ * from a tab opened before the release wipe the visa silently. A field old bundles never send is
+ * absent, and absent means "keep".
+ */
+export const approvalDepartmentIdsSchema = z.array(uuidSchema).max(50);
+
+/**
  * Почему набор надстроек не годится этой роли (ADR 0086) — одним текстом на форму и на сервер.
  *
  * Сообщение называет виноватую надстройку и роли, которым она положена: «сохранить не вышло» без
@@ -116,6 +126,8 @@ export const createUserSchema = z
     isActive: z.boolean().default(true),
     constructionObjectIds: constructionObjectIdsSchema.optional().default([]),
     departmentIds: departmentIdsSchema.optional().default([]),
+    /** Visa departments (ADR 0245); the server keeps them only for a role they limit. */
+    approvalDepartmentIds: approvalDepartmentIdsSchema.optional().default([]),
     /**
      * Надстройки роли (ADR 0086): набор дополнительных прав поверх роли, область он не меняет
      * (Р4). Полным списком, как объекты и отделы, — сервер синхронизирует набор.
@@ -213,6 +225,8 @@ export const updateUserSchema = z
     constructionObjectIds: constructionObjectIdsSchema.optional(),
     /** Полный список отделов; отсутствие поля — не трогать привязки (ADR 0040). */
     departmentIds: departmentIdsSchema.optional(),
+    /** Full list of visa departments; an absent field keeps them (ADR 0245). */
+    approvalDepartmentIds: approvalDepartmentIdsSchema.optional(),
     /** Полный список надстроек; отсутствие поля — не трогать выданные (ADR 0086). */
     addons: roleAddonsSchema.optional(),
     /**
@@ -400,6 +414,13 @@ export interface UserDepartmentRefDto {
   isHead: boolean;
 }
 
+/** A visa department in the account card (ADR 0245): enough to show it and pick it again. */
+export interface UserApprovalDepartmentRefDto {
+  id: string;
+  code: string;
+  name: string;
+}
+
 /**
  * Карточка работника, к которой привязана учётная запись (ADR 0102).
  *
@@ -452,6 +473,11 @@ export interface UserDto extends PersonNameParts {
   constructionObjects: UserObjectRefDto[];
   /** Отделы учётки (ADR 0040); непусты только у ролей отдела — вместе с объектами не бывают. */
   departments: UserDepartmentRefDto[];
+  /**
+   * Visa departments (ADR 0245), ordered by name. Filled only for a role whose visa they limit; the
+   * account is not a member of these departments and sees what its role sees.
+   */
+  approvalDepartments: UserApprovalDepartmentRefDto[];
   /**
    * Надстройки роли (ADR 0086) — кодами, а не подписями: подпись у надстройки одна на портал
    * (`roleAddonLabels`), и вторая её копия в ответе сервера разошлась бы с первой. Пустой массив —

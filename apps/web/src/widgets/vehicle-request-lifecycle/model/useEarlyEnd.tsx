@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { App, Button, Space } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  canApproveVehicleRequest,
   type DecideVehicleEarlyEndBody,
   isPlaceScopedRole,
   type RequestVehicleEarlyEndInput,
@@ -126,7 +127,7 @@ export function useEarlyEnd({ renderApproveModal, staleReasonOf }: Input) {
     }
     return (
       <Space size={8} wrap>
-        {can('vehicleRequests.approve') && (
+        {canApproveVehicleRequest(user, value, can) && (
           <>
             <Button size="small" type="primary" onClick={() => setApproveTarget(value)}>
               Согласовать

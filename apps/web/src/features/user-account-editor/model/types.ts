@@ -15,6 +15,11 @@ export interface UserFormValues {
   /** Account departments (ADR 0040): the second scope axis — instead of objects, not with them. */
   departmentIds?: string[];
   /**
+   * Visa departments (ADR 0245), one per row; an empty row is the «+» button's fresh line and is
+   * dropped on save. Not a scope axis: the account keeps the visibility of its role.
+   */
+  approvalDepartmentIds?: (string | undefined)[];
+  /**
    * Account counterparty: required for an external executor (ADR 0010). Its type selects the module
    * the account works in — waste removal or vehicle orders (ADR 0038).
    */

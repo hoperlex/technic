@@ -103,7 +103,7 @@ export function vehicleRequestFeedCard({
         approved={!!request.approvedAt}
         approvedByName={request.approvedByName}
         approvedAt={request.approvedAt}
-        canApprove={rights.canApprove}
+        canApprove={rights.canApprove(request)}
         pending={pending.approvalRequestId === request.id}
         onChange={(approved) => actions.changeApproval(request, approved)}
       />

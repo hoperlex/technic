@@ -1242,6 +1242,36 @@ export const userDepartments = pgTable(
 );
 
 /**
+ * Visa departments of an account (ADR 0245, migration 0410): where a visa that an axis-less role
+ * received from a grant acts — the department's own orders and those of its sites, as for the
+ * department head.
+ *
+ * A table of its own, not `user_departments`, for two reasons. Membership there is the department
+ * axis — visibility, mail audiences, the department card's members and heads — and the manager keeps
+ * a company-wide view. And the old account form sends `departmentIds: []` for every axis-less role:
+ * sharing the table would let an edit from a tab opened before the release wipe the visa silently.
+ */
+export const userApprovalDepartments = pgTable(
+  'user_approval_departments',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    departmentId: uuid('department_id')
+      .notNull()
+      .references(() => departments.id, { onDelete: 'cascade' }),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.departmentId] }),
+    // "Who signs for this department" is asked from the department side: the token version bump
+    // when the department's sites change (`markDepartmentScopeChanged`).
+    departmentIdx: index('user_approval_departments_department_idx').on(t.departmentId),
+  }),
+);
+
+/**
  * Assignable grants (ADR 0106, migration 0145): a role add-on that stopped being an enum value. Free
  * assembly means a grant is created in production, while an enum value can be neither created from
  * the UI nor removed at all.

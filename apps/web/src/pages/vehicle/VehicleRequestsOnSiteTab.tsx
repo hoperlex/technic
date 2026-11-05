@@ -2,7 +2,11 @@ import { useState } from 'react';
 import { Button } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
-import type { SpecialEquipmentRequestDto, VehicleOwnership } from '@technic/contracts';
+import {
+  canApproveVehicleRequest,
+  type SpecialEquipmentRequestDto,
+  type VehicleOwnership,
+} from '@technic/contracts';
 import { useOwnershipFilter } from '@features/vehicle-ownership-filter';
 import { useWaybillFormFilter } from '@features/waybill-form-filter';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
@@ -122,7 +126,7 @@ export function VehicleRequestsOnSiteTab() {
   // Досрочное завершение (ADR 0044) — единственное действие среза: он отвечает, что стоит на
   // площадке, и здесь же говорят, что машина уезжает раньше. Всё остальное по-прежнему ведут в
   // списке заявок.
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const earlyEnd = useEarlyEnd();
   /**
    * Второй вход в недельную заявку (ADR 0085, §5 шаг 1) — и он важнее первого: неделю собирают,
@@ -131,7 +135,9 @@ export function VehicleRequestsOnSiteTab() {
   const weeklyCreate = useWeeklyRequestCreate();
   const canOrderWeek = can('weeklyRequests.create');
   const canRequest = can('vehicleRequests.update');
-  const canDecide = can('vehicleRequests.approve');
+  // The decision is the visa of this request, scope included (ADR 0245): a manager with «Виза
+  // отдела» sees every site but decides only for his visa departments.
+  const canDecide = (r: SpecialEquipmentRequestDto) => canApproveVehicleRequest(user, r, can);
   // Часы вносит тот, кто ведёт заявку; подпись ставит тот, кто мог бы её завести. Область
   // (свой объект) сервер проверяет сам — здесь только право.
   const canFillShifts = can('vehicleRequests.update');

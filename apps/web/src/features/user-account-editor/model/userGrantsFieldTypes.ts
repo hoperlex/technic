@@ -1,5 +1,11 @@
 import type { ReactNode } from 'react';
-import type { CounterpartyType, GrantStatement, Role, UserAccountDto } from '@technic/contracts';
+import type {
+  CounterpartyType,
+  GrantStatement,
+  Permission,
+  Role,
+  UserAccountDto,
+} from '@technic/contracts';
 
 /** What the grants field reads and where it reports its result. */
 export interface UserGrantsFieldParams {
@@ -52,6 +58,12 @@ export interface UserGrantsControl {
    * caused by itself.
    */
   blocked: boolean;
+  /**
+   * Permissions the checked sets add beyond the position (`grantAddedPermissions`); empty while the
+   * catalog is not ready. The visa departments field asks it (ADR 0245): a visa added by a set to an
+   * axis-less role acts only within visa departments.
+   */
+  addedPermissions: readonly Permission[];
   /** Statement for the request body; undefined means do not send the field at all (§4.1). */
   statements: () => GrantStatement[] | undefined;
   /** Map a server refusal onto the field. true means it is shown and no generic error is needed (R8). */

@@ -205,6 +205,18 @@ export interface AuthUser extends PersonNameParts {
    */
   departmentObjectIds: string[];
   /**
+   * Visa departments (ADR 0245): where a visa that an axis-less role received from a grant acts.
+   * Not a scope axis — the account still sees the whole company; they only answer "may this account
+   * sign this request", and the portal asks it per row (`canApproveVehicleRequest`,
+   * `canApproveMechRequest`) so that «Визировать» does not lead to a 403.
+   *
+   * Optional, like `features`: in the deploy window the portal can be newer than the server, and
+   * the predicates read an absent list as "no visa departments" — the closed answer.
+   */
+  approvalDepartmentIds?: string[];
+  /** Sites attached to the visa departments — derived, like `departmentObjectIds` (ADR 0245). */
+  approvalDepartmentObjectIds?: string[];
+  /**
    * Тип контрагента учётки (ADR 0038): у роли внешнего исполнителя он определяет модуль, в
    * котором она работает, поэтому портал спрашивает права по паре «роль + тип», а не по роли.
    */

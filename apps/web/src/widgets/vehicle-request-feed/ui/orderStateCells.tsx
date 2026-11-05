@@ -129,8 +129,9 @@ export function ApprovalCell({
   approvedByName: string | null;
   approvedAt: string | null;
   /**
-   * The role's approval right only. A request on someone else's object is cut off by the server
-   * itself (assertRequestScope), so the cell does not repeat that check.
+   * The visa of this request — permission and scope (`canApproveVehicleRequest`, ADR 0245). The
+   * permission alone stopped being enough once an axis-less role could hold a department visa: it
+   * sees every row and signs only some.
    */
   canApprove: boolean;
   pending: boolean;

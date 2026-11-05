@@ -14,7 +14,8 @@ import type { FilterDefinition, FilterOption } from '@shared/ui';
 export type VehicleRequestFeedRow = VehicleFeedRow & { id: string };
 
 export interface VehicleRequestFeedRights {
-  canApprove: boolean;
+  /** The visa of this very request (ADR 0245), not the bare permission. */
+  canApprove: (request: VehicleRequestDto) => boolean;
   canCreate: boolean;
   canCreateWeekly: boolean;
   canDelete: boolean;

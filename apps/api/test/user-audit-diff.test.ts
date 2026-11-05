@@ -24,6 +24,7 @@ function account(over: Partial<UserAccountDto> = {}): UserAccountDto {
     emailVerifiedAt: null,
     constructionObjects: [{ id: 'o-1', code: 'СУ-10', name: 'СУ-10' }],
     departments: [],
+    approvalDepartments: [],
     addons: [],
     // Наборы и права в журнал не идут: дифф перечисляет поля карточки явно, а эффективные права —
     // производное от роли и наборов, и «право появилось» без причины его появления ничего не
@@ -111,6 +112,21 @@ describe('изменения учётной записи для журнала',
       account({ departments: [{ id: 'd-1', code: 'ПТО', name: 'ПТО', isHead: false }] }),
     );
     expect(changes).toEqual([{ field: 'departmentsAdded', from: null, to: 'ПТО' }]);
+  });
+
+  it('names visa departments as their own pair, apart from membership (ADR 0245)', () => {
+    // Visa departments are not membership: the journal is asked "who may sign for this department",
+    // and mixing them into «Отделы добавлены» would answer "he works there".
+    const oat = { id: 'd-2', code: 'ОАТ', name: 'ОАТ СМ' };
+    const pto = { id: 'd-3', code: 'ПТО', name: 'ПТО' };
+    const changes = userAuditChanges(
+      account({ role: 'manager', approvalDepartments: [pto] }),
+      account({ role: 'manager', approvalDepartments: [oat] }),
+    );
+    expect(changes).toEqual([
+      { field: 'approvalDepartmentsAdded', from: null, to: 'ОАТ СМ' },
+      { field: 'approvalDepartmentsRemoved', from: null, to: 'ПТО' },
+    ]);
   });
 
   it('называет снятую надстройку: следа от неё в учётке не остаётся', () => {

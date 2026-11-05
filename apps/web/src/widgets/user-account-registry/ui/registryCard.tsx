@@ -53,6 +53,11 @@ export function userAccountRegistryCard({
           record.departments.length > 0 ? record.departments : record.constructionObjects;
         return places.length > 0 ? places.map((place) => place.name).join(' · ') : null;
       },
+      // Visa departments (ADR 0245): where a grant-given visa acts — the same line as on desktop.
+      (record) =>
+        record.approvalDepartments.length > 0
+          ? `Виза: ${record.approvalDepartments.map((department) => department.name).join(' · ')}`
+          : null,
       (record) =>
         record.counterpartyName
           ? counterpartyTypeHasAccounts(record.counterpartyType)

@@ -32,6 +32,10 @@ export interface AuthUserSource {
   departmentIds: string[];
   /** Department sites (ADR 0062): the derived scope of a department role in waste removal. */
   departmentObjectIds: string[];
+  /** Visa departments (ADR 0245): the portal asks the visa predicates per row with them. */
+  approvalDepartmentIds: string[];
+  /** Sites of the visa departments (ADR 0245), derived like `departmentObjectIds`. */
+  approvalDepartmentObjectIds: string[];
   /** Counterparty type (ADR 0038): together with the role it defines the account's permissions. */
   counterpartyType: CounterpartyType | null;
   /**
@@ -104,6 +108,8 @@ export function makeAuthUser(u: AuthUserSource, features: FeatureFlagKey[]): Aut
     constructionObjectIds: u.constructionObjectIds,
     departmentIds: u.departmentIds,
     departmentObjectIds: u.departmentObjectIds,
+    approvalDepartmentIds: u.approvalDepartmentIds,
+    approvalDepartmentObjectIds: u.approvalDepartmentObjectIds,
     counterpartyType: u.counterpartyType,
     counterpartyId: u.counterpartyId,
     addons: u.addons,

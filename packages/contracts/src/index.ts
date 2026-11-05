@@ -112,6 +112,8 @@ export * from './vehicle-request-documents';
 export * from './vehicle-rental-completion';
 export * from './vehicle-requests';
 export * from './vehicle-request-feed';
+// Scope of a grant-given visa of an axis-less role (ADR 0245): shared by both request modules.
+export * from './visa-scope';
 /* Механизация (`mech-requests.ts`) — после заявки на технику, потому что читается с ней рядом и
  * заимствует у неё две вещи: склонение отработанного и набор закрытых статусов. Отдельным файлом,
  * а не частью «Заказа ТС», потому что общего у модулей только это: у аренды малой механизации свой

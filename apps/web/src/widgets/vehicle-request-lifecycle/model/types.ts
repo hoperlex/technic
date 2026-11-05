@@ -67,7 +67,8 @@ export interface VehicleRequestLifecycleController {
     statusRequestId?: string;
   };
   rights: {
-    canApprove: boolean;
+    /** The visa of this very request (ADR 0245), not the bare permission. */
+    canApprove: (request: VehicleRequestDto) => boolean;
     canDelete: boolean;
     canEdit: boolean;
     canRestore: boolean;

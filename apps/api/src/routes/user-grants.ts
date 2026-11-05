@@ -3,9 +3,11 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  APPROVAL_DEPARTMENTS_REQUIRED_MESSAGE,
   assignGrantSchema,
   GRANT_CONFLICT_CODES,
   grantAssignmentPreviewSchema,
+  needsApprovalDepartments,
   revokeGrantQuerySchema,
   roleLabels,
   validateGrantAssignment,
@@ -26,6 +28,7 @@ import { grants, userGrants, type GrantRow } from '../db/schema';
 import { writeAuditTx } from '../lib/audit';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
+import { approvalDepartmentIdsOfUser } from '../services/user-scopes';
 import {
   assertImpactUnchanged,
   assignedGrantLimitIssue,
@@ -364,6 +367,20 @@ export default async function userGrantsRoutes(app: FastifyInstance): Promise<vo
 
         if (impact.held) {
           return { assignmentId: impact.held.assignmentId, changed: false, delta: impact.delta };
+        }
+
+        // A visa that only visa departments make effective needs one (ADR 0245, owner decision
+        // 05.11.2026). This window has no field for them, so it refuses and names the window that
+        // does: a point assignment that gives nothing would let the administrator believe the
+        // access exists.
+        if (
+          needsApprovalDepartments(state.role, impact.permissionsAfter) &&
+          (await approvalDepartmentIdsOfUser(tx, id)).length === 0
+        ) {
+          throw err.badRequest(
+            `${APPROVAL_DEPARTMENTS_REQUIRED_MESSAGE}: выдайте полномочие в карточке учётки вместе с отделом визы`,
+            { grantId: APPROVAL_DEPARTMENTS_REQUIRED_MESSAGE },
+          );
         }
 
         /*

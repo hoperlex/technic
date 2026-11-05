@@ -128,6 +128,13 @@ export function userAuditChanges(
   set.listed('departmentsAdded', departments.added);
   set.listed('departmentsRemoved', departments.removed);
 
+  const approvalDepartments = setDelta(
+    before === null ? nothing : scopeTitles(before.approvalDepartments),
+    scopeTitles(after.approvalDepartments),
+  );
+  set.listed('approvalDepartmentsAdded', approvalDepartments.added);
+  set.listed('approvalDepartmentsRemoved', approvalDepartments.removed);
+
   const addons = setDelta(
     before === null ? nothing : addonTitles(before.addons),
     addonTitles(after.addons),

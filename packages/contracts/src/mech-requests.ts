@@ -18,7 +18,8 @@ import {
   dateOnlySchema,
   uuidSchema,
 } from './common';
-import { can, type Permission, type ScopedSubject } from './permissions';
+import { can, type Permission } from './permissions';
+import { visaLimitedToApprovalDepartments, type VisaSubject } from './visa-scope';
 import {
   costTargetKey,
   parseCostTargetKey,
@@ -695,14 +696,12 @@ export type RevokeMechIssueInput = z.infer<typeof revokeMechIssueSchema>;
 // ── Виза площадки (план `docs/mechanization-approval-and-grants-plan.md`, Р1–Р6) ──
 
 /**
- * Субъект, спрашивающий про визу: права плюс обе оси области. `ScopedSubject` сам по себе не
- * годится — в нём нет `departmentIds`, а именно они отвечают на вопрос «этот ли отдел завёл
- * заявку»; под расширение подходят как есть и принципал сервера, и текущий пользователь портала.
+ * The subject asking about a visa: permissions plus every scope a visa is compared with. A plain
+ * `ScopedSubject` does not fit — it lacks `departmentIds`, which answer "did this department file
+ * the request", and the visa departments of an axis-less role (ADR 0245). The server principal and
+ * the portal's current user both fit as they are.
  */
-export interface MechApprovalSubject extends ScopedSubject {
-  /** Отделы учётки (ADR 0040): своя сторона заявки у роли отдела. */
-  departmentIds?: readonly string[];
-}
+export type MechApprovalSubject = VisaSubject;
 
 /** Стороны заявки, по которым считается виза: место эксплуатации и необязательный заявитель. */
 export interface MechApprovalTarget {
@@ -745,14 +744,35 @@ export function canApproveMechRequest(
   if (isObjectScopedRole(role))
     return (subject?.constructionObjectIds ?? []).includes(row.objectId);
   if (isDepartmentScopedRole(role)) {
-    return (
-      !!row.departmentId &&
-      (subject?.departmentIds ?? []).includes(row.departmentId) &&
-      (subject?.departmentObjectIds ?? []).includes(row.objectId)
+    return departmentsOwnMechRequest(subject?.departmentIds, subject?.departmentObjectIds, row);
+  }
+  // An axis-less role whose visa came from a grant signs as the department head (ADR 0245, owner
+  // decision 05.11.2026): its visa department filed the request AND the site is attached to it.
+  if (visaLimitedToApprovalDepartments(role, 'mechRequests.approve')) {
+    return departmentsOwnMechRequest(
+      subject?.approvalDepartmentIds,
+      subject?.approvalDepartmentObjectIds,
+      row,
     );
   }
-  // A role without its own axis (administrator) is not limited by anything, as in the vehicle order.
+  // A role whose matrix carries the visa (administrator) is not limited by anything.
   return true;
+}
+
+/**
+ * Both halves of the department branch: the department filed the request AND the site is attached
+ * to it now. A request with an empty `departmentId` is never the department's to sign.
+ */
+function departmentsOwnMechRequest(
+  departmentIds: readonly string[] | undefined,
+  departmentObjectIds: readonly string[] | undefined,
+  row: MechApprovalTarget,
+): boolean {
+  return (
+    !!row.departmentId &&
+    (departmentIds ?? []).includes(row.departmentId) &&
+    (departmentObjectIds ?? []).includes(row.objectId)
+  );
 }
 
 /**

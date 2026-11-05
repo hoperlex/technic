@@ -39,6 +39,8 @@ import { loadPrincipal } from '../auth/principal';
 import { requirePrincipal } from '../auth/plugin';
 import { makeAuthUser } from '../auth/session-user';
 import {
+  approvalDepartmentIdsExpr,
+  approvalDepartmentObjectIdsExpr,
   constructionObjectIdsExpr,
   departmentIdsExpr,
   departmentObjectIdsExpr,
@@ -81,6 +83,10 @@ function userWithCounterpartyType() {
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
       departmentObjectIds: departmentObjectIdsExpr,
+      // Visa departments (ADR 0245) — the same expressions as the principal's, so that sign-in
+      // answers what `loadPrincipal` answers the next request.
+      approvalDepartmentIds: approvalDepartmentIdsExpr,
+      approvalDepartmentObjectIds: approvalDepartmentObjectIdsExpr,
       // Наборы вместо надстроек (ADR 0106, шаг 1c) — тем же выражением, что у принципала: вход
       // обязан отвечать то же, что ответит `loadPrincipal` следующему запросу.
       grantCodes: grantCodesExpr,
@@ -515,6 +521,8 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
           constructionObjectIds: row.constructionObjectIds,
           departmentIds: row.departmentIds,
           departmentObjectIds: row.departmentObjectIds,
+          approvalDepartmentIds: row.approvalDepartmentIds,
+          approvalDepartmentObjectIds: row.approvalDepartmentObjectIds,
           // Пометки рядом с ролью — производная от кодов наборов, как и у принципала: собранный
           // администратором набор в это поле не попадает (`systemAddonsOf`).
           addons: systemAddonsOf(row.grantCodes),
@@ -623,6 +631,8 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         constructionObjectIds: row.constructionObjectIds,
         departmentIds: row.departmentIds,
         departmentObjectIds: row.departmentObjectIds,
+        approvalDepartmentIds: row.approvalDepartmentIds,
+        approvalDepartmentObjectIds: row.approvalDepartmentObjectIds,
         addons: systemAddonsOf(row.grantCodes),
         grantCodes: row.grantCodes,
         grantPermissions: row.grantPermissions.filter(isPermission),

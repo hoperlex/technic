@@ -29,7 +29,10 @@ import {
   createUserSchema,
   EMAIL_VERIFICATION_ENABLED,
   isCounterpartyScopedRole,
+  acceptsApprovalDepartments,
+  APPROVAL_DEPARTMENTS_REQUIRED_MESSAGE,
   isDepartmentScopedRole,
+  needsApprovalDepartments,
   isObjectScopedRole,
   isPersonScopedRole,
   permissionsFor,
@@ -87,6 +90,8 @@ import { revokeAllForUser } from '../auth/sessions';
 import { orderByFrom, pageParams, phoneSearchCondition, searchCondition } from '../lib/pagination';
 import {
   addonsOfUser,
+  approvalDepartmentIdsOfUser,
+  approvalDepartmentsByUserIds,
   departmentIdsOfUser,
   departmentsByUserIds,
   grantCodesByUserIds,
@@ -95,6 +100,7 @@ import {
   objectIdsOfUser,
   objectsByUserIds,
   replaceUserAddons,
+  replaceUserApprovalDepartments,
   replaceUserDepartments,
   replaceUserObjects,
   systemAddonsOf,
@@ -317,6 +323,7 @@ function toDto(
   r: UserRowJoined,
   objects: UserDto['constructionObjects'],
   departments: UserDto['departments'],
+  approvalDepartments: UserDto['approvalDepartments'],
   grantCodes: string[],
   grantPermissions: Permission[],
   /**
@@ -346,6 +353,7 @@ function toDto(
     emailVerifiedAt: r.emailVerifiedAt?.toISOString() ?? null,
     constructionObjects: objects,
     departments,
+    approvalDepartments,
     addons,
     grantCodes,
     grants,
@@ -443,17 +451,20 @@ function usersQuery(reader: Reader = db) {
 async function fetchUserDto(id: string, reader: Reader = db): Promise<UserAccountDto | null> {
   const [row] = await usersQuery(reader).where(eq(users.id, id));
   if (!row) return null;
-  const [objects, departments, grantCodes, grantPermissions, grants] = await Promise.all([
-    objectsByUserIds([id], reader),
-    departmentsByUserIds([id], reader),
-    grantCodesByUserIds(reader, [id]),
-    grantPermissionsByUserIds(reader, [id]),
-    grantRefsByUserIds(reader, [id]),
-  ]);
+  const [objects, departments, approvalDepartments, grantCodes, grantPermissions, grants] =
+    await Promise.all([
+      objectsByUserIds([id], reader),
+      departmentsByUserIds([id], reader),
+      approvalDepartmentsByUserIds([id], reader),
+      grantCodesByUserIds(reader, [id]),
+      grantPermissionsByUserIds(reader, [id]),
+      grantRefsByUserIds(reader, [id]),
+    ]);
   return toDto(
     row,
     objects.get(id) ?? [],
     departments.get(id) ?? [],
+    approvalDepartments.get(id) ?? [],
     grantCodes.get(id) ?? [],
     grantPermissions.get(id) ?? [],
     grants.get(id) ?? [],
@@ -556,6 +567,33 @@ function resolveDepartmentIds(role: UserDto['role'], departmentIds: string[]): s
     });
   }
   return departmentIds;
+}
+
+/**
+ * Visa departments of the account (ADR 0245): kept only for a role whose visa they limit
+ * (`acceptsApprovalDepartments`), emptied for every other role by the same rule `resolve*` above
+ * apply to a foreign axis — a link that limits nothing would read in the card as a restriction.
+ */
+function resolveApprovalDepartmentIds(role: UserDto['role'], departmentIds: string[]): string[] {
+  return acceptsApprovalDepartments(role) ? departmentIds : [];
+}
+
+/**
+ * A visa that only visa departments make effective needs at least one (owner decision 05.11.2026).
+ * Asked on the effective permissions after the operation, so it covers a grant checked in the form
+ * as well as a role change that switches a held grant on. Without it the grant would be issued and
+ * give nothing, and the administrator would believe the access exists.
+ */
+function assertApprovalDepartments(
+  role: UserDto['role'],
+  permissionsAfter: readonly Permission[],
+  approvalDepartmentIds: readonly string[],
+): void {
+  if (approvalDepartmentIds.length > 0) return;
+  if (!needsApprovalDepartments(role, permissionsAfter)) return;
+  throw err.badRequest(APPROVAL_DEPARTMENTS_REQUIRED_MESSAGE, {
+    approvalDepartmentIds: APPROVAL_DEPARTMENTS_REQUIRED_MESSAGE,
+  });
 }
 
 /**
@@ -1138,19 +1176,22 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     // сверх пятого: витрина «Права» перебирает живые учётки целиком — по ним считаются держатели
     // права, группировка по фактическому набору и пометка «только у администратора», — и запрос на
     // учётку превратил бы такой перебор в сотню обращений к базе.
-    const [objects, departments, grantCodes, grantPermissions, grants] = await Promise.all([
-      objectsByUserIds(ids),
-      departmentsByUserIds(ids),
-      grantCodesByUserIds(db, ids),
-      grantPermissionsByUserIds(db, ids),
-      grantRefsByUserIds(db, ids),
-    ]);
+    const [objects, departments, approvalDepartments, grantCodes, grantPermissions, grants] =
+      await Promise.all([
+        objectsByUserIds(ids),
+        departmentsByUserIds(ids),
+        approvalDepartmentsByUserIds(ids),
+        grantCodesByUserIds(db, ids),
+        grantPermissionsByUserIds(db, ids),
+        grantRefsByUserIds(db, ids),
+      ]);
     return {
       items: rows.map((row) =>
         toDto(
           row,
           objects.get(row.id) ?? [],
           departments.get(row.id) ?? [],
+          approvalDepartments.get(row.id) ?? [],
           grantCodes.get(row.id) ?? [],
           grantPermissions.get(row.id) ?? [],
           grants.get(row.id) ?? [],
@@ -1296,6 +1337,10 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     const counterpartyId = await resolveCounterpartyId(body.role, body.counterpartyId);
     const objectIds = resolveObjectIds(body.role, body.constructionObjectIds);
     const departmentIds = resolveDepartmentIds(body.role, body.departmentIds);
+    const approvalDepartmentIds = resolveApprovalDepartmentIds(
+      body.role,
+      body.approvalDepartmentIds,
+    );
     const addons = resolveAddons(body.role, body.addons);
     let created;
     let binding: PersonBinding = {
@@ -1361,6 +1406,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           .returning({ id: users.id });
         await replaceUserObjects(tx, row!.id, objectIds, actor.id);
         await replaceUserDepartments(tx, row!.id, departmentIds, actor.id);
+        await replaceUserApprovalDepartments(tx, row!.id, approvalDepartmentIds, actor.id);
         await replaceUserAddons(tx, row!.id, addons, actor.id);
 
         /*
@@ -1393,6 +1439,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         if (outcome.violations.length > 0) {
           refuseGrantBarriers(outcome.violations, body.grants !== undefined);
         }
+        assertApprovalDepartments(body.role, outcome.permissionsAfter, approvalDepartmentIds);
         const assignmentIds = await applyGrantPlan(tx, row!.id, plan, actor.id);
 
         // Письмо только активной учётке: звать человека в портал, который его не пустит, хуже
@@ -1601,11 +1648,13 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           // отдельскую требует области и без поля: набор, оставшийся от прежней роли, проверяется
           // наравне с присланным. Смена оси при этом обнуляет чужой набор сама — `resolve*`
           // возвращают пустой список всем, кроме своей роли.
-          const [currentObjects, currentDepartments, currentAddons] = await Promise.all([
-            objectIdsOfUser(tx, id),
-            departmentIdsOfUser(tx, id),
-            addonsOfUser(tx, id),
-          ]);
+          const [currentObjects, currentDepartments, currentApprovalDepartments, currentAddons] =
+            await Promise.all([
+              objectIdsOfUser(tx, id),
+              departmentIdsOfUser(tx, id),
+              approvalDepartmentIdsOfUser(tx, id),
+              addonsOfUser(tx, id),
+            ]);
           const nextObjectIds = resolveObjectIds(
             nextRole,
             body.constructionObjectIds ?? currentObjects,
@@ -1613,6 +1662,12 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           const nextDepartmentIds = resolveDepartmentIds(
             nextRole,
             body.departmentIds ?? currentDepartments,
+          );
+          // An absent field keeps the visa departments (ADR 0245): bundles from before the release
+          // never send it, and an edit from such a tab must not wipe the visa.
+          const nextApprovalDepartmentIds = resolveApprovalDepartmentIds(
+            nextRole,
+            body.approvalDepartmentIds ?? currentApprovalDepartments,
           );
           /*
            * Тем же правилом, но с другим исходом: выданная надстройка от смены роли не отваливается,
@@ -1658,7 +1713,15 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
             nextDepartmentIds,
             actor.id,
           );
-          const changed = objectsChanged || departmentsChanged;
+          const approvalDepartmentsChanged = await replaceUserApprovalDepartments(
+            tx,
+            id,
+            nextApprovalDepartmentIds,
+            actor.id,
+          );
+          // Visa departments change what the account may sign: tokens are revoked as for any other
+          // scope change, so the portal's «Визировать» follows on the next refresh.
+          const changed = objectsChanged || departmentsChanged || approvalDepartmentsChanged;
           const addonsSetChanged =
             nextAddons === null ? false : await replaceUserAddons(tx, id, nextAddons, actor.id);
 
@@ -1708,6 +1771,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           if (outcome.violations.length > 0) {
             refuseGrantBarriers(outcome.violations, body.grants !== undefined);
           }
+          assertApprovalDepartments(nextRole, outcome.permissionsAfter, nextApprovalDepartmentIds);
           const assignmentIds = await applyGrantPlan(tx, id, plan, actor.id);
           const grantsWereChanged = plan.toAssign.length > 0 || plan.toRevoke.length > 0;
 

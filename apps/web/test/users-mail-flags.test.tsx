@@ -40,6 +40,7 @@ function user(over: Partial<UserDto> = {}): UserDto {
     emailVerifiedAt: null,
     constructionObjects: [],
     departments: [],
+    approvalDepartments: [],
     addons: [],
     /*
      * Права и наборы карточки (ADR 0106, этап 2б) — то, что посчитал сервер. В фикстуре пусто:

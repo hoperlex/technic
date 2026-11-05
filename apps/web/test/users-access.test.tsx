@@ -78,6 +78,7 @@ function user(over: Partial<UserAccountDto> = {}): UserAccountDto {
     emailVerifiedAt: '2026-08-01T10:00:00.000Z',
     constructionObjects: [{ id: 'o-1', code: 'A', name: 'Объект А' }],
     departments: [],
+    approvalDepartments: [],
     addons: [],
     /** Наборы (ADR 0106): у учётки без выдач их нет, и сценарий назначает их сам. */
     grantCodes: [],

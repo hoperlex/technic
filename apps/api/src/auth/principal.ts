@@ -2,6 +2,8 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/client';
 import { counterparties, persons, users } from '../db/schema';
 import {
+  approvalDepartmentIdsExpr,
+  approvalDepartmentObjectIdsExpr,
   constructionObjectIdsExpr,
   departmentIdsExpr,
   departmentObjectIdsExpr,
@@ -151,6 +153,15 @@ export interface Principal extends AccessSubject {
    * которой там не хранится роль.
    */
   departmentObjectIds: string[];
+  /**
+   * Visa departments (ADR 0245): where a visa that an axis-less role received from a grant acts.
+   * Not a scope axis — visibility ignores them; only the visa predicates read them
+   * (`canApproveVehicleRequest`, `canApproveMechRequest`, `canApproveMechExtension`). Read from the
+   * database on every request, like the role: an administrator changes them without the holder.
+   */
+  approvalDepartmentIds: string[];
+  /** Sites attached to the visa departments — derived from the directory on every request. */
+  approvalDepartmentObjectIds: string[];
   /** Контрагент учётки (ADR 0010): у внешнего исполнителя задаёт, чьи заявки ему видны. */
   counterpartyId: string | null;
   /**
@@ -246,6 +257,8 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
       departmentObjectIds: departmentObjectIdsExpr,
+      approvalDepartmentIds: approvalDepartmentIdsExpr,
+      approvalDepartmentObjectIds: approvalDepartmentObjectIdsExpr,
       // Роль, тип контрагента и наборы — общей выборкой (см. `accessSubjectColumns`): их же
       // спрашивает сборщик адресатов письма, и второй формулы права быть не должно.
       ...accessSubjectColumns,
@@ -280,6 +293,8 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     constructionObjectIds: row.constructionObjectIds,
     departmentIds: row.departmentIds,
     departmentObjectIds: row.departmentObjectIds,
+    approvalDepartmentIds: row.approvalDepartmentIds,
+    approvalDepartmentObjectIds: row.approvalDepartmentObjectIds,
     counterpartyId: u.counterpartyId,
     personId: u.personId,
     ...accessSubjectOf(row),

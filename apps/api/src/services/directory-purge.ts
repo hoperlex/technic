@@ -66,6 +66,7 @@ const REFERENCING_TABLE_LABELS: Record<string, string> = {
   person_specializations: 'специализации работников',
   request_files: 'вложения заявок вывоза',
   request_status_history: 'история статусов заявок вывоза',
+  user_approval_departments: 'отделы визы учётных записей',
   user_construction_objects: 'объекты учётных записей',
   user_departments: 'отделы учётных записей',
   users: 'учётные записи',

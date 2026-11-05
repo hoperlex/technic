@@ -247,6 +247,7 @@ export function account(over: Partial<UserAccountDto> = {}): UserAccountDto {
     emailVerifiedAt: '2026-08-01T10:00:00.000Z',
     constructionObjects: [],
     departments: [],
+    approvalDepartments: [],
     addons: [],
     grantCodes: [],
     grants: [],

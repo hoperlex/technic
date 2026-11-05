@@ -67,6 +67,14 @@ function currentFields(user: UserAccountDto): ViewField[] {
       children: user.departments.map((d) => d.name).join(', '),
     });
   }
+  if (user.approvalDepartments.length > 0) {
+    fields.push({
+      key: 'approvalDepartments',
+      label: 'Отделы визы',
+      full: true,
+      children: user.approvalDepartments.map((d) => d.name).join(', '),
+    });
+  }
   if (user.counterpartyName) {
     fields.push({ key: 'counterparty', label: 'Контрагент', children: user.counterpartyName });
   }

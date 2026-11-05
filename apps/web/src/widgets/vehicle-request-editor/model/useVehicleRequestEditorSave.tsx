@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { App, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  canApproveVehicleRequest,
   CARGO_AMOUNT_MESSAGE,
   moscowDateKeyOf,
   routeDateMismatch,
@@ -39,9 +40,8 @@ interface Input {
 export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: Input) {
   const { message, modal } = App.useApp();
   const [reconcilePending, setReconcilePending] = useState(false);
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const qc = useQueryClient();
-  const canApprove = can('vehicleRequests.approve');
 
   const sendCreate = (body: CreateVehicleRequestInput) => {
     const attempt = state.draft.prepareCreate(body);
@@ -264,7 +264,12 @@ export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: I
     }
     // An approver's own edit does not drop the approval (ADR 0025): the approver confirms the
     // conversion by the edit itself — the server answers by the same rule.
-    const erased = retypeErases(record, !!record.approvedAt && !canApprove);
+    // The server drops the visa when the editor could not sign this very request (ADR 0245), so
+    // the warning asks the same per-request predicate, not the bare permission.
+    const erased = retypeErases(
+      record,
+      !!record.approvedAt && !canApproveVehicleRequest(user, record, can),
+    );
     modal.confirm({
       title: `Переоформить заявку ${record.displayNumber} в «${vehicleRequestTypeLabels[values.requestType]}»?`,
       content: (

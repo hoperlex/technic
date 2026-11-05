@@ -190,8 +190,11 @@ export function earlyEndAllowed(
   );
 }
 
-export function decidable(r: SpecialEquipmentRequestDto, canDecide: boolean) {
-  return canDecide && r.earlyEnd?.status === 'pending';
+export function decidable(
+  r: SpecialEquipmentRequestDto,
+  canDecide: (r: SpecialEquipmentRequestDto) => boolean,
+) {
+  return r.earlyEnd?.status === 'pending' && canDecide(r);
 }
 
 /**
@@ -202,7 +205,8 @@ export type OnSiteRowArgs = {
   /** День среза от сервера (ADR 0036): пока его нет, присутствие не подписывается. */
   onDate: string | undefined;
   canRequest: boolean;
-  canDecide: boolean;
+  /** The early-end decision is the visa of this request (ADR 0245), asked per row. */
+  canDecide: (r: SpecialEquipmentRequestDto) => boolean;
   earlyEnd: ReturnType<typeof useEarlyEnd>;
   /** Открыть карточку заявки. */
   onView: (r: SpecialEquipmentRequestDto) => void;

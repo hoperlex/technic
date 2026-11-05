@@ -10,6 +10,7 @@ import {
   type Permission,
   type Role,
   type RoleAddon,
+  type UserApprovalDepartmentRefDto,
   type UserDepartmentRefDto,
   type UserGrantRefDto,
   type UserObjectRefDto,
@@ -22,6 +23,7 @@ import {
   grantPermissions,
   grantRoles,
   grants,
+  userApprovalDepartments,
   userConstructionObjects,
   userDepartments,
   userGrants,
@@ -246,14 +248,18 @@ export async function departmentIdsOfUser(tx: Tx, userId: string): Promise<strin
   return rows.map((r) => r.id);
 }
 
-async function assertAllDepartmentsExist(tx: Tx, departmentIds: string[]): Promise<void> {
+async function assertAllDepartmentsExist(
+  tx: Tx,
+  departmentIds: string[],
+  field: 'departmentIds' | 'approvalDepartmentIds' = 'departmentIds',
+): Promise<void> {
   if (departmentIds.length === 0) return;
   const rows = await tx
     .select({ id: departments.id })
     .from(departments)
     .where(inArray(departments.id, departmentIds));
   if (rows.length !== new Set(departmentIds).size) {
-    throw err.badRequest('Отдел не найден', { departmentIds: 'Отдел не найден' });
+    throw err.badRequest('Отдел не найден', { [field]: 'Отдел не найден' });
   }
 }
 
@@ -296,6 +302,97 @@ export async function replaceUserDepartments(
       // `isHead` не проставляется: из карточки учётки задают участие в отделе, а не руководство им
       // (его назначают из карточки отдела). Умолчание колонки — `false`.
       .values(toAdd.map((departmentId) => ({ userId, departmentId, createdBy: actorUserId })))
+      .onConflictDoNothing();
+  }
+  return true;
+}
+
+/*
+ * ── Visa departments (ADR 0245) ──────────────────────────────────────────────────────────────────
+ *
+ * Where a visa that an axis-less role received from a grant acts. Not a scope axis: the account is
+ * not a member of these departments and keeps the visibility of its role. The derived sites follow
+ * the department directory on every request, as `departmentObjectIdsExpr` does for members.
+ */
+
+/** Visa departments of the account as one expression — read with the principal on every request. */
+export const approvalDepartmentIdsExpr = sql<string[]>`(
+  SELECT coalesce(array_agg(uad.department_id ORDER BY uad.department_id), '{}')
+  FROM user_approval_departments uad
+  WHERE uad.user_id = ${users.id}
+)`;
+
+/**
+ * Sites of the visa departments — derived from `department_construction_objects` exactly as
+ * `departmentObjectIdsExpr` derives the sites of member departments, with the same `DISTINCT` and
+ * the same ordering, for the same reasons (one site under two departments; a stable `/auth/me`).
+ */
+export const approvalDepartmentObjectIdsExpr = sql<string[]>`(
+  SELECT coalesce(
+    array_agg(DISTINCT dco.construction_object_id ORDER BY dco.construction_object_id),
+    '{}'
+  )
+  FROM user_approval_departments uad
+  JOIN department_construction_objects dco ON dco.department_id = uad.department_id
+  WHERE uad.user_id = ${users.id}
+)`;
+
+/** Visa departments of a list of accounts in one query, for the account list and card. */
+export async function approvalDepartmentsByUserIds(
+  userIds: string[],
+  reader: Reader = db,
+): Promise<Map<string, UserApprovalDepartmentRefDto[]>> {
+  const map = new Map<string, UserApprovalDepartmentRefDto[]>();
+  if (userIds.length === 0) return map;
+  const rows = await reader
+    .select({
+      userId: userApprovalDepartments.userId,
+      id: departments.id,
+      code: departments.code,
+      name: departments.name,
+    })
+    .from(userApprovalDepartments)
+    .innerJoin(departments, eq(userApprovalDepartments.departmentId, departments.id))
+    .where(inArray(userApprovalDepartments.userId, userIds))
+    .orderBy(departments.name);
+  for (const row of rows) {
+    const list = map.get(row.userId) ?? [];
+    list.push({ id: row.id, code: row.code, name: row.name });
+    map.set(row.userId, list);
+  }
+  return map;
+}
+
+/** Current visa departments of the account: the edit compares with them to bump `authVersion`. */
+export async function approvalDepartmentIdsOfUser(tx: Tx, userId: string): Promise<string[]> {
+  const rows = await tx
+    .select({ id: userApprovalDepartments.departmentId })
+    .from(userApprovalDepartments)
+    .where(eq(userApprovalDepartments.userId, userId));
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Replaces the visa departments of the account; returns `true` when the set changed. Delete and
+ * insert, as for objects: the link row carries nothing but the link itself.
+ */
+export async function replaceUserApprovalDepartments(
+  tx: Tx,
+  userId: string,
+  departmentIds: string[],
+  actorUserId: string,
+): Promise<boolean> {
+  const ids = [...new Set(departmentIds)];
+  await assertAllDepartmentsExist(tx, ids, 'approvalDepartmentIds');
+  const before = new Set(await approvalDepartmentIdsOfUser(tx, userId));
+  const changed = before.size !== ids.length || ids.some((id) => !before.has(id));
+  if (!changed) return false;
+
+  await tx.delete(userApprovalDepartments).where(eq(userApprovalDepartments.userId, userId));
+  if (ids.length > 0) {
+    await tx
+      .insert(userApprovalDepartments)
+      .values(ids.map((departmentId) => ({ userId, departmentId, createdBy: actorUserId })))
       .onConflictDoNothing();
   }
   return true;
@@ -730,11 +827,19 @@ export async function replaceUserAddons(
  * загрузка справочника файлом — в своей транзакции.
  */
 export async function markDepartmentScopeChanged(tx: Tx, departmentId: string): Promise<string[]> {
-  const rows = await tx
-    .select({ userId: userDepartments.userId })
-    .from(userDepartments)
-    .where(eq(userDepartments.departmentId, departmentId));
-  const userIds = rows.map((r) => r.userId);
+  const [members, signers] = await Promise.all([
+    tx
+      .select({ userId: userDepartments.userId })
+      .from(userDepartments)
+      .where(eq(userDepartments.departmentId, departmentId)),
+    // Visa holders of the department (ADR 0245): their visa covers its sites, so a changed set of
+    // sites changes what they may sign, and the portal's button must follow on the next refresh.
+    tx
+      .select({ userId: userApprovalDepartments.userId })
+      .from(userApprovalDepartments)
+      .where(eq(userApprovalDepartments.departmentId, departmentId)),
+  ]);
+  const userIds = [...new Set([...members, ...signers].map((r) => r.userId))];
   if (userIds.length === 0) return [];
   await tx
     .update(users)

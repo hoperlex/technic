@@ -17,11 +17,13 @@ import {
   type ArchiveFilter,
   can,
   canActOnServiceRequest,
+  canApproveVehicleRequest,
   canChangeRequestAsCustomer,
   canOrderVehicleRequestType,
   canPickAnyServiceSubject,
   canTransitionStatus,
   type CounterpartyType,
+  departmentsOwnVehicleRequest,
   hasGrantCode,
   hasModuleWideScope,
   isCounterpartyScopedRole,
@@ -283,30 +285,22 @@ export function vehicleRequestVisibilityWhere(
  * (ADR 0040), затем своя площадка (ADR 0062, набором — ADR 0144).
  */
 function departmentOwnsRequest(p: Principal, customer: RequestCustomer): boolean {
-  return (
-    (!!customer.departmentId && p.departmentIds.includes(customer.departmentId)) ||
-    (!!customer.objectId && p.departmentObjectIds.includes(customer.objectId))
-  );
+  // The same function the visa predicate asks (`canApproveVehicleRequest`), so that a department's
+  // visibility, scope and visa cannot answer differently.
+  return departmentsOwnVehicleRequest(p.departmentIds, p.departmentObjectIds, customer);
 }
 
 /**
- * Может ли учётка визировать эту заявку (ADR 0025, ADR 0040): право визы плюс область —
- * руководитель строительства отвечает за свои объекты, руководитель отдела — за свои отделы и за
- * площадки этих отделов (ADR 0201, `departmentOwnsRequest`), и чужие заявки не согласовывает ни
- * тот, ни другой. Предикат, а не проверка с отказом: им же решается, снимать ли визу при правке
- * заявки.
+ * May the account sign this vehicle order (ADR 0025, 0040, 0201, 0245): the visa permission plus
+ * the scope — the site its objects, the department its departments and their sites, an axis-less
+ * role with a grant-given visa its visa departments and their sites, the administrator everything.
+ *
+ * The rule lives in contracts (`canApproveVehicleRequest`) because the portal asks it per row for
+ * the «Визировать» button; a server-only copy would show the button where this answers 403. A
+ * predicate, not a refusal: the same answer decides whether an edit drops the visa.
  */
 export function canApproveRequest(p: Principal, customer: RequestCustomer): boolean {
-  if (!can(p, 'vehicleRequests.approve')) return false;
-  if (isObjectScopedRole(p.role)) {
-    return !!customer.objectId && p.constructionObjectIds.includes(customer.objectId);
-  }
-  // Руководитель отдела подписывает и заказ на площадке своего отдела (ADR 0201): решение
-  // заказчика о том, что техника нужна и по средствам, принимает тот, кто этот заказ и завёл.
-  // Отсюда принятое следствие: у заявки объекта визирующих два круга — руководитель строительства
-  // площадки и руководители отделов, за которыми она закреплена. Кто подписал, видно в карточке.
-  if (isDepartmentScopedRole(p.role)) return departmentOwnsRequest(p, customer);
-  return true;
+  return canApproveVehicleRequest(p, customer);
 }
 
 /**

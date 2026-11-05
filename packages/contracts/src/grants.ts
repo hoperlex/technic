@@ -336,11 +336,20 @@ export const ROLE_GRANTS: Record<RoleGrantCode, CatalogGrant> = {
    * **Набор действует уже сегодня** (совместимая роль `department` живая, а не целевая), поэтому
    * его держатели получают визу механизации в момент выката — объявленное расширение доступа,
    * названное планом визы, Р2.
+   *
+   * **`manager` is the second compatible role (ADR 0245, hotfix 05.11.2026).** Two managers sign
+   * for a department and keep every manager right. The manager has no axis, so the visa is limited
+   * not by the role but by the account's visa departments (`visaLimitedToApprovalDepartments`) — the
+   * same scope as the department head's: orders of those departments and of their sites. Without
+   * that rule the grant would have made the visa company-wide.
+   *
+   * The `Role`-typed entry is the whole cleanup trace for the day the temporary `manager` role is
+   * removed: the build fails here, and the `grant_roles` row (migration 0410) goes with it.
    */
   department_approval: {
     name: 'Виза отдела',
     permissions: ['vehicleRequests.approve', 'mechRequests.approve'],
-    roles: ['department'],
+    roles: ['department', 'manager'],
   },
   /**
    * Аренда малой механизации, которую площадка просит, правит и снимает (план визы, Р7). Хода

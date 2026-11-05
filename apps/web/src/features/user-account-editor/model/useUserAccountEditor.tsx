@@ -9,6 +9,7 @@ import {
   isObjectScopedRole,
   isPersonScopedRole,
   isRetiringRole,
+  needsApprovalDepartments,
   ROLES,
   roleLabels,
   type UserAccountDto,
@@ -122,6 +123,12 @@ export function useUserAccountEditor(): UserAccountEditorController {
     onReload: () => void qc.invalidateQueries({ queryKey: userAccountKeys.root }),
   });
   /*
+   * Visa departments (ADR 0245) are asked while a checked set adds a visa that only they make
+   * effective — a «Виза отдела» on a manager. The visa itself stays an optional checkbox (owner
+   * decision 05.11.2026); once checked, the field appears and is required.
+   */
+  const visaDepartmentsShown = needsApprovalDepartments(watchRole, grants.addedPermissions);
+  /*
    * Roles offered for selection in the form exclude retiring ones (plan §13.2, ADR 0113).
    *
    * This is not a duplicate of the registry's role filter options: the filter must still find
@@ -144,6 +151,8 @@ export function useUserAccountEditor(): UserAccountEditorController {
       isActive: true,
       constructionObjectIds: [],
       departmentIds: [],
+      // One empty row: the field opens ready to pick, and «+» adds the next one.
+      approvalDepartmentIds: [undefined],
       // Default is "notify": an account is created for the person to use it, and they should not
       // learn about it only from the administrator's words.
       notifyUser: true,
@@ -164,6 +173,10 @@ export function useUserAccountEditor(): UserAccountEditorController {
       role: account.role ?? undefined,
       constructionObjectIds: account.constructionObjects.map((object) => object.id),
       departmentIds: account.departments.map((department) => department.id),
+      approvalDepartmentIds:
+        account.approvalDepartments.length > 0
+          ? account.approvalDepartments.map((department) => department.id)
+          : [undefined],
       counterpartyId: account.counterpartyId,
       // Directory person (ADR 0102): a driver already has the link and the field opens with it, so
       // the full-name check repeats only when another person is chosen.
@@ -179,7 +192,8 @@ export function useUserAccountEditor(): UserAccountEditorController {
     mutationFn: (values: UserFormValues) => {
       // personId is taken out of the common set: for a non-driver role it must be absent from the
       // body altogether, not empty — an empty value would be a request to unlink (R6).
-      const { notifyUser, personId, confirmNameMismatch, ...fields } = values;
+      const { notifyUser, personId, confirmNameMismatch, approvalDepartmentIds, ...fields } =
+        values;
       // Both flags are computed from the submitted values, not from what the form showed: the
       // request body and the displayed checkbox must express the same decision.
       const approving = approvesRegistration(record, values.role, values.isActive);
@@ -195,6 +209,19 @@ export function useUserAccountEditor(): UserAccountEditorController {
       // Grants stay silent together with the role for a reason: the planner rejects a grant set
       // without a role separately (role_required) — grants are issued on top of a position.
       const grantStatements = role ? grants.statements() : undefined;
+      /*
+       * Visa departments travel only together with the grant statement (ADR 0245). Without it the
+       * form cannot tell whether a visa set is held, so the field is left out — and absent means
+       * "keep" on the server; sending [] here would wipe them while the grants stay. With the
+       * statement, a hidden field means no visa set is checked, and the departments go away with
+       * the set: a link that limits nothing would read in the card as a working restriction.
+       */
+      const visaDepartments =
+        grantStatements === undefined
+          ? undefined
+          : visaDepartmentsShown
+            ? (approvalDepartmentIds ?? []).filter((id): id is string => !!id)
+            : [];
       const payload = {
         ...fields,
         role,
@@ -207,6 +234,7 @@ export function useUserAccountEditor(): UserAccountEditorController {
         constructionObjectIds: isObjectScopedRole(role) ? (values.constructionObjectIds ?? []) : [],
         departmentIds: isDepartmentScopedRole(role) ? (values.departmentIds ?? []) : [],
         counterpartyId: isCounterpartyScopedRole(role) ? (values.counterpartyId ?? null) : null,
+        ...(visaDepartments ? { approvalDepartmentIds: visaDepartments } : {}),
         /*
          * Grants go as a statement about every displayed set (R3), not as a list of the remaining
          * ones: a removed set is absent from such a list by construction, and neither its
@@ -238,11 +266,13 @@ export function useUserAccountEditor(): UserAccountEditorController {
         });
       }
       return usersApi.create({
-        ...(payload as Required<Omit<UserFormValues, 'notifyUser'>>),
+        ...(payload as Required<Omit<UserFormValues, 'notifyUser' | 'approvalDepartmentIds'>>),
         // The statement does not survive the cast: UserFormValues knows nothing about it — grants
         // are collected outside the form (§6) — and without the repeat the field would drop out
-        // of the body type.
+        // of the body type. Visa departments are repeated for the same reason: the form keeps
+        // empty rows, the body only the chosen departments.
         ...(grantStatements ? { grants: grantStatements } : {}),
+        ...(visaDepartments ? { approvalDepartmentIds: visaDepartments } : {}),
         ...(notifying ? { notifyUser } : {}),
       });
     },
@@ -301,6 +331,7 @@ export function useUserAccountEditor(): UserAccountEditorController {
         pendingRecord={pendingRecord}
         record={record}
         saving={save.isPending}
+        visaDepartmentsShown={visaDepartmentsShown}
         watchRole={watchRole}
       />
     ),

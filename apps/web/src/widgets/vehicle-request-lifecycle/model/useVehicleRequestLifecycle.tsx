@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { App } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
+  canApproveVehicleRequest,
   canRequestEarlyEnd,
   type ConfirmScheduleBody,
   isPlaceScopedRole,
@@ -73,7 +74,12 @@ export function useVehicleRequestLifecycle({
   const qc = useQueryClient();
   const canEdit = can('vehicleRequests.update');
   const canDelete = can('vehicleRequests.delete');
-  const canApprove = can('vehicleRequests.approve');
+  /*
+   * The visa per row, by the same predicate the server asks (ADR 0245): a manager holding «Виза
+   * отдела» sees the whole company but signs only his visa departments, so a bare permission would
+   * show the button on rows that end in a 403.
+   */
+  const canApprove = (request: VehicleRequestDto) => canApproveVehicleRequest(user, request, can);
   const canRestore = can('archive.restore');
   const today = minRequestDateKey();
   // Cancelling requires a reason, entered in its own dialog.
@@ -238,7 +244,7 @@ export function useVehicleRequestLifecycle({
     canRequestEarlyEnd(request, today) &&
     request.earlyEnd?.status !== 'pending';
   const canDecide = (request: VehicleRequestDto): request is SpecialEquipmentRequestDto =>
-    canApprove &&
+    canApprove(request) &&
     request.requestType === 'special_equipment' &&
     request.earlyEnd?.status === 'pending';
   // The customer edits a request while it is "new" (ADR 0040 item 5) — a rule of both axes, asked

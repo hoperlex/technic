@@ -259,6 +259,10 @@ export const USER_AUDIT_FIELDS = [
   'objectsRemoved',
   'departmentsAdded',
   'departmentsRemoved',
+  // Visa departments (ADR 0245): a separate pair, because they are not membership and the reader of
+  // the journal asks "who may sign for this department", not "who works in it".
+  'approvalDepartmentsAdded',
+  'approvalDepartmentsRemoved',
   'addonsGranted',
   'addonsRevoked',
   'grantsGranted',
@@ -283,6 +287,8 @@ export const userAuditFieldLabels: Record<UserAuditField, string> = {
   objectsRemoved: 'Объекты сняты',
   departmentsAdded: 'Отделы добавлены',
   departmentsRemoved: 'Отделы сняты',
+  approvalDepartmentsAdded: 'Отделы визы добавлены',
+  approvalDepartmentsRemoved: 'Отделы визы сняты',
   addonsGranted: 'Надстройки выданы',
   addonsRevoked: 'Надстройки сняты',
   // Тем же словом, каким выдачу и отзыв называют события каталога («Полномочие выдано»,
@@ -313,6 +319,8 @@ const fieldSummaries: Record<UserAuditField, string> = {
   objectsRemoved: 'объекты',
   departmentsAdded: 'отделы',
   departmentsRemoved: 'отделы',
+  approvalDepartmentsAdded: 'отделы визы',
+  approvalDepartmentsRemoved: 'отделы визы',
   addonsGranted: 'надстройки доступа',
   addonsRevoked: 'надстройки доступа',
   grantsGranted: 'полномочия',

@@ -113,6 +113,17 @@ export function userAccountRegistryColumns({ actionsFor, archivedActionsFor }: O
             </span>
           );
         }
+        // Visa departments (ADR 0245) are not a scope axis, but an axis-less role has nothing else
+        // in this column, and "who signs for ОАТ СМ" is asked here.
+        if (record.approvalDepartments.length > 0) {
+          return (
+            <span
+              title={record.approvalDepartments.map((department) => department.name).join(' · ')}
+            >
+              Виза: {record.approvalDepartments.map((department) => department.code).join(' · ')}
+            </span>
+          );
+        }
         return record.constructionObjects.length === 0
           ? '—'
           : record.constructionObjects.map((object) => object.name).join(' · ');

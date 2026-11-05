@@ -68,6 +68,7 @@ function account(over: Partial<UserAccountDto> = {}): UserAccountDto {
     emailVerifiedAt: '2026-08-01T10:00:00.000Z',
     constructionObjects: [],
     departments: [{ id: 'dep-1', code: 'PTO', name: 'ПТО', isHead: false }],
+    approvalDepartments: [],
     addons: [],
     grantCodes: [],
     /** Полномочий у кандидата нет: руководителей отбирают по оси области, а не по наборам. */

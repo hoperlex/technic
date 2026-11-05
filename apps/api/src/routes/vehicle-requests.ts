@@ -9007,6 +9007,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // Право на маршруте общее, а визирует руководитель своего объекта: чужую заявку он не
       // согласовывает, даже видя её.
       assertRequestScope(p, existing);
+      // The scope check alone is not the visa's scope: for an axis-less role it passes every row,
+      // and a manager holding «Виза отдела» would sign the whole company (ADR 0245). The visa
+      // predicate is the same one the edit asks before dropping a visa.
+      if (!canApproveRequest(p, existing)) {
+        throw err.forbidden('Эту заявку визирует ответственный её объекта или отдела');
+      }
 
       const isApproved = existing.approvedAt !== null;
       if (isApproved === approved) return (await getDto(existing.id))!;

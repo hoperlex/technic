@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { dateOnlySchema } from './common';
 import { isDepartmentScopedRole, isObjectScopedRole } from './enums';
 import { can, type Permission } from './permissions';
+import { visaLimitedToApprovalDepartments } from './visa-scope';
 import {
   isMechRentalRunning,
   MECH_EXTEND_NOT_LATER_MESSAGE,
@@ -152,7 +153,8 @@ export const MECH_EXTENSION_TERM_CHANGED_MESSAGE =
 
 /**
  * May the subject decide this extension (R10): the visa permission, the OBJECT axis and the
- * request's own site. A department role never decides, an axis-less role (administrator) always
+ * request's own site. A department role never decides, nor does an axis-less role whose visa came
+ * from a grant (ADR 0245); an axis-less role whose matrix carries the visa (administrator) always
  * may.
  *
  * Deliberately narrower than `canApproveMechRequest`: there the department head may sign a request
@@ -175,7 +177,10 @@ export function canApproveMechExtension(
   if (isObjectScopedRole(role)) {
     return (subject?.constructionObjectIds ?? []).includes(row.objectId);
   }
+  // A grant-given visa of an axis-less role acts as the department head's (ADR 0245), and the
+  // department head never decides an extension.
   if (isDepartmentScopedRole(role)) return false;
+  if (visaLimitedToApprovalDepartments(role, 'mechRequests.approve')) return false;
   return true;
 }
 

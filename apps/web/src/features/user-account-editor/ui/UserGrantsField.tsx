@@ -124,6 +124,11 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
     [assigned, catalog, edits, suggested],
   );
   const outOfRange = useMemo(() => outOfRangeGrants(assigned, catalog), [assigned, catalog]);
+  const addedPermissions = useMemo(
+    () =>
+      ready ? grantAddedPermissions({ role, counterpartyType, catalog, selected: value }) : [],
+    [ready, role, counterpartyType, catalog, value],
+  );
 
   /*
    * Role change: speak about the consequence, not about removal (R4). The moment is not "when the
@@ -191,6 +196,7 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
     shown,
     ready,
     blocked,
+    addedPermissions,
     statements,
     handleError,
     field: shown ? (
@@ -213,9 +219,7 @@ export function useUserGrantsField(params: UserGrantsFieldParams): UserGrantsCon
         onRetry={() => void catalogQuery.refetch()}
         errors={errors}
         outOfRangeHint={outOfRangeHintText(outOfRange)}
-        added={grantAddedPermissions({ role, counterpartyType, catalog, selected: value })
-          .map(permissionLabel)
-          .join(', ')}
+        added={addedPermissions.map(permissionLabel).join(', ')}
       />
     ) : null,
   };

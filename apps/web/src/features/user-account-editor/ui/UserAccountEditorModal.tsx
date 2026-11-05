@@ -20,6 +20,7 @@ import { AutoSelect, FormModal } from '@shared/ui';
 import { roleIssue, type ActivationControl } from '../model/useActivationDefaults';
 import type { UserFormValues } from '../model/types';
 import { DriverPersonField, personFactsOf } from './DriverPersonField';
+import { UserApprovalDepartmentsField } from './UserApprovalDepartmentsField';
 import { UserDepartmentsField } from './UserDepartmentsField';
 import type { UserGrantsControl } from '../model/userGrantsFieldTypes';
 
@@ -53,6 +54,8 @@ interface Props {
   pendingRecord: boolean;
   record: UserAccountDto | null;
   saving: boolean;
+  /** A checked set gives a visa that only visa departments make effective (ADR 0245). */
+  visaDepartmentsShown: boolean;
   watchRole?: Role;
 }
 
@@ -77,6 +80,7 @@ export function UserAccountEditorModal({
   pendingRecord,
   record,
   saving,
+  visaDepartmentsShown,
   watchRole,
 }: Props) {
   return (
@@ -230,6 +234,11 @@ export function UserAccountEditorModal({
             activity: first "who and where", then "what else". The field is absent for a role
             without grants, for a driver and for one's own account. */}
         {grants.field}
+        {/* Visa departments (ADR 0245) sit right under the grants: they appear when a checked set
+            gives a visa that only they make effective, and the eye goes from the checkbox to them. */}
+        {visaDepartmentsShown ? (
+          <UserApprovalDepartmentsField options={departmentOptions} loading={departmentsLoading} />
+        ) : null}
         {!record ? (
           <PasswordField name="password" identityFields={['email', 'lastName', 'firstName']} />
         ) : null}
