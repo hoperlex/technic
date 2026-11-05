@@ -1152,6 +1152,11 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { fileId: RECORD_ID, docType: 'УПД', docDate: PAST_DATE },
   },
 
+  // Working Sundays (ADR 0246): the same reason — a minimal valid body, or the check tests Zod.
+  'PUT /api/v1/vehicle-requests/:id/working-days/:date': {
+    payload: { working: true },
+  },
+
   'POST /api/v1/vehicle-requests/:id/completion/preview': {
     payload: { version: 0, completion: { workedUnit: 'shifts', workedAmount: 1 } },
   },
