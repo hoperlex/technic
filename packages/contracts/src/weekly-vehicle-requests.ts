@@ -659,7 +659,8 @@ export function extendBlocker(
  *
  * The month report takes a rental order as one piece, so a rental term never crosses the last day
  * of the month it starts in. The part of an extension that lies beyond that day is not refused: it
- * becomes a new order of the same rented vehicle, which starts on the first weekday of the next month.
+ * becomes a new order of the same rented vehicle, which starts on the first day of the next month
+ * that is not a Sunday (ADR 0246, D8: Sunday is the only rest day, Saturday works).
  */
 export interface RentalMonthSplit {
   /**
@@ -677,8 +678,8 @@ export interface RentalMonthSplit {
  * between the assembly and the signature: the portal and the server must not give two answers.
  *
  * The source order belongs to its starting month, including legacy orders whose old extension
- * already crossed the boundary. Weekend-only monthly tails do not open an empty rental order;
- * the selected end itself is retained, even when it is a Saturday or Sunday.
+ * already crossed the boundary. A Sunday-only monthly tail does not open an empty rental order;
+ * the selected end itself is retained, even when it is a Sunday.
  *
  * Only a rental vehicle is cut (`ownership`): an own machine's month is already cut on the paper
  * (ADR 0142), and an order with no vehicle never reaches an extension row.
@@ -695,8 +696,9 @@ export function rentalMonthSplit(
   if (ownership !== 'rental') return { extendTo: newDateTo, continuation: null };
   const border = monthEndKey(sourceDateFrom);
   if (newDateTo <= border) return { extendTo: newDateTo, continuation: null };
+  // Only Sunday is a rest day (ADR 0246, D8): a month starting on Saturday starts the order there.
   let dateFrom = shiftDateKey(border, 1);
-  while ([0, 6].includes(new Date(`${dateFrom}T00:00:00Z`).getUTCDay())) {
+  while (new Date(`${dateFrom}T00:00:00Z`).getUTCDay() === 0) {
     dateFrom = shiftDateKey(dateFrom, 1);
   }
   return {

@@ -78,6 +78,22 @@ describe('аренда: разрез продления границей мес�
     });
   });
 
+  it('месяц, начинающийся с субботы, открывает новый заказ в субботу (ADR 0246, D8)', () => {
+    // 01.08.2026 is a Saturday: only Sunday is a rest day, so the new order starts on it.
+    expect(rentalMonthSplit('rental', '2026-07-30', '2026-08-02', '2026-07-20')).toEqual({
+      extendTo: '2026-07-31',
+      continuation: { dateFrom: '2026-08-01', dateTo: '2026-08-02' },
+    });
+  });
+
+  it('месяц, начинающийся с воскресенья, открывает новый заказ в понедельник (ADR 0246, D8)', () => {
+    // 01.11.2026 is a Sunday.
+    expect(rentalMonthSplit('rental', '2026-10-29', '2026-11-04', '2026-10-20')).toEqual({
+      extendTo: '2026-10-31',
+      continuation: { dateFrom: '2026-11-02', dateTo: '2026-11-04' },
+    });
+  });
+
   it('выходной хвост на границе не создаёт пустой ноябрьский заказ', () => {
     expect(rentalMonthSplit('rental', '2026-10-30', '2026-11-01', '2026-10-23')).toEqual({
       extendTo: '2026-10-31',
