@@ -1,6 +1,7 @@
 import {
   DAY_BATCH_LIMIT,
   dayBatchPortionMessage,
+  isSundayKey,
   shiftDaysOf,
   type DayBatchApplyBody,
 } from '@technic/contracts';
@@ -22,6 +23,8 @@ export interface DayBatchFormValues {
   dayBatchIssue?: boolean;
   /** Backdate reason — one for the whole batch, not one per past day. */
   dayBatchReason?: string;
+  /** «Включая воскресенья» (ADR 0246): the term's Sundays go too, as working shifts. */
+  dayBatchSundays?: boolean;
 }
 
 export interface DayBatchTerm {
@@ -50,6 +53,9 @@ export function dayBatchBody(values: DayBatchFormValues, operationId: string): D
     // An empty reason goes as an absent key, not an empty string: "no explanation given" and "the
     // explanation is empty" are different things, and the door schema accepts only the first.
     ...(values.dayBatchReason?.trim() ? { reason: values.dayBatchReason.trim() } : {}),
+    // Sent only when asked: an absent key is what every earlier build sent, and the operation
+    // fingerprint of a pending retry must not change because the schema learned a new field.
+    ...(values.dayBatchSundays ? { includeSundays: true } : {}),
     /*
      * The replay key is fresh for every click (ADR 0207, decision 11). It is not about a double
      * click: by it the server recognises its own interrupted request and does not issue a second
@@ -104,6 +110,8 @@ export function dayBatchModel(input: {
   machinistNote: string | null;
   pastDays: string[];
   portionHint: string | null;
+  /** How many Sundays the term has: the «включая воскресенья» checkbox appears only with one. */
+  sundays: number;
 } {
   const days = shiftDaysOf(input.term);
   const pastDays = days.filter((date) => date < input.onDate);
@@ -122,5 +130,6 @@ export function dayBatchModel(input: {
     machinistNote,
     pastDays,
     portionHint: days.length > DAY_BATCH_LIMIT ? dayBatchPortionMessage(days.length) : null,
+    sundays: days.filter(isSundayKey).length,
   };
 }

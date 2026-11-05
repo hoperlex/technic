@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { uuidSchema } from './common';
 import { requestStatusLabels, type RequestStatus, type VehicleRequestType } from './enums';
+import { DRIVER_SUBMIT_PAST_DAYS } from './driver-cabinet';
 import { WAYBILL_CORRECTION_DAYS } from './time';
 import { isShiftDayInTerm, shiftDaysOf, type ShiftSource } from './vehicle-request-shifts';
 import {
@@ -396,6 +397,16 @@ export const dayBatchApplySchema = z
      * (миграция 0127) от этого не спасает, листы считаются по рейсу, а не по дню.
      */
     operationId: uuidSchema.optional(),
+    /**
+     * Whether the batch also takes the term's Sundays (ADR 0246, owner decision D6). Sunday is a rest
+     * day: by default the batch skips it, and a Sunday it does take gets the request's working mark
+     * in the same transaction as its route and paper.
+     *
+     * Optional WITHOUT a default, and the portal sends it only when true: the operation fingerprint
+     * is taken over the parsed body, and a default would make a pre-release retry — a body without
+     * the key — a different command under its own key.
+     */
+    includeSundays: z.boolean().optional(),
   })
   .strict();
 export type DayBatchApplyInput = z.infer<typeof dayBatchApplySchema>;
@@ -485,6 +496,19 @@ export interface VehicleRequestDayBatchResultDto {
  * при этом не раздвоилось: пропускать день или нет, решают всё те же предикаты, здесь только то,
  * как названа уже принятая ими причина.
  */
+
+/**
+ * Sunday is a rest day (ADR 0246, D6): without «включая воскресенья» the batch neither plans nor
+ * issues it, and it takes no room in the portion — the report names it so that the gap reads as a
+ * decision, not as a failure.
+ */
+export const DAY_BATCH_SKIP_SUNDAY = 'Воскресенье — не выписан: выходной';
+
+/**
+ * An included Sunday older than the driver's window (ADR 0246, D2): its working mark would demand a
+ * reading nobody can send any more, so the batch neither plans it nor marks it.
+ */
+export const DAY_BATCH_SKIP_SUNDAY_PAST = `Воскресенье старше ${DRIVER_SUBMIT_PAST_DAYS} дней: рабочую смену на него не отметить`;
 
 /** День занят своим же рейсом: пачка не переставляет то, что уже спланировано человеком. */
 export const DAY_BATCH_SKIP_PLANNED = 'День уже стоит в рейсе этой заявки — пачка его не трогает';

@@ -5,6 +5,11 @@ import {
   DAY_BATCH_SKIP_AMBIGUOUS_ROUTE,
   DAY_BATCH_SKIP_BACKDATED,
   DAY_BATCH_SKIP_BEYOND_LIMIT,
+  DAY_BATCH_SKIP_SUNDAY,
+  DAY_BATCH_SKIP_SUNDAY_PAST,
+  DRIVER_SUBMIT_PAST_DAYS,
+  isSundayKey,
+  shiftDateKey,
   DAY_BATCH_SKIP_FROZEN,
   DAY_BATCH_SKIP_NO_ROOM,
   DAY_BATCH_SKIP_PLANNED,
@@ -32,6 +37,7 @@ import { db } from '../db/client';
 import {
   constructionObjects,
   persons,
+  vehicleRequestWorkingDays,
   vehicleRequests,
   vehicleRouteRequests,
   vehicleRoutes,
@@ -39,6 +45,7 @@ import {
 import { writeAudit } from '../lib/audit';
 import { AppError, err } from '../lib/errors';
 import { logger } from '../logger';
+import { dateKeyRu } from './request-diff';
 import { assignmentStateOn } from './assignment-history';
 import { readActualChanges, readHistoryIsAuthoritative } from './assignment-read';
 import { assertRoutePlacement, hasSiteLocation, placeLinearDay } from './route-points';
@@ -155,6 +162,8 @@ interface DayDone {
   /** The operation row, if this day opened or found it: only one per batch travels outwards. */
   correction: CorrectionRecord | null;
   backdated: boolean;
+  /** The day is a Sunday the batch took on request and marked a working shift (ADR 0246). */
+  marked: boolean;
 }
 
 export interface DayBatchParams {
@@ -193,7 +202,28 @@ export async function runVehicleRequestDayBatch(
   const blocker = linearDaysBlocker(request);
   if (blocker) throw err.unprocessable(blocker, { requestId: 'Дни недоступны' });
 
-  const termDays = shiftDaysOf(request);
+  /*
+   * Sunday is a rest day (ADR 0246, D6). Without «включая воскресенья» the term's Sundays leave the
+   * batch BEFORE the portion is measured: a skipped Sunday takes no room in the fifty and is no work
+   * left for the next click, or a long term would never be walked to its end. The report still
+   * names them, within the window this click walked.
+   *
+   * With the inclusion a Sunday older than the driver's window is skipped too, before the backdate
+   * verdicts: its mark would demand a reading nobody can send, and asking a reason for a day the
+   * batch will not touch would refuse the whole click for nothing.
+   */
+  const includeSundays = input.includeSundays === true;
+  const allTermDays = shiftDaysOf(request);
+  const sundayFloor = shiftDateKey(today, -DRIVER_SUBMIT_PAST_DAYS);
+  const sundaySkip = (date: string): string | null =>
+    !isSundayKey(date)
+      ? null
+      : !includeSundays
+        ? DAY_BATCH_SKIP_SUNDAY
+        : date < sundayFloor
+          ? DAY_BATCH_SKIP_SUNDAY_PAST
+          : null;
+  const termDays = allTermDays.filter((date) => sundaySkip(date) === null);
   /*
    * The portion of one click is measured BEFORE the first write and from a single read of the days
    * already planned.
@@ -228,6 +258,13 @@ export async function runVehicleRequestDayBatch(
   const vehicleIds = [...new Set(vehicleByDay.values())];
   await db.transaction(async (tx) => {
     for (const vehicleId of vehicleIds) await assertDayRouteVehicle(tx, vehicleId);
+  });
+
+  const windowEnd = days.length > 0 ? days[days.length - 1]! : null;
+  const sundayRows: VehicleRequestDayBatchRowDto[] = allTermDays.flatMap((date) => {
+    const skip = sundaySkip(date);
+    const inWindow = remaining === 0 || (windowEnd !== null && date <= windowEnd);
+    return skip !== null && inWindow ? [{ date, outcome: 'skipped' as const, reason: skip }] : [];
   });
 
   const verdicts = new Map<string, BackdateVerdict>(
@@ -304,6 +341,7 @@ export async function runVehicleRequestDayBatch(
           // The operation found by an earlier day travels down: looking it up anew every day
           // would mean reading the corrections journal half a hundred times for the same row.
           correction,
+          markSunday: includeSundays && isSundayKey(date),
         }),
       );
       if (done.correction) correction = done.correction;
@@ -379,6 +417,9 @@ export async function runVehicleRequestDayBatch(
     });
   }
 
+  // The skipped Sundays stand among the days they lie between: the report is read by date.
+  rows.push(...sundayRows);
+  rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   return {
     days: await daysResponse(requestId, request, today),
     rows,
@@ -450,6 +491,11 @@ interface DayContext {
   backdated: boolean;
   fingerprint: string;
   correction: CorrectionRecord | null;
+  /**
+   * A Sunday taken by «включая воскресенья» (ADR 0246): a successful day sets the request's working
+   * mark in this same transaction; a refused or failed one rolls back without it.
+   */
+  markSunday: boolean;
 }
 
 /**
@@ -538,23 +584,34 @@ async function runDay(tx: Tx, ctx: DayContext): Promise<DayDone> {
   await assertRoutePlacement(tx, { routeId: route.id, formCode });
   await bumpRouteVersion(tx, route.id, actor.id);
 
-  if (!ctx.input.issueWaybills) {
-    /*
-     * No paper was asked for — the day only took its place in the route. The backdating does not
-     * disappear because of that: placing a past day went through the same `backdateGuard`, and the
-     * audit event must say so. Such a day has no row of its own in the corrections journal, by the
-     * same rule that holds for the per-day door: it spends no numbered blank, and an operation
-     * without a single waybill would litter the journal.
-     */
-    return {
-      routeId: route.id,
-      routeNumber,
-      waybill: null,
-      correction: null,
-      backdated: ctx.backdated,
-    };
-  }
-  return issueDayWaybill(tx, ctx, route, routeNumber);
+  const done: DayDone = ctx.input.issueWaybills
+    ? await issueDayWaybill(tx, ctx, route, routeNumber)
+    : notIssued(ctx, route.id, routeNumber);
+  if (!ctx.markSunday) return done;
+  const marked = await tx
+    .insert(vehicleRequestWorkingDays)
+    .values({ requestId: request.id, workDate: date, setBy: actor.id })
+    .onConflictDoNothing()
+    .returning({ date: vehicleRequestWorkingDays.workDate });
+  return { ...done, marked: marked.length > 0 };
+}
+
+/**
+ * No paper was asked for — the day only took its place in the route. The backdating does not
+ * disappear because of that: placing a past day went through the same `backdateGuard`, and the
+ * audit event must say so. Such a day has no row of its own in the corrections journal, by the same
+ * rule that holds for the per-day door: it spends no numbered blank, and an operation without a
+ * single waybill would litter the journal.
+ */
+function notIssued(ctx: DayContext, routeId: string, routeNumber: string): DayDone {
+  return {
+    routeId,
+    routeNumber,
+    waybill: null,
+    correction: null,
+    backdated: ctx.backdated,
+    marked: false,
+  };
 }
 
 /**
@@ -817,7 +874,14 @@ async function issueDayWaybill(
   });
 
   if (!backdated) {
-    return { routeId: route.id, routeNumber, waybill: issued, correction: null, backdated };
+    return {
+      routeId: route.id,
+      routeNumber,
+      waybill: issued,
+      correction: null,
+      backdated,
+      marked: false,
+    };
   }
   /*
    * THE LAZY OPERATION ROW (ADR 0207 §9): it is opened right here — inside the transaction of the
@@ -841,7 +905,7 @@ async function issueDayWaybill(
     // (`waybills_correction_issue_reason_check`).
     correctsWaybillId: null,
   });
-  return { routeId: route.id, routeNumber, waybill: issued, correction, backdated };
+  return { routeId: route.id, routeNumber, waybill: issued, correction, backdated, marked: false };
 }
 
 /**
@@ -998,6 +1062,19 @@ async function auditDay(
     entityId: done.routeId,
     metadata: { requestId, workDate: date, backdated: done.backdated, reason },
   });
+  if (done.marked) {
+    // The batch's own working mark (ADR 0246) is history of the request like a mark set by hand.
+    await writeAudit({
+      actorUserId: actor.id,
+      action: 'vehicle_request.working_day_set',
+      entityType: 'vehicle_request',
+      entityId: requestId,
+      metadata: {
+        changes: [{ field: 'workingDay', from: null, to: dateKeyRu(date) }],
+        workDate: date,
+      },
+    });
+  }
   if (!done.waybill) return;
   await writeAudit({
     actorUserId: actor.id,

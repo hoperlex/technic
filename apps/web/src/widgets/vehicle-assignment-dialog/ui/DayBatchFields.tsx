@@ -214,6 +214,19 @@ export function DayBatchFields({
             </FormGrid.Full>
           )}
 
+          {/* Sunday is a rest day (ADR 0246, D6): the batch skips it unless asked, and a Sunday it
+            does take becomes a working shift of the request — the driver will owe its reading. */}
+          {model.sundays > 0 && (
+            <FormGrid.Full>
+              <Form.Item name="dayBatchSundays" valuePropName="checked" noStyle>
+                <Checkbox>Включая воскресенья</Checkbox>
+              </Form.Item>
+              <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+                {`В сроке воскресений: ${model.sundays}. Без галочки пачка их пропустит — воскресенье выходной. С галочкой воскресенья тоже встанут в рейсы и будут отмечены рабочей сменой заявки.`}
+              </Typography.Paragraph>
+            </FormGrid.Full>
+          )}
+
           {/* Past days go as one corrections-journal operation (ADR 0207 §9), so the reason is one:
             it explains the decision to paper the past period, not each day separately. The same
             reason is printed on every such waybill. */}
