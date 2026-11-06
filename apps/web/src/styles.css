@@ -1254,3 +1254,66 @@ body,
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+
+/*
+ * The confirmation window before sending (pages/driver/DriverSubmitCheck.tsx, ADR 0237). It grew
+ * with its list: on a 360×640 phone «Подтверждаю, передать» sat below the screen edge, drivers saw
+ * only «Вернуться к исправлению», pressed it, and the day stayed a draft. So the window is capped by
+ * the visible screen and has two parts: the buttons never shrink and stay at its bottom, while the
+ * icon, the title and the text scroll above them. The title is not pinned on purpose (owner,
+ * 06.11.2026): on a small screen every line of height goes to the list.
+ *
+ * The cap reaches the scroller only through flex columns with min-height: 0 on every box between
+ * them — a flex item never shrinks below its content by default, and one plain box in the chain
+ * lets the window grow past the screen again. dvh, not vh: a phone's vh counts the browser bars as
+ * screen, and the buttons would hide under them; vh stays as the fallback for WebViews without dvh.
+ */
+.driver-submit-check .ant-modal-container {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px - var(--safe-top) - var(--safe-bottom));
+}
+
+.driver-submit-check .ant-modal-body,
+.driver-submit-check .ant-modal-confirm-body-wrapper {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.driver-submit-check .ant-modal-confirm-btns {
+  flex: none;
+}
+
+/*
+ * The scrolling part. The negative margin with the equal padding moves the scrollbar from the text
+ * to the window's edge without moving the text. The scrollbar is thin and muted; phones that draw
+ * an overlay scrollbar of their own (iOS, most Android) show it only while scrolling, so a light
+ * shade at the bottom edge says that the list goes on: the shade layer stays at the visible bottom
+ * (scroll), and an opaque cover attached to the end of the content (local) rides over it when the
+ * text ends — the shade disappears by itself at the end and never shows on a text that fits.
+ */
+.driver-submit-check .ant-modal-confirm-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-inline-end: -12px;
+  padding-inline-end: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.25) transparent;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0), var(--ant-color-bg-elevated, #fff) 70%) center bottom /
+      100% 40px no-repeat local,
+    linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.07)) center bottom / 100% 16px no-repeat
+      scroll;
+}
+
+.driver-submit-check .ant-modal-confirm-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.driver-submit-check .ant-modal-confirm-body::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.25);
+}

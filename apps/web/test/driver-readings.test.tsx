@@ -598,6 +598,9 @@ describe('кабинет водителя: передача показаний',
     expect(within(dialog).getAllByText('Проверьте данные перед передачей').length).toBeGreaterThan(
       0,
     );
+    // The pinned buttons live in styles.css under this class. jsdom lays nothing out, so the class
+    // is the part a test can hold; the layout itself was checked in a real browser at 360×640.
+    expect(dialog.classList.contains('driver-submit-check')).toBe(true);
     // Расхождение названо вместе с машиной, а число — с тем, от чего оно отличается.
     expect(
       within(dialog).getByText(/Одометр: меньше предыдущего \(145 320 от 10\.08\)/u),

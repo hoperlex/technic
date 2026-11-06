@@ -26,6 +26,10 @@ export function confirmSubmitDiscrepancies(
       title: 'Проверьте данные перед передачей',
       centered: true,
       maskClosable: false,
+      // Binds the window to its layout in styles.css: the buttons stay pinned at the bottom and the
+      // text above them scrolls. Without it a long list pushes «Подтверждаю, передать» below the
+      // screen edge, and a driver who sees only the return button leaves the day unsent.
+      className: 'driver-submit-check',
       okText: 'Подтверждаю, передать',
       cancelText: 'Вернуться к исправлению',
       // Large, as the footer's button: a gloved finger needs the target (the theme gives 60 px).
