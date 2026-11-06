@@ -1,7 +1,7 @@
 /**
  * Short instruction for the driver and the machinist.
  *
- * Facts and captions are checked against the interface as of 05.11.2026:
+ * Facts and captions are checked against the interface as of 06.11.2026:
  * - RegisterPage.tsx;
  * - DriverLayout.tsx, DriverDayView.tsx, DriverReadingsPage.tsx, DriverReadingFields.tsx,
  *   DriverRouteTimes.tsx, DriverSubmitCheck.tsx, readingChecks.ts, dayState.ts;
@@ -11,9 +11,10 @@
  *
  * The confirmation window has its own page: drivers took it for a refusal, pressed «Вернуться к
  * исправлению» and the day was never sent. Nothing blocks a day whose earlier shifts are unsent —
- * the previous snapshot is just older, so the window shows up almost always; the guide says so. On
- * a 360×640 phone the real window puts «Подтверждаю, передать» below the screen edge (checked in a
- * headless browser), hence the «прокрутите окно вниз» line.
+ * the previous snapshot is just older, so the window shows up almost always; the guide says so.
+ * Since 06.11.2026 both buttons stay pinned at the window's bottom and only the text above them
+ * scrolls (checked in a headless browser at 360×640), so the guide no longer tells the driver to
+ * scroll for the button: it explains the shade at the text's bottom edge instead.
  *
  * A page is drawn in SVG, the system librsvg turns it into PNG, and pdf-lib assembles A4. The other
  * illustrated instructions of the project use the same route; it needs no browser and makes the
@@ -35,7 +36,7 @@ const WORK = mkdtempSync(join(tmpdir(), 'driver-guide-'));
 const W = 1123;
 const H = 1588;
 const TOTAL = 6;
-const REVISION = '5 ноября 2026';
+const REVISION = '6 ноября 2026';
 
 const C = {
   ink: '#172033',
@@ -622,7 +623,7 @@ function windowCard(mx, my, mw, mh) {
     { lineHeight: 22 },
   );
   // The real window stacks its two large buttons on a phone: the return first, the confirmation
-  // under it — at the very bottom, where a small screen hides it until the window is scrolled.
+  // under it. Both stay pinned at the window's bottom; a long list scrolls above them.
   output += button(mx + 28, my + 480, mw - 56, 'Вернуться к исправлению', { primary: false });
   output += button(mx + 28, my + 540, mw - 56, 'Подтверждаю, передать');
   output += rect(mx + 21, my + 474, mw - 42, 60, { stroke: C.orange, sw: 3, r: 10 });
@@ -650,8 +651,8 @@ const TONE = {
 /**
  * The confirmation window gets a page of its own (owner's request, 05.11.2026): drivers read it as
  * a refusal and went back to the form, so the day was never sent. The page says first that nothing
- * is sent until «Подтверждаю, передать», then where that button hides on a small screen, then why
- * the window is the usual thing when earlier shifts were not sent.
+ * is sent until «Подтверждаю, передать», then that a long list scrolls above the pinned buttons,
+ * then why the window is the usual thing when earlier shifts were not sent.
  */
 function page4() {
   let body = pageHeader(4, 'Окно подтверждения', 'ВАЖНО · ВОДИТЕЛЬ / МАШИНИСТ');
@@ -695,9 +696,9 @@ function page4() {
     881,
     433,
     154,
-    'Синей кнопки не видно?',
-    'Прокрутите окно вниз: на небольшом экране кнопка «Подтверждаю, передать» уходит под текст.',
-    TONE.red,
+    'Длинный список?',
+    'Кнопки всегда внизу окна, прокручивается текст над ними. Тень у нижнего края текста — ниже есть ещё строки.',
+    TONE.blue,
   );
 
   body += callout(
@@ -938,7 +939,7 @@ function page6() {
       x: 572,
       y: 1245,
       title: 'Окно — «Подтверждаю, передать»',
-      body: 'Без этой кнопки ничего не передано. Не видно — прокрутите окно вниз.',
+      body: 'Без этой кнопки ничего не передано. Она всегда внизу окна.',
       tone: TONE.red,
     },
     {
