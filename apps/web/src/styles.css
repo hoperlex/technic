@@ -1266,13 +1266,20 @@ body,
  * The cap reaches the scroller only through flex columns with min-height: 0 on every box between
  * them — a flex item never shrinks below its content by default, and one plain box in the chain
  * lets the window grow past the screen again. dvh, not vh: a phone's vh counts the browser bars as
- * screen, and the buttons would hide under them; vh stays as the fallback for WebViews without dvh.
+ * screen, and the buttons would hide under them. The dvh cap sits in @supports because it carries
+ * var(): such a declaration is accepted at parse time, and a browser without dvh would turn it into
+ * "no cap" at computed time instead of falling back to the vh line above it.
  */
 .driver-submit-check .ant-modal-container {
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 32px);
-  max-height: calc(100dvh - 32px - var(--safe-top) - var(--safe-bottom));
+}
+
+@supports (height: 100dvh) {
+  .driver-submit-check .ant-modal-container {
+    max-height: calc(100dvh - 32px - var(--safe-top) - var(--safe-bottom));
+  }
 }
 
 .driver-submit-check .ant-modal-body,
@@ -1282,17 +1289,50 @@ body,
   min-height: 0;
 }
 
+/*
+ * The buttons stand one under the other across the whole width, and a label wraps instead of
+ * running out of the window. Two large buttons with the cabinet's 24 px label never fit side by side
+ * on a phone anyway; antd wrapped them but kept each one as wide as its one-line label, so on a
+ * narrow screen or with a large system font «Подтверждаю, передать» was cut at the screen edge — the
+ * very button this window exists for.
+ *
+ * antd centres one line in a fixed 60 px height with no block padding, so a wrapped label needs
+ * both: height grows from the 60 px of the theme (the gloved-finger target stays), and the block
+ * padding keeps two lines off the border. The inline padding is smaller than antd's 15 px to leave
+ * the label room before it wraps: on a 360 px phone «Вернуться к исправлению» is close to the limit.
+ * antd spaces a second button by a start margin, which here would push it off the column, so it is
+ * reset by a selector one class heavier than antd's.
+ */
 .driver-submit-check .ant-modal-confirm-btns {
   flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.driver-submit-check .ant-modal-confirm-btns .ant-btn {
+  width: 100%;
+  height: auto;
+  min-height: var(--ant-control-height-lg, 60px);
+  padding: 6px 8px;
+  line-height: 1.25;
+  white-space: normal;
+  text-align: center;
+}
+
+.driver-submit-check.ant-modal-confirm .ant-modal-confirm-btns .ant-btn + .ant-btn {
+  margin-inline-start: 0;
 }
 
 /*
- * The scrolling part. The negative margin with the equal padding moves the scrollbar from the text
- * to the window's edge without moving the text. The scrollbar is thin and muted; phones that draw
- * an overlay scrollbar of their own (iOS, most Android) show it only while scrolling, so a light
- * shade at the bottom edge says that the list goes on: the shade layer stays at the visible bottom
- * (scroll), and an opaque cover attached to the end of the content (local) rides over it when the
- * text ends — the shade disappears by itself at the end and never shows on a text that fits.
+ * The scrolling part. The negative margin with the equal padding moves the scrollbar 12 px out of
+ * the text, into the window's own padding. Phones draw an overlay scrollbar of their own (iOS, most
+ * Android) and show it only while scrolling, so a light shade at the bottom edge says that the list
+ * goes on: the shade layer stays at the visible bottom (scroll), and an opaque cover attached to
+ * the end of the content (local) rides over it when the text ends — the shade disappears by itself
+ * at the end and never shows on a text that fits. Both layers are backgrounds, painted under the
+ * text, so the cover never fades the last line. The cover takes the window's own background
+ * variable: any other colour would show as a band once the window's background changes.
  */
 .driver-submit-check .ant-modal-confirm-body {
   min-height: 0;
@@ -1303,12 +1343,19 @@ body,
   scrollbar-width: thin;
   scrollbar-color: rgba(0, 0, 0, 0.25) transparent;
   background:
-    linear-gradient(rgba(255, 255, 255, 0), var(--ant-color-bg-elevated, #fff) 70%) center bottom /
-      100% 40px no-repeat local,
+    linear-gradient(
+        rgba(255, 255, 255, 0),
+        var(--ant-modal-content-bg, var(--ant-color-bg-elevated, #fff)) 70%
+      )
+      center bottom / 100% 40px no-repeat local,
     linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.07)) center bottom / 100% 16px no-repeat
       scroll;
 }
 
+/*
+ * Only for browsers without scrollbar-width (Safari before 18.2, Chrome before 121): Chrome 121+
+ * ignores these rules whenever the standard properties above are set.
+ */
 .driver-submit-check .ant-modal-confirm-body::-webkit-scrollbar {
   width: 4px;
 }

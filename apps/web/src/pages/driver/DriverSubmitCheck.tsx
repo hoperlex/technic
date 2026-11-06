@@ -50,7 +50,9 @@ export function confirmSubmitDiscrepancies(
               )),
             )}
           </ol>
-          <Typography.Paragraph>
+          {/* No bottom margin: the scrolling text must end with the text. A trailing margin left a
+              window that scrolled with nothing more to show, and its bottom shade stayed on. */}
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
             Подтверждаете ли вы, что значения сняты с приборов верно? Если допущена ошибка,
             вернитесь к форме и исправьте её.
           </Typography.Paragraph>
