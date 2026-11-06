@@ -96,7 +96,9 @@ describe('client floor: verdict on the raw prod.env value', () => {
    * confirms it updates the number below (ADR 0226, the R1 → floor 7 → R2 sequence).
    */
   it('this release passes on the floor confirmed on production', () => {
-    const CONFIRMED_PRODUCTION_FLOOR = 4;
+    // 8 — raised by the owner with `deploy-auto --client-floor=8` on 06.11.2026, after the
+    // contract-8 bundle of release 0.1.138.0246 was verified served (ADR 0244, release 1B).
+    const CONFIRMED_PRODUCTION_FLOOR = 8;
     expect(judgeClientFloor(String(CONFIRMED_PRODUCTION_FLOOR)).kind).toBe('pass');
   });
 });
