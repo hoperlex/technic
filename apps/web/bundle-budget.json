@@ -34,15 +34,15 @@
     },
     "vehicle-requests": {
       "source": "src/pages/vehicle/VehicleRequestsPage.tsx",
-      "gzip": 677565,
+      "gzip": 677566,
       "tabs": [
         {
           "source": "src/pages/vehicle/VehicleRequestsTab.tsx",
-          "gzip": 677565
+          "gzip": 677566
         },
         {
           "source": "src/pages/vehicle/VehicleRequestsOnSiteTab.tsx",
-          "gzip": 618826
+          "gzip": 618827
         },
         {
           "source": "src/widgets/vehicle-request-history/index.ts",
@@ -64,11 +64,11 @@
       "tabs": [
         {
           "source": "src/pages/garage/GarageVehiclesTab.tsx",
-          "gzip": 619485
+          "gzip": 619487
         },
         {
           "source": "src/pages/garage/GarageDriversTab.tsx",
-          "gzip": 590815
+          "gzip": 590817
         },
         {
           "source": "src/pages/garage/ReadingsTab.tsx",
