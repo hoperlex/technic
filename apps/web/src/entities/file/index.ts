@@ -20,3 +20,9 @@
  */
 export { filesApi } from './api/filesApi';
 export { FileLinkList, FilePreviewModal, FilesButton, FilesCell } from './ui/FileLinks';
+/*
+ * The bare content of the preview, without a window (lessor receipt plan, P14): the receipt's visa
+ * window shows the receipt next to the rental's facts, and a second modal on top of its own would
+ * hide the facts it is signed against.
+ */
+export { FilePreviewFrame, type PdfPreviewMode } from './ui/FilePreviewFrame';

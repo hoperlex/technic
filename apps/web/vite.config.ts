@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { checkPureBarrels, pureBarrelRules } from './scripts/pure-barrels';
+import { pdfjsAssets } from './scripts/pdfjs-assets';
 
 // Меняется при каждом релизе: deploy-auto пробрасывает короткий commit SHA через BUILD_ID.
 // Fallback на таймстамп — только для локального `pnpm build` без переменной.
@@ -22,6 +23,8 @@ export default defineConfig({
   plugins: [
     react(),
     versionFilePlugin(),
+    // The worker, CMaps and fonts the receipt preview loads by URL (lessor receipt plan, P14).
+    pdfjsAssets(),
     { name: 'audit-pure-barrels', buildStart: checkPureBarrels },
   ],
   // Алиасы слоёв берутся из tsconfig.json: один источник истины на tsc, vite и vitest.

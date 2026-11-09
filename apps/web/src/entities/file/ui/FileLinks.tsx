@@ -1,66 +1,34 @@
-import { App, Alert, Button, Popover, Spin, Tooltip, Typography } from 'antd';
+import { App, Button, Popover, Tooltip, Typography } from 'antd';
 import { DownloadOutlined, EyeOutlined, PaperClipOutlined } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { isInlineViewable } from '@technic/contracts';
 import { errorMessage, formatBytes, useIsMobile } from '@shared/lib';
 import { filesApi } from '../api/filesApi';
 import { ItemList, ViewModal } from '@shared/ui';
-
-/**
- * Минимум, которым описывается прикреплённый файл. `contentType` есть не везде (черновики
- * формы хранят только имя и размер) — без него файл считается нечитаемым в браузере и просто
- * скачивается.
- */
-interface FileRef {
-  id: string;
-  filename: string;
-  contentType?: string;
-  size?: number;
-}
+import { FilePreviewFrame, type FileRef, type PdfPreviewMode } from './FilePreviewFrame';
 
 /**
  * Просмотр файла окном поверх страницы: содержимое показывается фреймом (PDF, текст) или
  * картинкой прямо в портале. Вкладка для этого не открывается — заявку разбирают, не отрываясь
  * от неё, а вернуться к списку после ухода на домен хранилища было бы лишним шагом.
  *
- * Ссылка на объект подписана и живёт минуты, поэтому запрашивается при открытии окна, а не
- * заранее на весь список вложений.
+ * The content is `FilePreviewFrame`, mounted only while the window is open: the signed link lives
+ * minutes, so it is asked on every opening and dropped on closing, never kept by a closed window.
  */
 export function FilePreviewModal({
   file,
   open,
   onClose,
+  pdf = 'frame',
 }: {
   file: FileRef;
   open: boolean;
   onClose: () => void;
+  /** `pages` — the portal draws the PDF itself (the receipt preview); the default keeps the frame. */
+  pdf?: PdfPreviewMode;
 }) {
   const { message } = App.useApp();
-  const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const isImage = (file.contentType ?? '').toLowerCase().startsWith('image/');
   const isMobile = useIsMobile();
-
-  useEffect(() => {
-    if (!open) {
-      // Ссылку не держим закрытым окном: она протухнет, и следующий показ всё равно берёт новую.
-      setUrl(null);
-      setError(null);
-      return;
-    }
-    let cancelled = false;
-    void filesApi
-      .downloadUrl(file.id, 'inline')
-      .then(({ url: u }) => {
-        if (!cancelled) setUrl(u);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(errorMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, file.id]);
 
   const download = async () => {
     try {
@@ -94,24 +62,7 @@ export function FilePreviewModal({
         overflow: 'hidden',
       }}
     >
-      {error ? (
-        <Alert type="error" title="Не удалось открыть файл" description={error} showIcon />
-      ) : !url ? (
-        <Spin />
-      ) : isImage ? (
-        <img
-          src={url}
-          alt={file.filename}
-          style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-          onError={() => setError('Файл не загрузился — скачайте его')}
-        />
-      ) : (
-        <iframe
-          src={url}
-          title={file.filename}
-          style={{ width: '100%', height: '100%', border: 0 }}
-        />
-      )}
+      {open && <FilePreviewFrame file={file} pdf={pdf} />}
     </ViewModal>
   );
 }
