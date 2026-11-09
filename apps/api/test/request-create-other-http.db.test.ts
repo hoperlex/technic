@@ -67,6 +67,72 @@ function headers(key?: string): Record<string, string> {
   return { authorization, ...(key ? { 'idempotency-key': key } : {}) };
 }
 
+async function countRows(sql: string, params: unknown[]): Promise<number> {
+  const client = new pg.Client({ connectionString: DB_URL!.toString() });
+  await client.connect();
+  try {
+    return (await client.query<{ n: number }>(sql, params)).rows[0]?.n ?? 0;
+  } finally {
+    await client.end();
+  }
+}
+
+const receiptRows = (key: string) =>
+  countRows('SELECT count(*)::int AS n FROM request_create_attempts WHERE key = $1', [key]);
+
+/** Rows of the request table carrying the label that `body(kind, label)` writes. */
+function requestRows(kind: Kind, label: string): Promise<number> {
+  if (kind === 'service')
+    return countRows('SELECT count(*)::int AS n FROM service_requests WHERE description = $1', [
+      `Проверка квитанции ${label}`,
+    ]);
+  const table = kind === 'waste' ? 'waste_requests' : 'mech_requests';
+  return countRows(`SELECT count(*)::int AS n FROM ${table} WHERE comment = $1`, [label]);
+}
+
+/** A body the create route refuses at its schema, before any handler code runs. */
+function brokenBody(kind: Kind, label: string): Record<string, unknown> {
+  return { ...body(kind, label), responsiblePhone: '123' };
+}
+
+/**
+ * The same parsed body in another spelling: padded name, another phone mask, explicit defaults,
+ * and for Waste Removal the same instant written with an offset. The raw bodies differ, the parsed
+ * ones do not, so only a fingerprint taken from the parsed data can still match the receipt.
+ */
+function respelled(kind: Kind, sent: Record<string, unknown>): Record<string, unknown> {
+  const common = {
+    ...sent,
+    responsibleName: '  Иванов Иван Иванович  ',
+    responsiblePhone: '8 (999) 000-00-00',
+    fileIds: [],
+  };
+  if (kind === 'waste')
+    return {
+      ...common,
+      deliveryAt: new Date(new Date(sent.deliveryAt as string).getTime() + 3 * 3600_000)
+        .toISOString()
+        .replace('Z', '+03:00'),
+      containersCount: 1,
+    };
+  if (kind === 'service')
+    return { ...common, isUrgent: false, urgencyReason: '', objectOverridden: false, comment: '' };
+  return { ...common, comment: sent.comment };
+}
+
+const reconcileKey = (
+  kind: Kind,
+  key: string | undefined,
+  originalBody: unknown,
+  extra: object = {},
+) =>
+  app!.inject({
+    method: 'POST',
+    url: `${ROOT[kind]}/_create-attempts/reconcile`,
+    headers: headers(key),
+    payload: { originalBody, ...extra },
+  });
+
 function createdId(kind: Kind, value: Record<string, unknown>): string {
   return kind === 'service'
     ? ((value.request as Record<string, unknown>).id as string)
@@ -275,6 +341,161 @@ describe.skipIf(!SERVER_URL)('ordinary request receipt HTTP protocol outside Veh
     });
     expect(check.statusCode, check.body).toBe(422);
     expect(check.json().message).toContain('отдельному ключу');
+  });
+});
+
+describe.skipIf(!SERVER_URL)('ordinary request reconciliation by key outside Vehicle', () => {
+  it.each(KINDS)(
+    '%s releases a body that create refused with a 400, then accepts the corrected request',
+    async (kind) => {
+      const key = randomUUID();
+      const label = `broken-${key}`;
+      const url = `${ROOT[kind]}/_create-with-receipt`;
+      const frozen = brokenBody(kind, label);
+      const refused = await app!.inject({
+        method: 'POST',
+        url,
+        headers: headers(key),
+        payload: frozen,
+      });
+      expect(refused.statusCode, refused.body).toBe(400);
+      expect(await receiptRows(key)).toBe(0);
+
+      const released = await reconcileKey(kind, key, frozen);
+      expect(released.statusCode, released.body).toBe(200);
+      expect(released.json()).toMatchObject({ state: 'not-created' });
+      const nextKey = released.json().nextOperationId as string;
+      expect(nextKey).toMatch(/^[0-9a-f-]{36}$/);
+      const again = await reconcileKey(kind, key, frozen);
+      expect(again.statusCode, again.body).toBe(200);
+      expect(again.json()).toEqual(released.json());
+
+      const lateOld = await app!.inject({
+        method: 'POST',
+        url,
+        headers: headers(key),
+        payload: body(kind, label),
+      });
+      expect(lateOld.statusCode, lateOld.body).toBe(409);
+      expect(await requestRows(kind, label)).toBe(0);
+
+      const corrected = await app!.inject({
+        method: 'POST',
+        url,
+        headers: headers(nextKey),
+        payload: body(kind, label),
+      });
+      expect(corrected.statusCode, corrected.body).toBe(201);
+      expect(await requestRows(kind, label)).toBe(1);
+    },
+  );
+
+  it.each(KINDS)('%s gives both reconciliation modes the same replacement key', async (kind) => {
+    for (const keyFirst of [true, false]) {
+      const key = randomUUID();
+      const label = `two-modes-${key}`;
+      const broken = brokenBody(kind, label);
+      const valid = body(kind, label);
+      const [first, second] = keyFirst ? [broken, valid] : [valid, broken];
+      const left = await reconcileKey(kind, key, first);
+      expect(left.statusCode, left.body).toBe(200);
+      expect(left.json()).toMatchObject({ state: 'not-created' });
+      const right = await reconcileKey(kind, key, second);
+      expect(right.statusCode, right.body).toBe(200);
+      expect(right.json()).toEqual(left.json());
+    }
+  });
+
+  it.each(KINDS)(
+    '%s answers a committed key by the parsed body however it was spelled',
+    async (kind) => {
+      const key = randomUUID();
+      const sent = body(kind, `spelling-${key}`);
+      const created = await app!.inject({
+        method: 'POST',
+        url: `${ROOT[kind]}/_create-with-receipt`,
+        headers: headers(key),
+        payload: sent,
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const reconciled = await reconcileKey(kind, key, respelled(kind, sent));
+      expect(reconciled.statusCode, reconciled.body).toBe(200);
+      expect(reconciled.json()).toEqual({
+        state: 'created',
+        requestId: createdId(kind, created.json()),
+      });
+      // A really different body under the same key is still a reuse.
+      const changed = await reconcileKey(kind, key, {
+        ...respelled(kind, sent),
+        responsibleName: 'Петров Пётр Петрович',
+      });
+      expect(changed.statusCode, changed.body).toBe(409);
+      // The original body is gone from the form, but the committed key still answers.
+      const broken = await reconcileKey(kind, key, { ...sent, responsiblePhone: '123' });
+      expect(broken.statusCode, broken.body).toBe(200);
+      expect(broken.json()).toEqual({
+        state: 'created',
+        requestId: createdId(kind, created.json()),
+      });
+    },
+  );
+
+  it.each(KINDS)(
+    '%s refuses a malformed envelope or a missing key without writing a receipt',
+    async (kind) => {
+      const valid = body(kind, `envelope-${randomUUID()}`);
+      for (const originalBody of [[valid], null, 'text', 12]) {
+        const key = randomUUID();
+        const response = await reconcileKey(kind, key, originalBody);
+        expect(response.statusCode, JSON.stringify(originalBody)).toBe(400);
+        expect(await receiptRows(key)).toBe(0);
+      }
+      const key = randomUUID();
+      const extra = await reconcileKey(kind, key, valid, { extra: true });
+      expect(extra.statusCode, extra.body).toBe(400);
+      expect(await receiptRows(key)).toBe(0);
+      for (const original of [valid, { ...valid, responsiblePhone: '123' }]) {
+        const absent = await reconcileKey(kind, undefined, original);
+        expect(absent.statusCode, absent.body).toBe(422);
+      }
+    },
+  );
+
+  it('keeps Service candidate bodies out of the ordinary receipt table, valid or not', async () => {
+    const candidate = {
+      description: 'Не печатает, зажёвывает бумагу',
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      equipmentCandidate: {
+        equipmentTypeId: randomUUID(),
+        declaredModel: 'Kyocera ECOSYS M3145',
+        inventoryNumber: 'TEST-CANDIDATE-KEY-MODE',
+        objectId,
+        location: 'каб. 214',
+      },
+    };
+    const bodies = [
+      candidate,
+      { ...candidate, responsiblePhone: '123' },
+      { ...candidate, equipmentCandidate: { declaredModel: 'incomplete' } },
+      { ...candidate, equipmentCandidate: 'not an object' },
+    ];
+    for (const original of bodies) {
+      const key = randomUUID();
+      const response = await reconcileKey('service', key, original);
+      expect(response.statusCode, response.body).toBe(422);
+      expect(response.json().message).toContain('отдельному ключу');
+      expect(await receiptRows(key), JSON.stringify(original)).toBe(0);
+    }
+    // An empty candidate is no report at all, exactly as the create route reads it.
+    const key = randomUUID();
+    const plain = await reconcileKey('service', key, {
+      ...body('service', `no-candidate-${key}`),
+      equipmentCandidate: null,
+      responsiblePhone: '123',
+    });
+    expect(plain.statusCode, plain.body).toBe(200);
+    expect(plain.json()).toMatchObject({ state: 'not-created' });
   });
 });
 

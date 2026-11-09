@@ -26,6 +26,8 @@ let objectId = '';
 let vehicleTypeId = '';
 let vehicleCategoryId: string | null = null;
 let mechModelId = '';
+let freightTypeId = '';
+let objectAddress = '';
 
 function body(dateFrom: string): Record<string, unknown> {
   return {
@@ -45,6 +47,44 @@ function headers(key?: string): Record<string, string> {
     ...(key ? { 'idempotency-key': key } : {}),
   };
 }
+
+function freightBody(label: string, amount: number): Record<string, unknown> {
+  const contact = { name: 'Складов Афанасий Юрьевич', phone: '9007770762' };
+  return {
+    requestType: 'freight_transport',
+    objectId,
+    vehicleTypeId: freightTypeId,
+    scheduledAt: `${shiftDateKey(moscowDateKeyOf(new Date()), 3)}T10:00:00+03:00`,
+    trips: [
+      {
+        fromLocation: objectAddress,
+        toLocation: objectAddress,
+        fromAddress: { source: 'object', refId: objectId },
+        toAddress: { source: 'object', refId: objectId },
+        cargoName: 'Песок',
+        volumeM3: amount,
+        fromResponsibleName: contact.name,
+        fromResponsiblePhone: contact.phone,
+        toResponsibleName: contact.name,
+        toResponsiblePhone: contact.phone,
+      },
+    ],
+    comment: label,
+  };
+}
+
+async function countRows(sql: string, params: unknown[]): Promise<number> {
+  const client = new pg.Client({ connectionString: DB_URL!.toString() });
+  await client.connect();
+  try {
+    return (await client.query<{ n: number }>(sql, params)).rows[0]?.n ?? 0;
+  } finally {
+    await client.end();
+  }
+}
+
+const receiptRows = (key: string) =>
+  countRows('SELECT count(*)::int AS n FROM request_create_attempts WHERE key = $1', [key]);
 
 beforeAll(async () => {
   if (!ADMIN_URL || !DB_URL) return;
@@ -126,6 +166,22 @@ beforeAll(async () => {
     );
     mechModelId = models.rows[0]?.id ?? '';
     if (!mechModelId) throw new Error('Seeded mechanization model is required');
+    const freight = await references.query<{ id: string }>(`
+      SELECT vt.id FROM vehicle_types vt
+      JOIN vehicle_kinds vk ON vk.id = vt.kind_id
+      WHERE vk.code = 'freight_transport' AND vt.is_active AND vt.waybill_form_code = '4p'
+        AND NOT EXISTS (SELECT 1 FROM vehicle_categories c WHERE c.vehicle_type_id = vt.id)
+      ORDER BY vt.sort_order, vt.code
+      LIMIT 1
+    `);
+    freightTypeId = freight.rows[0]?.id ?? '';
+    const address = await references.query<{ address: string }>(
+      'SELECT address FROM construction_objects WHERE id = $1',
+      [objectId],
+    );
+    objectAddress = address.rows[0]?.address ?? '';
+    if (!freightTypeId || !objectAddress)
+      throw new Error('Seeded freight vehicle type and object address are required');
   } finally {
     await references.end();
   }
@@ -335,6 +391,235 @@ describe.skipIf(!SERVER_URL)('Vehicle Request receipt HTTP protocol', () => {
       await blocker.end();
       await first?.catch(() => undefined);
       vi.useRealTimers();
+    }
+  });
+});
+
+describe.skipIf(!SERVER_URL)('Vehicle Request reconciliation by key', () => {
+  const reconcile = (key: string | undefined, originalBody: unknown, extra: object = {}) =>
+    app!.inject({
+      method: 'POST',
+      url: RECONCILE,
+      headers: headers(key),
+      payload: { originalBody, ...extra },
+    });
+
+  it('releases a body that create refused with a 400, then accepts the corrected request', async () => {
+    const key = randomUUID();
+    const label = `zero-volume-${key}`;
+    const frozen = freightBody(label, 0);
+    const refused = await app!.inject({
+      method: 'POST',
+      url: KEYED,
+      headers: headers(key),
+      payload: frozen,
+    });
+    expect(refused.statusCode, refused.body).toBe(400);
+    // The route refuses before it reserves anything: only a reconciliation may write the key.
+    expect(await receiptRows(key)).toBe(0);
+
+    const released = await reconcile(key, frozen);
+    expect(released.statusCode, released.body).toBe(200);
+    expect(released.json()).toMatchObject({ state: 'not-created' });
+    const nextKey = released.json().nextOperationId as string;
+    expect(nextKey).toMatch(/^[0-9a-f-]{36}$/);
+    const again = await reconcile(key, frozen);
+    expect(again.statusCode, again.body).toBe(200);
+    expect(again.json()).toEqual(released.json());
+
+    // The corrected body under the old key is refused: the tombstone is permanent.
+    const lateOld = await app!.inject({
+      method: 'POST',
+      url: KEYED,
+      headers: headers(key),
+      payload: freightBody(label, 12),
+    });
+    expect(lateOld.statusCode, lateOld.body).toBe(409);
+    expect(
+      await countRows('SELECT count(*)::int AS n FROM vehicle_requests WHERE comment = $1', [
+        label,
+      ]),
+    ).toBe(0);
+
+    const corrected = await app!.inject({
+      method: 'POST',
+      url: KEYED,
+      headers: headers(nextKey),
+      payload: freightBody(label, 12),
+    });
+    expect(corrected.statusCode, corrected.body).toBe(201);
+    expect(
+      await countRows('SELECT count(*)::int AS n FROM vehicle_requests WHERE comment = $1', [
+        label,
+      ]),
+    ).toBe(1);
+  });
+
+  it.each([
+    ['key mode first', true],
+    ['fingerprint mode first', false],
+  ])(
+    '%s: both reconciliations of one key return the same replacement key',
+    async (_name, keyFirst) => {
+      const key = randomUUID();
+      const invalid = freightBody(`two-modes-${key}`, 0);
+      const valid = freightBody(`two-modes-${key}`, 12);
+      const [first, second] = keyFirst ? [invalid, valid] : [valid, invalid];
+      const left = await reconcile(key, first);
+      expect(left.statusCode, left.body).toBe(200);
+      expect(left.json()).toMatchObject({ state: 'not-created' });
+      const right = await reconcile(key, second);
+      expect(right.statusCode, right.body).toBe(200);
+      expect(right.json()).toEqual(left.json());
+    },
+  );
+
+  it('answers a committed key with the fingerprint of the parsed body, however it was spelled', async () => {
+    const key = randomUUID();
+    const sent = {
+      ...body(shiftDateKey(moscowDateKeyOf(new Date()), 3)),
+      responsibleName: '  Иванов Иван Иванович  ',
+      responsiblePhone: '8 (999) 000-00-00',
+    };
+    const created = await app!.inject({
+      method: 'POST',
+      url: KEYED,
+      headers: headers(key),
+      payload: sent,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    // Another spelling of the same parsed body (explicit defaults, trimmed name, other phone mask).
+    const respelled = {
+      ...sent,
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+7 999 000 00 00',
+      comment: '',
+      fileIds: [],
+    };
+    const reconciled = await reconcile(key, respelled);
+    expect(reconciled.statusCode, reconciled.body).toBe(200);
+    expect(reconciled.json()).toEqual({ state: 'created', requestId: created.json().id });
+    // A really different body under the same key is still a reuse.
+    const changed = await reconcile(key, { ...respelled, comment: 'another body' });
+    expect(changed.statusCode, changed.body).toBe(409);
+  });
+
+  it('answers a committed key even when the original body no longer validates', async () => {
+    const key = randomUUID();
+    const submitted = body(shiftDateKey(moscowDateKeyOf(new Date()), 3));
+    const created = await app!.inject({
+      method: 'POST',
+      url: KEYED,
+      headers: headers(key),
+      payload: submitted,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const reconciled = await reconcile(key, { ...submitted, responsiblePhone: '123' });
+    expect(reconciled.statusCode, reconciled.body).toBe(200);
+    expect(reconciled.json()).toEqual({ state: 'created', requestId: created.json().id });
+  });
+
+  it('keeps correction bodies out of the receipt table, valid or not', async () => {
+    const base = body(shiftDateKey(moscowDateKeyOf(new Date()), -2));
+    const bodies = [
+      { ...base, operationId: randomUUID(), backdateReason: 'Correction' },
+      { ...base, backdateReason: 'Correction' },
+      { ...base, operationId: randomUUID() },
+      // The same bodies with one more broken field take the raw branch, and the same rule.
+      { ...base, operationId: randomUUID(), backdateReason: 'Correction', responsiblePhone: '123' },
+      { ...base, backdateReason: 'Correction', responsiblePhone: '123' },
+      { ...base, operationId: randomUUID(), responsiblePhone: '123' },
+    ];
+    for (const original of bodies) {
+      const key = randomUUID();
+      const response = await reconcile(key, original);
+      expect(response.statusCode, response.body).toBe(422);
+      expect(await receiptRows(key), JSON.stringify(original)).toBe(0);
+    }
+  });
+
+  it('refuses a malformed envelope or a missing key without writing a receipt', async () => {
+    const valid = body(shiftDateKey(moscowDateKeyOf(new Date()), 3));
+    for (const originalBody of [[valid], null, 'text', 12]) {
+      const key = randomUUID();
+      const response = await reconcile(key, originalBody);
+      expect(response.statusCode, JSON.stringify(originalBody)).toBe(400);
+      expect(await receiptRows(key)).toBe(0);
+    }
+    const key = randomUUID();
+    const extra = await reconcile(key, valid, { extra: true });
+    expect(extra.statusCode, extra.body).toBe(400);
+    expect(await receiptRows(key)).toBe(0);
+    const absent = await app!.inject({
+      method: 'POST',
+      url: RECONCILE,
+      headers: headers(),
+      payload: { originalBody: valid },
+    });
+    expect(absent.statusCode, absent.body).toBe(422);
+    const absentInvalid = await app!.inject({
+      method: 'POST',
+      url: RECONCILE,
+      headers: headers(),
+      payload: { originalBody: { ...valid, responsiblePhone: '123' } },
+    });
+    expect(absentInvalid.statusCode, absentInvalid.body).toBe(422);
+    const notUuid = await reconcile('not-a-uuid', { ...valid, responsiblePhone: '123' });
+    expect(notUuid.statusCode, notUuid.body).toBe(422);
+  });
+
+  it('binds a key to its actor in key mode and tells a foreign actor nothing', async () => {
+    const { db } = await import('../src/db/client');
+    const { users } = await import('../src/db/schema');
+    const { hashPassword } = await import('../src/auth/password');
+    const otherEmail = `receipt-http-other-${randomUUID()}@example.invalid`;
+    await db.insert(users).values({
+      email: otherEmail,
+      lastName: 'Другой',
+      firstName: 'Администратор',
+      middleName: '',
+      passwordHash: await hashPassword(PASSWORD),
+      role: 'admin',
+      isActive: true,
+    });
+    const login = await app!.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: otherEmail, password: PASSWORD },
+    });
+    expect(login.statusCode, login.body).toBe(200);
+    const foreign = {
+      authorization: `Bearer ${login.json().accessToken}`,
+    };
+    const invalid = {
+      ...body(shiftDateKey(moscowDateKeyOf(new Date()), 3)),
+      responsiblePhone: '123',
+    };
+
+    const committedKey = randomUUID();
+    const created = await app!.inject({
+      method: 'POST',
+      url: KEYED,
+      headers: headers(committedKey),
+      payload: body(shiftDateKey(moscowDateKeyOf(new Date()), 3)),
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const tombstoneKey = randomUUID();
+    const tombstone = await reconcile(tombstoneKey, invalid);
+    expect(tombstone.statusCode, tombstone.body).toBe(200);
+
+    for (const [key, secret] of [
+      [committedKey, created.json().id as string],
+      [tombstoneKey, tombstone.json().nextOperationId as string],
+    ] as const) {
+      const refused = await app!.inject({
+        method: 'POST',
+        url: RECONCILE,
+        headers: { ...foreign, 'idempotency-key': key },
+        payload: { originalBody: invalid },
+      });
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(refused.body).not.toContain(secret);
     }
   });
 });
