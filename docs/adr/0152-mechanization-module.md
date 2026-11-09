@@ -24,6 +24,10 @@
   `apps/api/test/mech-*.db.test.ts` (семь наборов)
 - Миграции: `0237` (значение enum) и `0238` (таблицы, инварианты, `file_is_linked`) — двумя файлами
   по причине из решения 8
+- Изменён: [ADR 0248](0248-mechanization-lessor-receipt.md) — decision 6 (the mechanization lessor
+  has portal accounts since release 0.1.142.0248, with exactly `mechRequests.read` and
+  `mechRequests.lessorReceipt`) and the third consequence (the executor status boundary is not
+  removed: it stays unreachable for mechanization)
 
 ## Контекст
 
@@ -82,6 +86,13 @@
 
 6. **Арендодатель — контрагент нового типа `mech_lessor`, и только он.** Тип заведён с пустым
    списком прав: учёток за ним не бывает (заказчик: «операторов пока нет»).
+
+   _Changed by [ADR 0248](0248-mechanization-lessor-receipt.md) (09.11.2026):_ the type's list is
+   `mechRequests.read` and `mechRequests.lessorReceipt`, and the lessor has accounts — he sees his
+   rentals «В работе» in a narrow card and attaches their receipts. The rest of the module refuses
+   him by a door guard, a second scope axis (`lessor_id`) stands behind it, and no permission set
+   can add to his list. The base still allows a `vehicle_lessor` as the lessor of a rental; such
+   rentals are invisible to every lessor account.
 
    Здесь стояло другое: разрешались оба типа — свой и «Арендодатель (ТС)», — потому что у
    контрагента ровно один тип и уникальный ИНН, а компания, сдающая и то, и другое, иначе не
@@ -148,6 +159,12 @@
   коридором (внешний исполнитель) гейт остался дизъюнкцией: строгий вариант изменил бы ответ для
   пары «оператор вывоза × заказ ТС», то есть тронул бы соседний модуль ради недостижимого случая.
   Граница названа в плане и снимается тем же решением, которым арендодателю выдадут учётки.
+
+  _Changed by [ADR 0248](0248-mechanization-lessor-receipt.md) (09.11.2026):_ the decision that gave
+  the lessor accounts keeps the boundary instead of removing it. It stays unreachable for
+  mechanization: the `mech_lessor` type list holds no status permission of any module, the grant
+  matrix refuses the executor role every `mechRequests.*` permission, and every mutation of the
+  module asks its own permission behind the lessor door guard.
 
 - **Два отдела, связанные с одной площадкой, видят заявки друг друга** — включая арендодателя и
   стоимость. Прямое следствие объектной оси: она отвечает «чья площадка», а не «чей отдел». У вывоза
