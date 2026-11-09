@@ -104,6 +104,14 @@ export const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
   mechExtendRequested: 'Запрошено продление аренды',
   mechExtendRejected: 'Продление аренды отклонено',
   mechExtendDropped: 'Запрос продления снят',
+  // The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P9): one title per
+  // strict event, as the server writes one event per action.
+  mechLessorReceiptAttached: 'Прикреплён чек арендодателя',
+  mechLessorReceiptApproved: 'Чек арендодателя утверждён',
+  mechLessorReceiptRejected: 'Чек арендодателя отклонён',
+  mechLessorReceiptRevoked: 'Отозвано решение по чеку арендодателя',
+  mechLessorReceiptWaived: 'Разрешено завершение без чека',
+  mechLessorReceiptRetired: 'Чек арендодателя снят',
   // Талоны, доложенные к выполненной заявке (ADR 0189): бумага пришла позже закрытия, и в ленте
   // она читается своей строкой — «чем подтверждён вывоз» и «что в заявке правили» разные вопросы.
   ticketsAdded: 'Приложены талоны',
@@ -168,6 +176,15 @@ export const KIND_TAGS: Record<string, { label: string; color?: string }> = {
   mechExtendRequested: { label: 'Продление', color: 'orange' },
   mechExtendRejected: { label: 'Продление', color: 'red' },
   mechExtendDropped: { label: 'Продление' },
+  // The receipt: waiting for the visa orange like every wait for a signature, an approval green, a
+  // refusal red, a revocation orange (the question is open again), the «без чека» visa gold (a
+  // decision about money, like the deal), a version dropped by the deal grey.
+  mechLessorReceiptAttached: { label: 'Чек', color: 'orange' },
+  mechLessorReceiptApproved: { label: 'Чек', color: 'green' },
+  mechLessorReceiptRejected: { label: 'Чек', color: 'red' },
+  mechLessorReceiptRevoked: { label: 'Чек', color: 'orange' },
+  mechLessorReceiptWaived: { label: 'Без чека', color: 'gold' },
+  mechLessorReceiptRetired: { label: 'Чек' },
   // Талоны — голубым: зелёный в этой ленте занят предъявленным фактом, и доложенная бумага не
   // должна читаться как второе закрытие. Ярлык тот же, каким подписан блок талонов в карточке.
   ticketsAdded: { label: 'Талоны', color: 'cyan' },

@@ -211,6 +211,28 @@ export type RequestHistoryKind =
   | 'mechExtendRejected'
   | 'mechExtendDropped'
   /**
+   * The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P9): six kinds, one per
+   * strict audit action — the history maps one action to one kind, the reason the extension keeps
+   * its request and refusal apart. The receipt is the evidence of a payment, and a revoked approval
+   * survives only in its event:
+   *
+   * - `mechLessorReceiptAttached` — a version attached or replacing another (the file goes with it,
+   *   so the version opens from its history line, O8);
+   * - `mechLessorReceiptApproved` / `mechLessorReceiptRejected` — the visa holder's decision, a
+   *   rejection with its reason;
+   * - `mechLessorReceiptRevoked` — an approval or a «без чека» visa withdrawn while the rental is in
+   *   work (O15), with the reason;
+   * - `mechLessorReceiptWaived` — completion allowed without a receipt (O10), with the reason;
+   * - `mechLessorReceiptRetired` — the current version dropped by a deal change or a return to
+   *   «Новая» (P8).
+   */
+  | 'mechLessorReceiptAttached'
+  | 'mechLessorReceiptApproved'
+  | 'mechLessorReceiptRejected'
+  | 'mechLessorReceiptRevoked'
+  | 'mechLessorReceiptWaived'
+  | 'mechLessorReceiptRetired'
+  /**
    * Добавочные талоны выполненной заявки (ADR 0189). Своё событие, а не `updated`: заявку оно не
    * меняет вовсе — предмет, срок и факт остаются прежними, — а «Заявка отредактирована» в этом
    * месте ленты звало бы искать правку, которой не было. И не `completed`: факт предъявлен

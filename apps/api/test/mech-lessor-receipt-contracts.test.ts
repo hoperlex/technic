@@ -10,9 +10,39 @@ import {
   permissionsFor,
   ROLE_PERMISSIONS,
   ROLES,
+  isMechLessorRentalVisible,
+  isMechLessorSubject,
+  MECH_LESSOR_RECEIPT_CAP_MESSAGE,
+  MECH_LESSOR_RECEIPT_LESSOR_CAP,
+  MECH_LESSOR_RECEIPT_LESSOR_LOCKED_MESSAGE,
+  MECH_LESSOR_RECEIPT_NOT_IN_WORK_MESSAGE,
+  MECH_LESSOR_RECEIPT_NOT_PENDING_MESSAGE,
+  MECH_LESSOR_RECEIPT_NOTHING_TO_REVOKE_MESSAGE,
+  MECH_LESSOR_RECEIPT_REVOKE_NOT_IN_WORK_MESSAGE,
+  MECH_LESSOR_RECEIPT_STATUSES,
+  MECH_LESSOR_RECEIPT_WAIVER_APPROVED_MESSAGE,
+  MECH_LESSOR_RECEIPT_WAIVER_NOT_IN_WORK_MESSAGE,
+  MECH_LESSOR_RECEIPT_WAIVER_REPEATED_MESSAGE,
+  attachMechLessorReceiptSchema,
+  decideMechLessorReceiptSchema,
+  isMechLessorReceiptContentType,
+  mechLessorReceiptAccess,
+  mechLessorReceiptAttachBlocker,
+  mechLessorReceiptCompletionBlocker,
+  mechLessorReceiptDecisionBlocker,
+  mechLessorReceiptMark,
+  mechLessorReceiptWaiverBlocker,
+  mechLessorVisibleVersions,
+  REQUEST_STATUSES,
   validateGrantAssignment,
+  waiveMechLessorReceiptSchema,
   type MechApprovalSubject,
+  type MechLessorReceiptCurrent,
+  type MechLessorReceiptRetireReason,
+  type MechLessorReceiptStatus,
+  type MechLessorSubject,
   type Permission,
+  type RequestStatus,
   type Role,
 } from '@technic/contracts';
 
@@ -163,12 +193,453 @@ describe('the visa circle refuses executors (P5)', () => {
 
   it('an executor holding `.approve` through a custom oracle still does not sign', () => {
     const target = { objectId: OBJECT_ID, departmentId: DEPARTMENT_ID };
-    expect(canApproveMechRequest(executor('operator'), target, listOf('mechRequests.approve'))).toBe(
-      false,
-    );
+    expect(
+      canApproveMechRequest(executor('operator'), target, listOf('mechRequests.approve')),
+    ).toBe(false);
     // The same oracle opens the visa to an axis-less role: the refusal is the executor's own branch.
     expect(canApproveMechRequest({ role: 'admin' }, target, listOf('mechRequests.approve'))).toBe(
       true,
+    );
+  });
+});
+
+// ── The receipt's rules (W1): blockers, gate, mark, versions, buttons ──
+
+const LESSOR_ID = 'cp-lessor';
+const UUID = '00000000-0000-4000-8000-000000000001';
+
+const current = (status: MechLessorReceiptStatus | null): MechLessorReceiptCurrent =>
+  status ? { status } : null;
+const CURRENTS: MechLessorReceiptCurrent[] = [null, ...MECH_LESSOR_RECEIPT_STATUSES.map(current)];
+
+describe('attaching (P7)', () => {
+  it('only to a rental in work, for anyone', () => {
+    for (const status of REQUEST_STATUSES) {
+      for (const actsAsLessor of [false, true]) {
+        const refusal = mechLessorReceiptAttachBlocker({
+          row: { status },
+          current: null,
+          lessorVersionCount: 0,
+          actsAsLessor,
+        });
+        expect(refusal, `${status} lessor=${actsAsLessor}`).toBe(
+          status === 'confirmed' ? null : MECH_LESSOR_RECEIPT_NOT_IN_WORK_MESSAGE,
+        );
+      }
+    }
+  });
+
+  /** O13: the office replaces anything; the lessor a pending or rejected version only. */
+  it('the lessor never replaces an approval or a waiver, the office replaces any version', () => {
+    for (const cur of CURRENTS) {
+      const office = mechLessorReceiptAttachBlocker({
+        row: { status: 'confirmed' },
+        current: cur,
+        lessorVersionCount: 0,
+        actsAsLessor: false,
+      });
+      expect(office, `office over ${cur?.status ?? 'none'}`).toBeNull();
+      const lessor = mechLessorReceiptAttachBlocker({
+        row: { status: 'confirmed' },
+        current: cur,
+        lessorVersionCount: 0,
+        actsAsLessor: true,
+      });
+      const locked = cur?.status === 'approved' || cur?.status === 'waived';
+      expect(lessor, `lessor over ${cur?.status ?? 'none'}`).toBe(
+        locked ? MECH_LESSOR_RECEIPT_LESSOR_LOCKED_MESSAGE : null,
+      );
+    }
+  });
+
+  /** The cap guards against an external loop; the office past it must still attach the real one. */
+  it('caps the lessor per account within the deal, never the office', () => {
+    const at = (count: number, actsAsLessor: boolean) =>
+      mechLessorReceiptAttachBlocker({
+        row: { status: 'confirmed' },
+        current: current('rejected'),
+        lessorVersionCount: count,
+        actsAsLessor,
+      });
+    expect(at(MECH_LESSOR_RECEIPT_LESSOR_CAP - 1, true)).toBeNull();
+    expect(at(MECH_LESSOR_RECEIPT_LESSOR_CAP, true)).toBe(MECH_LESSOR_RECEIPT_CAP_MESSAGE);
+    expect(at(MECH_LESSOR_RECEIPT_LESSOR_CAP * 5, false)).toBeNull();
+  });
+
+  it('takes PDF and JPEG only; the bodies are strict', () => {
+    expect(isMechLessorReceiptContentType('application/pdf')).toBe(true);
+    expect(isMechLessorReceiptContentType('image/jpeg')).toBe(true);
+    for (const type of ['image/png', 'image/heic', 'application/octet-stream', '']) {
+      expect(isMechLessorReceiptContentType(type), type).toBe(false);
+    }
+    expect(attachMechLessorReceiptSchema.safeParse({ fileId: UUID, version: 3 }).success).toBe(
+      true,
+    );
+    expect(
+      attachMechLessorReceiptSchema.safeParse({ fileId: UUID, version: 3, status: 'approved' })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe('deciding (P5) and the «без чека» visa (P6)', () => {
+  /** A cancelled rental may still hold a pending receipt (a prepayment): deciding it is allowed. */
+  it('approve and reject need a pending current version, whatever the request status', () => {
+    for (const status of REQUEST_STATUSES) {
+      for (const cur of CURRENTS) {
+        for (const decision of ['approve', 'reject'] as const) {
+          expect(
+            mechLessorReceiptDecisionBlocker({ status }, cur, decision),
+            `${decision} ${status} ${cur?.status ?? 'none'}`,
+          ).toBe(cur?.status === 'pending' ? null : MECH_LESSOR_RECEIPT_NOT_PENDING_MESSAGE);
+        }
+      }
+    }
+  });
+
+  /** O15: undone only while the rental is in work — after completion it is a closed rental's basis. */
+  it('revoke needs an approval or a waiver, and only in «В работе»', () => {
+    for (const status of REQUEST_STATUSES) {
+      for (const cur of CURRENTS) {
+        const revocable = cur?.status === 'approved' || cur?.status === 'waived';
+        const expected = !revocable
+          ? MECH_LESSOR_RECEIPT_NOTHING_TO_REVOKE_MESSAGE
+          : status === 'confirmed'
+            ? null
+            : MECH_LESSOR_RECEIPT_REVOKE_NOT_IN_WORK_MESSAGE;
+        expect(
+          mechLessorReceiptDecisionBlocker({ status }, cur, 'revoke'),
+          `revoke ${status} ${cur?.status ?? 'none'}`,
+        ).toBe(expected);
+      }
+    }
+  });
+
+  it('the waiver: in work, over nothing, a pending or a rejected version', () => {
+    for (const status of REQUEST_STATUSES) {
+      for (const cur of CURRENTS) {
+        const expected =
+          status !== 'confirmed'
+            ? MECH_LESSOR_RECEIPT_WAIVER_NOT_IN_WORK_MESSAGE
+            : cur?.status === 'approved'
+              ? MECH_LESSOR_RECEIPT_WAIVER_APPROVED_MESSAGE
+              : cur?.status === 'waived'
+                ? MECH_LESSOR_RECEIPT_WAIVER_REPEATED_MESSAGE
+                : null;
+        expect(
+          mechLessorReceiptWaiverBlocker({ status }, cur),
+          `waive ${status} ${cur?.status ?? 'none'}`,
+        ).toBe(expected);
+      }
+    }
+    // A cancelled rental is not waived: the waiver allows a completion, and there is none to come.
+    expect(mechLessorReceiptWaiverBlocker({ status: 'cancelled' }, null)).toBe(
+      MECH_LESSOR_RECEIPT_WAIVER_NOT_IN_WORK_MESSAGE,
+    );
+  });
+
+  it('a rejection and a revocation need their reason, a waiver always does', () => {
+    const decide = (decision: string, comment?: string) =>
+      decideMechLessorReceiptSchema.safeParse({ receiptId: UUID, decision, comment, version: 1 })
+        .success;
+    expect(decide('approve')).toBe(true);
+    expect(decide('reject')).toBe(false);
+    expect(decide('reject', '   ')).toBe(false);
+    expect(decide('reject', 'не та сумма')).toBe(true);
+    expect(decide('revoke')).toBe(false);
+    expect(decide('revoke', 'ошибся')).toBe(true);
+    expect(decide('waive', 'x')).toBe(false);
+    expect(waiveMechLessorReceiptSchema.safeParse({ comment: '', version: 1 }).success).toBe(false);
+    expect(
+      waiveMechLessorReceiptSchema.safeParse({ comment: 'арендодатель без чеков', version: 1 })
+        .success,
+    ).toBe(true);
+  });
+});
+
+describe('the completion gate (P3)', () => {
+  it('a rental taken in before the release is not gated', () => {
+    for (const cur of CURRENTS) {
+      expect(
+        mechLessorReceiptCompletionBlocker({ lessorReceiptRequired: false, lessorReceipt: cur }),
+      ).toBeNull();
+    }
+  });
+
+  it('a required receipt passes approved or waived, and says what is missing otherwise', () => {
+    const gate = (cur: MechLessorReceiptCurrent) =>
+      mechLessorReceiptCompletionBlocker({ lessorReceiptRequired: true, lessorReceipt: cur });
+    expect(gate(current('approved'))).toBeNull();
+    expect(gate(current('waived'))).toBeNull();
+    expect(gate(current('pending'))).toBe(
+      'Чек арендодателя ждёт визы — аренду завершают после неё',
+    );
+    expect(gate(current('rejected'))).toBe('Чек арендодателя отклонён — прикрепите исправленный');
+    expect(gate(null)).toBe('Прикрепите чек арендодателя или получите визу «без чека»');
+  });
+});
+
+describe('the mark (P16)', () => {
+  const mark = (
+    status: RequestStatus,
+    cur: MechLessorReceiptCurrent,
+    required = true,
+    deletedAt: string | null = null,
+  ) =>
+    mechLessorReceiptMark({
+      status,
+      deletedAt,
+      lessorReceiptRequired: required,
+      lessorReceipt: cur,
+    });
+
+  it('marks what waits for someone, and nothing on an archived row', () => {
+    expect(mark('confirmed', current('pending'))).toBe('pending');
+    // A pending receipt of a cancelled rental is still decidable, so it still asks for the visa.
+    expect(mark('cancelled', current('pending'))).toBe('pending');
+    expect(mark('confirmed', current('rejected'))).toBe('rejected');
+    expect(mark('cancelled', current('rejected'))).toBeNull();
+    expect(mark('confirmed', null)).toBe('missing');
+    expect(mark('confirmed', null, false)).toBeNull();
+    expect(mark('done', null)).toBeNull();
+    expect(mark('confirmed', current('approved'))).toBeNull();
+    expect(mark('confirmed', current('waived'))).toBeNull();
+    for (const cur of CURRENTS) {
+      expect(
+        mark('confirmed', cur, true, '2026-11-09T10:00:00Z'),
+        cur?.status ?? 'none',
+      ).toBeNull();
+    }
+  });
+});
+
+describe('the versions of the current deal (P12)', () => {
+  const v = (versionNo: number, retiredReason: MechLessorReceiptRetireReason | null) => ({
+    versionNo,
+    retiredReason,
+  });
+
+  it('starts after the last version dropped by a deal change or a return to «Новая»', () => {
+    expect(mechLessorVisibleVersions([])).toEqual([]);
+    expect(mechLessorVisibleVersions([v(1, 'replaced'), v(2, null)])).toEqual([
+      v(1, 'replaced'),
+      v(2, null),
+    ]);
+    // Out of order on input, ascending on output; a revoked waiver stays in the deal.
+    expect(
+      mechLessorVisibleVersions([
+        v(4, null),
+        v(1, 'replaced'),
+        v(3, 'revoked'),
+        v(2, 'deal_changed'),
+      ]),
+    ).toEqual([v(3, 'revoked'), v(4, null)]);
+    expect(
+      mechLessorVisibleVersions([v(1, 'deal_changed'), v(2, 'replaced'), v(3, 'rolled_back')]),
+    ).toEqual([]);
+  });
+});
+
+describe('the lessor and his rentals (P11)', () => {
+  const lessor: MechLessorSubject = {
+    role: 'operator',
+    counterpartyType: 'mech_lessor',
+    counterpartyId: LESSOR_ID,
+  };
+  const row = (
+    over: Partial<{
+      lessorId: string | null;
+      status: RequestStatus;
+      deletedAt: string | null;
+    }> = {},
+  ) => ({
+    lessorId: LESSOR_ID,
+    status: 'confirmed' as RequestStatus,
+    deletedAt: null as string | null,
+    ...over,
+  });
+
+  it('is the executor role with a mechanization lessor counterparty', () => {
+    expect(isMechLessorSubject(lessor)).toBe(true);
+    expect(isMechLessorSubject({ role: 'operator', counterpartyType: 'vehicle_lessor' })).toBe(
+      false,
+    );
+    expect(isMechLessorSubject({ role: 'admin' })).toBe(false);
+  });
+
+  it('sees his own rental in work, not archived — nothing else, and nobody else sees through it', () => {
+    expect(isMechLessorRentalVisible(lessor, row())).toBe(true);
+    expect(isMechLessorRentalVisible(lessor, row({ lessorId: 'cp-other' }))).toBe(false);
+    expect(isMechLessorRentalVisible(lessor, row({ lessorId: null }))).toBe(false);
+    for (const status of REQUEST_STATUSES.filter((s) => s !== 'confirmed')) {
+      expect(isMechLessorRentalVisible(lessor, row({ status })), status).toBe(false);
+    }
+    expect(isMechLessorRentalVisible(lessor, row({ deletedAt: '2026-11-09T10:00:00Z' }))).toBe(
+      false,
+    );
+    expect(isMechLessorRentalVisible({ ...lessor, counterpartyId: null }, row())).toBe(false);
+    expect(
+      isMechLessorRentalVisible(
+        { role: 'operator', counterpartyType: 'vehicle_lessor', counterpartyId: LESSOR_ID },
+        row(),
+      ),
+    ).toBe(false);
+    expect(isMechLessorRentalVisible({ role: 'admin', counterpartyId: LESSOR_ID }, row())).toBe(
+      false,
+    );
+  });
+});
+
+describe('the buttons (P15)', () => {
+  type Subject = MechApprovalSubject & MechLessorSubject;
+  const OFFICE_PERMS: Permission[] = [
+    'mechRequests.read',
+    'mechRequests.status',
+    'mechRequests.lessorReceipt',
+  ];
+  const VISA_PERMS: Permission[] = ['mechRequests.read', 'mechRequests.approve'];
+
+  const office: Subject = { role: 'dispatcher' };
+  const siteVisa: Subject = { role: 'site', constructionObjectIds: [OBJECT_ID] };
+  const foreignSiteVisa: Subject = { role: 'site', constructionObjectIds: ['obj-2'] };
+  const departmentVisa: Subject = {
+    role: 'department_head',
+    departmentIds: [DEPARTMENT_ID],
+    departmentObjectIds: [OBJECT_ID],
+  };
+  const admin: Subject = { role: 'admin' };
+  const lessor: Subject = {
+    role: 'operator',
+    counterpartyType: 'mech_lessor',
+    counterpartyId: LESSOR_ID,
+  };
+
+  const rental = (
+    cur: MechLessorReceiptCurrent,
+    over: Partial<{
+      status: RequestStatus;
+      deletedAt: string | null;
+      lessorVersionCount: number;
+      lessorId: string;
+      departmentId: string | null;
+    }> = {},
+  ) => ({
+    status: 'confirmed' as RequestStatus,
+    deletedAt: null as string | null,
+    lessorReceiptRequired: true,
+    lessorReceipt: cur,
+    objectId: OBJECT_ID,
+    departmentId: DEPARTMENT_ID as string | null,
+    lessorId: LESSOR_ID as string | null,
+    lessorVersionCount: 0,
+    ...over,
+  });
+
+  const NONE = {
+    attach: false,
+    replace: false,
+    review: false,
+    waive: false,
+    revokeApproval: false,
+    revokeWaiver: false,
+  };
+
+  it('the office attaches and replaces, and decides nothing without the visa', () => {
+    const has = listOf(...OFFICE_PERMS);
+    expect(mechLessorReceiptAccess(office, rental(null), has)).toEqual({ ...NONE, attach: true });
+    expect(mechLessorReceiptAccess(office, rental(current('approved')), has)).toEqual({
+      ...NONE,
+      attach: true,
+      replace: true,
+    });
+    expect(mechLessorReceiptAccess(office, rental(null, { status: 'done' }), has)).toEqual(NONE);
+    expect(
+      mechLessorReceiptAccess(office, rental(null, { deletedAt: '2026-11-09T10:00:00Z' }), has),
+    ).toEqual(NONE);
+  });
+
+  it('the site visa holder reviews, waives and revokes on his own site only', () => {
+    const has = listOf(...VISA_PERMS);
+    expect(mechLessorReceiptAccess(siteVisa, rental(current('pending')), has)).toEqual({
+      ...NONE,
+      review: true,
+      waive: true,
+    });
+    expect(mechLessorReceiptAccess(siteVisa, rental(null), has)).toEqual({ ...NONE, waive: true });
+    expect(mechLessorReceiptAccess(siteVisa, rental(current('rejected')), has)).toEqual({
+      ...NONE,
+      waive: true,
+    });
+    expect(mechLessorReceiptAccess(siteVisa, rental(current('approved')), has)).toEqual({
+      ...NONE,
+      revokeApproval: true,
+    });
+    expect(mechLessorReceiptAccess(siteVisa, rental(current('waived')), has)).toEqual({
+      ...NONE,
+      revokeWaiver: true,
+    });
+    // After completion: nothing to revoke; a cancelled rental's pending receipt is still reviewed.
+    expect(
+      mechLessorReceiptAccess(siteVisa, rental(current('approved'), { status: 'done' }), has),
+    ).toEqual(NONE);
+    expect(
+      mechLessorReceiptAccess(siteVisa, rental(current('pending'), { status: 'cancelled' }), has),
+    ).toEqual({ ...NONE, review: true });
+    expect(mechLessorReceiptAccess(foreignSiteVisa, rental(current('pending')), has)).toEqual(NONE);
+  });
+
+  it('the department visa holder decides the request his department filed (ADR 0171 decision 4)', () => {
+    const has = listOf(...VISA_PERMS);
+    expect(mechLessorReceiptAccess(departmentVisa, rental(current('pending')), has)).toEqual({
+      ...NONE,
+      review: true,
+      waive: true,
+    });
+    expect(
+      mechLessorReceiptAccess(
+        departmentVisa,
+        rental(current('pending'), { departmentId: null }),
+        has,
+      ),
+    ).toEqual(NONE);
+  });
+
+  it('the administrator does everything the state allows', () => {
+    const has = listOf(...OFFICE_PERMS, 'mechRequests.approve');
+    expect(mechLessorReceiptAccess(admin, rental(current('pending')), has)).toEqual({
+      ...NONE,
+      attach: true,
+      replace: true,
+      review: true,
+      waive: true,
+    });
+  });
+
+  it('the lessor attaches to his rental while it waits or after a rejection, and decides nothing', () => {
+    // Even an oracle that hands him the visa does not make him sign: the circle refuses executors.
+    const has = listOf('mechRequests.read', 'mechRequests.lessorReceipt', 'mechRequests.approve');
+    expect(mechLessorReceiptAccess(lessor, rental(null), has)).toEqual({ ...NONE, attach: true });
+    expect(mechLessorReceiptAccess(lessor, rental(current('pending')), has)).toEqual({
+      ...NONE,
+      attach: true,
+      replace: true,
+    });
+    expect(mechLessorReceiptAccess(lessor, rental(current('rejected')), has)).toEqual({
+      ...NONE,
+      attach: true,
+      replace: true,
+    });
+    expect(mechLessorReceiptAccess(lessor, rental(current('approved')), has)).toEqual(NONE);
+    expect(mechLessorReceiptAccess(lessor, rental(current('waived')), has)).toEqual(NONE);
+    expect(
+      mechLessorReceiptAccess(
+        lessor,
+        rental(null, { lessorVersionCount: MECH_LESSOR_RECEIPT_LESSOR_CAP }),
+        has,
+      ),
+    ).toEqual(NONE);
+    expect(mechLessorReceiptAccess(lessor, rental(null, { lessorId: 'cp-other' }), has)).toEqual(
+      NONE,
     );
   });
 });

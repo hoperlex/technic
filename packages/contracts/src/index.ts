@@ -122,6 +122,7 @@ export * from './visa-scope';
 export * from './mech-requests';
 // The extension visa of a running rental (ADR 0171, stage 3) — next to the request it belongs to.
 export * from './mech-request-extensions';
+export * from './mech-lessor-receipts';
 /* Справочник моделей механизации — сразу за заявкой: этап Э2 сделает его источником поля
  * «Модель», а пока справочник живёт сам по себе (план `docs/mechanization-models-directory-plan.md`). */
 export * from './mech-models';

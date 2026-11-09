@@ -1136,6 +1136,17 @@ export const mechRequestChangeLabels: Record<string, string> = {
   extendApproveComment: 'Комментарий к визе продления',
   extendRejectReason: 'Причина отказа в продлении',
   extendDropReason: 'Почему запрос продления снят',
+  // The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P9). The version number
+  // goes as a list row: a version has no "before". The replaced version names its number and the
+  // status it had, so a replaced approval reads as one.
+  lessorReceiptVersion: 'Версия чека',
+  lessorReceiptReplaced: 'Заменённая версия чека',
+  lessorReceiptApproveComment: 'Комментарий к визе чека',
+  lessorReceiptRejectReason: 'Причина отказа в чеке',
+  lessorReceiptRevoked: 'Отозвано',
+  lessorReceiptRevokeReason: 'Причина отзыва',
+  lessorReceiptWaiveReason: 'Почему без чека',
+  lessorReceiptRetireReason: 'Почему чек снят',
   // Завершение (`mech_request.complete`), в том числе повторное после отката: прежние числа не
   // сохранит ничто, кроме этой записи, а именно их спрашивают, разбирая счёт.
   actualTo: 'Возвращена',
