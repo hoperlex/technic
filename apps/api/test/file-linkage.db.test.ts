@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -74,6 +74,7 @@ interface Ctx {
     serviceRequestId: string;
     readingId: string;
     maintenanceId: string;
+    mechRequestId: string;
   };
   /** Работник и машина для отчёта, который сдаётся настоящим сервисом (проверка `pending`). */
   submit: { personId: string; vehicleId: string; date: string };
@@ -128,6 +129,9 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`DELETE FROM service_requests WHERE created_by IN ${admin}`);
   await db.execute(sql`DELETE FROM waste_requests WHERE created_by IN ${admin}`);
   await db.execute(sql`DELETE FROM vehicle_requests WHERE created_by IN ${admin}`);
+  // Before the files: a receipt version holds its file by RESTRICT (migration 0420), and the
+  // request's deletion cascades the version.
+  await db.execute(sql`DELETE FROM mech_requests WHERE created_by IN ${admin}`);
   // Строки связей уходят каскадом вместе с файлом (`ON DELETE CASCADE` у всех шести таблиц).
   await db.execute(sql`DELETE FROM files WHERE object_key LIKE ${`${KEY_PREFIX}%`}`);
   // Записи ТО — раньше машин по той же причине, что и отчёты дня: акт обслуживания держит машину
@@ -354,6 +358,23 @@ async function newReading(vehicleId: string, personId: string, waybillId: string
   return reading!.id;
 }
 
+/** A mechanization rental without a model or a deal: a «Новая» is enough to hold receipt rows. */
+async function newMechRequest(): Promise<string> {
+  const [request] = await ctx.db
+    .insert(ctx.schema.mechRequests)
+    .values({
+      objectId: ctx.objectId,
+      plannedFrom: ctx.submit.date,
+      plannedTo: ctx.submit.date,
+      responsibleName: 'Файлов Тест',
+      responsiblePhone: '9990000000',
+      comment: MARK,
+      createdBy: ctx.adminId,
+    })
+    .returning({ id: ctx.schema.mechRequests.id });
+  return request!.id;
+}
+
 /** Запись ТО (миграция 0147): к ней подшивают скан акта выполненных работ. */
 async function newMaintenance(vehicleId: string, day: string): Promise<string> {
   const [record] = await ctx.db
@@ -416,6 +437,28 @@ const LINK_CASES: { table: string; link: (fileId: string) => Promise<void> }[] =
       await ctx.db
         .insert(ctx.schema.vehicleMaintenanceFiles)
         .values({ maintenanceId: ctx.parents.maintenanceId, fileId });
+    },
+  },
+  {
+    // A RETIRED version: O8 keeps every version openable, so retiring must not unlink the file —
+    // the current one would pass even with a branch that forgot the retired rows.
+    table: 'mech_request_lessor_receipts',
+    link: async (fileId) => {
+      const [last] = await ctx.db
+        .select({ n: sql<number>`coalesce(max(version_no), 0)::int` })
+        .from(ctx.schema.mechRequestLessorReceipts)
+        .where(eq(ctx.schema.mechRequestLessorReceipts.requestId, ctx.parents.mechRequestId));
+      await ctx.db.insert(ctx.schema.mechRequestLessorReceipts).values({
+        requestId: ctx.parents.mechRequestId,
+        versionNo: last!.n + 1,
+        fileId,
+        status: 'pending',
+        createdBy: ctx.adminId,
+        createdAs: 'office',
+        retiredAt: new Date(),
+        retiredBy: ctx.adminId,
+        retiredReason: 'replaced',
+      });
     },
   },
 ];
@@ -580,6 +623,7 @@ describe.skipIf(!DB_URL)('жизненный цикл файла: связи и 
         serviceRequestId: '',
         readingId: '',
         maintenanceId: '',
+        mechRequestId: '',
       },
       submit: { personId: '', vehicleId: '', date: moscowDateKeyOf(new Date()) },
     };
@@ -618,6 +662,7 @@ describe.skipIf(!DB_URL)('жизненный цикл файла: связи и 
       serviceRequestId: service!.id,
       readingId: await newReading(docsVehicle, docsPerson, waybillId, day),
       maintenanceId: await newMaintenance(docsVehicle, day),
+      mechRequestId: await newMechRequest(),
     };
 
     // Отдельные работник и машина для отчёта, который сдаётся сервисом: строка ожидания занимает

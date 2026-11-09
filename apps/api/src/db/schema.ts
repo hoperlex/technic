@@ -121,6 +121,17 @@ export const mechExtensionStatusEnum = pgEnum('mech_extension_status', [
   'approved',
   'rejected',
 ]);
+/**
+ * State of a version of the lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P1;
+ * migration "mech_lessor_receipts"). `waived` is the «без чека» visa: a row without a file, born
+ * decided. Retiring a version never changes its status — "approved, then replaced" stays approved.
+ */
+export const mechLessorReceiptStatusEnum = pgEnum('mech_lessor_receipt_status', [
+  'pending',
+  'approved',
+  'rejected',
+  'waived',
+]);
 export const fileStatusEnum = pgEnum('file_status', ['pending', 'active', 'deleted']);
 export const jobStatusEnum = pgEnum('job_status', ['pending', 'running', 'done', 'failed', 'dead']);
 /**
@@ -7300,6 +7311,11 @@ export const mechRequests = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    // Completion waits for an approved or waived lessor receipt (lessor receipt plan, P3). Set by
+    // the server at `new → confirmed` and by attaching a receipt, never cleared: `false` is a rental
+    // taken into work before the release (or by the old code in the deploy window) and is not
+    // gated. A column, not a date cutoff: an old rental that later got a receipt must be gated too.
+    lessorReceiptRequired: boolean('lessor_receipt_required').notNull().default(false),
     // Архив по ADR 0070: мягкое удаление, восстановление и `records.purge`.
     deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
@@ -7506,6 +7522,93 @@ export const mechRequestExtensions = pgTable(
       'mech_request_extensions_rejection_reason_check',
       sql`${t.status} <> 'rejected' OR btrim(${t.decisionComment}) <> ''`,
     ),
+  }),
+);
+
+// ── The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P1; migration
+// "mech_lessor_receipts") ──
+// One row per version: O4 says one file, O8 says every version stays openable, and both hold when
+// the request has one CURRENT row (`retiredAt` empty, at most one per request) and retired ones. The
+// decision columns answer "what was decided", the retire columns "why it is no longer current".
+// Named in `file_is_linked(uuid)` by the same migration: retired versions stay linked (O8).
+export const mechRequestLessorReceipts = pgTable(
+  'mech_request_lessor_receipts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // A «Новая» with versions is archived, never hard-deleted (`mechDeleteScope`); hard delete of
+    // one without versions and purge cascade the rows.
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => mechRequests.id, { onDelete: 'cascade' }),
+    // Computed under the request's row lock; the unique pair is the backstop.
+    versionNo: integer('version_no').notNull(),
+    // RESTRICT, unlike the attachment links: the row carries a decision, and a bug that tries to
+    // delete a linked file must fail loudly. Empty exactly for a waiver.
+    fileId: uuid('file_id').references(() => files.id, { onDelete: 'restrict' }),
+    status: mechLessorReceiptStatusEnum('status').notNull(),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    // `lessor` or `office`, fixed at insert: the lessor's view shows this word instead of a name,
+    // and deriving it from the author's account later would relabel old versions.
+    createdAs: text('created_as').$type<'lessor' | 'office'>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    decidedBy: uuid('decided_by').references(() => users.id, { onDelete: 'restrict' }),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decisionComment: text('decision_comment').notNull().default(''),
+    retiredAt: timestamp('retired_at', { withTimezone: true }),
+    retiredBy: uuid('retired_by').references(() => users.id, { onDelete: 'restrict' }),
+    retiredReason: text('retired_reason').$type<
+      'replaced' | 'deal_changed' | 'rolled_back' | 'revoked'
+    >(),
+  },
+  (t) => ({
+    fileUnique: unique('mech_request_lessor_receipts_file_id_key').on(t.fileId),
+    versionUnique: unique('mech_lessor_receipts_version_unique').on(t.requestId, t.versionNo),
+    versionPositive: check('mech_lessor_receipts_version_check', sql`${t.versionNo} > 0`),
+    createdAs: check(
+      'mech_lessor_receipts_created_as_check',
+      sql`${t.createdAs} IN ('lessor', 'office')`,
+    ),
+    file: check(
+      'mech_lessor_receipts_file_check',
+      sql`(${t.status} = 'waived') = (${t.fileId} IS NULL)`,
+    ),
+    // Only the office waives, and a waiver is born decided by its author (P6).
+    waiver: check(
+      'mech_lessor_receipts_waiver_check',
+      sql`${t.status} <> 'waived' OR (${t.createdAs} = 'office' AND ${t.decidedBy} = ${t.createdBy})`,
+    ),
+    decision: check(
+      'mech_lessor_receipts_decision_check',
+      sql`(${t.decidedBy} IS NULL) = (${t.decidedAt} IS NULL)`,
+    ),
+    pending: check(
+      'mech_lessor_receipts_pending_check',
+      sql`(${t.status} = 'pending') = (${t.decidedAt} IS NULL)`,
+    ),
+    reason: check(
+      'mech_lessor_receipts_reason_check',
+      sql`${t.status} NOT IN ('rejected', 'waived') OR btrim(${t.decisionComment}) <> ''`,
+    ),
+    retired: check(
+      'mech_lessor_receipts_retired_check',
+      sql`num_nonnulls(${t.retiredAt}, ${t.retiredBy}, ${t.retiredReason}) IN (0, 3)`,
+    ),
+    retiredReason: check(
+      'mech_lessor_receipts_retired_reason_check',
+      sql`${t.retiredReason} IS NULL OR ${t.retiredReason} IN ('replaced', 'deal_changed', 'rolled_back', 'revoked')`,
+    ),
+    // A revoked file version goes back to `pending`; only a waiver is retired by revocation (P5).
+    revoked: check(
+      'mech_lessor_receipts_revoked_check',
+      sql`${t.retiredReason} IS DISTINCT FROM 'revoked' OR ${t.status} = 'waived'`,
+    ),
+    // At most one current version. Inserts follow an explicit retire under the request's lock, never
+    // `ON CONFLICT`: an upsert would have to repeat this predicate to be inferred.
+    currentUnique: uniqueIndex('mech_lessor_receipts_current_unique')
+      .on(t.requestId)
+      .where(sql`${t.retiredAt} IS NULL`),
   }),
 );
 
