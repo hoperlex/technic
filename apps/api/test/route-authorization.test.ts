@@ -105,7 +105,8 @@ interface RouteInfo {
   authz: string[];
   requiresLogin: boolean;
   /**
-   * Marks of the route's own `preValidation` hooks. Read after the app is built, not in `onRoute`:
+   * Marks of the route's own `preValidation` hooks, in order (`UNMARKED` for a hook without one).
+   * Read after the app is built, not in `onRoute`:
    * a module installs its guard by an `onRoute` hook of its own instance, which runs after this
    * file's root hook on the same options object.
    */
@@ -167,11 +168,17 @@ function handlersOf(route: RouteOptions): Record<string, unknown>[] {
   return (Array.isArray(pre) ? pre : [pre]) as unknown as Record<string, unknown>[];
 }
 
+/**
+ * The route's own `preValidation` hooks in their order, each by its mark; a hook without one is
+ * `UNMARKED`, not dropped — the guard must be FIRST, and dropping the unmarked would hide a hook
+ * that runs before it.
+ */
+const UNMARKED = '<unmarked>';
 function validatorMarksOf(route: RouteOptions): string[] {
   const hooks = route.preValidation;
   if (!hooks) return [];
-  return ((Array.isArray(hooks) ? hooks : [hooks]) as unknown as Record<string, unknown>[]).flatMap(
-    (h) => (h.authz ? [String(h.authz)] : []),
+  return ((Array.isArray(hooks) ? hooks : [hooks]) as unknown as Record<string, unknown>[]).map(
+    (h) => (h.authz ? String(h.authz) : UNMARKED),
   );
 }
 
@@ -373,12 +380,14 @@ describe('авторизация маршрутов', () => {
    * instance. A mechanization route registered on another instance would not get it and would
    * open to the lessor on his permission alone — this check is what catches that.
    */
-  it('every mechanization route carries the lessor door guard', () => {
+  it('every mechanization route carries the lessor door guard as its first preValidation', () => {
     const mech = routes.filter((r) => r.url.startsWith('/api/v1/mech-requests'));
     expect(mech.length).toBeGreaterThan(30);
+    // FIRST, not merely present: a hook of the route placed before the guard would run for the
+    // lessor before he is refused — whatever it reads or writes, it would do it for him.
     const unguarded = mech
-      .filter((r) => !r.validators.includes(MECH_LESSOR_DOOR_GUARD))
-      .map((r) => r.key);
+      .filter((r) => r.validators[0] !== MECH_LESSOR_DOOR_GUARD)
+      .map((r) => `${r.key}: [${r.validators.join(', ')}]`);
     expect(unguarded).toEqual([]);
     const elsewhere = routes
       .filter((r) => !r.url.startsWith('/api/v1/mech-requests'))
