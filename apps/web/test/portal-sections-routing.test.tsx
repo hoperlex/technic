@@ -154,6 +154,22 @@ describe('вход приводит в раздел роли, а не на сл�
     expect(sectionMenuLabels()).toEqual(['Заказ ТС', 'Путевые листы', 'Гараж']);
   });
 
+  it('a mechanization lessor lands in «Механизация», his only section', async () => {
+    // His accounts appear with the receipt release (lessor receipt plan, W4): the registry, not a
+    // list of his own, makes mechanization his start page and his whole menu.
+    renderPortal(
+      authUser({
+        id: 'user-lessor',
+        role: 'operator',
+        counterpartyType: 'mech_lessor',
+        counterpartyId: 'cp-mech-7',
+      }),
+    );
+
+    expect(await screen.findByText(sectionPage('Механизация'))).toBeDefined();
+    expect(sectionMenuLabels()).toEqual(['Механизация']);
+  });
+
   it('водитель приземляется в кабинет: разделов основного портала у роли нет', async () => {
     renderPortal(authUser({ id: 'user-driver', role: 'driver' }));
     expect(await screen.findByText(CABINET)).toBeDefined();

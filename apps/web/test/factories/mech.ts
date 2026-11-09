@@ -1,4 +1,9 @@
-import type { MechRequestDto, MechRequestSummaryDto } from '@technic/contracts';
+import type {
+  MechLessorReceiptVersionView,
+  MechLessorRentalDto,
+  MechRequestDto,
+  MechRequestSummaryDto,
+} from '@technic/contracts';
 
 /**
  * A mechanization rental request (`GET /mech-requests`). The default is a new request of a site
@@ -60,4 +65,61 @@ export function mechRequest(overrides: Partial<MechRequestDto> = {}): MechReques
 /** `GET /mech-requests/summary`: the counters above the list, everything zero by default. */
 export function mechSummary(overrides: Partial<MechRequestSummaryDto> = {}): MechRequestSummaryDto {
   return { pending: 0, awaitingIssue: 0, rental: 0, overdue: 0, ...overrides };
+}
+
+/**
+ * A receipt version as the mechanization lessor sees it (lessor receipt plan, P12): his own upload,
+ * waiting for the visa — no names and no reason but a rejection's are in this shape at all.
+ */
+export function mechLessorReceiptView(
+  overrides: Partial<MechLessorReceiptVersionView> = {},
+): MechLessorReceiptVersionView {
+  return {
+    id: 'lrv-1',
+    versionNo: 1,
+    status: 'pending',
+    file: { id: 'f-lr-1', filename: 'чек-1.pdf', contentType: 'application/pdf', size: 1024 },
+    createdAs: 'lessor',
+    createdAt: '2026-11-05T08:00:00.000Z',
+    decidedAt: null,
+    rejectionReason: null,
+    retiredAt: null,
+    retiredReason: null,
+    ...overrides,
+  };
+}
+
+/**
+ * `GET /mech-requests/lessor-rentals[/:id]`: a running rental of the lessor taken into work after the
+ * receipt's release, no receipt yet — the state in which his page asks him to act.
+ */
+export function mechLessorRental(
+  overrides: Partial<MechLessorRentalDto> = {},
+): MechLessorRentalDto {
+  return {
+    id: 'mech-1',
+    num: 42,
+    displayNumber: 'МХ-42',
+    version: 7,
+    status: 'confirmed',
+    mechModelName: 'Виброплита реверсивная Wacker DPU 3070Н',
+    objectName: 'ЖК Северный',
+    objectAddress: 'г. Москва, ул. Северная, 1',
+    plannedFrom: '2026-11-02',
+    plannedTo: '2026-11-20',
+    actualFrom: '2026-11-02',
+    actualTo: null,
+    rate: 1500,
+    rateUnit: 'shift',
+    responsibleName: 'Петров П. П.',
+    responsiblePhone: '9000000000',
+    lessorReceipt: {
+      audience: 'lessor',
+      required: true,
+      current: null,
+      retired: [],
+      ownVersionCount: 0,
+    },
+    ...overrides,
+  };
 }

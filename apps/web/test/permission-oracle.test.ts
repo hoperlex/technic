@@ -21,6 +21,7 @@ import {
   canUseServiceBulk,
   isWaitingOn,
   mechLessorReceiptAccess,
+  MECH_LESSOR_RECEIPT_LESSOR_CAP,
   MODULE_GRANTS,
   PERMISSIONS,
   permissionsFor,
@@ -35,6 +36,7 @@ import {
 } from '@technic/contracts';
 import { permissionChecks } from '@entities/session';
 import { vehicleRequestDateRules } from '@entities/vehicle-request';
+import { mechLessorRentalAccess } from '../src/pages/mech/lessor/lessorRental';
 import { mechMenuItems } from '../src/pages/mech/mechRequestMenu';
 import { serviceGridView } from '../src/pages/service/serviceRequestGrid';
 import { serviceRequestExtraItems } from '../src/pages/service/serviceRequestExtras';
@@ -49,7 +51,7 @@ import {
   serviceExecutorAssignment,
 } from '../src/pages/service/serviceRequestRow';
 import { authUser } from './factories/auth';
-import { mechRequest } from './factories/mech';
+import { mechLessorReceiptView, mechLessorRental, mechRequest } from './factories/mech';
 import { assignedServiceRequest, serviceRequest, SERVICE_COUNTERPARTY } from './factories/service';
 
 /**
@@ -194,18 +196,36 @@ const serverOracle =
     matrixCan(user, permission);
 
 /**
+ * The mechanization lessor's own counterparty (lessor receipt plan, W4). Not the service company's:
+ * one id shared by every counterparty subject made the lessor the lessor of rentals only by an
+ * accident of the fixtures, and a rental of another lessor could not be told from his own.
+ */
+const MECH_LESSOR_COUNTERPARTY = 'cp-mech-lessor';
+/** Another mechanization lessor: his rentals must give the subject nothing. */
+const OTHER_MECH_LESSOR = 'cp-mech-other';
+
+/** Each executor works for the counterparty whose requests the fixtures assign to him. */
+function counterpartyOf(subject: AccessSubject): string | null {
+  if (!subject.counterpartyType) return null;
+  return subject.counterpartyType === 'mech_lessor'
+    ? MECH_LESSOR_COUNTERPARTY
+    : SERVICE_COUNTERPARTY.id;
+}
+
+/**
  * The account as production ships it for a subject: its fields and the list the server computed
  * (`permissionsFor`, pinned to the session builder by G1). The scope is fixed so that the scope
  * branches of the predicates are walked: own site `obj-1`, own department `dep-1` placed on it. The
- * id is the named executor of `assignedServiceRequest`, and the counterparty is the assigned one,
- * so executor branches are reachable for every subject that may take them.
+ * id is the named executor of `assignedServiceRequest`, and the counterparty is the one the
+ * fixtures assign — the service company's for a service, his own for a mechanization lessor — so
+ * executor branches are reachable for every subject that may take them.
  */
 function shipped(subject: AccessSubject): AuthUser {
   return authUser({
     id: 'user-9',
     role: subject.role,
     counterpartyType: subject.counterpartyType ?? null,
-    counterpartyId: subject.counterpartyType ? SERVICE_COUNTERPARTY.id : null,
+    counterpartyId: counterpartyOf(subject),
     addons: [...(subject.addons ?? [])],
     grantCodes: [...(subject.grantCodes ?? [])],
     grantPermissions: [...(subject.grantPermissions ?? [])],
@@ -298,9 +318,9 @@ function receiptVersion(
 }
 
 /*
- * A running rental taken into work after the receipt's release. Its lessor `cp-1` is the
- * counterparty `shipped()` gives every counterparty subject, so the mechanization lessor's branch
- * of `mechLessorReceiptAccess` (his own rental, the replace rule of O13) is walked as well.
+ * A running rental taken into work after the receipt's release. Its lessor is the mechanization
+ * lessor subject's own counterparty, so his branch of `mechLessorReceiptAccess` (his own rental,
+ * the replace rule of O13) is walked; one rental of another lessor below walks the refusal.
  */
 const receiptRental = (
   lessorReceipt: MechLessorReceiptVersionDto | null,
@@ -309,7 +329,7 @@ const receiptRental = (
   mechRequest({
     status: 'confirmed',
     approvedAt: '2026-08-02T08:00:00.000Z',
-    lessorId: 'cp-1',
+    lessorId: MECH_LESSOR_COUNTERPARTY,
     lessorType: 'mech_lessor',
     actualFrom: '2026-08-03',
     lessorReceiptRequired: true,
@@ -362,6 +382,8 @@ const MECH_REQUESTS: readonly MechRequestDto[] = [
   // circle and the "decide a cancelled one" rule of P5.
   receiptRental(receiptVersion('pending'), { departmentId: 'dep-1' }),
   receiptRental(receiptVersion('pending'), { status: 'cancelled', actualFrom: null }),
+  // A rental of another lessor with a receipt to replace: the lessor subject gets nothing here.
+  receiptRental(receiptVersion('pending'), { lessorId: OTHER_MECH_LESSOR }),
 ];
 
 const noop = () => {};
@@ -403,6 +425,49 @@ function mechMenu(user: AuthUser, can: Can): unknown {
       },
     }).map((item) => (item.disabled ? `${item.key} (disabled)` : item.key)),
   }));
+}
+
+/*
+ * The mechanization lessor's own page (lessor receipt plan, W4): his rentals in his allow-listed DTO,
+ * the receipt in every state a lessor may meet, and one at his cap. The page builds its button from
+ * `mechLessorReceiptAccess` over the session's list like every other screen.
+ */
+const LESSOR_RENTALS = [
+  mechLessorRental(),
+  ...(['pending', 'rejected', 'approved'] as const).map((status) =>
+    mechLessorRental({
+      lessorReceipt: {
+        audience: 'lessor',
+        required: true,
+        current: mechLessorReceiptView({ status }),
+        retired: [],
+        ownVersionCount: 1,
+      },
+    }),
+  ),
+  mechLessorRental({
+    lessorReceipt: {
+      audience: 'lessor',
+      required: true,
+      current: mechLessorReceiptView({ status: 'waived', file: null, createdAs: 'office' }),
+      retired: [],
+      ownVersionCount: 0,
+    },
+  }),
+  mechLessorRental({
+    lessorReceipt: {
+      audience: 'lessor',
+      required: true,
+      current: mechLessorReceiptView({ status: 'rejected' }),
+      retired: [],
+      ownVersionCount: MECH_LESSOR_RECEIPT_LESSOR_CAP,
+    },
+  }),
+];
+
+/** The lessor page's receipt button over each of his rentals. */
+function mechLessorPage(user: AuthUser, can: Can): unknown {
+  return LESSOR_RENTALS.map((rental) => mechLessorRentalAccess(user, rental, can));
 }
 
 /** The office equipment list's column set (`serviceGridView`). */
@@ -514,10 +579,17 @@ function remainingPredicates(user: AuthUser, can: Can): unknown {
 
 type Screen = (user: AuthUser, can: Can) => unknown;
 type ScreenName =
-  'calendar' | 'mechMenu' | 'serviceGrid' | 'serviceExtras' | 'serviceMenu' | 'remainingPredicates';
+  | 'calendar'
+  | 'mechMenu'
+  | 'mechLessorPage'
+  | 'serviceGrid'
+  | 'serviceExtras'
+  | 'serviceMenu'
+  | 'remainingPredicates';
 const SCREEN_NAMES: readonly ScreenName[] = [
   'calendar',
   'mechMenu',
+  'mechLessorPage',
   'serviceGrid',
   'serviceExtras',
   'serviceMenu',
@@ -527,6 +599,7 @@ const SCREEN_NAMES: readonly ScreenName[] = [
 const SHIPPED_SCREENS: Record<ScreenName, Screen> = {
   calendar,
   mechMenu,
+  mechLessorPage,
   serviceGrid,
   serviceExtras,
   serviceMenu,
@@ -551,6 +624,49 @@ describe('the portal answers what the server answers, profile by profile (ADR 02
 
   it('the sweep covers every access profile and the catalogue grants', () => {
     expect(SUBJECTS.length).toBeGreaterThan(ACCESS_PROFILES.length);
+  });
+
+  /*
+   * The equality alone would stay green if the lessor's branch were never reached — a lessor who
+   * attaches to nothing agrees with the server just as well. So the sweep is pinned to walk it: the
+   * subject is in the profiles, works for his own counterparty, attaches to his rentals and to no
+   * other lessor's, and replaces only what O13 lets him.
+   */
+  it('walks the mechanization lessor with a counterparty of his own', () => {
+    const subject = ACCESS_PROFILES.find(
+      (profile) => profile.role === 'operator' && profile.counterpartyType === 'mech_lessor',
+    );
+    expect(subject).toBeDefined();
+    const user = shipped(subject!);
+    expect(user.counterpartyId).toBe(MECH_LESSOR_COUNTERPARTY);
+    expect(user.counterpartyId).not.toBe(SERVICE_COUNTERPARTY.id);
+    const { can } = permissionChecks(user);
+    const access = (request: MechRequestDto) =>
+      mechLessorReceiptAccess(user, { ...request, lessorVersionCount: 0 }, can);
+
+    const own = MECH_REQUESTS.filter(
+      (request) => request.lessorId === MECH_LESSOR_COUNTERPARTY && request.status === 'confirmed',
+    );
+    const replaceable = own.filter((request) =>
+      ['pending', 'rejected'].includes(request.lessorReceipt?.status ?? ''),
+    );
+    expect(replaceable.length).toBeGreaterThan(0);
+    for (const request of replaceable) expect(access(request)).toMatchObject({ replace: true });
+    for (const request of own.filter((r) => r.lessorReceipt?.status === 'approved')) {
+      expect(access(request)).toMatchObject({ attach: false, replace: false });
+    }
+    const foreign = MECH_REQUESTS.filter((request) => request.lessorId === OTHER_MECH_LESSOR);
+    expect(foreign.length).toBeGreaterThan(0);
+    for (const request of foreign) expect(access(request).attach).toBe(false);
+
+    expect(mechLessorPage(user, can)).toEqual([
+      expect.objectContaining({ attach: true, replace: false }),
+      expect.objectContaining({ attach: true, replace: true }),
+      expect.objectContaining({ attach: true, replace: true }),
+      expect.objectContaining({ attach: false }),
+      expect.objectContaining({ attach: false }),
+      expect.objectContaining({ attach: false }),
+    ]);
   });
 
   it.each(SCREEN_NAMES)('%s: as production ships the account', (name) => {
