@@ -197,15 +197,14 @@ export const GRANT_SCOPE_MATRIX: Record<PermissionModule, Record<RoleScopeAxis, 
   },
 
   /**
-   * Mechanization (plan `docs/mechanization-module-plan.md`, R10) — the scope is **one** column,
-   * `object_id`, the site of use: the object axis compares it with its own objects, the department
-   * axis with its departments' sites (ADR 0062, ADR 0144). The predicates are the waste module's —
-   * `placeObjectVisibilityWhere` and `assertPlaceObjectScope` — taken as they are, not copied: the
-   * axis is the same in both modules.
+   * Mechanization (plan `docs/mechanization-module-plan.md`, R10) — the site axes compare `object_id`,
+   * the site of use: the object axis with its own objects, the department axis with its departments'
+   * sites (ADR 0062, ADR 0144), by the waste module's predicates taken as they are. The module's own
+   * `mechScopeWhere` / `assertMechScope` add the lessor's counterparty (lessor receipt plan, P11).
    *
-   * The counterparty cell is `forbidden`, and it stays so after mechanization lessors get accounts
-   * and a scope predicate of their own (lessor receipt plan, P10) — the rule "scoped iff a predicate
-   * exists" does not apply to it. The lessor's powers are exactly his counterparty type's list (read
+   * The counterparty cell is `forbidden`, and it stays so although mechanization lessors have
+   * accounts and a scope predicate of their own (lessor receipt plan, P10) — the rule "scoped iff a
+   * predicate exists" does not apply to it. The lessor's powers are exactly his counterparty type's list (read
    * and attach a receipt) over a narrow view built for him. A set with `.status`, `.update`,
    * `.extend` or `.approve` given to the executor role would open write doors that answer with the
    * full request and predicates that know nothing of that narrow view: the lessor would see the

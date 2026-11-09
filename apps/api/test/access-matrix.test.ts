@@ -153,6 +153,10 @@ const DECLARED_PROFILE_KEYS = [
   'operator/operator',
   'operator/vehicle_lessor',
   'operator/service',
+  // The mechanization lessor (lessor receipt plan, P10): the fourth type with accounts. His only
+  // module is his rentals; the executor role's base `directories.read` opens him the directories as
+  // it does every executor (owner decision O16).
+  'operator/mech_lessor',
   'observer',
   'driver',
   // Служба главного механика: своей оси области у обеих ролей нет — парк они смотрят целиком.
@@ -659,6 +663,7 @@ const CASES: Case[] = [
       'operator/operator',
       'operator/vehicle_lessor',
       'operator/service',
+      'operator/mech_lessor',
       'observer',
       ...MECHANICS,
     ],
@@ -680,6 +685,7 @@ const CASES: Case[] = [
       'operator/operator',
       'operator/vehicle_lessor',
       'operator/service',
+      'operator/mech_lessor',
       'observer',
       ...MECHANICS,
     ],
@@ -703,6 +709,7 @@ const CASES: Case[] = [
       'operator/operator',
       'operator/vehicle_lessor',
       'operator/service',
+      'operator/mech_lessor',
       'observer',
       ...MECHANICS,
     ],
@@ -790,6 +797,7 @@ const CASES: Case[] = [
       'operator/operator',
       'operator/vehicle_lessor',
       'operator/service',
+      'operator/mech_lessor',
       'observer',
       ...MECHANICS,
     ],
@@ -1576,6 +1584,42 @@ const CASES: Case[] = [
     allowed: ['admin'],
   },
 
+  // ── Mechanization and its lessor (lessor receipt plan, P10–P12) ──
+  //
+  // The lessor reaches his three doors and nothing else of the module: the door guard refuses an
+  // executor before the route's permission is asked (P11), so the office list is closed to him
+  // although he holds `mechRequests.read`, and his own reads are closed to the office by their
+  // handler although it holds the same permission.
+  {
+    title: 'механизация — список заявок',
+    method: 'GET',
+    url: '/api/v1/mech-requests',
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'commandant',
+      'department',
+      'department_head',
+      'observer',
+    ],
+  },
+  {
+    title: 'механизация — аренды арендодателя',
+    method: 'GET',
+    url: '/api/v1/mech-requests/lessor-rentals',
+    allowed: ['operator/mech_lessor'],
+  },
+  {
+    title: 'механизация — прикрепить чек арендодателя',
+    method: 'POST',
+    url: `/api/v1/mech-requests/${RECORD_ID}/lessor-receipt`,
+    payload: { fileId: RECORD_ID, version: 1 },
+    allowed: ['admin', 'manager', 'dispatcher', 'operator/mech_lessor'],
+  },
+
   // ── Файлы: доступ определяется связанной заявкой, а не ролью (authorizeInHandler) ──
   {
     title: 'файл — ссылка на скачивание',
@@ -1594,6 +1638,7 @@ const CASES: Case[] = [
       'operator/operator',
       'operator/vehicle_lessor',
       'operator/service',
+      'operator/mech_lessor',
       'observer',
       // Водитель (ADR 0102) ходит теми же ручками: он грузит фотографии показаний и открывает
       // свои. Права роли тут ни при чём — доступ решает связь файла (Р34), и для чужого снимка

@@ -1444,17 +1444,22 @@ export const COUNTERPARTY_TYPE_PERMISSIONS: Record<CounterpartyType, readonly Pe
   // площадка решает за себя сама, а состав документа он видит только своими строками.
   vehicle_lessor: ['vehicleRequests.read', 'vehicleRequests.status', 'weeklyRequests.read'],
   /*
-   * Арендодатель механизации (план `docs/mechanization-module-plan.md`, Р6) — **пустой список, и
-   * это решение, а не заготовка**: учёток за таким контрагентом не заводят вовсе, вход в портал
-   * ему не открывают, а строка справочника нужна затем, чтобы заявка знала, кому звонить, и чтобы
-   * деньги складывались по арендодателям.
+   * The mechanization lessor (lessor receipt plan, P10, owner decision O6): sees his rentals «В
+   * работе» in a narrow card and attaches their receipts. This reverses ADR 0152 decision 6 ("no
+   * accounts"); the list being non-empty is what makes his accounts creatable
+   * (`COUNTERPARTY_TYPES_WITH_ACCOUNTS`, the account form, `resolveCounterpartyId`).
    *
-   * Пустота здесь работает: `COUNTERPARTY_TYPES_WITH_ACCOUNTS` считается из непустых списков, и
-   * форма учётки такого контрагента не предложит. Впиши сюда `mechRequests.read` — и появился бы
-   * вход, которого никто не заводил, с областью, которой у модуля нет: своего предиката по
-   * арендодателю механизация не имеет, аренду видно по площадке.
+   * **The list could land only after the module's scope** (plan W2, step 7 after step 6): the module
+   * refuses every executor by default (`routes/mech-lessor-door.ts`) except on his three marked
+   * doors, the lessor axis stands behind it (`mechScopeWhere`, `assertMechScope`), and his reads
+   * answer with an allow-list DTO. Without those, `.read` alone would have shown him every rental
+   * and file of the company — the module's only axis was the site.
+   *
+   * Nothing can widen it: the grant matrix keeps the mechanization counterparty cell `forbidden`
+   * (`grant-scope.ts`), so no set gives the executor role any `mechRequests.*`. No `.status` here
+   * either: the executor status boundary of `cycleTransitions` stays unreachable for mechanization.
    */
-  mech_lessor: [],
+  mech_lessor: ['mechRequests.read', 'mechRequests.lessorReceipt'],
   // Поставщик (ADR 0051) — сторона договора поставки: в портале за него никто не работает, его
   // склады ведут изнутри. Пустой список, как у генподрядчика и подрядчика; появится у поставщика
   // свой модуль — он будет строкой здесь, а не новой ролью.

@@ -43,6 +43,8 @@ const wasteOperator: AccessSubject = { role: 'operator', counterpartyType: 'oper
 const vehicleLessor: AccessSubject = { role: 'operator', counterpartyType: 'vehicle_lessor' };
 /** Сервисная компания (ADR 0085) — третий тип с учётками: исполнитель заявок на обслуживание. */
 const serviceCompany: AccessSubject = { role: 'operator', counterpartyType: 'service' };
+/** The mechanization lessor (lessor receipt plan, P10) — the fourth type with accounts. */
+const mechLessor: AccessSubject = { role: 'operator', counterpartyType: 'mech_lessor' };
 
 /** Заказчики модуля обслуживания (ADR 0085): площадка и офис — по две роли с каждой стороны. */
 const SERVICE_CUSTOMER_ROLES: Role[] = ['shtab', 'rukstroy', 'department', 'department_head'];
@@ -1013,12 +1015,14 @@ describe('права внешнего исполнителя зависят от
   });
 
   it('учётки заводятся только на тех контрагентов, за которых кто-то работает', () => {
-    // Список полный и в порядке самого перечня типов: сервисная компания (ADR 0085) пришла сюда
-    // третьей — не строкой второго списка, а тем, что у типа появились права.
+    // The list is complete and in the order of the type enumeration itself: the service company
+    // (ADR 0085) came third and the mechanization lessor fourth (lessor receipt plan, P10) — not as
+    // lines of a second list, but because their types got permissions.
     expect([...COUNTERPARTY_TYPES_WITH_ACCOUNTS]).toEqual([
       'operator',
       'vehicle_lessor',
       'service',
+      'mech_lessor',
     ]);
     // Поставщик (ADR 0051) — сторона договора, а не исполнитель: учётки на него не заводятся,
     // и войти в портал «от поставщика» нельзя. Генподрядчик и подрядчик — там же: их сотрудники
@@ -1028,6 +1032,7 @@ describe('права внешнего исполнителя зависят от
       expect(counterpartyTypeHasAccounts(type), type).toBe(false);
     }
     expect(counterpartyTypeHasAccounts('service')).toBe(true);
+    expect(counterpartyTypeHasAccounts('mech_lessor')).toBe(true);
     expect(counterpartyTypeHasAccounts(null)).toBe(false);
     for (const type of COUNTERPARTY_TYPES) {
       const hasAccounts = COUNTERPARTY_TYPES_WITH_ACCOUNTS.includes(type);
@@ -1045,13 +1050,14 @@ describe('права внешнего исполнителя зависят от
   });
 
   it('профили доступа перечисляют исполнителя по разу на каждый тип контрагента', () => {
-    // Три профиля, а не два: тип с правами — это тип, за который в портале работают, и своим
-    // субъектом он обязан попасть в перебор «всех, кто бывает в портале». Перечислением, а не
-    // счётом: пропавший профиль означал бы субъекта, которого перестали проверять тесты доступа.
+    // Four profiles: a type with permissions is a type someone works for in the portal, and it must
+    // enter the sweep of "everyone who uses the portal" as its own subject. Listed, not counted: a
+    // lost profile would be a subject the access tests stopped checking.
     expect(ACCESS_PROFILES.filter((s) => s.role === 'operator')).toEqual([
       wasteOperator,
       vehicleLessor,
       serviceCompany,
+      mechLessor,
     ]);
     // Ровно по разу на тип с учётками — и в том же порядке: перечень профилей выводится из
     // матрицы, а не поддерживается вторым списком.

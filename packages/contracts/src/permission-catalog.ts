@@ -733,6 +733,12 @@ const SCOPE_RULES: readonly AccessScopeRule[] = [
     applies: (s) => isCounterpartyScopedRole(s.role) && s.counterpartyType === 'service',
     text: 'Видит только заявки на обслуживание, назначенные его компании',
   },
+  // The mechanization lessor (lessor receipt plan, P11, P12): his rentals «В работе» in a narrow
+  // card — the rest of the module answers him 403 whatever his permissions say.
+  {
+    applies: (s) => isCounterpartyScopedRole(s.role) && s.counterpartyType === 'mech_lessor',
+    text: 'Видит только аренды механизации своей компании в работе — без отдела, заявителя, вложений, денег и истории',
+  },
   /**
    * Четвёртая ось — работник справочника (ADR 0102 §5), и она самая узкая из четырёх. Правило здесь
    * такое же текстовое, как соседние, хотя предиката в `lib/access.ts` у оси нет: область держится

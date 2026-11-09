@@ -10,6 +10,7 @@ import {
   can,
   conflictingPermissions,
   COUNTERPARTY_SCOPED_ROLES,
+  COUNTERPARTY_TYPE_PERMISSIONS,
   createUserSchema,
   DEPARTMENT_SCOPED_ROLES,
   effectiveDelta,
@@ -51,6 +52,7 @@ import {
   updateUserSchema,
   validateGrantAssignment,
   type AccessSubject,
+  type CounterpartyType,
   type GrantScopeRule,
   type GrantViolation,
   type GrantViolationCode,
@@ -1810,13 +1812,13 @@ const SCOPED_AXES_BY_MODULE: Partial<Record<PermissionModule, readonly RoleScope
   vehicle: ['object', 'department', 'counterparty'],
   // weeklyRequestReadScope + assertWeeklyRequestScope: обе площадочные оси и арендодатель.
   weekly: ['object', 'department', 'counterparty'],
-  // Mechanization takes the waste module's predicates as they are — `placeObjectVisibilityWhere`
-  // and `assertPlaceObjectScope`: the module has one axis, `object_id` of the site of use (plan
-  // `docs/mechanization-module-plan.md`, R10). The counterparty axis stays out of this list even
-  // when the lessor gets accounts and his own predicate (lessor receipt plan, P10, P11): that
-  // predicate scopes a narrow view built for the lessor, not the module's doors, so the matrix cell
-  // stays `forbidden` and no set may hand an executor any `mechRequests.*` permission. The cell is
-  // a decision about sets, not the absence of a predicate.
+  // Mechanization: `mechScopeWhere` + `assertMechScope` — the site of use (`object_id`, plan
+  // `docs/mechanization-module-plan.md`, R10) by the waste module's predicates, and since the lessor
+  // receipt plan (P11) the lessor's counterparty by `mechLessorVisibilityWhere`. The counterparty
+  // axis still stays out of this list, and the cell `forbidden`, although the predicate exists: the
+  // cell is a decision about SETS (P10). The lessor's powers are exactly his type's list over doors
+  // built for him; a set for the executor role would reach every executor type, and `.status`,
+  // `.update`, `.extend` or `.approve` would open write doors that answer with the full request.
   mech: ['object', 'department'],
   // serviceRequestScopeWhere + assertServiceRequestScope, serviceExecutorVisibilityWhere.
   service: ['object', 'department', 'counterparty'],
@@ -1991,6 +1993,54 @@ describe('матрица «ось роли × модуль»', () => {
   });
 
   /**
+   * The one sanctioned exception to the check below (lessor receipt plan, P10): the mechanization
+   * lessor's own type list holds `mechRequests.read` and `.lessorReceipt`, while the `mech ×
+   * counterparty` cell stays `forbidden`. The cell decides about sets, and refusing a set here is
+   * the point, not a refusal that "closes nothing": his two permissions come from his type past
+   * every set, and nothing may be added to them. Named by type and module, so a second exception
+   * has to come through this file.
+   */
+  const TYPE_LIST_OVER_FORBIDDEN_CELL: Partial<Record<CounterpartyType, PermissionModule>> = {
+    mech_lessor: 'mech',
+  };
+  const isTypeListOverForbiddenCell = (profile: AccessSubject, permission: Permission): boolean => {
+    const type = profile.counterpartyType;
+    if (!type || TYPE_LIST_OVER_FORBIDDEN_CELL[type] !== PERMISSION_CATALOG[permission].module) {
+      return false;
+    }
+    return COUNTERPARTY_TYPE_PERMISSIONS[type].includes(permission);
+  };
+
+  /**
+   * The mechanization lessor's powers are exactly his type's list (lessor receipt plan, P10): every
+   * grantable `mechRequests.*` permission is refused to the executor role by barrier 3, in a set's
+   * contents and at assignment alike — and so is the whole executor role, whatever its type.
+   */
+  it('no set gives the executor role a mechanization permission (lessor receipt plan, P10)', () => {
+    expect(COUNTERPARTY_TYPE_PERMISSIONS.mech_lessor).toEqual([
+      'mechRequests.read',
+      'mechRequests.lessorReceipt',
+    ]);
+    expect(grantScopeRule('operator', 'mech')).toBe('forbidden');
+    const mech = PERMISSIONS.filter(
+      (permission) => PERMISSION_CATALOG[permission].module === 'mech' && isGrantable(permission),
+    );
+    expect(mech).toEqual(expect.arrayContaining(['mechRequests.status', 'mechRequests.approve']));
+    for (const permission of mech) {
+      const violations = validateGrantAssignment({
+        roles: ['operator'],
+        permissions: [permission],
+        subjectPermissionsAfter: null,
+        subjectRole: null,
+      });
+      expect(
+        violations.map((v) => v.code),
+        permission,
+      ).toEqual(['module_forbidden_for_axis']);
+    }
+  });
+
+  /**
    * **Матрица не спорит с уже открытыми данными.** `forbidden` в клетке, где роль с этой осью право
    * уже имеет, — не защита, а ошибка: запрет на выдачу того, что роль видит и без набора, отказал бы
    * администратору в наборе, ничего при этом не закрыв.
@@ -2012,6 +2062,7 @@ describe('матрица «ось роли × модуль»', () => {
       for (const permission of permissionsFor(profile)) {
         if (!isGrantable(permission)) continue;
         const { module } = PERMISSION_CATALOG[permission];
+        if (isTypeListOverForbiddenCell(profile, permission)) continue;
         expect(
           grantScopeRule(role, module),
           `${accessProfileLabel(profile)} уже имеет ${permission} (модуль «${module}»)`,

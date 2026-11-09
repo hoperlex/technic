@@ -133,6 +133,8 @@ const driver = (id = 'driver-user', personId: string | null = PERSON) =>
   principal('driver', id, null, personId);
 /** The chief mechanic's service (Р14): maintenance, and since ADR 0241 readings and vehicle requests. */
 const mechanic = (id = 'mechanic-user') => principal('mechanic', id);
+/** The mechanization lessor (lessor receipt plan, P10): his type's two permissions are his module. */
+const mechLessor = (id = 'other') => principal('operator', id, 'mech_lessor');
 
 const NOWHERE = {
   visibleWaste: false,
@@ -264,9 +266,33 @@ describe('mechanization lessor receipt (lessor receipt plan, P13)', () => {
     }
   });
 
+  /**
+   * The flag reaches him only for his own rental «В работе» and a version of its current deal; the
+   * attachment flag never does — `canAccessFile` does not even look for it for a mechanization
+   * lessor (P11, O7). Both are db cases in `mech-lessor-scope.db.test.ts`; here, that the flag he
+   * may get opens the file, and that his module is nothing else.
+   */
+  it('the mechanization lessor opens a receipt flagged for him, and no other module', () => {
+    const p = mechLessor();
+    expect(can(p, 'mechRequests.read')).toBe(true);
+    expect(decideFileAccess(p, UPLOADER, IN_MECH_LESSOR_RECEIPT)).toBe(true);
+    for (const linkage of [
+      IN_WASTE,
+      IN_VEHICLE,
+      IN_SERVICE,
+      IN_WAYBILL,
+      IN_MAINTENANCE,
+      IN_READING,
+      IN_INVISIBLE_REQUEST,
+    ]) {
+      expect(decideFileAccess(p, UPLOADER, linkage)).toBe(false);
+    }
+  });
+
   it('the uploader of a linked receipt keeps no key of his own', () => {
     // The lessor uploads his receipt, it is attached, and from then on only the rental's rules
     // open it: a closed rental or a changed deal must take the file away from him too.
+    expect(decideFileAccess(mechLessor(UPLOADER), UPLOADER, IN_INVISIBLE_REQUEST)).toBe(false);
     expect(decideFileAccess(vehicleLessor(UPLOADER), UPLOADER, IN_INVISIBLE_REQUEST)).toBe(false);
   });
 });
