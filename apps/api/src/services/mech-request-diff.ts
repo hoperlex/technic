@@ -2,11 +2,17 @@ import {
   formatPhone,
   type MechExtensionDropReason,
   mechExtensionDropReasonLabels,
+  type MechLessorReceiptDecision,
+  type MechLessorReceiptRetireReason,
+  type MechLessorReceiptStatus,
+  mechLessorReceiptRetireReasonLabels,
+  mechLessorReceiptStatusLabels,
   type MechRequestDto,
   mechRequesterOf,
   mechRateUnitLabels,
   mechUnitsLabel,
   type RequestChangeDto,
+  type RequestChangeFileDto,
 } from '@technic/contracts';
 import { changeSet, EMPTY, money, short } from './request-diff';
 
@@ -235,6 +241,86 @@ export function mechExtendRejectChanges(reason: string): RequestChangeDto[] {
 export function mechExtendDropChanges(reason: MechExtensionDropReason): RequestChangeDto[] {
   const diff = changeSet();
   diff.listed('extendDropReason', [mechExtensionDropReasonLabels[reason]]);
+  return diff.changes;
+}
+
+// ── The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P9) ──
+//
+// Six strict events, one history kind each. The version number goes as a list row — a version has no
+// "before" — so the history line names the version the receipt block lists. A replaced version is
+// named with the status it had: a replaced approval must read as one, since replacing an approved
+// receipt asks for a new visa.
+
+type ReplacedLessorReceipt = { versionNo: number; status: MechLessorReceiptStatus } | null;
+
+function replacedText(replaced: NonNullable<ReplacedLessorReceipt>): string {
+  return `${replaced.versionNo} — ${mechLessorReceiptStatusLabels[replaced.status]}`;
+}
+
+/**
+ * Attached or replacing (`mech_request.lessor_receipt_attach`). The file goes as a file list with
+ * its id (`filesAdded`), so the history line opens the version (O8) and a quarantine set later hides
+ * its name at reading time, like every file in the history.
+ */
+export function mechLessorReceiptAttachChanges(
+  versionNo: number,
+  file: RequestChangeFileDto,
+  replaced: ReplacedLessorReceipt,
+): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.listed('lessorReceiptVersion', [String(versionNo)]);
+  diff.fileList('filesAdded', [file]);
+  if (replaced) diff.listed('lessorReceiptReplaced', [replacedText(replaced)]);
+  return diff.changes;
+}
+
+/**
+ * A decision of the visa holder (`.lessor_receipt_approve`, `_reject`, `_revoke`). A revocation names
+ * what it withdrew — an approval or a «без чека» visa — because afterwards the row reads `pending`
+ * or retired, and only this event remembers the decision that was there.
+ */
+export function mechLessorReceiptDecisionChanges(
+  decision: MechLessorReceiptDecision,
+  versionNo: number,
+  comment: string,
+  revoked: MechLessorReceiptStatus,
+): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.listed('lessorReceiptVersion', [String(versionNo)]);
+  if (decision === 'approve' && comment) diff.listed('lessorReceiptApproveComment', [comment]);
+  if (decision === 'reject') diff.listed('lessorReceiptRejectReason', [comment]);
+  if (decision === 'revoke') {
+    diff.listed('lessorReceiptRevoked', [revoked === 'waived' ? '«без чека»' : 'утверждение']);
+    diff.listed('lessorReceiptRevokeReason', [comment]);
+  }
+  return diff.changes;
+}
+
+/** The «без чека» visa (`.lessor_receipt_waive`): the reason, and the version it replaced. */
+export function mechLessorReceiptWaiveChanges(
+  versionNo: number,
+  reason: string,
+  replaced: ReplacedLessorReceipt,
+): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.listed('lessorReceiptVersion', [String(versionNo)]);
+  diff.listed('lessorReceiptWaiveReason', [reason]);
+  if (replaced) diff.listed('lessorReceiptReplaced', [replacedText(replaced)]);
+  return diff.changes;
+}
+
+/**
+ * The current version dropped by the deal (`.lessor_receipt_retire`): a deal change or a return to
+ * «Новая» (P8). Its own event, because the deal's event says the terms changed, not that the
+ * receipt issued under them stopped counting.
+ */
+export function mechLessorReceiptRetireChanges(
+  versionNo: number,
+  reason: Extract<MechLessorReceiptRetireReason, 'deal_changed' | 'rolled_back'>,
+): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.listed('lessorReceiptVersion', [String(versionNo)]);
+  diff.listed('lessorReceiptRetireReason', [mechLessorReceiptRetireReasonLabels[reason]]);
   return diff.changes;
 }
 

@@ -2,11 +2,23 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type {
-  MechLessorReceiptFilter,
-  MechLessorReceiptRetireReason,
-  MechLessorReceiptStatus,
-  MechRequestDto,
+import {
+  MECH_LESSOR_RECEIPT_CONTENT_TYPE_MESSAGE,
+  MECH_LESSOR_RECEIPT_NOT_IN_WORK_MESSAGE,
+  MECH_LESSOR_RECEIPT_REVOKE_NOT_IN_WORK_MESSAGE,
+  MECH_LESSOR_RECEIPT_SCOPE_MESSAGE,
+  MECH_LESSOR_RECEIPT_STALE_MESSAGE,
+  MECH_LESSOR_RECEIPT_WAIVER_APPROVED_MESSAGE,
+  MECH_LESSOR_RECEIPT_WAIVER_NOT_IN_WORK_MESSAGE,
+  MECH_LESSOR_RECEIPT_WAIVER_REPEATED_MESSAGE,
+  moscowDateKeyOf,
+  shiftDateKey,
+  type MechLessorReceiptFilter,
+  type MechLessorReceiptReplyDto,
+  type MechLessorReceiptRetireReason,
+  type MechLessorReceiptStatus,
+  type MechLessorReceiptVersionDto,
+  type MechRequestDto,
 } from '@technic/contracts';
 import { applyMigrations, listMigrationFiles, readMigration } from '../src/db/migration-journal';
 // Types only: the values of these modules are imported after the environment is set — the config
@@ -48,6 +60,15 @@ const EMAIL_PREFIX = `db-mech-lessor-receipt-${RUN}`;
 const CODE_PREFIX = `яя-MECHLR-${RUN}`;
 const GRANT_PREFIX = `test_mech_lessor_receipt_${RUN}`;
 
+const MARK = `ТЕСТОВЫЕ ДАННЫЕ: чек арендодателя механизации ${RUN}`;
+
+const TODAY = moscowDateKeyOf(new Date());
+const WEEK_AGO = shiftDateKey(TODAY, -7);
+const PLANNED_TO = shiftDateKey(TODAY, 10);
+
+/** The completion of a rental issued a week ago — what the status door asks for `done`. */
+const COMPLETION = { actualFrom: WEEK_AGO, actualTo: TODAY, actualUnits: 6, finalCost: 9000 };
+
 const MIGRATION_SUFFIX = '_mech_lessor_receipts.sql';
 
 /** The migration file, found by its suffix: the integrator may renumber it. */
@@ -85,12 +106,30 @@ interface Ctx {
   closeDb: () => Promise<void>;
   adminId: string;
   objectId: string;
+  otherObjectId: string;
+  departmentId: string;
+  lessorId: string;
+  modelId: string;
+}
+
+/** Who acts in the door suites, by role and scope (ADR 0171 decision 4 for the visa circle). */
+interface People {
+  /** The site's visa holder: files and signs the site's rentals. */
+  rukstroy: string;
+  /** A visa holder of another site: the permission without the scope. */
+  otherRukstroy: string;
+  /** The head of the department the site belongs to: signs his department's rentals only. */
+  head: string;
+  /** Runs rentals and attaches receipts; no visa. */
+  dispatcher: string;
 }
 
 type Headers = { authorization: string };
 type Injected = Awaited<ReturnType<Ctx['app']['inject']>>;
 
 let admin: Headers;
+let people: People;
+let auth: Record<keyof People, Headers>;
 
 let ctx: Ctx;
 let seq = 0;
@@ -122,7 +161,11 @@ async function migrate(databaseUrl: string): Promise<void> {
   }
 }
 
-async function newUser(tag: string, role: SchemaNs.UserRow['role']): Promise<string> {
+async function newUser(
+  tag: string,
+  role: SchemaNs.UserRow['role'],
+  scope: { objectIds?: string[]; departmentIds?: string[] } = {},
+): Promise<string> {
   seq += 1;
   const [row] = await ctx.db
     .insert(ctx.schema.users)
@@ -137,6 +180,16 @@ async function newUser(tag: string, role: SchemaNs.UserRow['role']): Promise<str
       emailVerifiedAt: new Date(),
     })
     .returning({ id: ctx.schema.users.id });
+  for (const objectId of scope.objectIds ?? []) {
+    await ctx.db
+      .insert(ctx.schema.userConstructionObjects)
+      .values({ userId: row!.id, constructionObjectId: objectId });
+  }
+  for (const departmentId of scope.departmentIds ?? []) {
+    await ctx.db
+      .insert(ctx.schema.userDepartments)
+      .values({ userId: row!.id, departmentId, isHead: true });
+  }
   return row!.id;
 }
 
@@ -157,8 +210,8 @@ function call(
   headers: Headers,
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   url: string,
-  payload?: unknown,
-) {
+  payload?: Record<string, unknown>,
+): Promise<Injected> {
   return ctx.app.inject({
     method,
     url: `/api/v1/mech-requests${url}`,
@@ -233,6 +286,138 @@ async function seedVersions(
   return ids;
 }
 
+/**
+ * A rental taken into work through the doors: filed by the site's visa holder (or by the department
+ * head for his department) — signed by the filing itself — and taken in by the administrator with
+ * the deal, issued a week ago unless `issued: false`.
+ */
+async function rental(
+  over: { department?: boolean; issued?: boolean } = {},
+): Promise<MechRequestDto> {
+  const created = ok(
+    await call(over.department ? auth.head : auth.rukstroy, 'POST', '/', {
+      objectId: ctx.objectId,
+      ...(over.department ? { departmentId: ctx.departmentId } : {}),
+      mechModelId: ctx.modelId,
+      plannedFrom: WEEK_AGO,
+      plannedTo: PLANNED_TO,
+      responsibleName: 'Иванов Иван',
+      responsiblePhone: '9990000000',
+      comment: MARK,
+    }),
+    201,
+  ) as unknown as MechRequestDto;
+  ok(
+    await call(admin, 'PATCH', `/${created.id}/status`, {
+      status: 'confirmed',
+      deal: { lessorId: ctx.lessorId, rate: 1500, rateUnit: 'shift' },
+      ...(over.issued === false ? {} : { actualFrom: WEEK_AGO }),
+      version: created.version,
+    }),
+  );
+  return card(created.id);
+}
+
+/** An upload of `userId`, finished unless said otherwise: the door asks for the uploader's own. */
+async function upload(
+  userId: string,
+  over: { contentType?: string; status?: 'pending' | 'active'; filename?: string } = {},
+): Promise<string> {
+  const [row] = await ctx.db
+    .insert(ctx.schema.files)
+    .values({
+      bucket: 'test',
+      objectKey: `${EMAIL_PREFIX}/${randomUUID()}`,
+      filename: over.filename ?? 'чек.pdf',
+      contentType: over.contentType ?? 'application/pdf',
+      size: 2048,
+      status: over.status ?? 'active',
+      uploadedBy: userId,
+    })
+    .returning({ id: ctx.schema.files.id });
+  return row!.id;
+}
+
+async function versionOf(id: string): Promise<number> {
+  return (await card(id)).version;
+}
+
+/** Attach as `who` (the dispatcher by default) a fresh PDF of his own, or the given file. */
+async function attach(
+  id: string,
+  over: { who?: keyof People | 'admin'; fileId?: string; version?: number } = {},
+): Promise<Injected> {
+  const who = over.who ?? 'dispatcher';
+  const fileId = over.fileId ?? (await upload(who === 'admin' ? ctx.adminId : people[who]));
+  return call(who === 'admin' ? admin : auth[who], 'POST', `/${id}/lessor-receipt`, {
+    fileId,
+    version: over.version ?? (await versionOf(id)),
+  });
+}
+
+async function attached(
+  id: string,
+  who?: keyof People | 'admin',
+): Promise<MechLessorReceiptReplyDto> {
+  return ok(await attach(id, { who })) as unknown as MechLessorReceiptReplyDto;
+}
+
+/** The office branch of a reply's block — every caller in this file is the office. */
+function officeOf(reply: MechLessorReceiptReplyDto) {
+  if (reply.lessorReceipt.audience !== 'office') throw new Error('expected the office audience');
+  return reply.lessorReceipt;
+}
+
+async function decide(
+  id: string,
+  body: {
+    decision: 'approve' | 'reject' | 'revoke';
+    receiptId?: string;
+    comment?: string;
+    version?: number;
+  },
+  headers: Headers = auth.rukstroy,
+): Promise<Injected> {
+  const opened = await card(id);
+  return call(headers, 'PATCH', `/${id}/lessor-receipt`, {
+    receiptId: body.receiptId ?? opened.lessorReceipt?.id,
+    decision: body.decision,
+    ...(body.comment !== undefined ? { comment: body.comment } : {}),
+    version: body.version ?? opened.version,
+  });
+}
+
+async function waive(
+  id: string,
+  over: { comment?: string; version?: number; headers?: Headers } = {},
+): Promise<Injected> {
+  return call(over.headers ?? auth.rukstroy, 'POST', `/${id}/lessor-receipt/waiver`, {
+    comment: over.comment ?? 'Арендодатель чеков не выдаёт',
+    version: over.version ?? (await versionOf(id)),
+  });
+}
+
+async function complete(id: string): Promise<Injected> {
+  return call(admin, 'PATCH', `/${id}/status`, {
+    status: 'done',
+    completion: COMPLETION,
+    version: await versionOf(id),
+  });
+}
+
+async function setStatus(
+  id: string,
+  status: 'new' | 'confirmed' | 'cancelled',
+  extra: Record<string, unknown> = {},
+): Promise<Injected> {
+  return call(admin, 'PATCH', `/${id}/status`, { status, ...extra, version: await versionOf(id) });
+}
+
+function refusedWith(res: Injected, code: number, message?: string): void {
+  expect(res.statusCode, res.body).toBe(code);
+  if (message !== undefined) expect(res.json().message).toBe(message);
+}
+
 async function bareFile(): Promise<string> {
   const [row] = await ctx.db
     .insert(ctx.schema.files)
@@ -281,19 +466,66 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       closeDb,
       adminId: '',
       objectId: '',
+      otherObjectId: '',
+      departmentId: '',
+      lessorId: '',
+      modelId: '',
     };
 
-    const [object] = await db
-      .insert(schema.constructionObjects)
+    const object = async (tag: string): Promise<string> => {
+      const [row] = await db
+        .insert(schema.constructionObjects)
+        .values({
+          code: `${CODE_PREFIX}-${tag}`,
+          name: `Площадка чека ${tag} ${RUN}`,
+          address: 'г. Москва, тестовый проезд, 3',
+        })
+        .returning({ id: schema.constructionObjects.id });
+      return row!.id;
+    };
+    ctx.objectId = await object('site');
+    ctx.otherObjectId = await object('other');
+    const [department] = await db
+      .insert(schema.departments)
+      .values({ code: `${CODE_PREFIX}-DEP`, name: `Отдел снабжения ${RUN}` })
+      .returning({ id: schema.departments.id });
+    ctx.departmentId = department!.id;
+    await db
+      .insert(schema.departmentConstructionObjects)
+      .values({ departmentId: ctx.departmentId, constructionObjectId: ctx.objectId });
+    const [lessor] = await db
+      .insert(schema.counterparties)
       .values({
-        code: `${CODE_PREFIX}-site`,
-        name: `Площадка чека ${RUN}`,
-        address: 'г. Москва, тестовый проезд, 3',
+        type: 'mech_lessor',
+        name: `Арендодатель чека ${RUN}`,
+        inn: `8${String(Date.now() % 100_000_000).padStart(8, '0')}5`,
+        isActive: true,
+        comment: MARK,
       })
-      .returning({ id: schema.constructionObjects.id });
-    ctx.objectId = object!.id;
+      .returning({ id: schema.counterparties.id });
+    ctx.lessorId = lessor!.id;
+    const [model] = await db
+      .insert(schema.mechModels)
+      .values({ code: `mech-lessor-receipt-${RUN}`, name: `Виброплита чека ${RUN}` })
+      .returning({ id: schema.mechModels.id });
+    ctx.modelId = model!.id;
+
     ctx.adminId = await newUser('admin', 'admin');
     admin = await headersOf(ctx.adminId);
+    people = {
+      rukstroy: await newUser('rukstroy', 'rukstroy', { objectIds: [ctx.objectId] }),
+      otherRukstroy: await newUser('other-rukstroy', 'rukstroy', {
+        objectIds: [ctx.otherObjectId],
+      }),
+      head: await newUser('head', 'department_head', { departmentIds: [ctx.departmentId] }),
+      dispatcher: await newUser('dispatcher', 'dispatcher'),
+    };
+    auth = {
+      rukstroy: await headersOf(people.rukstroy),
+      otherRukstroy: await headersOf(people.otherRukstroy),
+      head: await headersOf(people.head),
+      dispatcher: await headersOf(people.dispatcher),
+    };
   }, 120_000);
 
   afterAll(async () => {
@@ -308,7 +540,14 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
     );
     await ctx.db.execute(sql`DELETE FROM files WHERE object_key LIKE ${`${EMAIL_PREFIX}/%`}`);
     await ctx.db.execute(sql`DELETE FROM grants WHERE code LIKE ${`${GRANT_PREFIX}%`}`);
+    await ctx.db.execute(sql`DELETE FROM counterparties WHERE comment = ${MARK}`);
+    await ctx.db.execute(sql`DELETE FROM mech_models WHERE code = ${`mech-lessor-receipt-${RUN}`}`);
+    await ctx.db.execute(
+      sql`DELETE FROM department_construction_objects WHERE department_id IN
+            (SELECT id FROM departments WHERE code = ${`${CODE_PREFIX}-DEP`})`,
+    );
     await ctx.db.execute(sql`DELETE FROM users WHERE email LIKE ${`${EMAIL_PREFIX}%`}`);
+    await ctx.db.execute(sql`DELETE FROM departments WHERE code = ${`${CODE_PREFIX}-DEP`}`);
     await ctx.db.execute(
       sql`DELETE FROM construction_objects WHERE code LIKE ${`${CODE_PREFIX}%`}`,
     );
@@ -687,6 +926,433 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         await call(admin, 'DELETE', `/${without}?version=${(await card(without)).version}`),
       );
       expect(hard.mode).toBe('hard');
+    });
+  });
+
+  // ── Attaching and replacing (P7) ──
+
+  describe('прикрепление и замена (P7)', () => {
+    it('the office attaches: a pending version, the rental gated, the request version moved', async () => {
+      const request = await rental();
+      const reply = await attached(request.id);
+      const block = officeOf(reply);
+      const opened = await card(request.id);
+      expect(reply.version).toBe(opened.version);
+      expect(opened.version).toBe(request.version + 1);
+      expect(block.required).toBe(true);
+      expect(block.retired).toEqual([]);
+      expect(block.current).toMatchObject({
+        versionNo: 1,
+        status: 'pending',
+        createdAs: 'office',
+        createdBy: people.dispatcher,
+        createdByName: expect.stringContaining('dispatcher'),
+        decidedAt: null,
+        file: { filename: 'чек.pdf', contentType: 'application/pdf' },
+      });
+      expect(opened.lessorReceiptRequired).toBe(true);
+      expect(opened.lessorReceipt?.id).toBe(block.current!.id);
+    });
+
+    it('replacing retires the previous version, its status intact — an approval stays approved', async () => {
+      const request = await rental();
+      const first = officeOf(await attached(request.id)).current!;
+      ok(await decide(request.id, { decision: 'approve' }));
+      // The office replaces even an approved receipt (O13); the new version asks for a new visa.
+      const reply = officeOf(await attached(request.id));
+      expect(reply.current).toMatchObject({ versionNo: 2, status: 'pending' });
+      expect(
+        reply.retired.map((v: MechLessorReceiptVersionDto) => [v.id, v.status, v.retiredReason]),
+      ).toEqual([[first.id, 'approved', 'replaced']]);
+      expect(reply.retired[0]!.retiredByName).toContain('dispatcher');
+      expect((await card(request.id)).lessorReceiptVersionCount).toBe(2);
+    });
+
+    it('a JPEG is accepted; another declared type is refused with the receipt words', async () => {
+      const request = await rental();
+      const png = await upload(people.dispatcher, {
+        contentType: 'image/png',
+        filename: 'чек.png',
+      });
+      refusedWith(
+        await attach(request.id, { fileId: png }),
+        422,
+        MECH_LESSOR_RECEIPT_CONTENT_TYPE_MESSAGE,
+      );
+      const jpeg = await upload(people.dispatcher, {
+        contentType: 'image/jpeg',
+        filename: 'чек.jpg',
+      });
+      ok(await attach(request.id, { fileId: jpeg }));
+    });
+
+    it('an unfinished, foreign or already attached file is refused', async () => {
+      const request = await rental();
+      const unfinished = await upload(people.dispatcher, { status: 'pending' });
+      refusedWith(await attach(request.id, { fileId: unfinished }), 400);
+      const foreign = await upload(ctx.adminId);
+      refusedWith(await attach(request.id, { fileId: foreign }), 400);
+      const once = await upload(people.dispatcher);
+      ok(await attach(request.id, { fileId: once }));
+      const neighbour = await rental();
+      refusedWith(await attach(neighbour.id, { fileId: once }), 400);
+    });
+
+    it('only a rental in work takes a receipt: not «Новая», cancelled, done or archived', async () => {
+      const fresh = ok(
+        await call(auth.rukstroy, 'POST', '/', {
+          objectId: ctx.objectId,
+          mechModelId: ctx.modelId,
+          plannedFrom: WEEK_AGO,
+          plannedTo: PLANNED_TO,
+          responsibleName: 'Иванов Иван',
+          responsiblePhone: '9990000000',
+          comment: MARK,
+        }),
+        201,
+      ) as unknown as MechRequestDto;
+      refusedWith(await attach(fresh.id), 422, MECH_LESSOR_RECEIPT_NOT_IN_WORK_MESSAGE);
+
+      const cancelled = await rental({ issued: false });
+      ok(await setStatus(cancelled.id, 'cancelled', { comment: 'Передумали' }));
+      refusedWith(await attach(cancelled.id), 422, MECH_LESSOR_RECEIPT_NOT_IN_WORK_MESSAGE);
+
+      const done = await rental();
+      await ctx.db
+        .update(ctx.schema.mechRequests)
+        .set({ lessorReceiptRequired: false })
+        .where(eq(ctx.schema.mechRequests.id, done.id));
+      ok(await complete(done.id));
+      refusedWith(await attach(done.id), 422, MECH_LESSOR_RECEIPT_NOT_IN_WORK_MESSAGE);
+
+      const archived = await rental({ issued: false });
+      ok(await call(admin, 'DELETE', `/${archived.id}?version=${archived.version}`));
+      const refused = await attach(archived.id, { who: 'admin' });
+      refusedWith(refused, 422);
+      expect(refused.json().message).toMatch(/в архиве/);
+    });
+
+    it('the version 409 comes before any 422', async () => {
+      const fresh = ok(
+        await call(auth.rukstroy, 'POST', '/', {
+          objectId: ctx.objectId,
+          mechModelId: ctx.modelId,
+          plannedFrom: WEEK_AGO,
+          plannedTo: PLANNED_TO,
+          responsibleName: 'Иванов Иван',
+          responsiblePhone: '9990000000',
+          comment: MARK,
+        }),
+        201,
+      ) as unknown as MechRequestDto;
+      // «Новая» would be a 422; a stale version answers first.
+      refusedWith(await attach(fresh.id, { version: fresh.version + 5 }), 409);
+    });
+
+    it('a holder without the permission is refused before the door', async () => {
+      const request = await rental();
+      refusedWith(await attach(request.id, { who: 'rukstroy' }), 403);
+    });
+  });
+
+  // ── Deciding (P5) ──
+
+  describe('решение визирующего (P5)', () => {
+    it('the site visa holder approves, his remark kept', async () => {
+      const request = await rental();
+      await attached(request.id);
+      const reply = officeOf(
+        ok(
+          await decide(request.id, { decision: 'approve', comment: 'Сумма сверена' }),
+        ) as unknown as MechLessorReceiptReplyDto,
+      );
+      expect(reply.current).toMatchObject({
+        status: 'approved',
+        decidedBy: people.rukstroy,
+        decidedByName: expect.stringContaining('rukstroy'),
+        decisionComment: 'Сумма сверена',
+      });
+      expect(reply.current!.decidedAt).not.toBeNull();
+    });
+
+    it('a rejection needs its reason', async () => {
+      const request = await rental();
+      await attached(request.id);
+      refusedWith(await decide(request.id, { decision: 'reject' }), 400);
+      const reply = officeOf(
+        ok(
+          await decide(request.id, { decision: 'reject', comment: 'Не та сумма' }),
+        ) as unknown as MechLessorReceiptReplyDto,
+      );
+      expect(reply.current).toMatchObject({ status: 'rejected', decisionComment: 'Не та сумма' });
+    });
+
+    it('a pending receipt of a rental cancelled after it was attached is still decided', async () => {
+      const request = await rental({ issued: false });
+      await attached(request.id);
+      ok(await setStatus(request.id, 'cancelled', { comment: 'Передумали' }));
+      ok(await decide(request.id, { decision: 'approve' }));
+    });
+
+    it('no decision while the rental is archived', async () => {
+      const request = await rental({ issued: false });
+      await attached(request.id);
+      ok(await call(admin, 'DELETE', `/${request.id}?version=${await versionOf(request.id)}`));
+      const refused = await decide(request.id, { decision: 'approve' }, admin);
+      refusedWith(refused, 422);
+      expect(refused.json().message).toMatch(/в архиве/);
+    });
+
+    it('revoking an approval returns the version to pending, and the gate closes again', async () => {
+      const request = await rental();
+      await attached(request.id);
+      ok(await decide(request.id, { decision: 'approve', comment: 'Сверено' }));
+      refusedWith(await decide(request.id, { decision: 'revoke' }), 400);
+      const reply = officeOf(
+        ok(
+          await decide(request.id, { decision: 'revoke', comment: 'Сумма не та' }),
+        ) as unknown as MechLessorReceiptReplyDto,
+      );
+      expect(reply.current).toMatchObject({
+        versionNo: 1,
+        status: 'pending',
+        decidedBy: null,
+        decidedAt: null,
+        decisionComment: '',
+        retiredAt: null,
+      });
+      refusedWith(
+        await complete(request.id),
+        422,
+        'Чек арендодателя ждёт визы — аренду завершают после неё',
+      );
+    });
+
+    it('revoking a waiver retires it «revoked»; the rental needs a receipt again', async () => {
+      const request = await rental();
+      await attached(request.id);
+      ok(await waive(request.id));
+      const waiver = (await card(request.id)).lessorReceipt!;
+      expect(waiver.status).toBe('waived');
+      const reply = officeOf(
+        ok(
+          await decide(request.id, { decision: 'revoke', comment: 'Чек нашёлся' }),
+        ) as unknown as MechLessorReceiptReplyDto,
+      );
+      expect(reply.current).toBeNull();
+      expect(reply.retired[0]).toMatchObject({
+        id: waiver.id,
+        status: 'waived',
+        retiredReason: 'revoked',
+      });
+      refusedWith(
+        await complete(request.id),
+        422,
+        'Прикрепите чек арендодателя или получите визу «без чека»',
+      );
+    });
+
+    it('no revocation after completion: the approval is the basis of a closed rental', async () => {
+      const request = await rental();
+      await attached(request.id);
+      ok(await decide(request.id, { decision: 'approve' }));
+      ok(await complete(request.id));
+      refusedWith(
+        await decide(request.id, { decision: 'revoke', comment: 'Поздно' }),
+        422,
+        MECH_LESSOR_RECEIPT_REVOKE_NOT_IN_WORK_MESSAGE,
+      );
+    });
+
+    it('a stale receiptId gets the receipt words on the version 409', async () => {
+      const request = await rental();
+      const first = officeOf(await attached(request.id)).current!;
+      const seenVersion = await versionOf(request.id);
+      await attached(request.id);
+      // The window opened before the replacement: its version and its receipt are both stale.
+      refusedWith(
+        await decide(request.id, {
+          decision: 'approve',
+          receiptId: first.id,
+          version: seenVersion,
+        }),
+        409,
+        MECH_LESSOR_RECEIPT_STALE_MESSAGE,
+      );
+      // A fresh version with the old receipt is the same answer.
+      refusedWith(
+        await decide(request.id, { decision: 'approve', receiptId: first.id }),
+        409,
+        MECH_LESSOR_RECEIPT_STALE_MESSAGE,
+      );
+      // A stale version with the current receipt keeps the module's own words.
+      const refused = await decide(request.id, { decision: 'approve', version: seenVersion });
+      refusedWith(refused, 409);
+      expect(refused.json().message).not.toBe(MECH_LESSOR_RECEIPT_STALE_MESSAGE);
+    });
+
+    it('a receiptId of another request is refused 409 and changes neither request', async () => {
+      const mine = await rental();
+      const theirs = await rental();
+      await attached(mine.id);
+      const foreign = officeOf(await attached(theirs.id)).current!;
+      const before = [await card(mine.id), await card(theirs.id)];
+      refusedWith(
+        await decide(mine.id, { decision: 'approve', receiptId: foreign.id }),
+        409,
+        MECH_LESSOR_RECEIPT_STALE_MESSAGE,
+      );
+      const after = [await card(mine.id), await card(theirs.id)];
+      expect(after.map((r) => [r.version, r.lessorReceipt?.status])).toEqual(
+        before.map((r) => [r.version, r.lessorReceipt?.status]),
+      );
+    });
+
+    it('the version 409 comes before the 422 of a decided receipt', async () => {
+      const request = await rental();
+      await attached(request.id);
+      const seenVersion = await versionOf(request.id);
+      ok(await decide(request.id, { decision: 'approve' }));
+      refusedWith(await decide(request.id, { decision: 'approve', version: seenVersion }), 409);
+    });
+
+    it('the visa circle: another site 403, a head of the site but not of this request 403', async () => {
+      const request = await rental();
+      await attached(request.id);
+      refusedWith(await decide(request.id, { decision: 'approve' }, auth.otherRukstroy), 403);
+      // The department head sees the site's rental (his department's site) but did not file it.
+      refusedWith(
+        await decide(request.id, { decision: 'approve' }, auth.head),
+        403,
+        MECH_LESSOR_RECEIPT_SCOPE_MESSAGE,
+      );
+      refusedWith(await decide(request.id, { decision: 'approve' }, auth.dispatcher), 403);
+    });
+
+    it('the department head signs the receipt of his department rental (ADR 0171 decision 4)', async () => {
+      const request = await rental({ department: true });
+      await attached(request.id);
+      ok(await decide(request.id, { decision: 'approve' }, auth.head));
+    });
+
+    it('the one who attached may approve his own version (O14)', async () => {
+      const request = await rental();
+      await attached(request.id, 'admin');
+      ok(await decide(request.id, { decision: 'approve' }, admin));
+    });
+  });
+
+  // ── The «без чека» visa (P6) ──
+
+  describe('«без чека» (P6)', () => {
+    it('over nothing, over a pending file (replacing it) and over a rejection', async () => {
+      const bare = await rental();
+      const overNothing = officeOf(
+        ok(await waive(bare.id)) as unknown as MechLessorReceiptReplyDto,
+      );
+      expect(overNothing.current).toMatchObject({
+        versionNo: 1,
+        status: 'waived',
+        file: null,
+        createdAs: 'office',
+        createdBy: people.rukstroy,
+        decidedBy: people.rukstroy,
+        decisionComment: 'Арендодатель чеков не выдаёт',
+      });
+
+      const pending = await rental();
+      const file = officeOf(await attached(pending.id)).current!;
+      const overPending = officeOf(
+        ok(await waive(pending.id)) as unknown as MechLessorReceiptReplyDto,
+      );
+      expect(overPending.current).toMatchObject({ versionNo: 2, status: 'waived' });
+      expect(
+        overPending.retired.map((v: MechLessorReceiptVersionDto) => [
+          v.id,
+          v.status,
+          v.retiredReason,
+        ]),
+      ).toEqual([[file.id, 'pending', 'replaced']]);
+
+      const rejected = await rental();
+      await attached(rejected.id);
+      ok(await decide(rejected.id, { decision: 'reject', comment: 'Нечитаемо' }));
+      ok(await waive(rejected.id));
+    });
+
+    it('not over an approval, not twice, only in work', async () => {
+      const approved = await rental();
+      await attached(approved.id);
+      ok(await decide(approved.id, { decision: 'approve' }));
+      refusedWith(await waive(approved.id), 422, MECH_LESSOR_RECEIPT_WAIVER_APPROVED_MESSAGE);
+
+      const twice = await rental();
+      ok(await waive(twice.id));
+      refusedWith(await waive(twice.id), 422, MECH_LESSOR_RECEIPT_WAIVER_REPEATED_MESSAGE);
+
+      const cancelled = await rental({ issued: false });
+      ok(await setStatus(cancelled.id, 'cancelled', { comment: 'Передумали' }));
+      refusedWith(await waive(cancelled.id), 422, MECH_LESSOR_RECEIPT_WAIVER_NOT_IN_WORK_MESSAGE);
+    });
+
+    it('a reason is required, and only the visa circle waives', async () => {
+      const request = await rental();
+      refusedWith(await waive(request.id, { comment: ' ' }), 400);
+      refusedWith(await waive(request.id, { headers: auth.dispatcher }), 403);
+      refusedWith(
+        await waive(request.id, { headers: auth.head }),
+        403,
+        MECH_LESSOR_RECEIPT_SCOPE_MESSAGE,
+      );
+    });
+  });
+
+  // ── The completion gate (P3) ──
+
+  describe('ворота завершения (P3)', () => {
+    it('a required receipt holds completion: 422 while pending, passes once approved', async () => {
+      const request = await rental();
+      await attached(request.id);
+      refusedWith(
+        await complete(request.id),
+        422,
+        'Чек арендодателя ждёт визы — аренду завершают после неё',
+      );
+      ok(await decide(request.id, { decision: 'reject', comment: 'Не та сумма' }));
+      refusedWith(
+        await complete(request.id),
+        422,
+        'Чек арендодателя отклонён — прикрепите исправленный',
+      );
+      await attached(request.id);
+      ok(await decide(request.id, { decision: 'approve' }));
+      ok(await complete(request.id));
+    });
+
+    it('a waiver lets the rental complete', async () => {
+      const request = await rental();
+      await attached(request.id);
+      ok(await waive(request.id));
+      ok(await complete(request.id));
+    });
+
+    it('a rental not requiring a receipt completes; attaching one gates it', async () => {
+      // A rental taken into work before the release, or by the old code in the deploy window.
+      const old = await rental();
+      await ctx.db
+        .update(ctx.schema.mechRequests)
+        .set({ lessorReceiptRequired: false })
+        .where(eq(ctx.schema.mechRequests.id, old.id));
+      ok(await complete(old.id));
+
+      const gated = await rental();
+      await ctx.db
+        .update(ctx.schema.mechRequests)
+        .set({ lessorReceiptRequired: false })
+        .where(eq(ctx.schema.mechRequests.id, gated.id));
+      await attached(gated.id);
+      expect((await card(gated.id)).lessorReceiptRequired).toBe(true);
+      refusedWith(await complete(gated.id), 422);
     });
   });
 });

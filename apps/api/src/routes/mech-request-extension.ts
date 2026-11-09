@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import {
   canApproveMechExtension,
   decideMechExtensionSchema,
@@ -14,17 +14,16 @@ import {
   requestMechExtensionSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { mechRequestExtensions, mechRequests } from '../db/schema';
+import { mechRequestExtensions } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAuditTx } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
-import type { Principal } from '../auth/principal';
-import { loadMechRequestDto, type MechTx } from '../services/mech-request-dto';
+import { loadMechRequestDto } from '../services/mech-request-dto';
 import {
   assertMechRequestLive,
   assertMechRequestOpenable,
+  bumpRequest,
   lockMechRequest,
-  type LockedMechRequest,
 } from '../services/mech-request-guards';
 import { dropPendingMechExtension, loadMechExtension } from '../services/mech-request-extension';
 import {
@@ -54,27 +53,6 @@ const idParams = z.object({ id: z.string().uuid() });
 
 /** A `DELETE` carries no body, so the client's version comes in the query, as with deletion. */
 const versionQuery = z.object({ version: z.coerce.number().int().nonnegative() });
-
-/** CAS on the request: the version was matched under the lock, and only it is bumped here. */
-async function bumpRequest(
-  tx: MechTx,
-  p: Principal,
-  row: LockedMechRequest,
-  version: number,
-  plannedTo?: string,
-): Promise<void> {
-  const [updated] = await tx
-    .update(mechRequests)
-    .set({
-      ...(plannedTo ? { plannedTo } : {}),
-      updatedBy: p.id,
-      version: row.version + 1,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(mechRequests.id, row.id), eq(mechRequests.version, version)))
-    .returning({ id: mechRequests.id });
-  if (!updated) throw err.conflict();
-}
 
 export async function registerMechExtensionRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -181,7 +159,13 @@ export async function registerMechExtensionRoutes(app: FastifyInstance): Promise
           if (blocker) throw err.unprocessable(blocker);
         }
         const now = new Date();
-        await bumpRequest(tx, p, row, version, approved ? extension.newPlannedTo : undefined);
+        await bumpRequest(
+          tx,
+          p,
+          row,
+          version,
+          approved ? { plannedTo: extension.newPlannedTo } : {},
+        );
         await tx
           .update(mechRequestExtensions)
           .set({

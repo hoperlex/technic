@@ -114,6 +114,7 @@ import {
   type CreateTx,
 } from '../services/request-create-attempt';
 import { registerMechExtensionRoutes } from './mech-request-extension';
+import { registerMechLessorReceiptRoutes } from './mech-request-lessor-receipt';
 
 /*
  * Аренда малой механизации (план `docs/mechanization-module-plan.md`): виброплиты, компрессоры,
@@ -242,6 +243,9 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
   };
 
   await registerMechExtensionRoutes(app);
+  // The lessor receipt's doors (lessor receipt plan, P5–P7) on this same instance, so a guard of the
+  // module's plugin covers them as it covers the extension doors.
+  await registerMechLessorReceiptRoutes(app);
 
   r.get('/', { ...auth, schema: { querystring: mechRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);

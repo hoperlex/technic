@@ -63,12 +63,40 @@ export function assertMechRequestOpenable(
   p: Principal,
   row: LockedMechRequest | undefined,
   version: number,
+  /**
+   * The words of the version 409 when the door knows better than the generic «reread»: the lessor
+   * receipt's visa says the receipt was replaced while the window was open (lessor receipt plan,
+   * P5). Only the words change — the order of the checks and the status code stay the protocol's.
+   */
+  staleMessage?: string,
 ): LockedMechRequest {
   if (!row) throw err.notFound('Заявка не найдена');
   assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
   assertPlaceObjectScope(p, row.objectId, MECH_SCOPE_LABEL);
-  if (row.version !== version) throw err.conflict();
+  if (row.version !== version) throw err.conflict(staleMessage);
   return row;
+}
+
+/**
+ * CAS on the request after a write to its child rows (the extension, the lessor receipt): the
+ * version was matched under the lock, and only it is bumped here, with the request columns the door
+ * changes alongside. Every such door bumps the version even when only `updated_at` changes in the
+ * request: the card shows the child, and a CAS on a child table without its own version does not
+ * exist — the request's version is the one etag of the whole card.
+ */
+export async function bumpRequest(
+  tx: MechTx,
+  p: Principal,
+  row: LockedMechRequest,
+  version: number,
+  set: { plannedTo?: string; lessorReceiptRequired?: boolean } = {},
+): Promise<void> {
+  const [updated] = await tx
+    .update(mechRequests)
+    .set({ ...set, updatedBy: p.id, version: row.version + 1, updatedAt: new Date() })
+    .where(and(eq(mechRequests.id, row.id), eq(mechRequests.version, version)))
+    .returning({ id: mechRequests.id });
+  if (!updated) throw err.conflict();
 }
 
 /**

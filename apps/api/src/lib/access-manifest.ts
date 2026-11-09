@@ -1302,6 +1302,21 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['mechRequests.extend'],
   },
+  // The lessor receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P5–P7): the office and the
+  // lessor attach (`.lessorReceipt`), the request visa circle decides and waives (`.approve`). Whose
+  // visa it is, and which rental is the lessor's, are questions of the row, not of the route.
+  'POST /api/v1/mech-requests/:id/lessor-receipt': {
+    kind: 'permissions',
+    allOf: ['mechRequests.lessorReceipt'],
+  },
+  'PATCH /api/v1/mech-requests/:id/lessor-receipt': {
+    kind: 'permissions',
+    allOf: ['mechRequests.approve'],
+  },
+  'POST /api/v1/mech-requests/:id/lessor-receipt/waiver': {
+    kind: 'permissions',
+    allOf: ['mechRequests.approve'],
+  },
   // Виза площадки и её отзыв — одной ручкой и своим правом (план
   // `docs/mechanization-approval-and-grants-plan.md`, Р1, Р3). Область считает предикат
   // `canApproveMechRequest` уже внутри: манифест отвечает за право, а «своя ли это заявка» —
