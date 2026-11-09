@@ -1,7 +1,10 @@
 import { useCallback, useRef, useState } from 'react';
 import type { FormInstance } from 'antd';
-import type { CreateVehicleRequestInput } from '@technic/contracts';
-import { LocalCreateAttemptError, newIdempotencyKey } from '@shared/lib';
+import {
+  createVehicleRequestStableSchema,
+  type CreateVehicleRequestInput,
+} from '@technic/contracts';
+import { LocalCreateAttemptError, LocalValidationError, newIdempotencyKey } from '@shared/lib';
 import {
   draftValues,
   isBackdatedCreateAttempt,
@@ -86,6 +89,20 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
         `Старая попытка ${frozen.key} требует ручной проверки заявки; повтор через новую сверку недоступен.`,
       );
     }
+    // Keep a private JSON-shaped snapshot: form trip rows and file IDs can still be mutated by
+    // callers, while the stored draft and the request must describe the same first command.
+    const submittedBody: CreateVehicleRequestInput =
+      frozen?.body ?? JSON.parse(JSON.stringify(body));
+    // Only a body about to be frozen is checked, and with the route's own stable schema (the one the
+    // receipt route and its reconciliation parse with). Freezing a body the server must refuse
+    // locked the form for good: every retry resent it and the reconciliation refused it too
+    // (ADR 0247). A frozen body is never checked: it may be the first POST that is still in flight,
+    // and its resend is the only safe retry. Nothing is written or consumed on refusal, so the key
+    // (including a replacement key from a reconciliation) stays for the corrected form.
+    if (!frozen) {
+      const verdict = createVehicleRequestStableSchema.safeParse(submittedBody);
+      if (!verdict.success) throw new LocalValidationError(verdict.error.issues);
+    }
     const protocol: VehicleCreateProtocol =
       frozen?.protocol ??
       (frozen?.body.operationId ||
@@ -95,10 +112,6 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
         ? 'correction-v1'
         : 'receipt-v1');
     const key = frozen?.key ?? current.nextCreateKey ?? newIdempotencyKey();
-    // Keep a private JSON-shaped snapshot: form trip rows and file IDs can still be mutated by
-    // callers, while the stored draft and the request must describe the same first command.
-    const submittedBody: CreateVehicleRequestInput =
-      frozen?.body ?? JSON.parse(JSON.stringify(body));
     const next = {
       ...current,
       createAttempt: { key, body: submittedBody, protocol },

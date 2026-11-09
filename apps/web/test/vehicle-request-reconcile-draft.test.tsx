@@ -11,6 +11,7 @@ import {
   type FormValues,
 } from '@features/vehicle-request-editor';
 import { useVehicleRequestLocalDraft } from '../src/widgets/vehicle-request-editor/model/useVehicleRequestLocalDraft';
+import { freightRequestBody, freightTripBody } from './factories/vehicleRequestCreateBody';
 
 const userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const originalKey = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -51,11 +52,12 @@ afterEach(() => {
 describe('Vehicle Request reconciliation draft', () => {
   it('freezes a private JSON copy of nested rows and file IDs before sending', () => {
     const tab = renderHook(useTab);
-    const mutable = {
-      ...originalBody,
+    // A freight body: the first attempt is checked against the route schema before it is frozen,
+    // so the nested rows must be real trips, not arbitrary objects.
+    const mutable = freightRequestBody({
       fileIds: [originalKey],
-      trips: [{ fromLocation: 'Первый адрес', cargo: { amount: 1 } }],
-    } as unknown as CreateVehicleRequestInput;
+      trips: [freightTripBody({ fromLocation: 'Первый адрес', comment: 'one' })],
+    });
     act(() => tab.result.current.draft.begin({ kind: 'create' }, null, originalKey));
     let sent!: ReturnType<typeof tab.result.current.draft.prepareCreate>;
     act(() => {
@@ -63,7 +65,7 @@ describe('Vehicle Request reconciliation draft', () => {
     });
 
     mutable.fileIds.push(replacementKey);
-    (mutable as unknown as { trips: { cargo: { amount: number } }[] }).trips[0]!.cargo.amount = 2;
+    mutable.trips[0]!.comment = 'two';
     (sent.body as unknown as { trips: { fromLocation: string }[] }).trips[0]!.fromLocation =
       'Изменено отправителем';
 
@@ -73,7 +75,7 @@ describe('Vehicle Request reconciliation draft', () => {
     });
     expect(retry.body.fileIds).toEqual([originalKey]);
     expect(retry.body).toMatchObject({
-      trips: [{ fromLocation: 'Первый адрес', cargo: { amount: 1 } }],
+      trips: [{ fromLocation: 'Первый адрес', comment: 'one' }],
     });
     expect(listLocalDrafts(userId, { kind: 'create' }).drafts[0]?.createAttempt?.body).toEqual(
       retry.body,
