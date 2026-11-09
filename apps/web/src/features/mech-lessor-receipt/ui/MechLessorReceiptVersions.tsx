@@ -14,6 +14,17 @@ import { MechLessorReceiptFileLink } from './MechLessorReceiptFileLink';
 const secondary = { fontSize: 12 } as const;
 
 /**
+ * The decision's words. With a name (the office) the verb takes it — «Отклонил Прорабов П. П.»; the
+ * lessor's line has no staff names (P12), and a bare «Отклонил» would read as a name cut off, so
+ * his line names the outcome instead.
+ */
+function decisionWords(status: MechLessorReceiptLine['status'], by: string | null): string {
+  const waiver = status === 'waived';
+  if (by) return `${waiver ? 'Разрешил' : status === 'rejected' ? 'Отклонил' : 'Утвердил'} ${by}`;
+  return waiver ? 'Разрешено без чека' : status === 'rejected' ? 'Отклонён' : 'Утверждён';
+}
+
+/**
  * One version: its status, its file, who attached it and when, the decision and its words, and —
  * for a retired version — why it is no longer current. Retiring never changes the status (P1), so a
  * retired line reads «утверждён» and «заменён» at once: both facts are true.
@@ -38,8 +49,7 @@ export function MechLessorReceiptVersionLine({ line }: { line: MechLessorReceipt
       )}
       {line.decidedAt && (
         <Typography.Text type="secondary" style={secondary}>
-          {waiver ? 'Разрешил' : line.status === 'rejected' ? 'Отклонил' : 'Утвердил'}
-          {line.decidedBy ? ` ${line.decidedBy}` : ''} · {formatDateTime(line.decidedAt)}
+          {decisionWords(line.status, line.decidedBy)} · {formatDateTime(line.decidedAt)}
         </Typography.Text>
       )}
       {line.reason && (

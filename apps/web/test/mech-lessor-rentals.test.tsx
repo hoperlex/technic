@@ -263,6 +263,9 @@ describe('only his fields are drawn (O7, P12)', () => {
     expect(card.getByText(/Причина отказа: Не видно суммы/)).toBeTruthy();
     expect(card.getByText(/Причина отказа: Нет печати/)).toBeTruthy();
     expect(card.getAllByText(/Прикрепил арендодатель/)).toHaveLength(2);
+    // No name after the verb: the outcome is named instead of a decider cut off.
+    expect(card.getAllByText(/^Отклонён · /)).toHaveLength(2);
+    expect(card.queryByText(/Отклонил/)).toBeNull();
 
     const text = document.body.textContent ?? '';
     for (const word of HIDDEN_WORDS) expect(text, word).not.toContain(word);

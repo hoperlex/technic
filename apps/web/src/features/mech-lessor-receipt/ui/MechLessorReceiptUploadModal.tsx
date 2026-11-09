@@ -39,7 +39,8 @@ const fileRule: FormRule = {
  * replace may touch (O13).
  *
  * A replacement says what it does to a decision: the new version waits for the visa again, whatever
- * the old one was.
+ * the old one was. Where the old one stays is named in words true for both readers: «Версии чека»
+ * — the lessor has no card history (O7), so a promise of «история заявки» would point him nowhere.
  */
 export function MechLessorReceiptUploadModal({
   rental,
@@ -100,7 +101,7 @@ export function MechLessorReceiptUploadModal({
           showIcon
           style={{ marginBottom: 16 }}
           title="Новая версия заменит текущую и будет ждать визы заново"
-          description="Прежняя версия останется в «Версиях чека» и в истории заявки."
+          description="Прежняя версия останется в «Версиях чека»."
         />
       )}
       <Form
