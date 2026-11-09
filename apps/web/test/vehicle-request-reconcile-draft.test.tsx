@@ -9,6 +9,7 @@ import {
   newDraftId,
   writeLocalDraft,
   type FormValues,
+  type VehicleRequestLocalDraft,
 } from '@features/vehicle-request-editor';
 import { useVehicleRequestLocalDraft } from '../src/widgets/vehicle-request-editor/model/useVehicleRequestLocalDraft';
 import { freightRequestBody, freightTripBody } from './factories/vehicleRequestCreateBody';
@@ -135,6 +136,125 @@ describe('Vehicle Request reconciliation draft', () => {
     expect(corrected.body.comment).toBe('corrected after proof');
     act(() => expect(third.result.current.draft.clear()).toBe(true));
     expect(listLocalDrafts(userId, { kind: 'create' }).drafts).toHaveLength(0);
+  });
+
+  describe('sibling envelopes of a released attempt', () => {
+    const otherKey = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+    function sibling(extra: Partial<VehicleRequestLocalDraft>) {
+      const envelope: VehicleRequestLocalDraft = {
+        schema: 1,
+        id: newDraftId(),
+        userId,
+        target: { kind: 'create' },
+        baseVersion: null,
+        operationId: originalKey,
+        savedAt: Date.now(),
+        values: draftValues(changedValues),
+        ...extra,
+      };
+      expect(writeLocalDraft(envelope)).toBe(true);
+      return envelope;
+    }
+
+    function attemptedTab() {
+      const tab = renderHook(useTab);
+      act(() => tab.result.current.draft.begin({ kind: 'create' }, null, originalKey));
+      let sent!: ReturnType<typeof tab.result.current.draft.prepareCreate>;
+      act(() => {
+        sent = tab.result.current.draft.prepareCreate(originalBody);
+      });
+      return { tab, sent };
+    }
+
+    it('removes forks of the released attempt, as many as restorations made', () => {
+      const { tab, sent } = attemptedTab();
+      const attempt = { key: sent.key, body: sent.body, protocol: 'receipt-v1' as const };
+      const forks = [sibling({ createAttempt: attempt }), sibling({ createAttempt: attempt })];
+      expect(listLocalDrafts(userId, { kind: 'create' }).drafts).toHaveLength(3);
+
+      act(() => {
+        expect(tab.result.current.draft.acceptNotCreated(sent.key, replacementKey)).toBe(
+          'resolved',
+        );
+      });
+
+      const left = listLocalDrafts(userId, { kind: 'create' }).drafts;
+      expect(left.map((row) => row.id)).toEqual([tab.result.current.draft.active?.id]);
+      expect(left.map((row) => row.id)).not.toContain(forks[0]!.id);
+      expect(left[0]?.nextCreateKey).toBe(replacementKey);
+    });
+
+    it('keeps a sibling that already holds a new attempt under the replacement key', () => {
+      const { tab, sent } = attemptedTab();
+      const sameAttempt = { key: sent.key, body: sent.body, protocol: 'receipt-v1' as const };
+      const stale = sibling({ createAttempt: sameAttempt });
+      // The same command, continued in another tab after it had already adopted the replacement.
+      const continued = sibling({
+        createAttempt: { key: replacementKey, body: sent.body, protocol: 'receipt-v1' },
+        previousCreateKeys: [sent.key],
+      });
+      // Not an attempt of this key: related by lineage or by the pending replacement only.
+      const lineage = sibling({ nextCreateKey: replacementKey, previousCreateKeys: [sent.key] });
+      const unrelated = sibling({ createAttempt: { key: otherKey, body: sent.body } });
+
+      act(() => {
+        expect(tab.result.current.draft.acceptNotCreated(sent.key, replacementKey)).toBe(
+          'resolved',
+        );
+      });
+
+      const ids = listLocalDrafts(userId, { kind: 'create' }).drafts.map((row) => row.id);
+      expect(ids).not.toContain(stale.id);
+      expect(ids).toEqual(
+        expect.arrayContaining([
+          tab.result.current.draft.active!.id,
+          continued.id,
+          lineage.id,
+          unrelated.id,
+        ]),
+      );
+      expect(ids).toHaveLength(4);
+    });
+
+    it('leaves envelopes of another target alone', () => {
+      const { tab, sent } = attemptedTab();
+      const copy = sibling({
+        target: { kind: 'copy', sourceId: otherKey },
+        createAttempt: { key: sent.key, body: sent.body, protocol: 'receipt-v1' },
+      });
+
+      act(() => {
+        tab.result.current.draft.acceptNotCreated(sent.key, replacementKey);
+      });
+
+      expect(listLocalDrafts(userId, copy.target).drafts.map((row) => row.id)).toEqual([copy.id]);
+    });
+
+    it('still reports the release when a sibling cannot be removed', () => {
+      const { tab, sent } = attemptedTab();
+      const stale = sibling({
+        createAttempt: { key: sent.key, body: sent.body, protocol: 'receipt-v1' },
+      });
+      vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+        throw new Error('storage denied');
+      });
+
+      act(() => {
+        expect(tab.result.current.draft.acceptNotCreated(sent.key, replacementKey)).toBe(
+          'resolved',
+        );
+      });
+
+      expect(tab.result.current.draft.active?.createAttempt).toBeUndefined();
+      expect(tab.result.current.draft.active?.nextCreateKey).toBe(replacementKey);
+      expect(tab.result.current.draft.status.available).toBe(true);
+      // The leftover is cleaned up later through the lineage kept on the active envelope.
+      expect(tab.result.current.draft.active?.previousCreateKeys).toEqual([sent.key]);
+      expect(listLocalDrafts(userId, { kind: 'create' }).drafts.map((row) => row.id)).toContain(
+        stale.id,
+      );
+    });
   });
 
   it('keeps the frozen original when the atomic release cannot be stored', () => {

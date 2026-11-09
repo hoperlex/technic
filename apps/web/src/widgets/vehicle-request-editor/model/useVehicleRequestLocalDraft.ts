@@ -168,6 +168,20 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
     }
     activate(next);
     setStatus({ savedAt, available: true });
+    // Every restoration forks the envelope with the same attempt key. Left in place, each fork would
+    // resurface as an attempted draft that blocks the form again (ADR 0247). The match is the
+    // attempt key alone, like the shared `releaseCreateAttempt`: the broad match of `clear()` also
+    // takes `nextCreateKey` and the lineage, and a sibling may already hold a new attempt under the
+    // replacement key, which must survive. Best effort — a failed removal must not fail a release
+    // that is already written; the lineage in `previousCreateKeys` lets a later `clear()` finish.
+    const siblings = listLocalDrafts(current.userId, current.target);
+    if (siblings.available) {
+      for (const sibling of siblings.drafts) {
+        if (sibling.id !== current.id && sibling.createAttempt?.key === originalKey) {
+          removeLocalDraft(sibling.id);
+        }
+      }
+    }
     return 'resolved' as const;
   };
 
