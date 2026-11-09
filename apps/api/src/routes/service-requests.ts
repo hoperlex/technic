@@ -410,9 +410,6 @@ const NOT_FOUND = 'Заявка не найдена';
  */
 const FILE_NOT_LINKED = 'Файл не прикреплён к этой заявке';
 
-// ── Числа и даты ──
-
-/** `numeric` приезжает из драйвера строкой: в DTO суммы должны быть числами. */
 /**
  * A body with an equipment report belongs to the candidate intake receipt, never to the ordinary
  * one. The versioned create route and both reconcile branches ask this one function, and it reads a
@@ -423,6 +420,9 @@ function hasEquipmentCandidate(body: { equipmentCandidate?: unknown }): boolean 
   return Boolean(body.equipmentCandidate);
 }
 
+// ── Числа и даты ──
+
+/** `numeric` приезжает из драйвера строкой: в DTO суммы должны быть числами. */
 function num(value: string | null): number | null {
   return value === null ? null : Number(value);
 }

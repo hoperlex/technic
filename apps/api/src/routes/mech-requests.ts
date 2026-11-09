@@ -597,7 +597,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         kind: 'mech',
         actorUserId: p.id,
         mode: 'fingerprint',
-        // The create route fingerprints the normalized input, never the schema output.
+        // The input shape the create route fingerprints (`createInputOf`), not the schema output.
         fingerprint: createAttemptFingerprint(createInputOf(original.body)),
       });
     },

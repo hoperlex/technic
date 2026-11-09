@@ -1490,8 +1490,9 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
 };
 
 // Versioned creation has the same schema and guard as the original route. Reconciliation validates
-// the original body before authentication, then identifies the actor from the receipt without
-// asking for today's create permission. Reuse the bodies so the access sweep reaches those guards.
+// only its envelope before authentication; the original body is parsed by the handler (a body that
+// fails the schema is reconciled by key). The actor is identified from the receipt without asking
+// for today's create permission. Reuse the bodies so the access sweep reaches those guards.
 for (const kind of ['service', 'mech', 'waste', 'vehicle'] as const) {
   const base = `POST /api/v1/${kind}-requests` as ManifestRouteKey;
   const original = FIXTURES[base];
