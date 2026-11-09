@@ -474,6 +474,29 @@ export const mechLessorReceiptMarkLabels: Record<MechLessorReceiptMark, string> 
   missing: 'нет чека',
 };
 
+/**
+ * The filter «Чек» of the list and the history (P16), asked of the current version: `missing` is a
+ * rental that requires a receipt and has no current version; a rental that does not require one
+ * matches no value. The server serves it by `EXISTS` / `NOT EXISTS` over the current row, never by
+ * a join — the count query of the list joins only the site and the model.
+ */
+export const MECH_LESSOR_RECEIPT_FILTERS = [
+  'pending',
+  'rejected',
+  'missing',
+  'approved',
+  'waived',
+] as const;
+export type MechLessorReceiptFilter = (typeof MECH_LESSOR_RECEIPT_FILTERS)[number];
+
+export const mechLessorReceiptFilterLabels: Record<MechLessorReceiptFilter, string> = {
+  pending: 'ждёт визы',
+  rejected: 'отклонён',
+  missing: 'нет',
+  approved: 'утверждён',
+  waived: 'без чека',
+};
+
 export function mechLessorReceiptMark(row: MechLessorReceiptTarget): MechLessorReceiptMark | null {
   if (row.deletedAt !== null) return null;
   const status = row.lessorReceipt?.status;

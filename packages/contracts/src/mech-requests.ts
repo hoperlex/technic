@@ -32,6 +32,14 @@ import {
   type MechApprovalTarget,
 } from './mech-approval';
 import type { MechExtensionStatus, MechRequestExtensionDto } from './mech-request-extensions';
+// The only runtime import between the two files, and it goes this way only: the transition barrier
+// asks the receipt's completion gate. `mech-lessor-receipts.ts` never imports this file at runtime.
+import {
+  MECH_LESSOR_RECEIPT_FILTERS,
+  mechLessorReceiptCompletionBlocker,
+  type MechLessorReceiptCurrent,
+  type MechLessorReceiptVersionDto,
+} from './mech-lessor-receipts';
 import { dateKeySpan, moscowDateKeyOf } from './time';
 import { isClosedRequestStatus, workedAmountLabel } from './vehicle-requests';
 
@@ -160,6 +168,18 @@ export type MechTransitionState = MechRentalState & {
    * row, the server's locked row) is not made to load it.
    */
   extension?: { status: MechExtensionStatus } | null;
+  /**
+   * Completion waits for an approved or waived lessor receipt (lessor receipt plan, P3); `false` —
+   * a rental taken into work before the release, not gated.
+   *
+   * Both receipt fields are REQUIRED, unlike `extension`: the barrier reads them, and an optional
+   * field would let a caller that forgot to load the receipt pass the completion gate. The server
+   * loads the current version under the request's lock on every transition; the portal reads it
+   * from the DTO.
+   */
+  lessorReceiptRequired: boolean;
+  /** The current version's status; `null` — no current version. */
+  lessorReceipt: MechLessorReceiptCurrent;
 };
 
 /**
@@ -406,6 +426,11 @@ export const mechRequestListQuerySchema = baseListQuery(MECH_REQUEST_SORT_FIELDS
    * фильтром видит, что подписано и можно брать в работу.
    */
   approved: booleanFlagSchema,
+  /**
+   * The filter «Чек» (lessor receipt plan, P16): the visa holder finds the receipts waiting for
+   * him by it, the office the rentals still without one.
+   */
+  lessorReceipt: z.enum(MECH_LESSOR_RECEIPT_FILTERS).optional(),
   /** Архив (ADR 0070): без права `archive.read` любое значение означает «без архива» (Р15). */
   archive: archiveFilterSchema,
 });
@@ -481,6 +506,8 @@ export const mechRequestHistoryQuerySchema = baseListQuery(MECH_HISTORY_SORT_FIE
   periodFrom: dateOnlySchema.optional(),
   periodTo: dateOnlySchema.optional(),
   approved: booleanFlagSchema,
+  /** «Чек» in the journal: «what closed without a receipt» is asked of closed rentals too. */
+  lessorReceipt: z.enum(MECH_LESSOR_RECEIPT_FILTERS).optional(),
 });
 export type MechRequestHistoryQuery = z.infer<typeof mechRequestHistoryQuerySchema>;
 
@@ -910,33 +937,40 @@ export type ChangeMechRequestStatusInput = z.infer<typeof changeMechRequestStatu
 export const MECH_NO_COMPLETED_STATUS_MESSAGE = 'У аренды механизации нет статуса «Завершена»';
 
 /**
- * Почему переход запрещён состоянием строки — текстом, либо `null`, если разрешён. Один ответ на
- * отказ сервера (422) и на портал, который такой ход просто не предлагает: разойдись они, человек
- * нажимал бы кнопку, кончающуюся отказом.
+ * Why the row's state forbids a transition, as text, or `null` when it is allowed. One answer for the
+ * server's refusal (422) and for the portal, which simply does not offer such a move: if they
+ * drifted apart, a person would press a button that ends in a refusal.
  *
- * Барьеров три. Первый про **вход в работу**, два других — про **выданную технику**:
+ * There are four barriers. The first is about **taking into work**, the second about **completion**,
+ * the last two about **issued equipment**:
  *
- * 1. **вход в работу из «Новой» без визы** (план визы, Р3): за «взяли в работу» стоит
- *    договорённость с арендодателем и деньги площадки, и подпись обязана быть раньше неё.
- *    Остальных переходов виза не касается — отмена незавизированной заявки это законный способ её
- *    закрыть, а завершение решают те, кто ведёт аренду. **Откат «Выполнена» → «В работе» барьером
- *    не запирается, и это не послабление**: аренда уже состоялась, откатом её открывают, чтобы
- *    поправить факт, а у заявок старше визы подписи нет и взяться ей неоткуда — требовать её
- *    здесь значило бы запереть исправление всей прошлой истории модуля;
- * 2. **отмена после выдачи** — за выданную технику выставят счёт, и отмена означала бы, что аренды
- *    не было. Лечится завершением с фактическими датами, а не отменой;
- * 3. **откат в «Новую» после выдачи** — отдельный барьер, а не следствие второго. `confirmed → new`
- *    стирает договорённость и факт по построению (`new_empty_check`), и без запрета получалась бы
- *    дверь из трёх шагов в обход запрета на удаление действующей аренды: откат → всё стёрлось →
- *    физическое удаление «Новой». Тем же путём уходила бы и коррекция завершения.
+ * 1. **taking a «Новая» into work without the visa** (visa plan, R3): behind «taken into work» stand
+ *    an agreement with the lessor and the site's money, and the signature must come first. Other
+ *    transitions do not ask the visa — cancelling an unsigned request is a legal way to close it.
+ *    **The rollback «Выполнена» → «В работе» is not locked by it, and that is no relaxation**: the
+ *    rental took place, the rollback opens it to correct the fact, and requests older than the visa
+ *    have no signature and nowhere to get one;
+ * 2. **completion without an approved or waived lessor receipt** (lessor receipt plan, P3) — the
+ *    gate is `mechLessorReceiptCompletionBlocker`, asked for every completion including the repeat
+ *    after «Вернуть в работу»; a rental with `lessorReceiptRequired = false` passes. It is a state
+ *    barrier: nobody bypasses it, the administrator closes a stuck rental by the «без чека» visa;
+ * 3. **cancellation after the issue** — the issued equipment will be billed, and a cancellation
+ *    would mean the rental never happened. The cure is completion with the actual dates;
+ * 4. **a return to «Новая» after the issue** — its own barrier, not a consequence of the third.
+ *    `confirmed → new` erases the deal and the fact by construction (`new_empty_check`), and without
+ *    the ban there would be a three-step door around the ban on deleting a running rental: rollback →
+ *    everything erased → hard delete of the «Новая». A completion correction would leave the same way.
  *
- * Порядок лечения ошибочной выдачи один и остаётся единственным: сначала снять отметку, потом
- * откатывать. Два шага здесь не бюрократия — это то, что отличает исправление опечатки от стирания
- * состоявшейся аренды.
+ * The cure of a wrong issue mark is one and stays the only one: first take the mark off, then roll
+ * back. Two steps are not bureaucracy — they tell a typo fix from erasing a rental that took place.
  */
 export function mechTransitionBlocker(row: MechTransitionState, to: RequestStatus): string | null {
   if (to === 'confirmed' && row.status === 'new' && row.approvedAt === null) {
     return 'Заявку берут в работу после визы ответственного площадки или отдела-заявителя';
+  }
+  if (to === 'done') {
+    const receipt = mechLessorReceiptCompletionBlocker(row);
+    if (receipt) return receipt;
   }
   if (row.actualFrom === null) return null;
   if (to === 'cancelled') {
@@ -994,12 +1028,21 @@ export function mechEditScope(row: MechRentalState & { deletedAt: string | null 
  */
 export type MechDeleteScope = 'hard' | 'archive' | 'none';
 
+/**
+ * `lessorReceiptVersionCount` — every lessor receipt version of the request, the current one
+ * included (lessor receipt plan, P8). A «Новая» that has versions is ARCHIVED, not hard-deleted: a
+ * rental returned to «Новая» before issue may hold an approved prepayment receipt, and a hard delete
+ * would take every version and file at once (O8 keeps them). The argument is required on purpose — a
+ * caller that forgot the count must not compile into `hard`.
+ */
 export function mechDeleteScope(
   row: MechRentalState & { deletedAt: string | null },
+  lessorReceiptVersionCount: number,
 ): MechDeleteScope {
   if (row.deletedAt) return 'none';
   if (isMechRentalRunning(row) || isMechCompletionCorrection(row)) return 'none';
-  return row.status === 'new' ? 'hard' : 'archive';
+  if (row.status !== 'new') return 'archive';
+  return lessorReceiptVersionCount > 0 ? 'archive' : 'hard';
 }
 
 /** Один текст на отказ сервера и на подсказку в портале — см. `mechDeleteScope`. */
@@ -1084,6 +1127,27 @@ export interface MechRequestDto {
    * next request overwrites it. `null` — the rental was never asked to be extended through the visa.
    */
   extension: MechRequestExtensionDto | null;
+  /*
+   * The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P3, P15, P16). Four flat
+   * fields, the same in list rows and in the card, so the DTO itself is the `MechTransitionState`
+   * and the `MechLessorReceiptTarget` the barrier, the mark and the menu ask — a list row opens the
+   * card and is shown there until the fresh read arrives.
+   *
+   * `MechRequestDto` is the office's DTO: the lessor never receives it (his doors answer
+   * `MechLessorRentalDto`, P12), so the versions here are the office view with names.
+   */
+  /** Completion waits for a receipt; `false` — a rental taken into work before the release. */
+  lessorReceiptRequired: boolean;
+  /** The current version; `null` — none (never attached, or retired by a deal change). */
+  lessorReceipt: MechLessorReceiptVersionDto | null;
+  /** Every version, the current one included — what `mechDeleteScope` asks (P8). */
+  lessorReceiptVersionCount: number;
+  /**
+   * Retired versions, newest first — only in the card (`GET /:id` and the replies of the write
+   * doors). List rows carry `null`: a page of rentals would otherwise load every version of every
+   * row for a block nobody sees in the list, and the count above already says whether there are any.
+   */
+  lessorReceiptRetired: MechLessorReceiptVersionDto[] | null;
 }
 
 // ── История заявки (ADR 0012, Р11) ──

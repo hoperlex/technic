@@ -1,8 +1,9 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   type FileDto,
   formatMechRequestNumber,
+  type MechLessorReceiptVersionDto,
   type MechRequestDto,
   type MechRequestExtensionDto,
 } from '@technic/contracts';
@@ -15,11 +16,18 @@ import {
   mechModels,
   mechRequestExtensions,
   mechRequestFiles,
+  mechRequestLessorReceipts,
   mechRequestStatusHistory,
   mechRequests,
   users,
 } from '../db/schema';
 import { fileView } from './file-view';
+import {
+  loadMechLessorReceipts,
+  mechLessorReceiptFileOf,
+  mechLessorReceiptVersionCounts,
+  toMechLessorReceiptVersionDto,
+} from './mech-lessor-receipt';
 
 // Как заявка на механизацию выглядит наружу (план `docs/mechanization-module-plan.md`). Отдельно от
 // маршрутов, потому что карточку собирают восемь ручек, и половина из них — внутри транзакции
@@ -52,6 +60,17 @@ const approvers = alias(users, 'mech_approvers');
  */
 const extensionRequesters = alias(users, 'mech_extension_requesters');
 const extensionDeciders = alias(users, 'mech_extension_deciders');
+
+/*
+ * The current lessor receipt version (lessor receipt plan, P16): at most one per request by the
+ * partial unique index, so the outer join never multiplies rows of the list. Its file and the two
+ * names on it (author and visa holder) under their own aliases, for the reason given above; the
+ * current version is never retired, so it has no retirer to join.
+ */
+const currentLessorReceipts = alias(mechRequestLessorReceipts, 'mech_current_lessor_receipts');
+const currentLessorReceiptFiles = alias(files, 'mech_current_lessor_receipt_files');
+const lessorReceiptCreators = alias(users, 'mech_lessor_receipt_creators');
+const lessorReceiptDeciders = alias(users, 'mech_lessor_receipt_deciders');
 
 /** numeric в БД принимает и отдаёт строку; `null` остаётся `null`. */
 export function toNum(v: string | null): number | null {
@@ -127,6 +146,26 @@ const requestSelect = {
   extensionDecidedByName: extensionDeciders.fullName,
   extensionDecidedAt: mechRequestExtensions.decidedAt,
   extensionDecisionComment: mechRequestExtensions.decisionComment,
+  lessorReceiptRequired: mechRequests.lessorReceiptRequired,
+  lessorReceiptId: currentLessorReceipts.id,
+  lessorReceiptVersionNo: currentLessorReceipts.versionNo,
+  lessorReceiptStatus: currentLessorReceipts.status,
+  lessorReceiptFileId: currentLessorReceipts.fileId,
+  lessorReceiptFileName: currentLessorReceiptFiles.filename,
+  lessorReceiptFileContentType: currentLessorReceiptFiles.contentType,
+  lessorReceiptFileSize: currentLessorReceiptFiles.size,
+  lessorReceiptFileQuarantinedAt: currentLessorReceiptFiles.quarantinedAt,
+  lessorReceiptCreatedBy: currentLessorReceipts.createdBy,
+  lessorReceiptCreatedByName: lessorReceiptCreators.fullName,
+  lessorReceiptCreatedAs: currentLessorReceipts.createdAs,
+  lessorReceiptCreatedAt: currentLessorReceipts.createdAt,
+  lessorReceiptDecidedBy: currentLessorReceipts.decidedBy,
+  lessorReceiptDecidedByName: lessorReceiptDeciders.fullName,
+  lessorReceiptDecidedAt: currentLessorReceipts.decidedAt,
+  lessorReceiptDecisionComment: currentLessorReceipts.decisionComment,
+  // From the grouped subquery joined below, not a correlated subquery here: see
+  // `mechLessorReceiptVersionCounts` for why. No row in it means no versions.
+  lessorReceiptVersionCount: sql<number>`coalesce(${mechLessorReceiptVersionCounts.versionCount}, 0)`,
 };
 
 /**
@@ -150,6 +189,23 @@ export function mechBaseQuery(reader: MechReader = db) {
     .leftJoin(mechRequestExtensions, eq(mechRequestExtensions.requestId, mechRequests.id))
     .leftJoin(extensionRequesters, eq(mechRequestExtensions.requestedBy, extensionRequesters.id))
     .leftJoin(extensionDeciders, eq(mechRequestExtensions.decidedBy, extensionDeciders.id))
+    .leftJoin(
+      currentLessorReceipts,
+      and(
+        eq(currentLessorReceipts.requestId, mechRequests.id),
+        isNull(currentLessorReceipts.retiredAt),
+      ),
+    )
+    .leftJoin(
+      currentLessorReceiptFiles,
+      eq(currentLessorReceipts.fileId, currentLessorReceiptFiles.id),
+    )
+    .leftJoin(lessorReceiptCreators, eq(currentLessorReceipts.createdBy, lessorReceiptCreators.id))
+    .leftJoin(lessorReceiptDeciders, eq(currentLessorReceipts.decidedBy, lessorReceiptDeciders.id))
+    .leftJoin(
+      mechLessorReceiptVersionCounts,
+      eq(mechLessorReceiptVersionCounts.requestId, mechRequests.id),
+    )
     .innerJoin(users, eq(mechRequests.createdBy, users.id));
 }
 
@@ -208,7 +264,47 @@ function extensionOf(r: MechRequestRow): MechRequestExtensionDto | null {
   };
 }
 
-export function toMechRequestDto(r: MechRequestRow, requestFiles: FileDto[]): MechRequestDto {
+/**
+ * The current lessor receipt version from the joined columns, through the same mapper the card's
+ * versions go through (`toMechLessorReceiptVersionDto`), so a list row and the card cannot describe
+ * one version differently. Asked by the id: it is the primary key, so empty means no current row.
+ */
+function currentLessorReceiptOf(r: MechRequestRow): MechLessorReceiptVersionDto | null {
+  if (!r.lessorReceiptId) return null;
+  return toMechLessorReceiptVersionDto({
+    id: r.lessorReceiptId,
+    versionNo: r.lessorReceiptVersionNo!,
+    status: r.lessorReceiptStatus!,
+    file: mechLessorReceiptFileOf({
+      fileId: r.lessorReceiptFileId,
+      fileName: r.lessorReceiptFileName,
+      fileContentType: r.lessorReceiptFileContentType,
+      fileSize: r.lessorReceiptFileSize,
+      fileQuarantinedAt: r.lessorReceiptFileQuarantinedAt,
+    }),
+    createdBy: r.lessorReceiptCreatedBy!,
+    createdByName: r.lessorReceiptCreatedByName,
+    createdAs: r.lessorReceiptCreatedAs!,
+    createdAt: r.lessorReceiptCreatedAt!,
+    decidedBy: r.lessorReceiptDecidedBy,
+    decidedByName: r.lessorReceiptDecidedByName,
+    decidedAt: r.lessorReceiptDecidedAt,
+    decisionComment: r.lessorReceiptDecisionComment ?? '',
+    retiredAt: null,
+    retiredByName: null,
+    retiredReason: null,
+  });
+}
+
+/**
+ * `lessorReceiptRetired` — the retired versions, newest first, which only the card loads; list
+ * rows pass nothing and carry `null` (see `MechRequestDto.lessorReceiptRetired`).
+ */
+export function toMechRequestDto(
+  r: MechRequestRow,
+  requestFiles: FileDto[],
+  lessorReceiptRetired: MechLessorReceiptVersionDto[] | null = null,
+): MechRequestDto {
   return {
     id: r.id,
     num: r.num,
@@ -251,10 +347,17 @@ export function toMechRequestDto(r: MechRequestRow, requestFiles: FileDto[]): Me
     deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,
     deletedByName: r.deletedByName,
     extension: extensionOf(r),
+    lessorReceiptRequired: r.lessorReceiptRequired,
+    lessorReceipt: currentLessorReceiptOf(r),
+    lessorReceiptVersionCount: Number(r.lessorReceiptVersionCount),
+    lessorReceiptRetired,
   };
 }
 
-/** Карточка одной заявки. Удалённость не фильтруется: её разбирает вызывающий (архив, ADR 0070). */
+/**
+ * One request's card, with its retired lessor receipt versions (newest first). Deletion is not
+ * filtered: the caller decides about the archive (ADR 0070).
+ */
 export async function loadMechRequestDto(
   reader: MechReader,
   id: string,
@@ -262,5 +365,9 @@ export async function loadMechRequestDto(
   const [row] = await mechBaseQuery(reader).where(eq(mechRequests.id, id));
   if (!row) return null;
   const filesMap = await mechFilesByRequestIds(reader, [id]);
-  return toMechRequestDto(row, filesMap.get(id) ?? []);
+  const retired = (await loadMechLessorReceipts(reader, id))
+    .filter((version) => version.retiredAt !== null)
+    .reverse()
+    .map(toMechLessorReceiptVersionDto);
+  return toMechRequestDto(row, filesMap.get(id) ?? [], retired);
 }

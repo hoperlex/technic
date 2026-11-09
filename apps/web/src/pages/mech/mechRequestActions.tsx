@@ -161,7 +161,7 @@ export function useMechRequestActions({
    * в архив и возвращаются оттуда администратором.
    */
   const confirmRemove = (request: MechRequestDto) => {
-    const hard = mechDeleteScope(request) === 'hard';
+    const hard = mechDeleteScope(request, request.lessorReceiptVersionCount) === 'hard';
     modal.confirm({
       title: `Удалить заявку ${request.displayNumber}?`,
       content: hard

@@ -236,7 +236,12 @@ describe('the bodies of the three doors', () => {
 
 describe('the list tag (R13)', () => {
   it('a running rental with a pending request waits for the visa; a decided one does not', () => {
-    const row = { ...RUNNING, approvedAt: '2026-09-30T08:00:00.000Z' };
+    const row = {
+      ...RUNNING,
+      approvedAt: '2026-09-30T08:00:00.000Z',
+      lessorReceiptRequired: false,
+      lessorReceipt: null,
+    };
     expect(mechStateTag(row)).toBe('extensionPending');
     expect(mechStateTagLabels.extensionPending).toBe('продление ждёт визы');
     expect(

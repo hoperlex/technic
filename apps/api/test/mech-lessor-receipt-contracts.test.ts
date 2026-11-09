@@ -36,6 +36,12 @@ import {
   REQUEST_STATUSES,
   validateGrantAssignment,
   waiveMechLessorReceiptSchema,
+  MECH_LESSOR_RECEIPT_FILTERS,
+  mechDeleteScope,
+  mechRequestHistoryQuerySchema,
+  mechRequestListQuerySchema,
+  mechTransitionBlocker,
+  type MechTransitionState,
   type MechApprovalSubject,
   type MechLessorReceiptCurrent,
   type MechLessorReceiptRetireReason,
@@ -376,6 +382,71 @@ describe('the completion gate (P3)', () => {
     );
     expect(gate(current('rejected'))).toBe('Чек арендодателя отклонён — прикрепите исправленный');
     expect(gate(null)).toBe('Прикрепите чек арендодателя или получите визу «без чека»');
+  });
+
+  /**
+   * The gate is asked by the transition barrier itself, so the server's 422 and the portal's menu
+   * answer from one place; only completion asks it — issue, extension and cancellation do not (O2).
+   */
+  it('the transition barrier asks the gate for completion only', () => {
+    const issued: MechTransitionState = {
+      status: 'confirmed',
+      actualFrom: '2026-11-02',
+      actualTo: null,
+      approvedAt: '2026-11-01T08:00:00.000Z',
+      lessorReceiptRequired: true,
+      lessorReceipt: current('pending'),
+    };
+    expect(mechTransitionBlocker(issued, 'done')).toBe(
+      'Чек арендодателя ждёт визы — аренду завершают после неё',
+    );
+    expect(mechTransitionBlocker({ ...issued, lessorReceipt: current('approved') }, 'done')).toBe(
+      null,
+    );
+    expect(mechTransitionBlocker({ ...issued, lessorReceiptRequired: false }, 'done')).toBeNull();
+    // Cancellation keeps its own answer (the issued equipment), never the receipt's.
+    expect(mechTransitionBlocker(issued, 'cancelled')).toMatch(/завершить, а не отменять/);
+    const awaitingIssue = { ...issued, actualFrom: null };
+    expect(mechTransitionBlocker(awaitingIssue, 'cancelled')).toBeNull();
+    expect(mechTransitionBlocker(awaitingIssue, 'new')).toBeNull();
+  });
+});
+
+describe('deleting a «Новая» that holds receipt versions (P8)', () => {
+  const fresh = { status: 'new' as const, actualFrom: null, actualTo: null, deletedAt: null };
+
+  it('is archived, not hard-deleted, so every version stays (O8)', () => {
+    expect(mechDeleteScope(fresh, 0)).toBe('hard');
+    expect(mechDeleteScope(fresh, 1)).toBe('archive');
+    expect(mechDeleteScope(fresh, 3)).toBe('archive');
+  });
+
+  it('the count changes nothing else', () => {
+    expect(mechDeleteScope({ ...fresh, status: 'cancelled' }, 0)).toBe('archive');
+    expect(mechDeleteScope({ ...fresh, status: 'confirmed', actualFrom: '2026-11-02' }, 2)).toBe(
+      'none',
+    );
+    expect(mechDeleteScope({ ...fresh, deletedAt: '2026-11-03T08:00:00.000Z' }, 0)).toBe('none');
+  });
+});
+
+describe('the filter «Чек» (P16)', () => {
+  it('is a parameter of the list and of the journal, with five values', () => {
+    for (const value of MECH_LESSOR_RECEIPT_FILTERS) {
+      expect(mechRequestListQuerySchema.parse({ lessorReceipt: value }).lessorReceipt).toBe(value);
+      expect(mechRequestHistoryQuerySchema.parse({ lessorReceipt: value }).lessorReceipt).toBe(
+        value,
+      );
+    }
+    expect(MECH_LESSOR_RECEIPT_FILTERS).toEqual([
+      'pending',
+      'rejected',
+      'missing',
+      'approved',
+      'waived',
+    ]);
+    expect(mechRequestListQuerySchema.safeParse({ lessorReceipt: 'none' }).success).toBe(false);
+    expect(mechRequestListQuerySchema.parse({}).lessorReceipt).toBeUndefined();
   });
 });
 

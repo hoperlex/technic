@@ -1,7 +1,13 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type {
+  MechLessorReceiptFilter,
+  MechLessorReceiptRetireReason,
+  MechLessorReceiptStatus,
+  MechRequestDto,
+} from '@technic/contracts';
 import { applyMigrations, listMigrationFiles, readMigration } from '../src/db/migration-journal';
 // Types only: the values of these modules are imported after the environment is set — the config
 // validates it on import and fails without it.
@@ -9,6 +15,8 @@ import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 import type * as SchemaNs from '../src/db/schema';
 import type * as TokensNs from '../src/auth/tokens';
+import type * as ReceiptServiceNs from '../src/services/mech-lessor-receipt';
+import type * as DtoServiceNs from '../src/services/mech-request-dto';
 
 /**
  * The lessor's receipt of a mechanization rental (plan `docs/mechanization-lessor-receipt-plan.md`,
@@ -72,10 +80,17 @@ interface Ctx {
   db: typeof AppDb;
   schema: typeof SchemaNs;
   tokens: typeof TokensNs;
+  receipts: typeof ReceiptServiceNs;
+  dto: typeof DtoServiceNs;
   closeDb: () => Promise<void>;
   adminId: string;
   objectId: string;
 }
+
+type Headers = { authorization: string };
+type Injected = Awaited<ReturnType<Ctx['app']['inject']>>;
+
+let admin: Headers;
 
 let ctx: Ctx;
 let seq = 0;
@@ -125,8 +140,49 @@ async function newUser(tag: string, role: SchemaNs.UserRow['role']): Promise<str
   return row!.id;
 }
 
-/** A bare «Новая» inserted directly: the schema's invariants do not need the doors. */
-async function bareRequest(): Promise<string> {
+async function headersOf(userId: string): Promise<Headers> {
+  const [row] = await ctx.db
+    .select({ role: ctx.schema.users.role, authVersion: ctx.schema.users.authVersion })
+    .from(ctx.schema.users)
+    .where(eq(ctx.schema.users.id, userId));
+  const token = await ctx.tokens.signAccessToken({
+    sub: userId,
+    role: row!.role,
+    av: row!.authVersion,
+  });
+  return { authorization: `Bearer ${token}` };
+}
+
+function call(
+  headers: Headers,
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  url: string,
+  payload?: unknown,
+) {
+  return ctx.app.inject({
+    method,
+    url: `/api/v1/mech-requests${url}`,
+    headers,
+    ...(payload === undefined ? {} : { payload }),
+  });
+}
+
+function ok(res: Injected, code = 200): Record<string, unknown> {
+  expect(res.statusCode, res.body).toBe(code);
+  return res.json();
+}
+
+async function card(id: string): Promise<MechRequestDto> {
+  return ok(await call(admin, 'GET', `/${id}`)) as unknown as MechRequestDto;
+}
+
+/**
+ * A bare request inserted directly: the schema's invariants and the read side do not need the
+ * doors. A «Новая» by default; a cancelled one is just as legal without a deal (`cancel_check`).
+ */
+async function bareRequest(
+  over: { status?: 'new' | 'cancelled'; lessorReceiptRequired?: boolean } = {},
+): Promise<string> {
   const [row] = await ctx.db
     .insert(ctx.schema.mechRequests)
     .values({
@@ -136,9 +192,45 @@ async function bareRequest(): Promise<string> {
       responsibleName: 'Иванов Иван',
       responsiblePhone: '9990000000',
       createdBy: ctx.adminId,
+      ...over,
     })
     .returning({ id: ctx.schema.mechRequests.id });
   return row!.id;
+}
+
+/**
+ * Versions written directly, oldest first: `retired` names why a version is no longer current.
+ * A waiver has no file and is born decided by its author; a decided file version carries the
+ * decision; the last version without `retired` is the current one.
+ */
+async function seedVersions(
+  requestId: string,
+  versions: { status: MechLessorReceiptStatus; retired?: MechLessorReceiptRetireReason }[],
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const [index, version] of versions.entries()) {
+    const decided = version.status !== 'pending';
+    const [row] = await ctx.db
+      .insert(ctx.schema.mechRequestLessorReceipts)
+      .values({
+        requestId,
+        versionNo: index + 1,
+        fileId: version.status === 'waived' ? null : await bareFile(),
+        status: version.status,
+        createdBy: ctx.adminId,
+        createdAs: 'office',
+        decidedBy: decided ? ctx.adminId : null,
+        decidedAt: decided ? new Date() : null,
+        decisionComment:
+          version.status === 'rejected' || version.status === 'waived' ? 'Причина' : '',
+        ...(version.retired
+          ? { retiredAt: new Date(), retiredBy: ctx.adminId, retiredReason: version.retired }
+          : {}),
+      })
+      .returning({ id: ctx.schema.mechRequestLessorReceipts.id });
+    ids.push(row!.id);
+  }
+  return ids;
 }
 
 async function bareFile(): Promise<string> {
@@ -177,7 +269,19 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
     const { db, closeDb } = await import('../src/db/client');
     const schema = await import('../src/db/schema');
     const tokens = await import('../src/auth/tokens');
-    ctx = { app: await buildApp(), db, schema, tokens, closeDb, adminId: '', objectId: '' };
+    const receipts = await import('../src/services/mech-lessor-receipt');
+    const dto = await import('../src/services/mech-request-dto');
+    ctx = {
+      app: await buildApp(),
+      db,
+      schema,
+      tokens,
+      receipts,
+      dto,
+      closeDb,
+      adminId: '',
+      objectId: '',
+    };
 
     const [object] = await db
       .insert(schema.constructionObjects)
@@ -189,6 +293,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       .returning({ id: schema.constructionObjects.id });
     ctx.objectId = object!.id;
     ctx.adminId = await newUser('admin', 'admin');
+    admin = await headersOf(ctx.adminId);
   }, 120_000);
 
   afterAll(async () => {
@@ -403,6 +508,185 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         .from(ctx.schema.mechRequests)
         .where(eq(ctx.schema.mechRequests.id, requestId));
       expect(row!.required).toBe(false);
+    });
+  });
+
+  // ── The read side: the current version, the count and the filter «Чек» (P8, P16) ──
+
+  describe('строки списка и карточка: текущая версия, число версий, фильтр «Чек»', () => {
+    /**
+     * The count is right per row, read every way the server reads it: the delete door's plain
+     * count under the lock, the grouped subquery the list joins, and the DTO. Neighbouring rows with
+     * different counts are the point: a count that read the wrong row (the drizzle rewrite of a
+     * correlated subquery in a single-table select) gives every row the same number, or zero.
+     */
+    it('the version count is right per row, neighbours with other counts beside it', async () => {
+      const two = await bareRequest();
+      const none = await bareRequest();
+      const one = await bareRequest();
+      await seedVersions(two, [{ status: 'rejected', retired: 'replaced' }, { status: 'pending' }]);
+      await seedVersions(one, [{ status: 'pending' }]);
+      const expected = { [two]: 2, [none]: 0, [one]: 1 };
+
+      for (const [id, n] of Object.entries(expected)) {
+        expect(await ctx.receipts.countMechLessorReceiptVersions(ctx.db, id)).toBe(n);
+        expect((await card(id)).lessorReceiptVersionCount).toBe(n);
+      }
+      const counts = ctx.receipts.mechLessorReceiptVersionCounts;
+      const rows = await ctx.db
+        .select({
+          id: ctx.schema.mechRequests.id,
+          n: sql<number>`coalesce(${counts.versionCount}, 0)`,
+        })
+        .from(ctx.schema.mechRequests)
+        .leftJoin(counts, eq(counts.requestId, ctx.schema.mechRequests.id))
+        .where(inArray(ctx.schema.mechRequests.id, [two, none, one]));
+      expect(Object.fromEntries(rows.map((r) => [r.id, Number(r.n)]))).toEqual(expected);
+
+      // The list reads the count from a joined grouped subquery, not from a correlated subquery
+      // in its select list — the form that drizzle's single-table rewrite breaks.
+      const listed = ctx.dto.mechBaseQuery().toSQL().sql;
+      expect(listed).toMatch(
+        /left join \(select .*count\(\*\)::int.* group by .*\) "mech_lessor_receipt_counts"/is,
+      );
+      const selectList = listed.slice(0, listed.indexOf(' from '));
+      expect(selectList).not.toMatch(/select\s+count/i);
+    });
+
+    it('a list row carries the current version, the card also the retired ones, newest first', async () => {
+      const id = await bareRequest();
+      const [first, second, third] = await seedVersions(id, [
+        { status: 'rejected', retired: 'replaced' },
+        { status: 'approved', retired: 'replaced' },
+        { status: 'pending' },
+      ]);
+      const listed = ok(
+        await call(admin, 'GET', `/?placeObjectId=${ctx.objectId}&pageSize=100`),
+      ) as unknown as { items: MechRequestDto[] };
+      const row = listed.items.find((item) => item.id === id)!;
+      expect(row.lessorReceipt).toMatchObject({
+        id: third,
+        versionNo: 3,
+        status: 'pending',
+        createdAs: 'office',
+        createdByName: expect.stringContaining('Тестовый'),
+        retiredAt: null,
+        file: { filename: 'чек.pdf', contentType: 'application/pdf' },
+      });
+      expect(row.lessorReceiptVersionCount).toBe(3);
+      expect(row.lessorReceiptRetired, 'list rows never load the retired versions').toBeNull();
+
+      const opened = await card(id);
+      expect(opened.lessorReceipt?.id).toBe(third);
+      expect(opened.lessorReceiptRetired?.map((v) => [v.id, v.status, v.retiredReason])).toEqual([
+        [second, 'approved', 'replaced'],
+        [first, 'rejected', 'replaced'],
+      ]);
+      expect(opened.lessorReceiptRetired?.[0]?.retiredByName).toContain('Тестовый');
+    });
+
+    /**
+     * The filter is asked of the current row by `EXISTS`, so the count query of the list — which
+     * joins only the site and the model — agrees with the page: `total` equals the rows found.
+     */
+    it('«Чек» picks by the current version; «нет» is required without a current one', async () => {
+      const make = async (
+        versions: { status: MechLessorReceiptStatus; retired?: MechLessorReceiptRetireReason }[],
+        required = true,
+      ) => {
+        const id = await bareRequest({ lessorReceiptRequired: required });
+        await seedVersions(id, versions);
+        return id;
+      };
+      const pending = await make([
+        { status: 'rejected', retired: 'replaced' },
+        { status: 'pending' },
+      ]);
+      const rejected = await make([{ status: 'rejected' }]);
+      const approved = await make([{ status: 'approved' }]);
+      const waived = await make([{ status: 'pending', retired: 'replaced' }, { status: 'waived' }]);
+      const missing = await make([]);
+      const retiredByDeal = await make([{ status: 'approved', retired: 'deal_changed' }]);
+      const notRequired = await make([], false);
+      const mine = [pending, rejected, approved, waived, missing, retiredByDeal, notRequired];
+
+      const pick = async (filter: MechLessorReceiptFilter) => {
+        const res = ok(
+          await call(
+            admin,
+            'GET',
+            `/?placeObjectId=${ctx.objectId}&lessorReceipt=${filter}&pageSize=100`,
+          ),
+        ) as unknown as { items: MechRequestDto[]; total: number };
+        // Rows of the other cases of this file live on the same site: only this case's rows count.
+        const ids = res.items.map((item) => item.id).filter((id) => mine.includes(id));
+        return { ids: ids.sort(), total: res.total, all: res.items.length };
+      };
+      const expected: Record<MechLessorReceiptFilter, string[]> = {
+        pending: [pending],
+        rejected: [rejected],
+        approved: [approved],
+        waived: [waived],
+        missing: [missing, retiredByDeal],
+      };
+      for (const [filter, ids] of Object.entries(expected)) {
+        const found = await pick(filter as MechLessorReceiptFilter);
+        expect(found.ids, filter).toEqual([...ids].sort());
+        expect(found.total, `${filter}: the count query agrees with the page`).toBe(found.all);
+      }
+    });
+
+    it('the journal filters closed rentals by «Чек» too, with its summary', async () => {
+      const waiting = await bareRequest({ status: 'cancelled', lessorReceiptRequired: true });
+      await seedVersions(waiting, [{ status: 'pending' }]);
+      const without = await bareRequest({ status: 'cancelled', lessorReceiptRequired: true });
+      const old = await bareRequest({ status: 'cancelled' });
+
+      const journal = async (filter: MechLessorReceiptFilter) => {
+        const url = `?placeObjectId=${ctx.objectId}&lessorReceipt=${filter}&pageSize=100`;
+        const page = ok(await call(admin, 'GET', `/history${url}`)) as unknown as {
+          items: MechRequestDto[];
+          total: number;
+        };
+        const summary = ok(await call(admin, 'GET', `/history/summary${url}`)) as unknown as {
+          closed: number;
+        };
+        expect(summary.closed, 'the summary counts the same rows').toBe(page.total);
+        return page.items.map((item) => item.id);
+      };
+      expect(await journal('pending')).toContain(waiting);
+      expect(await journal('pending')).not.toContain(without);
+      expect(await journal('missing')).toContain(without);
+      expect(await journal('missing'), 'not required — not waiting for anything').not.toContain(
+        old,
+      );
+    });
+
+    /**
+     * P8: a rental returned to «Новая» may hold an approved prepayment receipt; deleting it archives
+     * it, and every version stays. Its neighbour without versions is still deleted for good — the
+     * count is per row, read under the lock.
+     */
+    it('deleting a «Новая» with versions archives it; one without is still hard-deleted', async () => {
+      const withVersions = await bareRequest();
+      await seedVersions(withVersions, [{ status: 'approved', retired: 'rolled_back' }]);
+      const without = await bareRequest();
+
+      const removed = ok(
+        await call(
+          admin,
+          'DELETE',
+          `/${withVersions}?version=${(await card(withVersions)).version}`,
+        ),
+      );
+      expect(removed.mode).toBe('soft');
+      expect((await card(withVersions)).deletedAt).not.toBeNull();
+      expect(await ctx.receipts.countMechLessorReceiptVersions(ctx.db, withVersions)).toBe(1);
+
+      const hard = ok(
+        await call(admin, 'DELETE', `/${without}?version=${(await card(without)).version}`),
+      );
+      expect(hard.mode).toBe('hard');
     });
   });
 });

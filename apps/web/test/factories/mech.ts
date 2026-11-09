@@ -48,6 +48,11 @@ export function mechRequest(overrides: Partial<MechRequestDto> = {}): MechReques
     deletedByName: null,
     // No extension request: the state every rental starts in (ADR 0171, stage 3).
     extension: null,
+    // No lessor receipt, not required: a «Новая» before take-in-work (lessor receipt plan, P3).
+    lessorReceiptRequired: false,
+    lessorReceipt: null,
+    lessorReceiptVersionCount: 0,
+    lessorReceiptRetired: null,
     ...overrides,
   };
 }

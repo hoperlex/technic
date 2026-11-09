@@ -287,7 +287,7 @@ export function mechMenuItems(
     items.push({ key: 'edit', label: 'Редактировать', onClick: () => openEdit(request) });
   }
 
-  const deleteScope = mechDeleteScope(request);
+  const deleteScope = mechDeleteScope(request, request.lessorReceiptVersionCount);
   const mayDeleteByRole = can('mechRequests.delete') && (!placeScoped || request.status === 'new');
   if (mayDeleteByRole) {
     items.push({

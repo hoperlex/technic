@@ -31,6 +31,9 @@ const NEW: MechTransitionState = {
   actualFrom: null,
   actualTo: null,
   approvedAt: null,
+  // No lessor receipt required: the completion gate is the receipt suite's subject.
+  lessorReceiptRequired: false,
+  lessorReceipt: null,
 };
 
 const OBJECT_ID = 'obj-1';
@@ -81,6 +84,8 @@ describe('барьер входа в работу (Р3)', () => {
       actualFrom: '2026-08-01',
       actualTo: '2026-08-20',
       approvedAt: null,
+      lessorReceiptRequired: false,
+      lessorReceipt: null,
     };
     expect(mechTransitionBlocker(done, 'confirmed')).toBeNull();
   });
@@ -92,6 +97,8 @@ describe('барьер входа в работу (Р3)', () => {
       actualFrom: '2026-09-01',
       actualTo: null,
       approvedAt: '2026-08-31T09:00:00.000Z',
+      lessorReceiptRequired: false,
+      lessorReceipt: null,
     };
     expect(mechTransitionBlocker(issued, 'cancelled')).toMatch(/завершить/);
   });
@@ -245,6 +252,8 @@ describe('тег состояния и фильтр (Р13)', () => {
       actualFrom: null,
       actualTo: null,
       approvedAt: '2026-09-01T08:00:00.000Z',
+      lessorReceiptRequired: false,
+      lessorReceipt: null,
     };
     expect(mechStateTag(awaitingIssue)).toBe('awaitingIssue');
   });

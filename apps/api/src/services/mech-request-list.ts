@@ -2,6 +2,8 @@ import { and, count, eq, gte, inArray, isNotNull, isNull, lte, sql, type SQL } f
 import {
   CLOSED_REQUEST_STATUSES,
   dateKeySpan,
+  type MechLessorReceiptFilter,
+  type MechLessorReceiptStatus,
   type MechRequestHistoryQuery,
   type MechRequestHistorySummaryDto,
   type MechRequestListQuery,
@@ -14,6 +16,7 @@ import {
   counterparties,
   departments,
   mechModels,
+  mechRequestLessorReceipts,
   mechRequests,
   users,
 } from '../db/schema';
@@ -68,7 +71,39 @@ type MechCommonFilters = Pick<
   // отборов: визирующий начинает день с неподписанных, а журнал отвечает на вопрос «что закрылось
   // без подписи» — про заявки, прошедшие до появления визы или взятые в работу откатом.
   | 'approved'
+  // The receipt (lessor receipt plan, P16): the visa holder looks for receipts waiting for him in the
+  // working list, and «what closed without a receipt» is a question to the journal.
+  | 'lessorReceipt'
 >;
+
+/**
+ * Whether the request has a current lessor receipt version, optionally of one status.
+ *
+ * `EXISTS` over the current row, never a join: the count query of the list (`GET /` in
+ * `routes/mech-requests.ts`) joins only the site and the model, and a condition that relied on a
+ * join of `mechBaseQuery` would break it. The outer row is named by its TABLE (`mech_requests.id`),
+ * not by the column object: drizzle rewrites column references of a single-table select to bare
+ * names, and a bare `id` inside this subquery would resolve to the receipt's own `id`.
+ */
+function currentLessorReceiptExists(status?: MechLessorReceiptStatus): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${mechRequestLessorReceipts} lr
+     WHERE lr.request_id = ${mechRequests}.id
+       AND lr.retired_at IS NULL
+       ${status ? sql`AND lr.status = ${status}` : sql``})`;
+}
+
+/**
+ * The filter «Чек» (P16). `missing` is a rental that requires a receipt and has no current version;
+ * a rental that does not require one matches no value — it is not waiting for anything.
+ */
+function lessorReceiptWhere(filter: MechLessorReceiptFilter | undefined): SQL | undefined {
+  if (!filter) return undefined;
+  if (filter === 'missing') {
+    return sql`${mechRequests}.lessor_receipt_required AND NOT ${currentLessorReceiptExists()}`;
+  }
+  return currentLessorReceiptExists(filter);
+}
 
 function mechCommonFilters(q: MechCommonFilters): (SQL | undefined)[] {
   const requester = q.requester ? parseMechRequesterFilter(q.requester) : null;
@@ -105,6 +140,7 @@ function mechCommonFilters(q: MechCommonFilters): (SQL | undefined)[] {
       : q.approved
         ? isNotNull(mechRequests.approvedAt)
         : isNull(mechRequests.approvedAt),
+    lessorReceiptWhere(q.lessorReceipt),
     searchCondition(q.search, [
       mechModels.name,
       mechRequests.comment,

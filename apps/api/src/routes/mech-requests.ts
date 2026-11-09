@@ -101,6 +101,10 @@ import {
 import { loadMechRequestHistory } from '../services/mech-request-history';
 import { dropPendingMechExtension } from '../services/mech-request-extension';
 import {
+  countMechLessorReceiptVersions,
+  loadCurrentMechLessorReceipt,
+} from '../services/mech-lessor-receipt';
+import {
   createAttemptFingerprint,
   createAttemptKey,
   createRequestOnce,
@@ -982,10 +986,18 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           return { dto: before, changed: false as const, from: row.status };
         }
         assertTransitionAllowed(p, row.status, status, 'mech');
-        // Виза приезжает барьеру строкой, как в DTO: у строки базы это `timestamptz`, а предикат
-        // один на портал и сервер — и разъехаться формам нельзя (план визы, Р3).
+        // The current lessor receipt is read under the request's lock on EVERY transition, not only
+        // on completion (lessor receipt plan, P3): the barrier's receipt fields are required, and a
+        // door that skipped the read for some moves would be one edit away from passing the gate.
+        const currentReceipt = await loadCurrentMechLessorReceipt(tx, id);
+        // The visa reaches the barrier as a string, as in the DTO: the base row holds a
+        // `timestamptz`, and the predicate is one for the portal and the server (visa plan, R3).
         const blocker = mechTransitionBlocker(
-          { ...row, approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null },
+          {
+            ...row,
+            approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
+            lessorReceipt: currentReceipt ? { status: currentReceipt.status } : null,
+          },
           status,
         );
         if (blocker) throw err.unprocessable(blocker);
@@ -1338,9 +1350,14 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         const row = assertMechRequestOpenable(p, await lockMechRequest(tx, id), version);
         assertMechRequestLive(row, 'удалить');
         assertObjectRoleEditable(p, row.status, 'удалять');
-        // Б3 уже пройден выше, поэтому `deletedAt` передаётся пустым: иначе `mechDeleteScope`
-        // ответил бы `none` про архив, а спросить его здесь надо про состояние аренды.
-        const scope = mechDeleteScope({ ...row, deletedAt: null });
+        // B3 is passed above, so `deletedAt` goes empty: otherwise `mechDeleteScope` would answer
+        // `none` about the archive, while here it is asked about the rental's state. The receipt
+        // versions are counted under the request's lock — they are inserted only under it — and a
+        // «Новая» that holds any is archived, not hard-deleted (lessor receipt plan, P8).
+        const scope = mechDeleteScope(
+          { ...row, deletedAt: null },
+          await countMechLessorReceiptVersions(tx, id),
+        );
         if (scope === 'none') throw err.unprocessable(MECH_DELETE_RUNNING_MESSAGE);
 
         if (scope === 'hard') {

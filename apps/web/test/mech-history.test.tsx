@@ -76,6 +76,12 @@ function requestDto(over: Partial<MechRequestDto> = {}): MechRequestDto {
     deletedByName: null,
     // No extension request: the state every rental starts in (ADR 0171, stage 3).
     extension: null,
+    // A journal row closed before the lessor receipt existed: not required, no versions; list rows
+    // never carry the retired versions (lessor receipt plan, P16).
+    lessorReceiptRequired: false,
+    lessorReceipt: null,
+    lessorReceiptVersionCount: 0,
+    lessorReceiptRetired: null,
     ...over,
   };
 }
