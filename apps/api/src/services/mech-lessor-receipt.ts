@@ -1,5 +1,5 @@
 import { and, asc, count, eq, isNull, sql } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
+import { alias, QueryBuilder } from 'drizzle-orm/pg-core';
 import type { z } from 'zod';
 import {
   type AttachedFileDto,
@@ -26,7 +26,6 @@ import {
   mechLessorVisibleVersions,
   type WaiveMechLessorReceiptInput,
 } from '@technic/contracts';
-import { db } from '../db/client';
 import { files, mechRequestLessorReceipts, users } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAuditTx } from '../lib/audit';
@@ -208,8 +207,12 @@ export async function countMechLessorReceiptVersions(
  * column references of such a subquery are rewritten to bare names, and `request_id = id` would
  * then compare the receipt table with itself — a count that is silently wrong
  * (`apps/api/test/mech-lessor-receipt.db.test.ts` pins it on a single-table query).
+ *
+ * Built by the standalone `QueryBuilder`, not `db.select`: it is only SQL to join, and a module that
+ * called the client at import would make every importer of the card's DTO depend on the client
+ * there — a suite that mocks `db.select` fails on import.
  */
-export const mechLessorReceiptVersionCounts = db
+export const mechLessorReceiptVersionCounts = new QueryBuilder()
   .select({
     requestId: receipts.requestId,
     versionCount: sql<number>`count(*)::int`.as('lessor_receipt_version_count'),
