@@ -1,7 +1,9 @@
 import { Form, Input, InputNumber } from 'antd';
+import type { Rule } from 'antd/es/form';
 import {
   CARGO_NAME_MESSAGE,
   isAddressVerified,
+  tripAmountSchema,
   type VehicleRequestTripDto,
 } from '@technic/contracts';
 import { FormGrid } from '@shared/ui';
@@ -39,6 +41,25 @@ const SIDE_LABELS: Record<Side, { address: string; required: string; responsible
     address: 'Место разгрузки',
     required: 'Укажите место разгрузки',
     responsible: 'Ответственный за разгрузку',
+  },
+};
+
+/**
+ * A filled volume or weight must pass the contract's own rule (`tripAmountSchema`), and the field
+ * shows the contract's message. The limits are deliberately not repeated here: a copy would drift,
+ * and a value the form lets through but the route's body schema refuses is a 400 before the handler
+ * runs — for a create attempt that is a frozen body nobody can fix (ADR 0231).
+ *
+ * An empty field passes: whether a quantity is required depends on the ordered vehicle type, and
+ * only the server decides that (`cargoRequired` is a hint, not a rule). The same rule serves create
+ * and edit — the database column also demands a value above zero.
+ */
+const tripAmountRule: Rule = {
+  validator: (_rule, value: number | null | undefined) => {
+    if (value === null || value === undefined) return Promise.resolve();
+    const parsed = tripAmountSchema.safeParse(value);
+    if (parsed.success) return Promise.resolve();
+    return Promise.reject(new Error(parsed.error.issues[0]?.message));
   },
 };
 
@@ -180,6 +201,7 @@ export function RequestTripFields({
         name={['trips', index, 'volumeM3']}
         label="Объём, м³"
         tooltip={cargoRequired ? 'Укажите объём или массу' : 'Необязательно'}
+        rules={[tripAmountRule]}
       >
         <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
       </Form.Item>
@@ -187,6 +209,7 @@ export function RequestTripFields({
         name={['trips', index, 'weightTons']}
         label="Масса, т"
         tooltip={cargoRequired ? 'Укажите объём или массу' : 'Необязательно'}
+        rules={[tripAmountRule]}
       >
         <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
       </Form.Item>
