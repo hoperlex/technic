@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { apiError, mockHttp } from './http';
 import { apiFetch } from '@shared/api';
-import { errorFields, errorMessage } from '@shared/lib';
+import {
+  errorFields,
+  errorMessage,
+  LocalCreateAttemptError,
+  LocalValidationError,
+} from '@shared/lib';
 
 /**
  * Сообщения об ошибках API. Механизм общий, подписи полей — доменные и приходят параметром;
@@ -201,5 +206,59 @@ describe('разбор настоящего ответа сервера', () => 
 
     expect(errorMessage(error, LABELS)).toBe('Запись используется');
     expect(errorFields(error)).toBeNull();
+  });
+});
+
+/**
+ * Reasons are opt-in (ADR 0247): a requester must learn why a field was refused, but the default text
+ * of every other screen stays as it was.
+ */
+describe('errorMessage with reasons', () => {
+  it('names the reason after the label and the row of an array path', () => {
+    const error = apiFailure('Ошибка валидации данных', {
+      'items.0.alpha': 'Значение должно быть больше 0',
+      beta: 'Слишком длинно',
+    });
+
+    expect(errorMessage(error, LABELS, { reasons: true })).toBe(
+      'Ошибка валидации данных: Первое поле (строка 1) — Значение должно быть больше 0; Второе поле — Слишком длинно',
+    );
+  });
+
+  it('drops an English built-in issue text and keeps the label', () => {
+    const error = apiFailure('Ошибка валидации данных', { alpha: 'Invalid input' });
+
+    expect(errorMessage(error, LABELS, { reasons: true })).toBe(
+      'Ошибка валидации данных: Первое поле',
+    );
+  });
+
+  it('leaves the default text without reasons', () => {
+    const error = apiFailure('Ошибка валидации данных', { alpha: 'Обязательное поле' });
+
+    expect(errorMessage(error, LABELS)).toBe('Ошибка валидации данных: Первое поле');
+  });
+});
+
+/**
+ * A local refusal must read and map like a server one, yet count as "nothing was sent": the save path
+ * shows the "first request may still commit" warning for any error that is not a local attempt error.
+ */
+describe('LocalValidationError', () => {
+  it('has the server validation shape and is a local attempt error', () => {
+    const error = new LocalValidationError([
+      { path: ['trips', 0, 'volumeM3'], message: 'Значение должно быть больше 0' },
+      { path: ['trips', 0, 'volumeM3'], message: 'Второе сообщение того же поля' },
+      { path: [], message: 'Укажите объект либо отдел — что-то одно' },
+    ]);
+
+    expect(error).toBeInstanceOf(LocalCreateAttemptError);
+    expect(errorFields(error)).toEqual({
+      'trips.0.volumeM3': 'Значение должно быть больше 0',
+      root: 'Укажите объект либо отдел — что-то одно',
+    });
+    expect(errorMessage(error, LABELS, { reasons: true })).toBe(
+      'Проверьте поля формы: volumeM3 (строка 1) — Значение должно быть больше 0; root — Укажите объект либо отдел — что-то одно',
+    );
   });
 });

@@ -91,12 +91,42 @@ function fieldLabel(path: string, labels: Record<string, string>): string {
  * это то, по чему причина находится в логе одной командой. У 4xx его не печатаем: там текст
  * называет проблему сам, и хвост из uuid только мешает читать.
  */
-export function errorMessage(error: unknown, labels: Record<string, string> = {}): string {
+export interface ErrorMessageOptions {
+  /**
+   * Name the reason after each field label: «Объём (строка 1) — Значение должно быть больше 0».
+   *
+   * Opt-in per domain. A label alone told a requester only where the refusal was, and «Объём» with
+   * an empty-looking field left them guessing (ADR 0247). Not global: the portal has no zod locale,
+   * so built-in issue texts are English, and hundreds of screens and their tests expect the bare
+   * labels.
+   */
+  reasons?: boolean;
+}
+
+// Built-in zod issue texts are English; showing them to a requester is worse than the label alone.
+const RUSSIAN_TEXT = /[А-Яа-яЁё]/u;
+
+function fieldPhrase(path: string, reason: string, labels: Record<string, string>): string {
+  const row = path.split('.').find((segment) => /^\d+$/.test(segment));
+  const where =
+    row === undefined
+      ? fieldLabel(path, labels)
+      : `${fieldLabel(path, labels)} (строка ${Number(row) + 1})`;
+  return RUSSIAN_TEXT.test(reason) ? `${where} — ${reason}` : where;
+}
+
+export function errorMessage(
+  error: unknown,
+  labels: Record<string, string> = {},
+  options: ErrorMessageOptions = {},
+): string {
   if (isApiErrorShape(error)) {
     const fields = errorFields(error);
-    const text = fields
-      ? `${error.message}: ${[...new Set(Object.keys(fields).map((path) => fieldLabel(path, labels)))].join(', ')}`
-      : error.message;
+    const text = !fields
+      ? error.message
+      : options.reasons
+        ? `${error.message}: ${[...new Set(Object.entries(fields).map(([path, reason]) => fieldPhrase(path, reason, labels)))].join('; ')}`
+        : `${error.message}: ${[...new Set(Object.keys(fields).map((path) => fieldLabel(path, labels)))].join(', ')}`;
     return error.status >= 500 && error.requestId ? `${text} (обращение ${error.requestId})` : text;
   }
   if (error instanceof Error) return error.message;

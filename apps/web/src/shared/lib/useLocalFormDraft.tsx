@@ -16,6 +16,36 @@ export interface LocalDraftStatus {
 
 export class LocalCreateAttemptError extends Error {}
 
+/**
+ * A create body that the route's own contract schema refuses, caught before it is frozen and sent.
+ *
+ * Freezing such a body used to lock the form: every retry resent it, the server refused it again,
+ * and the reconciliation refused it for the same reason (ADR 0247). Being a `LocalCreateAttemptError`
+ * tells the save path that nothing reached the server, so no "the first request may still commit"
+ * warning appears. It also carries the server's `validation_error` shape (`code`, `status`, `fields`
+ * keyed by the dotted issue path, as the API error handler builds them), so `errorMessage` and
+ * `errorFields` treat a local refusal exactly like a server one.
+ */
+export class LocalValidationError extends LocalCreateAttemptError {
+  readonly code = 'validation_error';
+  readonly status = 400;
+  readonly fields: Record<string, string>;
+
+  constructor(
+    issues: readonly { path: readonly PropertyKey[]; message: string }[],
+    message = 'Проверьте поля формы',
+  ) {
+    super(message);
+    this.name = 'LocalValidationError';
+    const fields: Record<string, string> = {};
+    for (const issue of issues) {
+      const path = issue.path.map(String).join('.') || 'root';
+      fields[path] ??= issue.message;
+    }
+    this.fields = fields;
+  }
+}
+
 export interface LocalFormDraftController<Payload> {
   active: LocalFormDraft<Payload> | null;
   begin: (target: string) => void;

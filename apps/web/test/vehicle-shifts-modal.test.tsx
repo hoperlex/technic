@@ -231,7 +231,10 @@ describe('окно смен на вкладке «На объекте»', () => 
     expect(within(today).getByPlaceholderText(SHIFT_IDLE_COMMENT_MESSAGE)).toBeDefined();
 
     fireEvent.click(within(today).getByTitle('Сохранить смену').closest('button')!);
-    expect(await screen.findByText('Ошибка валидации: Комментарий')).toBeDefined();
+    // Vehicle request errors name the reason as well as the field (ADR 0247).
+    expect(
+      await screen.findByText(`Ошибка валидации: Комментарий — ${SHIFT_IDLE_COMMENT_MESSAGE}`),
+    ).toBeDefined();
     expect(http.lastCall('PUT /vehicle-requests/r1/shifts/:date')?.body).toMatchObject({
       machineHours: 0,
       comment: '',

@@ -19,7 +19,9 @@ const VEHICLE_REQUEST_ERROR_LABELS: Record<string, string> = {
   loadingLocation: 'Адрес погрузки',
   unloadingLocation: 'Адрес разгрузки',
   volumeM3: 'Объём',
-  weightTons: 'Вес',
+  // The trip field reads «Масса, т»; a different word in the error sent people looking for a field
+  // that does not exist.
+  weightTons: 'Масса',
   responsibleName: 'Ответственный',
   responsiblePhone: 'Телефон ответственного',
   comment: 'Комментарий',
@@ -31,5 +33,8 @@ const VEHICLE_REQUEST_ERROR_LABELS: Record<string, string> = {
   date: 'Дата',
 };
 
+/**
+ * With reasons: a requester must see why a field was refused, not only which one (ADR 0247).
+ */
 export const vehicleRequestErrorMessage = (error: unknown): string =>
-  errorMessage(error, VEHICLE_REQUEST_ERROR_LABELS);
+  errorMessage(error, VEHICLE_REQUEST_ERROR_LABELS, { reasons: true });
