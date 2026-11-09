@@ -1,7 +1,13 @@
 import { mechLessorOptionsQuery } from '@entities/counterparty';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { CLOSED_REQUEST_STATUSES, REQUEST_STATUSES, requestStatusLabels } from '@technic/contracts';
+import {
+  CLOSED_REQUEST_STATUSES,
+  MECH_LESSOR_RECEIPT_FILTERS,
+  mechLessorReceiptFilterLabels,
+  REQUEST_STATUSES,
+  requestStatusLabels,
+} from '@technic/contracts';
 import { mechModelOptionsQuery } from '@entities/mech-model';
 import { objectOptionsQuery } from '@entities/object';
 import { useRequestCustomerOptions } from '@features/request-customer';
@@ -53,6 +59,12 @@ export interface MechListFilters {
    * ответил бы только на первый.
    */
   approved?: string;
+  /**
+   * «Чек» (lessor receipt plan, P16): the state of the current receipt version — the visa holder
+   * finds what waits for him by «ждёт визы», the office the rentals still without one by «нет».
+   * Served by the server over the current row, so it answers for every page, not the one on screen.
+   */
+  lessorReceipt?: string;
 }
 
 /**
@@ -73,6 +85,7 @@ export const MECH_FILTER_FIELDS = [
   'periodTo',
   'overdue',
   'approved',
+  'lessorReceipt',
 ] as const satisfies readonly (keyof MechListFilters)[];
 
 /**
@@ -92,6 +105,12 @@ export const MECH_HISTORY_FILTER_FIELDS = MECH_FILTER_FIELDS.filter((field) => f
  * который сервер отвечает пустотой, хуже его отсутствия. `closed` — те же два статуса, что
  * составляют журнал: заявка, по которой уже нечего решать.
  */
+/** The values of «Чек» in the order of the question: what waits, what is wrong, what is settled. */
+const RECEIPT_OPTIONS = MECH_LESSOR_RECEIPT_FILTERS.map((value) => ({
+  value,
+  label: mechLessorReceiptFilterLabels[value],
+}));
+
 const statusOptionsOf = (scope: 'open' | 'closed') =>
   (scope === 'closed'
     ? CLOSED_REQUEST_STATUSES
@@ -179,6 +198,8 @@ export function useMechRequestFilters({
         options: objectOptions,
         ready: placeEnabled && objectsReady,
       },
+      // A saved value the contracts no longer know would go to the server and come back as a 400.
+      { key: 'lessorReceipt', value: params.lessorReceipt, options: RECEIPT_OPTIONS, ready: true },
       {
         key: 'mechModelId',
         value: params.mechModelId,
@@ -286,6 +307,17 @@ export function useMechRequestFilters({
       ],
       placeholder: 'Любая',
       onChange: (value?: string) => apply({ approved: value }),
+    },
+    {
+      // The receipt is asked of the current version on the server (`EXISTS` over the current row),
+      // the same in the list and the journal: «what closed without a receipt» is a journal question.
+      kind: 'select' as const,
+      key: 'lessorReceipt',
+      label: 'Чек',
+      value: params.lessorReceipt,
+      options: RECEIPT_OPTIONS,
+      placeholder: 'Чек: любой',
+      onChange: (value?: string) => apply({ lessorReceipt: value }),
     },
     ...(overdue
       ? [

@@ -210,6 +210,7 @@ export function RentalsTab() {
         actions={rentalActions(cardActions.actionsFor)}
         modals={cardActions.modals}
         extension={cardActions.extensionStrip}
+        lessorReceipt={cardActions.lessorReceipt}
         onClose={() => {
           setViewRecord(null);
           opened.clear();

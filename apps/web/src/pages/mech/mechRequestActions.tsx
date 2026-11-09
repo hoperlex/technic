@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   mechDeleteScope,
   mechExtensionAccess,
+  mechLessorReceiptAccess,
   mechTransitionResetsDeal,
   type MechRequestDto,
   type RequestStatus,
@@ -14,6 +15,11 @@ import { MechTakeInWorkModal } from '@features/mech-take-in-work';
 import { MechIssueModal, MechRevokeIssueModal } from '@features/mech-issue';
 import { MechCompleteModal } from '@features/mech-complete';
 import { MechExtensionStrip, useMechExtensionActions } from '@features/mech-extend';
+import {
+  MechLessorReceiptBlock,
+  MechLessorReceiptStrip,
+  useMechLessorReceiptActions,
+} from '@features/mech-lessor-receipt';
 import type { ActionSheetItem } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '@entities/request';
 import { mechMenuItems } from './mechRequestMenu';
@@ -46,6 +52,15 @@ export function useMechRequestActions({
    * `mechExtensionAccess`: two places, one answer.
    */
   extensionStrip: (request: MechRequestDto) => ReactNode;
+  /**
+   * The card's lessor receipt (lessor receipt plan, P15): the strip «Чек арендодателя ждёт визы»
+   * above the fields and the block below them, with the buttons of the menu from the same
+   * `mechLessorReceiptAccess`.
+   */
+  lessorReceipt: {
+    strip: (request: MechRequestDto) => ReactNode;
+    block: (request: MechRequestDto) => ReactNode;
+  };
   modals: ReactNode;
   /** Погасить все окна набора: нужно тому, чьи окна живут внутри карточки (ADR 0140). */
   close: () => void;
@@ -55,6 +70,7 @@ export function useMechRequestActions({
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const extension = useMechExtensionActions();
+  const receipt = useMechLessorReceiptActions();
 
   const [dealTarget, setDealTarget] = useState<MechRequestDto | null>(null);
   const [dealMode, setDealMode] = useState<'start' | 'deal'>('start');
@@ -74,6 +90,7 @@ export function useMechRequestActions({
     setIssueTarget(null);
     setRevokeTarget(null);
     extension.close();
+    receipt.close();
     setCompleteTarget(null);
     setCancelTarget(null);
     setRollbackTarget(null);
@@ -194,6 +211,7 @@ export function useMechRequestActions({
         complete: setCompleteTarget,
         cancel: setCancelTarget,
         rollbackToNew: setRollbackTarget,
+        lessorReceipt: receipt.open,
         edit: onEdit,
       },
       run: {
@@ -215,6 +233,17 @@ export function useMechRequestActions({
     />
   );
 
+  const receiptAccess = (request: MechRequestDto) =>
+    mechLessorReceiptAccess(user, { ...request, lessorVersionCount: 0 }, can);
+  const lessorReceipt = {
+    strip: (request: MechRequestDto): ReactNode => (
+      <MechLessorReceiptStrip request={request} access={receiptAccess(request)} on={receipt.open} />
+    ),
+    block: (request: MechRequestDto): ReactNode => (
+      <MechLessorReceiptBlock request={request} access={receiptAccess(request)} on={receipt.open} />
+    ),
+  };
+
   const modals = (
     <>
       <MechTakeInWorkModal
@@ -225,6 +254,7 @@ export function useMechRequestActions({
       <MechIssueModal request={issueTarget} onClose={() => setIssueTarget(null)} />
       <MechRevokeIssueModal request={revokeTarget} onClose={() => setRevokeTarget(null)} />
       {extension.modals}
+      {receipt.modals}
       <MechCompleteModal request={completeTarget} onClose={() => setCompleteTarget(null)} />
       <CancelReasonModal
         open={!!cancelTarget}
@@ -261,6 +291,7 @@ export function useMechRequestActions({
   return {
     actionsFor,
     extensionStrip,
+    lessorReceipt,
     modals,
     close,
     pending:

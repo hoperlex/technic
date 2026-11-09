@@ -9,6 +9,8 @@ import {
   mechDeleteScope,
   mechEditScope,
   mechExtensionAccess,
+  mechLessorReceiptAccess,
+  mechLessorReceiptCompletionBlocker,
   mechTransitionBlocker,
   isPlaceScopedRole,
   type AuthUser,
@@ -16,6 +18,7 @@ import {
   type Permission,
   type RequestStatus,
 } from '@technic/contracts';
+import type { MechLessorReceiptHandlers } from '@features/mech-lessor-receipt';
 import type { ActionSheetItem } from '@shared/ui';
 
 /**
@@ -32,9 +35,12 @@ import type { ActionSheetItem } from '@shared/ui';
  * `confirmed → new` стирает договорённость и факт по построению, и без запрета получалась бы дверь
  * в обход запрета на удаление действующей аренды.
  *
- * Удаление — единственный пункт, который **показывается выключенным**: у него есть готовый текст
- * причины (`MECH_DELETE_RUNNING_MESSAGE`), общий с отказом сервера, и молча спрятанный пункт
- * оставил бы человека гадать, куда делось действие, которое вчера было.
+ * Two items are **shown disabled** rather than dropped, each with a ready reason shared with the
+ * server's refusal: deletion of a running rental (`MECH_DELETE_RUNNING_MESSAGE`) and «Завершить
+ * аренду» while the lessor's receipt is neither approved nor waived
+ * (`mechLessorReceiptCompletionBlocker`, lessor receipt plan, P3). A silently hidden item would
+ * leave the person guessing where yesterday's action went — and the dispatcher must see that the
+ * rental waits for the receipt, not that completion vanished.
  */
 
 /** Куда ведёт переход и как он называется человеку. Подписи свои, а не имена статусов. */
@@ -61,6 +67,8 @@ export interface MechMenuTargets {
   complete: (request: MechRequestDto) => void;
   cancel: (request: MechRequestDto) => void;
   rollbackToNew: (request: MechRequestDto) => void;
+  /** The lessor's receipt windows (lessor receipt plan, P15): upload, visa, reason. */
+  lessorReceipt: MechLessorReceiptHandlers;
   /**
    * Правка открывает форму заявки, а форма принадлежит вкладке. Необязательна поэтому: у вкладки
    * «В аренде» формы нет вовсе — заявку там ведут не правкой, а продлением и завершением, — и
@@ -115,6 +123,13 @@ export const MECH_RENTAL_ACTION_KEYS: readonly string[] = [
   'extension:reject',
   'extension:withdraw',
   'status:done',
+  // The lessor's receipt (lessor receipt plan, P15): completion waits for it, and the rental tab is
+  // where the dispatcher completes and the visa holder looks for what blocks it.
+  'lessor-receipt:attach',
+  'lessor-receipt:review',
+  'lessor-receipt:waive',
+  'lessor-receipt:revoke-approval',
+  'lessor-receipt:revoke-waiver',
 ];
 
 export function mechMenuItems(
@@ -140,13 +155,18 @@ export function mechMenuItems(
    */
   const transitions = user ? allowedStatusTransitions(request.status, user, 'mech', can) : [];
   for (const to of transitions) {
-    if (mechTransitionBlocker(request, to)) continue;
+    const blocker = mechTransitionBlocker(request, to);
+    // A blocked move is dropped — except completion held by the receipt gate, which stays visible
+    // and disabled with its reason (see the header): the dispatcher must learn what it waits for.
+    if (blocker && !(to === 'done' && mechLessorReceiptCompletionBlocker(request))) continue;
     const key = `${request.status}>${to}`;
     const label = TRANSITION_LABELS[key];
     if (!label) continue;
     items.push({
       key: `status:${to}`,
       label,
+      disabled: !!blocker,
+      disabledReason: blocker ?? undefined,
       danger: to === 'cancelled',
       // Главный шаг «Новой» — взять её в работу: ради него список и открывают.
       primary: key === 'new>confirmed',
@@ -257,6 +277,55 @@ export function mechMenuItems(
       key: 'extension:withdraw',
       label: 'Отозвать запрос продления',
       onClick: () => run.withdrawExtension(request),
+    });
+  }
+
+  /*
+   * The lessor's receipt (lessor receipt plan, P15): the dispatcher or the lessor attaches
+   * (`mechRequests.lessorReceipt`), the request's visa holder decides (`mechRequests.approve` and
+   * the visa circle). Which items exist is `mechLessorReceiptAccess` — the same blockers the server
+   * answers with, over the server's permission list. The office passes no own-version count: the
+   * cap of P7 is the lessor's only.
+   *
+   * «Без чека» is its own item only when there is no file to look at (none, or a rejected one,
+   * P6); over a pending file it is an action of the visa window, where the holder sees what he
+   * waives.
+   */
+  const receipt = mechLessorReceiptAccess(user, { ...request, lessorVersionCount: 0 }, can);
+  if (receipt.review) {
+    items.push({
+      key: 'lessor-receipt:review',
+      label: 'Проверить чек',
+      primary: true,
+      onClick: () => open.lessorReceipt.review(request),
+    });
+  }
+  if (receipt.attach) {
+    items.push({
+      key: 'lessor-receipt:attach',
+      label: receipt.replace ? 'Заменить чек' : 'Прикрепить чек',
+      onClick: () => open.lessorReceipt.attach(request),
+    });
+  }
+  if (receipt.waive && !receipt.review) {
+    items.push({
+      key: 'lessor-receipt:waive',
+      label: 'Без чека',
+      onClick: () => open.lessorReceipt.waive(request),
+    });
+  }
+  if (receipt.revokeApproval) {
+    items.push({
+      key: 'lessor-receipt:revoke-approval',
+      label: 'Отозвать утверждение',
+      onClick: () => open.lessorReceipt.revokeApproval(request),
+    });
+  }
+  if (receipt.revokeWaiver) {
+    items.push({
+      key: 'lessor-receipt:revoke-waiver',
+      label: 'Отменить «без чека»',
+      onClick: () => open.lessorReceipt.revokeWaiver(request),
     });
   }
 

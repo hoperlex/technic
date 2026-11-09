@@ -101,6 +101,7 @@ export function HistoryTab() {
     periodFrom: params.periodFrom,
     periodTo: params.periodTo,
     num: params.num,
+    lessorReceipt: params.lessorReceipt,
   };
 
   /**

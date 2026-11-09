@@ -3,6 +3,10 @@ import { Button, Dropdown, Spin, Tabs, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { mechRequestChangeLabels, type MechRequestDto } from '@technic/contracts';
 import { mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
+import {
+  MechLessorReceiptBlock,
+  mechLessorReceiptHistoryFiles,
+} from '@features/mech-lessor-receipt';
 import { ActionSheet, ViewFields, ViewModal, type ActionSheetItem } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { type HistoryRow, RequestHistoryTable } from '@entities/request-history';
@@ -28,6 +32,7 @@ export function MechRequestViewModal({
   actions,
   modals,
   extension,
+  lessorReceipt,
 }: {
   /** `null` — окно закрыто. Строка списка: с неё карточка рисуется, пока едет свежая. */
   request: MechRequestDto | null;
@@ -45,6 +50,15 @@ export function MechRequestViewModal({
    * buttons of whoever may act. Not passed — the card is read-only (the archive).
    */
   extension?: (request: MechRequestDto) => ReactNode;
+  /**
+   * The lessor's receipt with its buttons (lessor receipt plan, P15): the strip above the fields and
+   * the block below them. Not passed — the block is still shown, read-only: the archive and the
+   * journal keep the receipt as evidence, and its versions open there too (O8, O17).
+   */
+  lessorReceipt?: {
+    strip: (request: MechRequestDto) => ReactNode;
+    block: (request: MechRequestDto) => ReactNode;
+  };
 }) {
   const isMobile = useIsMobile();
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -135,7 +149,13 @@ export function MechRequestViewModal({
               children: (
                 <>
                   {extension?.(request)}
+                  {lessorReceipt?.strip(request)}
                   <ViewFields items={fields} />
+                  {lessorReceipt ? (
+                    lessorReceipt.block(request)
+                  ) : (
+                    <MechLessorReceiptBlock request={request} />
+                  )}
                 </>
               ),
             },
@@ -148,7 +168,12 @@ export function MechRequestViewModal({
                 // Подписи полей — модульные: сервер шлёт технические ключи, а читателю истории
                 // нужны слова аренды («Ставка», «Выдана», «Причина снятия отметки»). Словарь
                 // статусов общий: цикл у механизации тот же, что у соседних заявок.
-                <RequestHistoryTable rows={rows} labels={mechRequestChangeLabels} />
+                // A receipt version opens from the line that attached it (lessor receipt plan, P9).
+                <RequestHistoryTable
+                  rows={rows}
+                  labels={mechRequestChangeLabels}
+                  renderFiles={mechLessorReceiptHistoryFiles(request)}
+                />
               ) : (
                 <Typography.Text type="secondary">История недоступна</Typography.Text>
               ),

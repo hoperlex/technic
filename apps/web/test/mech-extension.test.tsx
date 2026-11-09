@@ -79,6 +79,13 @@ function menuKeys(user: AuthUser, request: MechRequestDto): string[] {
       complete: noop,
       cancel: noop,
       rollbackToNew: noop,
+      lessorReceipt: {
+        attach: noop,
+        review: noop,
+        waive: noop,
+        revokeApproval: noop,
+        revokeWaiver: noop,
+      },
     },
     run: {
       rollback: noop,

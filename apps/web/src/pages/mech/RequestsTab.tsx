@@ -251,6 +251,7 @@ export function RequestsTab() {
           </>
         }
         extension={cardActions.extensionStrip}
+        lessorReceipt={cardActions.lessorReceipt}
         onClose={() => {
           setViewRecord(null);
           opened.clear();

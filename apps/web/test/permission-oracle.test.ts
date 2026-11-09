@@ -323,6 +323,13 @@ function mechMenu(user: AuthUser, can: Can): unknown {
         complete: noop,
         cancel: noop,
         rollbackToNew: noop,
+        lessorReceipt: {
+          attach: noop,
+          review: noop,
+          waive: noop,
+          revokeApproval: noop,
+          revokeWaiver: noop,
+        },
       },
       run: {
         rollback: noop,
