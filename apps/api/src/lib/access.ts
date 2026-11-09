@@ -191,6 +191,21 @@ export function lessorVisibilityWhere(p: Principal, lessorColumn: AnyColumn): SQ
 }
 
 /**
+ * Visibility of mechanization rentals for the mechanization lessor (lessor receipt plan, P11): the
+ * rentals whose deal names his counterparty. The second line of his scope, under the module's door
+ * guard (`routes/mech-lessor-door.ts`), so that no read relies on the lessor lacking a permission.
+ *
+ * The column is the request's own `lessor_id`, unlike the vehicle lessor's: a mechanization rental
+ * names its lessor in the deal, there is no assignment to join. An executor of another type gets
+ * `NEVER_MATCH` — a vehicle lessor who somehow held `mechRequests.read` would still see nothing,
+ * and old rentals whose lessor is a `vehicle_lessor` (ADR 0152 decision 6) are invisible to every
+ * lessor account (plan §7, risk 4).
+ */
+export function mechLessorVisibilityWhere(p: Principal, lessorColumn: AnyColumn): SQL | undefined {
+  return counterpartyVisibilityWhere(p, 'mech_lessor', lessorColumn);
+}
+
+/**
  * Удалённая запись видна только тем, кому открыт архив; остальным её как бы нет — 404, а не
  * 403: сам факт существования удалённой заявки под известным id тоже не их дело. Проверять
  * это обязан каждый маршрут, отдающий запись по id: список удалённые скрывает, а карточка,
@@ -348,6 +363,25 @@ export function assertPlaceObjectScope(p: Principal, objectId: string, moduleLab
     );
   }
   throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
+}
+
+/**
+ * The scope of one mechanization request, both axes (lessor receipt plan, P11): the site for the
+ * site and department roles, the lessor's counterparty for an executor. It replaces every
+ * `assertPlaceObjectScope` of the module, so no door — the card, its history, the mutations,
+ * restore and purge — relies on the lessor lacking a permission.
+ *
+ * An executor outside the rental gets **404**, not 403, deliberately unlike the vehicle lessor
+ * (`assertLessorScope`): the mechanization lessor is an external party, and which request ids exist
+ * is not his business — the reason `assertArchiveVisible` answers 404 too. The site roles keep
+ * their 403 with the words of `assertPlaceObjectScope`: their area is a fact they know.
+ */
+export function assertMechScope(
+  p: Principal,
+  row: { objectId: string; lessorId: string | null },
+): void {
+  assertPlaceObjectScope(p, row.objectId, MECH_SCOPE_LABEL);
+  assertCounterpartyScope(p, 'mech_lessor', row.lessorId, 'Заявка не найдена', err.notFound);
 }
 
 /**

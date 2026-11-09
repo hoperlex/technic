@@ -14,7 +14,7 @@ import {
   mechRequests,
 } from '../db/schema';
 import { err } from '../lib/errors';
-import { assertArchiveVisible, assertPlaceObjectScope, MECH_SCOPE_LABEL } from '../lib/access';
+import { assertArchiveVisible, assertMechScope } from '../lib/access';
 import type { Principal } from '../auth/principal';
 import type { MechTx } from './mech-request-dto';
 
@@ -72,7 +72,8 @@ export function assertMechRequestOpenable(
 ): LockedMechRequest {
   if (!row) throw err.notFound('Заявка не найдена');
   assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
-  assertPlaceObjectScope(p, row.objectId, MECH_SCOPE_LABEL);
+  // Both axes (lessor receipt plan, P11): the site, and the lessor's counterparty for an executor.
+  assertMechScope(p, row);
   if (row.version !== version) throw err.conflict(staleMessage);
   return row;
 }

@@ -2,6 +2,7 @@ import { and, count, eq, gte, inArray, isNotNull, isNull, lte, sql, type SQL } f
 import {
   CLOSED_REQUEST_STATUSES,
   dateKeySpan,
+  isMechLessorSubject,
   type MechLessorReceiptFilter,
   type MechLessorReceiptStatus,
   type MechRequestHistoryQuery,
@@ -20,7 +21,7 @@ import {
   mechRequests,
   users,
 } from '../db/schema';
-import { archiveWhere, placeObjectVisibilityWhere } from '../lib/access';
+import { archiveWhere, mechLessorVisibilityWhere, placeObjectVisibilityWhere } from '../lib/access';
 import { searchCondition } from '../lib/pagination';
 import type { Principal } from '../auth/principal';
 
@@ -43,9 +44,34 @@ export const mechRunningRentalSql = sql`${mechRequests.status} = 'confirmed'
   AND ${mechRequests.actualFrom} is not null
   AND ${mechRequests.actualTo} is null`;
 
-/** Область модуля — одна ось: площадка эксплуатации (Р10, Р17). */
+/**
+ * The module's scope, two axes (R10, R17; lessor receipt plan, P11): the site of use for the site
+ * and department roles, and the lessor's counterparty for an executor. The list, its summary, the
+ * journal, the journal's summary and the export all ask this one function, so the lessor axis
+ * cannot be forgotten in one of them. For everyone but an executor the second term is empty.
+ */
 export function mechScopeWhere(p: Principal): SQL | undefined {
-  return placeObjectVisibilityWhere(p, mechRequests.objectId);
+  return and(
+    placeObjectVisibilityWhere(p, mechRequests.objectId),
+    mechLessorVisibilityWhere(p, mechRequests.lessorId),
+  );
+}
+
+/**
+ * **The SQL twin of `isMechLessorRentalVisible`** (contracts): the lessor's own rental, «В работе»
+ * (O12), not archived. The lessor's list asks it, and
+ * `mech-lessor-scope.db.test.ts` pins it against the predicate over a grid of rows — the two
+ * deciding differently would show a rental in the list whose card answers 404, or the other way
+ * round. Anyone who is not a mechanization lessor matches nothing, as the predicate answers.
+ */
+export function mechLessorRentalVisibleWhere(p: Principal): SQL {
+  const counterpartyId = isMechLessorSubject(p) ? p.counterpartyId : null;
+  if (!counterpartyId) return sql`false`;
+  return and(
+    eq(mechRequests.lessorId, counterpartyId),
+    eq(mechRequests.status, 'confirmed'),
+    isNull(mechRequests.deletedAt),
+  )!;
 }
 
 /**

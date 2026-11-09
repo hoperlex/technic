@@ -14,6 +14,7 @@ import {
   assertArchiveVisible,
   assertCan,
   assertLessorScope,
+  assertMechScope,
   assertOperatorScope,
   assertObjectRoleEditable,
   assertPlaceObjectScope,
@@ -31,6 +32,7 @@ import {
   type WeeklyRequestReadScope,
   vehicleRequestVisibilityWhere,
   lessorVisibilityWhere,
+  mechLessorVisibilityWhere,
   officeEquipmentScopeWhere,
   operatorVisibilityWhere,
   assertOfficeEquipmentScope,
@@ -417,6 +419,76 @@ describe('видимость заявок ТС по арендодателю (AD
     for (const role of ['admin', 'manager', 'dispatcher', 'shtab', 'observer'] as Role[]) {
       expect(lessorVisibilityWhere(principal(role), vehicles.lessorId), role).toBeUndefined();
     }
+  });
+});
+
+/**
+ * The mechanization lessor's axis (lessor receipt plan, P11): the request's own `lessor_id`. The
+ * db suite's "a vehicle lessor sees nothing" passes on the permission check alone and pins nothing
+ * about the axis — here the axis answers for a principal that does hold the permission.
+ */
+describe('mechanization rentals by the lessor (lessor receipt plan, P11)', () => {
+  it('a mechanization lessor sees the rentals of his counterparty only', () => {
+    const cond = mechLessorVisibilityWhere(
+      executor('mech_lessor', COUNTERPARTY_A),
+      mechRequests.lessorId,
+    );
+    expect(paramsOf(cond)).toEqual([COUNTERPARTY_A]);
+  });
+
+  it('a vehicle lessor holding mechRequests.read through a set still sees nothing', () => {
+    const p = executor('vehicle_lessor', COUNTERPARTY_A);
+    p.grantPermissions = ['mechRequests.read'];
+    expect(can(p, 'mechRequests.read'), 'the permission is really held').toBe(true);
+    expect(paramsOf(mechLessorVisibilityWhere(p, mechRequests.lessorId))).toEqual([NEVER_MATCH]);
+    expect(
+      statusOf(() => assertMechScope(p, { objectId: OBJECT_A, lessorId: COUNTERPARTY_A })),
+    ).toBe(404);
+  });
+
+  it('an executor without a counterparty and other executor types see nothing', () => {
+    expect(
+      paramsOf(mechLessorVisibilityWhere(principal('operator'), mechRequests.lessorId)),
+    ).toEqual([NEVER_MATCH]);
+    for (const type of ['operator', 'service'] as CounterpartyType[]) {
+      const cond = mechLessorVisibilityWhere(executor(type, COUNTERPARTY_A), mechRequests.lessorId);
+      expect(paramsOf(cond), type).toEqual([NEVER_MATCH]);
+    }
+  });
+
+  it('roles without a counterparty are not limited by the lessor axis', () => {
+    for (const role of ['admin', 'manager', 'dispatcher', 'shtab', 'observer'] as Role[]) {
+      expect(
+        mechLessorVisibilityWhere(principal(role), mechRequests.lessorId),
+        role,
+      ).toBeUndefined();
+    }
+  });
+
+  it('one request: 404 for a foreign rental or none, the site role keeps its 403', () => {
+    const lessor = executor('mech_lessor', COUNTERPARTY_A);
+    expect(
+      statusOf(() => assertMechScope(lessor, { objectId: OBJECT_B, lessorId: COUNTERPARTY_A })),
+    ).toBe(200);
+    expect(
+      statusOf(() => assertMechScope(lessor, { objectId: OBJECT_A, lessorId: COUNTERPARTY_B })),
+    ).toBe(404);
+    // Before the deal the rental is nobody's: no lessor reaches it.
+    expect(statusOf(() => assertMechScope(lessor, { objectId: OBJECT_A, lessorId: null }))).toBe(
+      404,
+    );
+    const shtab = principal('shtab', { constructionObjectIds: [OBJECT_A] });
+    expect(statusOf(() => assertMechScope(shtab, { objectId: OBJECT_B, lessorId: null }))).toBe(
+      403,
+    );
+    expect(
+      statusOf(() => assertMechScope(shtab, { objectId: OBJECT_A, lessorId: COUNTERPARTY_B })),
+    ).toBe(200);
+    expect(
+      statusOf(() =>
+        assertMechScope(principal('dispatcher'), { objectId: OBJECT_B, lessorId: null }),
+      ),
+    ).toBe(200);
   });
 });
 

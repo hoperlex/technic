@@ -51,10 +51,9 @@ import { requirePrincipal } from '../auth/plugin';
 import type { Principal } from '../auth/principal';
 import {
   assertArchiveVisible,
+  assertMechScope,
   assertObjectRoleEditable,
-  assertPlaceObjectScope,
   assertTransitionAllowed,
-  MECH_SCOPE_LABEL,
 } from '../lib/access';
 import { orderByFrom, pageParams } from '../lib/pagination';
 import { hardDeleteFiles } from '../services/request-files';
@@ -448,7 +447,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     const dto = await loadMechRequestDto(db, req.params.id);
     if (!dto) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, dto.deletedAt, 'Заявка не найдена');
-    assertPlaceObjectScope(p, dto.objectId, MECH_SCOPE_LABEL);
+    assertMechScope(p, dto);
     return dto;
   });
 
@@ -461,6 +460,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
       .select({
         id: mechRequests.id,
         objectId: mechRequests.objectId,
+        lessorId: mechRequests.lessorId,
         deletedAt: mechRequests.deletedAt,
         createdAt: mechRequests.createdAt,
         createdBy: mechRequests.createdBy,
@@ -471,7 +471,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
       .where(eq(mechRequests.id, req.params.id));
     if (!row) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
-    assertPlaceObjectScope(p, row.objectId, MECH_SCOPE_LABEL);
+    assertMechScope(p, row);
     return loadMechRequestHistory(row.id, {
       at: row.createdAt,
       actorId: row.createdBy,
@@ -503,7 +503,8 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
     createKey?: string | null,
     fingerprintOverride?: string,
   ): Promise<{ dto: MechRequestDto; repeated: boolean }> => {
-    assertPlaceObjectScope(p, input.objectId, MECH_SCOPE_LABEL);
+    // A new request has no deal yet: no lessor's rental, whoever asks.
+    assertMechScope(p, { objectId: input.objectId, lessorId: null });
     assertMechRequesterAllowed(p, input.departmentId);
     const fingerprint = createKey ? (fingerprintOverride ?? createAttemptFingerprint(input)) : null;
     const load = (id: string) => loadMechRequestDto(db, id);
@@ -672,7 +673,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         const source = await loadMechRequestDto(db, req.params.id);
         if (!source) throw err.notFound('Заявка не найдена');
         assertArchiveVisible(p, source.deletedAt, 'Заявка не найдена');
-        assertPlaceObjectScope(p, source.objectId, MECH_SCOPE_LABEL);
+        assertMechScope(p, source);
         // A pre-directory source may have no model link. The copy cannot satisfy the current model
         // requirement, and the old model name was not retained for a useful error label.
         if (!source.mechModelId) {
@@ -803,7 +804,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         // комментарий старой заявки.
         const objectId = body.objectId ?? row.objectId;
         if (objectChanged || departmentChanged) {
-          assertPlaceObjectScope(p, objectId, MECH_SCOPE_LABEL);
+          assertMechScope(p, { objectId, lessorId: row.lessorId });
           assertMechRequesterAllowed(p, nextDepartmentId);
           await assertMechPairAssignable(tx, objectId, nextDepartmentId);
         }
@@ -1455,7 +1456,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         // требовать здесь оба значило бы закрыть ручку тому, кому её и открывали.
         const row = await lockMechRequest(tx, id);
         if (!row) throw err.notFound('Заявка не найдена');
-        assertPlaceObjectScope(p, row.objectId, MECH_SCOPE_LABEL);
+        assertMechScope(p, row);
         if (row.version !== version) throw err.conflict();
         // Живая заявка отдаётся как есть: восстанавливать нечего, а отказ на повторном нажатии
         // читался бы как поломка.
@@ -1520,7 +1521,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         // ручка отвечала бы 404 на единственную строку, ради которой заведена, — архивную.
         const row = await lockMechRequest(tx, id);
         if (!row) throw err.notFound('Заявка не найдена');
-        assertPlaceObjectScope(p, row.objectId, MECH_SCOPE_LABEL);
+        assertMechScope(p, row);
         if (row.version !== version) throw err.conflict();
         assertObjectRoleEditable(p, row.status, 'удалять');
         if (!row.deletedAt) throw err.conflict('Заявка не в архиве — сначала удалите её');
