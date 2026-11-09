@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type * as Contracts from '@technic/contracts';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { VehicleClassificationDto, WarehouseDto } from '@technic/contracts';
 import {
@@ -15,6 +16,17 @@ import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
 import { freightRequest, vehicleFeed, vehicleSummary } from './factories/vehicle';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
+
+/**
+ * These scenarios pin what the form puts into the create body, and their directory fixtures use
+ * readable identifiers (`obj-1`, `vt-1`). The editor refuses a body that fails the route schema
+ * before it freezes the attempt (ADR 0247), and the real schema wants UUIDs, so the check is stubbed
+ * here; the refusal itself is pinned in `vehicle-request-create-prevalidation.test.tsx`.
+ */
+vi.mock('@technic/contracts', async (importOriginal) => ({
+  ...(await importOriginal<typeof Contracts>()),
+  createVehicleRequestStableSchema: { safeParse: () => ({ success: true }) },
+}));
 
 /**
  * Подбор «Объект/отдел» в разделе «Заказ автотехники» (план `docs/department-requests-plan.md`,
