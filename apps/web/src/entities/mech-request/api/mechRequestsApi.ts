@@ -1,17 +1,21 @@
 import type {
+  AttachMechLessorReceiptInput,
   ChangeMechRequestStatusInput,
   CreateMechRequestInput,
   DecideMechExtensionInput,
+  DecideMechLessorReceiptInput,
   IssueMechRequestInput,
   MechRequestDto,
   MechRequestHistorySummaryDto,
   MechRequestSummaryDto,
   RequestHistoryEntryDto,
   RequestMechExtensionInput,
+  MechLessorReceiptReplyDto,
   RevokeMechIssueInput,
   SetMechRequestApprovalInput,
   UpdateMechDealInput,
   UpdateMechRequestInput,
+  WaiveMechLessorReceiptInput,
 } from '@technic/contracts';
 import {
   apiDownload,
@@ -127,6 +131,25 @@ export const mechRequestsApi = {
   /** Withdraw the pending request; the version goes in the query, as with deletion. */
   withdrawExtension: (id: string, version: number) =>
     apiFetch<MechRequestDto>(`${PATH}/${id}/extension`, { method: 'DELETE', query: { version } }),
+
+  /*
+   * The lessor's receipt (lessor receipt plan, P5–P7). The three doors answer the request's new
+   * version and the receipt block, not the whole request: the caller drops the module's cache and
+   * the card reads itself again. Attaching is also the lessor's own write door — his page calls the
+   * same method from his account.
+   */
+  /** Attach a receipt, or replace the current version. */
+  attachLessorReceipt: (id: string, body: AttachMechLessorReceiptInput) =>
+    apiFetch<MechLessorReceiptReplyDto>(`${PATH}/${id}/lessor-receipt`, { method: 'POST', body }),
+  /** Approve, reject or revoke — always of the version the window showed (`receiptId`). */
+  decideLessorReceipt: (id: string, body: DecideMechLessorReceiptInput) =>
+    apiFetch<MechLessorReceiptReplyDto>(`${PATH}/${id}/lessor-receipt`, { method: 'PATCH', body }),
+  /** The «без чека» visa: completion without a receipt, with its reason. */
+  waiveLessorReceipt: (id: string, body: WaiveMechLessorReceiptInput) =>
+    apiFetch<MechLessorReceiptReplyDto>(`${PATH}/${id}/lessor-receipt/waiver`, {
+      method: 'POST',
+      body,
+    }),
 
   /**
    * Дублирование (Р3): «нужны две виброплиты» — две заявки, потому что ставка задаётся за единицу.

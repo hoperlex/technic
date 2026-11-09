@@ -1,15 +1,25 @@
 import { Space, Tag, Tooltip } from 'antd';
 import {
+  mechLessorReceiptMark,
+  mechLessorReceiptMarkLabels,
   mechStateTag,
   mechStateTagLabels,
   requestStatusColors,
   requestStatusLabels,
+  type MechLessorReceiptMark,
   type MechStateTagKind,
   type MechTransitionState,
 } from '@technic/contracts';
 
-/** Строка, из которой тег читает всё, что ему нужно: состояние плюс причина отмены. */
-export type MechStateRow = MechTransitionState & { cancelReason?: string | null };
+/**
+ * Строка, из которой тег читает всё, что ему нужно: состояние плюс причина отмены. `deletedAt` is
+ * required: an archived row shows no receipt mark (lessor receipt plan, P16), and a caller that
+ * forgot it must not compile into a mark on the archive.
+ */
+export type MechStateRow = MechTransitionState & {
+  cancelReason?: string | null;
+  deletedAt: string | null;
+};
 
 /**
  * Цвета тегов состояния (Р2; виза — план визы, Р13). Все три предупреждающие, но разной природы, и
@@ -23,6 +33,17 @@ const STATE_COLORS: Record<MechStateTagKind, string> = {
   correction: 'volcano',
   // The same gold as the request visa: both wait for the site's signature (ADR 0171, stage 3).
   extensionPending: 'gold',
+};
+
+/**
+ * Receipt marks (lessor receipt plan, P16): «ждёт визы» gold like every signature the module waits
+ * for; a refusal red — the lessor has something to fix; «нет чека» orange, as every wait on the
+ * portal's own side.
+ */
+const RECEIPT_MARK_COLORS: Record<MechLessorReceiptMark, string> = {
+  pending: 'gold',
+  rejected: 'red',
+  missing: 'orange',
 };
 
 /**
@@ -40,6 +61,9 @@ const STATE_COLORS: Record<MechStateTagKind, string> = {
  */
 export function MechStateTag({ row }: { row: MechStateRow }) {
   const state = mechStateTag(row);
+  // A second mark, not a fifth value of the state tag: the tag is the rental's single state (ADR
+  // 0171 decision 13), and a receipt can wait for a visa in any of them.
+  const receipt = mechLessorReceiptMark(row);
   const status = (
     <Tag color={requestStatusColors[row.status]} style={{ marginInlineEnd: 0 }}>
       {requestStatusLabels[row.status]}
@@ -57,6 +81,11 @@ export function MechStateTag({ row }: { row: MechStateRow }) {
       {state && (
         <Tag color={STATE_COLORS[state]} style={{ marginInlineEnd: 0 }}>
           {mechStateTagLabels[state]}
+        </Tag>
+      )}
+      {receipt && (
+        <Tag color={RECEIPT_MARK_COLORS[receipt]} style={{ marginInlineEnd: 0 }}>
+          {mechLessorReceiptMarkLabels[receipt]}
         </Tag>
       )}
     </Space>
