@@ -1,5 +1,4 @@
-import { Form, Input, InputNumber } from 'antd';
-import type { Rule } from 'antd/es/form';
+import { Form, Input, InputNumber, type FormRule } from 'antd';
 import {
   CARGO_NAME_MESSAGE,
   isAddressVerified,
@@ -48,13 +47,13 @@ const SIDE_LABELS: Record<Side, { address: string; required: string; responsible
  * A filled volume or weight must pass the contract's own rule (`tripAmountSchema`), and the field
  * shows the contract's message. The limits are deliberately not repeated here: a copy would drift,
  * and a value the form lets through but the route's body schema refuses is a 400 before the handler
- * runs — for a create attempt that is a frozen body nobody can fix (ADR 0231).
+ * runs — for a create attempt that froze a refused body and locked the form until ADR 0247.
  *
  * An empty field passes: whether a quantity is required depends on the ordered vehicle type, and
  * only the server decides that (`cargoRequired` is a hint, not a rule). The same rule serves create
  * and edit — the database column also demands a value above zero.
  */
-const tripAmountRule: Rule = {
+const tripAmountRule: FormRule = {
   validator: (_rule, value: number | null | undefined) => {
     if (value === null || value === undefined) return Promise.resolve();
     const parsed = tripAmountSchema.safeParse(value);

@@ -195,7 +195,8 @@ export function firstTripWithoutCargoName(trips: readonly { cargoName?: string }
  *
  * Exported so the request form asks this very rule on the field instead of copying its limits: a
  * copy would drift, and a value the form lets through but the body schema refuses ends in a 400
- * before the handler runs — for a create attempt that is a frozen body that can never be sent.
+ * before the handler runs — a create attempt then freezes a body the server will never accept
+ * (ADR 0247).
  */
 export const tripAmountSchema = z
   .number()
