@@ -23,6 +23,7 @@ import {
   createAttemptFingerprint,
   createAttemptKey,
   createRequestOnce,
+  parseOriginalAttempt,
   reconcileRequestCreate,
   replayRequestCreate,
 } from '../services/request-create-attempt';
@@ -1953,6 +1954,16 @@ function customerOf(
     return { objectId: body.objectId, departmentId: null };
   }
   return { objectId: body.objectId ?? null, departmentId: body.departmentId ?? null };
+}
+
+/**
+ * A body that asks for backdated creation belongs to the correction journal, never to the ordinary
+ * receipt table. The versioned create route and both reconcile branches ask this one function, and
+ * it reads a raw body that failed the schema too: with a different rule on the raw path, a
+ * correction body with one bad field would be tombstoned in a table that does not own it.
+ */
+function isCorrectionBody(body: { operationId?: unknown; backdateReason?: unknown }): boolean {
+  return Boolean(body.operationId || body.backdateReason);
 }
 
 async function assertCustomerActive(tx: Tx, customer: RequestCustomer): Promise<void> {
@@ -4837,22 +4848,32 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     '/_create-attempts/reconcile',
     {
       preHandler: [app.authenticate],
-      schema: { body: z.object({ originalBody: createVehicleRequestStableSchema }).strict() },
+      // The body is validated below, not here: the original body may be exactly what the create
+      // route refused with a 400, and refusing it again would leave the frozen attempt unreleasable.
+      schema: { body: z.object({ originalBody: z.record(z.string(), z.unknown()) }).strict() },
     },
     async (req) => {
       const p = requirePrincipal(req);
       const key = createAttemptKey(req.headers['idempotency-key']);
       if (!key) throw err.unprocessable('Передайте ключ исходной попытки');
-      const originalBody = req.body.originalBody;
-      // The correction journal, not the ordinary receipt table, owns backdated creation.
-      if (originalBody.operationId || originalBody.backdateReason) {
+      const rawBody = req.body.originalBody;
+      const original = parseOriginalAttempt(createVehicleRequestStableSchema, rawBody);
+      if (isCorrectionBody(original.parsed ? original.body : rawBody)) {
         throw err.unprocessable('Заявка с исправлением даты сверяется по журналу коррекций');
+      }
+      if (!original.parsed) {
+        req.log.warn(
+          { kind: 'vehicle', key, issuePaths: original.issuePaths },
+          'Create attempt reconciled by key: the original body fails the create schema',
+        );
+        return reconcileRequestCreate({ key, kind: 'vehicle', actorUserId: p.id, mode: 'key' });
       }
       return reconcileRequestCreate({
         key,
         kind: 'vehicle',
         actorUserId: p.id,
-        fingerprint: createAttemptFingerprint(originalBody),
+        mode: 'fingerprint',
+        fingerprint: createAttemptFingerprint(original.body),
       });
     },
   );
@@ -4872,7 +4893,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (receiptRequired && !createKey) {
         throw err.unprocessable('Передайте ключ создания заявки');
       }
-      if (receiptRequired && (body.operationId || body.backdateReason)) {
+      if (receiptRequired && isCorrectionBody(body)) {
         throw err.unprocessable('Заявка с исправлением даты создаётся через основной маршрут');
       }
       const createFingerprint = createKey ? createAttemptFingerprint(body) : null;

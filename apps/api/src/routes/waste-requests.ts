@@ -124,6 +124,7 @@ import {
   createAttemptFingerprint,
   createAttemptKey,
   createRequestOnce,
+  parseOriginalAttempt,
   reconcileRequestCreate,
   replayRequestCreate,
 } from '../services/request-create-attempt';
@@ -1370,17 +1371,28 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     '/_create-attempts/reconcile',
     {
       preHandler: [app.authenticate],
-      schema: { body: z.object({ originalBody: replayBodySchema }).strict() },
+      // The body is validated below, not here: the original body may be exactly what the create
+      // route refused with a 400, and refusing it again would leave the frozen attempt unreleasable.
+      schema: { body: z.object({ originalBody: z.record(z.string(), z.unknown()) }).strict() },
     },
     async (req) => {
       const p = requirePrincipal(req);
       const key = createAttemptKey(req.headers['idempotency-key']);
       if (!key) throw err.unprocessable('Передайте ключ исходной попытки');
+      const original = parseOriginalAttempt(replayBodySchema, req.body.originalBody);
+      if (!original.parsed) {
+        req.log.warn(
+          { kind: 'waste', key, issuePaths: original.issuePaths },
+          'Create attempt reconciled by key: the original body fails the create schema',
+        );
+        return reconcileRequestCreate({ key, kind: 'waste', actorUserId: p.id, mode: 'key' });
+      }
       return reconcileRequestCreate({
         key,
         kind: 'waste',
         actorUserId: p.id,
-        fingerprint: createAttemptFingerprint(req.body.originalBody),
+        mode: 'fingerprint',
+        fingerprint: createAttemptFingerprint(original.body),
       });
     },
   );

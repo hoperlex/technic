@@ -221,6 +221,7 @@ describe.skipIf(!SERVER_URL)('shared request creation receipts', () => {
         key,
         kind,
         actorUserId: ACTOR,
+        mode: 'fingerprint',
         fingerprint,
       });
       void barrier.then(() => {
@@ -264,6 +265,7 @@ describe.skipIf(!SERVER_URL)('shared request creation receipts', () => {
         key,
         kind,
         actorUserId: ACTOR,
+        mode: 'fingerprint',
         fingerprint,
       });
       const firstRefusal = expect(first).rejects.toThrow('validation');
@@ -277,6 +279,7 @@ describe.skipIf(!SERVER_URL)('shared request creation receipts', () => {
           key,
           kind,
           actorUserId: ACTOR,
+          mode: 'fingerprint',
           fingerprint,
         }),
       ).toEqual(outcome);
@@ -295,6 +298,7 @@ describe.skipIf(!SERVER_URL)('shared request creation receipts', () => {
           key,
           kind,
           actorUserId: OTHER_ACTOR,
+          mode: 'fingerprint',
           fingerprint,
         }),
       ).rejects.toMatchObject({ statusCode: 409 });
@@ -316,8 +320,8 @@ describe.skipIf(!SERVER_URL)('shared request creation receipts', () => {
     const fingerprint = service.createAttemptFingerprint({ comment: 'two tabs' });
     const args = { key, kind: 'vehicle' as const, actorUserId: ACTOR, fingerprint };
     const [left, right] = await Promise.all([
-      service.reconcileRequestCreate(args),
-      service.reconcileRequestCreate(args),
+      service.reconcileRequestCreate({ ...args, mode: 'fingerprint' }),
+      service.reconcileRequestCreate({ ...args, mode: 'fingerprint' }),
     ]);
     expect(left).toEqual(right);
     expect(left.state).toBe('not-created');

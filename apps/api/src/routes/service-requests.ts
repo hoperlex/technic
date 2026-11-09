@@ -161,6 +161,7 @@ import {
   createAttemptFingerprint,
   createAttemptKey,
   createRequestOnce,
+  parseOriginalAttempt,
   reconcileRequestCreate,
   replayRequestCreate,
 } from '../services/request-create-attempt';
@@ -412,6 +413,16 @@ const FILE_NOT_LINKED = 'Файл не прикреплён к этой заяв
 // ── Числа и даты ──
 
 /** `numeric` приезжает из драйвера строкой: в DTO суммы должны быть числами. */
+/**
+ * A body with an equipment report belongs to the candidate intake receipt, never to the ordinary
+ * one. The versioned create route and both reconcile branches ask this one function, and it reads a
+ * raw body that failed the schema too: with a different rule on the raw path, a candidate body with
+ * one bad field would be tombstoned in a table that does not own it.
+ */
+function hasEquipmentCandidate(body: { equipmentCandidate?: unknown }): boolean {
+  return Boolean(body.equipmentCandidate);
+}
+
 function num(value: string | null): number | null {
   return value === null ? null : Number(value);
 }
@@ -4346,20 +4357,32 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     '/_create-attempts/reconcile',
     {
       preHandler: [app.authenticate],
-      schema: { body: z.object({ originalBody: createServiceRequestSchema }).strict() },
+      // The body is validated below, not here: the original body may be exactly what the create
+      // route refused with a 400, and refusing it again would leave the frozen attempt unreleasable.
+      schema: { body: z.object({ originalBody: z.record(z.string(), z.unknown()) }).strict() },
     },
     async (req) => {
       const p = requirePrincipal(req);
       const key = createAttemptKey(req.headers['idempotency-key']);
       if (!key) throw err.unprocessable('Передайте ключ исходной попытки');
-      if (req.body.originalBody.equipmentCandidate) {
+      const rawBody = req.body.originalBody;
+      const original = parseOriginalAttempt(createServiceRequestSchema, rawBody);
+      if (hasEquipmentCandidate(original.parsed ? original.body : rawBody)) {
         throw err.unprocessable('Сообщение о технике сверяется по отдельному ключу приёма');
+      }
+      if (!original.parsed) {
+        req.log.warn(
+          { kind: 'service', key, issuePaths: original.issuePaths },
+          'Create attempt reconciled by key: the original body fails the create schema',
+        );
+        return reconcileRequestCreate({ key, kind: 'service', actorUserId: p.id, mode: 'key' });
       }
       return reconcileRequestCreate({
         key,
         kind: 'service',
         actorUserId: p.id,
-        fingerprint: createAttemptFingerprint(req.body.originalBody),
+        mode: 'fingerprint',
+        fingerprint: createAttemptFingerprint(original.body),
       });
     },
   );
@@ -4373,7 +4396,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
       if (receiptRequired) {
-        if (body.equipmentCandidate)
+        if (hasEquipmentCandidate(body))
           throw err.unprocessable('Сообщение о технике создаётся через основной маршрут');
         if (!createAttemptKey(req.headers['idempotency-key']))
           throw err.unprocessable('Передайте ключ создания заявки');
