@@ -190,8 +190,14 @@ export function firstTripWithoutCargoName(trips: readonly { cargoName?: string }
   return trips.findIndex((trip) => trip.cargoName === undefined);
 }
 
-/** Положительное количество с не более чем 3 знаками после запятой (`numeric(12,3)`). */
-const tripAmountSchema = z
+/**
+ * A positive quantity with at most 3 decimals (`numeric(12,3)`).
+ *
+ * Exported so the request form asks this very rule on the field instead of copying its limits: a
+ * copy would drift, and a value the form lets through but the body schema refuses ends in a 400
+ * before the handler runs — for a create attempt that is a frozen body that can never be sent.
+ */
+export const tripAmountSchema = z
   .number()
   .positive('Значение должно быть больше 0')
   .max(999_999_999.999, 'Слишком большое значение')
