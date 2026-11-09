@@ -9,6 +9,8 @@ import {
   Typography,
 } from 'antd';
 import {
+  type RequestChangeDto,
+  type RequestChangeFileDto,
   type RequestHistoryEntryDto,
   requestStatusColors,
   requestStatusLabels,
@@ -69,6 +71,19 @@ const DEFAULT_STATUS_DICT: HistoryStatusDict = {
   labels: requestStatusLabels,
   colors: requestStatusColors,
 };
+
+/**
+ * The files of a change drawn by the module instead of their names as text (lessor receipt plan,
+ * P9, O8): the mechanization card turns them into links, so a receipt version opens from its own
+ * history line. Optional, and absent everywhere else: a module that passes nothing keeps the line
+ * exactly as it was. The module decides, because only it knows which of the named files the reader
+ * may still open and how — the history keeps names, not access. On the phone a tap anywhere on an
+ * event folds it, so a link drawn here stops its click from reaching the event.
+ */
+export type HistoryFilesRenderer = (
+  files: RequestChangeFileDto[],
+  change: RequestChangeDto,
+) => ReactNode;
 
 function StatusBubbles({ row, statuses }: { row: HistoryRow; statuses: HistoryStatusDict }) {
   const e = row.entry;
@@ -149,23 +164,40 @@ function hasDetails(row: HistoryRow): boolean {
 function ChangeLines({
   row,
   labels,
+  renderFiles,
 }: {
   row: HistoryRow;
   labels: Record<string, string>;
+  renderFiles?: HistoryFilesRenderer;
 }): ReactNode {
-  return row.entry?.changes.map((c, i) => (
-    <Typography.Text key={`${c.field}-${i}`} type="secondary" style={secondary}>
-      {labels[c.field] ?? c.field}: {c.from === null ? c.to : `${c.from} → ${c.to}`}
-    </Typography.Text>
-  ));
+  return row.entry?.changes.map((c, i) =>
+    renderFiles && c.files?.length ? (
+      <div key={`${c.field}-${i}`}>
+        <Typography.Text type="secondary" style={secondary}>
+          {labels[c.field] ?? c.field}:{' '}
+        </Typography.Text>
+        {renderFiles(c.files, c)}
+      </div>
+    ) : (
+      <Typography.Text key={`${c.field}-${i}`} type="secondary" style={secondary}>
+        {labels[c.field] ?? c.field}: {c.from === null ? c.to : `${c.from} → ${c.to}`}
+      </Typography.Text>
+    ),
+  );
 }
 
-function HistoryDetails({ row, labels }: { row: HistoryRow; labels: Record<string, string> }) {
+interface LineProps {
+  row: HistoryRow;
+  labels: Record<string, string>;
+  renderFiles?: HistoryFilesRenderer;
+}
+
+function HistoryDetails({ row, labels, renderFiles }: LineProps) {
   const comment = commentOf(row.entry);
   return (
     <div className="history-cell">
       {comment && <Typography.Text>{comment}</Typography.Text>}
-      <ChangeLines row={row} labels={labels} />
+      <ChangeLines row={row} labels={labels} renderFiles={renderFiles} />
       {row.details}
     </div>
   );
@@ -176,14 +208,14 @@ function HistoryDetails({ row, labels }: { row: HistoryRow; labels: Record<strin
  * колонкой. Короткая суть при них лишняя — «Исполнитель: — → ООО „Ромашка“» и «Вывезено 3 м³»
  * говорят то же самое подробнее, и одно и то же читалось бы дважды подряд.
  */
-function HistoryContent({ row, labels }: { row: HistoryRow; labels: Record<string, string> }) {
+function HistoryContent({ row, labels, renderFiles }: LineProps) {
   const comment = commentOf(row.entry);
   const spoken = (row.entry?.changes.length ?? 0) > 0 || !!row.details;
   const headline = comment ?? (spoken ? null : summaryOf(row, labels));
   return (
     <div className="history-cell">
       {headline && <Typography.Text>{headline}</Typography.Text>}
-      <ChangeLines row={row} labels={labels} />
+      <ChangeLines row={row} labels={labels} renderFiles={renderFiles} />
       {row.details}
     </div>
   );
@@ -194,6 +226,7 @@ function HistoryContent({ row, labels }: { row: HistoryRow; labels: Record<strin
 function columnsWith(
   labels: Record<string, string>,
   statuses: HistoryStatusDict,
+  renderFiles?: HistoryFilesRenderer,
 ): TableColumnsType<HistoryRow> {
   return [
     {
@@ -203,7 +236,7 @@ function columnsWith(
     },
     {
       key: 'summary',
-      render: (_v, row) => <HistoryContent row={row} labels={labels} />,
+      render: (_v, row) => <HistoryContent row={row} labels={labels} renderFiles={renderFiles} />,
     },
     {
       key: 'when',
@@ -237,11 +270,13 @@ function MobileHistoryList({
   labels,
   statuses,
   defaultExpandedKeys,
+  renderFiles,
 }: {
   rows: HistoryRow[];
   labels: Record<string, string>;
   statuses: HistoryStatusDict;
   defaultExpandedKeys?: string[];
+  renderFiles?: HistoryFilesRenderer;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(defaultExpandedKeys ?? []));
   const toggle = (key: string) =>
@@ -280,7 +315,7 @@ function MobileHistoryList({
             )}
             {expandable &&
               (open ? (
-                <HistoryDetails row={row} labels={labels} />
+                <HistoryDetails row={row} labels={labels} renderFiles={renderFiles} />
               ) : (
                 <Typography.Link style={secondary}>Подробнее</Typography.Link>
               ))}
@@ -299,11 +334,14 @@ export function RequestHistoryTable({
   statuses = DEFAULT_STATUS_DICT,
   /** Строки, раскрытые сразу на телефоне: за приложенными к ним файлами карточку и открывают. */
   defaultExpandedKeys,
+  /** Files of a change as the module draws them; not passed — their names stay text. */
+  renderFiles,
 }: {
   rows: HistoryRow[];
   labels: Record<string, string>;
   statuses?: HistoryStatusDict;
   defaultExpandedKeys?: string[];
+  renderFiles?: HistoryFilesRenderer;
 }) {
   const isMobile = useIsMobile();
 
@@ -314,6 +352,7 @@ export function RequestHistoryTable({
         labels={labels}
         statuses={statuses}
         defaultExpandedKeys={defaultExpandedKeys}
+        renderFiles={renderFiles}
       />
     );
   }
@@ -326,7 +365,7 @@ export function RequestHistoryTable({
         showHeader={false}
         pagination={false}
         rowKey="key"
-        columns={columnsWith(labels, statuses)}
+        columns={columnsWith(labels, statuses, renderFiles)}
         dataSource={rows}
       />
     </ConfigProvider>

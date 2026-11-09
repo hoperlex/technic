@@ -21,4 +21,4 @@
  */
 export { HISTORY_TITLES, KIND_TAGS } from './model/labels';
 export { RequestHistoryTable } from './ui/RequestHistory';
-export type { HistoryRow } from './ui/RequestHistory';
+export type { HistoryFilesRenderer, HistoryRow } from './ui/RequestHistory';
