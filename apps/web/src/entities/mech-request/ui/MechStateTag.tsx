@@ -47,6 +47,18 @@ const RECEIPT_MARK_COLORS: Record<MechLessorReceiptMark, string> = {
 };
 
 /**
+ * The receipt mark alone: next to the state here, and on its own in the lessor's list, where every
+ * rental is «В работе» (O12) and a state tag would repeat one word on every row.
+ */
+export function MechLessorReceiptMarkTag({ mark }: { mark: MechLessorReceiptMark }) {
+  return (
+    <Tag color={RECEIPT_MARK_COLORS[mark]} style={{ marginInlineEnd: 0 }}>
+      {mechLessorReceiptMarkLabels[mark]}
+    </Tag>
+  );
+}
+
+/**
  * Состояние аренды в строке списка и в карточке: статус заявки плюс тег того, чего статус не
  * говорит.
  *
@@ -83,11 +95,7 @@ export function MechStateTag({ row }: { row: MechStateRow }) {
           {mechStateTagLabels[state]}
         </Tag>
       )}
-      {receipt && (
-        <Tag color={RECEIPT_MARK_COLORS[receipt]} style={{ marginInlineEnd: 0 }}>
-          {mechLessorReceiptMarkLabels[receipt]}
-        </Tag>
-      )}
+      {receipt && <MechLessorReceiptMarkTag mark={receipt} />}
     </Space>
   );
 }

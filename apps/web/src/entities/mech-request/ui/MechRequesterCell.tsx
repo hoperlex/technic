@@ -4,9 +4,9 @@ import type { MechRequestDto } from '@technic/contracts';
 import { isDepartmentRequester, mechRequesterLabel } from '../model/labels';
 
 /**
- * Наименование переносится на две строки, а не обрезается в одну: площадку узнают по концу
- * названия — «…корпус 3» и «…корпус 7» различаются последним словом. Что не поместилось — в
- * подсказке наведения.
+ * The name wraps to two lines instead of being cut to one: a site is recognised by the end of its
+ * name — «…корпус 3» and «…корпус 7» differ in the last word. What does not fit is in the hover
+ * hint.
  */
 const nameBox: CSSProperties = {
   display: '-webkit-box',
@@ -16,12 +16,12 @@ const nameBox: CSSProperties = {
   overflowWrap: 'anywhere',
 };
 
-/** Адрес остаётся однострочным: он второй вопрос к списку, и высоту строки за него не отдают. */
+/** The address stays on one line: it is the list's second question, not worth the row's height. */
 const line: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
 
 /**
- * Адрес не участвует в подборе ширины колонки: при `width: 0` его вклад в max-content нулевой, а
- * при отрисовке `minWidth: '100%'` возвращает строке всю ширину ячейки.
+ * The address takes no part in sizing the column: with `width: 0` it adds nothing to max-content,
+ * and `minWidth: '100%'` gives the line the whole cell back when it is drawn.
  */
 const addressBox: CSSProperties = { width: 0, minWidth: '100%' };
 
@@ -49,17 +49,27 @@ export function MechRequesterCell({ row }: { row: MechRequestDto }) {
 }
 
 /**
- * Площадка — **место эксплуатации**, и она есть у каждой заявки (Р17). Адрес второй строкой:
- * «куда ехать забирать» спрашивают у неё чаще всего, а своего столбца адрес не стоит.
+ * The site is **where the machine works**, and every request has one (R17). The address on the
+ * second line: «where do we pick it up» is asked of it most often, and it is not worth a column.
  *
- * Отдельной ячейкой от заявителя, а не одной с ним: это два разных вопроса — «на кого расходы» и
- * «где стоит», — и у заявки отдела ответы на них разные.
+ * A cell of its own, not one with the requester: «who pays» and «where it stands» are two
+ * questions, and a department's request answers them differently.
+ *
+ * The row is narrowed to the site's fields so that the lessor's list (lessor receipt plan, P12)
+ * draws its site the same way: his DTO carries no site code, and the hint then names the site alone.
  */
-export function MechPlaceCell({ row }: { row: MechRequestDto }) {
+export function MechPlaceCell({
+  row,
+}: {
+  row: Pick<MechRequestDto, 'objectName' | 'objectAddress'> & { objectCode?: string | null };
+}) {
   const address = row.objectAddress.trim();
   return (
     <div style={{ lineHeight: 1.35 }}>
-      <div style={nameBox} title={`${row.objectCode} — ${row.objectName}`}>
+      <div
+        style={nameBox}
+        title={row.objectCode ? `${row.objectCode} — ${row.objectName}` : row.objectName}
+      >
         {row.objectName}
       </div>
       {address && (

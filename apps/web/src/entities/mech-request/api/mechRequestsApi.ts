@@ -5,6 +5,7 @@ import type {
   DecideMechExtensionInput,
   DecideMechLessorReceiptInput,
   IssueMechRequestInput,
+  MechLessorRentalDto,
   MechRequestDto,
   MechRequestHistorySummaryDto,
   MechRequestSummaryDto,
@@ -150,6 +151,17 @@ export const mechRequestsApi = {
       method: 'POST',
       body,
     }),
+
+  /*
+   * The mechanization lessor's read doors (lessor receipt plan, P12): his rentals «В работе» in his
+   * own allow-listed DTO. Only a lessor account passes them; every other door of the module refuses
+   * him, so his page never calls the office methods above except `attachLessorReceipt`.
+   */
+  /** His rentals: the period, the receipt state and a search over what his card shows. */
+  lessorRentals: (query: Query) =>
+    apiFetch<ListResult<MechLessorRentalDto>>(`${PATH}/lessor-rentals`, { query }),
+  /** One of his rentals; 404 once it left «В работе» or was never his. */
+  lessorRental: (id: string) => apiFetch<MechLessorRentalDto>(`${PATH}/lessor-rentals/${id}`),
 
   /**
    * Дублирование (Р3): «нужны две виброплиты» — две заявки, потому что ставка задаётся за единицу.

@@ -1,20 +1,20 @@
 import { createQueryKeys, type Query } from '@shared/api';
 
 /**
- * Ключи запросов заявок на аренду механизации (план `docs/mechanization-module-plan.md`).
+ * Query keys of mechanization rental requests (plan `docs/mechanization-module-plan.md`).
  *
- * Семейства разведены по виду вопроса, а не по экрану: список со своими фильтрами, карточка по
- * идентификатору (её открывают ссылкой, минуя список), история заявки и сводка над списком. Под
- * общим ключом карточка, открытая из архива, затирала бы страницу рабочего списка — кто спросил
- * вторым, тот и определил бы ответ обоим.
+ * Families are split by the kind of question, not by the screen: the list with its filters, the
+ * card by id (it is opened by a link, bypassing the list), the request's history and the summary
+ * above the list. Under one key a card opened from the archive would overwrite the page of the
+ * working list — whoever asked second would decide the answer for both.
  *
- * Сводка — семейство внутри заявок, а не свой корень: её четыре числа считаются по тем же
- * заявкам теми же предикатами Р2 и устаревают от тех же событий. Свой корень означал бы шапку,
- * которая после отметки выдачи продолжает показывать заявку «ждущей подачи».
+ * The summary is a family inside the requests, not a root of its own: its four numbers are counted
+ * over the same requests by the same R2 predicates and go stale on the same events. A root of its
+ * own would mean a header that keeps showing a request "awaiting issue" after the issue was marked.
  *
- * Семейства подсказки видов здесь больше нет: предмет заявки выбирается из справочника моделей
- * (ADR 0156), и перечень живёт своим ключом в слайсе `entities/mech-model` — он не про заявки, и
- * заведение новой его не устаревает.
+ * The model hint family is gone: the subject of a request is picked from the model directory
+ * (ADR 0156), and that list lives under its own key in `entities/mech-model` — it is not about
+ * requests, and filing a new one does not make it stale.
  */
 export const mechRequestKeys = createQueryKeys('mech-requests', {
   list: (params: Query) => ['list', params],
@@ -22,16 +22,24 @@ export const mechRequestKeys = createQueryKeys('mech-requests', {
   history: (id: string) => ['history', id],
   summary: (params: Query) => ['summary', params],
   /**
-   * Журнал закрытых заявок и его итог (Э3): «Выполнена» и «Отменена» за выбранный отбор.
+   * The journal of closed requests and its total (E3): «Выполнена» and «Отменена» over the chosen
+   * filter.
    *
-   * Имя `closed`, а не `history`: `history` в этом же наборе занята лентой событий одной заявки, и
-   * два разных вопроса под одним префиксом гасили бы друг друга — отметка выдачи в карточке
-   * сбрасывала бы страницу журнала, открытую рядом.
+   * Named `closed`, not `history`: `history` in this same set is taken by one request's event feed,
+   * and two different questions under one prefix would drop each other — marking an issue in the
+   * card would reset the journal page opened next to it.
    *
-   * Итог — своё семейство, а не хвост списка: он считается по отбору целиком, без страницы и
-   * порядка, и общий ключ заставлял бы пересчитывать все шесть чисел на каждый переход по
-   * страницам.
+   * The total is a family of its own, not a tail of the list: it is counted over the whole filter,
+   * without a page or an order, and a shared key would recount all six numbers on every page turn.
    */
   closed: (params: Query) => ['closed', params],
   closedSummary: (params: Query) => ['closed-summary', params],
+  /**
+   * The mechanization lessor's own list and card (lessor receipt plan, P12): other doors and
+   * another DTO, so families of their own — an office card and a lessor card of the same id must
+   * never answer for each other. Under the module's root on purpose: the receipt doors drop the
+   * whole root when they settle, and the lessor's attach must refresh his list and card with it.
+   */
+  lessorList: (params: Query) => ['lessor-list', params],
+  lessorDetail: (id: string) => ['lessor-detail', id],
 });

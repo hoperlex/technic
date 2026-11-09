@@ -26,7 +26,7 @@ export {
 } from './model/labels';
 export { isMechStaleError, mechFailureText, MECH_STALE_MESSAGE } from './model/failure';
 export { MechRequestContext } from './ui/MechRequestContext';
-export { MechStateTag } from './ui/MechStateTag';
+export { MechLessorReceiptMarkTag, MechStateTag } from './ui/MechStateTag';
 export type { MechStateRow } from './ui/MechStateTag';
 export { MechTermCell } from './ui/MechTermCell';
 export type { MechTermRow } from './ui/MechTermCell';
