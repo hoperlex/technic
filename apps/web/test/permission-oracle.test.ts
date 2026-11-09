@@ -20,6 +20,7 @@ import {
   canRunServiceBulkOperation,
   canUseServiceBulk,
   isWaitingOn,
+  mechLessorReceiptAccess,
   MODULE_GRANTS,
   PERMISSIONS,
   permissionsFor,
@@ -27,6 +28,7 @@ import {
   type AccessSubject,
   type AuthUser,
   type CatalogGrant,
+  type MechLessorReceiptVersionDto,
   type MechRequestDto,
   type Permission,
   type ServiceRequestDto,
@@ -269,6 +271,53 @@ function calendar(user: AuthUser, can: Can): unknown {
   });
 }
 
+/** A lessor receipt version in a given state (lessor receipt plan, P1). */
+function receiptVersion(
+  status: MechLessorReceiptVersionDto['status'],
+): MechLessorReceiptVersionDto {
+  return {
+    id: `lr-${status}`,
+    versionNo: 1,
+    status,
+    file:
+      status === 'waived'
+        ? null
+        : { id: 'f-lr', filename: 'чек.pdf', contentType: 'application/pdf', size: 1 },
+    createdBy: 'user-1',
+    createdByName: 'Диспетчеров Д. П.',
+    createdAs: 'office',
+    createdAt: '2026-08-04T08:00:00.000Z',
+    decidedBy: status === 'pending' ? null : 'user-r',
+    decidedByName: status === 'pending' ? null : 'Прорабов П. П.',
+    decidedAt: status === 'pending' ? null : '2026-08-05T08:00:00.000Z',
+    decisionComment: status === 'rejected' ? 'Не видно суммы' : '',
+    retiredAt: null,
+    retiredByName: null,
+    retiredReason: null,
+  };
+}
+
+/*
+ * A running rental taken into work after the receipt's release. Its lessor `cp-1` is the
+ * counterparty `shipped()` gives every counterparty subject, so the mechanization lessor's branch
+ * of `mechLessorReceiptAccess` (his own rental, the replace rule of O13) is walked as well.
+ */
+const receiptRental = (
+  lessorReceipt: MechLessorReceiptVersionDto | null,
+  over: Partial<MechRequestDto> = {},
+): MechRequestDto =>
+  mechRequest({
+    status: 'confirmed',
+    approvedAt: '2026-08-02T08:00:00.000Z',
+    lessorId: 'cp-1',
+    lessorType: 'mech_lessor',
+    actualFrom: '2026-08-03',
+    lessorReceiptRequired: true,
+    lessorReceipt,
+    lessorReceiptVersionCount: lessorReceipt ? 1 : 0,
+    ...over,
+  });
+
 const MECH_REQUESTS: readonly MechRequestDto[] = [
   mechRequest(),
   mechRequest({ objectId: 'obj-2' }),
@@ -302,6 +351,17 @@ const MECH_REQUESTS: readonly MechRequestDto[] = [
     },
   }),
   mechRequest({ status: 'done', actualFrom: '2026-08-03', actualTo: '2026-08-10' }),
+  // The lessor receipt (lessor receipt plan, P15): none yet, waiting, rejected, approved, waived —
+  // every button of the block and the menu, and the completion held by the gate.
+  receiptRental(null),
+  receiptRental(receiptVersion('pending')),
+  receiptRental(receiptVersion('rejected')),
+  receiptRental(receiptVersion('approved')),
+  receiptRental(receiptVersion('waived')),
+  // A pending receipt on a rental of the department, and one cancelled after the attach: the visa
+  // circle and the "decide a cancelled one" rule of P5.
+  receiptRental(receiptVersion('pending'), { departmentId: 'dep-1' }),
+  receiptRental(receiptVersion('pending'), { status: 'cancelled', actualFrom: null }),
 ];
 
 const noop = () => {};
@@ -310,6 +370,9 @@ const noop = () => {};
 function mechMenu(user: AuthUser, can: Can): unknown {
   return MECH_REQUESTS.map((request) => ({
     visa: canApproveMechRequest(user, request, can),
+    // The receipt block's buttons ask the same predicate as the menu; pinned directly too, so a
+    // block that read the matrix would differ here even where the menu hides an item.
+    receipt: mechLessorReceiptAccess(user, { ...request, lessorVersionCount: 0 }, can),
     items: mechMenuItems(request, {
       user,
       can,
@@ -338,7 +401,7 @@ function mechMenu(user: AuthUser, can: Can): unknown {
         remove: noop,
         withdrawExtension: noop,
       },
-    }).map((item) => item.key),
+    }).map((item) => (item.disabled ? `${item.key} (disabled)` : item.key)),
   }));
 }
 
