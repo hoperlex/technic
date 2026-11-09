@@ -34,15 +34,15 @@
     },
     "vehicle-requests": {
       "source": "src/pages/vehicle/VehicleRequestsPage.tsx",
-      "gzip": 677566,
+      "gzip": 678256,
       "tabs": [
         {
           "source": "src/pages/vehicle/VehicleRequestsTab.tsx",
-          "gzip": 677566
+          "gzip": 678256
         },
         {
           "source": "src/pages/vehicle/VehicleRequestsOnSiteTab.tsx",
-          "gzip": 618827
+          "gzip": 619145
         },
         {
           "source": "src/widgets/vehicle-request-history/index.ts",
@@ -60,19 +60,19 @@
     },
     "garage": {
       "source": "src/pages/garage/GaragePage.tsx",
-      "gzip": 630035,
+      "gzip": 630351,
       "tabs": [
         {
           "source": "src/pages/garage/GarageVehiclesTab.tsx",
-          "gzip": 619487
+          "gzip": 619818
         },
         {
           "source": "src/pages/garage/GarageDriversTab.tsx",
-          "gzip": 590817
+          "gzip": 591132
         },
         {
           "source": "src/pages/garage/ReadingsTab.tsx",
-          "gzip": 630035
+          "gzip": 630351
         },
         {
           "source": "src/pages/garage/AutoPartsTab.tsx",
