@@ -13,19 +13,20 @@ export const COUNTERPARTY_TYPES = [
   'supplier',
   'service',
   /*
-   * Арендодатель механизации (план `docs/mechanization-module-plan.md`, Р6). Свой тип, а не
-   * расширение `vehicle_lessor`: тип у контрагента один, ИНН уникален, и компания, сдающая и ТС, и
-   * виброплиты, обоими типами быть не может. Арендодателем в заявке механизации допускаются оба —
-   * уже заведённому арендодателю ТС тип не меняют, иначе сломались бы права его учёток и его
-   * техника.
+   * Mechanization lessor (plan `docs/mechanization-module-plan.md`, R6). A type of its own, not an
+   * extension of `vehicle_lessor`: a counterparty has one type and a unique INN, so a company that
+   * rents out both vehicles and vibratory plates cannot be both. The server assigns only this type
+   * as the lessor of a rental (ADR 0152 decision 6); the base still accepts a `vehicle_lessor` there,
+   * so going back would cost code, not a schema rollout.
    *
-   * Учёток за таким контрагентом не заводят вовсе: список прав типа пуст
-   * (`COUNTERPARTY_TYPE_PERMISSIONS`), и `COUNTERPARTY_TYPES_WITH_ACCOUNTS` считается из непустых.
+   * Since ADR 0248 such a counterparty has accounts: its list in `COUNTERPARTY_TYPE_PERMISSIONS` is
+   * `mechRequests.read` and `mechRequests.lessorReceipt`, which puts it into
+   * `COUNTERPARTY_TYPES_WITH_ACCOUNTS` and the account form.
    *
-   * Стоит последним, а не рядом с арендодателем ТС: порядок значений здесь повторяет порядок
-   * enum'а в базе, а `ALTER TYPE ... ADD VALUE` без `BEFORE` дописывает значение в конец (так
-   * пришли `supplier` и `service`). Разойдись они — фильтр справочника предлагал бы типы в одном
-   * порядке, а сортировка по колонке `type` возвращала бы в другом.
+   * Last, not next to the vehicle lessor: the order here repeats the order of the database enum, and
+   * `ALTER TYPE ... ADD VALUE` without `BEFORE` appends the value (so came `supplier` and `service`).
+   * Were they to diverge, the directory filter would offer the types in one order and a sort by the
+   * `type` column would return them in another.
    */
   'mech_lessor',
 ] as const;

@@ -268,10 +268,11 @@ export const counterpartyTypeEnum = pgEnum('counterparty_type', [
   'supplier',
   // Сервисная компания (ADR 0085, миграция 0103): исполнитель заявок на обслуживание оргтехники.
   'service',
-  // Арендодатель малой механизации (миграция 0237). Список прав у типа ПУСТ: учёток за таким
-  // контрагентом не заводят вовсе, поэтому размывать права нечем. Арендодателем заявки механизации
-  // при этом бывает и `vehicle_lessor` — у контрагента ровно один тип, и компанию, уже заведённую
-  // арендодателем ТС, переводить сюда значило бы сломать права её учёток и её технику в парке.
+  // Lessor of small mechanization (migration 0237). Since ADR 0248 the type has accounts: its list
+  // is `mechRequests.read` and `mechRequests.lessorReceipt` (his rentals in work and their receipts),
+  // and no permission set can add to it. The base still accepts a `vehicle_lessor` as the lessor of
+  // a rental (`mech_requests_lessor_type_check`) although the server assigns only this type
+  // (ADR 0152 decision 6): such rentals are invisible to every lessor account.
   'mech_lessor',
 ]);
 // Кем человек назвал себя при регистрации (ADR 0034). Это пожелание, не роль: права даёт

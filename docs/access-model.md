@@ -85,10 +85,12 @@ right itself still implies no readings.
 выдать». У большинства учёток из четырёх слагаемых заполнено одно — роль, — и субъект совпадает с
 ней. У исполнителя тип контрагента решает, в каком модуле он работает:
 
-| Субъект         | Тип контрагента  | Модуль       | Что видит                                |
-| --------------- | ---------------- | ------------ | ---------------------------------------- |
-| Оператор вывоза | `operator`       | Вывоз мусора | заявки, назначенные его контрагенту      |
-| Арендодатель ТС | `vehicle_lessor` | Заказ ТС     | заявки, на которые назначена его техника |
+| Subject              | Counterparty type | Module         | What it sees                                                            |
+| -------------------- | ----------------- | -------------- | ----------------------------------------------------------------------- |
+| Waste operator       | `operator`        | «Вывоз мусора» | requests assigned to its counterparty                                   |
+| Vehicle lessor       | `vehicle_lessor`  | «Заказ ТС»     | requests its vehicles are assigned to                                   |
+| Service company      | `service`         | «Оргтехника»   | service requests assigned to its company                                |
+| Mechanization lessor | `mech_lessor`     | «Механизация»  | its rentals «В работе» in a narrow card; attaches their receipts (§9.5) |
 
 Роль отвечает «кем человек работает», тип контрагента — «по какому предмету». Второй роли под
 арендодателя нет намеренно: она отличалась бы от первой только модулем и требовала бы ручной
@@ -172,13 +174,15 @@ client floor.
 модуля отбивается ему барьером выдачи. Реестр профилей —
 `packages/contracts/src/office-equipment-profiles.ts`.
 
-Административные четыре заведены (миграция `0150`) и не выданы никому: они снимают с администратора
-работу, не требующую администратора, но кому именно — решение не кода. Три ролевых (`0153`)
-замещают упраздняемые роли и держателям старых ролей уже выданы шагом prepare — молча, до перевода
-(`0155`, `0156`). Свободная сборка при этом не безгранична: шесть прав не выдаются набором вовсе
+The four administrative sets were created (migration `0150`) and are held by nobody: they take
+work that needs no administrator off the administrator, but whom to give it to is not the code's
+decision. The three role sets (`0153`) replace the retiring roles and were already given to the
+holders of the old roles by the prepare step — silently, before the transfer (`0155`, `0156`). Free
+assembly is not unlimited either: six permissions are never given by a set
 (`NON_GRANTABLE_PERMISSIONS` — `records.purge`, `users.manage`, `waybills.correctBeyondLimit`,
-`autoParts.delete` и оба права кабинета водителя), назначаемых поэтому 72 из 78. Что ещё стережёт выдачу — требования прав
-друг к другу, конфликты обязанностей и матрицу «ось × модуль» — см. §7.1.
+`autoParts.delete` and both driver cabinet permissions), so 81 of 87 are assignable. What else
+guards a grant — the requirements between permissions, the conflicts of duties and the "axis ×
+module" matrix — see §7.1.
 
 ## 2. Матрица прав
 
@@ -195,8 +199,8 @@ client floor.
 администратора и ничего не открывает. У роли `site` по той же причине пусты заказ ТС,
 недельная заявка и обе визы: они уехали в наборы «Заказ техники» и «Виза объекта».
 
-The dictionary holds 86 rights, 14 roles. Only the administrator has the full set; then, in
-descending order (02.11.2026, after ADR 0241): manager 45, dispatcher 42, construction head 26,
+The dictionary holds 87 rights, 14 roles. Only the administrator has the full set; then, in
+descending order (09.11.2026, after ADR 0248): manager 46, dispatcher 43, construction head 26,
 shtab and department head 23 each, department 21, site and chief mechanic 12 each, mechanic 10,
 commandant 9, observer 7, driver 2, external executor 1 (the rest comes from the counterparty
 type).
@@ -234,6 +238,14 @@ type).
 | `weeklyRequests.create`           |  ✅   |   ✅    |     ✅     |  ✅   |    ✅    |     —      |  —   |     —      |        —        |    —     |    —     |
 | `weeklyRequests.update`           |  ✅   |   ✅    |     ✅     |  ✅   |    ✅    |     —      |  —   |     —      |        —        |    —     |    —     |
 | `weeklyRequests.approve` (виза)   |  ✅   |    —    |     —      |   —   |    ✅    |     —      |  —   |     —      |        —        |    —     |    —     |
+| `mechRequests.read`               |  ✅   |   ✅    |     ✅     |  ✅   |    ✅    |     ✅     |  —   |     ✅     |       ✅        |    —¹    |    ✅    |
+| `mechRequests.create`             |  ✅   |   ✅    |     ✅     |  ✅   |    ✅    |     ✅     |  —   |     ✅     |       ✅        |    —     |    —     |
+| `mechRequests.update`             |  ✅   |   ✅    |     ✅     |  ✅   |    ✅    |     ✅     |  —   |     ✅     |       ✅        |    —     |    —     |
+| `mechRequests.delete`             |  ✅   |   ✅    |     ✅     |  ✅   |    ✅    |     ✅     |  —   |     ✅     |       ✅        |    —     |    —     |
+| `mechRequests.status`             |  ✅   |   ✅    |     ✅     |   —   |    —     |     —      |  —   |     —      |        —        |    —     |    —     |
+| `mechRequests.extend`             |  ✅   |    —    |     ✅     |   —   |    —     |     —      |  —   |     —      |        —        |    —     |    —     |
+| `mechRequests.lessorReceipt`      |  ✅   |   ✅    |     ✅     |   —   |    —     |     —      |  —   |     —      |        —        |    —¹    |    —     |
+| `mechRequests.approve` (виза)     |  ✅   |    —    |     —      |   —   |    ✅    |     —      |  —   |     —      |       ✅        |    —     |    —     |
 | `drivers.read`²                   |  ✅   |   ✅    |     ✅     |   —   |    —     |     —      |  —   |     —      |        —        |    —     |    —     |
 | `drivers.write`²                  |  ✅   |   ✅    |     ✅     |   —   |    —     |     —      |  —   |     —      |        —        |    —     |    —     |
 | `waybills.read`²                  |  ✅   |   ✅    |     ✅     |   —   |    —     |     —      |  —   |     —      |        —        |    —     |    —     |
@@ -288,22 +300,24 @@ Beyond the common `directories.read`: the mechanic — `garage.read`, `waybills.
 `waybills.cancel` and `drivers.write`; the driver — exactly the two cabinet rights and **nothing**
 else, `directories.read` included.
 
-Модульные права исполнителя перечислены своей матрицей — `COUNTERPARTY_TYPE_PERMISSIONS` в том же
-файле:
+The executors' module permissions are listed by a matrix of their own —
+`COUNTERPARTY_TYPE_PERMISSIONS` in the same file:
 
-| Право                            | оператор вывоза (`operator`) | арендодатель ТС (`vehicle_lessor`) | сервисная компания (`service`) |
-| -------------------------------- | :--------------------------: | :--------------------------------: | :----------------------------: |
-| `wasteRequests.read`             |              ✅              |                 —                  |               —                |
-| `wasteRequests.status`           |              ✅              |                 —                  |               —                |
-| `wasteRequests.operatorComment`⁴ |              ✅              |                 —                  |               —                |
-| `vehicleRequests.read`           |              —               |                 ✅                 |               —                |
-| `vehicleRequests.status`         |              —               |                 ✅                 |               —                |
-| `weeklyRequests.read`⁵           |              —               |                 ✅                 |               —                |
-| `serviceRequests.read`           |              —               |                 —                  |               ✅               |
-| `serviceRequests.estimate`³      |              —               |                 —                  |               ✅               |
-| `serviceRequests.status`         |              —               |                 —                  |               ✅               |
-| `serviceRequests.files`          |              —               |                 —                  |               ✅               |
-| `serviceRequests.finance`⁶       |              —               |                 —                  |               ✅               |
+| Permission                       | waste operator (`operator`) | vehicle lessor (`vehicle_lessor`) | service company (`service`) | mechanization lessor (`mech_lessor`) |
+| -------------------------------- | :-------------------------: | :-------------------------------: | :-------------------------: | :----------------------------------: |
+| `wasteRequests.read`             |             ✅              |                 —                 |              —              |                  —                   |
+| `wasteRequests.status`           |             ✅              |                 —                 |              —              |                  —                   |
+| `wasteRequests.operatorComment`⁴ |             ✅              |                 —                 |              —              |                  —                   |
+| `vehicleRequests.read`           |              —              |                ✅                 |              —              |                  —                   |
+| `vehicleRequests.status`         |              —              |                ✅                 |              —              |                  —                   |
+| `weeklyRequests.read`⁵           |              —              |                ✅                 |              —              |                  —                   |
+| `serviceRequests.read`           |              —              |                 —                 |             ✅              |                  —                   |
+| `serviceRequests.estimate`³      |              —              |                 —                 |             ✅              |                  —                   |
+| `serviceRequests.status`         |              —              |                 —                 |             ✅              |                  —                   |
+| `serviceRequests.files`          |              —              |                 —                 |             ✅              |                  —                   |
+| `serviceRequests.finance`⁶       |              —              |                 —                 |             ✅              |                  —                   |
+| `mechRequests.read`              |              —              |                 —                 |              —              |                  ✅                  |
+| `mechRequests.lessorReceipt`⁸    |              —              |                 —                 |              —              |                  ✅                  |
 
 ³ Смета — работа исполнителя: он один знает, что именно менял и почём. Согласует её оператор
 оргтехники, и эти два права никому не выдаются вместе (кроме администратора, разбирающего ошибки) —
@@ -335,6 +349,12 @@ else, `directories.read` included.
 «Оргтехника: ИТ-служба». «Ведению» оно не нужно (у него `serviceRequests.status` с теми же дугами
 отмены), сервисной компании не выдаётся.
 
+⁸ The mechanization lessor (ADR 0248) reads his rentals «В работе» and attaches their receipts —
+no status, no edit, no visa: the deal, the issue and the completion stay the office's. These two
+permissions are the whole of his powers. The grant matrix keeps the mechanization × counterparty
+cell `forbidden`, so no set adds to them, and the module refuses him every route but his three doors
+(§9.5).
+
 У генподрядчика и подрядчика набор пуст: за них в портале работают сотрудники под собственными
 ролями, и учётку на такого контрагента завести нельзя (`COUNTERPARTY_TYPES_WITH_ACCOUNTS`
 выводится из этой же матрицы).
@@ -350,6 +370,10 @@ else, `directories.read` included.
   не перечислением: новое право у оператора вывоза обязано появиться и у арендодателя — либо
   разойтись осознанно, строкой в диффе. Разошлись они пока в двух местах: примечание исполнителя у
   вывоза и чтение недельной заявки у арендодателя.
+- **The mechanization lessor is unlike them by design.** He holds no status permission: he attaches
+  the receipt, and the office records the deal, the issue and the completion. That is also why the
+  executor status gate of `cycleTransitions` — a disjunction over modules — stays unreachable for
+  mechanization instead of being removed (ADR 0248).
 - **Заказчик и исполнитель разведены.** `shtab` и `rukstroy` заявку заводят и правят, но статусы
   («в работе», «выполнена») и назначение оператора — не их: это граница модели, а не особенность
   роли.
@@ -674,6 +698,7 @@ land in the garage; every other role with both sections starts at «Вывоз �
 | объект и отдел                                        | оргтехника: объект единицы, свои отделы (в справочнике — плюс неразмеченная техника)  | `officeEquipmentScopeWhere`, `serviceRequestScopeWhere`                        |
 | контрагент — оператор вывоза                          | только заявки вывоза своего контрагента                                               | `operatorVisibilityWhere`, `assertOperatorScope`                               |
 | контрагент — арендодатель ТС                          | только заявки, на которые назначена его техника                                       | `lessorVisibilityWhere`, `assertLessorScope`                                   |
+| counterparty — mechanization lessor                   | his rentals «В работе», by his three doors; other routes 403, a foreign rental 404    | door guard, `mechLessorVisibilityWhere`, `assertMechScope` (§9.5)              |
 | контрагент — сервисная компания                       | только назначенные ей заявки на обслуживание                                          | `serviceExecutorVisibilityWhere`, `assertServiceRequestScope`                  |
 | контрагент в чужом модуле                             | не видит ничего (явным условием, а не отсутствием права)                              | те же функции                                                                  |
 | работник (`driver`)                                   | только строки про самого себя                                                         | предиката нет: кабинет не принимает `personId` ниоткуда                        |
@@ -721,6 +746,11 @@ land in the garage; every other role with both sections starts at «Вывоз �
 видит** — до назначения она ничья. У сервисной компании то же самое: до назначения заявка на
 обслуживание ей не видна.
 
+The mechanization lessor's scope is the rental's own `lessor_id`: a rental names its lessor in the
+deal, there is no assignment to join. So he never sees a «Новая» either (it has no deal), and he
+loses a rental the moment it leaves «В работе» or its deal names another lessor. That axis is the
+second line only; the first is the module's door guard (§9.5).
+
 **Область меняет ровно один источник прав — набор «Оргтехника: ИТ-служба»** (ADR 0096, ADR 0106
 решение 2): в двух модулях оргтехники его держатель не сужается ничем, оставаясь собой во всех
 прочих. Спрашивается это по кодам наборов учётки (`hasModuleWideScope(p.grantCodes, …)`), а не по
@@ -744,7 +774,7 @@ land in the garage; every other role with both sections starts at «Вывоз �
 | нельзя активировать учётку с неподтверждённым адресом                                             | доступ выдаётся тому, кто доказал, что ящик его: иначе заявку подал бы кто угодно на чужой адрес (ADR 0072). Учётки, заведённые администратором, подтверждены по факту создания                                                                                                                                                                                                                                                                               |
 | `department` / `department_head` требуют хотя бы одного отдела; объекты и отделы вместе не бывают | учётка работает ровно на одной оси: отдел — офис, объект — площадка (ADR 0040). Держат схема (`createUserSchema`) и сервер (`resolveDepartmentIds`)                                                                                                                                                                                                                                                                                                           |
 | объектные роли (`shtab` / `rukstroy` / `commandant` / `site`) требуют хотя бы одного объекта      | без объекта роль не ограничена ничем и одновременно не видит ничего. Держит API (`resolveObjectIds`), не БД: с переходом на набор (ADR 0039, миграция `0063`) CHECK `users_rukstroy_object_check` снят — он читал колонку своей строки                                                                                                                                                                                                                        |
-| `operator` требует контрагента с правами (оператор вывоза или арендодатель ТС)                    | контрагентом заданы и область видимости, и модуль работы (CHECK `users_operator_counterparty_check`, миграция `0023`; тип проверяет сервис)                                                                                                                                                                                                                                                                                                                   |
+| `operator` requires a counterparty of a type with accounts (`COUNTERPARTY_TYPES_WITH_ACCOUNTS`)   | the counterparty sets both the scope and the module of work: waste operator, vehicle lessor, service company or mechanization lessor (CHECK `users_operator_counterparty_check`, migration `0023`; the type is checked by the service)                                                                                                                                                                                                                        |
 | нельзя сменить тип контрагента, на котором висят учётки                                           | тип задаёт их права: правка карточки справочника молча перевела бы исполнителя в другой модуль (409)                                                                                                                                                                                                                                                                                                                                                          |
 | смена контрагента у учётки ⇒ `authVersion + 1`                                                    | это смена модуля и области сразу — как и смена роли                                                                                                                                                                                                                                                                                                                                                                                                           |
 | правка отдела в справочнике (руководители, площадки) ⇒ `authVersion + 1` затронутым               | признак `is_head` живёт в строке связи, а связь задаёт область: назначенный из карточки отдела видит заявки этого отдела с ближайшего запроса, снятый — перестаёт. Смена набора площадок меняет область всем, кто в отделе состоит (ADR 0062, набором — ADR 0144), поэтому вместе с `authVersion` в той же транзакции отзываются и refresh-сессии затронутых: счётчик гасит выданные access-токены, а живая сессия иначе прозрачно выдала бы новый (ADR 0144) |
@@ -772,14 +802,14 @@ land in the garage; every other role with both sections starts at «Вывоз �
 [`packages/contracts/src/permissions.ts`](../packages/contracts/src/permissions.ts):
 
 ```text
-PERMISSIONS                    — плоский список прав (const-кортеж → тип Permission), 78 штук
-isPermission(value)            — страж границы «база → код»: право набора хранится текстом
-ROLE_PERMISSIONS               — Record<Role, Permission[]>, полный явный список на каждую роль
-COUNTERPARTY_TYPE_PERMISSIONS  — Record<CounterpartyType, Permission[]>, модуль исполнителя
-ROLE_ADDON_PERMISSIONS         — Record<RoleAddon, Permission[]>, что добавляет надстройка
+PERMISSIONS                    — flat list of permissions (const tuple → type Permission), 87
+isPermission(value)            — guard of the "base → code" border: a set's permission is stored as text
+ROLE_PERMISSIONS               — Record<Role, Permission[]>, a full explicit list per role
+COUNTERPARTY_TYPE_PERMISSIONS  — Record<CounterpartyType, Permission[]>, the executor's module
+ROLE_ADDON_PERMISSIONS         — Record<RoleAddon, Permission[]>, what an add-on adds
 AccessSubject                  — { role, counterpartyType?, addons?, grantPermissions? }
-ACCESS_PROFILES                — 24 различимых поставочных субъекта: роли, роль × тип контрагента,
-                                 роль × надстройка
+ACCESS_PROFILES                — 25 distinguishable shipped subjects: roles, role × counterparty
+                                 type, role × add-on
 ```
 
 **Право у субъекта складывается из четырёх источников, и спрашиваются они в одном порядке: роль →
@@ -939,6 +969,7 @@ const canApprove = {
 | `assertRequestScope(p, customer)`                     | 403            | то же по одной заявке; у объектной роли заявка отдела чужая, у отдела ответ считает `departmentOwnsRequest` — свой отдел ∨ своя площадка                                                                                                                                                                                                                                                          |
 | `operatorVisibilityWhere(p, operatorCol)`             | SQL            | оператору вывоза — только его контрагент                                                                                                                                                                                                                                                                                                                                                          |
 | `lessorVisibilityWhere(p, lessorCol)`                 | SQL            | арендодателю — только его техника; исполнителю чужого модуля — ничего                                                                                                                                                                                                                                                                                                                             |
+| `mechLessorVisibilityWhere(p, lessorCol)`             | SQL            | the mechanization lessor — only his counterparty's rentals, by the request's own `lessor_id`; an executor of another type — nothing; joined with the site axis in `mechScopeWhere`                                                                                                                                                                                                                |
 | `officeEquipmentScopeWhere(p, objCol, ownerCol)`      | SQL            | справочник оргтехники: объект единицы либо отдел-владелец плюс неразмеченные                                                                                                                                                                                                                                                                                                                      |
 | `serviceRequestVisibilityWhere(p)`                    | SQL            | заявки на обслуживание — **одним** условием: заказчик (объект техники и оба отдела снимка) ∨ подрядчик ∨ назначенный сотрудник с `execute`. Оси приватны: наружу отвечает только эта пара                                                                                                                                                                                                         |
 | `assertServiceRequestVisible(p, row)`                 | 403            | то же по одной заявке, с чтением назначения; `assertServiceRequestScope` — её синхронная половина «заказчик»                                                                                                                                                                                                                                                                                      |
@@ -952,6 +983,7 @@ const canApprove = {
 | `assertVehicleRequestTypeAllowed(p, type)`            | 403            | коридор типов роли расширяет её область (ADR 0201): отдел — грузоперевозки, спецтехника только с площадкой                                                                                                                                                                                                                                                                                        |
 | `assertOperatorScope(p, counterpartyId)`              | 403            | оператор вывоза — только заявки своего контрагента                                                                                                                                                                                                                                                                                                                                                |
 | `assertLessorScope(p, lessorId)`                      | 403            | арендодатель — только заявки, на которые вышла его техника                                                                                                                                                                                                                                                                                                                                        |
+| `assertMechScope(p, row)`                             | 403 / **404**  | one mechanization request on both axes: the site (403 for site roles) and the lessor (404: which ids exist is not an external party's business); asked at every door of the module                                                                                                                                                                                                                |
 | `assertArchiveVisible(p, deletedAt, msg)`             | **404**        | удалённая запись без `archive.read` как бы не существует                                                                                                                                                                                                                                                                                                                                          |
 | `archiveWhere(p, filter, deletedAtCol)`               | SQL            | что список делает с архивом (ADR 0070); без `archive.read` любое значение означает «без архива»                                                                                                                                                                                                                                                                                                   |
 | `canApproveRequest(p, customer)`                      | предикат       | право визы **и** заказчик из своих (объект или отдел)                                                                                                                                                                                                                                                                                                                                             |
@@ -1043,6 +1075,11 @@ return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
   исполнителя и роль без прав ничем не сужают — без проверки права учётка без роли скачивала бы
   вложение любой заявки вывоза по известному id. В ветке заказа ТС к заявке присоединяется
   назначение: вложения арендодателю открыты по тому же правилу, что и сами заявки.
+- **Mechanization (ADR 0248):** the requester's attachments never open for the mechanization
+  lessor, even of his own rental and by a known id. Receipt versions open by their own flag
+  `visibleMechLessorReceipt` under `mechRequests.read`: for the office within `mechScopeWhere`; of an
+  archived request too for a holder of `archive.read` in his scope, while that request's attachments
+  stay closed; for the lessor only the versions of the current deal of his rental «В работе».
 - Отдельного права на скачивание в модели нет: видит заявку — видит и её вложения. Наблюдателю,
   соответственно, доступны и вложения, и суммы в карточке.
 - **У вложений парка условие одно — связь, потому что области у их модулей нет.** Скан акта ТО
@@ -1126,6 +1163,48 @@ table, `vehicle_request_files.kind`. No permission was added:
   (`canRemoveVehicleRequestDocument`). A requester's attachment is removed by the request editor
   alone, and the editor never sees a document.
 
+### 9.5. The mechanization lessor (ADR 0248, 09.11.2026)
+
+An account of a `mech_lessor` counterparty holds exactly its type's list — `mechRequests.read` and
+`mechRequests.lessorReceipt` — and nothing can add to it: the `mech × counterparty` cell of the
+grant matrix stays `forbidden`, so barrier 3 refuses every `mechRequests.*` permission to the
+executor role, in a set and at assignment. `mechRequests.lessorReceipt` is also held by the office
+(manager, dispatcher), and `mechRequests.status` requires it for every account (§7.1).
+
+**His doors.** The module refuses an executor account by default: every route of the mechanization
+instance carries the door guard (`routes/mech-lessor-door.ts`) as its first `preValidation`, which
+answers 403 «Арендодателю доступен только список его аренд» before validation unless the route is
+marked `mechLessorDoor`. A route added tomorrow is closed to him until someone marks it. The marked
+doors:
+
+| Door                                            | What he gets                                                                                              |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/mech-requests/lessor-rentals`      | his rentals «В работе» in his own DTO; filters «Период аренды» and «Чек», soonest return first            |
+| `GET /api/v1/mech-requests/lessor-rentals/:id`  | one rental; 404 when it is not his, not in work or archived                                               |
+| `POST /api/v1/mech-requests/:id/lessor-receipt` | attach or replace his receipt: over a pending or rejected one only, 20 versions per account within a deal |
+
+An office account at his two reads gets 403 from the handler: the reply would be the lessor's shape.
+
+**Behind the guard** the lessor axis narrows every read and write of the module to his
+counterparty's rentals (`mechScopeWhere`, `assertMechScope`), and one predicate,
+`isMechLessorRentalVisible` (his counterparty, «В работе», not archived) with its SQL twin, decides
+his reads, his attach and his files. The axis alone would still answer him on the office doors in
+the office DTO — department, requester, comment, money, every status. The guard is what keeps the
+narrow view, and it is pinned twice: `route-authorization.test.ts` (present and first on every
+mechanization route) and `mech-lessor-scope.db.test.ts` (every unmarked manifest route answers a
+real lessor account 403 with an empty body).
+
+**What he sees** is an allow-list DTO built field by field: number, status, model, site and its
+address, dates, his rate and unit, the person who meets the machine, and the receipt versions of the
+current deal (`mech_requests.deal_no`) without staff names or internal reasons — only a rejection's
+reason. No department, requester, comment, requester's files, visa, worked units, final cost,
+extension or card history.
+
+**Not closed by this release:** the executor role's base `directories.read` opens the directories
+to him as to every executor (journal card «Доступ: сузить справочники для внешних исполнителей»);
+deactivating his counterparty does not end his accounts' sessions — to cut a lessor off, deactivate
+his accounts (`docs/runbook.md`).
+
 ## 10. Портал: права приходят с сервера
 
 | Уровень                 | Файл                                                      | Механизм                                                                                                                                          |
@@ -1173,7 +1252,9 @@ table, `vehicle_request_files.kind`. No permission was added:
 Исполнитель узнаётся так же — не по роли, а по
 `actsForCounterparty(user, 'operator' | 'vehicle_lessor')`: от этого зависят скрытая колонка
 «Оператор» в вывозе и скрытый фильтр «Арендодатель» в журнале заказа ТС — своё значение там
-одинаково во всех строках.
+одинаково во всех строках. The mechanization lessor is recognised by `isMechLessorSubject(user)`:
+`MechRequestsPage` gives him his own page (a lazy chunk) and never mounts the office tabs, whose
+routes would refuse him; «Механизация» is his only section and so his start page.
 
 ## 11. Тесты — независимые уровни, а не один перебор
 

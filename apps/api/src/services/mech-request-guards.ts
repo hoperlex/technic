@@ -113,20 +113,21 @@ export function assertMechRequestLive(row: LockedMechRequest, action: string): v
   }
 }
 
-// ── Назначаемость арендодателя (Р6) ──
+// ── Who may be the lessor (R6) ──
 
 /**
- * Арендодателем может быть контрагент типа «Арендодатель механизации» **или** «Арендодатель (ТС)».
- * Тип у контрагента ровно один, ИНН уникален — значит компания, уже заведённая арендодателем ТС,
- * сдаёт механизацию под своим типом: смена типа сломала бы права её учёток и её технику. Права при
- * этом не размываются — у `mech_lessor` их нет вовсе.
+ * The lessor of a rental is a counterparty of type «Арендодатель механизации», and only that type is
+ * assigned (ADR 0152 decision 6). The type also decides access: since ADR 0248 such a counterparty
+ * has accounts, and the lessor axis gives them exactly the rentals whose deal names it.
  *
- * Проверка сервисная и стоит **сверх** составного внешнего ключа, а не вместо него: ключ отвечает
- * «такое сочетание существует», сервис — «его можно выбрать сегодня» (не удалён, активен). Приём и
- * порядок отказов те же, что у `assertOperatorAssignable` в вывозе мусора.
+ * The check is a service one and stands **on top of** the composite foreign key, not instead of it:
+ * the key answers "such a combination exists", the service "it can be chosen today" (not deleted,
+ * active). The approach and the order of refusals are those of `assertOperatorAssignable` in waste
+ * removal.
  *
- * Возвращает служебные колонки ключа: тип и активность пишет ПРИЛОЖЕНИЕ, значения берутся из строки
- * контрагента, а дальше `ON UPDATE CASCADE` держит копию активности в синхронности сам.
+ * Returns the key's service columns: the APPLICATION writes the type and the activity, the values
+ * come from the counterparty row, and from then on `ON UPDATE CASCADE` keeps the activity copy in
+ * sync by itself.
  */
 export async function assertMechLessorAssignable(
   tx: MechTx,
@@ -142,13 +143,13 @@ export async function assertMechLessorAssignable(
     .from(counterparties)
     .where(eq(counterparties.id, lessorId));
   if (!cp || cp.deletedAt) throw err.badRequest('Контрагент не найден');
-  // Только свой тип. Здесь принимался ещё и «Арендодатель (ТС)» — рассуждение было в том, что одна
-  // компания сдаёт и технику, и механизацию, а тип у контрагента один. Заказчик это отверг, увидев
-  // в списке арендодателей техники: выбор превращался в поиск нужного среди чужих. Сервер обязан
-  // спрашивать ровно то же, что предлагает форма, — иначе ручка принимает то, чего в списке нет.
+  // Only its own type. «Арендодатель (ТС)» was accepted here too, on the reasoning that one company
+  // rents out both vehicles and machinery while a counterparty has one type. The customer rejected it
+  // on seeing vehicle lessors in the list: the choice turned into a search among strangers. The
+  // server must ask exactly what the form offers, or the door accepts what the list does not show.
   //
-  // Ограничение базы (`mech_requests_lessor_type_check`) при этом оставлено терпимым к обоим типам
-  // намеренно: понадобится обратное — правка здесь и в подборе портала, без миграции.
+  // The base constraint (`mech_requests_lessor_type_check`) is left tolerant of both types on
+  // purpose: going back is an edit here and in the portal's picker, without a migration.
   if (cp.type !== 'mech_lessor') {
     throw err.badRequest('Арендодателем может быть контрагент типа «Арендодатель механизации»', {
       lessorId: 'Нужен арендодатель механизации',

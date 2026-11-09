@@ -772,6 +772,104 @@ mandatory reload banner on its next request. Rolling step 2 back is `deploy-auto
 and the command permits it only while the serving release requires no more than 6. Once R2 serves,
 its requirement is 7, so lowering to 6 is refused before `prod.env` changes.
 
+### Mechanization lessor receipt and lessor accounts (ADR 0248, release 0.1.142.0248)
+
+Migration `0420` adds the receipt table, two columns of `mech_requests`, the permission
+`mechRequests.lessorReceipt` to every permission set that holds `mechRequests.status` (version +1
+each) and the eleventh branch of `file_is_linked`; `0421` is the release entry. No client floor
+raise, no maintenance mode. Before the release the owner confirmed (survey of 09.11.2026) that every
+site with mechanization rentals in work has a visa holder and that no rental in work has a
+`vehicle_lessor` as its lessor; ask again if the deploy is weeks later.
+
+**1. No edits of permission sets between the migration and the restart.** Until `up -d` the old
+API serves, reads `mechRequests.lessorReceipt` as an unknown string and **deletes it** from a set
+on any save of that set's contents. Tell the administrators not to save anything under
+«Администрирование» → «Права» for the duration of the deploy. An editor opened before the migration
+is safe: the version bump turns its save into a 409.
+
+**2. After the restart, sets that run rentals must also attach receipts.** Through `db-tools`
+(the connection command is in «A migration fails with `canceling statement due to lock timeout`»):
+
+```sql
+-- Permission sets holding mechRequests.status without mechRequests.lessorReceipt.
+-- Expected: no rows (deleted sets are included on purpose: a restore must be consistent).
+SELECT g.id, g.code, g.name, g.version, g.deleted_at
+  FROM grants g
+ WHERE EXISTS (SELECT 1 FROM grant_permissions gp
+                WHERE gp.grant_id = g.id AND gp.permission = 'mechRequests.status')
+   AND NOT EXISTS (SELECT 1 FROM grant_permissions gp
+                    WHERE gp.grant_id = g.id AND gp.permission = 'mechRequests.lessorReceipt')
+ ORDER BY g.code;
+```
+
+A row means a set lost the permission in the window (step 1 was broken). Repair is the data step of
+`0420` again — idempotent, it touches only the sets that lack the row and moves their version so an
+open editor gets a 409 instead of saving over it:
+
+```sql
+BEGIN;
+WITH touched AS (
+  INSERT INTO grant_permissions (grant_id, permission)
+  SELECT grant_id, 'mechRequests.lessorReceipt'
+    FROM grant_permissions
+   WHERE permission = 'mechRequests.status'
+  ON CONFLICT (grant_id, permission) DO NOTHING
+  RETURNING grant_id
+)
+UPDATE grants SET version = version + 1, updated_at = now()
+ WHERE id IN (SELECT grant_id FROM touched);
+COMMIT;
+```
+
+Then run the first query again: no rows. Holders need no re-login — the API reads a set's
+permissions on every request. Until the repair, barrier 4 refuses saving such a set, and any access
+change of its holders, whenever a holder's role does not bring `mechRequests.lessorReceipt` itself
+(«Ведущий аренду прикрепляет и чек арендодателя»).
+
+**3. The storage bucket answers the receipt preview from the portal's origin.** The preview reads a
+PDF with pdf.js by one plain `GET` of the signed link, straight from the bucket (files never pass
+through the API, see «Загрузка файлов (S3 / CORS)»). `$DOWNLOAD_URL` is the `url` of
+`GET /api/v1/files/<id>/download?disposition=inline` for any PDF attachment (the browser's network
+tab, opening the file in any card):
+
+```bash
+curl -i -X OPTIONS "$DOWNLOAD_URL" \
+  -H 'Origin: https://auto.su10.ru' \
+  -H 'Access-Control-Request-Method: GET'
+curl -s -D - -o /dev/null "$DOWNLOAD_URL" -H 'Origin: https://auto.su10.ru'
+```
+
+The first answer (`200`/`204`) carries `Access-Control-Allow-Origin: https://auto.su10.ru` and
+`GET` among `Access-Control-Allow-Methods`; the second is `200` with the same
+`Access-Control-Allow-Origin`. Without it the visa window shows no receipt while «Скачать» still
+works: fix the bucket's CORS rule (`docs/setup-infra.md` §3, `AllowedMethods` with `GET`), not the
+portal. The origin is the address people open, the same as `PUBLIC_ORIGIN`.
+
+**4. Smoke.** As a dispatcher, attach a PDF to a rental «В работе»; as its site's visa holder, open
+«Проверить чек»: the pages are drawn in the window, on a phone too. «Завершить аренду» is disabled
+until the receipt is approved or «Без чека» is given.
+
+**Lessor accounts.** The administrator creates them in «Администрирование» → «Пользователи»: the
+role «Оператор (внешний исполнитель)» and a counterparty of type «Арендодатель механизации». Such an
+account sees only «Механизация»: its rentals «В работе» and their receipts.
+
+**Cutting a lessor off = deactivating his accounts.** Deactivating the counterparty in the directory
+does **not** end its accounts' sessions — the session checks the account, not its counterparty (the
+same for every executor type). Deactivate each account («Пользователи» → «Деактивировать»): that
+revokes its tokens at once. To find them:
+
+```sql
+SELECT u.id, u.email, u.full_name, u.is_active,
+       c.name AS counterparty, c.is_active AS counterparty_active
+  FROM users u
+  JOIN counterparties c ON c.id = u.counterparty_id
+ WHERE c.type = 'mech_lessor' AND u.deleted_at IS NULL
+ ORDER BY c.name, u.full_name;
+```
+
+A rental whose lessor is changed leaves the previous lessor's list at once, with every receipt
+version of it; nothing has to be done for that.
+
 ### Документ выполненных работ и автосогласование оргтехники (ADR 0208)
 
 Оба рабочих ключа включены миграцией `0341`: `service_estimate_document_mode` открывает подачу
