@@ -949,6 +949,10 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
             lessorIsActive: lessor.lessorIsActive,
             rate: String(rate),
             rateUnit,
+            // A new deal number on every real change, with or without a current receipt: the
+            // lessor's view and files are filtered by it (P12). The retire marker above needs a
+            // current version, and after a revoked waiver there is none (review of W2).
+            ...(dealChanged ? { dealNo: row.dealNo + 1 } : {}),
             updatedBy: p.id,
             version: row.version + 1,
             updatedAt: new Date(),
@@ -1045,7 +1049,12 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         // Any entry into «Новая» erases the deal, and the receipt issued under it stops counting
         // (P8) — `cancelled → new` included: naming only `confirmed → new` would leave an approved
         // receipt of the old deal current after `confirmed → cancelled → new → confirmed`.
-        if (mechTransitionResetsDeal(row.status, status) && currentReceipt) {
+        //
+        // The deal number moves on EVERY entry into «Новая», a current receipt or not: it is the
+        // boundary of the lessor's view (P12), and the retire marker above exists only when a
+        // current version does — after a revoked waiver there is none (review of W2).
+        const resetsDeal = mechTransitionResetsDeal(row.status, status);
+        if (resetsDeal && currentReceipt) {
           await retireMechLessorReceiptForDeal(tx, p.id, id, 'rolled_back');
         }
         const [updated] = await tx
@@ -1055,6 +1064,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
             ...plan.deal,
             ...plan.fact,
             ...(takesIntoWork ? { lessorReceiptRequired: true } : {}),
+            ...(resetsDeal ? { dealNo: row.dealNo + 1 } : {}),
             updatedBy: p.id,
             version: row.version + 1,
             updatedAt: new Date(),

@@ -9,7 +9,8 @@ import { mechLessorReceiptLessorState, type MechLessorReceiptRow } from './mech-
 /*
  * The mechanization lessor's own view of his rentals (lessor receipt plan, P12, O7): an allow-list
  * read by its own query, not the office's card with fields blanked. The query selects only what the
- * lessor is shown, plus the three columns his predicate asks (`lessorId`, `status`, `deletedAt`) —
+ * lessor is shown, plus the columns his predicate and his receipt block ask (`lessorId`, `status`,
+ * `deletedAt`, `lessorReceiptRequired`, `dealNo`) —
  * the department, the requester, the comment and files, the visa, the cancel reason, the worked
  * units, the final cost and the extension are never even read for him, so a mapper bug cannot leak
  * them.
@@ -34,6 +35,8 @@ const rentalSelect = {
   responsibleName: mechRequests.responsibleName,
   responsiblePhone: mechRequests.responsiblePhone,
   lessorReceiptRequired: mechRequests.lessorReceiptRequired,
+  // Read for the receipt block, never shown: the lessor's versions are those of this deal number.
+  dealNo: mechRequests.dealNo,
 };
 
 /**
@@ -78,6 +81,6 @@ export function toMechLessorRentalDto(
     rateUnit: row.rateUnit,
     responsibleName: row.responsibleName,
     responsiblePhone: row.responsiblePhone,
-    lessorReceipt: mechLessorReceiptLessorState(p, row.lessorReceiptRequired, versions),
+    lessorReceipt: mechLessorReceiptLessorState(p, row, versions),
   };
 }

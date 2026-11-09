@@ -270,6 +270,7 @@ async function seedVersions(
       .values({
         requestId,
         versionNo: index + 1,
+        dealNo: 1,
         fileId: version.status === 'waived' ? null : await bareFile(),
         status: version.status,
         createdBy: ctx.adminId,
@@ -669,6 +670,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
     const insert = (values: Partial<ReceiptInsert> & { requestId: string }) =>
       ctx.db.insert(ctx.schema.mechRequestLessorReceipts).values({
         versionNo: 1,
+        dealNo: 1,
         status: 'pending',
         createdBy: ctx.adminId,
         createdAs: 'office',

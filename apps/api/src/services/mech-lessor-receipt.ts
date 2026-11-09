@@ -75,6 +75,8 @@ const retirers = alias(users, 'mech_lessor_receipt_retirers');
 export interface MechLessorReceiptRow {
   id: string;
   versionNo: number;
+  /** The request's deal number at insert: the lessor sees the version only while it is current. */
+  dealNo: number;
   status: MechLessorReceiptStatus;
   file: AttachedFileDto | null;
   createdBy: string;
@@ -121,6 +123,7 @@ function receiptRowsQuery(reader: MechReader) {
       requestId: receipts.requestId,
       id: receipts.id,
       versionNo: receipts.versionNo,
+      dealNo: receipts.dealNo,
       status: receipts.status,
       fileId: receipts.fileId,
       fileName: files.filename,
@@ -268,7 +271,8 @@ function iso(value: Date | null): string | null {
 
 /** A version as the office sees it: names and every reason. */
 export function toMechLessorReceiptVersionDto(
-  row: MechLessorReceiptRow,
+  // The office sees every deal's versions; the deal number is the lessor's filter only.
+  row: Omit<MechLessorReceiptRow, 'dealNo'>,
 ): MechLessorReceiptVersionDto {
   return {
     id: row.id,
@@ -316,10 +320,14 @@ export function toMechLessorReceiptVersionView(
 /**
  * Versions this account attached within the current deal — what the lessor's cap of P7 counts.
  * Per account and per deal: a new lessor does not inherit his predecessor's count, and the versions
- * of an earlier deal are not his to count.
+ * of an earlier deal are not his to count. `dealNo` is the request's current deal number.
  */
-function ownVersionsInDeal(p: Principal, rows: readonly MechLessorReceiptRow[]): number {
-  return mechLessorVisibleVersions(rows).filter((row) => row.createdBy === p.id).length;
+function ownVersionsInDeal(
+  p: Principal,
+  rows: readonly MechLessorReceiptRow[],
+  dealNo: number,
+): number {
+  return mechLessorVisibleVersions(rows, dealNo).filter((row) => row.createdBy === p.id).length;
 }
 
 function newestFirst<T extends { versionNo: number }>(rows: readonly T[]): T[] {
@@ -334,20 +342,30 @@ function newestFirst<T extends { versionNo: number }>(rows: readonly T[]): T[] {
  */
 export function mechLessorReceiptLessorState(
   p: Principal,
-  required: boolean,
+  request: MechLessorReceiptRequestSide,
   rows: readonly MechLessorReceiptRow[],
 ): MechLessorReceiptLessorStateDto {
-  const visible = mechLessorVisibleVersions(rows);
+  const visible = mechLessorVisibleVersions(rows, request.dealNo);
   const current = currentMechLessorReceipt(visible);
   return {
     audience: 'lessor',
-    required,
+    required: request.lessorReceiptRequired,
     current: current ? toMechLessorReceiptVersionView(current) : null,
     retired: newestFirst(visible.filter((row) => row.retiredAt !== null)).map(
       toMechLessorReceiptVersionView,
     ),
-    ownVersionCount: ownVersionsInDeal(p, rows),
+    ownVersionCount: ownVersionsInDeal(p, rows, request.dealNo),
   };
+}
+
+/**
+ * What the receipt block needs of its request: whether completion waits for a receipt, and the
+ * current deal number the lessor's versions are filtered by. A locked row and the lessor's rental
+ * row both fit it.
+ */
+export interface MechLessorReceiptRequestSide {
+  lessorReceiptRequired: boolean;
+  dealNo: number;
 }
 
 /** The lessor's branch of the block, as his rental DTO carries it. */
@@ -366,14 +384,14 @@ export type MechLessorReceiptLessorStateDto = Extract<
  */
 export function mechLessorReceiptStateFor(
   p: Principal,
-  required: boolean,
+  request: MechLessorReceiptRequestSide,
   rows: readonly MechLessorReceiptRow[],
 ): MechLessorReceiptStateDto {
-  if (isMechLessorSubject(p)) return mechLessorReceiptLessorState(p, required, rows);
+  if (isMechLessorSubject(p)) return mechLessorReceiptLessorState(p, request, rows);
   const current = currentMechLessorReceipt(rows);
   return {
     audience: 'office',
-    required,
+    required: request.lessorReceiptRequired,
     current: current ? toMechLessorReceiptVersionDto(current) : null,
     retired: newestFirst(rows.filter((row) => row.retiredAt !== null)).map(
       toMechLessorReceiptVersionDto,
@@ -407,6 +425,10 @@ export async function retireMechLessorReceipt(
  * The current version stops counting because the deal it was issued under is gone (P8): the deal
  * changed its lessor, unit or rate (`deal_changed`), or the request entered «Новая» and the deal was
  * erased (`rolled_back`). Returns whether a version was retired.
+ *
+ * The marker is the office's record of why, not the lessor's boundary: the boundary is the
+ * request's `dealNo`, which the calling door moves by one in its own CAS whether or not a current
+ * version exists (`mechLessorVisibleVersions`).
  *
  * Called inside the deal and status doors, under the request's lock and before their CAS; the strict
  * event goes in the same transaction — the card's history must not disagree with the block above it,
@@ -454,13 +476,13 @@ async function replyFor(
   p: Principal,
   requestId: string,
   version: number,
-  required: boolean,
+  request: MechLessorReceiptRequestSide,
 ): Promise<MechLessorReceiptReplyDto> {
   return {
     version,
     lessorReceipt: mechLessorReceiptStateFor(
       p,
-      required,
+      request,
       await loadMechLessorReceipts(reader, requestId),
     ),
   };
@@ -508,7 +530,7 @@ export async function attachMechLessorReceipt(
   const blocker = mechLessorReceiptAttachBlocker({
     row,
     current: current && { status: current.status },
-    lessorVersionCount: actsAsLessor ? ownVersionsInDeal(p, versions) : 0,
+    lessorVersionCount: actsAsLessor ? ownVersionsInDeal(p, versions, row.dealNo) : 0,
     actsAsLessor,
   });
   if (blocker) throw err.unprocessable(blocker);
@@ -531,6 +553,9 @@ export async function attachMechLessorReceipt(
     .values({
       requestId: id,
       versionNo,
+      // Read from the row locked above: a deal change waits for this lock, so the stamp cannot
+      // name a deal that already ended.
+      dealNo: row.dealNo,
       fileId: input.fileId,
       status: 'pending',
       createdBy: p.id,
@@ -559,7 +584,10 @@ export async function attachMechLessorReceipt(
       ),
     },
   });
-  return replyFor(tx, p, id, row.version + 1, true);
+  return replyFor(tx, p, id, row.version + 1, {
+    lessorReceiptRequired: true,
+    dealNo: row.dealNo,
+  });
 }
 
 export type DecideMechLessorReceiptBody = z.output<typeof decideMechLessorReceiptSchema>;
@@ -662,7 +690,7 @@ export async function decideMechLessorReceipt(
       ),
     },
   });
-  return replyFor(tx, p, id, row.version + 1, row.lessorReceiptRequired);
+  return replyFor(tx, p, id, row.version + 1, row);
 }
 
 /**
@@ -694,6 +722,7 @@ export async function waiveMechLessorReceipt(
     .values({
       requestId: id,
       versionNo,
+      dealNo: row.dealNo,
       fileId: null,
       status: 'waived',
       createdBy: p.id,
@@ -718,5 +747,5 @@ export async function waiveMechLessorReceipt(
       changes: mechLessorReceiptWaiveChanges(versionNo, input.comment, replaced),
     },
   });
-  return replyFor(tx, p, id, row.version + 1, row.lessorReceiptRequired);
+  return replyFor(tx, p, id, row.version + 1, row);
 }

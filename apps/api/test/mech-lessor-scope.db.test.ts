@@ -794,6 +794,87 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
     });
   });
 
+  /**
+   * The deal boundary when NO version is current (review of W2). A revoked waiver leaves the
+   * request without a current version, so a deal change writes no retire marker anywhere; the
+   * boundary must still hold — it is the request's deal number, moved by the deal and status
+   * doors whatever the versions say.
+   */
+  describe('граница договорённости без текущей версии', () => {
+    /** Lessor A's file version, then a waiver over it, then the waiver revoked: nothing current. */
+    async function afterRevokedWaiver(id: string): Promise<string> {
+      ok(await attach(id, 'a1'));
+      ok(await waive(id, 'Арендодатель чеков не выдаёт'));
+      ok(await decide(id, 'revoke', 'Чек всё-таки будет'));
+      expect((await card(id)).lessorReceipt, 'no current version').toBeNull();
+      const [aFile] = (await versionFiles(id)) as [string];
+      expect(await canDownload('a1', aFile), 'his own file before the change').toBe(true);
+      return aFile;
+    }
+
+    it('a deal moved to another lessor: B sees none of A, opens none of his files; A loses it', async () => {
+      const id = await rental(ctx.lessorA, { issued: false });
+      const aFile = await afterRevokedWaiver(id);
+      ok(await changeDeal(id, { lessorId: ctx.lessorB, rate: 1500 }));
+
+      const seen = ok<MechLessorRentalDto>(await lessorRental(auth.b1, id));
+      expect(seen.lessorReceipt.current).toBeNull();
+      expect(seen.lessorReceipt.retired).toEqual([]);
+      expect(seen.lessorReceipt.ownVersionCount).toBe(0);
+      expect(await canDownload('b1', aFile), "the predecessor's file").toBe(false);
+
+      refusedWith(await lessorRental(auth.a1, id), 404);
+      expect((await lessorList(auth.a1)).map((item) => item.id)).not.toContain(id);
+      expect(await canDownload('a1', aFile), 'no longer his rental').toBe(false);
+      // The office still sees every version of the request.
+      expect(await canDownload('dispatcher', aFile)).toBe(true);
+    });
+
+    it('a new rate for the same lessor: his earlier-deal versions are gone, the cap restarts', async () => {
+      const id = await rental(ctx.lessorA, { issued: false });
+      const aFile = await afterRevokedWaiver(id);
+      ok(await changeDeal(id, { lessorId: ctx.lessorA, rate: 1900 }));
+
+      const seen = ok<MechLessorRentalDto>(await lessorRental(auth.a1, id));
+      expect(seen.lessorReceipt.current).toBeNull();
+      expect(seen.lessorReceipt.retired).toEqual([]);
+      expect(seen.lessorReceipt.ownVersionCount, 'the cap restarts with the deal').toBe(0);
+      expect(await canDownload('a1', aFile), 'his own file of the earlier deal').toBe(false);
+
+      const reply = ok<MechLessorReceiptReplyDto>(await attach(id, 'a1'));
+      if (reply.lessorReceipt.audience !== 'lessor')
+        throw new Error('expected the lessor audience');
+      expect(reply.lessorReceipt.retired).toEqual([]);
+      expect(reply.lessorReceipt.ownVersionCount).toBe(1);
+      expect(reply.lessorReceipt.current?.versionNo).toBe(3);
+    });
+
+    it('a return to «Новая» and a new take-in-work: the next lessor sees none of the old deal', async () => {
+      const id = await rental(ctx.lessorA, { issued: false });
+      const aFile = await afterRevokedWaiver(id);
+      ok(
+        await call(auth.admin, 'PATCH', `/${id}/status`, {
+          status: 'new',
+          comment: 'Не та модель',
+          version: await versionOf(id),
+        }),
+      );
+      ok(
+        await call(auth.admin, 'PATCH', `/${id}/status`, {
+          status: 'confirmed',
+          deal: { lessorId: ctx.lessorB, rate: 1500, rateUnit: 'shift' },
+          version: await versionOf(id),
+        }),
+      );
+      const seen = ok<MechLessorRentalDto>(await lessorRental(auth.b1, id));
+      expect(seen.lessorReceipt.current).toBeNull();
+      expect(seen.lessorReceipt.retired).toEqual([]);
+      expect(await canDownload('b1', aFile)).toBe(false);
+      expect(await canDownload('a1', aFile)).toBe(false);
+      refusedWith(await lessorRental(auth.a1, id), 404);
+    });
+  });
+
   // ── The lessor's attach (P7 for the lessor) ──
 
   describe('прикрепление арендодателем', () => {

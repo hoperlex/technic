@@ -485,29 +485,45 @@ describe('the mark (P16)', () => {
 });
 
 describe('the versions of the current deal (P12)', () => {
-  const v = (versionNo: number, retiredReason: MechLessorReceiptRetireReason | null) => ({
-    versionNo,
-    retiredReason,
+  const v = (
+    versionNo: number,
+    dealNo: number,
+    retiredReason: MechLessorReceiptRetireReason | null = null,
+  ) => ({ versionNo, dealNo, retiredReason });
+
+  it('are the versions stamped with the current deal number, ascending', () => {
+    expect(mechLessorVisibleVersions([], 1)).toEqual([]);
+    expect(mechLessorVisibleVersions([v(1, 1, 'replaced'), v(2, 1)], 1)).toEqual([
+      v(1, 1, 'replaced'),
+      v(2, 1),
+    ]);
+    // Out of order on input, ascending on output; a revoked waiver stays in its deal.
+    expect(
+      mechLessorVisibleVersions(
+        [v(4, 2), v(1, 1, 'replaced'), v(3, 2, 'revoked'), v(2, 1, 'deal_changed')],
+        2,
+      ),
+    ).toEqual([v(3, 2, 'revoked'), v(4, 2)]);
+    expect(mechLessorVisibleVersions([v(1, 1, 'deal_changed'), v(2, 2, 'rolled_back')], 3)).toEqual(
+      [],
+    );
   });
 
-  it('starts after the last version dropped by a deal change or a return to «Новая»', () => {
-    expect(mechLessorVisibleVersions([])).toEqual([]);
-    expect(mechLessorVisibleVersions([v(1, 'replaced'), v(2, null)])).toEqual([
-      v(1, 'replaced'),
-      v(2, null),
+  /**
+   * The case the retire markers could not hold (review of W2): a waiver revoked leaves no current
+   * version, so the next deal change writes no `deal_changed` marker anywhere. The number moved
+   * anyway, and the earlier deal's versions — the predecessor's file among them — stay out.
+   */
+  it('ignores the retire markers: a deal moved with no current version still starts afresh', () => {
+    const earlier = [v(1, 1, 'replaced'), v(2, 1, 'revoked')];
+    expect(mechLessorVisibleVersions(earlier, 1)).toEqual(earlier);
+    expect(mechLessorVisibleVersions(earlier, 2)).toEqual([]);
+    expect(mechLessorVisibleVersions([...earlier, v(3, 2)], 2)).toEqual([v(3, 2)]);
+    // And a marker alone does not cut a deal: the number does.
+    expect(mechLessorVisibleVersions([v(1, 3, 'deal_changed'), v(2, 3)], 3)).toEqual([
+      v(1, 3, 'deal_changed'),
+      v(2, 3),
     ]);
-    // Out of order on input, ascending on output; a revoked waiver stays in the deal.
-    expect(
-      mechLessorVisibleVersions([
-        v(4, null),
-        v(1, 'replaced'),
-        v(3, 'revoked'),
-        v(2, 'deal_changed'),
-      ]),
-    ).toEqual([v(3, 'revoked'), v(4, null)]);
-    expect(
-      mechLessorVisibleVersions([v(1, 'deal_changed'), v(2, 'replaced'), v(3, 'rolled_back')]),
-    ).toEqual([]);
   });
 });
 

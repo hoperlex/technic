@@ -7316,6 +7316,12 @@ export const mechRequests = pgTable(
     // taken into work before the release (or by the old code in the deploy window) and is not
     // gated. A column, not a date cutoff: an old rental that later got a receipt must be gated too.
     lessorReceiptRequired: boolean('lessor_receipt_required').notNull().default(false),
+    // Which deal the request is on (lessor receipt plan, P12): the server adds one under the
+    // request's lock when the lessor, the unit or the rate changes and on every entry into «Новая»;
+    // receipt versions are stamped with it, and the lessor sees only those of the current number.
+    // A number on the request, not a retire marker on a version: a marker needs a current version,
+    // and a deal moved after a revoked waiver would leave no boundary (review of W2).
+    dealNo: integer('deal_no').notNull().default(1),
     // Архив по ADR 0070: мягкое удаление, восстановление и `records.purge`.
     deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
@@ -7542,6 +7548,9 @@ export const mechRequestLessorReceipts = pgTable(
       .references(() => mechRequests.id, { onDelete: 'cascade' }),
     // Computed under the request's row lock; the unique pair is the backstop.
     versionNo: integer('version_no').notNull(),
+    // The request's `dealNo` at insert, under the same lock (P12): no default — a version that does
+    // not say its deal would be visible to the wrong lessor or to none.
+    dealNo: integer('deal_no').notNull(),
     // RESTRICT, unlike the attachment links: the row carries a decision, and a bug that tries to
     // delete a linked file must fail loudly. Empty exactly for a waiver.
     fileId: uuid('file_id').references(() => files.id, { onDelete: 'restrict' }),
@@ -7566,6 +7575,7 @@ export const mechRequestLessorReceipts = pgTable(
     fileUnique: unique('mech_request_lessor_receipts_file_id_key').on(t.fileId),
     versionUnique: unique('mech_lessor_receipts_version_unique').on(t.requestId, t.versionNo),
     versionPositive: check('mech_lessor_receipts_version_check', sql`${t.versionNo} > 0`),
+    dealNoPositive: check('mech_lessor_receipts_deal_no_check', sql`${t.dealNo} > 0`),
     createdAs: check(
       'mech_lessor_receipts_created_as_check',
       sql`${t.createdAs} IN ('lessor', 'office')`,

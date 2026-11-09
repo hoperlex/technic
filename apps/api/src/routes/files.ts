@@ -432,10 +432,10 @@ function serviceNomenclatureWhere(p: Principal): SQL | undefined {
  * The caller has asked `mechRequests.read`. See `FileLinkage.visibleMechLessorReceipt` for the rule.
  *
  * The lessor's half asks the contracts' predicates themselves, not a SQL copy: the rental by
- * `isMechLessorRentalVisible`, the deal by `mechLessorVisibleVersions` over the request's versions
- * — the same function his DTO and the cap of P7 ask, so a version he cannot see in his card cannot
- * be downloaded either. A file attached once is linked to one version; the loop only keeps the
- * answer honest if that ever changes.
+ * `isMechLessorRentalVisible`, the deal by `mechLessorVisibleVersions` over the request's versions and
+ * its current deal number — the same function his DTO and the cap of P7 ask, so a version he cannot
+ * see in his card cannot be downloaded either. A file attached once is linked to one version; the
+ * loop only keeps the answer honest if that ever changes.
  */
 async function mechLessorReceiptFileVisible(p: Principal, fileId: string): Promise<boolean> {
   const receipts = mechRequestLessorReceipts;
@@ -446,26 +446,28 @@ async function mechLessorReceiptFileVisible(p: Principal, fileId: string): Promi
         lessorId: mechRequests.lessorId,
         status: mechRequests.status,
         deletedAt: mechRequests.deletedAt,
+        dealNo: mechRequests.dealNo,
       })
       .from(receipts)
       .innerJoin(mechRequests, eq(receipts.requestId, mechRequests.id))
       .where(eq(receipts.fileId, fileId));
     for (const rental of linked) {
-      const visible = isMechLessorRentalVisible(p, {
+      const his = isMechLessorRentalVisible(p, {
         lessorId: rental.lessorId,
         status: rental.status,
         deletedAt: rental.deletedAt ? rental.deletedAt.toISOString() : null,
       });
-      if (!visible) continue;
+      if (!his) continue;
       const versions = await db
         .select({
           fileId: receipts.fileId,
           versionNo: receipts.versionNo,
-          retiredReason: receipts.retiredReason,
+          dealNo: receipts.dealNo,
         })
         .from(receipts)
         .where(eq(receipts.requestId, rental.requestId));
-      if (mechLessorVisibleVersions(versions).some((v) => v.fileId === fileId)) return true;
+      const visible = mechLessorVisibleVersions(versions, rental.dealNo);
+      if (visible.some((v) => v.fileId === fileId)) return true;
     }
     return false;
   }

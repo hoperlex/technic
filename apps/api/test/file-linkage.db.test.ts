@@ -451,6 +451,7 @@ const LINK_CASES: { table: string; link: (fileId: string) => Promise<void> }[] =
       await ctx.db.insert(ctx.schema.mechRequestLessorReceipts).values({
         requestId: ctx.parents.mechRequestId,
         versionNo: last!.n + 1,
+        dealNo: 1,
         fileId,
         status: 'pending',
         createdBy: ctx.adminId,

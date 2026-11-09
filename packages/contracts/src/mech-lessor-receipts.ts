@@ -342,23 +342,26 @@ export function isMechLessorRentalVisible(
 }
 
 /**
- * The versions of the **current deal** (P12): back to, not including, the last version retired
- * because the deal changed or the request went back to «Новая». Older versions were issued under
- * other terms and may belong to another lessor. One function for the lessor's DTO, the replies of
- * P5–P7, the cap of P7 and the lessor's file flag, so the four cannot disagree on where a deal
- * starts. Returns the versions in ascending `versionNo` order whatever the input order.
+ * The versions of the **current deal** (P12): those stamped with the request's current deal number.
+ * Versions of an earlier deal were issued under other terms and may belong to another lessor. One
+ * function for the lessor's DTO, the replies of P5–P7, the cap of P7 and the lessor's file flag, so
+ * the four cannot disagree on where a deal starts. Returns the versions in ascending `versionNo`
+ * order whatever the input order.
+ *
+ * **The deal is a number on the request, not a marker on a version.** The server adds one to
+ * `deal_no` whenever the lessor, the unit or the rate changes and on every entry into «Новая», and
+ * stamps each version with it at insert. The retire markers `deal_changed` / `rolled_back` cannot
+ * serve as the boundary: they are written only on a CURRENT version, and after a revoked waiver
+ * there is none — a deal moved then left no marker, and the next lessor saw his predecessor's
+ * versions and opened his files (review of W2). The markers stay for the office's view.
  */
-export function mechLessorVisibleVersions<
-  T extends { versionNo: number; retiredReason: MechLessorReceiptRetireReason | null },
->(versions: readonly T[]): T[] {
-  const sorted = [...versions].sort((a, b) => a.versionNo - b.versionNo);
-  let start = 0;
-  sorted.forEach((version, index) => {
-    if (version.retiredReason === 'deal_changed' || version.retiredReason === 'rolled_back') {
-      start = index + 1;
-    }
-  });
-  return sorted.slice(start);
+export function mechLessorVisibleVersions<T extends { versionNo: number; dealNo: number }>(
+  versions: readonly T[],
+  currentDealNo: number,
+): T[] {
+  return versions
+    .filter((version) => version.dealNo === currentDealNo)
+    .sort((a, b) => a.versionNo - b.versionNo);
 }
 
 // ── What the state allows ──

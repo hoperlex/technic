@@ -1,9 +1,10 @@
 -- The lessor's receipt of a mechanization rental (plan `docs/mechanization-lessor-receipt-plan.md`,
 -- §4; decisions P1, P3, P4, P13).
 --
--- WHAT IS ADDED. A column on `mech_requests` (does completion wait for a receipt), a status enum, a
--- table with one row per receipt version, the permission `mechRequests.lessorReceipt` in every
--- permission set that holds `mechRequests.status`, and the eleventh branch of `file_is_linked`.
+-- WHAT IS ADDED. Two columns on `mech_requests` (does completion wait for a receipt; the number of
+-- the request's current deal), a status enum, a table with one row per receipt version, the
+-- permission `mechRequests.lessorReceipt` in every permission set that holds `mechRequests.status`,
+-- and the eleventh branch of `file_is_linked`.
 --
 -- WHERE THE NUMBER CAME FROM. `ls apps/api/drizzle` and `git ls-tree origin/main apps/api/drizzle/`
 -- on 09.11.2026: the last taken number is `0419_releases_create_attempt_unlock.sql` (origin). Parallel
@@ -11,9 +12,12 @@
 --
 -- WHY IT SURVIVES THE DEPLOY WINDOW (migrations run while the old release serves — AGENTS.md,
 -- `docs/runbook.md`; plan §5):
---   · old code never reads or writes the table, the enum or the column. It takes rentals into work
+--   · old code never reads or writes the table, the enum or the columns. It takes rentals into work
 --     with `lessor_receipt_required = false` (the default) — such rentals are not gated at
 --     completion, exactly like the rentals taken before the release (accepted by the owner);
+--   · old code changes deals without moving `deal_no`. Harmless: the number only tells receipt
+--     versions of different deals apart, and no version exists until the new code attaches one —
+--     the first version of any request is stamped with whatever number the request has then;
 --   · old hard delete and purge of a request cascade its receipt rows; there are none until the
 --     new code attaches one;
 --   · the old worker's orphan sweep asks `file_is_linked`, which this file replaces in the same
@@ -43,8 +47,19 @@ SET LOCAL lock_timeout = '10s';
 -- column rather than "taken into work after a date": a date cutoff outlives everyone who remembers
 -- its meaning (ADR 0133 decision 3), and an old rental that later got a receipt must be gated,
 -- which a date cannot say. `ADD COLUMN … DEFAULT false` is metadata-only since PostgreSQL 11.
+--
+-- `deal_no` — which deal the request is on (P12, the lessor sees only the versions of the current
+-- deal). The server adds one, under the request's lock, whenever the lessor, the unit or the rate
+-- changes and on every entry into «Новая»; each receipt version is stamped with it at insert. The
+-- epoch is a number on the request, not a marker on a version: a retire marker (`deal_changed`,
+-- `rolled_back`) can only be written when a CURRENT version exists, and after a revoked waiver there
+-- is none — a deal moved then left no boundary, and the next lessor saw his predecessor's versions
+-- and files (review of W2). The markers stay for the office's view and the history. No CHECK here:
+-- it would scan the live table under ACCESS EXCLUSIVE, and the value is only ever 1 or the server's
+-- increment; the versions' copy below is checked.
 ALTER TABLE mech_requests
-  ADD COLUMN lessor_receipt_required boolean NOT NULL DEFAULT false;
+  ADD COLUMN lessor_receipt_required boolean NOT NULL DEFAULT false,
+  ADD COLUMN deal_no integer NOT NULL DEFAULT 1;
 
 -- `waived` is the «без чека» visa (O10): a row without a file, created by the visa holder in its
 -- final state. Retiring a version never changes its status (P1).
@@ -61,6 +76,10 @@ CREATE TABLE mech_request_lessor_receipts (
   request_id uuid NOT NULL REFERENCES mech_requests (id) ON DELETE CASCADE,
   -- Computed under the request's row lock; the unique pair below is the backstop.
   version_no integer NOT NULL,
+  -- The request's `deal_no` when the version was inserted, under the same lock: the lessor sees a
+  -- version only while it equals the request's current one. No default — a version that does not
+  -- say which deal it belongs to would be visible to the wrong lessor or to none.
+  deal_no integer NOT NULL,
   -- RESTRICT, unlike the attachment link table (CASCADE): this row carries a decision, and a future
   -- bug that tries to delete a linked file must fail loudly instead of silently removing an approved
   -- version. No current path deletes a linked file; purge removes these rows (cascade from the
@@ -81,6 +100,7 @@ CREATE TABLE mech_request_lessor_receipts (
   retired_reason text,
   CONSTRAINT mech_lessor_receipts_version_unique UNIQUE (request_id, version_no),
   CONSTRAINT mech_lessor_receipts_version_check CHECK (version_no > 0),
+  CONSTRAINT mech_lessor_receipts_deal_no_check CHECK (deal_no > 0),
   CONSTRAINT mech_lessor_receipts_created_as_check CHECK (created_as IN ('lessor', 'office')),
   -- A file version has a file, a waiver has none.
   CONSTRAINT mech_lessor_receipts_file_check CHECK ((status = 'waived') = (file_id IS NULL)),
