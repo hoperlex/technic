@@ -109,6 +109,7 @@ interface Ctx {
   otherObjectId: string;
   departmentId: string;
   lessorId: string;
+  otherLessorId: string;
   modelId: string;
 }
 
@@ -469,6 +470,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       otherObjectId: '',
       departmentId: '',
       lessorId: '',
+      otherLessorId: '',
       modelId: '',
     };
 
@@ -504,6 +506,17 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       })
       .returning({ id: schema.counterparties.id });
     ctx.lessorId = lessor!.id;
+    const [otherLessor] = await db
+      .insert(schema.counterparties)
+      .values({
+        type: 'mech_lessor',
+        name: `Другой арендодатель чека ${RUN}`,
+        inn: `8${String((Date.now() + 1) % 100_000_000).padStart(8, '0')}6`,
+        isActive: true,
+        comment: MARK,
+      })
+      .returning({ id: schema.counterparties.id });
+    ctx.otherLessorId = otherLessor!.id;
     const [model] = await db
       .insert(schema.mechModels)
       .values({ code: `mech-lessor-receipt-${RUN}`, name: `Виброплита чека ${RUN}` })
@@ -1353,6 +1366,146 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       await attached(gated.id);
       expect((await card(gated.id)).lessorReceiptRequired).toBe(true);
       refusedWith(await complete(gated.id), 422);
+    });
+  });
+
+  // ── What else touches the receipt (P8) ──
+
+  describe('договорённость, откаты, удаление и purge (P8)', () => {
+    async function deal(
+      id: string,
+      body: { lessorId?: string; rate?: number; rateUnit?: 'hour' | 'shift' },
+    ): Promise<Injected> {
+      return call(admin, 'PATCH', `/${id}/deal`, {
+        lessorId: body.lessorId ?? ctx.lessorId,
+        rate: body.rate ?? 1500,
+        rateUnit: body.rateUnit ?? 'shift',
+        version: await versionOf(id),
+      });
+    }
+
+    async function approvedRental(over: { issued?: boolean } = {}): Promise<MechRequestDto> {
+      const request = await rental(over);
+      await attached(request.id);
+      ok(await decide(request.id, { decision: 'approve' }));
+      return card(request.id);
+    }
+
+    it('taking a «Новая» into work makes it require a receipt', async () => {
+      const request = await rental({ issued: false });
+      expect(request.lessorReceiptRequired).toBe(true);
+      expect(request.lessorReceipt).toBeNull();
+    });
+
+    it('the same deal again retires nothing: 1500 against the stored 1500.00 is no change', async () => {
+      const request = await approvedRental({ issued: false });
+      const [stored] = await ctx.db
+        .select({ rate: ctx.schema.mechRequests.rate })
+        .from(ctx.schema.mechRequests)
+        .where(eq(ctx.schema.mechRequests.id, request.id));
+      expect(stored!.rate).toBe('1500.00');
+      ok(await deal(request.id, { rate: 1500 }));
+      const opened = await card(request.id);
+      expect(opened.lessorReceipt?.status).toBe('approved');
+      expect(opened.lessorReceiptRetired).toEqual([]);
+    });
+
+    it('a new rate, unit or lessor retires the current version «deal_changed»', async () => {
+      for (const change of [
+        { rate: 1600 },
+        { rateUnit: 'hour' as const },
+        { lessorId: ctx.otherLessorId },
+      ]) {
+        const request = await approvedRental({ issued: false });
+        const approved = request.lessorReceipt!;
+        ok(await deal(request.id, change));
+        const opened = await card(request.id);
+        expect(opened.lessorReceipt, JSON.stringify(change)).toBeNull();
+        expect(opened.lessorReceiptRetired?.[0]).toMatchObject({
+          id: approved.id,
+          status: 'approved',
+          retiredReason: 'deal_changed',
+        });
+      }
+    });
+
+    it('«В работе» → «Новая» retires the current version «rolled_back»', async () => {
+      const request = await approvedRental({ issued: false });
+      ok(await setStatus(request.id, 'new', { comment: 'Не та модель' }));
+      const opened = await card(request.id);
+      expect(opened.lessorReceipt).toBeNull();
+      expect(opened.lessorReceiptRetired?.[0]).toMatchObject({
+        status: 'approved',
+        retiredReason: 'rolled_back',
+      });
+      expect(opened.lessorReceiptVersionCount).toBe(1);
+    });
+
+    /**
+     * The chain the plan names: naming only `confirmed → new` would leave the old deal's approved
+     * receipt current after `cancelled → new → confirmed`, passing the new deal's gate.
+     */
+    it('«Отменена» → «Новая» retires it too, and the next deal starts without a receipt', async () => {
+      const request = await approvedRental({ issued: false });
+      ok(await setStatus(request.id, 'cancelled', { comment: 'Передумали' }));
+      expect((await card(request.id)).lessorReceipt?.status, 'cancellation keeps it').toBe(
+        'approved',
+      );
+      ok(await setStatus(request.id, 'new', { comment: 'Снова нужна' }));
+      expect((await card(request.id)).lessorReceipt).toBeNull();
+      ok(
+        await setStatus(request.id, 'confirmed', {
+          deal: { lessorId: ctx.otherLessorId, rate: 1700, rateUnit: 'shift' },
+          actualFrom: WEEK_AGO,
+        }),
+      );
+      refusedWith(
+        await complete(request.id),
+        422,
+        'Прикрепите чек арендодателя или получите визу «без чека»',
+      );
+    });
+
+    it('«Вернуть в работу» keeps the approval: the repeat completion passes', async () => {
+      const request = await approvedRental();
+      ok(await complete(request.id));
+      ok(await setStatus(request.id, 'confirmed', { comment: 'Исправить отработанное' }));
+      expect((await card(request.id)).lessorReceipt?.status).toBe('approved');
+      ok(await complete(request.id));
+    });
+
+    it('deleting a «Новая» that kept versions archives it, the versions stay', async () => {
+      const request = await approvedRental({ issued: false });
+      ok(await setStatus(request.id, 'new', { comment: 'Не та модель' }));
+      const removed = ok(
+        await call(admin, 'DELETE', `/${request.id}?version=${await versionOf(request.id)}`),
+      );
+      expect(removed.mode).toBe('soft');
+      const opened = await card(request.id);
+      expect(opened.deletedAt).not.toBeNull();
+      expect(opened.lessorReceiptVersionCount).toBe(1);
+    });
+
+    it('purge removes every version and every version file', async () => {
+      const request = await rental({ issued: false });
+      const first = officeOf(await attached(request.id)).current!;
+      const second = officeOf(await attached(request.id)).current!;
+      ok(await setStatus(request.id, 'cancelled', { comment: 'Передумали' }));
+      ok(await call(admin, 'DELETE', `/${request.id}?version=${await versionOf(request.id)}`));
+      ok(
+        await call(admin, 'DELETE', `/${request.id}/purge?version=${await versionOf(request.id)}`),
+      );
+      const fileIds = [first.file!.id, second.file!.id];
+      const left = await ctx.db
+        .select({ id: ctx.schema.files.id })
+        .from(ctx.schema.files)
+        .where(inArray(ctx.schema.files.id, fileIds));
+      expect(left, 'every version file is deleted with the request').toEqual([]);
+      const versions = await ctx.db
+        .select({ id: ctx.schema.mechRequestLessorReceipts.id })
+        .from(ctx.schema.mechRequestLessorReceipts)
+        .where(eq(ctx.schema.mechRequestLessorReceipts.requestId, request.id));
+      expect(versions).toEqual([]);
     });
   });
 });

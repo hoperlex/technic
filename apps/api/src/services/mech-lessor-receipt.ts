@@ -36,6 +36,7 @@ import type { MechReader, MechTx } from './mech-request-dto';
 import {
   mechLessorReceiptAttachChanges,
   mechLessorReceiptDecisionChanges,
+  mechLessorReceiptRetireChanges,
   mechLessorReceiptWaiveChanges,
 } from './mech-request-diff';
 import {
@@ -338,6 +339,40 @@ export async function retireMechLessorReceipt(
     .where(and(eq(receipts.id, current.id), isNull(receipts.retiredAt)))
     .returning({ id: receipts.id });
   if (!retired) throw err.conflict();
+}
+
+/**
+ * The current version stops counting because the deal it was issued under is gone (P8): the deal
+ * changed its lessor, unit or rate (`deal_changed`), or the request entered «Новая» and the deal was
+ * erased (`rolled_back`). Returns whether a version was retired.
+ *
+ * Called inside the deal and status doors, under the request's lock and before their CAS; the strict
+ * event goes in the same transaction — the card's history must not disagree with the block above it,
+ * and after the retire nothing but this event says why an approved receipt stopped counting.
+ */
+export async function retireMechLessorReceiptForDeal(
+  tx: MechTx,
+  actorUserId: string,
+  requestId: string,
+  reason: Extract<MechLessorReceiptRetireReason, 'deal_changed' | 'rolled_back'>,
+): Promise<boolean> {
+  const current = await loadCurrentMechLessorReceipt(tx, requestId);
+  if (!current) return false;
+  await retireMechLessorReceipt(tx, current, reason, actorUserId);
+  await writeAuditTx(tx, {
+    actorUserId,
+    action: 'mech_request.lessor_receipt_retire',
+    entityType: 'mech_request',
+    entityId: requestId,
+    metadata: {
+      receiptId: current.id,
+      versionNo: current.versionNo,
+      status: current.status,
+      reason,
+      changes: mechLessorReceiptRetireChanges(current.versionNo, reason),
+    },
+  });
+  return true;
 }
 
 // ── The doors (P5–P7) ──

@@ -103,6 +103,7 @@ import { dropPendingMechExtension } from '../services/mech-request-extension';
 import {
   countMechLessorReceiptVersions,
   loadCurrentMechLessorReceipt,
+  retireMechLessorReceiptForDeal,
 } from '../services/mech-lessor-receipt';
 import {
   createAttemptFingerprint,
@@ -921,6 +922,15 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         }
         const lessor = await assertMechLessorAssignable(tx, lessorId);
         const before = (await loadMechRequestDto(tx, id))!;
+        // The receipt was issued under the old terms: a new lessor, unit or rate retires it (lessor
+        // receipt plan, P8). The rate is compared AS A NUMBER: the column is `numeric(12,2)` and
+        // reads back as '1500.00', so `1500` sent again is no change. Not `mechDealChanges` — it
+        // compares the lessor's name and formatted money, which is the history's question, not this.
+        const dealChanged =
+          lessorId !== row.lessorId ||
+          rateUnit !== row.rateUnit ||
+          Number(rate) !== Number(row.rate);
+        if (dealChanged) await retireMechLessorReceiptForDeal(tx, p.id, id, 'deal_changed');
         const [updated] = await tx
           .update(mechRequests)
           .set({
@@ -1019,12 +1029,22 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         }
 
         const plan = await planMechTransition(tx, row, req.body);
+        // Every take-in-work from now on gates completion (lessor receipt plan, P3), whatever the
+        // client. Never set back: a return to «Новая» and a new take-in-work set it again anyway.
+        const takesIntoWork = row.status === 'new' && status === 'confirmed';
+        // Any entry into «Новая» erases the deal, and the receipt issued under it stops counting
+        // (P8) — `cancelled → new` included: naming only `confirmed → new` would leave an approved
+        // receipt of the old deal current after `confirmed → cancelled → new → confirmed`.
+        if (mechTransitionResetsDeal(row.status, status) && currentReceipt) {
+          await retireMechLessorReceiptForDeal(tx, p.id, id, 'rolled_back');
+        }
         const [updated] = await tx
           .update(mechRequests)
           .set({
             status,
             ...plan.deal,
             ...plan.fact,
+            ...(takesIntoWork ? { lessorReceiptRequired: true } : {}),
             updatedBy: p.id,
             version: row.version + 1,
             updatedAt: new Date(),

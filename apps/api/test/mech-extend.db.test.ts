@@ -186,11 +186,25 @@ async function newRequest(
   return ok(res, 201) as unknown as MechRequestDto;
 }
 
+/**
+ * Completion waits for an approved or waived lessor receipt (lessor receipt plan, P3) — a
+ * precondition of this file's scenes, not their subject: the gate and its rules live in
+ * `mech-lessor-receipt.db.test.ts`. The rental is made one that does not require a receipt, as every
+ * rental taken into work before the release is, by the column alone: the request's version does not
+ * move, so the versions the scenes read stay what they were.
+ */
+async function notGatedByLessorReceipt(id: string): Promise<void> {
+  await ctx.db.execute(
+    sql`UPDATE mech_requests SET lessor_receipt_required = false WHERE id = ${id}`,
+  );
+}
+
 async function changeStatus(
   id: string,
   status: string,
   extra: Record<string, unknown> = {},
 ): Promise<Injected> {
+  if (status === 'done') await notGatedByLessorReceipt(id);
   return call('PATCH', `/${id}/status`, { status, version: await version(id), ...extra });
 }
 
@@ -702,6 +716,7 @@ describe.skipIf(!DB_URL)('механизация: продление срока 
     // Обе двери выходят из действующей аренды, где продление законно. Пока продление ждало
     // строку, технику вернули и заявку закрыли — и предметный барьер («продлевают действующую
     // аренду») стал бы формально верным ответом на вопрос, которого человек не задавал.
+    await notGatedByLessorReceipt(rental.id);
     const [completed, extended] = await race(
       rental.id,
       () =>

@@ -1,5 +1,5 @@
 import { and, count, eq, inArray } from 'drizzle-orm';
-import { files, mechRequestFiles } from '../db/schema';
+import { files, mechRequestFiles, mechRequestLessorReceipts } from '../db/schema';
 import {
   assertFilesAttachable,
   assertTotalWithinLimit,
@@ -75,17 +75,29 @@ export async function unlinkMechRequestFiles(
 }
 
 /**
- * Второй и третий пути — физическое удаление «Новой» и `purge` архивной заявки. Набор собирается
- * join'ом ДО удаления заявки: каскад снимет `mech_request_files`, и защищённый `hardDeleteFiles`
- * увидит действительно свободные строки.
+ * The second and third paths — the hard delete of a «Новая» and the purge of an archived request.
+ * The set is collected by a join BEFORE the request is deleted: the cascade removes the link rows,
+ * and the guarded `hardDeleteFiles` then sees really free rows.
+ *
+ * The files of every lessor receipt version are collected too, retired ones included (lessor
+ * receipt plan, P13): purge is the administrator's explicit end of the request, files included
+ * (ADR 0070). A version row holds its file by RESTRICT, which is why the order matters — the
+ * request's deletion cascades the version rows first, then the files go. A «Новая» with versions is
+ * never hard-deleted (`mechDeleteScope` archives it), so on that path the second list is empty.
  */
 export async function collectMechRequestFiles(
   tx: MechTx,
   requestId: string,
 ): Promise<{ id: string; objectKey: string }[]> {
-  return tx
+  const attachments = await tx
     .select({ id: files.id, objectKey: files.objectKey })
     .from(mechRequestFiles)
     .innerJoin(files, eq(mechRequestFiles.fileId, files.id))
     .where(eq(mechRequestFiles.requestId, requestId));
+  const lessorReceipts = await tx
+    .select({ id: files.id, objectKey: files.objectKey })
+    .from(mechRequestLessorReceipts)
+    .innerJoin(files, eq(mechRequestLessorReceipts.fileId, files.id))
+    .where(eq(mechRequestLessorReceipts.requestId, requestId));
+  return [...attachments, ...lessorReceipts];
 }

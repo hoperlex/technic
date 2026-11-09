@@ -280,7 +280,21 @@ async function seedNew(input: SeedInput): Promise<string> {
   return res.json().id as string;
 }
 
+/**
+ * Completion waits for an approved or waived lessor receipt (lessor receipt plan, P3) — a
+ * precondition of this file's scenes, not their subject: the gate and its rules live in
+ * `mech-lessor-receipt.db.test.ts`. The rental is made one that does not require a receipt, as every
+ * rental taken into work before the release is, by the column alone: the request's version does not
+ * move, so the versions the scenes read stay what they were.
+ */
+async function notGatedByLessorReceipt(id: string): Promise<void> {
+  await ctx.db.execute(
+    sql`UPDATE mech_requests SET lessor_receipt_required = false WHERE id = ${id}`,
+  );
+}
+
 async function changeStatus(id: string, payload: Record<string, unknown>): Promise<void> {
+  if (payload.status === 'done') await notGatedByLessorReceipt(id);
   const res = await ctx.app.inject({
     method: 'PATCH',
     url: `/api/v1/mech-requests/${id}/status`,

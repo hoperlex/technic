@@ -241,6 +241,19 @@ async function runningRental(departmentId?: string): Promise<MechRequestDto> {
   return card(created.id);
 }
 
+/**
+ * Completion waits for an approved or waived lessor receipt (lessor receipt plan, P3) — a
+ * precondition of this file's scenes, not their subject: the gate and its rules live in
+ * `mech-lessor-receipt.db.test.ts`. The rental is made one that does not require a receipt, as every
+ * rental taken into work before the release is, by the column alone: the request's version does not
+ * move, so the versions the scenes read stay what they were.
+ */
+async function notGatedByLessorReceipt(id: string): Promise<void> {
+  await ctx.db.execute(
+    sql`UPDATE mech_requests SET lessor_receipt_required = false WHERE id = ${id}`,
+  );
+}
+
 async function requestExtension(
   request: MechRequestDto,
   over: { plannedTo?: string; reason?: string; version?: number; headers?: Headers } = {},
@@ -572,6 +585,7 @@ describe.skipIf(!DB_URL)('механизация: виза продления а
   it('completion and the revoked issue mark drop the pending request in their transaction', async () => {
     const completed = await runningRental();
     ok(await requestExtension(completed));
+    await notGatedByLessorReceipt(completed.id);
     ok(
       await call(auth.admin, 'PATCH', `/${completed.id}/status`, {
         status: 'done',
@@ -607,6 +621,7 @@ describe.skipIf(!DB_URL)('механизация: виза продления а
     const decided = await runningRental();
     ok(await requestExtension(decided));
     ok(await decide(decided, false, { comment: 'Нет' }));
+    await notGatedByLessorReceipt(decided.id);
     ok(
       await call(auth.admin, 'PATCH', `/${decided.id}/status`, {
         status: 'done',
