@@ -107,7 +107,11 @@ export default function PdfPages({
           const canvas = document.createElement('canvas');
           canvas.width = Math.floor(viewport.width * ratio);
           canvas.height = Math.floor(viewport.height * ratio);
-          canvas.style.cssText = 'display:block;width:100%;height:auto;margin:0 auto 8px;';
+          // A white sheet with a faint shadow on the pane's grey: a page reads as paper, and where one
+          // page ends and the next begins stays visible.
+          canvas.style.cssText =
+            'display:block;width:100%;height:auto;margin:0 auto 8px;background:#fff;' +
+            'box-shadow:0 1px 3px rgba(0,0,0,0.25);';
           canvas.setAttribute('role', 'img');
           canvas.setAttribute('aria-label', `Страница ${number} из ${total}`);
           if (cancelled) return;
@@ -136,7 +140,7 @@ export default function PdfPages({
 
   const shown = progress?.url === url ? progress : null;
   return (
-    <div style={{ width: '100%' }}>
+    <div style={{ width: '100%', padding: 8, boxSizing: 'border-box' }}>
       {!shown && (
         <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
           <Spin />
