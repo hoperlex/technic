@@ -13,7 +13,13 @@ import { listLocalDrafts, type FormValues } from '@features/vehicle-request-edit
 import { saveVehicleRequest } from '../src/widgets/vehicle-request-editor/model/saveVehicleRequest';
 import { useVehicleRequestLocalDraft } from '../src/widgets/vehicle-request-editor/model/useVehicleRequestLocalDraft';
 import type { VehicleRequestEditorState } from '../src/widgets/vehicle-request-editor/model/useVehicleRequestEditorState';
-import { freightRequestBody, freightTripBody } from './factories/vehicleRequestCreateBody';
+import {
+  freightFormValues,
+  freightRequestBody,
+  freightTripBody,
+  specialFormValues,
+  tripFormRow,
+} from './factories/vehicleRequestCreateBody';
 
 const userId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const originalKey = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -202,99 +208,58 @@ describe('Vehicle Request create pre-validation: real bodies', () => {
     } as unknown as VehicleRequestEditorState;
   }
 
-  const address = { source: 'object', refId: departmentId } as const;
-  const row = (over: Record<string, unknown> = {}) => ({
-    key: crypto.randomUUID(),
-    fromLocation: 'Карьер',
-    toLocation: 'Площадка',
-    fromAddress: address,
-    toAddress: { source: 'resolved', fiasId: 'fias-1' } as const,
-    cargoName: 'Песок',
-    fromResponsibleName: 'Иванов Иван',
-    fromResponsiblePhone: '+7 (999) 000-00-00',
-    toResponsibleName: 'Петров Пётр',
-    toResponsiblePhone: '8 999 000 00 01',
-    volumeM3: 12.5,
-    weightTons: null,
-    ...over,
-  });
-  const freight = (over: Record<string, unknown> = {}) =>
-    ({
-      requestType: 'freight_transport',
-      classificationKey: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:',
-      customerKey: `object:${userId}`,
-      scheduledDate: dayjs('2026-10-20'),
-      scheduledTime: '9:30',
-      trips: [row()],
-      comment: ' отправить ',
-      ...over,
-    }) as FormValues;
-
   const cases: [string, FormValues, Parameters<typeof stateFor>[0]][] = [
     [
-      'special equipment, object customer',
-      {
-        requestType: 'special_equipment',
+      'special equipment with a category and a closed term',
+      specialFormValues({
         classificationKey:
           'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-        dateFrom: dayjs('2026-10-20'),
         dateTo: dayjs('2026-10-22'),
-        responsibleName: 'Иванов Иван',
-        responsiblePhone: '+79990000000',
-        comment: '',
-      } as FormValues,
+      }),
       {},
     ],
     [
-      'special equipment with open end and file IDs',
-      {
-        requestType: 'special_equipment',
-        classificationKey: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:',
-        dateFrom: dayjs('2026-10-20'),
-        dateTo: null,
-        responsibleName: 'Иванов Иван',
-        responsiblePhone: '+79990000000',
-      } as FormValues,
+      'special equipment with an open term and file IDs',
+      specialFormValues({ comment: undefined }),
       { newFileIds: [fileId] },
     ],
-    ['freight, object customer, one trip', freight(), {}],
+    ['freight, object customer, one trip', freightFormValues(), {}],
     [
       'freight, department customer',
-      freight({ customerKey: `department:${departmentId}` }),
+      freightFormValues({ customerKey: `department:${departmentId}` }),
       { customer: 'department' },
     ],
-    ['freight, time unspecified', freight({ scheduledTime: '' }), {}],
-    ['freight, trip time override', freight({ trips: [row({ scheduledTime: '14:15' })] }), {}],
+    ['freight, time unspecified', freightFormValues({ scheduledTime: '' }), {}],
     [
-      'freight, null amounts (the server decides if a quantity is required)',
-      freight({ trips: [row({ volumeM3: null, weightTons: null })] }),
+      'freight, trip time override',
+      freightFormValues({ trips: [tripFormRow({ scheduledTime: '14:15' })] }),
+      {},
+    ],
+    [
+      'freight, null amounts (the server decides whether a quantity is required)',
+      freightFormValues({ trips: [tripFormRow({ volumeM3: null, weightTons: null })] }),
       {},
     ],
     [
       'freight, weight only',
-      freight({ trips: [row({ volumeM3: undefined, weightTons: 0.125 })] }),
+      freightFormValues({ trips: [tripFormRow({ volumeM3: undefined, weightTons: 0.125 })] }),
       {},
     ],
     [
       'freight, several trips and file IDs',
-      freight({ trips: [row(), row({ comment: 'позвонить' }), row()] }),
+      freightFormValues({
+        trips: [tripFormRow(), tripFormRow({ comment: 'позвонить' }), tripFormRow()],
+      }),
       { newFileIds: [fileId] },
     ],
     [
       'freight, backdated with a reason',
-      freight({ scheduledDate: dayjs('2026-10-01'), backdateReason: ' Забыли завести ' }),
+      freightFormValues({ scheduledDate: dayjs('2026-10-01'), backdateReason: ' Забыли завести ' }),
       { backdated: true },
     ],
     [
       'special equipment, backdated with a reason',
-      {
-        requestType: 'special_equipment',
-        classificationKey: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:',
-        dateFrom: dayjs('2026-10-01'),
-        responsibleName: 'Иванов Иван',
-        responsiblePhone: '+79990000000',
-        backdateReason: 'Забыли завести',
-      } as FormValues,
+      specialFormValues({ dateFrom: dayjs('2026-10-01'), backdateReason: 'Забыли завести' }),
       { backdated: true },
     ],
   ];

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { App, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -26,10 +26,23 @@ import {
   type FormValues,
 } from '@features/vehicle-request-editor';
 import { mayHaveCommittedWrite } from '@shared/api';
-import { LocalCreateAttemptError } from '@shared/lib';
+import { errorStatus, LocalCreateAttemptError } from '@shared/lib';
 import { useEditorTermDoor, type TermStepResult } from './useEditorTermDoor';
 import { saveVehicleRequest } from './saveVehicleRequest';
 import type { VehicleRequestEditorState } from './useVehicleRequestEditorState';
+
+/**
+ * Answers by which the route says "I read this body and refused it": the schema (400) and the
+ * business rules that run after it (422). A network failure, a timeout, a 5xx and a 409 (the key is
+ * bound to another actor or kind) say nothing about the body and are not among them.
+ */
+const REFUSING_STATUSES: ReadonlySet<number | null> = new Set([400, 422]);
+
+/** One toast slot for the refusal: the reconciliation that follows rewrites it instead of adding. */
+const REFUSAL_TOAST_KEY = 'vehicle-create-refusal';
+
+const UNPROVEN_REFUSAL_WARNING =
+  'Отказ повторной отправки не доказывает, что первая заявка не создана. Сверьте исходную попытку.';
 
 interface Input {
   openCreated: (request: VehicleRequestDto) => void;
@@ -40,6 +53,9 @@ interface Input {
 export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: Input) {
   const { message, modal } = App.useApp();
   const [reconcilePending, setReconcilePending] = useState(false);
+  // The state above reaches a mutation callback one render late; a refusal can arrive while a
+  // reconciliation started by the button is still running, and must not start a second one.
+  const reconcileBusy = useRef(false);
   const { can, user } = useAuth();
   const qc = useQueryClient();
 
@@ -50,9 +66,19 @@ export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: I
       : vehicleRequestsApi.createWithReceipt(attempt.body, attempt.key);
   };
 
-  const reconcileAttempt = async () => {
-    const attempt = state.draft.active?.createAttempt;
-    if (state.record || attempt?.protocol !== 'receipt-v1' || reconcilePending) return;
+  /**
+   * Asks the server whether the frozen original was created, and releases or closes the form by the
+   * answer. `refusal` is the error the portal got in reply to a send of that same attempt: then the
+   * reconciliation runs without the button, and a proven absence is explained by that refusal.
+   *
+   * Safe to run on a refusal: the server's reconciliation waits on the key of an in-flight create
+   * (answering `created` if it commits), and the tombstone it writes makes a late first POST fail
+   * (ADR 0231). Nothing is sent again here — the person corrects the form and presses «Сохранить».
+   */
+  const reconcileAttempt = async ({ refusal }: { refusal?: unknown } = {}) => {
+    const attempt = state.draft.currentAttempt();
+    if (state.record || attempt?.protocol !== 'receipt-v1' || reconcileBusy.current) return;
+    reconcileBusy.current = true;
     setReconcilePending(true);
     try {
       const outcome = await vehicleRequestsApi.reconcileCreateAttempt(attempt.body, attempt.key);
@@ -66,6 +92,13 @@ export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: I
           message.warning(
             'Попытка в этом окне уже изменилась. Проверьте черновик перед сохранением.',
           );
+        } else if (refusal !== undefined) {
+          // Without a trailing period of its own: the sentence below adds one.
+          const reason = errorMessage(refusal).replace(/[.\s]+$/u, '');
+          message.warning({
+            key: REFUSAL_TOAST_KEY,
+            content: `Заявка не создана: ${reason}. Исправьте поля и сохраните снова.`,
+          });
         } else {
           message.success(
             'Заявка по прежней попытке не создана. Исправьте поля и сохраните снова.',
@@ -74,6 +107,8 @@ export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: I
         return;
       }
 
+      // The refusal was an echo of the first send: the request exists, so an error toast would lie.
+      if (refusal !== undefined) message.destroy(REFUSAL_TOAST_KEY);
       // Receipt ownership proves creation, but reading the card must still use current permissions.
       let request: VehicleRequestDto | null = null;
       try {
@@ -101,7 +136,9 @@ export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: I
       }
     } catch (error) {
       message.error(`Не удалось сверить исходную отправку: ${errorMessage(error)}. Ключ сохранён.`);
+      if (refusal !== undefined) message.warning(UNPROVEN_REFUSAL_WARNING);
     } finally {
+      reconcileBusy.current = false;
       setReconcilePending(false);
     }
   };
@@ -224,20 +261,35 @@ export function useVehicleRequestEditorSave({ openCreated, openRoute, state }: I
       warnRouteDateMismatch(saved);
     },
     onError: (error, { period }) => {
-      message.error(
-        // The one half-applied state of a split save (see `useEditorTermDoor`): it is named, not
-        // hidden — the editor stays open, and the next "Save" sends only the rest.
-        period
-          ? `Срок работ изменён, но остальные правки не сохранены: ${errorMessage(error)}`
-          : errorMessage(error),
-      );
-      if (!state.record && !(error instanceof LocalCreateAttemptError)) {
-        message.warning(
-          mayHaveCommittedWrite(error)
-            ? 'Ответ сервера мог не дойти. Сверьте исходную отправку по сохранённому ключу.'
-            : 'Отказ повторной отправки не доказывает, что первая заявка не создана. Сверьте исходную попытку.',
-        );
+      /*
+       * A create send of the frozen receipt-v1 attempt that the route read and refused. The attempt
+       * stays frozen, so every further «Сохранить» would repeat the same body; the only way out is
+       * the proof that it was not created, and the person is not asked to find the button for it.
+       * Correction-v1 keeps its manual door (its journal cannot prove absence), a local refusal
+       * never left the browser, and a lost answer is a different case — all three keep the warning.
+       */
+      const reconcilable =
+        !state.record &&
+        !(error instanceof LocalCreateAttemptError) &&
+        REFUSING_STATUSES.has(errorStatus(error)) &&
+        state.draft.currentAttempt()?.protocol === 'receipt-v1';
+      const text = period
+        ? // The one half-applied state of a split save (see `useEditorTermDoor`): it is named, not
+          // hidden — the editor stays open, and the next "Save" sends only the rest.
+          `Срок работ изменён, но остальные правки не сохранены: ${errorMessage(error)}`
+        : errorMessage(error);
+      if (reconcilable) message.error({ key: REFUSAL_TOAST_KEY, content: text });
+      else message.error(text);
+      if (state.record || error instanceof LocalCreateAttemptError) return;
+      if (reconcilable) {
+        void reconcileAttempt({ refusal: error });
+        return;
       }
+      message.warning(
+        mayHaveCommittedWrite(error)
+          ? 'Ответ сервера мог не дойти. Сверьте исходную отправку по сохранённому ключу.'
+          : UNPROVEN_REFUSAL_WARNING,
+      );
     },
   });
 

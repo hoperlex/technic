@@ -31,7 +31,11 @@ describe('vehicle request create retry race', () => {
     });
     const create = vi.spyOn(vehicleRequestsApi, 'createWithReceipt');
     create.mockImplementationOnce(() => firstResponse);
-    create.mockRejectedValueOnce({ status: 422, message: 'Дата в прошлом' });
+    create.mockRejectedValueOnce({ code: 'unprocessable', status: 422, message: 'Дата в прошлом' });
+    // The refused retry reconciles by itself; here the answer is lost, so the original stays frozen.
+    const reconcile = vi
+      .spyOn(vehicleRequestsApi, 'reconcileCreateAttempt')
+      .mockRejectedValue({ code: 'unavailable', status: 503, message: 'Сервер недоступен' });
 
     let current: {
       draft: ReturnType<typeof useVehicleRequestLocalDraft>;
@@ -80,6 +84,8 @@ describe('vehicle request create retry race', () => {
     await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(current!.save.confirmLoading).toBe(false));
     expect(create.mock.calls[1]).toEqual(create.mock.calls[0]);
+    await waitFor(() => expect(reconcile).toHaveBeenCalledOnce());
+    expect(reconcile).toHaveBeenCalledWith(...create.mock.calls[0]!);
     expect(current!.draft.active).toMatchObject({
       operationId,
       createAttempt: { protocol: 'receipt-v1', body: { comment: 'Исходное тело' } },

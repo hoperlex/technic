@@ -139,6 +139,12 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
     };
   };
 
+  /**
+   * The attempt frozen right now. Reads the ref, not the rendered `active`: a mutation callback can
+   * run before the render that follows `prepareCreate` is committed, and would see no attempt.
+   */
+  const currentAttempt = () => activeRef.current?.createAttempt;
+
   const acceptNotCreated = (originalKey: string, nextKey: string) => {
     const current = activeRef.current;
     if (
@@ -329,6 +335,7 @@ export function useVehicleRequestLocalDraft(form: FormInstance<FormValues>, user
     active,
     begin,
     clear,
+    currentAttempt,
     discardPending,
     pending,
     persist,
