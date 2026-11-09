@@ -1,6 +1,6 @@
 # ADR 0247. A create attempt whose body the schema refuses is reconciled by its key
 
-- Статус: Реализовано (09.11.2026); not deployed
+- Статус: Реализовано (09.11.2026), release 0.1.141.0247; not deployed
 - Домены: заказ-тс, вывоз-мусора, механизация, оргтехника
 - Изменяет: [ADR 0231](0231-request-create-receipts.md) — decision 8 (reconcile accepted only a
   validated body; now a body the schema refuses is answered by its key), decision 1 (the key's binding
@@ -90,6 +90,9 @@ way, so any body their forms let through and their schemas refuse locks those fo
   attempts by decision 1. The notice still lists each fork of an attempt as a separate row until
   `not-created` or a successful create removes them.
 - No schema change and no client floor change: a former 400 of reconcile becomes an answer.
+- The Vehicle Request route grows by 690 gzip bytes and the entry by 292 (the reason text and the
+  local refusal class are shared code); `apps/web/bundle-budget.json` raises the seven exceeded limits
+  to the measured values.
 
 ## Rejected alternatives
 
