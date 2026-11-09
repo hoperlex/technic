@@ -43,6 +43,15 @@ const AUDIT_ACTIONS = [
   'mech_request.extend_request',
   'mech_request.extend_reject',
   'mech_request.extend_drop',
+  // The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P9): six strict events.
+  // A revoked approval and a version retired by the deal leave no trace in the receipt row's
+  // decision columns, so these events are the only memory of them in the card.
+  'mech_request.lessor_receipt_attach',
+  'mech_request.lessor_receipt_approve',
+  'mech_request.lessor_receipt_reject',
+  'mech_request.lessor_receipt_revoke',
+  'mech_request.lessor_receipt_waive',
+  'mech_request.lessor_receipt_retire',
   // Завершение, в том числе повторное после отката: прежние числа не сохранит ничто, кроме этой
   // записи, а именно их спрашивают, разбирая счёт.
   'mech_request.complete',
@@ -72,6 +81,14 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'mech_request.extend_request': 'mechExtendRequested',
   'mech_request.extend_reject': 'mechExtendRejected',
   'mech_request.extend_drop': 'mechExtendDropped',
+  // One kind per action: `mergeHistory` maps an action to one kind, the reason the extension keeps
+  // its request and refusal apart.
+  'mech_request.lessor_receipt_attach': 'mechLessorReceiptAttached',
+  'mech_request.lessor_receipt_approve': 'mechLessorReceiptApproved',
+  'mech_request.lessor_receipt_reject': 'mechLessorReceiptRejected',
+  'mech_request.lessor_receipt_revoke': 'mechLessorReceiptRevoked',
+  'mech_request.lessor_receipt_waive': 'mechLessorReceiptWaived',
+  'mech_request.lessor_receipt_retire': 'mechLessorReceiptRetired',
   'mech_request.complete': 'completed',
   'mech_request.soft_delete': 'deleted',
   'mech_request.restore': 'restored',

@@ -79,8 +79,11 @@ export async function writeAudit(entry: AuditEntry): Promise<void> {
  *
  * 5. **предметные события механизации** — `mech_request.deal`, `.issue`, `.issue_revoke`,
  *    `.extend`, `.complete`, `.approve`, `.approval_revoke`, the extension visa's
- *    `.extend_request`, `.extend_reject`, `.extend_drop` и `mech_request.purge`
- *    (`routes/mech-requests.ts`, `routes/mech-request-extension.ts` и сервисы модуля),
+ *    `.extend_request`, `.extend_reject`, `.extend_drop`, the lessor receipt's
+ *    `.lessor_receipt_attach`, `.lessor_receipt_approve`, `.lessor_receipt_reject`,
+ *    `.lessor_receipt_revoke`, `.lessor_receipt_waive`, `.lessor_receipt_retire` и
+ *    `mech_request.purge` (`routes/mech-requests.ts`, `routes/mech-request-extension.ts`,
+ *    `services/mech-lessor-receipt.ts` и сервисы модуля),
  *    план `docs/mechanization-module-plan.md`, Р21. Перечень проверен тем же вопросом, что акт и
  *    сверка: **является ли событие единственным носителем факта**. У пяти предметных является —
  *    строка заявки помнит только «сейчас»: прежняя ставка исправленной договорённости, прежний
@@ -96,6 +99,12 @@ export async function writeAudit(entry: AuditEntry): Promise<void> {
  *    overwritten by the next request and deleted when withdrawn or dropped with the rental's end,
  *    so what was asked, why, who refused it and why it went away is remembered by these events
  *    alone.
+ *    **The lessor receipt** (plan `docs/mechanization-lessor-receipt-plan.md`, P9) passes it for
+ *    the reason ADR 0152 decision 9 gives for money events: the receipt is the evidence of a
+ *    payment. A revoked approval survives only in its event — the version goes back to `pending`
+ *    with its decision cleared — and so does the reason of a retire by the deal; the card's history
+ *    must not disagree with the receipt block above it, so the event and the change live or die in
+ *    one transaction.
  *    У `purge` причина самая сильная из перечня: после него от заявки не остаётся ничего, кроме
  *    строки журнала со снимком, и потерянная запись означает бесследно исчезнувший документ
  *    вместе с деньгами, которые по нему считали. Остальные события модуля (`create`, `update`,

@@ -19,6 +19,7 @@ import {
   type MechLessorReceiptStatus,
   type MechLessorReceiptVersionDto,
   type MechRequestDto,
+  type RequestHistoryEntryDto,
 } from '@technic/contracts';
 import { applyMigrations, listMigrationFiles, readMigration } from '../src/db/migration-journal';
 // Types only: the values of these modules are imported after the environment is set — the config
@@ -1506,6 +1507,152 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         .from(ctx.schema.mechRequestLessorReceipts)
         .where(eq(ctx.schema.mechRequestLessorReceipts.requestId, request.id));
       expect(versions).toEqual([]);
+    });
+  });
+
+  // ── History and the strict audit (P9) ──
+
+  describe('история и строгий аудит (P9)', () => {
+    async function history(id: string): Promise<RequestHistoryEntryDto[]> {
+      const entries = ok(
+        await call(admin, 'GET', `/${id}/history`),
+      ) as unknown as RequestHistoryEntryDto[];
+      // Chronological, as the card shows them.
+      return entries.filter((e) => e.kind.startsWith('mechLessorReceipt'));
+    }
+
+    function lines(entry: RequestHistoryEntryDto | undefined): Record<string, string | null> {
+      return Object.fromEntries((entry?.changes ?? []).map((c) => [c.field, c.to]));
+    }
+
+    it('every receipt event reaches the card as its own kind, with its change keys', async () => {
+      const request = await rental({ issued: false });
+      const first = officeOf(await attached(request.id)).current!;
+      ok(await decide(request.id, { decision: 'reject', comment: 'Нечитаемо' }));
+      await attached(request.id);
+      ok(await decide(request.id, { decision: 'approve', comment: 'Сверено' }));
+      ok(await decide(request.id, { decision: 'revoke', comment: 'Сумма не та' }));
+      ok(await waive(request.id, { comment: 'Чек потерян' }));
+      ok(await decide(request.id, { decision: 'revoke', comment: 'Чек нашёлся' }));
+      await attached(request.id);
+      ok(
+        await call(admin, 'PATCH', `/${request.id}/deal`, {
+          lessorId: ctx.lessorId,
+          rate: 1600,
+          rateUnit: 'shift',
+          version: await versionOf(request.id),
+        }),
+      );
+
+      const events = await history(request.id);
+      expect(events.map((e) => e.kind)).toEqual([
+        'mechLessorReceiptAttached',
+        'mechLessorReceiptRejected',
+        'mechLessorReceiptAttached',
+        'mechLessorReceiptApproved',
+        'mechLessorReceiptRevoked',
+        'mechLessorReceiptWaived',
+        'mechLessorReceiptRevoked',
+        'mechLessorReceiptAttached',
+        'mechLessorReceiptRetired',
+      ]);
+      const [attach1, reject, attach2, approve, revoke, waiver, unwaive, attach4, retire] = events;
+      expect(lines(attach1)).toEqual({ lessorReceiptVersion: '1', filesAdded: 'чек.pdf' });
+      // The file rides as a file list with its id, so the history line opens the version (O8).
+      expect(attach1!.changes.find((c) => c.field === 'filesAdded')?.files).toEqual([
+        { id: first.file!.id, filename: 'чек.pdf' },
+      ]);
+      expect(lines(reject)).toEqual({
+        lessorReceiptVersion: '1',
+        lessorReceiptRejectReason: 'Нечитаемо',
+      });
+      expect(lines(attach2)).toMatchObject({
+        lessorReceiptVersion: '2',
+        lessorReceiptReplaced: '1 — отклонён',
+      });
+      expect(lines(approve)).toEqual({
+        lessorReceiptVersion: '2',
+        lessorReceiptApproveComment: 'Сверено',
+      });
+      expect(lines(revoke)).toEqual({
+        lessorReceiptVersion: '2',
+        lessorReceiptRevoked: 'утверждение',
+        lessorReceiptRevokeReason: 'Сумма не та',
+      });
+      expect(lines(waiver)).toEqual({
+        lessorReceiptVersion: '3',
+        lessorReceiptWaiveReason: 'Чек потерян',
+        lessorReceiptReplaced: '2 — ждёт визы',
+      });
+      expect(lines(unwaive)).toEqual({
+        lessorReceiptVersion: '3',
+        lessorReceiptRevoked: '«без чека»',
+        lessorReceiptRevokeReason: 'Чек нашёлся',
+      });
+      expect(lines(attach4)).toEqual({ lessorReceiptVersion: '4', filesAdded: 'чек.pdf' });
+      expect(lines(retire)).toEqual({
+        lessorReceiptVersion: '4',
+        lessorReceiptRetireReason: 'изменилась договорённость',
+      });
+      expect(retire!.actorId).toBe(ctx.adminId);
+    });
+
+    it('a return to «Новая» names its own reason in the retire event', async () => {
+      const request = await rental({ issued: false });
+      await attached(request.id);
+      ok(await setStatus(request.id, 'new', { comment: 'Не та модель' }));
+      const events = await history(request.id);
+      expect(lines(events.at(-1))).toEqual({
+        lessorReceiptVersion: '1',
+        lessorReceiptRetireReason: 'заявка возвращена в «Новую»',
+      });
+    });
+
+    /**
+     * The events are strict (`writeAuditTx`): a failure after the audit row was written rolls the
+     * receipt change back with it. The failure is a deferred constraint trigger on `audit_log`
+     * itself — the one way to fail AFTER the audit insert, at commit — aimed at this request's id,
+     * so neighbouring runs never see it. That it fires also proves the event is written in the
+     * door's transaction: had it not been, the change would have gone through.
+     */
+    it('a failing strict audit rolls the receipt change back', async () => {
+      const request = await rental();
+      const fn = `zz_test_lessor_receipt_audit_boom_${RUN}`;
+      await ctx.db.execute(
+        sql.raw(`
+        CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+        BEGIN
+          RAISE EXCEPTION 'ИСКУССТВЕННЫЙ СБОЙ ПОСЛЕ ЗАПИСИ АУДИТА' USING ERRCODE = 'check_violation';
+        END
+        $fn$`),
+      );
+      await ctx.db.execute(
+        sql.raw(`
+        CREATE CONSTRAINT TRIGGER ${fn} AFTER INSERT ON audit_log
+          DEFERRABLE INITIALLY DEFERRED
+          FOR EACH ROW WHEN (NEW.entity_id = '${request.id}')
+          EXECUTE FUNCTION ${fn}()`),
+      );
+      const before = await card(request.id);
+      try {
+        const refused = await attach(request.id);
+        expect(refused.statusCode, refused.body).toBe(500);
+      } finally {
+        await ctx.db.execute(sql.raw(`DROP TRIGGER ${fn} ON audit_log`));
+        await ctx.db.execute(sql.raw(`DROP FUNCTION ${fn}()`));
+      }
+      const after = await card(request.id);
+      expect(after.version, 'the request version stays').toBe(before.version);
+      expect(after.lessorReceipt, 'no version survives the rollback').toBeNull();
+      expect(after.lessorReceiptVersionCount).toBe(0);
+      const events = await ctx.db.execute<{ c: number }>(sql`
+        SELECT count(*)::int AS c FROM audit_log
+         WHERE entity_type = 'mech_request' AND entity_id = ${request.id}
+           AND action LIKE 'mech_request.lessor_receipt_%'`);
+      expect(events.rows[0]!.c).toBe(0);
+      // Without the trigger the same door goes through and writes its event.
+      ok(await attach(request.id));
+      expect((await history(request.id)).map((e) => e.kind)).toEqual(['mechLessorReceiptAttached']);
     });
   });
 });
