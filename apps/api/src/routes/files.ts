@@ -23,6 +23,9 @@ import {
   fileDownloadQuerySchema,
   type FileDto,
   isInlineViewable,
+  isMechLessorRentalVisible,
+  isMechLessorSubject,
+  mechLessorVisibleVersions,
   serviceConsumablesHiddenFrom,
   type ServiceRequestAudience,
   visibleServiceFileKinds,
@@ -35,6 +38,7 @@ import {
   files,
   type FileRow,
   mechRequestFiles,
+  mechRequestLessorReceipts,
   mechRequests,
   requestFiles,
   serviceRequestExecutors,
@@ -68,6 +72,7 @@ import {
   isFileLinked,
   scheduleObjectDeletion,
 } from '../services/request-files';
+import { mechScopeWhere } from '../services/mech-request-list';
 import type { Principal } from '../auth/principal';
 import { buildObjectKey, deleteObject, headObject, presignGet, presignPut, s3 } from '../lib/s3';
 import { enqueueJob, JOB_DELETE_S3_OBJECT } from '../lib/jobs';
@@ -171,15 +176,30 @@ export interface FileLinkage {
    */
   visibleWaybill: boolean;
   /**
-   * Файл связан с видимой пользователю заявкой на аренду малой механизации (план
-   * `docs/mechanization-module-plan.md`, Р14).
+   * The file is an attachment of a mechanization request visible to the principal (plan
+   * `docs/mechanization-module-plan.md`, R14), by the module's own scope (`mechScopeWhere`, the
+   * same function the list asks).
    *
-   * Область у модуля одна и считается одной колонкой — площадкой эксплуатации (Р10): объектная ось
-   * сравнивает её со своими объектами, отдельская — с площадками своих отделов. Своей оси по
-   * контрагенту здесь нет и быть не должно: арендодатель механизации в портал не входит вовсе
-   * (Р6), поэтому предикат берётся ровно тот же, каким модуль отбирает список.
+   * **Never for a mechanization lessor** (lessor receipt plan, P11, O7): the requester's files are
+   * hidden from him, and a lessor who learnt an attachment's id must not open it through his own
+   * rental. Live requests only: the archive opens the card, not the attachments.
    */
   visibleMech: boolean;
+  /**
+   * The file is a version of a mechanization lessor receipt (lessor receipt plan, P13), read under
+   * `mechRequests.read`:
+   *
+   * - for the office, of a request visible by `mechScopeWhere`; of an ARCHIVED request too for a
+   *   holder of `archive.read` (O17) — the receipt is the evidence of a payment and is examined
+   *   after archiving, while the request's attachments stay closed there;
+   * - for the lessor, of his rental by the one predicate (`isMechLessorRentalVisible`: his
+   *   counterparty, «В работе», not archived) AND a version of the current deal
+   *   (`mechLessorVisibleVersions`) — a closed rental and an earlier deal's versions are gone from
+   *   his files at once with his list.
+   *
+   * Every version stays openable, retired ones included (O8): `file_is_linked` keeps them linked.
+   */
+  visibleMechLessorReceipt: boolean;
   /**
    * Файл — скан акта техобслуживания (миграция 0147). Условие одно — связь, по той же причине, что
    * у путевых листов: журнал ТО не сужается ни объектом, ни контрагентом — парк у портала один, и
@@ -251,6 +271,7 @@ export function decideFileAccess(
   if (linkage.visibleService && can(p, 'serviceRequests.read')) return true;
   if (linkage.visibleWaybill && can(p, 'waybills.read')) return true;
   if (linkage.visibleMech && can(p, 'mechRequests.read')) return true;
+  if (linkage.visibleMechLessorReceipt && can(p, 'mechRequests.read')) return true;
   if (linkage.visibleMaintenance && can(p, 'vehicleMaintenance.read')) return true;
   if (linkage.visibleReceipt && can(p, 'garage.read')) return true;
   if (linkage.visibleReading && can(p, 'vehicleReadings.read')) return true;
@@ -406,6 +427,64 @@ function serviceNomenclatureWhere(p: Principal): SQL | undefined {
     : undefined;
 }
 
+/**
+ * Is the file a lessor receipt version the principal may open (lessor receipt plan, P13, O17)?
+ * The caller has asked `mechRequests.read`. See `FileLinkage.visibleMechLessorReceipt` for the rule.
+ *
+ * The lessor's half asks the contracts' predicates themselves, not a SQL copy: the rental by
+ * `isMechLessorRentalVisible`, the deal by `mechLessorVisibleVersions` over the request's versions
+ * — the same function his DTO and the cap of P7 ask, so a version he cannot see in his card cannot
+ * be downloaded either. A file attached once is linked to one version; the loop only keeps the
+ * answer honest if that ever changes.
+ */
+async function mechLessorReceiptFileVisible(p: Principal, fileId: string): Promise<boolean> {
+  const receipts = mechRequestLessorReceipts;
+  if (isMechLessorSubject(p)) {
+    const linked = await db
+      .select({
+        requestId: receipts.requestId,
+        lessorId: mechRequests.lessorId,
+        status: mechRequests.status,
+        deletedAt: mechRequests.deletedAt,
+      })
+      .from(receipts)
+      .innerJoin(mechRequests, eq(receipts.requestId, mechRequests.id))
+      .where(eq(receipts.fileId, fileId));
+    for (const rental of linked) {
+      const visible = isMechLessorRentalVisible(p, {
+        lessorId: rental.lessorId,
+        status: rental.status,
+        deletedAt: rental.deletedAt ? rental.deletedAt.toISOString() : null,
+      });
+      if (!visible) continue;
+      const versions = await db
+        .select({
+          fileId: receipts.fileId,
+          versionNo: receipts.versionNo,
+          retiredReason: receipts.retiredReason,
+        })
+        .from(receipts)
+        .where(eq(receipts.requestId, rental.requestId));
+      if (mechLessorVisibleVersions(versions).some((v) => v.fileId === fileId)) return true;
+    }
+    return false;
+  }
+  const found = await db
+    .select({ id: receipts.id })
+    .from(receipts)
+    .innerJoin(mechRequests, eq(receipts.requestId, mechRequests.id))
+    .where(
+      and(
+        eq(receipts.fileId, fileId),
+        // O17: the archive holder opens the receipts of an archived request without a restore.
+        can(p, 'archive.read') ? undefined : isNull(mechRequests.deletedAt),
+        mechScopeWhere(p),
+      ),
+    )
+    .limit(1);
+  return found.length > 0;
+}
+
 async function canAccessFile(
   p: Principal,
   fileId: string,
@@ -552,35 +631,38 @@ async function canAccessFile(
   const foundBeforeMech = visibleWaste || visibleVehicle || visibleService || visibleWaybill;
 
   let visibleMech = false;
-  if (!foundBeforeMech && can(p, 'mechRequests.read')) {
-    // Вложения заявки на аренду малой механизации (план механизации, Р14, миграция 0238). Ветка
-    // обязана быть здесь целиком: в `file_is_linked` модуль уже перечислен, то есть его файл
-    // перестал быть «ничьим» — без этой ветки его не открыл бы никто, включая тех, кому сама
-    // заявка видна. Область — одной колонкой места эксплуатации, тем же предикатом
-    // `placeObjectVisibilityWhere`, каким модуль отбирает список: своя копия правил разошлась бы
-    // с ним на первой же правке.
+  if (!foundBeforeMech && can(p, 'mechRequests.read') && !isMechLessorSubject(p)) {
+    // Attachments of a mechanization rental request (mechanization plan, R14, migration 0238). The
+    // branch must be here whole: `file_is_linked` lists the module, so its file stopped being
+    // "nobody's" — without this branch nobody would open it, those who see the request included.
+    // The scope is the module's own `mechScopeWhere`, the function its list asks: a copy of the
+    // rules here would drift from it on the first edit.
     //
-    // Удалённая заявка вложений не отдаёт — как у вывоза, техники и оргтехники выше: архив
-    // открывает карточку, а не прямую ссылку на файл.
+    // Never for the mechanization lessor (lessor receipt plan, P11, O7): the requester's files are
+    // not his to see, even of his own rental. His receipts open by the branch below.
+    //
+    // A deleted request gives no attachments — as with waste, vehicles and office equipment above:
+    // the archive opens the card, not a direct link to the file.
     const mech = await db
       .select({ id: mechRequests.id })
       .from(mechRequestFiles)
       .innerJoin(mechRequests, eq(mechRequestFiles.requestId, mechRequests.id))
       .where(
-        and(
-          eq(mechRequestFiles.fileId, fileId),
-          isNull(mechRequests.deletedAt),
-          placeObjectVisibilityWhere(p, mechRequests.objectId),
-        ),
+        and(eq(mechRequestFiles.fileId, fileId), isNull(mechRequests.deletedAt), mechScopeWhere(p)),
       )
       .limit(1);
     visibleMech = mech.length > 0;
   }
 
-  // Дальше — вложения парка: скан акта ТО, скан чека на автозапчасти и фотографии показаний. Одна проверка «связь уже
-  // нашлась» вместо растущей цепочки отрицаний: каждый следующий модуль иначе добавлял бы по
-  // слагаемому в четыре условия.
-  const foundInRequests = foundBeforeMech || visibleMech;
+  let visibleMechLessorReceipt = false;
+  if (!foundBeforeMech && !visibleMech && can(p, 'mechRequests.read')) {
+    visibleMechLessorReceipt = await mechLessorReceiptFileVisible(p, fileId);
+  }
+
+  // Then the fleet's files: the maintenance act scan, the auto part receipt scan and the readings
+  // photos. One check "a link was already found" instead of a growing chain of negations: each next
+  // module would otherwise add a term to four conditions.
+  const foundInRequests = foundBeforeMech || visibleMech || visibleMechLessorReceipt;
 
   let visibleMaintenance = false;
   if (!foundInRequests && can(p, 'vehicleMaintenance.read')) {
@@ -665,6 +747,7 @@ async function canAccessFile(
     visibleService,
     visibleWaybill,
     visibleMech,
+    visibleMechLessorReceipt,
     visibleMaintenance,
     visibleReceipt,
     visibleReading,

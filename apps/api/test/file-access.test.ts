@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CounterpartyType, Role } from '@technic/contracts';
+import { can, type CounterpartyType, type Role } from '@technic/contracts';
 import type { Principal } from '../src/auth/principal';
 import { files as filesTable } from '../src/db/schema';
 
@@ -139,7 +139,10 @@ const NOWHERE = {
   visibleVehicle: false,
   visibleService: false,
   visibleWaybill: false,
+  visibleMech: false,
+  visibleMechLessorReceipt: false,
   visibleMaintenance: false,
+  visibleReceipt: false,
   visibleReading: false,
   ownDriverReading: false,
   linkedAnywhere: false,
@@ -155,6 +158,13 @@ const IN_MAINTENANCE = { ...NOWHERE, visibleMaintenance: true, linkedAnywhere: t
 const IN_READING = { ...NOWHERE, visibleReading: true, linkedAnywhere: true };
 /** Фотография показания из отчёта самого принципала (Р34): четвёртая ось области сошлась. */
 const IN_OWN_READING = { ...NOWHERE, ownDriverReading: true, linkedAnywhere: true };
+/** An attachment of a mechanization request in the principal's scope (mechanization plan, R14). */
+const IN_MECH = { ...NOWHERE, visibleMech: true, linkedAnywhere: true };
+/**
+ * A version of a mechanization lessor receipt the principal may see (lessor receipt plan, P13):
+ * the scope, the archive (O17) and the lessor's deal were asked by `canAccessFile` before.
+ */
+const IN_MECH_LESSOR_RECEIPT = { ...NOWHERE, visibleMechLessorReceipt: true, linkedAnywhere: true };
 /** Файл лежит в заявке, которую этот пользователь не видит (чужой объект, чужой контрагент). */
 const IN_INVISIBLE_REQUEST = { ...NOWHERE, linkedAnywhere: true };
 
@@ -229,6 +239,35 @@ describe('привязанный файл живёт по правилам св�
     expect(decideFileAccess(serviceExecutor(), UPLOADER, IN_VEHICLE)).toBe(false);
     expect(decideFileAccess(wasteOperator(), UPLOADER, IN_SERVICE)).toBe(false);
     expect(decideFileAccess(vehicleLessor(), UPLOADER, IN_SERVICE)).toBe(false);
+  });
+});
+
+/**
+ * The receipt flag decides only "is the module his at all": which versions, of which requests and
+ * deals, was asked in SQL and in the contracts' predicates before (db cases in
+ * `mech-lessor-scope.db.test.ts`).
+ */
+describe('mechanization lessor receipt (lessor receipt plan, P13)', () => {
+  it('opens under mechRequests.read — the office and the site alike', () => {
+    for (const role of ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy'] as Role[]) {
+      const p = principal(role, 'other');
+      expect(can(p, 'mechRequests.read'), role).toBe(true);
+      expect(decideFileAccess(p, UPLOADER, IN_MECH_LESSOR_RECEIPT), role).toBe(true);
+    }
+  });
+
+  it('a principal without the module gets nothing, executors of other types included', () => {
+    for (const p of [vehicleLessor(), wasteOperator(), serviceExecutor(), driver()]) {
+      expect(can(p, 'mechRequests.read'), String(p.counterpartyType ?? p.role)).toBe(false);
+      expect(decideFileAccess(p, UPLOADER, IN_MECH_LESSOR_RECEIPT)).toBe(false);
+      expect(decideFileAccess(p, UPLOADER, IN_MECH)).toBe(false);
+    }
+  });
+
+  it('the uploader of a linked receipt keeps no key of his own', () => {
+    // The lessor uploads his receipt, it is attached, and from then on only the rental's rules
+    // open it: a closed rental or a changed deal must take the file away from him too.
+    expect(decideFileAccess(vehicleLessor(UPLOADER), UPLOADER, IN_INVISIBLE_REQUEST)).toBe(false);
   });
 });
 
