@@ -197,16 +197,21 @@ export const GRANT_SCOPE_MATRIX: Record<PermissionModule, Record<RoleScopeAxis, 
   },
 
   /**
-   * Механизация (план `docs/mechanization-module-plan.md`, Р10) — область считается **одной**
-   * колонкой `object_id`, местом эксплуатации: объектная ось сравнивает со своими объектами,
-   * отдельская — с площадками своих отделов (ADR 0062, ADR 0144). Предикаты те же, что у вывоза, —
-   * `placeObjectVisibilityWhere` и `assertPlaceObjectScope`, — и берутся они как есть, а не
-   * копируются: ось у обоих модулей одна и та же.
+   * Mechanization (plan `docs/mechanization-module-plan.md`, R10) — the scope is **one** column,
+   * `object_id`, the site of use: the object axis compares it with its own objects, the department
+   * axis with its departments' sites (ADR 0062, ADR 0144). The predicates are the waste module's —
+   * `placeObjectVisibilityWhere` and `assertPlaceObjectScope` — taken as they are, not copied: the
+   * axis is the same in both modules.
    *
-   * Контрагент — `forbidden`, и это не осторожность на всякий случай. Арендодатель механизации в
-   * портал не входит вовсе (Р6): учёток за таким типом не заводят, ветки по арендодателю у
-   * предиката области нет, и набор с правом механизации, выданный роли исполнителя, отдал бы ей
-   * аренды всех площадок компании — вместе со ставками и суммами.
+   * The counterparty cell is `forbidden`, and it stays so after mechanization lessors get accounts
+   * and a scope predicate of their own (lessor receipt plan, P10) — the rule "scoped iff a predicate
+   * exists" does not apply to it. The lessor's powers are exactly his counterparty type's list (read
+   * and attach a receipt) over a narrow view built for him. A set with `.status`, `.update`,
+   * `.extend` or `.approve` given to the executor role would open write doors that answer with the
+   * full request and predicates that know nothing of that narrow view: the lessor would see the
+   * department, the comment, the requester's files and the money of his rentals, and could move
+   * them. So barrier 3 refuses every `mechRequests.*` permission to the executor role, in a set's
+   * contents and at assignment alike.
    */
   mech: {
     object: 'scoped',

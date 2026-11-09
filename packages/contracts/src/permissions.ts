@@ -165,18 +165,20 @@ export const PERMISSIONS = [
   'weeklyRequests.approve',
 
   /**
-   * Механизация — аренда малой механизации (план `docs/mechanization-module-plan.md`, Р9).
-   * Заявка здесь и есть аренда (Р1): её заводит площадка или отдел, договорённость с
-   * арендодателем ставит офис, а фактическую выдачу и возврат отмечает он же.
+   * Mechanization — rental of small machinery (plan `docs/mechanization-module-plan.md`, R9). The
+   * request is the rental itself (R1): a site or a department files it, the office records the deal
+   * with the lessor, the issue and the return.
    *
-   * Пять прав устроены как у соседних модулей, шестое — своё. **Продление разведено со сменой
-   * статуса намеренно**: продлить аренду — это не «поправить срок», а согласие платить дальше, и
-   * звонит арендодателю с этим диспетчер (решение заказчика). Лежи продление внутри `.status`, его
-   * получил бы и менеджер, а отобрать его составом набора было бы нечем.
+   * Five permissions are shaped as in the neighbouring modules, the rest are the module's own.
+   * **The extension is split from the status on purpose**: extending a rental is not "fixing a
+   * date" but agreeing to keep paying, and the dispatcher is the one who calls the lessor about it
+   * (the customer's decision). Inside `.status` the manager would get it too, and no set could take
+   * it away.
    *
-   * Своей группы прав у арендодателя нет и не будет: учёток за таким контрагентом не заводят вовсе
-   * (Р6, пустая строка в `COUNTERPARTY_TYPE_PERMISSIONS`) — справочная запись нужна, чтобы заявка
-   * знала, кому звонить, и чтобы деньги складывались по арендодателям.
+   * The mechanization lessor has no group of his own: what he may do is exactly his counterparty
+   * type's list (`COUNTERPARTY_TYPE_PERMISSIONS.mech_lessor`), and no permission set can add to it —
+   * the grant matrix refuses every permission of this module to the executor role (lessor receipt
+   * plan, P10).
    */
   'mechRequests.read',
   'mechRequests.create',
@@ -184,6 +186,19 @@ export const PERMISSIONS = [
   'mechRequests.delete',
   'mechRequests.status',
   'mechRequests.extend',
+  /**
+   * Attaching the lessor's receipt to a rental in work (plan
+   * `docs/mechanization-lessor-receipt-plan.md`, P4). Its own permission, not `.status`: the lessor
+   * attaches his receipt, and `.status` would let him record the deal, the issue and the completion.
+   *
+   * Everyone who runs rentals attaches receipts too, and that is an invariant held in three places,
+   * not a habit of the matrix: the office bundle (`MECH_REQUEST_OFFICE_PERMISSIONS`), the requirement
+   * `.status` → `.lessorReceipt` (`PERMISSION_REQUIRES`, checked over every account's effective
+   * permissions) and the migration that added it to every permission set holding `.status`.
+   * Who may replace which version (the office any, the lessor a pending or rejected one) is one
+   * predicate with the subject (`mechLessorReceiptAttachBlocker`), not a second permission.
+   */
+  'mechRequests.lessorReceipt',
   /**
    * Виза ответственного лица площадки: без неё аренду не берут в работу, и ею же подписывается
    * продление (план `docs/mechanization-approval-and-grants-plan.md`, Р1, Р3, Р10).
@@ -933,23 +948,30 @@ const MECH_REQUEST_CUSTOMER_PERMISSIONS = [
 ] as const;
 
 /**
- * Механизация глазами офиса: то же плюс ход аренды. Продления здесь нет — оно у диспетчера
- * поимённо (Р9), и общий набор раздал бы его менеджеру, то есть решил бы за заказчика вопрос,
- * которого он не задавал.
+ * Mechanization as the office sees it: the same plus running the rental. The extension is not here
+ * — the dispatcher holds it by name (R9), and a shared bundle would hand it to the manager, deciding
+ * for the customer a question he never asked.
+ *
+ * The lessor's receipt rides with `.status` (lessor receipt plan, P4): whoever runs a rental also
+ * attaches its receipt when the lessor does not. `PERMISSION_REQUIRES` turns this pairing into an
+ * invariant for every account, so a role row listing `.status` without this bundle would be refused
+ * the first time anything about its accounts changes.
  */
 const MECH_REQUEST_OFFICE_PERMISSIONS = [
   ...MECH_REQUEST_CUSTOMER_PERMISSIONS,
   'mechRequests.status',
+  'mechRequests.lessorReceipt',
 ] as const;
 
 /**
- * Все семь прав модуля — ими же он и сужается областью (`MODULE_SCOPE`, Р10). Отдельным списком,
- * а не фильтром по префиксу: перечень читается как решение («вся механизация ходит по площадкам»),
- * а фильтр молча подхватил бы завтрашнее сквозное право — так `wasteRequests.ticketAudit` попал бы
- * под площадочную область, хотя заведён ровно наоборот, поперёк площадок.
+ * Every permission of the module — the module is narrowed by scope with exactly these
+ * (`MODULE_SCOPE`, R10). A list, not a prefix filter: the list reads as a decision ("all of
+ * mechanization goes by sites"), while a filter would silently pick up tomorrow's cross-site
+ * permission — that is how `wasteRequests.ticketAudit` would have fallen under the site scope,
+ * although it was made to work across sites.
  *
- * Виза (план визы, Р1) стоит здесь наравне с остальными: подписывают заявку своей площадки, и
- * держатель с пустой площадочной областью не должен видеть раздел ради одной кнопки.
+ * The visa (visa plan, R1) stands here with the rest: one signs the request of one's own site, and a
+ * holder with an empty site scope must not see the section for the sake of one button.
  */
 const MECH_REQUEST_PERMISSIONS = [
   ...MECH_REQUEST_OFFICE_PERMISSIONS,

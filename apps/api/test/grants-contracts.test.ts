@@ -168,7 +168,7 @@ describe('невыдаваемые права: шесть, и именно эт�
   });
 });
 
-describe('назначаемые права: 80 из 86', () => {
+describe('назначаемые права: 81 из 87', () => {
   /**
    * То самое число из ADR. Считается вычитанием, а не записано «50»: право, добавленное в словарь,
    * обязано пополнить назначаемые — и одновременно оба слагаемых закреплены явно, иначе тест
@@ -316,10 +316,16 @@ describe('назначаемые права: 80 из 86', () => {
     // отката, было нечем. Назначаемо по той же причине, что соседи: единственный его держатель —
     // системный набор ИТ-службы, а набор наполняется выдачей прав. Оба числа выросли на единицу:
     // восемьдесят из восьмидесяти шести.
-    expect(PERMISSIONS).toHaveLength(86);
+    //
+    // The eighty-seventh is attaching the lessor's receipt (`mechRequests.lessorReceipt`, plan
+    // `docs/mechanization-lessor-receipt-plan.md`, P4) — split from `.status` so that the lessor can
+    // attach without running the rental. Grantable, and it must stay so: `.status` requires it, and a
+    // set holding `.status` (the migration added it to every such set) could not be saved otherwise.
+    // Both numbers grew by one: eighty-one of eighty-seven.
+    expect(PERMISSIONS).toHaveLength(87);
     const grantable = PERMISSIONS.filter(isGrantable);
     expect(grantable).toHaveLength(PERMISSIONS.length - NON_GRANTABLE_PERMISSIONS.length);
-    expect(grantable).toHaveLength(80);
+    expect(grantable).toHaveLength(81);
   });
 
   /**
@@ -1804,10 +1810,13 @@ const SCOPED_AXES_BY_MODULE: Partial<Record<PermissionModule, readonly RoleScope
   vehicle: ['object', 'department', 'counterparty'],
   // weeklyRequestReadScope + assertWeeklyRequestScope: обе площадочные оси и арендодатель.
   weekly: ['object', 'department', 'counterparty'],
-  // Механизация берёт предикаты вывоза как есть — `placeObjectVisibilityWhere` и
-  // `assertPlaceObjectScope`: ось у модуля одна, `object_id` места эксплуатации (план
-  // `docs/mechanization-module-plan.md`, Р10). Ветки контрагента у неё нет и не будет: арендодатель
-  // механизации в портал не входит вовсе, учёток за таким типом не заводят (Р6).
+  // Mechanization takes the waste module's predicates as they are — `placeObjectVisibilityWhere`
+  // and `assertPlaceObjectScope`: the module has one axis, `object_id` of the site of use (plan
+  // `docs/mechanization-module-plan.md`, R10). The counterparty axis stays out of this list even
+  // when the lessor gets accounts and his own predicate (lessor receipt plan, P10, P11): that
+  // predicate scopes a narrow view built for the lessor, not the module's doors, so the matrix cell
+  // stays `forbidden` and no set may hand an executor any `mechRequests.*` permission. The cell is
+  // a decision about sets, not the absence of a predicate.
   mech: ['object', 'department'],
   // serviceRequestScopeWhere + assertServiceRequestScope, serviceExecutorVisibilityWhere.
   service: ['object', 'department', 'counterparty'],

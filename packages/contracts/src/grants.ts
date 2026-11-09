@@ -1121,14 +1121,22 @@ export const PERMISSION_REQUIRES: Partial<Record<Permission, readonly Permission
   // раздела у субъекта нет.
   'vehicleRequests.status': ['vehicleRequests.read'],
   /*
-   * Механизация (план `docs/mechanization-module-plan.md`, Р9) — тот же случай коменданта, дважды.
-   * Ход аренды без её чтения — договорённость и отметка выдачи по заявке, которой держатель не
-   * видит; продление — согласие платить дальше за то же невидимое. Живым учёткам строки ничего не
-   * меняют: у менеджера и диспетчера чтение модуля есть по построению — нужны они свободной
-   * сборке, где право выдаётся в одиночку.
+   * Mechanization (plan `docs/mechanization-module-plan.md`, R9) — the commandant's case three
+   * times over. Running a rental without reading it is a deal and an issue mark on a request the
+   * holder cannot see; an extension is agreeing to keep paying for the same unseen thing; a receipt
+   * is evidence of money attached to it. The manager and the dispatcher read the module by
+   * construction — the rows are for free assembly, where a permission is granted alone.
+   *
+   * `.status` also requires `.lessorReceipt` (lessor receipt plan, P4), and this is the opposite
+   * kind of row: not "the module is closed by reading" but "whoever runs a rental attaches its
+   * receipt". Barrier 4 checks it over every account's effective permissions after every operation
+   * that changes access, so no account holds the pair half, whether it comes from a role, a set or
+   * both. Its refusal has its own words (`PERMISSION_REQUIREMENT_REASONS`): the generic "the account
+   * does not see the module" would be false here.
    */
-  'mechRequests.status': ['mechRequests.read'],
+  'mechRequests.status': ['mechRequests.read', 'mechRequests.lessorReceipt'],
   'mechRequests.extend': ['mechRequests.read'],
+  'mechRequests.lessorReceipt': ['mechRequests.read'],
   /*
    * Виза аренды — третий случай того же рода и самый строгий (план визы, Р1, Р2): подпись под
    * заявкой, которой подписывающий не видит, — это не «неполный доступ», а согласие вслепую, а
@@ -1177,6 +1185,24 @@ export const PERMISSION_REQUIRES: Partial<Record<Permission, readonly Permission
    */
   'autoParts.manage': ['garage.read'],
   'autoParts.delete': ['garage.read'],
+};
+
+/**
+ * The words of a requirement refusal, per pair `permission → required`, where barrier 4's generic
+ * text would be false.
+ *
+ * The generic text says the action is open in a module the account does not see — true for every
+ * "the module is closed by reading" row, which is what the table was made for. A row of the other
+ * kind (an invariant between two actions of a module the account already reads) needs its own
+ * reason, or the administrator reads a refusal that names the wrong problem and looks for a missing
+ * read permission that is there. A pair without an entry keeps the generic text.
+ */
+export const PERMISSION_REQUIREMENT_REASONS: Partial<
+  Record<Permission, Partial<Record<Permission, string>>>
+> = {
+  'mechRequests.status': {
+    'mechRequests.lessorReceipt': 'Ведущий аренду прикрепляет и чек арендодателя',
+  },
 };
 
 /**
@@ -1421,16 +1447,21 @@ export function validateGrantAssignment(check: GrantAssignmentCheck): readonly G
   if (after === null) return violations;
   const held = new Set<Permission>(after);
 
-  // Барьер 4: «модуль закрывается чтением» — по итоговым правам субъекта (ADR 0021, §13.1).
+  // Barrier 4: requirements over the subject's effective permissions (ADR 0021, §13.1). A pair with
+  // its own reason says it; the rest are "the module is closed by reading".
   for (const permission of PERMISSIONS) {
     if (!held.has(permission)) continue;
     for (const required of PERMISSION_REQUIRES[permission] ?? []) {
       if (held.has(required)) continue;
+      const reason = PERMISSION_REQUIREMENT_REASONS[permission]?.[required];
+      const why = reason
+        ? `. ${reason}.`
+        : `: действие открыто в модуле «${permissionModuleLabels[PERMISSION_CATALOG[permission].module]}», которого учётка не видит.`;
       violations.push({
         code: 'requirement_missing',
         permission,
         requires: required,
-        message: `${where}у учётки есть право ${permissionTitle(permission)}, а ${permissionTitle(required)} — нет: действие открыто в модуле «${permissionModuleLabels[PERMISSION_CATALOG[permission].module]}», которого учётка не видит.`,
+        message: `${where}у учётки есть право ${permissionTitle(permission)}, а ${permissionTitle(required)} — нет${why}`,
       });
     }
   }

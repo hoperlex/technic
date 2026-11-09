@@ -718,11 +718,11 @@ describe('механизация: аренда малой механизации
      * совместимым, а снять право, не имея чем его вернуть, значило бы молча отобрать работу.
      */
     expect(mechOf(of('site'))).toEqual([]);
-    // Офис ведёт аренду: договорённость с арендодателем, отметка выдачи, завершение с фактом.
-    expect(mechOf(of('manager'))).toEqual([...MECH_CUSTOMER, 'mechRequests.status'].sort());
-    expect(mechOf(of('dispatcher'))).toEqual(
-      [...MECH_CUSTOMER, 'mechRequests.status', 'mechRequests.extend'].sort(),
-    );
+    // The office runs the rental: the deal with the lessor, the issue mark, the completion with the
+    // facts — and attaches the lessor's receipt with it (lessor receipt plan, P4).
+    const MECH_OFFICE = [...MECH_CUSTOMER, 'mechRequests.status', 'mechRequests.lessorReceipt'];
+    expect(mechOf(of('manager'))).toEqual([...MECH_OFFICE].sort());
+    expect(mechOf(of('dispatcher'))).toEqual([...MECH_OFFICE, 'mechRequests.extend'].sort());
     expect(mechOf(of('observer'))).toEqual(['mechRequests.read']);
     // Служба главного механика модуля не получает вовсе: своей техники у механизации нет ни
     // единицы, а чужая аренда — не парк компании.
