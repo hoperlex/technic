@@ -16,11 +16,14 @@ import { DeferredSearchInput, FilterReset, type FilterDefinition } from '@shared
 const DATE = 'YYYY-MM-DD';
 
 /**
- * Один фильтр в панели десктопа. Обычная функция, а не компонент: она вызывается прямо из разметки
- * панели и своего состояния не имеет — объявленный внутри компонент пересоздавался бы на каждый
- * рендер и терял бы фокус поля при вводе.
+ * One filter in the desktop bar. A plain function, not a component: it is called right from the
+ * bar's markup and has no state of its own — a component declared inside would be recreated on
+ * every render and lose the field's focus while typing.
+ *
+ * Exported for the lessor's list (lessor receipt plan, P12): his two filters are drawn by the same
+ * controls, while the office bar's number search does not fit him.
  */
-function renderFilter(filter: FilterDefinition): ReactNode {
+export function renderMechFilter(filter: FilterDefinition): ReactNode {
   switch (filter.kind) {
     case 'select':
       return (
@@ -40,8 +43,8 @@ function renderFilter(filter: FilterDefinition): ReactNode {
         />
       );
     case 'toggle':
-      // Флажком, а не переключателем: в панели десктопа он стоит в одном ряду с полями отбора, и
-      // подпись должна читаться слева направо вместе с ними — как у архива в реестре техники.
+      // A checkbox, not a switch: in the desktop bar it stands in one row with the filter fields,
+      // and its label must read left to right with them — as the archive's in the vehicle registry.
       return (
         <Checkbox
           key={filter.key}
@@ -70,8 +73,8 @@ function renderFilter(filter: FilterDefinition): ReactNode {
         />
       );
     default:
-      // Прочих видов у этого списка нет: описания собираются здесь же, и ветка-заглушка ловила бы
-      // только собственную опечатку — молча и на экране.
+      // The module's lists have no other kinds: the descriptions are built next door, and a stub
+      // branch would catch only their own typo — silently and on screen.
       return null;
   }
 }
@@ -100,7 +103,7 @@ export function MechFilterBar({
 }) {
   return (
     <Space wrap>
-      {filters.map(renderFilter)}
+      {filters.map(renderMechFilter)}
       <DeferredSearchInput
         style={{ width: 160 }}
         allowClear

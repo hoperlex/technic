@@ -1,7 +1,9 @@
+import { lazy } from 'react';
 import { useSearchParams } from 'react-router';
+import { isMechLessorSubject } from '@technic/contracts';
 import { mechRequestKeys } from '@entities/mech-request';
 import { useAuth } from '@entities/session';
-import { PageTabs } from '@shared/ui';
+import { AsyncContent, PageTabs } from '@shared/ui';
 import { canSeeArchiveTab } from '@entities/request';
 import { RequestsTab } from './RequestsTab';
 import { RentalsTab } from './RentalsTab';
@@ -9,52 +11,84 @@ import { HistoryTab } from './HistoryTab';
 import { MechArchiveTab } from './ArchiveTab';
 
 /**
- * Раздел «Механизация» (план `docs/mechanization-module-plan.md`): аренда виброплит, компрессоров,
- * генераторов и тепловых пушек — всего, что стоит на площадке неделями и стоит денег каждый день.
+ * The lessor's page, in a chunk of its own: an office account never downloads it, and the office's
+ * route chunk carries only this loader (lessor receipt plan, W4).
+ */
+const MechLessorRentalsPage = lazy(() =>
+  import('./lessor/MechLessorRentalsPage').then((module) => ({
+    default: module.MechLessorRentalsPage,
+  })),
+);
+
+/**
+ * The «Механизация» section (plan `docs/mechanization-module-plan.md`): rentals of plate
+ * compactors, compressors, generators and heaters — everything that stands on a site for weeks and
+ * costs money every day.
  *
- * Вкладок четыре: «Заявки» — то, что ведут, «В аренде» — то, что сейчас стоит на площадках
- * (присутствие по предикату Р2), «История» — закрытое, с итогами за отбор (Э3), и «Архив» — то,
- * что снесли.
+ * Two pages behind one section, chosen by the account. A mechanization lessor (lessor receipt plan,
+ * P12) gets his own list of rentals «В работе» and NEVER the office tabs: each of them calls doors
+ * that answer him 403 (P11), and mounting one would greet him with an error instead of his work.
+ * Everyone else gets the tabs.
  *
- * Порядок вкладок — порядок вопросов к разделу: сначала «что взять в работу», потом «что вернуть
- * и продлить», следом «во что нам это обошлось», в конце разбор удалённого. «В аренде» стоит
- * второй, а не первой, хотя открывают её чаще: первой встречает та, где заводят заявку, — иначе
- * площадка, пришедшая заказать виброплиту, попадала бы на чужой список без кнопки «Заказать
- * технику». «История» стоит после неё, а не рядом с «Архивом»: закрытая заявка — это состоявшаяся
- * работа, а архив — след ошибки, и соседство сваливало бы их в одну кучу.
+ * The right to the section itself is checked by the route (`RequireSection` by the registry row):
+ * mechanization has one, `mechRequests.read`, and the scope matters here too. A department with no
+ * sites attached does not see the section at all (R10): it has nowhere to rent to. For a lessor it
+ * is the only section, hence his start page.
+ */
+export function MechRequestsPage() {
+  const { user } = useAuth();
+  if (isMechLessorSubject(user)) {
+    return (
+      <AsyncContent>
+        <MechLessorRentalsPage />
+      </AsyncContent>
+    );
+  }
+  return <MechOfficeTabs />;
+}
+
+/**
+ * Four tabs: «Заявки» — what is being run, «В аренде» — what stands on the sites right now
+ * (presence by the R2 predicate), «История» — what is closed, with totals over the filter (E3), and
+ * «Архив» — what was deleted.
  *
- * ПЕРЕЧЕНЬ ВКЛАДОК ЖИВЁТ ЗДЕСЬ, а не в общем реестре разделов: реестр (ADR 0121) отвечает на
- * вопрос «какие разделы есть у портала», а из чего состоит раздел — дело самого раздела.
+ * The order of the tabs is the order of the questions to the section: first «what to take into
+ * work», then «what to return and extend», then «what did it cost us», and last the review of the
+ * deleted. «В аренде» is second, not first, although it is opened more often: the first one greets
+ * with the place where a request is filed — otherwise a site that came to order a plate compactor
+ * would land on someone else's list without «Заказать технику». «История» follows it, not next to
+ * «Архив»: a closed request is work done, the archive is the trace of a mistake, and putting them
+ * side by side would pile them together.
  *
- * Право на сам раздел проверяет маршрут (`RequireSection` по строке реестра): у механизации оно
- * одно — `mechRequests.read`, — и области здесь тоже значимы. Отдел без закреплённых площадок
- * раздела не видит вовсе (Р10): арендовать ему некуда.
+ * THE TAB LIST LIVES HERE, not in the section registry: the registry (ADR 0121) answers «which
+ * sections the portal has», and what a section consists of is the section's own business.
  */
 const TABS = ['requests', 'rentals', 'history', 'archive'] as const;
 
-export function MechRequestsPage() {
+function MechOfficeTabs() {
   const { can } = useAuth();
   const [sp, setSp] = useSearchParams();
 
-  // Условие показа архива спрашивается там же, где его спрашивает ссылка (`utils/links`):
-  // разойдись эти два места, ссылка вела бы на вкладку, которой у роли нет.
+  // The archive is asked the same way as by the link (`utils/links`): were the two to differ, the
+  // link would lead to a tab the role does not have.
   const showArchive = canSeeArchiveTab(can);
 
   const items = [
     { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
-    // «В аренде» видна всем, кому виден раздел: своего права у присутствия нет — это тот же
-    // список заявок, отобранный предикатом, и область смотрящего сужает его тем же барьером.
+    // «В аренде» is visible to whoever sees the section: presence has no right of its own — it is
+    // the same request list cut by a predicate, and the viewer's scope narrows it by the same
+    // barrier.
     { key: 'rentals', label: 'В аренде', children: <RentalsTab /> },
-    // «История» — тоже без своего права: это те же заявки, отобранные закрытыми статусами, и
-    // область смотрящего сужает журнал тем же барьером, что и список.
+    // «История» has no right of its own either: the same requests cut by the closed statuses, and
+    // the viewer's scope narrows the journal by the same barrier as the list.
     { key: 'history', label: 'История', children: <HistoryTab /> },
     ...(showArchive ? [{ key: 'archive', label: 'Архив', children: <MechArchiveTab /> }] : []),
   ];
 
   /**
-   * Ссылка на недоступную вкладку ведёт на первую доступную, а не на жёсткое «Заявки»: адрес
-   * переживает смену роли. Сюда же приземляются адреса вкладок, которых у роли нет: ссылка на
-   * архив открывает список, а не пустой экран.
+   * A link to an unavailable tab leads to the first available one, not to a hard-wired «Заявки»:
+   * the address survives a change of role. Addresses of tabs the role does not have land here too:
+   * a link to the archive opens the list, not an empty screen.
    */
   const raw = sp.get('tab') ?? '';
   const tab =
