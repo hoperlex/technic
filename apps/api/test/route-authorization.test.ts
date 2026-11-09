@@ -104,7 +104,22 @@ interface RouteInfo {
    */
   authz: string[];
   requiresLogin: boolean;
+  /**
+   * Marks of the route's own `preValidation` hooks. Read after the app is built, not in `onRoute`:
+   * a module installs its guard by an `onRoute` hook of its own instance, which runs after this
+   * file's root hook on the same options object.
+   */
+  validators: string[];
+  /** The route's config opens it to the mechanization lessor (lessor receipt plan, P11). */
+  mechLessorDoor: boolean;
 }
+
+/**
+ * The mark of the mechanization lessor door guard (`routes/mech-lessor-door.ts`). A literal, like
+ * `handler:` and `anyOf:`: checking the mark with the module that writes it would check the code by
+ * its own claim.
+ */
+const MECH_LESSOR_DOOR_GUARD = 'scope:mech-lessor-door';
 
 /**
  * Пометка стража «одно из перечисленных прав» (`auth/plugin.ts`): префикс плюс перечень через `|`.
@@ -152,6 +167,14 @@ function handlersOf(route: RouteOptions): Record<string, unknown>[] {
   return (Array.isArray(pre) ? pre : [pre]) as unknown as Record<string, unknown>[];
 }
 
+function validatorMarksOf(route: RouteOptions): string[] {
+  const hooks = route.preValidation;
+  if (!hooks) return [];
+  return ((Array.isArray(hooks) ? hooks : [hooks]) as unknown as Record<string, unknown>[]).flatMap(
+    (h) => (h.authz ? [String(h.authz)] : []),
+  );
+}
+
 beforeAll(async () => {
   // Конфиг читается из окружения при импорте модуля, поэтому значения ставим до него.
   // Сборка приложения не ходит ни в БД, ни в S3 — маршруты регистрируются оффлайн.
@@ -168,23 +191,29 @@ beforeAll(async () => {
     S3_SECRET_ACCESS_KEY: 'test-secret',
   });
   const { buildApp } = await import('../src/app');
+  const options = new Map<RouteInfo, RouteOptions>();
   const app = await buildApp({
     onRoute: (route) => {
       const handlers = handlersOf(route);
       const methods = Array.isArray(route.method) ? route.method : [route.method];
       for (const method of methods) {
-        routes.push({
+        const info: RouteInfo = {
           key: `${method} ${route.url}`,
           method,
           url: pathOf(route.url),
           authz: handlers.flatMap((h) => (h.authz ? [String(h.authz)] : [])),
           // Вход проверяет `authenticate` — единственный страж без пометки authz.
           requiresLogin: handlers.some((h) => !h.authz),
-        });
+          validators: [],
+          mechLessorDoor: route.config?.mechLessorDoor === true,
+        };
+        routes.push(info);
+        options.set(info, route);
       }
     },
   });
   await app.close();
+  for (const [info, route] of options) info.validators = validatorMarksOf(route);
   /*
    * Тридцать секунд вместо умолчания в десять — не «тест бывает медленным», а мерка выросшего
    * приложения: сборка со всеми маршрутами занимает около восьми секунд транспиляции, и вместе с
@@ -336,5 +365,37 @@ describe('авторизация маршрутов', () => {
       // записанное так, что сверка с манифестом перестала бы отличать выбор от единственного права.
       expect(permissionsOf(route).length, route.key).toBeGreaterThan(1);
     }
+  });
+
+  /**
+   * The mechanization module refuses counterparty-scoped principals by default (lessor receipt
+   * plan, P11): its guard sits in each route's own `preValidation`, put there by the module's
+   * instance. A mechanization route registered on another instance would not get it and would
+   * open to the lessor on his permission alone — this check is what catches that.
+   */
+  it('every mechanization route carries the lessor door guard', () => {
+    const mech = routes.filter((r) => r.url.startsWith('/api/v1/mech-requests'));
+    expect(mech.length).toBeGreaterThan(30);
+    const unguarded = mech
+      .filter((r) => !r.validators.includes(MECH_LESSOR_DOOR_GUARD))
+      .map((r) => r.key);
+    expect(unguarded).toEqual([]);
+    const elsewhere = routes
+      .filter((r) => !r.url.startsWith('/api/v1/mech-requests'))
+      .filter((r) => r.validators.includes(MECH_LESSOR_DOOR_GUARD))
+      .map((r) => r.key);
+    expect(elsewhere, 'the guard belongs to the mechanization module only').toEqual([]);
+  });
+
+  /**
+   * The lessor's doors are named one by one: a fourth mark is a widening of what an external
+   * party reaches, and it must show up here in review, not in the logs.
+   */
+  it('the mechanization lessor doors are exactly those of the plan', () => {
+    const doors = routes
+      .filter((r) => r.mechLessorDoor && r.method !== 'HEAD')
+      .map((r) => `${r.method} ${r.url}`)
+      .sort();
+    expect(doors).toEqual(['POST /api/v1/mech-requests/:id/lessor-receipt']);
   });
 });

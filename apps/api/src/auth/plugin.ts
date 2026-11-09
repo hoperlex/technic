@@ -71,6 +71,14 @@ export default fp(
     app.decorateRequest('principal', null);
 
     app.decorate('authenticate', async (req: FastifyRequest) => {
+      /*
+       * Idempotent: a principal already loaded for this request is the answer. A module guard that
+       * must see the principal before validation authenticates in `preValidation` (the
+       * mechanization lessor door, lessor receipt plan P11), and the route's own `authenticate` in
+       * `preHandler` then must not load the session a second time — two reads could even disagree
+       * if the account changed between them.
+       */
+      if (req.principal) return;
       const header = req.headers.authorization;
       if (!header || !header.startsWith('Bearer ')) throw err.unauthorized();
       const token = header.slice('Bearer '.length).trim();

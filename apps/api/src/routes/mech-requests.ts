@@ -116,6 +116,7 @@ import {
 } from '../services/request-create-attempt';
 import { registerMechExtensionRoutes } from './mech-request-extension';
 import { registerMechLessorReceiptRoutes } from './mech-request-lessor-receipt';
+import { installMechLessorDoorGuard } from './mech-lessor-door';
 
 /*
  * Аренда малой механизации (план `docs/mechanization-module-plan.md`): виброплиты, компрессоры,
@@ -195,6 +196,11 @@ const versionQuery = z.object({ version: z.coerce.number().int().nonnegative() }
 const restoreBody = z.object({ version: z.number().int().nonnegative() });
 
 export default async function mechRequestsRoutes(app: FastifyInstance): Promise<void> {
+  // Before the first route, and on this instance: every route below — the extension and receipt
+  // doors included — refuses a counterparty-scoped principal unless marked a lessor door (lessor
+  // receipt plan, P11). A route registered after this line on another instance would escape it;
+  // the route authorization test looks for the guard on every mechanization route.
+  installMechLessorDoorGuard(app);
   const r = app.withTypeProvider<ZodTypeProvider>();
   // Право на каждое действие отдельно (ADR 0021). Договорённость, выдача и снятие отметки закрыты
   // правом смены статуса: это работа офиса, а не правка формы, и через общий `PATCH` их пустил бы

@@ -27,18 +27,6 @@ import {
  * portal invalidates its queries.
  */
 
-declare module 'fastify' {
-  interface FastifyContextConfig {
-    /**
-     * A mechanization door open to a mechanization lessor (plan P11). The module refuses
-     * counterparty-scoped principals by default; only a route marked here lets the lessor through —
-     * a route added tomorrow stays closed to him unless someone marks it. Read by the module's
-     * `preValidation` guard.
-     */
-    mechLessorDoor?: boolean;
-  }
-}
-
 const idParams = z.object({ id: z.string().uuid() });
 
 export async function registerMechLessorReceiptRoutes(app: FastifyInstance): Promise<void> {
