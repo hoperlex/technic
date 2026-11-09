@@ -280,6 +280,12 @@ const INITIAL_STOCK_REFUSAL = 'Заведите позицию с нулевым
  */
 const WHOLE_ORGANIZATION_REFUSAL = 'Выгрузка сводит все площадки';
 
+/**
+ * The handler's refusal of a non-lessor at the mechanization lessor's reads (lessor receipt plan,
+ * P12). A literal, not the server's constant: the expectation must not come from the checked code.
+ */
+const MECH_LESSOR_RENTALS_ONLY = 'открыт только учётке арендодателя механизации';
+
 const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   // ── Вход и self-service ──
   // Тело валидное, потому что схема стоит до стража: с пустым телом невошедший получил бы 400, и
@@ -956,6 +962,11 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   'POST /api/v1/mech-requests/:id/lessor-receipt/waiver': {
     payload: { comment: 'арендодатель чеков не выдаёт', version: 1 },
   },
+  // The lessor's reads (P12) answer only a mechanization lessor: the sweep's role is not one, so
+  // past the guard the handler refuses it in its own words — the positive case proves the guard
+  // let `.read` through, the negative one that it asks for it.
+  'GET /api/v1/mech-requests/lessor-rentals': { selfRefusal: MECH_LESSOR_RENTALS_ONLY },
+  'GET /api/v1/mech-requests/lessor-rentals/:id': { selfRefusal: MECH_LESSOR_RENTALS_ONLY },
   // Фактическая дата не бывает в будущем (Р2), и проверяет это схема: `FUTURE_DATE` дал бы 400
   // раньше стража.
   'POST /api/v1/mech-requests/:id/issue': { payload: { actualFrom: PAST_DATE, version: 1 } },

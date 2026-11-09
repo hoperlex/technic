@@ -391,11 +391,15 @@ describe('авторизация маршрутов', () => {
    * The lessor's doors are named one by one: a fourth mark is a widening of what an external
    * party reaches, and it must show up here in review, not in the logs.
    */
-  it('the mechanization lessor doors are exactly those of the plan', () => {
+  it('the mechanization lessor doors are exactly the three of the plan', () => {
     const doors = routes
       .filter((r) => r.mechLessorDoor && r.method !== 'HEAD')
       .map((r) => `${r.method} ${r.url}`)
       .sort();
-    expect(doors).toEqual(['POST /api/v1/mech-requests/:id/lessor-receipt']);
+    expect(doors).toEqual([
+      'GET /api/v1/mech-requests/lessor-rentals',
+      'GET /api/v1/mech-requests/lessor-rentals/:id',
+      'POST /api/v1/mech-requests/:id/lessor-receipt',
+    ]);
   });
 });

@@ -123,12 +123,26 @@ function currentLessorReceiptExists(status?: MechLessorReceiptStatus): SQL {
  * The filter «Чек» (P16). `missing` is a rental that requires a receipt and has no current version;
  * a rental that does not require one matches no value — it is not waiting for anything.
  */
-function lessorReceiptWhere(filter: MechLessorReceiptFilter | undefined): SQL | undefined {
+export function lessorReceiptWhere(filter: MechLessorReceiptFilter | undefined): SQL | undefined {
   if (!filter) return undefined;
   if (filter === 'missing') {
     return sql`${mechRequests}.lessor_receipt_required AND NOT ${currentLessorReceiptExists()}`;
   }
   return currentLessorReceiptExists(filter);
+}
+
+/**
+ * The period is the window of the question "what stood on the site in these days", so it is the
+ * OVERLAP of terms, not the boundaries falling inside: a rental from 01.09 to 30.09 must be found by
+ * a question about mid-September. The journal asks the same planned term as the list: a cancelled
+ * request has no actual dates at all, and a filter on them would silently lose half the journal.
+ * The lessor's list asks the same window (lessor receipt plan, P12) — one rule for the three.
+ */
+export function mechPeriodWhere(q: { periodFrom?: string; periodTo?: string }): SQL | undefined {
+  return and(
+    q.periodFrom ? gte(mechRequests.plannedTo, q.periodFrom) : undefined,
+    q.periodTo ? lte(mechRequests.plannedFrom, q.periodTo) : undefined,
+  );
 }
 
 function mechCommonFilters(q: MechCommonFilters): (SQL | undefined)[] {
@@ -148,12 +162,7 @@ function mechCommonFilters(q: MechCommonFilters): (SQL | undefined)[] {
     q.mechModelId ? eq(mechRequests.mechModelId, q.mechModelId) : undefined,
     q.lessorId ? eq(mechRequests.lessorId, q.lessorId) : undefined,
     q.num ? eq(mechRequests.num, q.num) : undefined,
-    // Период — окно вопроса «что стояло на площадке в эти дни», поэтому ПЕРЕСЕЧЕНИЕ сроков, а не
-    // попадание границ: аренда с 01.09 по 30.09 обязана найтись запросом про середину сентября.
-    // В журнале спрашивается тот же плановый срок, что и в списке: у отменённой заявки фактических
-    // дат нет вовсе, и отбор по ним потерял бы половину журнала молча.
-    q.periodFrom ? gte(mechRequests.plannedTo, q.periodFrom) : undefined,
-    q.periodTo ? lte(mechRequests.plannedFrom, q.periodTo) : undefined,
+    mechPeriodWhere(q),
     // Поиск по наименованию модели — по тому, что человек видит на экране сегодня (справочник
     // могли переименовать). Написания заявки в перечне больше нет: уборка Э3 сняла колонку, и
     // заявку без модели по названию техники не найти вовсе — только по номеру, площадке или

@@ -1317,6 +1317,17 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['mechRequests.approve'],
   },
+  // The mechanization lessor's own reads (lessor receipt plan, P12): his rentals «В работе» in his
+  // own DTO. The route asks only `.read`; that the caller is a mechanization lessor, and which
+  // rentals are his, is asked by the handler — an office account gets 403, a foreign rental 404.
+  'GET /api/v1/mech-requests/lessor-rentals': {
+    kind: 'permissions',
+    allOf: ['mechRequests.read'],
+  },
+  'GET /api/v1/mech-requests/lessor-rentals/:id': {
+    kind: 'permissions',
+    allOf: ['mechRequests.read'],
+  },
   // Виза площадки и её отзыв — одной ручкой и своим правом (план
   // `docs/mechanization-approval-and-grants-plan.md`, Р1, Р3). Область считает предикат
   // `canApproveMechRequest` уже внутри: манифест отвечает за право, а «своя ли это заявка» —

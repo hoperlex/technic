@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { uuidSchema } from './common';
+import { baseListQuery, dateOnlySchema, sortOrderSchema, uuidSchema } from './common';
 import type { MechRateUnit, RequestStatus } from './enums';
 import type { AttachedFileDto } from './files';
 import {
@@ -496,6 +496,33 @@ export const mechLessorReceiptFilterLabels: Record<MechLessorReceiptFilter, stri
   approved: 'утверждён',
   waived: 'без чека',
 };
+
+// ── The lessor's list (P12) ──
+
+/**
+ * The lessor sorts his rentals by the planned return — when the machine leaves the site is the one
+ * date he plans by. One field on purpose: a sort by a column he is not shown would leak its order.
+ */
+export const MECH_LESSOR_RENTAL_SORT_FIELDS = ['plannedTo'] as const;
+
+/**
+ * The query of `GET /mech-requests/lessor-rentals` (P12): the module's list envelope with paging,
+ * the period (rentals whose term crosses these days, as in the office list) and the receipt state
+ * of the current version. The search looks only at what the lessor's card shows: a search over a
+ * hidden column would answer "is this word in the comment" one rental at a time.
+ *
+ * Soonest return first by default, unlike the office lists (newest first): the lessor reads the
+ * list as "what comes back next".
+ */
+export const mechLessorRentalListQuerySchema = baseListQuery(MECH_LESSOR_RENTAL_SORT_FIELDS).extend(
+  {
+    periodFrom: dateOnlySchema.optional(),
+    periodTo: dateOnlySchema.optional(),
+    lessorReceipt: z.enum(MECH_LESSOR_RECEIPT_FILTERS).optional(),
+    sortOrder: sortOrderSchema.default('asc'),
+  },
+);
+export type MechLessorRentalListQuery = z.infer<typeof mechLessorRentalListQuerySchema>;
 
 export function mechLessorReceiptMark(row: MechLessorReceiptTarget): MechLessorReceiptMark | null {
   if (row.deletedAt !== null) return null;

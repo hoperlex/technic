@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { alias, QueryBuilder } from 'drizzle-orm/pg-core';
 import type { z } from 'zod';
 import {
@@ -114,16 +114,11 @@ export function mechLessorReceiptFileOf(c: MechLessorReceiptFileColumns): Attach
   });
 }
 
-/**
- * Every version of a request, oldest first. Under a write door the caller already holds the
- * request's lock; the card reads it without one.
- */
-export async function loadMechLessorReceipts(
-  reader: MechReader,
-  requestId: string,
-): Promise<MechLessorReceiptRow[]> {
-  const rows = await reader
+/** The versions with their file and the three names, under the aliases above. */
+function receiptRowsQuery(reader: MechReader) {
+  return reader
     .select({
+      requestId: receipts.requestId,
       id: receipts.id,
       versionNo: receipts.versionNo,
       status: receipts.status,
@@ -148,10 +143,21 @@ export async function loadMechLessorReceipts(
     .leftJoin(files, eq(receipts.fileId, files.id))
     .leftJoin(creators, eq(receipts.createdBy, creators.id))
     .leftJoin(deciders, eq(receipts.decidedBy, deciders.id))
-    .leftJoin(retirers, eq(receipts.retiredBy, retirers.id))
-    .where(eq(receipts.requestId, requestId))
-    .orderBy(asc(receipts.versionNo));
-  return rows.map(({ fileId, fileName, fileContentType, fileSize, fileQuarantinedAt, ...row }) => ({
+    .leftJoin(retirers, eq(receipts.retiredBy, retirers.id));
+}
+
+type ReceiptQueryRow = Awaited<ReturnType<typeof receiptRowsQuery>>[number];
+
+function toReceiptRow({
+  requestId: _requestId,
+  fileId,
+  fileName,
+  fileContentType,
+  fileSize,
+  fileQuarantinedAt,
+  ...row
+}: ReceiptQueryRow): MechLessorReceiptRow {
+  return {
     ...row,
     file: mechLessorReceiptFileOf({
       fileId,
@@ -160,7 +166,42 @@ export async function loadMechLessorReceipts(
       fileSize,
       fileQuarantinedAt,
     }),
-  }));
+  };
+}
+
+/**
+ * Every version of a request, oldest first. Under a write door the caller already holds the
+ * request's lock; the card reads it without one.
+ */
+export async function loadMechLessorReceipts(
+  reader: MechReader,
+  requestId: string,
+): Promise<MechLessorReceiptRow[]> {
+  const rows = await receiptRowsQuery(reader)
+    .where(eq(receipts.requestId, requestId))
+    .orderBy(asc(receipts.versionNo));
+  return rows.map(toReceiptRow);
+}
+
+/**
+ * The versions of a page of rentals in one query, by request, oldest first — the lessor's list
+ * builds every row's block from them without a query per row.
+ */
+export async function loadMechLessorReceiptsByRequestIds(
+  reader: MechReader,
+  requestIds: readonly string[],
+): Promise<Map<string, MechLessorReceiptRow[]>> {
+  const map = new Map<string, MechLessorReceiptRow[]>();
+  if (requestIds.length === 0) return map;
+  const rows = await receiptRowsQuery(reader)
+    .where(inArray(receipts.requestId, [...requestIds]))
+    .orderBy(asc(receipts.requestId), asc(receipts.versionNo));
+  for (const row of rows) {
+    const list = map.get(row.requestId) ?? [];
+    list.push(toReceiptRow(row));
+    map.set(row.requestId, list);
+  }
+  return map;
 }
 
 /** The current version among the rows: the one not retired (at most one, by the partial index). */
@@ -286,6 +327,36 @@ function newestFirst<T extends { versionNo: number }>(rows: readonly T[]): T[] {
 }
 
 /**
+ * The lessor's receipt block (P12): only the versions of the current deal — older ones were issued
+ * under other terms and may belong to another lessor — as `MechLessorReceiptVersionView`, and his
+ * own count within the deal, which is exactly what the cap of P7 compares. One function for the
+ * replies of the doors and for his rental DTO, so the two cannot show him different versions.
+ */
+export function mechLessorReceiptLessorState(
+  p: Principal,
+  required: boolean,
+  rows: readonly MechLessorReceiptRow[],
+): MechLessorReceiptLessorStateDto {
+  const visible = mechLessorVisibleVersions(rows);
+  const current = currentMechLessorReceipt(visible);
+  return {
+    audience: 'lessor',
+    required,
+    current: current ? toMechLessorReceiptVersionView(current) : null,
+    retired: newestFirst(visible.filter((row) => row.retiredAt !== null)).map(
+      toMechLessorReceiptVersionView,
+    ),
+    ownVersionCount: ownVersionsInDeal(p, rows),
+  };
+}
+
+/** The lessor's branch of the block, as his rental DTO carries it. */
+export type MechLessorReceiptLessorStateDto = Extract<
+  MechLessorReceiptStateDto,
+  { audience: 'lessor' }
+>;
+
+/**
  * The receipt block for the caller's audience — the reply of every receipt door (P5–P7).
  *
  * The office gets every version with names. The lessor gets only the versions of the current deal
@@ -298,19 +369,7 @@ export function mechLessorReceiptStateFor(
   required: boolean,
   rows: readonly MechLessorReceiptRow[],
 ): MechLessorReceiptStateDto {
-  if (isMechLessorSubject(p)) {
-    const visible = mechLessorVisibleVersions(rows);
-    const current = currentMechLessorReceipt(visible);
-    return {
-      audience: 'lessor',
-      required,
-      current: current ? toMechLessorReceiptVersionView(current) : null,
-      retired: newestFirst(visible.filter((row) => row.retiredAt !== null)).map(
-        toMechLessorReceiptVersionView,
-      ),
-      ownVersionCount: ownVersionsInDeal(p, rows),
-    };
-  }
+  if (isMechLessorSubject(p)) return mechLessorReceiptLessorState(p, required, rows);
   const current = currentMechLessorReceipt(rows);
   return {
     audience: 'office',
