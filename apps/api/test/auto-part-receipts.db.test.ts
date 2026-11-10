@@ -1245,14 +1245,17 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
       },
     );
 
-    it('в теле функции названы ровно десять таблиц, и они названы поимённо', async () => {
+    it('в теле функции названы ровно одиннадцать таблиц, и они названы поимённо', async () => {
       // Утверждение о ПОЛНОТЕ перечня, а не о наличии новой строки. `CREATE OR REPLACE` заменяет
       // тело целиком, и забытая прежняя ветка — тихая потеря защиты: сравнение множеством ловит и
       // пропавшую ветку, и лишнюю (второй ответ на тот же вопрос запирает файл навсегда в первом же
       // расклеившемся случае).
+      // The eleventh branch is the lessor's receipt versions (migration 0420, ADR 0248); its link
+      // case lives in `file-linkage.db.test.ts`, the suite that owns every branch's case.
       expect(await tablesKnownToFunction()).toEqual([
         'auto_part_receipt_files',
         'mech_request_files',
+        'mech_request_lessor_receipts',
         'person_credential_files',
         'request_files',
         'service_request_files',
