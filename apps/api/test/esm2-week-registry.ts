@@ -804,6 +804,16 @@ export const ESM2_WEEK_REGISTRY: readonly Esm2WeekEntry[] = [
       'code is a cell value of the types sheet, no waybill and no period exist in the file',
   },
   {
+    file: 'mech-lessor-scope.db.test.ts',
+    klass: 'mention',
+    status: 'done',
+    note:
+      'periodFrom/periodTo here are the query parameters of the mechanization lessor rental list ' +
+      '(ADR 0248), a filter on the rental term — not waybill columns; the file touches no waybill, ' +
+      'no ESM-2 sheet and no week cut',
+    periodIsDecoration: true,
+  },
+  {
     file: 'vehicle-type-waybill-form-pending.db.test.ts',
     klass: 'mention',
     status: 'done',
