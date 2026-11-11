@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   DEFAULT_MAIL_ACCOUNT,
   MAIL_ACCOUNTS,
+  emailSchema,
   mailAccountEnvPrefix,
   // Умолчание окна повторов приходит из контрактов, а не пишется здесь нулём второй раз: тем же
   // значением предикат объявляет себя выключенным, и разъехаться этим двум местам нечем.
@@ -184,6 +185,18 @@ const rawSchema = z.object({
    * если счёт окажется тесен живой работе; править это должно быть можно без релиза.
    */
   SERVICE_MAIL_MAX_PER_REQUEST_HOUR: z.coerce.number().int().min(0).default(12),
+  // Extra trusted service destinations must not change the SMTP identity or user notifications.
+  SERVICE_MAIL_EXTRA_RECIPIENTS: z
+    .string()
+    .default('')
+    .transform((raw) =>
+      raw
+        .split(',')
+        .map((email) => email.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.array(emailSchema))
+    .transform((emails) => [...new Set(emails.map((email) => email.toLowerCase()))]),
   /**
    * ОКНО ПРИЗНАКА ПОВТОРНОГО ОБРАЩЕНИЯ, ДНЯМИ (план
    * `docs/office-equipment-repeat-request-plan.md`, Р5). Заявка помечается повтором, если по тому
@@ -677,6 +690,7 @@ function loadConfig() {
       /** Размер пачки автозакрытия «Решена» → «Закрыта» за один прогон (Н7). */
       autoCloseBatch: env.SERVICE_REQUEST_AUTO_CLOSE_BATCH,
       mailMaxPerRequestHour: env.SERVICE_MAIL_MAX_PER_REQUEST_HOUR,
+      mailExtraRecipients: env.SERVICE_MAIL_EXTRA_RECIPIENTS,
       /** Окно признака повтора, днями; `0` — признак выключен целиком (Р5 плана повторов). */
       repeatWindowDays: env.SERVICE_REQUEST_REPEAT_WINDOW_DAYS,
       /**

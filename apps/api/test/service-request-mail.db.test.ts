@@ -394,6 +394,195 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     }
   });
 
+  describe('extra trusted service mailbox', () => {
+    const extraMailbox = `db-sm-extra-${RUN}@example.invalid`;
+
+    async function withExtraMailbox(run: () => Promise<void>) {
+      const { config } = await import('../src/config');
+      const previous = config.serviceRequests.mailExtraRecipients;
+      config.serviceRequests.mailExtraRecipients = [extraMailbox, SERVICE_MAILBOX.toUpperCase()];
+      try {
+        await run();
+      } finally {
+        config.serviceRequests.mailExtraRecipients = previous;
+      }
+    }
+
+    async function serviceLetters(requestId: string) {
+      return (
+        await ctx.db.execute<{
+          id: string;
+          to_email: string;
+          reply_to: string;
+          account: string;
+          kind: string;
+          subject: string;
+          body_text: string;
+          body_html: string;
+          dedupe_key: string;
+          job_id: string;
+        }>(sql`
+        SELECT m.*, j.id AS job_id FROM mail_messages m
+        JOIN jobs j ON j.type = 'send_email' AND j.payload->>'mailMessageId' = m.id::text
+        WHERE m.entity_type = 'serviceRequest' AND m.entity_id = ${requestId}
+          AND m.to_email IN (${SERVICE_MAILBOX}, ${extraMailbox})
+        ORDER BY m.to_email`)
+      ).rows;
+    }
+
+    it('queues identical full bodies and independent jobs, and replays neither destination', async () => {
+      await withExtraMailbox(async () => {
+        const { request } = await createRequest(await ctx.newEquipment('extra'), 'Сломан сканер');
+        const letters = await serviceLetters(request.id);
+        expect(letters.map((letter) => letter.to_email).sort()).toEqual(
+          [SERVICE_MAILBOX, extraMailbox].sort(),
+        );
+        expect(new Set(letters.map((letter) => letter.job_id)).size).toBe(2);
+        expect(new Set(letters.map((letter) => letter.dedupe_key)).size).toBe(2);
+        expect(letters.every((letter) => letter.account === 'repair')).toBe(true);
+        expect(letters.every((letter) => letter.reply_to === ctx.customerEmail)).toBe(true);
+        expect(new Set(letters.map((letter) => letter.body_text)).size).toBe(1);
+        expect(new Set(letters.map((letter) => letter.body_html)).size).toBe(1);
+        expect(letters[0]!.body_text).toContain('Сломан сканер');
+        expect(letters[0]!.body_text).toContain(
+          `Контакт: Иванов Иван Иванович, ${request.responsiblePhone}`,
+        );
+        const primary = letters.find((letter) => letter.to_email === SERVICE_MAILBOX)!;
+        expect(primary.dedupe_key.split(':')[2]).toBe('channel');
+
+        const prepared = await ctx.mail.prepareServiceMail({
+          event: 'service_request_waiting_it',
+          authorId: ctx.people.customer.id,
+          actor: { ...ctx.people.customer, counterpartyId: null },
+        });
+        for (let replay = 0; replay < 2; replay += 1) {
+          await ctx.db.transaction(async (tx) => {
+            await ctx.mail.queueServiceMailForIntent(tx, {
+              prepared,
+              requestId: request.id,
+              side: await ctx.mail.readServiceSide(tx, request.id),
+              anchor: primary.dedupe_key.split(':')[1]!,
+            });
+          });
+        }
+        expect(await serviceLetters(request.id)).toEqual(letters);
+      });
+    });
+
+    it('mirrors service-side status and chat notices but leaves contractor-only letters alone', async () => {
+      await withExtraMailbox(async () => {
+        const { request } = await createRequest(
+          await ctx.newEquipment('extra-cycle'),
+          'Заедает бумага',
+        );
+        const assigned = await inject(
+          'PUT',
+          `/api/v1/service-requests/${request.id}/executors`,
+          ctx.admin,
+          {
+            userIds: [],
+            serviceCounterpartyId: ctx.serviceCounterpartyId,
+            version: request.version,
+          },
+        );
+        expect(assigned.statusCode, assigned.body).toBe(200);
+        expect(
+          (await serviceLetters(request.id)).filter(
+            (letter) => letter.kind === 'service_request_assigned',
+          ),
+        ).toEqual([]);
+        const assignment = await ctx.db.execute<{ count: string }>(sql`
+          SELECT count(*)::text AS count FROM mail_messages WHERE entity_id = ${request.id}
+          AND kind = 'service_request_assigned' AND to_email = ${CONTRACTOR_MAILBOX}`);
+        expect(Number(assignment.rows[0]!.count)).toBe(1);
+
+        await withEvent('service_request_status_changed', async () => {
+          const started = await inject(
+            'PATCH',
+            `/api/v1/service-requests/${request.id}/start`,
+            ctx.admin,
+            {
+              version: assigned.json().request.version,
+            },
+          );
+          expect(started.statusCode, started.body).toBe(200);
+        });
+        const statuses = (await serviceLetters(request.id)).filter(
+          (letter) => letter.kind === 'service_request_status_changed',
+        );
+        expect(statuses).toHaveLength(2);
+        expect(statuses.every((letter) => letter.reply_to === SERVICE_MAILBOX)).toBe(true);
+
+        await withEvent('service_request_comment', async () => {
+          for (const [target, body] of [
+            ['operator', 'Полная реплика службе'],
+            ['service', 'Только подрядчику'],
+          ] as const) {
+            const message = await inject(
+              'POST',
+              `/api/v1/service-requests/${request.id}/messages`,
+              ctx.customer,
+              {
+                body,
+                addressees: { sides: [target] },
+              },
+            );
+            expect(message.statusCode, message.body).toBe(200);
+          }
+        });
+        const comments = (await serviceLetters(request.id)).filter(
+          (letter) => letter.kind === 'service_request_comment',
+        );
+        expect(comments).toHaveLength(2);
+        expect(comments.every((letter) => letter.body_text.includes('Полная реплика службе'))).toBe(
+          true,
+        );
+        expect(comments.every((letter) => !letter.body_text.includes('Только подрядчику'))).toBe(
+          true,
+        );
+      });
+    });
+
+    it('keeps event switches and per-address activity summaries for both mailboxes', async () => {
+      await withExtraMailbox(async () => {
+        const { request } = await createRequest(
+          await ctx.newEquipment('extra-limit'),
+          'Не включается',
+        );
+        const { config } = await import('../src/config');
+        const previous = config.serviceRequests.mailMaxPerRequestHour;
+        config.serviceRequests.mailMaxPerRequestHour = 1;
+        const send = () =>
+          inject('POST', `/api/v1/service-requests/${request.id}/messages`, ctx.customer, {
+            body: 'Нужна проверка питания',
+            addressees: { sides: ['operator'] },
+          });
+        try {
+          await withoutEvent('service_request_comment', async () => {
+            const response = await send();
+            expect(response.statusCode, response.body).toBe(200);
+          });
+          expect(await serviceLetters(request.id)).toHaveLength(2);
+          await withEvent('service_request_comment', async () => {
+            for (let n = 0; n < 3; n += 1) {
+              const response = await send();
+              expect(response.statusCode, response.body).toBe(200);
+            }
+          });
+        } finally {
+          config.serviceRequests.mailMaxPerRequestHour = previous;
+        }
+        const summaries = (await serviceLetters(request.id)).filter(
+          (letter) => letter.kind === 'service_request_activity_summary',
+        );
+        expect(summaries.map((letter) => letter.to_email).sort()).toEqual(
+          [SERVICE_MAILBOX, extraMailbox].sort(),
+        );
+        expect(new Set(summaries.map((letter) => letter.body_text)).size).toBe(1);
+      });
+    });
+  });
+
   it('заведение шлёт письмо на ящик службы — с её же канала и с ответом заявителю', async () => {
     const { request, mail } = await createRequest(
       await ctx.newEquipment('dup'),

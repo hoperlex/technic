@@ -938,6 +938,41 @@ describe.skipIf(!DB_URL)('массовые действия над заявка�
       expect(afterBulk.executors).toEqual([]);
     });
 
+    it('queues one complete bulk digest per trusted service mailbox and does not repeat it', async () => {
+      const { config } = await import('../src/config');
+      const previous = config.serviceRequests.mailExtraRecipients;
+      const extraMailbox = `extra-${RUN}@example.invalid`;
+      config.serviceRequests.mailExtraRecipients = [extraMailbox];
+      try {
+        const ids = [await makeRequest(), await makeRequest()];
+        const key = randomUUID();
+        const body = {
+          operation: 'cancel',
+          rows: await rowsOf(ids),
+          reason: 'Заявки больше не нужны',
+        };
+        const result = await bulkOk(body, ctx.operator.auth, key);
+        expect(result.done).toBe(2);
+        const digests = (await digestsOf(result.operationId)).filter((letter) =>
+          [SERVICE_MAILBOX, extraMailbox].includes(letter.to_email),
+        );
+        expect(digests.map((letter) => letter.to_email).sort()).toEqual(
+          [SERVICE_MAILBOX, extraMailbox].sort(),
+        );
+        expect(new Set(digests.map((letter) => letter.body_text)).size).toBe(1);
+        for (const id of ids)
+          expect(digests[0]!.body_text).toContain((await card(id)).displayNumber);
+        await bulkOk(body, ctx.operator.auth, key);
+        expect(
+          (await digestsOf(result.operationId)).filter((letter) =>
+            [SERVICE_MAILBOX, extraMailbox].includes(letter.to_email),
+          ),
+        ).toEqual(digests);
+      } finally {
+        config.serviceRequests.mailExtraRecipients = previous;
+      }
+    });
+
     it('cancel: письмо каждой строки уходит в сводку пачки, а не отдельным письмом (Р10)', async () => {
       /*
        * Существующий потолок писем считается по тройке «заявка + адрес + час» и от пачки по РАЗНЫМ

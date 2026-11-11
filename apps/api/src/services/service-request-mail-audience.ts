@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { can, COUNTERPARTY_SCOPED_ROLES, type ModuleMailEvent } from '@technic/contracts';
 import type { db } from '../db/client';
@@ -10,6 +11,7 @@ import {
   users,
 } from '../db/schema';
 import { logger } from '../logger';
+import { config } from '../config';
 import { accessSubjectColumns, accessSubjectOf } from '../auth/principal';
 
 /**
@@ -360,18 +362,16 @@ export async function counterpartyMailbox(reader: Reader, counterpartyId: string
 // ── Стороны письма ──
 
 /**
- * Адресаты одной стороны события (§5.2).
+ * Candidates for one event side (ADR 0159, decision 5).
  *
- * - `office` — ящик канала `repair`, аудитория `internal`. Учётки за ним нет: это сторона, а не
- *   человек, и потому он не вычёркивается исключением актора (§5.4).
- * - `service` — назначенная компания целиком: её живые операторы, общий ящик карточки и активные
- *   поимённые исполнители заявки. Внешним — тело подрядчика, своим сотрудникам — внутреннее.
- * - `{ userId }` — только та активная учётка, которая **сейчас назначена на эту заявку** и имеет
- *   `serviceRequests.execute`. Это адресация по имени, а не вся сторона `service`: реплика
- *   конкретному исполнителю не должна приходить всей компании.
+ * - `office`: the primary repair mailbox and its configured trusted destinations, all `internal`.
+ *   They represent the service, so an employee acting from the same address cannot suppress them.
+ * - `service`: the assigned company's active operators, shared mailbox and active named executors.
+ *   External recipients get the contractor body; employees get the internal body.
+ * - `{ userId }`: only the active user currently assigned to this request who still holds
+ *   `serviceRequests.execute`. A named message must not be sent to the entire company.
  *
- * Возвращает кандидатов, а не готовый список: исключение актора, нормализацию и дедупликацию делает
- * накопитель (`collectServiceMailRecipients`) — одним правилом на все стороны сразу.
+ * The shared accumulator applies actor exclusion and deduplicates across sides and copy rows.
  */
 export async function sideRecipients(
   tx: Tx,
@@ -390,18 +390,28 @@ export async function sideRecipients(
   opts: { includeCounterpartyMailbox?: boolean } = {},
 ): Promise<ServiceMailRecipient[]> {
   if (target === 'office') {
-    if (!ctx.channelEmail) return [];
-    return [
-      {
-        key: 'channel',
-        email: ctx.channelEmail,
+    const primary = normalizeEmail(ctx.channelEmail);
+    if (!primary) return [];
+    const addresses = new Set(
+      [primary, ...config.serviceRequests.mailExtraRecipients].map(normalizeEmail),
+    );
+    return [...addresses].map((email) => {
+      // Preserve the legacy key so queued events are not resent. Extra keys must differ and
+      // contain no colons: the queue uses the third colon-delimited field as recipient identity.
+      const key =
+        email === primary
+          ? 'channel'
+          : `channel-${createHash('sha256').update(email).digest('hex')}`;
+      return {
+        key,
+        email,
         replyTo: ctx.internalReplyTo,
-        audience: 'internal',
-        source: 'channel',
-        sortId: 'channel',
+        audience: 'internal' as const,
+        source: 'channel' as const,
+        sortId: key,
         counterpartyId: null,
-      },
-    ];
+      };
+    });
   }
 
   if (typeof target === 'object') {

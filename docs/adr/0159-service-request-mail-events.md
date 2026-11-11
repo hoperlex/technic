@@ -166,10 +166,37 @@ ADR 0153 сказал прямо: «Откат в „Новую“ подряд�
 уходила на общий ящик компании, но не её живым операторам. С семью событиями таких мест стало бы
 семь, и следующее расхождение нашлось бы тем же способом — по жалобе подрядчика.
 
-Поэтому вводится **один сборщик сторон**: `office` — ящик канала, `service` — вся сторона назначенной
-компании (живые операторы, общий ящик карточки, поимённые исполнители с `serviceRequests.execute`),
-`{ userId }` — одна назначенная учётка для поимённой реплики. Ходит он в базу **через `tx` события**,
-после того как строка заявки взята `FOR UPDATE`, и обращение к глобальному `db` запрещается тестом.
+One side builder owns the audience: `office` is the repair channel's mailbox, `service` is the
+assigned company's complete side (active operators, its shared mailbox and named executors who
+hold `serviceRequests.execute`), and `{ userId }` is one assigned user for a named message. It
+reads through the event transaction after the request is locked `FOR UPDATE`; a test prevents
+reads through the global database client.
+
+**Temporary extension on 2026-11-11: trusted service destinations during a domain transition.**
+The owner's final instruction replaces the repair channel's SMTP identity with `repair@su-10.ru`
+and keeps `repair@mstroy.pro` receiving full service notices as an extra recipient. This supersedes
+the initial instruction to retain the old sender. Configure the new mailbox's SMTP account and
+From in `MAIL_ACCOUNT_REPAIR_*`, and set `SERVICE_MAIL_EXTRA_RECIPIENTS=repair@mstroy.pro`.
+The legacy copy remains until the owner explicitly ends the temporary transition; no automatic
+deadline is inferred.
+
+The optional extra-recipient setting adds destinations of the same internal repair service to
+the `office` target. That setting alone does not change SMTP identity or targets of events
+addressed only to other sides. The default is empty. Changing the repair channel's identity
+also changes the From of requester notices sent through that channel (ADR 0227), while keeping
+the per-event reply rules. Unrelated default-channel letters are outside this transition.
+These infrastructure-configured service mailboxes have the same `internal` audience and
+non-excludable `channel` source as the primary mailbox; arbitrary observer rows in
+`module_mail_recipients` remain redacted under decision 7.
+
+Each normalized address receives its own outbox row and job. The primary destination retains
+recipient key `channel`; additional destinations use stable address-derived keys without colons.
+Reusing `channel` for both would silently suppress one delivery under the outbox's uniqueness
+constraint. Recipient ordering is independent of extra-recipient configuration order, and the accumulator still
+deduplicates against users and observer copies. Existing per-address rate limits, activity
+summaries and bulk digests apply independently to each mailbox. The setting affects future events
+only: changing it neither replays history nor redirects queued letters. Deployment and rollback
+steps are in the [mail guide](../guide-office-equipment-mail.md).
 
 **Почему предварительного снимка с одной сверкой недостаточно.** Соблазн понятен: посчитать
 адресатов заранее, а перед вставкой сверить `serviceCounterpartyId` — не сменился ли подрядчик. Но

@@ -93,6 +93,65 @@ SERVICE_MAIL_MAX_PER_REQUEST_HOUR=12
 изменения env примените обычный для проекта выкат или перезапуск API и worker. Миграции должны быть
 накатаны до запуска нового worker.
 
+### Temporary domain transition: new sender and a copy to the legacy mailbox
+
+The owner's temporary decision of 2026-11-11 makes `repair@su-10.ru` the primary repair address:
+it sends the module's notices and receives full service notices. `repair@mstroy.pro` continues
+receiving the same full service notices as an extra destination. End the legacy copy only on the
+owner's explicit instruction; there is no automatic deadline.
+
+Configure the existing `repair` channel with the new mailbox's own SMTP account, and retain the
+old mailbox through the extra-recipient setting:
+
+```dotenv
+MAIL_ACCOUNT_REPAIR_HOST=m.su-10.ru
+MAIL_ACCOUNT_REPAIR_PORT=465
+MAIL_ACCOUNT_REPAIR_SECURE=true
+MAIL_ACCOUNT_REPAIR_AUTH_METHOD=CRAM-MD5
+MAIL_ACCOUNT_REPAIR_USER=repair@su-10.ru
+MAIL_ACCOUNT_REPAIR_PASSWORD=<secret stored outside Git>
+MAIL_ACCOUNT_REPAIR_FROM="Ремонт оргтехники <repair@su-10.ru>"
+MAIL_ACCOUNT_REPAIR_REPLY_TO=repair@su-10.ru
+SERVICE_MAIL_EXTRA_RECIPIENTS=repair@mstroy.pro
+```
+
+Only list trusted mailboxes belonging to the same internal repair service. Every event that
+currently reaches the primary service mailbox also reaches these addresses with the same full
+body and the same Reply-To. The primary destination still comes from `MAIL_ACCOUNT_REPAIR_FROM`;
+it is not replaced by this list. Multiple extra addresses are comma-separated; case and duplicate
+addresses do not multiply delivery. An empty or missing value keeps the existing single-mailbox
+behavior. Invalid addresses prevent API startup and name the setting in the error.
+
+Changing the `repair` SMTP identity also changes the sender of requester notices sent through
+that channel (ADR 0227). Preserve the event-specific reply rules: service replies now use the new
+repair address, creation/cancellation notices to the service can reply to the author, and
+requester letters still reply to the portal's general address. Leave the unrelated default
+portal channel (`SMTP_*`, `MAIL_FROM`, `MAIL_REPLY_TO`) configured as before. Letters addressed
+only to the contractor, named executors or the requester keep their existing audience.
+
+SMTP TLS and CRAM-MD5 authentication were verified without sending a message on 2026-11-11.
+IMAP `m.su-10.ru:993` is a mail-client setting; this outgoing-notice transition does not configure
+the portal's separate device-telemetry mailbox or import human messages as requests.
+
+This setting differs from the **«Служебные адреса»** observer copies: extra service destinations
+receive the complete internal body, while observer copies retain the restricted body described
+below. If an extra mailbox also appears as a copy, it receives only the full service letter for
+an event addressed to the service.
+
+Apply the code release first, then update the shared production environment with the values
+above and recreate both API and worker using the normal runbook procedure. An old API without
+extra-recipient support would send only to the new primary address and lose the legacy copy.
+Before activation, check
+for existing mail-server forwarding between the two mailboxes: combining forwarding and portal
+duplication can produce duplicate physical delivery. Check the mail audit for separate queued
+messages to both addresses, matching full bodies and `repair@su-10.ru` as the sender. Check a normal
+request event and a bulk digest; a repeated event must not create another copy for either address.
+
+After the owner ends the temporary transition, removing the legacy extra address and recreating
+the API stops future legacy copies while keeping the new sender and primary destination.
+Already queued letters retain their recorded destination and are not cancelled or replayed by
+this setting; SMTP identity is read by the worker at startup.
+
 ## 3. Заполнить адреса сервисных компаний
 
 Путь: **Справочники** → **Контрагенты** → карточка организации типа
