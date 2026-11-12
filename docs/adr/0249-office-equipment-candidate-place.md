@@ -17,6 +17,7 @@
   [object exports](../../apps/web/src/entities/object/index.ts),
   [usePlaceObjectScope.ts](../../apps/web/src/entities/session/model/usePlaceObjectScope.ts);
   tests —
+  [candidate object choice](../../apps/api/test/candidate-object-choice.test.ts),
   [candidate intake](../../apps/api/test/service-request-candidate-intake.db.test.ts),
   [missing equipment](../../apps/web/test/missing-equipment.test.tsx)
 

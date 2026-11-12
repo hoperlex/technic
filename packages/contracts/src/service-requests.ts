@@ -5,8 +5,10 @@ import {
   actsForCounterparty,
   can,
   hasGrantCode,
+  placeObjectScopeIds,
   type AccessSubject,
   type Permission,
+  type ScopedSubject,
 } from './permissions';
 import {
   OFFICE_EQUIPMENT_EXECUTOR_GRANT,
@@ -15,9 +17,8 @@ import {
   OFFICE_EQUIPMENT_REQUESTER_GRANT,
 } from './office-equipment-profiles';
 import { roleScopeAxis } from './grant-scope';
-// Только тип: список ролей-заявителей (ADR 0181) обязан состоять из ЗНАЧЕНИЙ словаря ролей, и
-// `satisfies readonly Role[]` роняет сборку в тот день, когда роль-заплатку `manager` уберут.
-import type { Role } from './enums';
+// The requester list (ADR 0181) uses Role values so removing a temporary role fails the build.
+import { isDepartmentScopedRole, isObjectScopedRole, type Role } from './enums';
 // Значением, а не типом: сквозную область модуля читает предикат правки заявки (Н8) — тем же
 // `hasModuleWideScope`, каким её читают область видимости на сервере и подбор заказчика на портале.
 // Обратной зависимости у наборов на заявки нет, поэтому цикла модулей не заводится.
@@ -1188,6 +1189,42 @@ export function canPickAnyServiceSubject(subject: AccessSubject | null | undefin
   if (!subject) return false;
   if (subject.role === 'admin') return true;
   return hasModuleWideScope(subject.grantCodes, 'officeEquipment');
+}
+
+export interface CandidateObjectChoice {
+  /** `null`: any object that exists, active or not. A list: only these objects. */
+  readonly allowedObjectIds: readonly string[] | null;
+  /** The subject's own place-axis objects, offered first when the choice is wider than them. */
+  readonly ownObjectIds: readonly string[];
+}
+
+/**
+ * ADR 0249: the server and reporting window must agree on accepted locations. Department links
+ * only prioritize suggestions during the temporary data-quality exception; object roles need
+ * their restriction to keep the resulting request visible to its author.
+ */
+export function candidateObjectChoice(
+  subject: ScopedSubject | null | undefined,
+): CandidateObjectChoice {
+  if (!subject) return { allowedObjectIds: [], ownObjectIds: [] };
+  if (canPickAnyServiceSubject(subject)) {
+    return { allowedObjectIds: null, ownObjectIds: placeObjectScopeIds(subject) ?? [] };
+  }
+  if (isObjectScopedRole(subject.role)) {
+    return { allowedObjectIds: subject.constructionObjectIds ?? [], ownObjectIds: [] };
+  }
+  if (isDepartmentScopedRole(subject.role)) {
+    return { allowedObjectIds: null, ownObjectIds: subject.departmentObjectIds ?? [] };
+  }
+  return { allowedObjectIds: null, ownObjectIds: [] };
+}
+
+export function canPlaceCandidateOn(
+  subject: ScopedSubject | null | undefined,
+  objectId: string,
+): boolean {
+  const { allowedObjectIds } = candidateObjectChoice(subject);
+  return allowedObjectIds === null || allowedObjectIds.includes(objectId);
 }
 
 /**
