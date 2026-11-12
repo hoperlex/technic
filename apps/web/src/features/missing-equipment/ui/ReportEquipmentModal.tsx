@@ -1,34 +1,25 @@
 import { useEffect } from 'react';
 import { Alert, Form, Input } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import type { EquipmentCandidateInput } from '@technic/contracts';
-import { objectOptionsQuery } from '@entities/object';
+import {
+  candidateObjectChoice,
+  isDepartmentScopedRole,
+  type EquipmentCandidateInput,
+} from '@technic/contracts';
+import { objectActivityOptionsQuery } from '@entities/object';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
-import { usePlaceObjectScope } from '@entities/session';
+import { useAuth } from '@entities/session';
+import { flattenOptions } from '@shared/lib';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { equipmentCandidateDraft, type EquipmentCandidateDraft } from '../model/draft';
 
-/** Значения окна: те же шесть реквизитов (Р7), без единого поля учёта. */
 type Values = EquipmentCandidateInput;
 
 /**
- * «Сообщить об аппарате» — окно заявителя, у которого нужной техники в справочнике нет (план
- * `docs/office-equipment-candidate-plan.md`, Р7, §9).
- *
- * ШЕСТЬ ПОЛЕЙ НАБЛЮДЕНИЯ, А НЕ ОДИННАДЦАТЬ ПОЛЕЙ УЧЁТА, и это главное отличие от соседнего окна
- * быстрого создания (`QuickCreateEquipmentModal`). Ни отдела-владельца, ни даты покупки, ни
- * гарантии, ни модели-ссылки здесь нет вовсе: заявитель их не знает, и, спросив их, форма получила
- * бы выдуманные ответы. Их проставляет проверяющий в форме подтверждения — полной форме карточки
- * парка (Р13).
- *
- * МОДЕЛЬ — ТЕКСТОМ. Справочник моделей такая же запись, как карточка техники, и открыв его
- * заявителю, портал вернул бы отобранный `officeEquipment.write` боковой дверью: перечень моделей
- * пополняли бы те, кому карточки вести не положено. Ссылку на модель проставляет проверяющий.
- *
- * ОКНО НИЧЕГО НЕ ОТПРАВЛЯЕТ САМО (Р2). Оно кладёт черновик в форму заявки и закрывается; уходит всё
- * одним нажатием «Сохранить» в самой заявке, потому что кандидат и заявка рождаются одной
- * транзакцией одного запроса. Отсюда и подпись кнопки — «Отправить с заявкой», а не «Сохранить»:
- * человек должен видеть, что произойдёт, а произойдёт заполнение формы под окном.
+ * A requester reports observable device details; accounting fields belong to the reviewer who
+ * creates the directory card. The model stays free text so reporting does not become a second
+ * way to edit the model directory. The draft travels with the service request in one transaction,
+ * since separate submissions would leave orphaned reports after a connection failure.
  */
 export function ReportEquipmentModal({
   open,
@@ -37,51 +28,60 @@ export function ReportEquipmentModal({
   onFilled,
 }: {
   open: boolean;
-  /** Уже заявленное — окно открывают и повторно, чтобы поправить сообщение до отправки. */
+  /** Reopening edits the same unsent observation instead of starting another report. */
   draft: EquipmentCandidateDraft | null;
   onClose: () => void;
-  /** Черновик уходит в форму заявки: она и отправит его вместе с описанием и вложениями. */
+  /** The request form owns submission so the report and request are created atomically. */
   onFilled: (draft: EquipmentCandidateDraft) => void;
 }) {
   const [form] = Form.useForm<Values>();
   const blockers = useFormBlockers(form);
-  const objectScope = usePlaceObjectScope();
+  const { user } = useAuth();
+  const choice = candidateObjectChoice(user);
 
-  // Справочники спрашиваются только при открытом окне: большинство заводящих заявку сюда не
-  // заходит вовсе, и два запроса на каждое открытие формы были бы платой ни за что.
+  // Most requesters never open this window, so its dictionaries are loaded only when needed.
   const { data: typeOptions = [], isFetching: typesLoading } = useQuery({
     ...officeEquipmentTypeOptionsQuery(),
     enabled: open,
   });
-  const { data: objectOptions = [] } = useQuery({ ...objectOptionsQuery(), enabled: open });
+  const { data: objectOptions = [] } = useQuery({
+    ...objectActivityOptionsQuery(),
+    enabled: open,
+  });
 
   /*
-   * ПЛОЩАДКА — ПО ПЛОЩАДОЧНОЙ ОСИ, тем же правилом, каким её проверяет сервер (Р7): объектная роль
-   * называет свои объекты, отдельская — площадки своих отделов, роль без оси выбирает из
-   * справочника. Чужой объект сервер отвечает 422, и предлагать в поле отвергаемое нельзя —
-   * человек узнал бы об отказе после того, как заполнил шесть полей.
-   *
-   * Ось спрашивается хуком, а не разбирается здесь по ролям и `departmentObjectIds`: она одна на
-   * все модули, где заказчиком стоит объект (ADR 0201), и свой разбор разошёлся бы с общим молча —
-   * на первой же правке того, как площадки отдела считаются.
+   * ADR 0249 keeps offered locations aligned with the server, including inactive sites and wide
+   * scope. Departments temporarily choose any existing site while directory data is incomplete;
+   * their linked sites guide the choice without overriding the place the person actually reports.
    */
-  const objects = objectScope.limitObjectOptions(objectOptions);
+  const available = objectOptions
+    .filter((o) => choice.allowedObjectIds === null || choice.allowedObjectIds.includes(o.value))
+    .map((o) => ({ ...o, label: o.isActive ? o.label : `${o.label} (неактивен)` }))
+    .sort((a, b) => Number(b.isActive) - Number(a.isActive));
+  const ownIds = new Set(choice.ownObjectIds);
+  const own = available.filter((o) => ownIds.has(o.value));
+  const other = available.filter((o) => !ownIds.has(o.value));
+  const objects =
+    own.length > 0 && other.length > 0
+      ? [
+          {
+            label: isDepartmentScopedRole(user?.role) ? 'Площадки вашего отдела' : 'Ваши объекты',
+            options: own,
+          },
+          { label: 'Другие объекты', options: other },
+        ]
+      : available;
 
   useEffect(() => {
     if (!open) return;
-    // Открытое повторно окно показывает уже сообщённое: правят сообщение до отправки, а не
-    // заводят второе. Пустая форма на месте заявленного читалась бы как потерянный ввод.
+    // Preserve the unsent observation on reopen; an empty form would look like lost input.
     form.resetFields();
     if (draft) form.setFieldsValue(draft.input);
   }, [open, draft, form]);
 
   const finish = (values: Values) => {
-    /*
-     * «Хотя бы один номер» (Р7) — проверкой в `onFinish`, а не правилом поля: правило живёт у
-     * одного поля, а условие говорит про пару, и повешенное на оба оно ругалось бы дважды на одну
-     * причину. Слова те же, что скажет схема сервера, — иначе один и тот же отказ читался бы в
-     * форме и в ответе по-разному.
-     */
+    // One form-level error covers the pair: attaching the same requirement to both number
+    // fields would report the same missing identifier twice.
     if (
       blockers.raise({
         inventoryNumber:
@@ -106,7 +106,9 @@ export function ReportEquipmentModal({
         },
         {
           typeName: typeOptions.find((t) => t.value === values.equipmentTypeId)?.label ?? '',
-          objectLabel: objects.find((o) => o.value === objectId)?.label ?? '',
+          objectLabel: String(
+            flattenOptions(objects).find((o) => o.value === objectId)?.label ?? '',
+          ),
         },
       ),
     );
@@ -123,11 +125,8 @@ export function ReportEquipmentModal({
       width={560}
     >
       <Form form={form} layout="vertical" onFinish={finish} {...blockers.formProps}>
-        {/* Подсказка про фото — ПРОСЬБА, А НЕ ПРАВИЛО (Р7, В4). Снимок шильдика снимает половину
-            работы проверяющего: номера видно глазами, и опечатка «O» вместо «0» ловится до
-            заведения карточки. Обязательным его не делаем — аппарат стоит в коридоре, телефон
-            бывает без камеры, а запертая на вложении заявка означает несделанную заявку. Механики
-            новой не нужно: снимок приезжает обычным вложением самой заявки. */}
+        {/* A photo helps reviewers catch mistyped identifiers, but requiring it would block
+            reports from people who cannot take a picture at the device. */}
         <Alert
           type="info"
           showIcon
@@ -150,7 +149,6 @@ export function ReportEquipmentModal({
           />
         </Form.Item>
 
-        {/* Модель словами — то, что человек прочёл с шильдика, вместе с «кажется, Kyocera». */}
         <Form.Item
           name="declaredModel"
           label="Модель с шильдика"

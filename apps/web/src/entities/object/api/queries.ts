@@ -5,8 +5,8 @@ import { objectKeys } from './keys';
 
 /**
  * Sites fit in one response and are searched locally, so a picker opens without a request per
- * keystroke. New requests offer only active sites, while historical references need the inactive
- * variant under its own key.
+ * keystroke. Standard pickers offer active sites by default; historical references and reported
+ * device locations need the inactive variant under its own key.
  */
 export const objectOptionsQuery = ({ activeOnly = true }: { activeOnly?: boolean } = {}) =>
   queryOptions({
@@ -22,6 +22,21 @@ export const objectOptionsQuery = ({ activeOnly = true }: { activeOnly?: boolean
       }),
     select: (r) => r.items.map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` })),
   });
+
+/**
+ * Observed device locations can refer to inactive sites (ADR 0249). Retaining activity in this
+ * observer lets the picker label them while sharing the ordinary all-sites response and cache key.
+ */
+export const objectActivityOptionsQuery = () => {
+  const base = objectOptionsQuery({ activeOnly: false });
+  return {
+    queryKey: base.queryKey,
+    ...queryProfileOptions(base),
+    queryFn: base.queryFn,
+    select: (r: Awaited<ReturnType<typeof objectsApi.list>>) =>
+      r.items.map((o) => ({ value: o.id, label: `${o.code} — ${o.name}`, isActive: o.isActive })),
+  };
+};
 
 /**
  * Address selection (ADR 0069) uses the same cached active-site response as the ordinary picker.

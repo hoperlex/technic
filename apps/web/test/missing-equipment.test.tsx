@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type {
-  AuthUser,
-  CreateServiceRequestInput,
-  OfficeEquipmentTypeDto,
-  Permission,
+import {
+  OFFICE_EQUIPMENT_IT_GRANT,
+  type AuthUser,
+  type CreateServiceRequestInput,
+  type OfficeEquipmentTypeDto,
+  type Permission,
 } from '@technic/contracts';
-import { selectOption } from './antd';
+import { openSelectOptions, selectOption } from './antd';
 import { json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
@@ -135,13 +136,15 @@ function renderForm(user: AuthUser, over: RouteMap = {}) {
 const fill = (label: string, value: string) =>
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 
-/** Заполнить окно «Сообщить об аппарате» и вернуть заявленное в форму заявки. */
-async function reportEquipment() {
+async function openReport() {
   fireEvent.click(await screen.findByText('Не нашли технику?'));
-  // Окно открывается кнопкой плашки, а не самой ссылкой: выходов у этой ветви два, и человек
-  // выбирает между ними (Э5).
   fireEvent.click(await screen.findByRole('button', { name: 'Заполнить самостоятельно' }));
-  await screen.findByText('Сообщить об аппарате');
+  await screen.findByLabelText('Где стоит');
+}
+
+/** The request must stay unsent until the separate request form is submitted. */
+async function reportEquipment() {
+  await openReport();
   await selectOption('Что за аппарат', 'МФУ');
   fill('Модель с шильдика', 'Kyocera M3145');
   fill('Инвентарный номер', '0012345');
@@ -294,5 +297,160 @@ describe('409 «такой аппарат в справочнике уже ес�
     );
     // И объясняет словами, что произошло: человек искал этот аппарат и не нашёл.
     expect(await screen.findByText(/уже есть в справочнике/)).toBeDefined();
+  });
+});
+
+const PLACES = [
+  objectDto({ id: 'obj-1', code: 'ОБ-1', name: 'Альфа', isActive: false }),
+  objectDto({ id: 'obj-2', code: 'ОБ-2', name: 'Бета', isActive: false }),
+  objectDto({ id: 'obj-3', code: 'ОБ-3', name: 'Гамма' }),
+  objectDto({ id: 'obj-4', code: 'ОБ-4', name: 'Дельта' }),
+];
+
+function placeUser(overrides: Partial<AuthUser>): AuthUser {
+  return authUser({ ...PROPOSER, constructionObjectIds: [], ...overrides });
+}
+
+function renderPlaces(user: AuthUser) {
+  return renderForm(user, { 'GET /objects': () => json(list(PLACES)) });
+}
+
+function shownPlace(): string | null {
+  const field = screen.getByLabelText('Где стоит').closest('.ant-select');
+  return field?.querySelector('.ant-select-content')?.getAttribute('title') ?? null;
+}
+
+async function placeOptions() {
+  const options = await openSelectOptions('Где стоит');
+  const dropdown = options[0]!.closest('.ant-select-dropdown')!;
+  return {
+    labels: options.map((option) => option.textContent),
+    groups: [...dropdown.querySelectorAll('.ant-select-item-group')].map((g) => g.textContent),
+  };
+}
+
+describe('место аппарата: общий выбор с сервером (ADR 0249)', () => {
+  it('площадки отдела идут первыми, активные перед неактивными внутри каждой группы', async () => {
+    renderPlaces(
+      placeUser({
+        role: 'department',
+        departmentIds: ['dept-1'],
+        departmentObjectIds: ['obj-1', 'obj-4'],
+      }),
+    );
+    await openReport();
+
+    expect(await placeOptions()).toEqual({
+      groups: ['Площадки вашего отдела', 'Другие объекты'],
+      labels: [
+        'ОБ-4 — Дельта',
+        'ОБ-1 — Альфа (неактивен)',
+        'ОБ-3 — Гамма',
+        'ОБ-2 — Бета (неактивен)',
+      ],
+    });
+    expect(shownPlace()).toBeNull();
+  });
+
+  it.each(['department', 'department_head'] as const)(
+    '%s без площадок видит все объекты, включая неактивные',
+    async (role) => {
+      const { http } = renderPlaces(
+        placeUser({ role, departmentIds: ['dept-1'], departmentObjectIds: [] }),
+      );
+      await openReport();
+
+      expect(await placeOptions()).toEqual({
+        groups: [],
+        labels: [
+          'ОБ-3 — Гамма',
+          'ОБ-4 — Дельта',
+          'ОБ-1 — Альфа (неактивен)',
+          'ОБ-2 — Бета (неактивен)',
+        ],
+      });
+      expect(shownPlace()).toBeNull();
+      expect(http.lastCall('GET /objects')?.query.has('isActive')).toBe(false);
+    },
+  );
+
+  it('объектная роль видит только свои объекты, включая неактивный', async () => {
+    renderPlaces(placeUser({ role: 'shtab', constructionObjectIds: ['obj-1', 'obj-4'] }));
+    await openReport();
+
+    expect(await placeOptions()).toEqual({
+      groups: [],
+      labels: ['ОБ-4 — Дельта', 'ОБ-1 — Альфа (неактивен)'],
+    });
+  });
+
+  it('единственный свой объект подставляется даже если он неактивен', async () => {
+    renderPlaces(placeUser({ role: 'shtab', constructionObjectIds: ['obj-1'] }));
+    await openReport();
+
+    await waitFor(() => expect(shownPlace()).toBe('ОБ-1 — Альфа (неактивен)'));
+    expect(await placeOptions()).toEqual({
+      groups: [],
+      labels: ['ОБ-1 — Альфа (неактивен)'],
+    });
+  });
+
+  it('сквозная область ИТ снимает ограничение штаба, свои объекты идут первой группой', async () => {
+    renderPlaces(
+      placeUser({
+        role: 'shtab',
+        constructionObjectIds: ['obj-1', 'obj-4'],
+        grantCodes: [OFFICE_EQUIPMENT_IT_GRANT],
+      }),
+    );
+    await openReport();
+
+    expect(await placeOptions()).toEqual({
+      groups: ['Ваши объекты', 'Другие объекты'],
+      labels: [
+        'ОБ-4 — Дельта',
+        'ОБ-1 — Альфа (неактивен)',
+        'ОБ-3 — Гамма',
+        'ОБ-2 — Бета (неактивен)',
+      ],
+    });
+  });
+
+  it.each(['dispatcher', 'admin'] as const)(
+    '%s видит полный справочник без групп и с неактивными объектами',
+    async (role) => {
+      renderPlaces(placeUser({ role }));
+      await openReport();
+
+      expect(await placeOptions()).toEqual({
+        groups: [],
+        labels: [
+          'ОБ-3 — Гамма',
+          'ОБ-4 — Дельта',
+          'ОБ-1 — Альфа (неактивен)',
+          'ОБ-2 — Бета (неактивен)',
+        ],
+      });
+    },
+  );
+
+  it('черновик сохраняет подпись неактивного объекта из группы «Другие объекты»', async () => {
+    const { http } = renderPlaces(
+      placeUser({
+        role: 'department',
+        departmentIds: ['dept-1'],
+        departmentObjectIds: ['obj-4'],
+      }),
+    );
+    await openReport();
+    await selectOption('Что за аппарат', 'МФУ');
+    await selectOption('Где стоит', 'ОБ-2 — Бета (неактивен)');
+    fill('Модель с шильдика', 'Kyocera M3145');
+    fill('Инвентарный номер', '0012345');
+    fill('Место', 'каб. 214');
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить с заявкой' }));
+
+    expect(await screen.findByText(/МФУ · ОБ-2 — Бета \(неактивен\) · каб\. 214/)).toBeDefined();
+    expect(http.calls.filter((c) => c.method === 'POST')).toHaveLength(0);
   });
 });

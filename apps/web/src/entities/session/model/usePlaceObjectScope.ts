@@ -3,28 +3,14 @@ import { objectScopeAnswers } from '@shared/lib';
 import { useAuth } from './authContext';
 
 /**
- * **Площадочная** область учётки (ADR 0062): у объектной роли — свои объекты, у роли отдела —
- * площадки её отделов (с ADR 0144 их бывает несколько).
+ * Place scope follows the shared contracts axis: direct objects for object roles and department
+ * sites for department roles (ADRs 0062, 0144 and 0201). Request-customer selection uses this hook;
+ * candidate reporting has its separate location choice under ADR 0249.
  *
- * Имя называет ось, а не модуль: по ней ходят вывоз мусора, механизация и — с ADR 0201 — заказ
- * спецтехники, то есть всё, где заказчиком стоит объект. Второй такой хук на модуль означал бы
- * второе описание одной области; правило живёт в контрактах (`placeObjectScopeIds`), а ответы
- * формы — в общем `objectScopeAnswers`, там же, откуда их берёт вторая ось портала.
- *
- * Отдельным хуком, а не веткой внутри `useObjectScope`: тот отвечает за **прямую** привязку
- * объектной роли и спрашивается там, где у роли отдела заказчиком стоит её отдел, — в заказе
- * грузоперевозки. Подмешать производные объекты туда значило бы подставить в фильтр списка объект
- * рядом с отделом, а заявки с двумя заказчиками не бывает: список вышел бы заведомо пустым.
- *
- * Дом у оси теперь есть, и это слайс сессии: хук читает `useAuth`, чем и выбран адрес (шапка
- * `index.ts` слайса). Прежняя причина отсрочки — «место искать вместе с общей моделью доступа
- * портала» — этим и исполнена: общая модель доступа на портале и есть слайс сессии. Барьер к
- * `features` здесь не гипотетический: хук спрашивают два слайса того слоя сразу — подбор
- * заказчика заявки и сообщение о ненайденной технике.
- *
- * Портал сужает выбор, но не решает доступ: чужой объект сервер всё равно отдаёт как 403
- * (`assertPlaceObjectScope`, `assertRequestScope`), а список — как пустую выборку
- * (`placeObjectVisibilityWhere`, `vehicleRequestVisibilityWhere`).
+ * Session owns the hook because it reads the authenticated subject, and features cannot import
+ * another feature. Keeping it separate from direct object scope also prevents a department's
+ * derived sites from being added beside its department in freight filters, where two customer
+ * axes would produce an empty list. Server guards still enforce access independently.
  */
 export function usePlaceObjectScope() {
   const { user } = useAuth();
