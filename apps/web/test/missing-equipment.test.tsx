@@ -312,7 +312,10 @@ function placeUser(overrides: Partial<AuthUser>): AuthUser {
 }
 
 function renderPlaces(user: AuthUser) {
-  return renderForm(user, { 'GET /objects': () => json(list(PLACES)) });
+  return renderForm(user, {
+    'GET /objects': ({ query }) =>
+      json(list(query.get('isActive') === 'true' ? PLACES.filter((p) => p.isActive) : PLACES)),
+  });
 }
 
 function shownPlace(): string | null {
@@ -329,8 +332,8 @@ async function placeOptions() {
   };
 }
 
-describe('место аппарата: общий выбор с сервером (ADR 0249)', () => {
-  it('площадки отдела идут первыми, активные перед неактивными внутри каждой группы', async () => {
+describe('место аппарата: область сервера и только активные объекты (ADR 0249)', () => {
+  it('активные площадки отдела идут первыми, неактивные не предлагаются', async () => {
     renderPlaces(
       placeUser({
         role: 'department',
@@ -342,18 +345,13 @@ describe('место аппарата: общий выбор с сервером
 
     expect(await placeOptions()).toEqual({
       groups: ['Площадки вашего отдела', 'Другие объекты'],
-      labels: [
-        'ОБ-4 — Дельта',
-        'ОБ-1 — Альфа (неактивен)',
-        'ОБ-3 — Гамма',
-        'ОБ-2 — Бета (неактивен)',
-      ],
+      labels: ['ОБ-4 — Дельта', 'ОБ-3 — Гамма'],
     });
     expect(shownPlace()).toBeNull();
   });
 
   it.each(['department', 'department_head'] as const)(
-    '%s без площадок видит все объекты, включая неактивные',
+    '%s без площадок видит все активные объекты',
     async (role) => {
       const { http } = renderPlaces(
         placeUser({ role, departmentIds: ['dept-1'], departmentObjectIds: [] }),
@@ -362,37 +360,48 @@ describe('место аппарата: общий выбор с сервером
 
       expect(await placeOptions()).toEqual({
         groups: [],
-        labels: [
-          'ОБ-3 — Гамма',
-          'ОБ-4 — Дельта',
-          'ОБ-1 — Альфа (неактивен)',
-          'ОБ-2 — Бета (неактивен)',
-        ],
+        labels: ['ОБ-3 — Гамма', 'ОБ-4 — Дельта'],
       });
       expect(shownPlace()).toBeNull();
-      expect(http.lastCall('GET /objects')?.query.has('isActive')).toBe(false);
+      expect(http.lastCall('GET /objects')?.query.get('isActive')).toBe('true');
     },
   );
 
-  it('объектная роль видит только свои объекты, включая неактивный', async () => {
+  it('объектная роль видит только свои активные объекты', async () => {
     renderPlaces(placeUser({ role: 'shtab', constructionObjectIds: ['obj-1', 'obj-4'] }));
     await openReport();
 
     expect(await placeOptions()).toEqual({
       groups: [],
-      labels: ['ОБ-4 — Дельта', 'ОБ-1 — Альфа (неактивен)'],
+      labels: ['ОБ-4 — Дельта'],
     });
   });
 
-  it('единственный свой объект подставляется даже если он неактивен', async () => {
-    renderPlaces(placeUser({ role: 'shtab', constructionObjectIds: ['obj-1'] }));
+  it('единственный свой активный объект подставляется автоматически', async () => {
+    renderPlaces(placeUser({ role: 'shtab', constructionObjectIds: ['obj-4'] }));
     await openReport();
 
-    await waitFor(() => expect(shownPlace()).toBe('ОБ-1 — Альфа (неактивен)'));
+    await waitFor(() => expect(shownPlace()).toBe('ОБ-4 — Дельта'));
     expect(await placeOptions()).toEqual({
       groups: [],
-      labels: ['ОБ-1 — Альфа (неактивен)'],
+      labels: ['ОБ-4 — Дельта'],
     });
+  });
+
+  it('свой неактивный объект не предлагается и не подставляется автоматически', async () => {
+    const { http } = renderPlaces(placeUser({ role: 'shtab', constructionObjectIds: ['obj-1'] }));
+    await openReport();
+    await waitFor(() => expect(http.lastCall('GET /objects')?.query.get('isActive')).toBe('true'));
+    fireEvent.mouseDown(screen.getByLabelText('Где стоит'));
+
+    await waitFor(() => {
+      const dropdown = document.querySelector(
+        '.ant-select-dropdown:not(.ant-select-dropdown-hidden)',
+      );
+      expect(dropdown?.querySelector('.ant-empty')).toBeTruthy();
+      expect(dropdown?.querySelectorAll('.ant-select-item-option')).toHaveLength(0);
+    });
+    expect(shownPlace()).toBeNull();
   });
 
   it('сквозная область ИТ снимает ограничение штаба, свои объекты идут первой группой', async () => {
@@ -407,34 +416,24 @@ describe('место аппарата: общий выбор с сервером
 
     expect(await placeOptions()).toEqual({
       groups: ['Ваши объекты', 'Другие объекты'],
-      labels: [
-        'ОБ-4 — Дельта',
-        'ОБ-1 — Альфа (неактивен)',
-        'ОБ-3 — Гамма',
-        'ОБ-2 — Бета (неактивен)',
-      ],
+      labels: ['ОБ-4 — Дельта', 'ОБ-3 — Гамма'],
     });
   });
 
   it.each(['dispatcher', 'admin'] as const)(
-    '%s видит полный справочник без групп и с неактивными объектами',
+    '%s видит все активные объекты без групп',
     async (role) => {
       renderPlaces(placeUser({ role }));
       await openReport();
 
       expect(await placeOptions()).toEqual({
         groups: [],
-        labels: [
-          'ОБ-3 — Гамма',
-          'ОБ-4 — Дельта',
-          'ОБ-1 — Альфа (неактивен)',
-          'ОБ-2 — Бета (неактивен)',
-        ],
+        labels: ['ОБ-3 — Гамма', 'ОБ-4 — Дельта'],
       });
     },
   );
 
-  it('черновик сохраняет подпись неактивного объекта из группы «Другие объекты»', async () => {
+  it('черновик сохраняет подпись активного объекта из группы «Другие объекты»', async () => {
     const { http } = renderPlaces(
       placeUser({
         role: 'department',
@@ -444,13 +443,13 @@ describe('место аппарата: общий выбор с сервером
     );
     await openReport();
     await selectOption('Что за аппарат', 'МФУ');
-    await selectOption('Где стоит', 'ОБ-2 — Бета (неактивен)');
+    await selectOption('Где стоит', 'ОБ-3 — Гамма');
     fill('Модель с шильдика', 'Kyocera M3145');
     fill('Инвентарный номер', '0012345');
     fill('Место', 'каб. 214');
     fireEvent.click(screen.getByRole('button', { name: 'Отправить с заявкой' }));
 
-    expect(await screen.findByText(/МФУ · ОБ-2 — Бета \(неактивен\) · каб\. 214/)).toBeDefined();
+    expect(await screen.findByText(/МФУ · ОБ-3 — Гамма · каб\. 214/)).toBeDefined();
     expect(http.calls.filter((c) => c.method === 'POST')).toHaveLength(0);
   });
 });

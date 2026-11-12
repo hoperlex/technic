@@ -6,7 +6,7 @@ import {
   isDepartmentScopedRole,
   type EquipmentCandidateInput,
 } from '@technic/contracts';
-import { objectActivityOptionsQuery } from '@entities/object';
+import { objectOptionsQuery } from '@entities/object';
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { useAuth } from '@entities/session';
 import { flattenOptions } from '@shared/lib';
@@ -45,19 +45,18 @@ export function ReportEquipmentModal({
     enabled: open,
   });
   const { data: objectOptions = [] } = useQuery({
-    ...objectActivityOptionsQuery(),
+    ...objectOptionsQuery(),
     enabled: open,
   });
 
   /*
-   * ADR 0249 keeps offered locations aligned with the server, including inactive sites and wide
-   * scope. Departments temporarily choose any existing site while directory data is incomplete;
-   * their linked sites guide the choice without overriding the place the person actually reports.
+   * ADR 0249 shares location scope with the server and honours wide scope. Departments temporarily
+   * choose any active site while directory data is incomplete; their linked sites guide the choice
+   * without overriding the place the person reports. The picker offers active directory entries.
    */
-  const available = objectOptions
-    .filter((o) => choice.allowedObjectIds === null || choice.allowedObjectIds.includes(o.value))
-    .map((o) => ({ ...o, label: o.isActive ? o.label : `${o.label} (неактивен)` }))
-    .sort((a, b) => Number(b.isActive) - Number(a.isActive));
+  const available = objectOptions.filter(
+    (o) => choice.allowedObjectIds === null || choice.allowedObjectIds.includes(o.value),
+  );
   const ownIds = new Set(choice.ownObjectIds);
   const own = available.filter((o) => ownIds.has(o.value));
   const other = available.filter((o) => !ownIds.has(o.value));
