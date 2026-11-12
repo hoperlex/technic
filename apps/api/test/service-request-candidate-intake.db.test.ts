@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { ServiceRequestDto } from '@technic/contracts';
+import { OFFICE_EQUIPMENT_IT_GRANT, type ServiceRequestDto } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -95,8 +95,9 @@ interface Ctx {
    * него больше не сделать. У диспетчера круг остался набором — здесь ему выдают свой, урезанный.
    */
   plain: TestUser;
-  /** Роль отдела: у неё ось площадок отдела (ADR 0062), а заказчиком остаётся её отдел. */
+  /** The customer department preserves the author's access even when the device is elsewhere. */
   dept: TestUser;
+  wide: TestUser;
   objectId: string;
   foreignObjectId: string;
   deptObjectId: string;
@@ -299,7 +300,7 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
       INSERT INTO departments (code, name) VALUES (${`CI-D-${RUN}`}, ${`Отдел ${RUN}`})
       RETURNING id`);
     const departmentId = departmentRow.rows[0]!.id;
-    // Площадка отдела (ADR 0062) — вторая ось: по ней роль отдела и сообщает о технике.
+    // Linked sites remain display priorities while incomplete data requires a wider choice.
     await db.execute(sql`
       INSERT INTO department_construction_objects (department_id, construction_object_id)
       VALUES (${departmentId}, ${deptObjectId})`);
@@ -320,6 +321,7 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
     const second = await makeUser('second', 'shtab');
     const plain = await makeUser('plain', 'dispatcher');
     const dept = await makeUser('dept', 'department');
+    const wide = await makeUser('wide', 'shtab');
 
     const attachObject = (userId: string, id: string) =>
       db.execute(sql`
@@ -327,6 +329,7 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
         VALUES (${userId}, ${id})`);
     await attachObject(requester.id, objectId);
     await attachObject(second.id, objectId);
+    await attachObject(wide.id, objectId);
     // `plain` площадке не приписывается: у роли `dispatcher` объектной оси нет вовсе, и строка
     // привязки ничего бы не значила. Заявку он заводит глобально — это свойство роли без оси,
     // а не поблажка теста.
@@ -361,6 +364,11 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
         INSERT INTO user_grants (user_id, grant_id, granted_by, origin)
         VALUES (${holder}, ${grantId}, ${adminUser.id}, 'manual')`);
     }
+
+    await db.execute(sql`
+      INSERT INTO user_grants (user_id, grant_id, granted_by, origin)
+      SELECT ${wide.id}, id, ${adminUser.id}, 'manual' FROM grants
+      WHERE code = ${OFFICE_EQUIPMENT_IT_GRANT}`);
 
     /*
      * ВТОРОЙ СОБРАННЫЙ НАБОР — заказчик БЕЗ сообщения о технике, для `plain`. Состав повторяет
@@ -432,6 +440,7 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
       second: await withAuth(second),
       plain: await withAuth(plain),
       dept: await withAuth(dept),
+      wide: await withAuth(wide),
       objectId,
       foreignObjectId,
       deptObjectId,
@@ -803,7 +812,7 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
     });
   });
 
-  // ── 6. Ось объекта (Р7) ──
+  // ── 6. Candidate location (ADR 0249) ──
 
   describe('площадка сообщения', () => {
     it('чужой объект — 422 с путём поля', async () => {
@@ -813,22 +822,91 @@ describe.skipIf(!DB_URL)('заявка с сообщением о технике
         { inventoryNumber: `CI-FOREIGN-${RUN}`, objectId: ctx.foreignObjectId },
         randomUUID(),
       );
-      // 422, а не 403: право сообщать у человека есть — не годится присланное значение.
+      // Reporting permission is present; the location violates the object-role boundary.
       expect(res.statusCode, res.body).toBe(422);
-      expect(res.json().fields).toHaveProperty('equipmentCandidate.objectId');
+      expect(res.json().fields).toHaveProperty('equipmentCandidate.objectId', 'Чужой объект');
       expect(await counts()).toEqual(before);
     });
 
-    it('роль отдела не сообщает с площадки чужого отдела', async () => {
-      // Отдельская ось — площадки СВОИХ отделов (`departmentObjectIds`, ADR 0062): иначе очередь
-      // проверяющего чужой площадки наполнялась бы сообщениями, которых там никто не видел.
+    it('роль отдела сообщает с чужой площадки и сохраняет доступ к заявке', async () => {
       const res = await propose(
         ctx.dept.auth,
         { inventoryNumber: `CI-DEPT-FRN-${RUN}`, objectId: ctx.foreignObjectId },
         randomUUID(),
       );
+      expect(res.statusCode, res.body).toBe(201);
+      const dto = (res.json() as { request: ServiceRequestDto }).request;
+      const row = await requestRow(dto.id);
+      expect(row.customer_department_id).toBe(ctx.departmentId);
+      expect(row.equipment_object_id).toBe(ctx.foreignObjectId);
+      expect((await candidateRow(row.equipment_candidate_id!)).object_id).toBe(ctx.foreignObjectId);
+      const opened = await inject('GET', `${REQUESTS}/${dto.id}`, ctx.dept.auth);
+      expect(opened.statusCode, opened.body).toBe(200);
+    });
+
+    it('роль отдела сообщает с неактивной чужой площадки', async () => {
+      await ctx.db.execute(sql`
+        UPDATE construction_objects SET is_active = false WHERE id = ${ctx.foreignObjectId}`);
+      try {
+        const res = await propose(
+          ctx.dept.auth,
+          { inventoryNumber: `CI-DEPT-INACTIVE-${RUN}`, objectId: ctx.foreignObjectId },
+          randomUUID(),
+        );
+        expect(res.statusCode, res.body).toBe(201);
+        const dto = (res.json() as { request: ServiceRequestDto }).request;
+        const row = await requestRow(dto.id);
+        expect(row.customer_department_id).toBe(ctx.departmentId);
+        expect((await candidateRow(row.equipment_candidate_id!)).object_id).toBe(
+          ctx.foreignObjectId,
+        );
+      } finally {
+        await ctx.db.execute(sql`
+          UPDATE construction_objects SET is_active = true WHERE id = ${ctx.foreignObjectId}`);
+      }
+    });
+
+    it('объектная роль сообщает со своего неактивного объекта', async () => {
+      await ctx.db.execute(sql`
+        UPDATE construction_objects SET is_active = false WHERE id = ${ctx.objectId}`);
+      try {
+        const res = await propose(
+          ctx.requester.auth,
+          { inventoryNumber: `CI-OWN-INACTIVE-${RUN}` },
+          randomUUID(),
+        );
+        expect(res.statusCode, res.body).toBe(201);
+        const dto = (res.json() as { request: ServiceRequestDto }).request;
+        const row = await requestRow(dto.id);
+        expect((await candidateRow(row.equipment_candidate_id!)).object_id).toBe(ctx.objectId);
+      } finally {
+        await ctx.db.execute(sql`
+          UPDATE construction_objects SET is_active = true WHERE id = ${ctx.objectId}`);
+      }
+    });
+
+    it('сквозная область парка разрешает объектной роли чужую площадку', async () => {
+      const res = await propose(
+        ctx.wide.auth,
+        { inventoryNumber: `CI-WIDE-FRN-${RUN}`, objectId: ctx.foreignObjectId },
+        randomUUID(),
+      );
+      expect(res.statusCode, res.body).toBe(201);
+      const dto = (res.json() as { request: ServiceRequestDto }).request;
+      const row = await requestRow(dto.id);
+      expect((await candidateRow(row.equipment_candidate_id!)).object_id).toBe(ctx.foreignObjectId);
+    });
+
+    it('роль отдела не сообщает о технике на несуществующем объекте', async () => {
+      const before = await counts();
+      const res = await propose(
+        ctx.dept.auth,
+        { inventoryNumber: `CI-DEPT-NOOBJ-${RUN}`, objectId: randomUUID() },
+        randomUUID(),
+      );
       expect(res.statusCode, res.body).toBe(422);
-      expect(res.json().fields).toHaveProperty('equipmentCandidate.objectId');
+      expect(res.json().fields).toHaveProperty('equipmentCandidate.objectId', 'Не найден');
+      expect(await counts()).toEqual(before);
     });
 
     it('несуществующий объект — 422, а не отказ базы по ссылке', async () => {

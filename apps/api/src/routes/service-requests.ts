@@ -40,6 +40,7 @@ import {
   canHoldService,
   canOpenServiceEstimateDispute,
   canPickAnyServiceSubject,
+  canPlaceCandidateOn,
   canReopenServiceEstimate,
   canResolveServiceEstimateDispute,
   canResumeService,
@@ -4899,64 +4900,27 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   }
 
   /**
-   * Площадка кандидата — по ОСИ РОЛИ автора (Р7), и оси здесь две, а не одна.
+   * Candidate location is one contracts rule shared with the reporting window (ADR 0249).
+   * Department access is temporarily wider while department and object data are incomplete;
+   * object roles remain restricted so the author does not lose access to the created request.
    *
-   * Обе оси сужаются — и объектная, и отдельская (`departmentObjectIds`, ADR 0062): опоры на
-   * карточку здесь нет вовсе, площадку называет сам человек, и без второй оси сотрудник отдела
-   * заводил бы сообщения о технике чужих строек, а очередь проверяющего той площадки наполнялась бы
-   * сообщениями, которых никто там не видел.
+   * Existence stays a server check. Activity does not restrict location: closing sites can still
+   * hold devices that need service. This resolver stays separate from resolveEquipmentObject,
+   * whose correction of an existing equipment card keeps its department restriction.
    *
-   * Разбор при этом СВОЙ, а не общий с пометкой «не тот объект» (`resolveEquipmentObject`), хотя обе
-   * оси теперь спрашивают оба (план предмета заявки, Р8). Разные у них не проверки, а предмет и
-   * слова отказа: там объект ПОПРАВЛЯЕТ карточку и подсказка говорит про аппарат, здесь объект
-   * называет место аппарата, которого в справочнике нет, — и человеку надо объяснить, что проверять
-   * сообщение будут по площадке. Слив их в одну функцию, пришлось бы разводить тексты флагом, то
-   * есть той же развилкой, но спрятанной.
-   *
-   * Область ПАРКА и роли без осей выбирают из справочника целиком — то же правило и тот же источник
-   * (`canPickAnyServiceSubject`), что у соседних разборов предмета.
-   *
-   * ОСНОВАНИЕ — ОБЛАСТЬ ПАРКА, А НЕ ЛЕНТЫ ЗАЯВОК (план свободного объёма работ, Р9). Прежде здесь
-   * стояла сквозная область модуля ЗАЯВОК, хотя вопрос у разбора другой: площадка сообщения о
-   * технике — это предмет будущей заявки, то есть справочник, из которого её собирают. Пока оба
-   * ключа стоят у одного набора (ИТ-служба), подмена не меняет ни одного ответа — ровно это и обязан
-   * доказать parity-тест. Меняется она заранее потому, что `serviceRequests` уезжает из карты
-   * области следующим выпуском, и без этой правки уборка строки молча сузила бы ЗАВЕДЕНИЕ: «технику
-   * вижу, а сообщить о ней не могу» — не сужение видимости заявок, а поломка сценария, ради которого
-   * парк и оставлен видимым целиком (ответ В5).
-   *
-   * 422 с именем поля, а не 403: право сообщить о технике у человека есть — не годится присланное
-   * значение. Тот же код и та же форма ответа, что у чужого объекта в пометке «не тот объект».
+   * An invalid location is a field error (422): the subject has permission to report a device,
+   * but cannot place this candidate on the supplied object.
    */
   async function resolveCandidateObject(
     p: Principal,
     candidate: EquipmentCandidateInput,
   ): Promise<void> {
-    const wide = canPickAnyServiceSubject(p);
-    const who = p.role ? roleLabels[p.role] : 'Учётная запись';
-    if (
-      !wide &&
-      isObjectScopedRole(p.role) &&
-      !p.constructionObjectIds.includes(candidate.objectId)
-    ) {
+    if (!canPlaceCandidateOn(p, candidate.objectId)) {
       throw err.unprocessable(
         'Сообщить о технике можно только со своего объекта — заявку с чужого не увидит и сам заявитель',
         { 'equipmentCandidate.objectId': 'Чужой объект' },
       );
     }
-    if (
-      !wide &&
-      isDepartmentScopedRole(p.role) &&
-      !p.departmentObjectIds.includes(candidate.objectId)
-    ) {
-      throw err.unprocessable(
-        `${who} сообщает о технике на площадках своего отдела: на чужой её некому проверить`,
-        { 'equipmentCandidate.objectId': 'Чужая площадка' },
-      );
-    }
-    // Существование, а не активность: закрывающаяся площадка ещё держит у себя технику, и запрет
-    // выбирать её означал бы сообщение, которое негде записать. Тот же разбор, что у площадки
-    // заявителя и у пометки «не тот объект» рядом.
     const [object] = await db
       .select({ id: constructionObjects.id })
       .from(constructionObjects)
