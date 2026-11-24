@@ -23,6 +23,7 @@ import { mechHistoryCard, mechHistoryColumns } from './mechHistoryGrid';
 import {
   MECH_HISTORY_FILTER_FIELDS,
   MechFilterBar,
+  mechHistoryFilterQuery,
   useMechRequestFilters,
   type MechListFilters,
 } from './mechRequestFilters';
@@ -86,23 +87,8 @@ export function HistoryTab() {
     setParams((p) => ({ ...p, num: parseMechRequestNumberSearch(raw), page: 1 }));
   };
 
-  /**
-   * Отбор перечислен полями, а не взят из `params` целиком, ровно потому, что он уходит **в три
-   * места**: в таблицу, в итог и в файл. Страница и порядок нужны только первой из них, и попади
-   * они в остальные два — итог считался бы по двадцати видимым строкам, а книга повторяла бы одну
-   * страницу вместо всего периода.
-   */
-  const filterQuery = {
-    status: params.status,
-    placeObjectId: params.placeObjectId,
-    requester: params.requester,
-    mechModelId: params.mechModelId,
-    lessorId: params.lessorId,
-    periodFrom: params.periodFrom,
-    periodTo: params.periodTo,
-    num: params.num,
-    lessorReceipt: params.lessorReceipt,
-  };
+  // Goes to the table, the summary and the export; page and sort are added for the table only.
+  const filterQuery = mechHistoryFilterQuery(params);
 
   /**
    * Умолчание порядка — по плановому возврату, поздние сверху: журнал читают с последнего

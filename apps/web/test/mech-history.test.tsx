@@ -275,4 +275,31 @@ describe('механизация: журнал закрытых аренд', () 
     expect(call.query.get('sortBy')).toBe('plannedTo');
     expect(call.query.get('page')).toBeNull();
   });
+
+  /**
+   * A filter of the journal reaches all three doors: the table, the summary and the export. «Виза»
+   * once drew and was remembered but never left the browser, so the journal showed everything.
+   * Driven through the select, not the address: the journal's filters live in the persisted store.
+   */
+  it('sends the «Виза» filter to the table, the summary and the export', async () => {
+    const http = renderHistory();
+    await waitFor(() => expect(http.countOf(HISTORY)).toBe(1));
+
+    const placeholder = await screen.findByText('Любая');
+    fireEvent.mouseDown(placeholder.closest('.ant-select')!.querySelector('.ant-select-content')!);
+    await waitFor(() => {
+      const item = [...document.querySelectorAll('.ant-select-item-option')].find(
+        (option) => option.textContent === 'Ждёт визы',
+      );
+      expect(item).toBeTruthy();
+      fireEvent.click(item!);
+    });
+
+    await waitFor(() => expect(http.lastCall(HISTORY)?.query.get('approved')).toBe('false'));
+    await waitFor(() => expect(http.lastCall(SUMMARY)?.query.get('approved')).toBe('false'));
+
+    fireEvent.click(screen.getByRole('button', { name: /Выгрузить/u }));
+    await waitFor(() => expect(http.countOf(EXPORT)).toBe(1));
+    expect(http.lastCall(EXPORT)!.query.get('approved')).toBe('false');
+  });
 });

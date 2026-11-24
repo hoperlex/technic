@@ -98,6 +98,31 @@ export const MECH_FILTER_FIELDS = [
  */
 export const MECH_HISTORY_FILTER_FIELDS = MECH_FILTER_FIELDS.filter((field) => field !== 'overdue');
 
+/** The journal's filters as the three history doors take them: no page, no sort. */
+export type MechHistoryFilterQuery = Pick<
+  MechListFilters,
+  (typeof MECH_HISTORY_FILTER_FIELDS)[number]
+> & { num?: number };
+
+/**
+ * What the journal asks the server about its filters — for the table, the summary and the export
+ * alike, so the three always answer the same question.
+ *
+ * Picked by `MECH_HISTORY_FILTER_FIELDS`, the one list that decides which filters the journal has:
+ * a filter added to the list reaches the table, the summary and the file by itself. An enumeration
+ * here silently lost «Виза» — the filter drew and remembered, but never left the browser. The
+ * request number is not a filter field (it is a search box), so it is added by hand. Page and sort
+ * stay out on purpose: the summary over twenty visible rows, or an export repeating one page,
+ * would answer a different question than the journal shows.
+ */
+export function mechHistoryFilterQuery(
+  params: MechListFilters & { num?: number },
+): MechHistoryFilterQuery {
+  const query: MechHistoryFilterQuery = { num: params.num };
+  for (const field of MECH_HISTORY_FILTER_FIELDS) query[field] = params[field];
+  return query;
+}
+
 /**
  * Какие статусы предлагает отбор.
  *
