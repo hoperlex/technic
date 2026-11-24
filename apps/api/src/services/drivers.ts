@@ -202,12 +202,11 @@ export function driverCondition(): SQL {
  * вышедший на работу 10-го. Верхняя включающая: день увольнения — ещё рабочий день, и рейс этого
  * дня за уволенным.
  *
- * `started_on` в обеих таблицах `NOT NULL DEFAULT CURRENT_DATE`, ветки «начало неизвестно» здесь
- * не бывает. Но у этого умолчания есть цена, и её надо знать: если кадровая выгрузка пришла без
- * даты приёма (`employedSince`), началом записан день заведения карточки — и человек, внесённый в
- * справочник уже после рейса, в отбор на дату рейса не попадёт. Смягчать это здесь нечем:
- * «началом считать минус бесконечность, когда дата приёма не заполнена» стёрло бы и настоящую
- * границу тоже, а качество кадровых дат чинится в справочнике, а не в запросе отбора.
+ * Both `started_on` columns are NOT NULL and default to the Moscow calendar day when the source
+ * omits `employedSince`. This records the day the card was created, not an unknown start date. A
+ * worker entered after an earlier trip therefore cannot appear in that trip's dated selection.
+ * Treating every omitted date as an unbounded past would erase genuine start dates too; missing
+ * personnel dates must be corrected in the directory, not in this selection predicate.
  *
  * Запретом это правило не является (ADR 0037 п. 6): отбор — список выбора, а не валидатор. Но
  * тем же списком, суженным до одного человека, сервер сверяет присланного водителя — поэтому
@@ -946,13 +945,12 @@ function dateRu(key: string): string {
  * выбирать документ по его тогдашней должности, а `ended_on IS NULL` отвечал на другой вопрос —
  * «числится ли он сегодня».
  *
- * Нижнюю границу брать нельзя, и причина в данных, а не в правиле. `on` здесь — **начало недели
- * листа**, то есть прошлое уже при обычной выписке: лист за текущую неделю выписывают в среду, а
- * `started_on` трудового отношения при выгрузке без даты приёма равен `CURRENT_DATE`, дню
- * заведения карточки (§5 п. 10). Машинист, внесённый в справочник в среду, печатался бы на этой
- * самой неделе без табельного номера и не с тем видом документа (ADR 0095). Условие вида «или
- * дата приёма неизвестна» тут не выражается ничем: неизвестность записана обычной датой и от
- * настоящей неотличима.
+ * The lower bound is omitted because `on` is the start of the waybill week, already in the past
+ * when a current-week sheet is issued on Wednesday. An employment imported without `employedSince`
+ * starts on the card creation day in Moscow. Applying `started_on <= on` would then print a
+ * machinist entered on Wednesday without the personnel number and with the wrong credential type
+ * for that same week (ADR 0095). The missing source date is stored as an ordinary date, so the
+ * query cannot distinguish it from a real start date.
  *
  * Отдельным «историческим режимом под коррекцией» это не делается намеренно: тогда один и тот же
  * человек печатался бы то с табельным номером, то без — в зависимости от того, каким входом лист

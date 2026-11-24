@@ -7738,9 +7738,8 @@ export const persons = pgTable(
   }),
 );
 
-// ── Трудовые отношения (история) ──
-// Активность работника выводится отсюда (ended_on IS NULL); отдельного флага в persons нет.
-// Работодатель — строкой: справочник организаций появится вместе с подрядной техникой.
+// Employment periods are the source of worker activity; a separate flag would drift from them.
+// Employer stays free text until contractor vehicles need an organization directory.
 export const personEmployments = pgTable(
   'person_employments',
   {
@@ -7752,9 +7751,10 @@ export const personEmployments = pgTable(
     employerName: text('employer_name').notNull().default(''),
     personnelNo: text('personnel_no').notNull().default(''),
     jobTitle: text('job_title').notNull().default(''),
+    // The API may omit this date; UTC session CURRENT_DATE is yesterday after Moscow midnight.
     startedOn: date('started_on', { mode: 'string' })
       .notNull()
-      .default(sql`CURRENT_DATE`),
+      .default(sql`(now() AT TIME ZONE 'Europe/Moscow')::date`),
     endedOn: date('ended_on', { mode: 'string' }),
     comment: text('comment').notNull().default(''),
     createdAt: createdAt(),
@@ -7769,16 +7769,15 @@ export const personEmployments = pgTable(
     activeIdx: index('person_employments_active_idx')
       .on(t.personId)
       .where(sql`${t.endedOn} IS NULL`),
-    // Табельный уникален среди действующих отношений работодателя (после увольнения переиспользуем).
+    // A personnel number can be reused by the employer after the prior period ends.
     personnelNoUnique: uniqueIndex('person_employments_personnel_no_unique')
       .on(t.employerName, t.personnelNo)
       .where(sql`${t.personnelNo} <> '' AND ${t.endedOn} IS NULL`),
   }),
 );
 
-// ── Справочник специализаций ──
-// Какую работу человек может выполнять. Это НЕ право по документу: категории — ниже.
-// Таблица создаётся пустой (миграция 0018 без сида).
+// Specializations name possible work; credentials below establish document based rights.
+// Migration 0018 leaves this directory empty for the organization to fill.
 export const specializations = pgTable(
   'specializations',
   {
@@ -7798,9 +7797,8 @@ export const specializations = pgTable(
   }),
 );
 
-// ── Специализации человека ──
-// Несколько одновременно, с периодом действия. Водитель — это выборка по code='driver'
-// с ended_on IS NULL; отдельных таблиц drivers/driver_profiles нет.
+// A person can hold several overlapping specializations. An active `driver` period is the driver
+// registry; a separate drivers table would duplicate the person.
 export const personSpecializations = pgTable(
   'person_specializations',
   {
@@ -7812,9 +7810,10 @@ export const personSpecializations = pgTable(
       .notNull()
       .references(() => specializations.id, { onDelete: 'restrict' }),
     isPrimary: boolean('is_primary').notNull().default(false),
+    // Keep both period defaults on the same Moscow calendar so a new driver starts both today.
     startedOn: date('started_on', { mode: 'string' })
       .notNull()
-      .default(sql`CURRENT_DATE`),
+      .default(sql`(now() AT TIME ZONE 'Europe/Moscow')::date`),
     endedOn: date('ended_on', { mode: 'string' }),
     comment: text('comment').notNull().default(''),
     createdAt: createdAt(),
@@ -7828,7 +7827,7 @@ export const personSpecializations = pgTable(
     activeUnique: uniqueIndex('person_specializations_active_unique')
       .on(t.personId, t.specializationId)
       .where(sql`${t.endedOn} IS NULL`),
-    // Не более одной действующей основной специализации на человека.
+    // At most one active primary specialization belongs to a person.
     primaryUnique: uniqueIndex('person_specializations_primary_unique')
       .on(t.personId)
       .where(sql`${t.isPrimary} AND ${t.endedOn} IS NULL`),
