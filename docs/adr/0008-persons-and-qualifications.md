@@ -2,7 +2,7 @@
 
 - Статус: Принято
 - Связано: `apps/api/drizzle/0018_persons.sql`, `apps/api/drizzle/0019_person_credentials.sql`,
-  `apps/api/src/db/schema.ts`, [ADR 0004](0004-vehicle-requests.md) (модуль «Заказ ТС»),
+  `apps/api/drizzle/0424_person_period_moscow_start_default.sql`, `apps/api/src/db/schema.ts`, [ADR 0004](0004-vehicle-requests.md) (модуль «Заказ ТС»),
   [ADR 0007](0007-vehicle-models-and-vehicles.md) (модели и реестр ТС)
 
 ## Контекст
@@ -81,6 +81,15 @@ CRUD справочников) в объём не входит.
 12. **Ограничение Postgres, зафиксированное явно:** `CURRENT_DATE` не IMMUTABLE и в CHECK запрещён,
     поэтому «дата рождения в разумных пределах» проверяется константой `1900-01-01`, а верхняя
     граница — на уровне сервиса.
+
+_Changed on 24.11.2026 (migration `0424_person_period_moscow_start_default.sql`, release
+0.1.145.0249): when the source omits it, `started_on` of `person_employments` and
+`person_specializations` defaults to the Moscow calendar day, `(now() AT TIME ZONE
+'Europe/Moscow')::date`, not `CURRENT_DATE`. Sessions run in UTC, so between 00:00 and 03:00 Moscow
+time `CURRENT_DATE` was the previous day: a driver entered at night started "yesterday". Removing a
+driver ends his open periods with the Moscow day for the same reason — a UTC end day would precede a
+Moscow start day and fail the `ended_on >= started_on` CHECK. Existing rows were not shifted (owner's
+decision). A plain unit test keeps the `schema.ts` default equal to the migration's._
 
 ## Последствия
 

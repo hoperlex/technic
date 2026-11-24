@@ -1,6 +1,6 @@
 # ADR 0248. Mechanization: the lessor's receipt, its visa, and lessor accounts
 
-- Статус: Реализовано (09.11.2026), release 0.1.142.0248; not deployed
+- Статус: Реализовано (09.11.2026), release 0.1.142.0248; deployed 12.11.2026
 - Домены: механизация, доступ
 - Изменяет: [ADR 0152](0152-mechanization-module.md) — decision 6 (the mechanization lessor has no
   accounts: since this release he has, with exactly two permissions of his type) and the consequence
@@ -250,6 +250,13 @@ lessor accounts never exist without the lessor's page.
     and on every entry into «Новая»; every version stamped with it at insert).
     `mechLessorVisibleVersions(versions, dealNo)` keeps the versions of the current deal and is the
     one function for his DTO, the doors' replies, the cap of decision 7 and his file flag.
+
+    _Changed on 24.11.2026 (release 0.1.145.0249): the search also matches the rental number his
+    card shows — «МХ-42», «мх42», «MX 42», «№42» or «42» — but only when the whole term is a number
+    (`parseMechRequestNumberTerm`), so a number inside a phrase such as an address «Ленина 15» stays
+    text. The number is capped at the int4 range: an oversized term matches no number instead of
+    failing the query. The office's number fields got the same cap as a 400._
+
 13. **Files** (P13). `file_is_linked` got its eleventh branch (full `CREATE OR REPLACE` of the
     `0243` body plus `mech_request_lessor_receipts`): retired versions stay linked (O8).
     `canAccessFile` got the flag `visibleMechLessorReceipt` under `mechRequests.read`: for the
