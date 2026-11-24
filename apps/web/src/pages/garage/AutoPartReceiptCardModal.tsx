@@ -13,24 +13,26 @@ import { ReceiptDeletionMarkModal } from './ReceiptDeletionMarkModal';
 import { receiptErrorText, receiptVehicleIds, useReceiptInvalidation } from './receiptMutations';
 
 /**
- * Карточка чека `?receipt=<id>` (план `docs/auto-part-receipts-plan.md`, §8, Р8, Р11, Р12).
+ * The receipt card `?receipt=<id>` (plan `docs/auto-part-receipts-plan.md`, §8, R8, R11, R12).
  *
- * Карточка отвечает на три вопроса и ровно в этом порядке: что за бумага (реквизиты и сканы), что
- * по ней куплено (строки) и сколько это стоило (три числа под таблицей).
+ * The card answers three questions, in exactly this order: what the paper is (details and scans),
+ * what was bought on it (the lines) and what it cost (three numbers under the table).
  *
- * **Итогов три, а не один.** «Всего по чеку» — вся бумага, «не отнесено» — та её часть, которую не
- * привязали к машинам: строка без машины это законное состояние (Р8) — общий инструмент,
- * расходники гаража, позиция, которую механик не стал разбирать. Сумма по машинам законно меньше
- * суммы чека, и объяснять разницу должна карточка, а не читатель.
+ * **Three totals, not one.** "Total on the receipt" is the whole paper, "unassigned" is the part
+ * not attached to vehicles: a line without a vehicle is a legitimate state (R8) — a shared tool,
+ * garage consumables, a position the mechanic did not break down. The per-vehicle sum is
+ * legitimately smaller than the receipt total, and the card, not the reader, has to explain the
+ * difference.
  *
- * Ни одно из чисел карточка не считает по строкам: `total` и `unassignedTotal` приходят из ответа
- * (Р11), а «по машинам» — их разность. Второй формулы для одной и той же суммы в портале быть не
- * должно: она разошлась бы с серверной на первом же округлении.
+ * The card computes none of the numbers from the lines: `total` and `unassignedTotal` come from the
+ * response (R11), and "per vehicles" is their difference. The portal must not hold a second
+ * formula for the same sum: it would diverge from the server's on the first rounding.
  *
- * **Читают карточку все, кому виден гараж** (Р5), а кнопки внизу зависят от права (Р12): держатель
- * ведения меняет чек и просит его удалить, администратор удаляет или отказывает, сняв пометку.
- * Окна, открываемые отсюда, живут внутри карточки (ADR 0140) — вызванное снаружи, оно иногда
- * открывалось бы под ней, и это неотличимо от неработающей кнопки.
+ * **Everyone who can see the garage reads the card** (R5), and the buttons below depend on the
+ * permission (R12): the maintenance holder (`autoParts.manage`) changes the receipt, asks for its
+ * deletion and clears that mark; only the administrator (`autoParts.delete`) deletes it. The
+ * windows opened from here live inside the card (ADR 0140) — called from outside, one would
+ * sometimes open under it, which is indistinguishable from a broken button.
  */
 
 const SHOWN_DATE = 'DD.MM.YYYY';

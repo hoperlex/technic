@@ -184,6 +184,29 @@ describe('deletion mark window', () => {
   });
 });
 
+describe('deletion mark window hint', () => {
+  /**
+   * Clearing the mark is the maintenance holder's action on the card (`autoParts.manage`); only
+   * deletion is the administrator's. The hint once claimed both were the administrator's, which
+   * told a maintenance holder that the way back was closed to them.
+   */
+  it('says the administrator deletes and the mark is cleared in the card, not that only he clears it', async () => {
+    mockHttp({});
+    renderWithProps(ReceiptDeletionMarkModal, {
+      receipt: RECEIPT as AutoPartReceiptDto | null,
+      onClose: () => {},
+    });
+
+    expect(
+      await screen.findByText(
+        'Чек останется в списке и в суммах по машинам. Удаляет его только администратор; снять пометку можно в карточке чека.',
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText(/снять пометку может только администратор/u)).toBeNull();
+    expect(screen.queryByText(/причину прочитает он/u)).toBeNull();
+  });
+});
+
 describe('warehouse application window', () => {
   afterEach(() => vi.useRealTimers());
 

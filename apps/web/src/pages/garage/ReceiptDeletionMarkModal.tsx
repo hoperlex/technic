@@ -8,24 +8,27 @@ import { FormModal, StaleRecordNotice, useFormRecordSession } from '@shared/ui';
 import { receiptErrorText, useReceiptInvalidation } from './receiptMutations';
 
 /**
- * Пометка чека к удалению (план `docs/auto-part-receipts-plan.md`, Р12).
+ * Marking a receipt for deletion (plan `docs/auto-part-receipts-plan.md`, R12).
  *
- * Удаление разведено на два действия и два права, потому что это две разные работы: держатель
- * ведения (`autoParts.manage`) **просит** удалить и объясняет зачем, администратор
- * (`autoParts.delete`) удаляет или отказывает, сняв пометку. Мягкого удаления у чека нет вовсе:
- * скрытый чек либо продолжал бы участвовать в суммах, либо выпадал бы из них молча — и обе
- * половины ответа «сколько вложено в машину» зависели бы от невидимого состояния.
+ * Deletion is split into two actions and two permissions because they are two different jobs: the
+ * holder of the maintenance permission (`autoParts.manage`) **asks** for the deletion and says why;
+ * only the administrator (`autoParts.delete`, not grantable) deletes the receipt. Clearing the mark
+ * needs only `autoParts.manage` (the «Снять пометку» button of the receipt card), so it is not
+ * reserved to the administrator. There is no soft delete: a hidden receipt would either keep
+ * taking part in the totals or drop out of them silently, and both halves of the answer to "how
+ * much went into the vehicle" would depend on an invisible state.
  *
- * Отсюда два обещания окна:
+ * Hence two promises of the window:
  *
- *   1. **Причина обязательна.** Пометка — просьба к администратору, а «предлагаю удалить, а зачем
- *      не скажу» это не просьба, а загадка. Того же требует пара `CHECK` в базе.
- *   2. **Пометка ничего не меняет.** Чек с ней виден в списке, входит в суммы по машинам и
- *      правится как прежде. Сказать это надо до нажатия: иначе оранжевый тег читался бы как
- *      «запись выключена».
+ *   1. **The reason is required.** The mark is a request to the administrator, and "I suggest
+ *      deleting it, but I will not say why" is a riddle, not a request. The pair of `CHECK`s in the
+ *      database demands the same.
+ *   2. **The mark changes nothing.** A marked receipt stays in the list, counts in the per-vehicle
+ *      totals and is edited as before. This must be said before the button is pressed: otherwise
+ *      the orange tag would read as "the record is switched off".
  *
- * Версия — как у остальных трёх мутаций (Р12): помечают прочитанный документ, а не строку в
- * таблице, и чек, переписанный тем временем, обязан ответить 409.
+ * The version is as in the other three mutations (R12): the person marks the document they read,
+ * not a row in a table, and a receipt rewritten in the meantime must answer 409.
  */
 
 interface Values {
@@ -66,7 +69,7 @@ export function ReceiptDeletionMarkModal({
       }),
     onSuccess: () => {
       message.success('Чек помечен к удалению');
-      // Цифры пометка не двигает (Р12), поэтому гасится список, сводка и карточка — и только они.
+      // The mark moves no numbers (R12), so the list, the summary and the card are invalidated — and only they.
       invalidate({ kind: 'mark', id: receipt!.id });
       onClose();
     },
@@ -105,7 +108,7 @@ export function ReceiptDeletionMarkModal({
           showIcon
           style={{ marginBottom: 16 }}
           title="Пометка ничего не удаляет и ничего не пересчитывает"
-          description="Чек останется в списке и в суммах по машинам. Удалить его или снять пометку может только администратор — причину прочитает он."
+          description="Чек останется в списке и в суммах по машинам. Удаляет его только администратор; снять пометку можно в карточке чека."
         />
         <Form.Item
           name="reason"
