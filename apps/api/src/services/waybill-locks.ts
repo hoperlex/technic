@@ -23,9 +23,10 @@ import { vehicleRequests, waybillRequests, waybills } from '../db/schema';
  * строки каждое в своём порядке, встали бы в клинч. Единственный порядок на всех писателей — это
  * и есть причина, по которой блокировка живёт отдельным модулем, а не строчкой в каждом из них.
  *
- * **Блокировка постоянная.** Она чинит дыру, которая была в портале и до хотфикса — просто до
- * предпросмотра о ней никто не обещал обратного, — и с уборкой временных колонок (§9 плана
- * переключения режима) не снимается.
+ * **The lock is permanent.** It fixes a hole the portal had before the linear-switch hotfix too —
+ * only before the preview nobody promised otherwise. It was never part of that workaround, which
+ * is itself permanent now (owner decision S-13, ADR 0107): no cleanup of the snapshot columns
+ * follows.
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];

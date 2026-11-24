@@ -283,12 +283,13 @@ export interface VehicleTypeDto {
    */
   maintenanceBasis: MaintenanceBasis;
   /**
-   * Сколько заявок этого типа дорабатывает по прежнему режиму — их застигло переключение
-   * признака (миграция 0137). Ноль у всех типов, которых не переключали под работающими заказами.
+   * How many requests of this type finish by their previous mode — a switch of the flag caught
+   * them in «В работе» (migration 0137, ADR 0107). Zero for every type not switched under live
+   * orders.
    *
-   * Показывается в справочнике и отвечает на вопрос «можно ли убирать костыль»: колонки снимка
-   * удаляются, когда это число обнулится по всем типам, и спрашивать об этом базу человек не
-   * должен. Поле временное и уходит вместе с ними.
+   * Shown in the directory so an editor sees that a just-switched type still has orders finishing
+   * the old way. It is not a cleanup gauge: the snapshot is permanent (owner decision S-13), so a
+   * zero means "nothing is caught right now", never "the columns can go".
    */
   frozenRequests: number;
   /** Сколько ТТХ привязано к типу (ADR 0016): 0 — у типа нет и не может быть категорий. */

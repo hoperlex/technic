@@ -2009,15 +2009,17 @@ export const changeVehicleRequestStatusSchema = z
      */
     schedule: confirmScheduleSchema.optional(),
     /**
-     * Отпечаток последствий, снятый предпросмотром (`POST /vehicle-requests/:id/status/preview`).
+     * Fingerprint of the consequences taken by the preview
+     * (`POST /vehicle-requests/:id/status/preview`).
      *
-     * Необязателен **в схеме** и спрашивается сервером: обязателен он ровно на одном переходе —
-     * откате «Выполнена» → «В работе» у заказа техники на объект, где диалог обещает точный
-     * результат сверки ЭСМ-2. Требуй его схема — прочие переходы получали бы `400` на пустом
-     * месте; решает по-прежнему сервер, у которого есть и заявка, и её режим.
+     * Optional **in the schema** and demanded by the server: it is required on exactly one
+     * transition — the rollback «Выполнена» → «В работе» of an on-site equipment order, where the
+     * dialog promises the exact outcome of the ЭСМ-2 reconciliation. Were the schema to require
+     * it, every other transition would get a `400` out of nothing; the server decides, since it
+     * has both the request and its mode.
      *
-     * Живёт вместе с предпросмотром: он остаётся и после уборки снимков — обещание «выпишется
-     * столько-то листов» обязано быть верным независимо от того, жив ли костыль.
+     * It belongs to the preview, not to the linear-switch snapshot (ADR 0107): the promise "so
+     * many sheets will be issued" must be exact whether or not the request runs by a snapshot.
      *
      * The rollback «В работе» → «Новая» takes the fingerprint of its own preview
      * (`POST /vehicle-requests/:id/rollback/preview`, ADR 0211), and there it is optional: tabs
@@ -2976,39 +2978,44 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
   dateFrom: string;
   dateTo: string | null;
   /**
-   * Линейный ли заказанный тип (`vehicle_types.is_linear`, миграция 0127, ADR 0100): вечером
-   * машина возвращается на базу и за день работает на нескольких объектах. Заказ такого типа
-   * ведётся по дням, а недельные листы ЭСМ-2 портал сам не выписывает — их просят по требованию.
+   * Whether the ordered type is linear (`vehicle_types.is_linear`, migration 0127, ADR 0100): the
+   * vehicle returns to the base in the evening and works on several sites a day. An order of such
+   * a type is run by days, and the portal does not issue its weekly ЭСМ-2 sheets by itself — they
+   * are requested on demand.
    *
-   * Читается это как «как заявка ведётся по умолчанию», а не «бывают ли у неё дни»: дни и дневные
-   * 4-П признак больше не воротит (`linearDaysBlocker`, ADR 0207 §1) — их ведут у любого заказа
-   * техники на объект. За признаком осталась ровно одна развилка — сам ли портал выписывает
-   * недельные ЭСМ-2, — и поле показывают из-за неё.
+   * Read it as "how the request is run by default", not "does it have days": the flag no longer
+   * gates days and daily 4-П (`linearDaysBlocker`, ADR 0207 §1) — they are kept for any on-site
+   * equipment order. One fork is left behind the flag, whether the portal issues weekly ЭСМ-2
+   * itself, and the field is shown for it.
    *
-   * Признак **заказанного типа**, а не назначенной машины: как заявка ведётся, решает заказ, а не
-   * то, какую единицу под него нашли (ADR 0100 §1). Снимка в заявке нет — поле читается живым
-   * join'ом, и смену признака у типа с заявками в работе сервер не разрешает.
+   * A flag of the **ordered type**, not of the assigned vehicle: the order decides how a request is
+   * run, not the unit found for it (ADR 0100 §1). The value is the effective one: the type's flag
+   * read live, unless a switch of that flag caught the request in «В работе» — then the mode the
+   * switch recorded (`linearFrozen`, ADR 0107).
    *
-   * Поля нет у грузоперевозки, и это не экономия: она ездит рейсами при любом признаке типа —
-   * ни листов ЭСМ-2, ни дней работы у неё не бывает вовсе, и отвечать там было бы не на что.
+   * No field on a freight request, and not to save bytes: it runs by trips whatever the type's
+   * flag — it never has ЭСМ-2 sheets or work days, so there would be nothing to answer.
    *
-   * Едет полем DTO, а не отдельным запросом за справочником: от него зависит, что карточка
-   * показывает и чего не обещает форма перевода в работу. Сами выписанные листы карточка берёт
-   * там же, где и раньше, — `GET /vehicle-requests/:id/waybills` (ADR 0041 п. 8).
+   * It travels as a DTO field, not as a separate directory request: the card decides by it what to
+   * show and what the confirmation form does not promise. The issued sheets themselves the card
+   * takes where it did before — `GET /vehicle-requests/:id/waybills` (ADR 0041 п. 8).
    */
   isLinear: boolean;
   /**
-   * Заявка застигнута переключением признака у типа и дорабатывает по прежнему режиму
-   * (миграция 0137) — `null` у всех остальных, то есть почти всегда.
+   * The request was caught in «В работе» by a switch of its type's flag and finishes by the
+   * previous mode (migration 0137, ADR 0107); `null` for every other request, that is almost
+   * always.
    *
-   * Поле временное и уходит вместе с колонками снимка, но пока оно есть, его показывают: без
-   * метки диспетчер видит две заявки одного типа, ведущие себя по-разному, и ни одного
-   * объяснения на экране. Полем `isLinear` тут не обойтись — оно отвечает «как ведётся», а метке
-   * нужно ещё «почему» и «с какого числа»:
+   * The card shows it as a label: without it a dispatcher sees two requests of one type behaving
+   * differently and no explanation on screen. `isLinear` alone cannot carry it — it answers "how
+   * is it run", while the label also needs "why" and "since when":
    *
-   * - `isLinear` внутри — режим, записанный переключением: `false` — по неделям, `true` — по дням;
-   *   ровно он и лежит в `isLinear` заявки, пока снимок жив;
-   * - `at` — когда переключение случилось.
+   * - `isLinear` inside is the mode the switch recorded: `false` by weeks, `true` by days; it is
+   *   exactly what the request's own `isLinear` holds while the snapshot lives;
+   * - `at` is when the switch happened.
+   *
+   * The field is permanent, like the snapshot columns behind it: switching the flag under live
+   * orders stays a feature (owner decision S-13, ADR 0107).
    */
   linearFrozen: { isLinear: boolean; at: string } | null;
   /** Кто встречает технику на объекте; пусто — заявка заведена до миграции 0062. */
