@@ -1270,6 +1270,8 @@ routes would refuse him; «Механизация» is his only section and so h
 | `apps/api/test/access-matrix.test.ts`            | «привязано ли _правильное_ право»     | настоящие HTTP-запросы под каждым субъектом из `ACCESS_PROFILES` с заглушенной БД: 403 ровно у тех, кому запрещено                                                           |
 | `apps/web/test/permissions-ui.test.tsx`          | «совпадает ли портал с моделью»       | меню, нижняя навигация и закрытие разделов по правам                                                                                                                         |
 | `apps/web/test/permissions-from-server.test.tsx` | «портал слушается сервера»            | право сверх роли открывает раздел, снятое из списка — закрывает его при той же роли                                                                                          |
+| `apps/api/test/auth-session-permissions.test.ts` | «does the session carry every right»  | G1 without a database: `makeAuthUser` equals `permissionsFor` on every subject the contracts describe; the SQL side is `auth-permissions.db.test.ts`                         |
+| `apps/web/test/permission-oracle.test.ts`        | «does the portal ask only the list»   | screens and predicates with the portal's `can` over the shipped list equal the server oracle, also on an account the matrix cannot read; the lint guard is live              |
 
 Уровни устроены так, чтобы **никто не проверял код его же собственным утверждением**. Страж
 (`route-authorization`) ловит только полностью забытую проверку: правильность привязанного права он
