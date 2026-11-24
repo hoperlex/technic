@@ -20,6 +20,7 @@ import {
   LICENSE_NUMBER_RACE_MESSAGE,
   licenseNumberLabel,
   licenseNumberTakenMessage,
+  moscowDateKeyOf,
   normalizeJobTitle,
   requiredCredentialType,
   revokeDriverLicenseSchema,
@@ -295,15 +296,6 @@ const personSelect = {
   deletedAt: persons.deletedAt,
   ...employmentJoin,
 };
-
-/**
- * Сегодня по московскому времени — ею меряется срок документа в фильтре комплекта. Тем же
- * временем берётся дата рейса при выписке листа (`tripDate`): справочник и бланк обязаны считать
- * просроченным одно и то же, а UTC ночью отстаёт на день.
- */
-function todayInMoscow(): string {
-  return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
 
 /**
  * У кого открыта эта категория на сегодня (ADR 0055). Справочный вопрос — «кого можно посадить за
@@ -631,9 +623,11 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       const p = requirePrincipal(req);
       const q = req.query;
       const showDeleted = q.includeDeleted && can(p, 'archive.read');
-      // Комплект и категории считаются на сегодня: справочник открывают, чтобы решить сегодняшний
-      // вопрос — кого дозаполнить и кем закрывать рейсы, — а не чтобы вспомнить прошлый год.
-      const today = todayInMoscow();
+      // The document set and categories are judged as of today: the directory is opened to settle
+      // today's question (whom to complete, who can cover trips), not to recall last year. The day
+      // is the Moscow one, like the waybill's `tripDate`: the directory and the blank must call the
+      // same document expired, and the UTC day lags by one between 00:00 and 03:00 MSK.
+      const today = moscowDateKeyOf(new Date());
       const complete = documentsCompleteCondition(today);
       const documents =
         q.documents === undefined
@@ -1169,9 +1163,10 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
   );
 
   /**
-   * Удаление — пометкой: на водителя ссылаются выданные путевые листы и назначения, и стереть
-   * его значит потерять, кто был за рулём. Специализация закрывается тем же действием — уволенный
-   * перестаёт попадать в отбор, даже если карточку потом восстановят.
+   * Removal is a mark, not a delete: issued waybills and assignments reference the driver, and
+   * erasing him would lose who was at the wheel. The specialization and employment periods are
+   * closed by the same action, so a dismissed driver drops out of selection even if the card is
+   * restored later.
    */
   r.delete(
     '/:id',
@@ -1190,8 +1185,13 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       if (!found) throw err.notFound('Водитель не найден');
       if (found.row.deletedAt) return reply.code(204).send();
 
-      const today = new Date().toISOString().slice(0, 10);
-      /** Что человек ведёт машинистом — им и считается перечень окна, и метаданные аудита. */
+      // One instant for the whole removal: `deletedAt` and the closed periods must name the same
+      // moment. Period dates are Moscow calendar days; the UTC day between 00:00 and 03:00 MSK is
+      // the previous one and would end a period before it started (a period begun that night
+      // starts on the Moscow day), which fails the CHECK `ended_on >= started_on`.
+      const now = new Date();
+      const removalDay = moscowDateKeyOf(now);
+      /** What the person leads as a machinist: it fixes the window's list and the audit metadata. */
       const commitments: MachinistCommitments = await db.transaction(async (tx) => {
         /*
          * Последствия — под тем же снимком, что и само удаление (план `machinist-card-removal`, Э2).
@@ -1232,11 +1232,11 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         }
         await tx
           .update(persons)
-          .set({ deletedAt: new Date(), deletedBy: p.id, version: found.row.version + 1 })
+          .set({ deletedAt: now, deletedBy: p.id, version: found.row.version + 1 })
           .where(eq(persons.id, found.row.id));
         await tx
           .update(personSpecializations)
-          .set({ endedOn: today, updatedAt: new Date() })
+          .set({ endedOn: removalDay, updatedAt: now })
           .where(
             and(
               eq(personSpecializations.personId, found.row.id),
@@ -1245,7 +1245,7 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
           );
         await tx
           .update(personEmployments)
-          .set({ endedOn: today, updatedAt: new Date() })
+          .set({ endedOn: removalDay, updatedAt: now })
           .where(
             and(eq(personEmployments.personId, found.row.id), isNull(personEmployments.endedOn)),
           );
