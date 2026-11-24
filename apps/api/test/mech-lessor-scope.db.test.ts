@@ -709,6 +709,51 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
     });
 
     /**
+     * The grid shows «МХ-42», so the search finds by the number he reads off it. The number is an
+     * alternative inside the search, under the visibility predicate: the foreign and the closed
+     * rental stay unfound by their numbers too.
+     */
+    it('the search finds a rental by its number, in any spelling, and only his own visible one', async () => {
+      const own = await rental(ctx.lessorC);
+      const foreign = await rental(ctx.lessorB);
+      const closed = await rental(ctx.lessorC);
+      await completeWithoutGate(closed);
+      const ownNum = (await card(own)).num;
+      const foreignNum = (await card(foreign)).num;
+      const closedNum = (await card(closed)).num;
+      const found = async (headers: Headers, term: string) =>
+        (await lessorList(headers, `search=${encodeURIComponent(term)}`)).map((item) => item.id);
+
+      for (const term of [
+        `МХ-${ownNum}`,
+        `мх${ownNum}`,
+        `MX ${ownNum}`,
+        `mx-${ownNum}`,
+        `№${ownNum}`,
+        ` ${ownNum} `,
+        `${ownNum}`,
+      ]) {
+        expect(await found(auth.c1, term), term).toContain(own);
+      }
+      // Text around the number is a text search: «МХ-<n> дом» is not request n.
+      expect(await found(auth.c1, `МХ-${ownNum} дом`)).toEqual([]);
+
+      // Another lessor's number and his own closed rental's number find nothing.
+      expect(await found(auth.c1, `МХ-${foreignNum}`)).toEqual([]);
+      expect(await found(auth.c1, `МХ-${closedNum}`)).toEqual([]);
+      expect(await found(auth.b1, `МХ-${foreignNum}`)).toContain(foreign);
+      expect(await found(auth.b1, `МХ-${ownNum}`)).toEqual([]);
+    });
+
+    it('a number beyond the column is a plain search that finds nothing, not a 500', async () => {
+      for (const term of ['123456789012', 'МХ-99999999999', '2147483648']) {
+        expect(await lessorList(auth.c1, `search=${encodeURIComponent(term)}`), term).toEqual([]);
+      }
+      // The largest int4 is still a number, and still finds nothing here.
+      expect(await lessorList(auth.c1, 'search=2147483647')).toEqual([]);
+    });
+
+    /**
      * The allow-lists of P12 exactly, nested blocks included — after a rejection, an approval and
      * its revocation, a waiver and its revocation, so every status and every reason has passed
      * through the DTO.

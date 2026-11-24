@@ -71,15 +71,41 @@ export function formatMechRequestNumber(num: number): string {
 }
 
 /**
- * Разбор пользовательского ввода поиска: «42» / «МХ-42» / «мх42» → 42. Ищут по числу — префикс
- * только отображение, и требовать его от того, кто копирует номер из переписки, значило бы
- * возвращать пустой список на верно набранный номер.
+ * Lax parse of a number-only field: «42» / «МХ-42» / «мх42» → 42. The search is by the number —
+ * the prefix is display only, and demanding it from someone who copies the number from a message
+ * would return an empty list for a correctly typed number.
  */
 export function parseMechRequestNumberSearch(input: string): number | undefined {
   const digits = input.match(/\d+/)?.[0];
-  if (!digits) return undefined;
+  return digits ? toMechNum(digits, Number.MAX_SAFE_INTEGER) : undefined;
+}
+
+/**
+ * The largest number the column can hold: `mech_requests.num` is an int4, and a bigger value in a
+ * comparison makes Postgres raise 22003 (a 500), not return no rows.
+ */
+const MECH_REQUEST_NUM_MAX = 2147483647;
+
+/**
+ * The cap is a parameter because the two parsers answer an oversized number differently. The lax
+ * one (the office's number-only field) passes it on, so the query schema's `.max` turns it into an
+ * honest 400 — dropping the filter silently would show the full list as if the number matched.
+ * The strict one (a mixed search box) treats it as "not a number" and lets the text search go on.
+ */
+function toMechNum(digits: string, cap: number): number | undefined {
   const n = Number(digits);
-  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+  return Number.isSafeInteger(n) && n > 0 && n <= cap ? n : undefined;
+}
+
+/**
+ * The number inside a mixed search box («МХ-42» / «mx 42» / «№42» / «42»), or `undefined` when the
+ * term is anything else. Unlike the lax parser it takes the WHOLE trimmed term: in a box that also
+ * searches text, "Ленина 15" must stay a text search, not become "request 15".
+ * The letters are matched as Cyrillic or Latin because the prefix is typed in either layout.
+ */
+export function parseMechRequestNumberTerm(term: string): number | undefined {
+  const m = /^(?:№\s*)?(?:[мm][хx]\s*-?\s*)?(\d+)$/iu.exec(term.trim());
+  return m ? toMechNum(m[1]!, MECH_REQUEST_NUM_MAX) : undefined;
 }
 
 // ── Предмет аренды: модель из справочника (Р5, ADR 0156) ──
@@ -402,7 +428,7 @@ export const mechRequestListQuerySchema = baseListQuery(MECH_REQUEST_SORT_FIELDS
   mechModelId: uuidSchema.optional(),
   /** Арендодатель: контрагент, у которого взяли единицу (Р6). Имя колонки — `lessor_id`. */
   lessorId: uuidSchema.optional(),
-  num: z.coerce.number().int().positive().optional(),
+  num: z.coerce.number().int().positive().max(MECH_REQUEST_NUM_MAX).optional(),
   /**
    * Период: заявки, чей срок пересекается с этими днями, — «что стояло на площадке в эти дни».
    * Имена свои, а не `plannedFrom`/`plannedTo` самой заявки: там это границы одного срока, здесь —
@@ -502,7 +528,7 @@ export const mechRequestHistoryQuerySchema = baseListQuery(MECH_HISTORY_SORT_FIE
   requester: mechRequesterFilterSchema.optional(),
   mechModelId: uuidSchema.optional(),
   lessorId: uuidSchema.optional(),
-  num: z.coerce.number().int().positive().optional(),
+  num: z.coerce.number().int().positive().max(MECH_REQUEST_NUM_MAX).optional(),
   periodFrom: dateOnlySchema.optional(),
   periodTo: dateOnlySchema.optional(),
   approved: booleanFlagSchema,

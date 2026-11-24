@@ -24,7 +24,7 @@ import {
 } from './lessorRentalGrid';
 import { MechLessorRentalCard } from './MechLessorRentalCard';
 
-const SEARCH_PLACEHOLDER = 'Модель, площадка, адрес';
+const SEARCH_PLACEHOLDER = 'Номер, модель, площадка, адрес';
 
 /**
  * «Механизация» for a mechanization lessor (lessor receipt plan, §2, P12): his rentals «В работе»,

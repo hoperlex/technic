@@ -132,6 +132,14 @@ describe('the section for a lessor', () => {
     await waitFor(() => expect(http.lastCall(LIST)?.query.get('lessorReceipt')).toBe('rejected'));
   });
 
+  it('says in the search box that a number finds a rental: the grid shows it', async () => {
+    lessorRoutes([mechLessorRental()]);
+    renderWithUser(<MechRequestsPage />, { route: '/mech', user: lessor });
+    await screen.findByText('МХ-42');
+
+    expect(screen.getByPlaceholderText('Номер, модель, площадка, адрес')).toBeTruthy();
+  });
+
   it('shows the rental as a card on the phone, the receipt mark as its badge', async () => {
     lessorRoutes([withReceipt(mechLessorReceiptView({ status: 'rejected' }))]);
     renderWithUser(<MechRequestsPage />, {

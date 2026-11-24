@@ -1,13 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, asc, count, eq } from 'drizzle-orm';
+import { and, asc, count, eq, or } from 'drizzle-orm';
 import {
   isMechLessorRentalVisible,
   isMechLessorSubject,
   type ListResult,
   type MechLessorRentalDto,
   mechLessorRentalListQuerySchema,
+  parseMechRequestNumberTerm,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import { constructionObjects, mechModels, mechRequests } from '../db/schema';
@@ -61,17 +62,24 @@ export async function registerMechLessorRentalRoutes(app: FastifyInstance): Prom
       const p = requirePrincipal(req);
       assertMechLessor(p);
       const q = req.query;
+      // The grid shows the number, so a lessor reading «МХ-42» off it must find that rental. The
+      // number is an alternative inside the search, never a separate filter: it stays under the
+      // visibility predicate below, so another lessor's number finds nothing.
+      const searchedNumber = q.search ? parseMechRequestNumberTerm(q.search) : undefined;
       const where = and(
         mechLessorRentalVisibleWhere(p),
         mechPeriodWhere(q),
         lessorReceiptWhere(q.lessorReceipt),
         // Only what the lessor's card shows (see the query schema).
-        searchCondition(q.search, [
-          mechModels.name,
-          constructionObjects.name,
-          constructionObjects.address,
-          mechRequests.responsibleName,
-        ]),
+        or(
+          searchCondition(q.search, [
+            mechModels.name,
+            constructionObjects.name,
+            constructionObjects.address,
+            mechRequests.responsibleName,
+          ]),
+          searchedNumber === undefined ? undefined : eq(mechRequests.num, searchedNumber),
+        ),
       );
       const page = pageParams(q);
       const rows = await mechLessorRentalQuery(db)

@@ -511,8 +511,10 @@ export const MECH_LESSOR_RENTAL_SORT_FIELDS = ['plannedTo'] as const;
 /**
  * The query of `GET /mech-requests/lessor-rentals` (P12): the module's list envelope with paging,
  * the period (rentals whose term crosses these days, as in the office list) and the receipt state
- * of the current version. The search looks only at what the lessor's card shows: a search over a
- * hidden column would answer "is this word in the comment" one rental at a time.
+ * of the current version. The search looks only at what the lessor's card shows: the number
+ * (`МХ-42`, `42`, whole term only — see `parseMechRequestNumberTerm`), the model, the site name and
+ * address, the responsible name. A search over a hidden column would answer "is this word in the
+ * comment" one rental at a time.
  *
  * Soonest return first by default, unlike the office lists (newest first): the lessor reads the
  * list as "what comes back next".
