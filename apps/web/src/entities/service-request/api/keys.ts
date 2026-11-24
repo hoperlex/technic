@@ -51,15 +51,20 @@ export const serviceRequestKeys = createQueryKeys('service-requests', {
 });
 
 /**
- * Кандидаты в поимённые исполнители (Н5, Н6) — учётки, которых можно поставить исполнителем ЭТОЙ
- * заявки.
+ * Candidates for named executors (Н5, Н6): the accounts that may be made an executor of THIS
+ * request.
  *
- * Свой корень, а не семейство внутри заявок: перечень живёт учётками портала и от хода заявок не
- * зависит. Общий корень означал бы, что каждое согласование объёма работ гасит список
- * сотрудников, а выдача полномочия — все открытые списки заявок.
+ * Its own root, not a family under requests: the list is made of portal accounts and does not
+ * follow the course of requests. A shared root would let every estimate approval drop the staff
+ * list, and every permission grant drop all open request lists.
  *
- * Заявка при этом входит в ключ (Р7 плана аудита исполнителей): ответ сервера считается по ней, и
- * общий ключ отдал бы одному окну кэш, посчитанный для другой заявки.
+ * The request is still part of the key (Р7 of the executor audit plan): the server computes the
+ * answer for that request, and a shared key would hand one window a cache computed for another.
+ *
+ * Writes to accounts and permission grants deliberately do not invalidate this root. A stale list
+ * can at worst offer someone who has just lost the right: `PUT /:id/executors` rechecks every
+ * executor with the same `canBecomeNamedExecutor` that builds this list and answers 422, so nothing
+ * wrong is ever written.
  */
 export const serviceExecutorKeys = createQueryKeys('service-executor-candidates', {
   options: (requestId: string) => ['options', requestId],
