@@ -1087,9 +1087,12 @@ export interface WasteTicketBadgeDto {
    */
   unreviewedPaper: number;
   /**
-   * Нечитаемое: файлы `unsupported`/`failed`, страницы `failed`, мёртвые задачи. Отдельным числом,
-   * а не в `errors`, потому что это не расхождение бумаги с заявкой, а отсутствие бумаги в
-   * разборе, — и человек делает с ним другое: перезаливает скан или заводит талон руками.
+   * Unreadable: files `unsupported`/`failed`, failed pages, dead jobs. A separate number, not part
+   * of `errors`: it is not a discrepancy between the paper and the request but the paper missing
+   * from review, and the way out is different. A manual ticket does not settle such a file
+   * (snow-removal plan, §3.2): the service or the scan is restored and recognition rerun, and an
+   * unusable original goes through the authorized reset to «Новая» and a re-close with a usable
+   * scan.
    *
    * Без него значок разошёлся бы с реестром: заявка со сломанным файлом попадает в «требуют
    * разбора» (Р24), а показать в строке было бы нечего — ноль замечаний при живом фильтре читается
@@ -1132,8 +1135,10 @@ export interface WasteTicketBadgeDto {
  * коснулся. Так выкат `0195` и объявил принятой всю прошлую бумагу разом (ADR 0135, миграция
  * `0204` вернула эти заявки в «Выполнена»).
  *
- * Правило проходимо всегда, даже с выключенным распознаванием: талон заводят руками, и ручной
- * создаётся сразу подтверждённым (Р15). Завершение требует не машины, а решения человека.
+ * A manual ticket (created confirmed, R15) settles only a file that recognition READ and found no
+ * ticket in (ADR 0155, R18). Paper that was never read or failed to read needs recognition: the
+ * service is restored and the file rerun, or an unusable original is replaced through the
+ * authorized reset to «Новая» and a re-close (snow-removal plan, §3.2).
  *
  * `null` означает «бумаги у заявки нет вовсе»: ни талонов, ни файлов, ни приложенной квитанции —
  * либо разбор к этому типу заявки неприменим (контейнерные операции и металлолом, Р1). Разбирать
@@ -1166,12 +1171,14 @@ export function wasteTicketReviewBlocker(badge: WasteTicketBadgeDto | null): str
   if (badge.errors > 0) parts.push(`непринятых расхождений: ${badge.errors}`);
   if (badge.failures > 0) parts.push(`не разобрано файлов: ${badge.failures}`);
   if (badge.unreviewedPaper > 0) {
-    // Своими словами, а не числом в общий ряд: остальные поводы говорят «доделайте начатое», этот
-    // — «разбор ещё не начинался». Человеку отсюда два разных следующих шага, и второй он должен
-    // прочитать целиком: распознать файл либо завести талон руками.
+    // In its own words, not a bare number: the other reasons say "finish what was started", this
+    // one says "the sheet has not been read". Manual entry is offered only for a sheet that WAS
+    // read and had no ticket: for an unread or interrupted file it settles nothing, and offering it
+    // alone sent people into a loop the badge never left (snow-removal plan, §3.2).
     parts.push(
       `приложенных талонов не разобрано: ${badge.unreviewedPaper}` +
-        ' (распознайте файл или заведите талон руками)',
+        ' (дождитесь распознавания или перераспознайте файл;' +
+        ' заведите талон руками, только если в прочитанном файле его не нашлось)',
     );
   }
   return `Сначала разберите бумагу — ${parts.join(', ')}`;

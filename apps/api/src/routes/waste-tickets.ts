@@ -755,10 +755,12 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             ...fileNameView(a),
             contentType: a.contentType,
             status: 'not_queued',
+            // Manual entry is not offered here: a manual ticket settles only a sheet recognition
+            // has read (ADR 0155, R18), so for unread paper it would be a dead end.
             reason:
               'Талон приложен, но в разбор не поступал: распознавание было выключено. ' +
-              'Прочитайте его сами кнопкой «Добавить талон вручную» или включите распознавание ' +
-              'и нажмите «Перераспознать».',
+              'Включите распознавание и нажмите «Перераспознать» — талон, заведённый вручную, ' +
+              'непрочитанный файл не закрывает.',
             errorClass: null,
             errorScope: null,
             totalPages: 0,
@@ -1855,13 +1857,14 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         // заявки, разбор которой закрыт. Своя проверка статуса заменена общей политикой —
         // «разбор открыт только у выполненной» — и считается по перечитанной под замком строке.
         const request = await lockRequestForReview(tx, req.params.id, p);
-        // Выключенный модуль задачу не заведёт (`enqueueTicketRecognition` выходит сразу), и без
-        // этой проверки кнопка отвечала бы «отправлено на распознавание», не отправив ничего.
-        // Обещание, которого никто не исполнит, хуже отказа: человек ждёт результата и не заводит
-        // талон руками.
+        // A disabled module enqueues nothing (`enqueueTicketRecognition` returns at once), and
+        // without this refusal the button would answer "sent for recognition" having sent nothing.
+        // The refusal does not offer manual entry as the way out: a manual ticket settles only a
+        // file recognition has read, and this file is exactly the one waiting to be read.
         if (!config.ticketOcr.enabled) {
           throw err.badRequest(
-            'Распознавание талонов выключено: включите модуль либо заведите талон вручную',
+            'Распознавание талонов выключено — перераспознать файл нельзя. Включите распознавание ' +
+              'и повторите: талон, заведённый вручную, закрывает только прочитанный файл',
           );
         }
         // Связь проверяется здесь же: право говорит «разбирает талоны», но не «этот файл».

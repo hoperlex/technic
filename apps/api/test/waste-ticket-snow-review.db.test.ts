@@ -340,6 +340,9 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
         const res = await complete(id);
         expect(res.statusCode, res.body).toBe(400);
         expect(res.json().message).toContain('приложенных талонов не разобрано: 1');
+        // The refusal leads to recognition first; manual entry only for a read sheet.
+        expect(res.json().message).toContain('перераспознайте файл');
+        expect(res.json().message).toContain('только если в прочитанном файле его не нашлось');
       } finally {
         await setOcrEnabled(true);
       }
@@ -368,5 +371,28 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
       expect(out.status, `${out.stdout}\n${out.stderr}`).toBe(0);
       expect(await storedState(id)).toMatchObject({ unreviewed_paper: 1, stale: false });
     }, 180_000);
+  });
+
+  describe('texts for unread paper do not offer manual entry alone', () => {
+    it('the card and the rerun refusal send an unread file to recognition', async () => {
+      await setOcrEnabled(false);
+      try {
+        const id = await newRequest('snow_removal', { factVolumeM3: 20 });
+        const fileId = await attachTicketFile(id);
+
+        const card = await cardOf(id);
+        const file = card.files.find((f) => f.fileId === fileId);
+        expect(file?.status).toBe('not_queued');
+        expect(file?.reason).toContain('нажмите «Перераспознать»');
+        expect(file?.reason).not.toContain('Добавить талон вручную');
+
+        const rerun = await inject('POST', `${REQUESTS}/${id}/ticket-files/${fileId}/recognize`);
+        expect(rerun.statusCode, rerun.body).toBe(400);
+        expect(rerun.json().message).toContain('Включите распознавание');
+        expect(rerun.json().message).not.toContain('либо заведите талон');
+      } finally {
+        await setOcrEnabled(true);
+      }
+    });
   });
 });
