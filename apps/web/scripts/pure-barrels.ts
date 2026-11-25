@@ -15,6 +15,9 @@ export const PURE_BARRELS = [
   // The shell's route-window provider needs only keys and links from it, while the barrel also
   // carries the shift notes, whose reading and shift schemas would otherwise load on every screen.
   'apps/web/src/entities/vehicle-request/index.ts',
+  // The waste page mounts only the lazy blind-check queue from this entry; the rest of it is the
+  // request card's ticket panel, which the stats and on-site tabs never open.
+  'apps/web/src/features/waste-ticket-review/index.ts',
   'packages/contracts/src/index.ts',
 ] as const;
 
