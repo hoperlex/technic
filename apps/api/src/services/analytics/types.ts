@@ -108,7 +108,10 @@ export interface AnalyticsAtom {
    * requests. Not the book estimate: `moneyLow` covers unfinished requests only.
    */
   moneyPlanned: number;
-  /** Share of `volumePlannedM3` that has no money: a dash, not zero, in the tab (see below). */
+  /**
+   * Share of `volumePlannedM3` that has no money: a dash, not zero, in the tab (see below). Always 0
+   * for manual-cost snow: it has no estimate to miss (header of `facts-waste.ts`, decision 5).
+   */
   volumePlannedUnpricedM3: number;
   /**
    * Share of the removed volume whose completion has no sum. The same reason as
@@ -157,6 +160,11 @@ export interface AnalyticsAtom {
    * Удалось ли оценить заявку хоть как-нибудь. Флаг живёт на атоме, а считается по заявке:
    * `count(DISTINCT requestId) FILTER (WHERE NOT priced)` — иначе заявка с десятью сменами дала бы
    * десять «без цены» (тест `analytics-rollup`).
+   *
+   * Manual-cost snow is unpriced only when it is removed (a fact status) and its completion has no
+   * amount: an unfinished or rolled-back snow request is never meant to have money yet. In a fact
+   * status the flag therefore means "the completion carries a total" for every volume type, and the
+   * statistics tab reads it that way.
    */
   priced: boolean;
 }

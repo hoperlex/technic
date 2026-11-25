@@ -129,6 +129,10 @@ export interface AnalyticsTotals {
  *
  * `unpriced` — заявки, которые не удалось оценить ни фактом, ни расчётом. Считается по заявкам, а
  * не по строкам: нулевая клетка иначе неотличима от бесплатной работы.
+ *
+ * Snow removal (snow-removal plan, S6, S7) has a fact only — the amount entered at completion —
+ * and no estimate: it adds nothing to `low` and `high`, and it is `unpriced` only when removed
+ * without an amount. Every figure is an exact kopeck sum converted to a number once.
  */
 export interface AnalyticsMoney {
   fact: number;
