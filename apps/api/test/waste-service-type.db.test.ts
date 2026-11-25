@@ -729,4 +729,133 @@ describe.skipIf(!DB_URL)('служебный тип «Снег» в справо
       ]),
     );
   });
+  // ── 5. The database backstop and its translation ──
+
+  /** Runs a write the entry points would have refused and returns what the database threw. */
+  async function databaseRefusal(run: () => Promise<unknown>): Promise<unknown> {
+    try {
+      await run();
+    } catch (e) {
+      return e;
+    }
+    throw new Error('the database accepted a write migration 0429 forbids');
+  }
+
+  it('сторожа базы держат служебную строку сами, а их отказ переводится в 4xx со словами', async () => {
+    const { asServiceWasteTypeRefusal } = await import('../src/services/waste-types');
+    const { AppError } = await import('../src/lib/errors');
+    const own = await ordinaryType();
+    const cases: { write: () => Promise<unknown>; field: string; status: number; text: string }[] =
+      [
+        {
+          write: () =>
+            ctx.db.execute(sql`UPDATE waste_types SET name = 'Снег зимний'
+                                WHERE id = ${SNOW_WASTE_TYPE_ID}`),
+          field: 'name',
+          status: 400,
+          text: ctx.messages.SERVICE_WASTE_TYPE_LOCKED_MESSAGE,
+        },
+        {
+          write: () =>
+            ctx.db.execute(sql`UPDATE waste_types SET is_active = false
+                                WHERE id = ${SNOW_WASTE_TYPE_ID}`),
+          field: 'isActive',
+          status: 400,
+          text: ctx.messages.SERVICE_WASTE_TYPE_LOCKED_MESSAGE,
+        },
+        {
+          write: () =>
+            ctx.db.execute(sql`UPDATE waste_types SET code = 'snow' WHERE id = ${own.id}`),
+          field: 'code',
+          status: 400,
+          text: ctx.messages.SERVICE_WASTE_TYPE_LOCKED_MESSAGE,
+        },
+        {
+          write: () =>
+            ctx.db.execute(sql`
+              INSERT INTO waste_tariffs (operator_counterparty_id, waste_type_id, container_kind,
+                                         price_per_m3, is_active)
+              VALUES (${ctx.operator.id}, ${SNOW_WASTE_TYPE_ID}, 'truck', 500, false)`),
+          field: 'wasteTypeId',
+          status: 400,
+          text: SNOW_COST_AT_COMPLETION_MESSAGE,
+        },
+        {
+          write: () =>
+            ctx.db.execute(sql`DELETE FROM waste_types WHERE id = ${SNOW_WASTE_TYPE_ID}`),
+          field: 'id',
+          status: 409,
+          text: ctx.messages.SERVICE_WASTE_TYPE_LOCKED_MESSAGE,
+        },
+      ];
+    for (const { write, field, status, text } of cases) {
+      const translated = asServiceWasteTypeRefusal(await databaseRefusal(write), field);
+      expect(translated).toBeInstanceOf(AppError);
+      const e = translated as InstanceType<typeof AppError>;
+      expect(e.statusCode).toBe(status);
+      if (status === 400) expect(e.fields).toEqual({ [field]: text });
+      else expect(e.message).toBe(text);
+    }
+    await serviceRowStillSeeded();
+  });
+
+  /** The reserved row survived every refused write above, unchanged. */
+  async function serviceRowStillSeeded(): Promise<void> {
+    const res = await ctx.db.execute(sql`
+      SELECT code, name, is_active FROM waste_types WHERE id = ${SNOW_WASTE_TYPE_ID}`);
+    expect(res.rows).toEqual([
+      { code: SNOW_WASTE_TYPE_CODE, name: SNOW_WASTE_TYPE_NAME, is_active: true },
+    ]);
+  }
+
+  it('запись файла, дошедшая до сторожей базы, отменяет загрузку словами, а не 500', async () => {
+    const types = ctx.directoryFor('waste-types')!;
+    const tariffs = ctx.directoryFor('waste-tariffs')!;
+    // `check()` is skipped on purpose: this is the write a racing file would reach.
+    const typeRefusal = await databaseRefusal(() =>
+      ctx.db.transaction((tx) =>
+        types.create(
+          tx,
+          { code: 'snow', name: `Сугробы ${RUN}`, description: '', sortOrder: 100, isActive: true },
+          { reservedNames: new Set<string>() },
+          ctx.adminId,
+        ),
+      ),
+    );
+    expect(typeRefusal).toBeInstanceOf(ctx.engine.DirectoryFileError);
+    expect((typeRefusal as Error).message).toMatch(/служебный тип «Снег»/u);
+
+    const tariffRefusal = await databaseRefusal(() =>
+      ctx.db.transaction((tx) =>
+        tariffs.create(
+          tx,
+          {
+            operatorInn: ctx.operator.inn,
+            wasteTypeCode: SNOW_WASTE_TYPE_CODE,
+            containerTypeCode: '',
+            containerKind: 'truck',
+            pricePerM3: '500',
+            pricePerContainer: '',
+            isPerContainer: false,
+            note: '',
+            isActive: false,
+          },
+          {
+            operators: new Map([[ctx.operator.inn, { id: ctx.operator.id, isOperator: true }]]),
+            wasteTypeIds: new Map([[SNOW_WASTE_TYPE_CODE, SNOW_WASTE_TYPE_ID]]),
+            containers: new Map(),
+          },
+          ctx.adminId,
+        ),
+      ),
+    );
+    expect(tariffRefusal).toBeInstanceOf(ctx.engine.DirectoryFileError);
+    expect((tariffRefusal as Error).message).toContain(SNOW_COST_AT_COMPLETION_MESSAGE);
+
+    await serviceRowStillSeeded();
+    const snowTariffs = await ctx.db.execute(
+      sql`SELECT id FROM waste_tariffs WHERE waste_type_id = ${SNOW_WASTE_TYPE_ID}`,
+    );
+    expect(snowTariffs.rows).toEqual([]);
+  });
 });

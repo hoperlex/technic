@@ -17,6 +17,7 @@ import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
 import {
   assertWasteTypeNameFree,
+  asServiceWasteTypeRefusal,
   asWasteTypeNameConflict,
   editableWasteTypes,
   isServiceWasteTypeRow,
@@ -137,7 +138,7 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
         .where(eq(wasteTypes.id, req.params.id))
         .returning()
         .catch((e: unknown) => {
-          throw asWasteTypeNameConflict(e, 'name');
+          throw asServiceWasteTypeRefusal(asWasteTypeNameConflict(e, 'name'), 'name');
         });
       if (!updated) throw err.notFound('Тип мусора не найден');
       const action =
@@ -170,7 +171,12 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
     },
     isDown: (row) => !row.isActive,
     remove: async (tx, row) => {
-      await tx.delete(wasteTypes).where(eq(wasteTypes.id, row.id));
+      await tx
+        .delete(wasteTypes)
+        .where(eq(wasteTypes.id, row.id))
+        .catch((e: unknown) => {
+          throw asServiceWasteTypeRefusal(e, 'id');
+        });
     },
     notFound: 'Тип мусора не найден',
     stillLive: 'Тип мусора активен — сначала деактивируйте его',

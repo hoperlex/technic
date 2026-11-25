@@ -242,3 +242,25 @@ export function asWasteTypeNameConflict(e: unknown, field: string): unknown {
   }
   return e;
 }
+
+/**
+ * The guards of migration 0429 answering instead of the API: `waste_types_service_snow_check`
+ * (23514), `waste_tariffs_not_service_type_check` (23514) and the no-delete trigger on the reserved
+ * row (`restrict_violation`, 23001). The entry points refuse first, by the fixed reserved identity,
+ * so a race should not reach these; but a request the portal meant to refuse must never come back
+ * as a 500 with a constraint name in the log only. `field` marks the form field the refusal belongs
+ * to. Any other error is returned unchanged for the next mapper.
+ */
+export function asServiceWasteTypeRefusal(e: unknown, field: string): unknown {
+  const pg = pgErrorOf(e);
+  if (pg?.code === '23514' && pg.constraint === 'waste_types_service_snow_check') {
+    return err.validation({ [field]: SERVICE_WASTE_TYPE_LOCKED_MESSAGE });
+  }
+  if (pg?.code === '23514' && pg.constraint === 'waste_tariffs_not_service_type_check') {
+    return err.validation({ [field]: SNOW_COST_AT_COMPLETION_MESSAGE });
+  }
+  // Only the trigger of migration 0429 raises 23001 on `waste_types`: a foreign key refusal, the
+  // other way a purge fails, arrives as 23503 and is translated by `directory-purge.ts`.
+  if (pg?.code === '23001') return err.conflict(SERVICE_WASTE_TYPE_LOCKED_MESSAGE);
+  return e;
+}

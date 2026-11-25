@@ -25,7 +25,11 @@ import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
 import { resolveWasteTariff, resolveWasteTariffByKind } from '../services/waste-pricing';
-import { asWasteTypeNameConflict, createWasteType } from '../services/waste-types';
+import {
+  asServiceWasteTypeRefusal,
+  asWasteTypeNameConflict,
+  createWasteType,
+} from '../services/waste-types';
 
 const dtoColumns = {
   id: wasteTariffs.id,
@@ -317,7 +321,10 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
           return { tariff: created!, newType: type };
         })
         .catch((e: unknown) => {
-          throw asWasteTypeNameConflict(e, 'wasteTypeName');
+          throw asServiceWasteTypeRefusal(
+            asWasteTypeNameConflict(e, 'wasteTypeName'),
+            b.wasteTypeName ? 'wasteTypeName' : 'wasteTypeId',
+          );
         });
 
       const actorUserId = requirePrincipal(req).id;
@@ -399,7 +406,10 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
           updatedAt: new Date(),
         })
         .where(eq(wasteTariffs.id, current.id))
-        .returning();
+        .returning()
+        .catch((e: unknown) => {
+          throw asServiceWasteTypeRefusal(e, 'wasteTypeId');
+        });
 
       const action =
         b.isActive === false

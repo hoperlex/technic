@@ -31,7 +31,9 @@ import {
   parseRequired,
 } from '../cells';
 import { directory, type AnyDirectory, type RowContext } from '../types';
+import { DirectoryFileError } from '../engine';
 import { editableWasteTypes } from '../../waste-types';
+import { pgErrorOf } from '../../../lib/pg-error';
 
 /**
  * Справочники вывоза мусора в обмене файлом (ADR 0073): типы контейнеров, типы мусора и прайс.
@@ -254,6 +256,27 @@ interface WasteTypeModel {
  */
 const SERVICE_ROW_IN_FILE = `строка ссылается на служебный тип «${SNOW_WASTE_TYPE_NAME}» заявок «Вывоз снега»: его ставит портал, и файлом он не правится — удалите эту строку из файла`;
 
+/**
+ * The CHECKs of migration 0429 answering at apply instead of `check()`. The engine translates only
+ * uniqueness and references; without this a refused file would come back as a 500. `check()` holds
+ * the same rules on the same snapshot, so reaching this means a write raced the file.
+ */
+function asServiceRowFileError(e: unknown): unknown {
+  const pg = pgErrorOf(e);
+  if (pg?.code !== '23514') return e;
+  if (pg.constraint === 'waste_types_service_snow_check') {
+    return new DirectoryFileError(
+      `Загрузка отменена: строка затрагивает служебный тип «${SNOW_WASTE_TYPE_NAME}» заявок «Вывоз снега» — его код, название и активность файлом не меняются. Ничего не изменено.`,
+    );
+  }
+  if (pg.constraint === 'waste_tariffs_not_service_type_check') {
+    return new DirectoryFileError(
+      `Загрузка отменена: цена задана на служебный тип «${SNOW_WASTE_TYPE_NAME}». ${SNOW_COST_AT_COMPLETION_MESSAGE}. Ничего не изменено.`,
+    );
+  }
+  return e;
+}
+
 /** What the database says about the names in the file, asked once per file by `resolveRows`. */
 interface WasteTypeEnv {
   /**
@@ -397,13 +420,18 @@ const wasteTypesDirectory = directory<WasteTypeRow, WasteTypeModel, WasteTypeEnv
     }
   },
   create: async (tx, m) => {
-    await tx.insert(wasteTypes).values({
-      code: m.code,
-      name: m.name,
-      description: m.description,
-      sortOrder: m.sortOrder,
-      isActive: m.isActive,
-    });
+    await tx
+      .insert(wasteTypes)
+      .values({
+        code: m.code,
+        name: m.name,
+        description: m.description,
+        sortOrder: m.sortOrder,
+        isActive: m.isActive,
+      })
+      .catch((e: unknown) => {
+        throw asServiceRowFileError(e);
+      });
   },
   update: async (tx, row, m) => {
     await tx
@@ -416,7 +444,10 @@ const wasteTypesDirectory = directory<WasteTypeRow, WasteTypeModel, WasteTypeEnv
         isActive: m.isActive,
         updatedAt: new Date(),
       })
-      .where(eq(wasteTypes.id, row.id));
+      .where(eq(wasteTypes.id, row.id))
+      .catch((e: unknown) => {
+        throw asServiceRowFileError(e);
+      });
   },
 });
 
@@ -810,13 +841,21 @@ const wasteTariffsDirectory = directory<WasteTariffFileRow, WasteTariffModel, Wa
     m.pricePerM3 = derived;
   },
   create: async (tx, m, env) => {
-    await tx.insert(wasteTariffs).values(tariffValues(m, env));
+    await tx
+      .insert(wasteTariffs)
+      .values(tariffValues(m, env))
+      .catch((e: unknown) => {
+        throw asServiceRowFileError(e);
+      });
   },
   update: async (tx, row, m, env) => {
     await tx
       .update(wasteTariffs)
       .set({ ...tariffValues(m, env), updatedAt: new Date() })
-      .where(eq(wasteTariffs.id, row.id));
+      .where(eq(wasteTariffs.id, row.id))
+      .catch((e: unknown) => {
+        throw asServiceRowFileError(e);
+      });
   },
 });
 
