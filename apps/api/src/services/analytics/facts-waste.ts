@@ -15,6 +15,7 @@ import {
   wasteFactUnit,
 } from '@technic/contracts';
 import { db } from '../../db/client';
+import { JOB_RECOGNIZE_WASTE_TICKET_FILE } from '../../lib/jobs';
 import type { AnalyticsAtom, AnalyticsFacts, AnalyticsFactsScope, AnalyticsRange } from './types';
 
 /**
@@ -429,41 +430,88 @@ graded AS (
        * read and a file it read without finding a single ticket. Counted by FILES — how many
        * tickets such a scan holds is exactly what is unknown.
        *
-       * "Could not read" is the review badge's "broken" scan (waste-ticket-inputs.ts), so the
-       * tab and the card name the same paper: the file was rejected or failed, its latest attempt
-       * died before writing a file result (the active job is dead), or one of its pages failed.
-       * A file with several failed pages is ONE unread scan, and a broken file is never also "read
-       * without tickets" — the same sheet would be counted under two warnings.
+       * "Could not read" is the review badge's "failed" scan (classifyTicketFile in
+       * waste-ticket-checks.ts), so the tab and the card name the same paper, in the same order of
+       * precedence:
+       *   1. a recognition job of the file is pending or running → the scan is LIVE: not late yet,
+       *      neither unread nor "read without tickets", even when an earlier attempt failed;
+       *   2. otherwise a failed or dead job that is not older than the file's last result means the
+       *      latest attempt died before writing a result — unread, also when the file has no result
+       *      row at all (the job died before its first write);
+       *   3. a file row rejected or failed → unread; a file row still pending is unread when its
+       *      active job died, and otherwise INTERRUPTED (neither unread nor read);
+       *   4. any failed page → unread. One file with several failed pages is ONE unread scan, and a
+       *      broken file is never also "read without tickets" — the same sheet would be counted
+       *      under two warnings.
+       * Files are the ones the review looks at: rows of the file table plus attached ticket files
+       * that only have a job. A job of a file detached by a reset is not the request's paper.
        *
        * "No tickets found" asks for any ticket row of the file, dismissed ones included: a file
        * whose readings a person dismissed has been reviewed, and calling it unrecognised would send
-       * people to look at it again. A file still in the queue is neither: it is not late yet. A
-       * scan that never entered recognition (the module was off) has no row here and is not counted
-       * either — it was never an attempt to read.
+       * people to look at it again. A scan that never entered recognition (the module was off) has
+       * no job and no row and is not counted — it was never an attempt to read.
+       *
+       * The jobs are read by the queue's status prefix (jobs_due_idx): only these states stay few
+       * while the table grows with every mail and storage delete.
        */
       LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE fx.broken)              AS files_unread,
                                 count(*) FILTER (
                                   WHERE NOT fx.broken
+                                    AND NOT fx.live
                                     AND fx.status = 'done'
                                     AND NOT EXISTS (SELECT 1
                                                       FROM waste_ticket_pages p
                                                       JOIN waste_tickets t ON t.page_id = p.id
-                                                     WHERE p.file_id = fx.file_id)
+                                                     WHERE p.file_id::text = fx.fid)
                                 )                                               AS files_without_tickets
-                           FROM (SELECT f.file_id,
+                           FROM (SELECT ids.fid,
                                         f.status,
-                                        /* NULL-safe: a file without a job must read as
-                                           "not broken", not as unknown, or the second counter
-                                           below would drop it. */
-                                        (f.status IN ('failed', 'unsupported')
-                                         OR j.status IS NOT DISTINCT FROM 'dead'
-                                         OR EXISTS (SELECT 1
-                                                      FROM waste_ticket_pages fp
-                                                     WHERE fp.file_id = f.file_id
-                                                       AND fp.status = 'failed')) AS broken
-                                   FROM waste_ticket_files f
-                                   LEFT JOIN jobs j ON j.id = f.active_job_id
-                                  WHERE f.request_id = s.id) fx) tf ON true
+                                        /* NULL-safe: bool_or over no jobs is NULL, and a file
+                                           without a job must read as "not live" and "not died",
+                                           or the counters would drop it. */
+                                        coalesce(jb.live, false)                AS live,
+                                        (NOT coalesce(jb.live, false)
+                                         AND (coalesce(jb.died, false)
+                                              OR f.status IN ('failed', 'unsupported')
+                                              OR (f.status = 'pending'
+                                                  AND aj.status IN ('dead', 'failed'))
+                                              OR (f.status IS DISTINCT FROM 'pending'
+                                                  AND EXISTS (SELECT 1
+                                                                FROM waste_ticket_pages fp
+                                                               WHERE fp.file_id::text = ids.fid
+                                                                 AND fp.status = 'failed'))
+                                             ))                                 AS broken
+                                   FROM (SELECT wf.file_id::text AS fid
+                                           FROM waste_ticket_files wf
+                                          WHERE wf.request_id = s.id
+                                         UNION
+                                         SELECT dj.payload->>'fileId'
+                                           FROM jobs dj
+                                          WHERE dj.type = ${JOB_RECOGNIZE_WASTE_TICKET_FILE}
+                                            AND dj.status IN ('pending', 'running', 'failed', 'dead')
+                                            AND dj.payload->>'requestId' = s.id::text
+                                            AND EXISTS (SELECT 1
+                                                          FROM request_files rf
+                                                          JOIN files fl ON fl.id = rf.file_id
+                                                         WHERE rf.request_id = s.id
+                                                           AND rf.kind = 'ticket'
+                                                           AND fl.status = 'active'
+                                                           AND rf.file_id::text = dj.payload->>'fileId')
+                                        ) ids
+                                   LEFT JOIN waste_ticket_files f
+                                          ON f.request_id = s.id AND f.file_id::text = ids.fid
+                                   LEFT JOIN jobs aj ON aj.id = f.active_job_id
+                                   LEFT JOIN LATERAL (
+                                        SELECT bool_or(j.status IN ('pending', 'running')) AS live,
+                                               bool_or(j.status IN ('dead', 'failed')
+                                                       AND (f.updated_at IS NULL
+                                                            OR f.updated_at <= j.created_at)) AS died
+                                          FROM jobs j
+                                         WHERE j.type = ${JOB_RECOGNIZE_WASTE_TICKET_FILE}
+                                           AND j.status IN ('pending', 'running', 'failed', 'dead')
+                                           AND j.payload->>'requestId' = s.id::text
+                                           AND j.payload->>'fileId' = ids.fid
+                                   ) jb ON true) fx) tf ON true
 ),
 atoms AS (
     SELECT o.id                                       AS customer_id,
