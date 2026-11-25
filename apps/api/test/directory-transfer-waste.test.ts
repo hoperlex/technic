@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SNOW_COST_AT_COMPLETION_MESSAGE, SNOW_WASTE_TYPE_ID } from '@technic/contracts';
 import type { AnyDirectory, RowContext } from '../src/services/directory-transfer/types';
 
 /**
@@ -434,5 +435,67 @@ describe('стоимость вывоза мусора в обмене файл�
     expect(ctx.problems).toEqual([]);
     expect(cells['Цена за контейнер']).toBe('');
     expect(ctx.warnings).toHaveLength(1);
+  });
+});
+
+// ── Служебный тип «Снег» (snow-removal plan, §3.2) ────────────────────────────────────────────
+
+describe('служебный тип «Снег» в обмене файлом', () => {
+  /** Names the database reported as carrying the reserved key; here set by hand. */
+  const reservedEnv = { reservedNames: new Set(['Снёг']) };
+
+  /** A new waste type row from file cells: parse and check in the engine's order. */
+  function wasteTypeFrom(cells: Cells): TestContext {
+    const ctx = testContext();
+    const model = wasteTypesDir.blank();
+    applyCells(wasteTypesDir, reservedEnv, model, cells, ctx);
+    wasteTypesDir.check?.(model, ctx, reservedEnv);
+    return ctx;
+  }
+
+  it.each([SNOW_WASTE_TYPE_ID, SNOW_WASTE_TYPE_ID.toUpperCase()])(
+    'идентификатор служебной строки %s — отказ с советом удалить строку',
+    (id) => {
+      expect(wasteTypesDir.reservedId?.(id)).toMatch(/служебный тип «Снег».*удалите эту строку/u);
+    },
+  );
+
+  it('обычный идентификатор не зарезервирован', () => {
+    expect(wasteTypesDir.reservedId?.(wasteTypeRow.id)).toBeUndefined();
+  });
+
+  it.each(['snow', 'SNOW', ' Snow '])('код «%s» служебного типа другому типу не даётся', (code) => {
+    const ctx = wasteTypeFrom({ Код: code, Наименование: 'Сугробы' });
+    expect(ctx.problems).toHaveLength(1);
+    expect(ctx.problems[0]).toMatch(/код «snow» принадлежит служебному типу «Снег»/u);
+  });
+
+  it('наименование с ключом служебного типа отвергается по ответу базы', () => {
+    const ctx = wasteTypeFrom({ Код: 'sneg', Наименование: 'Снёг' });
+    expect(ctx.problems).toEqual([
+      'наименование «Снёг» совпадает со служебным типом «Снег» заявок «Вывоз снега» — выберите другое',
+    ]);
+  });
+
+  it('обычная строка проверку проходит', () => {
+    const ctx = wasteTypeFrom({ Код: 'beton_boy', Наименование: 'Бетонный бой' });
+    expect(ctx.problems).toEqual([]);
+  });
+
+  it.each(['snow', 'SNOW'])(
+    'цена на служебный код «%s» отвергается: стоимость — при закрытии',
+    (code) => {
+      const { ctx } = tariffFrom({ 'Тип мусора (код)': code });
+      expect(ctx.problems).toEqual([
+        `тип мусора «snow» — служебный тип «Снег». ${SNOW_COST_AT_COMPLETION_MESSAGE}`,
+      ]);
+    },
+  );
+
+  it('справка обоих справочников говорит о служебном типе', () => {
+    expect(wasteTypesDir.help(reservedEnv).join(' ')).toMatch(
+      /Служебного типа «Снег» в файле нет/u,
+    );
+    expect(wasteTariffsDir.help(tariffEnv).join(' ')).toMatch(/служебный тип «Снег»/u);
   });
 });

@@ -3,6 +3,11 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  containerKindLabels,
+  DIRECTORY_DATA_SHEET,
+  DIRECTORY_ID_COLUMN,
+  type DirectoryImportReportDto,
+  type DirectoryKey,
   isValidInn,
   SNOW_COST_AT_COMPLETION_MESSAGE,
   SNOW_WASTE_TYPE_CODE,
@@ -17,6 +22,9 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
 import type * as WasteTypesNs from '../src/services/waste-types';
+import type * as EngineNs from '../src/services/directory-transfer/engine';
+import type * as XlsxNs from '../src/lib/xlsx';
+import type { AnyDirectory } from '../src/services/directory-transfer/types';
 
 /**
  * The reserved service waste type «Снег» at the directory entry points (snow-removal plan, §3.2,
@@ -51,6 +59,10 @@ interface Ctx {
   db: typeof AppDb;
   /** Administrator: directory write, purge, import and export. */
   admin: Auth;
+  adminId: string;
+  engine: typeof EngineNs;
+  xlsx: typeof XlsxNs;
+  directoryFor: (key: DirectoryKey) => AnyDirectory | undefined;
   /** This run's operator: tariffs belong to an operator (ADR 0026). */
   operator: { id: string; inn: string };
   /** This run's container type: the exact-type branch of tariff resolution needs one. */
@@ -199,6 +211,10 @@ describe.skipIf(!DB_URL)('служебный тип «Снег» в справо
       app,
       db,
       admin: { authorization: `Bearer ${login.json().accessToken}` },
+      adminId: admin.rows[0]!.id,
+      engine: await import('../src/services/directory-transfer/engine'),
+      xlsx: await import('../src/lib/xlsx'),
+      directoryFor: (await import('../src/services/directory-transfer/registry')).directoryFor,
       operator: { id: operator.rows[0]!.id, inn },
       containerTypeId: container.rows[0]!.id,
       messages: {
@@ -475,5 +491,242 @@ describe.skipIf(!DB_URL)('служебный тип «Снег» в справо
     );
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json<{ tariff: { tariffId: string } | null }>().tariff?.tariffId).toBe(tariff.id);
+  });
+  // ── 4. Excel exchange (ADR 0073) ──
+
+  /** The data sheet of a fresh export: the file a person downloads and edits. */
+  async function exportSheet(key: DirectoryKey): Promise<string[][]> {
+    const { bytes } = await ctx.engine.exportDirectory(ctx.directoryFor(key)!);
+    return ctx.xlsx.readWorkbook(bytes).find((sheet) => sheet.name === DIRECTORY_DATA_SHEET)!.rows;
+  }
+
+  function bookOf(rows: string[][]): Uint8Array {
+    return ctx.xlsx.writeWorkbook([{ name: DIRECTORY_DATA_SHEET, rows }]);
+  }
+
+  function preview(key: DirectoryKey, rows: string[][]): Promise<DirectoryImportReportDto> {
+    return ctx.engine.importDirectory(ctx.directoryFor(key)!, bookOf(rows), {
+      dryRun: true,
+      actorUserId: ctx.adminId,
+    });
+  }
+
+  /** Apply must refuse the same file as a whole, with a person's text, writing nothing. */
+  async function expectApplyRefused(key: DirectoryKey, rows: string[][]): Promise<string> {
+    const error = await ctx.engine
+      .importDirectory(ctx.directoryFor(key)!, bookOf(rows), {
+        dryRun: false,
+        actorUserId: ctx.adminId,
+      })
+      .then(
+        () => {
+          throw new Error('the file was applied');
+        },
+        (e: unknown) => e,
+      );
+    expect(error).toBeInstanceOf(ctx.engine.DirectoryFileError);
+    return (error as Error).message;
+  }
+
+  const TYPE_HEADER = [
+    DIRECTORY_ID_COLUMN,
+    'Код',
+    'Наименование',
+    'Описание',
+    'Порядок',
+    'Активен',
+  ];
+
+  /** The waste type directory as the database holds it, for «nothing was written» checks. */
+  async function typesSnapshot(): Promise<unknown[]> {
+    const res = await ctx.db.execute(sql`
+      SELECT id, code, name, description, sort_order, is_active, updated_at
+        FROM waste_types ORDER BY id`);
+    return res.rows;
+  }
+
+  const isServiceCell = (row: string[]) =>
+    (row[0] ?? '').toLowerCase() === SNOW_WASTE_TYPE_ID ||
+    row.some((cell) => cell === SNOW_WASTE_TYPE_CODE || cell === SNOW_WASTE_TYPE_NAME);
+
+  it('выгрузка типов мусора и прайса не несёт служебного типа, а чистый файл грузится без правок', async () => {
+    const own = await ordinaryType();
+    await ordinaryTariff();
+
+    const types = await exportSheet('waste-types');
+    expect(types[0]).toEqual(TYPE_HEADER);
+    expect(types.slice(1).filter(isServiceCell)).toEqual([]);
+    expect(types.slice(1).map((row) => row[0])).toContain(own.id);
+
+    const tariffs = await exportSheet('waste-tariffs');
+    expect(tariffs.slice(1).filter((row) => row.includes(SNOW_WASTE_TYPE_CODE))).toEqual([]);
+
+    for (const [key, rows] of [
+      ['waste-types', types],
+      ['waste-tariffs', tariffs],
+    ] as const) {
+      const report = await preview(key, rows);
+      expect(report.problems, key).toEqual([]);
+      expect(report.created, key).toEqual([]);
+      expect(report.updated, key).toEqual([]);
+      expect(report.unchanged, key).toBe(rows.length - 1);
+    }
+
+    // Applying the unchanged file writes nothing and refuses nothing.
+    const before = await typesSnapshot();
+    const applied = await ctx.engine.importDirectory(
+      ctx.directoryFor('waste-types')!,
+      bookOf(types),
+      {
+        dryRun: false,
+        actorUserId: ctx.adminId,
+      },
+    );
+    expect(applied.problems).toEqual([]);
+    expect(await typesSnapshot()).toEqual(before);
+  });
+
+  it.each([SNOW_WASTE_TYPE_ID, SNOW_ID_UPPER])(
+    'строка с идентификатором служебного типа %s отвергается, даже если код и название в ней переписаны',
+    async (id) => {
+      const before = await typesSnapshot();
+      const variants: string[][] = [
+        // The reserved row as it is: nothing to edit, and still not the file's business.
+        [id, SNOW_WASTE_TYPE_CODE, SNOW_WASTE_TYPE_NAME, '', '1000', 'да'],
+        // Deactivation only.
+        [id, SNOW_WASTE_TYPE_CODE, SNOW_WASTE_TYPE_NAME, '', '1000', 'нет'],
+        // UUID intact, name AND code changed: imports match the id before the code, so this would
+        // be a rename of the reserved row, or — after clearing the id — a brand-new type.
+        [id, `${CODE}_renamed`, `Сугробы ${RUN}`, 'Переименован файлом', '5', 'да'],
+      ];
+      for (const row of variants) {
+        const rows = [TYPE_HEADER, row];
+        const report = await preview('waste-types', rows);
+        expect(report.problems, row.join(' | ')).toHaveLength(1);
+        expect(report.problems[0]).toMatch(/^строка 2: строка ссылается на служебный тип «Снег»/u);
+        expect(report.created).toEqual([]);
+        expect(report.updated).toEqual([]);
+        expect(await expectApplyRefused('waste-types', rows)).toMatch(/служебный тип «Снег»/u);
+      }
+      expect(await typesSnapshot()).toEqual(before);
+    },
+  );
+
+  it.each(['snow', 'SNOW'])(
+    'новая строка с кодом %s или названием «Снег» в любом написании отвергается',
+    async (reservedCode) => {
+      const before = await typesSnapshot();
+      // One row per reserved spelling: two rows with the same code would also be reported as one
+      // record described twice, which is the engine's rule, not this one.
+      const rows = [
+        TYPE_HEADER,
+        ['', reservedCode, `Сугробы ${RUN}`, '', '100', 'да'],
+        ...RESERVED_SPELLINGS.map((name, i) => ['', `${CODE}_x${i}`, name, '', '100', 'да']),
+      ];
+      const report = await preview('waste-types', rows);
+      expect(report.problems).toHaveLength(1 + RESERVED_SPELLINGS.length);
+      expect(report.problems[0]).toBe(
+        'строка 2: код «snow» принадлежит служебному типу «Снег» заявок «Вывоз снега» — выберите другой',
+      );
+      for (const problem of report.problems.slice(1)) {
+        expect(problem).toMatch(/совпадает со служебным типом «Снег»/u);
+      }
+      await expectApplyRefused('waste-types', rows);
+      expect(await typesSnapshot()).toEqual(before);
+    },
+  );
+
+  it('заведённый тип не переименовать в «Снег» и не перекодировать в snow файлом', async () => {
+    const own = await ordinaryType();
+    const before = await typesSnapshot();
+    const files: { rows: string[][]; problem: RegExp }[] = [
+      {
+        rows: [TYPE_HEADER, [own.id, own.code, 'Снёг', '', '100', 'да']],
+        problem: /наименование «Снёг» совпадает со служебным типом/u,
+      },
+      {
+        rows: [TYPE_HEADER, [own.id.toUpperCase(), 'snow', own.name, '', '100', 'да']],
+        problem: /код «snow» принадлежит служебному типу/u,
+      },
+      // Matched by code, without the id column: the name is still asked of the database.
+      {
+        rows: [
+          ['Код', 'Наименование'],
+          [own.code, 'с н е г'],
+        ],
+        problem: /наименование «с н е г» совпадает со служебным типом/u,
+      },
+    ];
+    for (const { rows, problem } of files) {
+      const report = await preview('waste-types', rows);
+      expect(report.problems).toHaveLength(1);
+      expect(report.problems[0]).toMatch(problem);
+      await expectApplyRefused('waste-types', rows);
+    }
+    expect(await typesSnapshot()).toEqual(before);
+  });
+
+  it('прайс со служебным кодом отвергается в предпросмотре и применении', async () => {
+    const { tariff } = await ordinaryTariff();
+    const sheet = await exportSheet('waste-tariffs');
+    const header = sheet[0]!;
+    const ownRow = sheet.find((row) => row[0] === tariff.id)!;
+    expect(ownRow, 'the own tariff is exported').toBeDefined();
+    const codeAt = header.indexOf('Тип мусора (код)');
+    const kindAt = header.indexOf('Вид техники');
+    expect(ownRow[kindAt]).toBe(containerKindLabels.truck);
+
+    const newRow = (code: string) => {
+      const row = header.map(() => '');
+      row[header.indexOf('Оператор (ИНН)')] = ctx.operator.inn;
+      row[codeAt] = code;
+      row[kindAt] = containerKindLabels.cont;
+      row[header.indexOf('Цена за м³')] = '500';
+      row[header.indexOf('Считать за контейнер')] = 'нет';
+      row[header.indexOf('Активен')] = 'нет';
+      return row;
+    };
+    const moved = [...ownRow];
+    moved[codeAt] = 'SNOW';
+
+    for (const row of [newRow('snow'), newRow('SNOW'), moved]) {
+      const rows = [header, row];
+      const report = await preview('waste-tariffs', rows);
+      expect(report.problems).toEqual([
+        `строка 2: тип мусора «snow» — служебный тип «Снег». ${SNOW_COST_AT_COMPLETION_MESSAGE}`,
+      ]);
+      expect(await expectApplyRefused('waste-tariffs', rows)).toMatch(/служебный тип «Снег»/u);
+    }
+    const snowTariffs = await ctx.db.execute(
+      sql`SELECT id FROM waste_tariffs WHERE waste_type_id = ${SNOW_WASTE_TYPE_ID}`,
+    );
+    expect(snowTariffs.rows).toEqual([]);
+  });
+
+  it('чистый файл обычных данных применяется: новый тип заводится, заведённый правится по UUID прописными', async () => {
+    const own = await ordinaryType();
+    const code = `${CODE}_file`;
+    const rows = [
+      TYPE_HEADER,
+      ['', code, `Мусор из файла ${RUN}`, 'Заведён файлом', '150', 'да'],
+      [own.id.toUpperCase(), own.code, `${own.name} (файл)`, '', '100', 'да'],
+    ];
+    const report = await preview('waste-types', rows);
+    expect(report.problems).toEqual([]);
+    expect(report.created).toHaveLength(1);
+    expect(report.updated).toHaveLength(1);
+
+    await ctx.engine.importDirectory(ctx.directoryFor('waste-types')!, bookOf(rows), {
+      dryRun: false,
+      actorUserId: ctx.adminId,
+    });
+    const saved = await ctx.db.execute<{ code: string; name: string }>(sql`
+      SELECT code, name FROM waste_types WHERE code IN (${code}, ${own.code})`);
+    expect(new Map(saved.rows.map((row) => [row.code, row.name]))).toEqual(
+      new Map([
+        [code, `Мусор из файла ${RUN}`],
+        [own.code, `${own.name} (файл)`],
+      ]),
+    );
   });
 });

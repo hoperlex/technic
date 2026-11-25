@@ -236,6 +236,15 @@ function silentContext(row: number): RowContext {
   return { row, fail: () => {}, warn: () => {} };
 }
 
+/**
+ * The lookup form of the service id. Every directory's id is a UUID, and UUIDs compare as UUIDs: an
+ * uppercase spelling typed or pasted into the column names the same record, and a reserved record
+ * must not slip past `reservedId` or the id match by being spelled in capitals.
+ */
+function idKey(id: string): string {
+  return id.trim().toLowerCase();
+}
+
 interface PlannedRow {
   report: DirectoryRowReportDto;
   model: unknown;
@@ -265,7 +274,7 @@ function planRows(
   const byId = new Map<string, unknown>();
   const byKey = new Map<string, unknown>();
   for (const row of prepared.rows) {
-    byId.set(def.id(row), row);
+    byId.set(idKey(def.id(row)), row);
     const key = def.keyOf(def.model(row, prepared.env));
     if (key !== '' && !byKey.has(key)) byKey.set(key, row);
   }
@@ -296,8 +305,13 @@ function planRows(
     apply(probe, silentContext(rowNo));
 
     const idText = idAt >= 0 ? (cells[idAt] ?? '').trim() : '';
-    const existing = idText !== '' ? byId.get(idText) : byKey.get(def.keyOf(probe));
     const ctx = rowContext(rowNo, problems, warnings);
+    const reserved = idText !== '' ? def.reservedId?.(idText) : undefined;
+    if (reserved !== undefined) {
+      ctx.fail(reserved);
+      return;
+    }
+    const existing = idText !== '' ? byId.get(idKey(idText)) : byKey.get(def.keyOf(probe));
     if (idText !== '' && !existing) {
       ctx.fail(
         `запись с идентификатором ${idText} в справочнике не найдена. Если это новая строка, очистите колонку «${DIRECTORY_ID_COLUMN}»`,

@@ -299,3 +299,48 @@ describe('применение', () => {
     expect(applied).toEqual([]);
   });
 });
+
+/**
+ * A record outside the exchange (`reservedId`) and ids spelled in capitals. Made for the service
+ * waste type «Снег» (snow-removal plan, §3.2): imports match by id before key, so a row that kept
+ * the reserved id but rewrote every other cell must be refused, not applied as a rename or — after
+ * «clear the id» advice — filed as a new record.
+ */
+describe('запись вне обмена и регистр идентификатора', () => {
+  const RESERVED = 'id-9';
+  const guarded: typeof def = {
+    ...def,
+    reservedId: (id) =>
+      id.toLowerCase() === RESERVED ? 'служебная запись, файлом не правится' : undefined,
+  };
+
+  it.each([RESERVED, RESERVED.toUpperCase()])(
+    'строка с идентификатором %s отвергается своими словами, а не «не найдена»',
+    async (id) => {
+      const bytes = book([HEADER, [id, 'renamed', 'Другое имя', '', 'да']]);
+      const report = await importDirectory(guarded, bytes, { dryRun: true, actorUserId: 'u' });
+      expect(report.problems).toEqual(['строка 2: служебная запись, файлом не правится']);
+      expect(report.created).toEqual([]);
+      expect(report.updated).toEqual([]);
+      await expect(
+        importDirectory(guarded, bytes, { dryRun: false, actorUserId: 'u' }),
+      ).rejects.toThrow(/служебная запись/u);
+      expect(applied).toEqual([]);
+    },
+  );
+
+  it('идентификатор прописными находит ту же запись: UUID сравниваются как UUID', async () => {
+    const bytes = book([HEADER, ['ID-1', 'moscow', 'Москва', 'столица', 'да']]);
+    const report = await importDirectory(def, bytes, { dryRun: true, actorUserId: 'u' });
+    expect(report.problems).toEqual([]);
+    expect(report.created).toEqual([]);
+    expect(report.updated[0]!.changes).toEqual([{ column: 'Код', from: 'msk', to: 'moscow' }]);
+  });
+
+  it('хук отказа обычных строк не касается', async () => {
+    const bytes = book([HEADER, ['id-1', 'msk', 'Москва', 'столица', 'да']]);
+    const report = await importDirectory(guarded, bytes, { dryRun: true, actorUserId: 'u' });
+    expect(report.problems).toEqual([]);
+    expect(report.unchanged).toBe(1);
+  });
+});

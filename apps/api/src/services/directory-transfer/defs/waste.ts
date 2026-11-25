@@ -2,11 +2,15 @@ import {
   containerKindLabels,
   INN_MESSAGE,
   innSchema,
+  isServiceWasteTypeCode,
+  isServiceWasteTypeId,
   pricePerM3FromContainer,
+  SNOW_COST_AT_COMPLETION_MESSAGE,
+  SNOW_WASTE_TYPE_NAME,
   wasteTypeNameKey,
   type ContainerKind,
 } from '@technic/contracts';
-import { eq, isNull } from 'drizzle-orm';
+import { eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../../db/client';
 import {
   containerTypes,
@@ -27,6 +31,7 @@ import {
   parseRequired,
 } from '../cells';
 import { directory, type AnyDirectory, type RowContext } from '../types';
+import { editableWasteTypes } from '../../waste-types';
 
 /**
  * Справочники вывоза мусора в обмене файлом (ADR 0073): типы контейнеров, типы мусора и прайс.
@@ -242,9 +247,42 @@ interface WasteTypeModel {
   isActive: boolean;
 }
 
-const wasteTypesDirectory = directory<WasteTypeRow, WasteTypeModel, Record<string, never>>({
+/**
+ * The service waste type «Снег» (snow-removal plan, S2, S10) stays outside the exchange entirely:
+ * it is not exported, not matched, and a file can neither edit it nor create its twin. The portal
+ * sets it on snow requests, and the CHECK and trigger of migration 0429 remain the backstop.
+ */
+const SERVICE_ROW_IN_FILE = `строка ссылается на служебный тип «${SNOW_WASTE_TYPE_NAME}» заявок «Вывоз снега»: его ставит портал, и файлом он не правится — удалите эту строку из файла`;
+
+/** What the database says about the names in the file, asked once per file by `resolveRows`. */
+interface WasteTypeEnv {
+  /**
+   * Names from the file whose `waste_type_name_key` equals the reserved one. The key is the
+   * database's, not the contracts' twin: it is the function behind the unique index, and a copy
+   * that drifted would let a reserved spelling through to a faceless 23505 at apply time.
+   */
+  reservedNames: Set<string>;
+}
+
+async function resolveReservedNames(
+  models: readonly WasteTypeModel[],
+  env: WasteTypeEnv,
+): Promise<void> {
+  const names = [...new Set(models.map((m) => m.name).filter((name) => name !== ''))];
+  if (names.length === 0) return;
+  const found = await db.execute<{ name: string }>(sql`
+    SELECT a.name
+      FROM (VALUES ${sql.join(
+        names.map((name) => sql`(${name}::text)`),
+        sql`, `,
+      )}) AS a(name)
+     WHERE waste_type_name_key(a.name) = waste_type_name_key(${SNOW_WASTE_TYPE_NAME})`);
+  for (const row of found.rows) env.reservedNames.add(row.name);
+}
+
+const wasteTypesDirectory = directory<WasteTypeRow, WasteTypeModel, WasteTypeEnv>({
   key: 'waste-types',
-  env: async () => ({}),
+  env: async () => ({ reservedNames: new Set<string>() }),
   columns: () => [
     {
       header: 'Код',
@@ -321,9 +359,17 @@ const wasteTypesDirectory = directory<WasteTypeRow, WasteTypeModel, Record<strin
     'Типы мусора — «что вывозим»: строительный мусор, бетонный бой, грунт, древесные отходы.',
     'Загрузка заводит новые типы и правит заведённые. Удаления нет: лишний тип гасят колонкой «Активен» — на него ссылаются заявки и позиции прайса.',
     'Цену типу задают в справочнике «Стоимость вывоза мусора»: тип без цены в форме заявки не выбрать.',
+    `Служебного типа «${SNOW_WASTE_TYPE_NAME}» в файле нет: его ставит портал заявкам «Вывоз снега». Его код и название другому типу не даются.`,
   ],
-  load: () => db.select().from(wasteTypes).orderBy(wasteTypes.sortOrder, wasteTypes.code),
+  load: () =>
+    db
+      .select()
+      .from(wasteTypes)
+      .where(editableWasteTypes())
+      .orderBy(wasteTypes.sortOrder, wasteTypes.code),
   id: (row) => row.id,
+  reservedId: (id) => (isServiceWasteTypeId(id) ? SERVICE_ROW_IN_FILE : undefined),
+  resolveRows: resolveReservedNames,
   // `nameKey` в модель не берётся и в базу не пишется: его считает БД (GENERATED), и второй
   // источник правды у него завёлся бы ровно на одну загрузку.
   model: (row) => ({
@@ -336,6 +382,20 @@ const wasteTypesDirectory = directory<WasteTypeRow, WasteTypeModel, Record<strin
   blank: () => ({ code: '', name: '', description: '', sortOrder: 100, isActive: true }),
   keyOf: (m) => m.code,
   titleOf: (m) => m.name || m.code,
+  check: (m, ctx, env) => {
+    // The reserved code and name are refused here, in words, before apply: the database refuses
+    // them too, but by a constraint name and only after the file has started to be written.
+    if (isServiceWasteTypeCode(m.code)) {
+      ctx.fail(
+        `код «${m.code}» принадлежит служебному типу «${SNOW_WASTE_TYPE_NAME}» заявок «Вывоз снега» — выберите другой`,
+      );
+    }
+    if (env.reservedNames.has(m.name)) {
+      ctx.fail(
+        `наименование «${m.name}» совпадает со служебным типом «${SNOW_WASTE_TYPE_NAME}» заявок «Вывоз снега» — выберите другое`,
+      );
+    }
+  },
   create: async (tx, m) => {
     await tx.insert(wasteTypes).values({
       code: m.code,
@@ -450,7 +510,12 @@ const wasteTariffsDirectory = directory<WasteTariffFileRow, WasteTariffModel, Wa
         .select({ id: counterparties.id, inn: counterparties.inn, type: counterparties.type })
         .from(counterparties)
         .where(isNull(counterparties.deletedAt)),
-      db.select({ id: wasteTypes.id, code: wasteTypes.code }).from(wasteTypes),
+      // The service type is out of the dictionary: a price for it is refused in `check()` by its
+      // code, and a missing entry keeps `tariffValues` from ever resolving it at apply.
+      db
+        .select({ id: wasteTypes.id, code: wasteTypes.code })
+        .from(wasteTypes)
+        .where(editableWasteTypes()),
       db
         .select({
           id: containerTypes.id,
@@ -581,6 +646,7 @@ const wasteTariffsDirectory = directory<WasteTariffFileRow, WasteTariffModel, Wa
     'Цена в портале всегда за 1 м³. «Считать за контейнер» — это способ задания, а не вторая цена: вводится цена за контейнер целиком, а цену за м³ портал выводит сам из вместимости типа (15 000 ₽ за контейнер 8 м³ → 1875 ₽/м³) и требует кратности объёма в заявке.',
     'Цель тарифа одна: либо конкретный тип контейнера, либо вид техники целиком. Точная цена на тип побеждает цену на вид.',
     'Оператор, тип мусора и тип контейнера ищутся по ИНН и кодам: их справочники загружают раньше прайса — сам прайс ничего из них не заводит.',
+    `Цены на служебный тип «${SNOW_WASTE_TYPE_NAME}» не бывает: стоимость вывоза снега вносится при закрытии заявки.`,
   ],
   load: async () => {
     const rows: WasteTariffFileRow[] = await db
@@ -668,6 +734,11 @@ const wasteTariffsDirectory = directory<WasteTariffFileRow, WasteTariffModel, Wa
 
     if (m.wasteTypeCode === '') {
       ctx.fail('тип мусора (код) не указан');
+    } else if (isServiceWasteTypeCode(m.wasteTypeCode)) {
+      // Snow has no price list (S6): no position, active or not, may target the service type.
+      ctx.fail(
+        `тип мусора «${m.wasteTypeCode}» — служебный тип «${SNOW_WASTE_TYPE_NAME}». ${SNOW_COST_AT_COMPLETION_MESSAGE}`,
+      );
     } else if (!env.wasteTypeIds.has(m.wasteTypeCode)) {
       ctx.fail(
         `тип мусора «${m.wasteTypeCode}» не найден — сначала загрузите справочник типов мусора`,

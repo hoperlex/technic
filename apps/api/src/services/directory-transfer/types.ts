@@ -94,6 +94,17 @@ export interface DirectoryDefinition<Row, Model, Env> {
   load(env: Env): Promise<Row[]>;
   /** Идентификатор строки: он же значение служебной колонки. */
   id(row: Row): string;
+  /**
+   * Rows the exchange never touches, recognised by the service id column: the refusal for a file
+   * row whose id names one, `undefined` for any other id. The definition also leaves such rows out
+   * of `load`, so they are neither exported nor matched by key.
+   *
+   * Asked before the id lookup because «запись не найдена — очистите идентификатор» would be wrong
+   * advice here: imports match by id before key, and a cleared id turns a row that edited the
+   * reserved record into a new record under whatever name and code the file now carries. Made for
+   * the service waste type «Снег» (snow-removal plan, §3.2), which only the portal sets.
+   */
+  reservedId?(id: string): string | undefined;
   model(row: Row, env: Env): Model;
   /** Пустая модель: с неё начинается строка, которой в справочнике ещё нет. */
   blank(): Model;
