@@ -642,6 +642,126 @@ describe.skipIf(!DB_URL)('вывоз снега: статистика за от�
     });
   });
 
+  describe('деньги и талоны снега (S6, S7)', () => {
+    it('площадка A: вывезенное — внесённые суммы с нулём, без цены — только вывезенное без суммы', async () => {
+      const a = rowOf(await stats(`month=${MONTH}&kind=snow`), 'a');
+      expect(a).toMatchObject({
+        requests: 5,
+        removals: 3,
+        // Ordered by every valid request, the rolled-back and the unfinished ones included.
+        plannedVolumeM3: 50,
+        // No estimate at all: a dash, and nothing is "unpriced" in the plan.
+        plannedCost: null,
+        plannedVolumeUnpricedM3: 0,
+        // 12 + 8 + 9 removed; 1500 + 0 entered, the unpaid 9 m³ flagged.
+        doneVolumeM3: 29,
+        doneCost: 1500,
+        doneVolumeUnpricedM3: 9,
+        // Only the removed request without an amount; the open and rolled-back ones miss nothing.
+        unpricedRequests: 1,
+      });
+    });
+
+    it('площадка A: талоны снега по правилам мусора, а денег по талонам нет', async () => {
+      const a = rowOf(await stats(`month=${MONTH}&kind=snow`), 'a');
+      expect(a).toMatchObject({
+        // 7 accepted + 5 unreviewed at the first request, 8 at the second; the rolled-back
+        // request's ticket is out with it.
+        ticketVolumeM3: 20,
+        ticketVolumeUnconfirmedM3: 5,
+        ticketsUnconfirmed: 2,
+        ticketsWithoutVolume: 1,
+        // The scan with a failed page, the one with two failed pages, the one whose latest attempt
+        // died and the rejected one — each once; the queued scan is neither.
+        ticketFilesUnread: 4,
+        // Only the scan read in full without a ticket; the broken ones are not counted here too.
+        ticketFilesWithoutTickets: 1,
+        ticketCost: null,
+        ticketVolumeUnpricedM3: 0,
+      });
+    });
+
+    it('площадка A: устаревшие поля для старой вкладки согласованы с новыми', async () => {
+      const a = rowOf(await stats(`month=${MONTH}&kind=snow`), 'a');
+      expect(a).toMatchObject({
+        // Removed 29 + ordered-not-removed 8 (rolled back) + 15 (open).
+        volumeM3: 52,
+        volumeOrderedM3: 23,
+        totalCost: 1500,
+        costEstimated: 0,
+        confirmedVolumeM3: 20,
+        confirmedVolumeUnpricedM3: 0,
+        confirmedCost: null,
+      });
+    });
+
+    it('окно площадки: позиция «Снег» несёт те же числа, что строка', async () => {
+      const dto = await stats(`month=${MONTH}&kind=snow`);
+      for (const row of dto.rows) {
+        const [position] = row.positions;
+        const { objectId, code, name, isActive, positions, ...figures } = row;
+        void [objectId, code, name, isActive, positions];
+        expect(position, row.code).toMatchObject(figures);
+      }
+    });
+
+    it('площадки B, C, D: крупные суммы точно, без суммы — прочерк, незакрытая — ноль', async () => {
+      const dto = await stats(`month=${MONTH}&kind=snow`);
+      expect(rowOf(dto, 'b')).toMatchObject({
+        removals: 3,
+        doneVolumeM3: 25,
+        // 999 999 998.99 + 999 999 997.37, exactly; the third removal has no amount yet.
+        doneCost: 1_999_999_996.36,
+        doneVolumeUnpricedM3: 5,
+        unpricedRequests: 1,
+        plannedCost: null,
+      });
+      expect(rowOf(dto, 'c')).toMatchObject({
+        doneVolumeM3: 10,
+        doneCost: null,
+        doneVolumeUnpricedM3: 10,
+        unpricedRequests: 1,
+      });
+      expect(rowOf(dto, 'd')).toMatchObject({
+        plannedVolumeM3: 12,
+        plannedCost: null,
+        doneVolumeM3: 0,
+        doneCost: 0,
+        unpricedRequests: 0,
+        removals: 0,
+      });
+    });
+
+    it('итог из тех же атомов: суммы точны, без цены — по вывезенному', async () => {
+      const dto = await stats(`month=${MONTH}&kind=snow`);
+      expect(dto.totals).toMatchObject({
+        requests: 10,
+        removals: 7,
+        plannedVolumeM3: 100,
+        plannedCost: null,
+        doneVolumeM3: 64,
+        doneCost: 2_000_001_496.36,
+        doneVolumeUnpricedM3: 24,
+        unpricedRequests: 3,
+        ticketVolumeM3: 20,
+        ticketCost: null,
+        ticketFilesUnread: 4,
+        ticketFilesWithoutTickets: 1,
+      });
+      // The price-quality row: snow removed without an amount, out of every request of the set.
+      expect(qualityOf(dto, 'waste.requests_without_price')).toMatchObject({ value: 3, outOf: 10 });
+    });
+
+    it('пустой ответ снега — без плана и денег по талонам, ноль вывезенного', async () => {
+      for (const dto of [
+        await stats(`month=${GARBAGE_MONTH}&kind=snow`),
+        await stats(`month=${MONTH}&kind=snow`, ctx.emptyScopeAuth),
+      ]) {
+        expect(dto.totals).toMatchObject({ plannedCost: null, doneCost: 0, ticketCost: null });
+      }
+    });
+  });
+
   describe('круг читателей и область', () => {
     it('исполнителю вывоза отказ при любом виде', async () => {
       for (const kind of ['', '&kind=snow', '&kind=waste']) {

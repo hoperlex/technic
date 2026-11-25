@@ -4,6 +4,7 @@ import {
   type AnalyticsQualityEntry,
   countsInWasteVolumeSum,
   formatWasteRequestNumber,
+  isManualCostOnly,
   isPricedRequestType,
   REQUEST_STATUSES,
   REQUEST_TYPES,
@@ -55,6 +56,12 @@ import type { AnalyticsAtom, AnalyticsFacts, AnalyticsFactsScope, AnalyticsRange
  *    from the completion row regardless of status, so a rolled-back request stays in the same month
  *    and only stops being "removed". Spreading money over days (R28) is only needed where a request
  *    lives for weeks: mechanization and vehicle requests.
+ * 5. **Snow money is entered by hand only** (snow-removal plan, S6, S7; `isManualCostOnly`). Such a
+ *    request has no price list, no estimate and no price per cubic metre: its estimate, planned
+ *    money and ticket money are absent rather than "unpriced", so neither the unpriced shares nor
+ *    the «без цены» counter flag them. What can be missing is the amount of a REMOVED request: a
+ *    fact-status snow request whose completion has no total is unpriced, while an unfinished or
+ *    rolled-back one is not missing anything yet — its cost is entered only at completion.
  */
 
 /** Московские сутки: сервер живёт в UTC, а календарный день портала — МСК (`moscowDateKeyOf`). */
@@ -78,6 +85,8 @@ export const VOLUME_REQUEST_TYPES: RequestType[] = REQUEST_TYPES.filter(
 );
 const CONTAINER_OP_TYPES = REQUEST_TYPES.filter(usesContainerType);
 const PRICED_TYPES = REQUEST_TYPES.filter(isPricedRequestType);
+/** Types whose completion money is entered by hand only — snow (header, decision 5). */
+const MANUAL_COST_TYPES = REQUEST_TYPES.filter(isManualCostOnly);
 /**
  * Виды работ талона, которые складываются в объём (Р18 ADR 0114). Список считается из контракта
  * `countsInWasteVolumeSum` и уходит в запрос параметром — тем же приёмом и по той же причине, что
@@ -238,7 +247,8 @@ WITH scope AS (
            r.request_type::text = ANY(${sql.param(REMOVAL_TYPES)}::text[]) AS is_removal,
            r.request_type::text = ANY(${sql.param(VOLUME_REQUEST_TYPES)}::text[]) AS is_volume_removal,
            r.request_type::text = ANY(${sql.param(CONTAINER_OP_TYPES)}::text[]) AS is_container_op,
-           r.request_type::text = ANY(${sql.param(PRICED_TYPES)}::text[])  AS is_priced_type
+           r.request_type::text = ANY(${sql.param(PRICED_TYPES)}::text[])  AS is_priced_type,
+           r.request_type::text = ANY(${sql.param(MANUAL_COST_TYPES)}::text[]) AS is_manual_cost
       FROM waste_requests r
       LEFT JOIN waste_request_completions c ON c.request_id = r.id
      WHERE r.deleted_at IS NULL
@@ -267,7 +277,12 @@ graded AS (
      */
     SELECT s.*,
            CASE WHEN s.is_fact THEN s.total_cost END                            AS money_fact,
-           CASE WHEN s.is_fact THEN NULL ELSE v.amount END                      AS money_estimate,
+           /*
+            * A manual-cost request has no estimate by definition (header, decision 5). Its amount
+            * column is NULL anyway (no price snapshot, CHECK waste_requests_snow_subject_check), but
+            * the rule is stated here rather than inherited from that data.
+            */
+           CASE WHEN s.is_fact OR s.is_manual_cost THEN NULL ELSE v.amount END  AS money_estimate,
            /*
             * ЗАЯВКА БЕЗ ЦЕНЫ — это заявка, которую НЕ УДАЛОСЬ оценить, а не заявка без денег.
             * У металлолома и контейнерных операций денег нет ВОВСЕ и по построению: лом принимают
@@ -276,10 +291,18 @@ graded AS (
             * ради вопроса «чего мы не знаем», начал бы отвечать на вопрос «что бесплатно», а
             * площадка с десятью законными вывозами лома выглядела бы хуже всех в книге.
             * Поэтому признак спрашивает контракт: тарифицируется тип или нет.
+            *
+            * Manual-cost snow is priced by its entered amount only (header, decision 5): a removed
+            * request without a total is unpriced, an unfinished or rolled-back one is not — it was
+            * never meant to have money before completion, and counting it would flag every open
+            * snow request of the month as missing a price.
             */
-           (NOT s.is_priced_type
-            OR (CASE WHEN s.is_fact THEN s.total_cost
-                     ELSE v.amount END) IS NOT NULL)                            AS priced,
+           CASE WHEN s.is_manual_cost
+                THEN NOT s.is_fact OR s.total_cost IS NOT NULL
+                ELSE (NOT s.is_priced_type
+                      OR (CASE WHEN s.is_fact THEN s.total_cost
+                               ELSE v.amount END) IS NOT NULL)
+           END                                                                  AS priced,
            /*
             * "Has a ticket" for the quality row still means an ACCEPTED one (status = 'confirmed'):
             * the row answers "is the volume backed by a document a person accepted", and a machine
@@ -318,7 +341,7 @@ graded AS (
                 THEN CASE WHEN v.ordered_volume IS NOT NULL THEN v.ordered_volume
                           ELSE s.fact_volume END
            END                                                                 AS planned_volume,
-           CASE WHEN s.is_volume_removal
+           CASE WHEN s.is_volume_removal AND NOT s.is_manual_cost
                 THEN CASE WHEN v.ordered_volume IS NOT NULL THEN v.amount
                           ELSE s.total_cost END
            END                                                                 AS planned_money,
@@ -328,14 +351,17 @@ graded AS (
             * be told from "there was nothing to price", and the cost cell could not choose between
             * a dash and a number.
             */
-           CASE WHEN s.price_per_m3 IS NULL THEN coalesce(tk.ticket_volume, 0) ELSE 0 END
-                                                                               AS ticket_unpriced,
+           CASE WHEN s.price_per_m3 IS NULL AND NOT s.is_manual_cost
+                THEN coalesce(tk.ticket_volume, 0) ELSE 0 END                  AS ticket_unpriced,
            /*
             * TICKET VOLUME IN MONEY (R5): ticket volume × completion price — the price list snapshot
             * the request itself was priced with. NULL is legal: a completion may have no price (no
             * price list position for the pair, ADR 0046), and zero here would mean a free removal.
+            * Manual-cost snow has no price per cubic metre at all, so neither money nor an unpriced
+            * share: an invoice amount cannot be split by ticket volume.
             */
-           coalesce(tk.ticket_volume, 0) * s.price_per_m3                       AS money_tickets
+           CASE WHEN NOT s.is_manual_cost
+                THEN coalesce(tk.ticket_volume, 0) * s.price_per_m3 END         AS money_tickets
       FROM scope s
       /* Оценка незакрытой заявки одним выражением: строк нет — сумма заявки, строки есть и все с
          ценой — их сумма, хоть одна без цены — оценки нет вовсе (NULL, а не ноль). */
@@ -400,8 +426,14 @@ graded AS (
                             AND t.status <> 'dismissed') tk ON true
       /*
        * Ticket scans the ticket volume cannot contain (ADR 0213): a file the recognition could not
-       * read (rejected or out of attempts) and a file it read without finding a single ticket.
-       * Counted by FILES — how many tickets such a scan holds is exactly what is unknown.
+       * read and a file it read without finding a single ticket. Counted by FILES — how many
+       * tickets such a scan holds is exactly what is unknown.
+       *
+       * "Could not read" is the review badge's "broken" scan (waste-ticket-inputs.ts), so the
+       * tab and the card name the same paper: the file was rejected or failed, its latest attempt
+       * died before writing a file result (the active job is dead), or one of its pages failed.
+       * A file with several failed pages is ONE unread scan, and a broken file is never also "read
+       * without tickets" — the same sheet would be counted under two warnings.
        *
        * "No tickets found" asks for any ticket row of the file, dismissed ones included: a file
        * whose readings a person dismissed has been reviewed, and calling it unrecognised would send
@@ -409,18 +441,29 @@ graded AS (
        * scan that never entered recognition (the module was off) has no row here and is not counted
        * either — it was never an attempt to read.
        */
-      LEFT JOIN LATERAL (SELECT count(*) FILTER (
-                                  WHERE f.status IN ('failed', 'unsupported')
-                                )                                               AS files_unread,
+      LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE fx.broken)              AS files_unread,
                                 count(*) FILTER (
-                                  WHERE f.status = 'done'
+                                  WHERE NOT fx.broken
+                                    AND fx.status = 'done'
                                     AND NOT EXISTS (SELECT 1
                                                       FROM waste_ticket_pages p
                                                       JOIN waste_tickets t ON t.page_id = p.id
-                                                     WHERE p.file_id = f.file_id)
+                                                     WHERE p.file_id = fx.file_id)
                                 )                                               AS files_without_tickets
-                           FROM waste_ticket_files f
-                          WHERE f.request_id = s.id) tf ON true
+                           FROM (SELECT f.file_id,
+                                        f.status,
+                                        /* NULL-safe: a file without a job must read as
+                                           "not broken", not as unknown, or the second counter
+                                           below would drop it. */
+                                        (f.status IN ('failed', 'unsupported')
+                                         OR j.status IS NOT DISTINCT FROM 'dead'
+                                         OR EXISTS (SELECT 1
+                                                      FROM waste_ticket_pages fp
+                                                     WHERE fp.file_id = f.file_id
+                                                       AND fp.status = 'failed')) AS broken
+                                   FROM waste_ticket_files f
+                                   LEFT JOIN jobs j ON j.id = f.active_job_id
+                                  WHERE f.request_id = s.id) fx) tf ON true
 ),
 atoms AS (
     SELECT o.id                                       AS customer_id,
@@ -494,7 +537,8 @@ atoms AS (
             */
            coalesce(g.planned_volume, 0)::text        AS volume_planned_m3,
            coalesce(g.planned_money, 0)::text         AS money_planned,
-           CASE WHEN g.planned_money IS NULL THEN coalesce(g.planned_volume, 0) ELSE 0 END::text
+           CASE WHEN g.planned_money IS NULL AND NOT g.is_manual_cost
+                THEN coalesce(g.planned_volume, 0) ELSE 0 END::text
                                                       AS volume_planned_unpriced_m3,
            /*
             * Removed volume whose completion has no amount: the same dash rule for the main cost
@@ -539,7 +583,7 @@ quality AS (
                'label', 'Заявок вывоза без цены',
                'value', count(*) FILTER (WHERE NOT g.priced),
                'outOf', count(*),
-               'note',  'В деньги не вошли ни фактом, ни оценкой'),
+               'note',  'В деньги не вошли ни фактом, ни оценкой; у вывоза снега — выполненные без внесённой суммы'),
              /*
               * Volume-type requests filed without an ordered volume (old data). The statistics tab
               * takes their plan from the completion; while they are not closed, their plan is zero.
