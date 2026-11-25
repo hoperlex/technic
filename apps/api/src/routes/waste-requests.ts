@@ -2512,7 +2512,13 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // удалённую, и фильтр «только живые» отвечал бы 404 на единственную заявку, ради которой
         // ручка заведена. Under the request lock, like delete and purge, so that a restore never
         // interleaves with a purge or an archive of the same row.
-        const existing = await lockRequestDto(tx, req.params.id);
+        // The scope is decided on the locked row's own columns before the related data of the
+        // card is loaded at all.
+        const [existing] = await tx
+          .select()
+          .from(wasteRequests)
+          .where(eq(wasteRequests.id, req.params.id))
+          .for('update');
         if (!existing) throw err.notFound('Заявка не найдена');
         // Область — до разбора состояния, а не внутри ветки возврата: на живой заявке ручка
         // отдаёт её карточку целиком, и без проверки здесь `archive.restore` читал бы чужие заявки
@@ -2521,7 +2527,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
         assertOperatorScope(p, existing.operatorCounterpartyId);
         assertTypeSupported(req, existing.requestType);
-        if (!existing.deletedAt) return { restored: false, after: existing };
+        if (!existing.deletedAt) {
+          return { restored: false, after: (await getRequestDto(tx, existing.id))! };
+        }
         await tx
           .update(wasteRequests)
           // Restoring advances the version like archiving: a confirmation shown on the archived
