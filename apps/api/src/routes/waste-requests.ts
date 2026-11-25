@@ -144,13 +144,12 @@ import {
   reconcileRequestCreate,
   replayRequestCreate,
 } from '../services/request-create-attempt';
-import { wasteTicketChecks } from '../services/waste-ticket-checks';
-import { loadTicketCheckInputs, loadTicketCheckRequestRow } from '../services/waste-ticket-inputs';
 import {
   markTicketReviewStale,
   neighbourRequestIds,
   readOrRecomputeBadges,
   recomputeTicketReviewState,
+  computeTicketReviewBadge,
   ticketReviewPendingSql,
 } from '../services/waste-ticket-review-state';
 
@@ -392,13 +391,11 @@ async function refreshRequestReviewState(
  * завершению ничто не мешает.
  */
 async function ticketReviewBlockerFor(tx: Tx, requestId: string): Promise<string | null> {
-  // The request and its evidence are read by the transaction that holds the lock (snow-removal
-  // plan, §3.2): read through the pool, they would describe another moment than the one this
-  // transaction writes, and with a pool of one connection the read would wait for itself.
-  const row = await loadTicketCheckRequestRow(requestId, tx);
-  if (!row) return null;
-  const bundle = (await loadTicketCheckInputs([row], { exec: tx })).get(requestId);
-  return wasteTicketReviewBlocker(bundle ? wasteTicketChecks(bundle.inputs).badge : null);
+  // The badge is computed fresh by the transaction that holds the lock (snow-removal plan, §3.2):
+  // read through the pool it would describe another moment than the one this transaction writes,
+  // and with a pool of one connection the read would wait for itself. It also reads the live
+  // recognition queue, which the stored badge does not.
+  return wasteTicketReviewBlocker(await computeTicketReviewBadge(tx, requestId));
 }
 
 function toDto(
