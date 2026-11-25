@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import type { QueryClient } from '@tanstack/react-query';
+import { wasteRequestKeys } from '@entities/waste-request';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import dayjs from 'dayjs';
 import {
@@ -61,9 +63,12 @@ function setup(over: RouteMap = {}, user?: AuthUser, rows: WasteRequestDto[] = [
       json(wasteRequest({ ...(body as Partial<WasteRequestDto>), id: params.id })),
     ...over,
   });
-  renderWithUser(<WasteRequestsPage />, user ? { user } : {});
+  client = renderWithUser(<WasteRequestsPage />, user ? { user } : {}).queryClient;
   return http;
 }
+
+/** The query client of the last render: a scenario uses it to recheck snow support mid-form. */
+let client: QueryClient;
 
 /** Opens the field's own dropdown once; a repeated mouse-down would close it again. */
 async function openDropdown(fieldId: string): Promise<() => HTMLElement[]> {
@@ -270,6 +275,42 @@ describe('вывоз снега в форме заявки', () => {
       .map((key) => localStorage.getItem(key) ?? '')
       .some((value) => value.includes('createAttempt'));
     expect(frozen).toBe(false);
+  });
+});
+
+describe('замороженная попытка снега переживает потерю подтверждения', () => {
+  it('повтор уходит тем же телом и ключом, хотя новый снег уже не предлагается', async () => {
+    let supported = true;
+    let fail = true;
+    const http = setup({
+      'GET /waste-requests/capabilities': () =>
+        supported ? json(SNOW_OK) : apiError(503, { code: 'error', message: 'Недоступно' }),
+      'POST /waste-requests/_create-with-receipt': ({ body }) =>
+        fail
+          ? apiError(502, { code: 'error', message: 'Bad gateway' })
+          : json(wasteRequest({ ...(body as Partial<WasteRequestDto>), id: 'wr-new' }), 201),
+    });
+    await openCreate(http);
+    await pickOption('objectId', 'ЖК Южный');
+    await pickOption('requestType', 'Вывоз снега');
+    fill('Объём, м³', '11');
+    fillSchedule();
+    fireEvent.click(screen.getByText('Сохранить'));
+    // The first send froze the attempt; its answer is lost.
+    await waitFor(() => expect(http.countOf('POST /waste-requests/_create-with-receipt')).toBe(1));
+    expect((await screen.findAllByText('Bad gateway')).length).toBeGreaterThan(0);
+
+    // Support is rechecked while the form stays open and is no longer confirmed.
+    supported = false;
+    fail = false;
+    const checks = http.countOf('GET /waste-requests/capabilities');
+    await client.invalidateQueries({ queryKey: wasteRequestKeys.capabilities() });
+    await waitFor(() => expect(http.countOf('GET /waste-requests/capabilities')).toBe(checks + 1));
+    fireEvent.click(screen.getByText('Сохранить'));
+    await waitFor(() => expect(http.countOf('POST /waste-requests/_create-with-receipt')).toBe(2));
+    const sends = http.calls.filter((c) => c.path === '/waste-requests/_create-with-receipt');
+    expect(sends[1]!.body).toEqual(sends[0]!.body);
+    expect(sends[1]!.body).toMatchObject({ requestType: 'snow_removal', volumeM3: 11 });
   });
 });
 
