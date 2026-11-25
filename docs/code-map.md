@@ -18,7 +18,7 @@
 - Web: [waste](../apps/web/src/pages/waste), [waste-request-feed](../apps/web/src/widgets/waste-request-feed), [waste-request-view](../apps/web/src/widgets/waste-request-view), [waste-request-editor](../apps/web/src/features/waste-request-editor), [waste-request-lifecycle](../apps/web/src/features/waste-request-lifecycle), [waste-operator-assignment](../apps/web/src/features/waste-operator-assignment), [waste-request-completion](../apps/web/src/features/waste-request-completion), [waste-request-comment](../apps/web/src/features/waste-request-comment), [waste-ticket-attach](../apps/web/src/features/waste-ticket-attach), [waste-request](../apps/web/src/entities/waste-request)
 - Тесты: `waste-request-*.db.test.ts`, `waste-tickets*.db.test.ts`, `waste-contracts.test.ts`
 - Композиция: [WasteRequestsPage](../apps/web/src/pages/waste/WasteRequestsPage.tsx) держит URL и права вкладок, [WasteRequestsTab](../apps/web/src/pages/waste/WasteRequestsTab.tsx) лениво собирает рабочий список, редактор, lifecycle и карточку.
-- Решения: [ADR 0009](adr/0009-waste-pricing.md), [ADR 0035](adr/0035-waste-fact-by-volume.md), [ADR 0135](adr/0135-waste-request-completed.md), [ADR 0230](adr/0230-request-local-drafts.md)
+- Решения: [ADR 0009](adr/0009-waste-pricing.md), [ADR 0035](adr/0035-waste-fact-by-volume.md), [ADR 0135](adr/0135-waste-request-completed.md), [ADR 0230](adr/0230-request-local-drafts.md), [ADR 0250](adr/0250-snow-removal-request.md) (вывоз снега: тип заявки, служебный тип «Снег», ручная стоимость)
 
 ## Заказ ТС
 
