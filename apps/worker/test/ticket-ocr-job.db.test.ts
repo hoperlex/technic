@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  SNOW_WASTE_TYPE_ID,
   WASTE_TICKET_FIELDS,
   type RecognizedWasteTicket,
   type WasteTicketField,
@@ -101,8 +102,13 @@ function countingEngine(
   return { engine, calls };
 }
 
-/** Фикстура: выполненная заявка с приложенным талоном. Возвращает идентификаторы. */
-async function seed(): Promise<{ requestId: string; fileId: string }> {
+/**
+ * Фикстура: выполненная заявка с приложенным талоном. Возвращает идентификаторы.
+ *
+ * `snow` — a snow removal request (snow-removal plan, §3.5): the reserved service waste type and an
+ * ordered volume, the shape `waste_requests_snow_subject_check` demands. The job must not care.
+ */
+async function seed(opts: { snow?: boolean } = {}): Promise<{ requestId: string; fileId: string }> {
   const suffix = Math.random().toString(36).slice(2, 8);
   const obj = await admin.query<{ id: string }>(
     `INSERT INTO construction_objects (code, name) VALUES ($1, $1) RETURNING id`,
@@ -119,9 +125,17 @@ async function seed(): Promise<{ requestId: string; fileId: string }> {
     // расстояние до него решает, звать ли старшую модель. Оставь мы «сегодня» — набор менялся бы
     // со временем: через месяц после написания дата талона `2026-08-17` вылезла бы за окно, и
     // проверки каскада начали бы звать эскалацию по причине, которой в них не написано.
-    `INSERT INTO waste_requests (object_id, request_type, delivery_at, created_by, status)
-     VALUES ($1, 'waste_removal', $3::timestamptz, $2, 'done') RETURNING id`,
-    [obj.rows[0]!.id, user.rows[0]!.id, `${DEFAULT_ANCHOR}T09:00:00+03:00`],
+    `INSERT INTO waste_requests (object_id, request_type, delivery_at, created_by, status,
+                                 volume_m3, waste_type_id)
+     VALUES ($1, $4::request_type, $3::timestamptz, $2, 'done', $5, $6) RETURNING id`,
+    [
+      obj.rows[0]!.id,
+      user.rows[0]!.id,
+      `${DEFAULT_ANCHOR}T09:00:00+03:00`,
+      opts.snow ? 'snow_removal' : 'waste_removal',
+      opts.snow ? 20 : null,
+      opts.snow ? SNOW_WASTE_TYPE_ID : null,
+    ],
   );
   const file = await admin.query<{ id: string }>(
     `INSERT INTO files (bucket, object_key, filename, content_type, size, status, uploaded_by)
@@ -445,6 +459,37 @@ describe.skipIf(!DB_URL)('задача распознавания талонов
       [fileId],
     );
     expect(file.rows[0]).toMatchObject({ status: 'done', total_pages: 1, processed_pages: 1 });
+  });
+
+  it('a snow request goes through the same job: payload and link query know no request type', async () => {
+    // The mixed deploy window (snow-removal plan, §3.5): a worker built before snow takes the new
+    // API's jobs. It reads only `requestId`, `fileId` and `forced`, and its link query checks the
+    // ticket link, the file and the status — never the type — so a snow sheet is read as any other.
+    const { requestId, fileId } = await seed({ snow: true });
+    const { engine, calls } = countingEngine();
+    const jobId = await seedJob({ requestId, fileId, forced: true });
+    await runTicketRecognitionJob(
+      deps({ engine }) as never,
+      { requestId, fileId, forced: true },
+      jobId,
+    );
+
+    expect(calls).toHaveLength(1);
+    const tickets = await admin.query(
+      `SELECT number_key, status, origin FROM waste_tickets WHERE request_id = $1`,
+      [requestId],
+    );
+    expect(tickets.rows).toEqual([{ number_key: '30476', status: 'unconfirmed', origin: 'ocr' }]);
+    const file = await admin.query(
+      `SELECT status, active_job_id FROM waste_ticket_files WHERE file_id = $1`,
+      [fileId],
+    );
+    expect(file.rows[0]).toEqual({ status: 'done', active_job_id: null });
+    const state = await admin.query(
+      `SELECT stale FROM waste_ticket_review_state WHERE request_id = $1`,
+      [requestId],
+    );
+    expect(state.rows[0]).toEqual({ stale: true });
   });
 
   it('расхождение проходов оставляет поле пустым и сохраняет обоих кандидатов', async () => {
