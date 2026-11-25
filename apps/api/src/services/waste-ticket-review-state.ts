@@ -159,7 +159,7 @@ function recognitionJobSql(requestId: SQLWrapper, statuses: readonly string[]): 
   return sql`EXISTS (
     SELECT 1 FROM jobs j
       JOIN request_files rjf ON rjf.request_id = ${requestId} AND rjf.kind = 'ticket'
-                            AND rjf.file_id::text = j.payload->>'fileId'
+                            AND rjf.file_id::text = lower(j.payload->>'fileId')
      WHERE j.type = ${JOB_RECOGNIZE_WASTE_TICKET_FILE}
        AND j.status IN (${list})
        AND j.payload->>'requestId' = (${requestId})::text

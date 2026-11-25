@@ -346,7 +346,9 @@ export async function loadTicketCheckInputs(
         .select({
           id: jobs.id,
           requestId: sql<string>`${jobs.payload}->>'requestId'`,
-          fileId: sql<string>`${jobs.payload}->>'fileId'`,
+          // Lowercase on read: the ids it is compared with come from `uuid` columns, and a payload
+          // written with an uppercase id (a route accepts one) would otherwise never match.
+          fileId: sql<string>`lower(${jobs.payload}->>'fileId')`,
           status: jobs.status,
           attempts: jobs.attempts,
           maxAttempts: jobs.maxAttempts,

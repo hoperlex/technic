@@ -769,6 +769,68 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
     });
   });
 
+  describe('an uppercase file id (a route accepts one) is the same file for the queue readers', () => {
+    /** A free storage-verified upload of the admin: what the completion body points at. */
+    async function freeTicketFile(): Promise<string> {
+      const file = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO files (bucket, object_key, filename, content_type, size, status, uploaded_by,
+                           storage_verified_at)
+        VALUES ('test', ${`${KEY_PREFIX}${randomUUID()}`}, 'талон.pdf', 'application/pdf', 1024,
+                'active', ${ctx.adminId}, now())
+        RETURNING id`);
+      return file.rows[0]!.id;
+    }
+
+    it('a rerun by an uppercase id queues a lowercase payload that the badge and the register see', async () => {
+      const { id, fileId } = await settledSnow();
+      const res = await rerun(id, fileId.toUpperCase());
+      expect(res.statusCode, res.body).toBe(200);
+
+      // `liveJobs` compares with the lowercase text of the column, as every reader of the queue does.
+      expect(await liveJobs(id, fileId)).toHaveLength(1);
+      expect(await listBadge(id)).toMatchObject({ unreviewedPaper: 1 });
+      expect(await registry()).toContain(id);
+      const refused = await complete(id);
+      expect(refused.statusCode, refused.body).toBe(400);
+      expect(refused.json().message).toContain('приложенных талонов не разобрано: 1');
+    });
+
+    it('a ticket added by an uppercase id gets a lowercase job that a later rerun reuses', async () => {
+      const id = await newRequest('snow_removal', { factVolumeM3: 20 });
+      const fileId = await freeTicketFile();
+      const added = await inject('POST', `${REQUESTS}/${id}/ticket-files`, {
+        ticketFileIds: [fileId.toUpperCase()],
+        version: await versionOf(id),
+      });
+      expect(added.statusCode, added.body).toBe(200);
+      const [queued] = await liveJobs(id, fileId);
+      expect(queued).toBeTruthy();
+
+      const again = await rerun(id, fileId);
+      expect(again.statusCode, again.body).toBe(200);
+      expect(again.json().reused).toBe(true);
+      expect(await liveJobs(id, fileId)).toEqual([queued]);
+    });
+
+    it('a job queued by an older release with an uppercase id still holds the review', async () => {
+      const { id, fileId } = await settledSnow();
+      const legacy = await seedJob(id, fileId.toUpperCase(), 'pending', { forced: true });
+
+      expect(await listBadge(id)).toMatchObject({ unreviewedPaper: 1 });
+      expect(await registry()).toContain(id);
+      expect((await complete(id)).statusCode).toBe(400);
+      // And a rerun finds it instead of queueing a second pass over the same sheet.
+      const res = await rerun(id, fileId);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().reused).toBe(true);
+      const live = await ctx.db.execute<{ id: string }>(sql`
+        SELECT id FROM jobs
+         WHERE type = ${JOB_TYPE} AND status IN ('pending', 'running')
+           AND payload->>'requestId' = ${id}`);
+      expect(live.rows.map((r) => r.id)).toEqual([legacy]);
+    });
+  });
+
   describe('ticket detail is one authorized snapshot', () => {
     it('masks the name of a quarantined ticket, read or not, and keeps the row', async () => {
       const id = await newRequest('snow_removal', { factVolumeM3: 20 });

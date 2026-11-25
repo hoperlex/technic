@@ -51,7 +51,7 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export async function enqueueTicketRecognition(
   tx: Tx,
   requestId: string,
-  fileIds: string[],
+  requestedFileIds: string[],
   /**
    * `forced` — кнопка «перераспознать» (Р13): попытка обходит кэш и уходит в прокси со своим
    * ключом идемпотентности. Признак едет в payload, а не в отдельный тип задачи: работа та же,
@@ -60,6 +60,16 @@ export async function enqueueTicketRecognition(
   opts: { forced?: boolean } = {},
 ): Promise<{ reused: string[] }> {
   const none = { reused: [] };
+  /*
+   * The ONE place a file id enters the job payload, and it is written lowercase. `uuidSchema` of
+   * the routes accepts uppercase, while every reader of the queue (the badge overlay, the
+   * "Требуют разбора" register, the stats counters) compares the payload id with the lowercase
+   * text of a `uuid` column. An uppercase id left in the payload makes a live job invisible to
+   * them: a request with paper in flight would look settled and could be completed. The same
+   * normalization keeps the quarantine filter and the one-live-job lookup below honest, since
+   * both compare with ids that come back lowercase from the database.
+   */
+  const fileIds = [...new Set(requestedFileIds.map((id) => id.toLowerCase()))];
   if (fileIds.length === 0) return none;
   // Выключенное распознавание — не «работа впрок». Задачи копились бы в очереди типом, которого
   // никто не разбирает, а после включения модуля разом ушли бы в модель пачкой месячной давности:
@@ -138,7 +148,8 @@ export async function enqueueTicketRecognition(
     .select({
       id: jobs.id,
       status: jobs.status,
-      fileId: sql<string>`${jobs.payload}->>'fileId'`,
+      // Lowercase on read as well: a job queued by an older release may carry an uppercase id.
+      fileId: sql<string>`lower(${jobs.payload}->>'fileId')`,
       forced: sql<boolean>`coalesce(${jobs.payload}->'forced' = 'true'::jsonb, false)`,
     })
     .from(jobs)
@@ -147,7 +158,7 @@ export async function enqueueTicketRecognition(
         eq(jobs.type, JOB_RECOGNIZE_WASTE_TICKET_FILE),
         inArray(jobs.status, ['pending', 'running']),
         sql`${jobs.payload}->>'requestId' = ${requestId}`,
-        inArray(sql`${jobs.payload}->>'fileId'`, targets),
+        inArray(sql`lower(${jobs.payload}->>'fileId')`, targets),
       ),
     );
   const reused: string[] = [];
