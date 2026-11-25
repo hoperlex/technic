@@ -25,6 +25,7 @@ import type {
   WasteRequestLifecycleController,
   WasteRequestOperatorModalProps,
 } from './types';
+import { useCompletionCommand } from './useCompletionCommand';
 
 interface Input {
   renderCompletion: (props: WasteRequestCompletionModalProps) => ReactNode;
@@ -59,11 +60,10 @@ export function useWasteRequestLifecycle({
   // reason modal, but a rollback also lists what it erases, and a single state could not tell
   // the two apart.
   const [rollbackTarget, setRollbackTarget] = useState<WasteRequestDto | null>(null);
+  const invalidateRequests = () => void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
   // Completion: the fact (volume and cost, or only a ticket) and the comment are entered in their
   // own modal and sent together with the status in one request.
-  const [completionTarget, setCompletionTarget] = useState<WasteRequestDto | null>(null);
-
-  const invalidateRequests = () => void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
+  const completion = useCompletionCommand(invalidateRequests);
 
   // The completion modal already hands over the request body: the actual volume with its cost
   // (ADR 0035) and the request tickets; this command only attaches them to the status change.
@@ -77,7 +77,6 @@ export function useWasteRequestLifecycle({
     onSuccess: () => {
       setCancelTarget(null);
       setRollbackTarget(null);
-      setCompletionTarget(null);
       invalidateRequests();
       // A rollback to "new" erases the tickets with their pages and accepted mismatches in the same
       // transaction as the status (purgeRequestRecognition), under their own cache root. Without
@@ -143,7 +142,7 @@ export function useWasteRequestLifecycle({
     // Completion goes through the modal for every request type: container operations also present
     // a ticket, and every completion needs its comment (ADR 0013).
     if (next === 'done') {
-      setCompletionTarget(request);
+      completion.open(request);
       return;
     }
     status.mutate({ id: request.id, status: next, version: request.version });
@@ -219,24 +218,10 @@ export function useWasteRequestLifecycle({
           onSubmit: (value) =>
             operatorTarget && startWork.mutate({ request: operatorTarget, ...value }),
         })}
-        {renderCompletion({
-          request: completionTarget,
-          confirmLoading: status.isPending,
-          onCancel: () => setCompletionTarget(null),
-          // Completion facts: removal reports actual volume and cost (ADR 0035), container
-          // operations a ticket (ADR 0013); a ticket is mandatory in both cases (ADR 0020), and a
-          // difference from the planned volume is a hint that does not block saving.
-          onSubmit: (value) =>
-            completionTarget &&
-            status.mutate({
-              id: completionTarget.id,
-              status: 'done',
-              version: completionTarget.version,
-              comment: value.comment,
-              completion: value.completion ?? undefined,
-              ticketFileIds: value.ticketFileIds,
-            }),
-        })}
+        {/* Completion facts: removal reports actual volume and cost (ADR 0035), container
+            operations a ticket (ADR 0013); a ticket is mandatory in both cases (ADR 0020), and a
+            difference from the planned volume is a hint that does not block saving. */}
+        {renderCompletion(completion.props)}
         <CancelReasonModal
           open={!!cancelTarget}
           subject={cancelTarget ? `№ ${cancelTarget.displayNumber}` : ''}
@@ -273,7 +258,8 @@ export function useWasteRequestLifecycle({
       </>
     ),
     pending: {
-      statusRequestId: status.isPending && status.variables ? status.variables.id : undefined,
+      statusRequestId:
+        status.isPending && status.variables ? status.variables.id : completion.pendingRequestId,
     },
     rights: { canDelete, canEdit, canRestore },
   };

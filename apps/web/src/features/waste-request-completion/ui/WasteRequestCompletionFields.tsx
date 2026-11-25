@@ -13,6 +13,8 @@ interface Props {
   calculated: number | null;
   changeVolume: (value: number | null) => void;
   costDiffers: boolean;
+  /** Snow: the cost is the invoice amount, typed by hand and optional; there is no price list. */
+  manualCost: boolean;
   noTicketYet: boolean;
   onCostChange: () => void;
   onRemoveTicket: (file: FileDto) => void;
@@ -33,6 +35,7 @@ export function WasteRequestCompletionFields({
   calculated,
   changeVolume,
   costDiffers,
+  manualCost,
   noTicketYet,
   onCostChange,
   onRemoveTicket,
@@ -124,9 +127,11 @@ export function WasteRequestCompletionFields({
             name="totalCost"
             label="Стоимость, ₽"
             extra={
-              pricePerM3 != null
-                ? `${priceIsMinimum ? 'от ' : ''}${formatMoney(pricePerM3)}/м³ по прайсу`
-                : 'Цены на этот тип мусора в прайсе нет — укажите сумму'
+              manualCost
+                ? 'По счёту перевозчика. Необязательно: без счёта оставьте пустым'
+                : pricePerM3 != null
+                  ? `${priceIsMinimum ? 'от ' : ''}${formatMoney(pricePerM3)}/м³ по прайсу`
+                  : 'Цены на этот тип мусора в прайсе нет — укажите сумму'
             }
           >
             <InputNumber

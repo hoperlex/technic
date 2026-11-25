@@ -20,10 +20,25 @@ export interface WasteRequestCompletionValue {
   ticketFileIds: string[];
 }
 
+/**
+ * What became of a submitted completion: `saved`; `rejected` — the server refused, nothing was
+ * attached; `unknown` — the answer was lost (5xx, no connection) and the completion may have
+ * committed, so its files must outlive the window (snow-removal plan, §3.3).
+ */
+export type CompletionOutcome = 'saved' | 'rejected' | 'unknown';
+
+/** The request was reloaded after a 409; `blocked` — it can no longer be completed from here. */
+export interface CompletionReload {
+  pending: boolean;
+  blocked: boolean;
+}
+
 export interface WasteRequestCompletionModalProps {
   confirmLoading: boolean;
   onCancel: () => void;
-  onSubmit: (value: WasteRequestCompletionValue) => void;
+  onSubmit: (value: WasteRequestCompletionValue) => Promise<CompletionOutcome>;
+  /** Set after a 409 while the saved fact and ticket links are reloaded and once they are. */
+  reload: CompletionReload | null;
   request: WasteRequestDto | null;
 }
 
