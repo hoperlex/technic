@@ -33,10 +33,21 @@ x-common-env: &common-env
     # `api` (`depends_on` ниже), — старый клиент оказался бы заблокирован раньше, чем появилась
     # новая статика.
 
+# The LLM proxy of ticket recognition (`PROXY_LLM_BASE_URL` in prod.env) is pinned to a fixed address
+# for the two services that call it. The pin was first made by hand on the prod host (25.11.2026) and
+# its reason was not recorded; that day the public A record was the same 45.114.61.103 (no AAAA), so
+# it bypasses name resolution inside the containers rather than redirecting anywhere. The cost: if the
+# proxy operator moves the host, recognition fails with connection errors while DNS already knows the
+# new address — compare `dig +short proxyllm.fvds.ru` with this line first. The pin works only while
+# `PROXY_LLM_BASE_URL` uses this host name.
+x-proxy-llm-hosts: &proxy-llm-hosts
+  - 'proxyllm.fvds.ru:45.114.61.103'
+
 services:
-  # Имена сервисов = DNS-алиасы. Короткие `api`/`web` на edge конфликтуют с zakupki.
+  # Service names are DNS aliases: the short `api`/`web` would clash with zakupki on the edge network.
   technic-api:
     <<: *common-env
+    extra_hosts: *proxy-llm-hosts
     image: technic-api:${TAG:-latest}
     container_name: technic-api
     build:
@@ -62,6 +73,7 @@ services:
 
   technic-worker:
     <<: *common-env
+    extra_hosts: *proxy-llm-hosts
     image: technic-worker:${TAG:-latest}
     container_name: technic-worker
     build:
