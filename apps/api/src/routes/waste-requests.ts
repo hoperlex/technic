@@ -742,10 +742,10 @@ async function resolveSubject(
 async function getRequestDto(exec: Exec, id: string): Promise<WasteRequestDto | null> {
   const [row] = await baseQuery(exec).where(eq(wasteRequests.id, id));
   if (!row) return null;
-  const [filesMap, vehiclesMap] = await Promise.all([
-    filesByRequestIds([id], exec),
-    vehiclesByRequestIds([id], exec),
-  ]);
+  // One after another, not `Promise.all`: a transaction is one connection, and node-postgres
+  // deprecates queueing a second query on a client that is still executing the first.
+  const filesMap = await filesByRequestIds([id], exec);
+  const vehiclesMap = await vehiclesByRequestIds([id], exec);
   return toDto(row, filesMap.get(id) ?? EMPTY_FILE_GROUPS, vehiclesMap.get(id) ?? []);
 }
 

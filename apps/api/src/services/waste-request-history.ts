@@ -59,29 +59,29 @@ export async function loadWasteRequestHistory(
   // The card's route passes the snapshot transaction in which it authorized the row (§3.2).
   reader: HistoryReader = db,
 ): Promise<RequestHistoryEntryDto[]> {
-  const [statusRows, auditRows] = await Promise.all([
-    reader
-      .select({
-        id: requestStatusHistory.id,
-        fromStatus: requestStatusHistory.fromStatus,
-        toStatus: requestStatusHistory.toStatus,
-        comment: requestStatusHistory.comment,
-        at: requestStatusHistory.changedAt,
-        actorId: requestStatusHistory.changedBy,
-        // Переход без автора — перевод выкатом (ADR 0135, миграция 0195): статус меняла не
-        // учётка, а накат. Подпись ставится здесь, а не в браузере: «—» в столбце «Кто» читается
-        // как потерянная запись, а это ровно тот случай, когда автора и не было.
-        actorName: sql<string>`coalesce(${users.fullName}, 'Портал')`,
-      })
-      .from(requestStatusHistory)
-      // Внешнее соединение, а не внутреннее: строка без автора иначе выпала бы из истории вовсе,
-      // и заявка выглядела бы сменившей статус ниоткуда.
-      .leftJoin(users, eq(requestStatusHistory.changedBy, users.id))
-      .where(eq(requestStatusHistory.requestId, requestId))
-      .orderBy(desc(requestStatusHistory.changedAt))
-      .limit(HISTORY_LIMIT),
-    loadAuditEvents('waste_request', requestId, AUDIT_ACTIONS, reader),
-  ]);
+  // One after another: the reader may be a transaction, i.e. one connection, on which
+  // node-postgres deprecates queueing a second query behind a running one.
+  const statusRows = await reader
+    .select({
+      id: requestStatusHistory.id,
+      fromStatus: requestStatusHistory.fromStatus,
+      toStatus: requestStatusHistory.toStatus,
+      comment: requestStatusHistory.comment,
+      at: requestStatusHistory.changedAt,
+      actorId: requestStatusHistory.changedBy,
+      // Переход без автора — перевод выкатом (ADR 0135, миграция 0195): статус меняла не
+      // учётка, а накат. Подпись ставится здесь, а не в браузере: «—» в столбце «Кто» читается
+      // как потерянная запись, а это ровно тот случай, когда автора и не было.
+      actorName: sql<string>`coalesce(${users.fullName}, 'Портал')`,
+    })
+    .from(requestStatusHistory)
+    // Внешнее соединение, а не внутреннее: строка без автора иначе выпала бы из истории вовсе,
+    // и заявка выглядела бы сменившей статус ниоткуда.
+    .leftJoin(users, eq(requestStatusHistory.changedBy, users.id))
+    .where(eq(requestStatusHistory.requestId, requestId))
+    .orderBy(desc(requestStatusHistory.changedAt))
+    .limit(HISTORY_LIMIT);
+  const auditRows = await loadAuditEvents('waste_request', requestId, AUDIT_ACTIONS, reader);
 
   return mergeHistory({
     requestId,
