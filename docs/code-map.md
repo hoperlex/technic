@@ -11,7 +11,7 @@
 ## Вывоз мусора
 
 - Домен: `вывоз-мусора`
-- Источник истины: [waste-requests.ts](../packages/contracts/src/waste-requests.ts), [waste-tariffs.ts](../packages/contracts/src/waste-tariffs.ts), [waste-tickets.ts](../packages/contracts/src/waste-tickets.ts)
+- Источник истины: [waste-requests.ts](../packages/contracts/src/waste-requests.ts) (предикаты, DTO, подписи; схемы разбора тел и запросов — в [waste-request-schemas.ts](../packages/contracts/src/waste-request-schemas.ts), портал их не импортирует), [waste-tariffs.ts](../packages/contracts/src/waste-tariffs.ts), [waste-tickets.ts](../packages/contracts/src/waste-tickets.ts)
 - Разделы портала: `waste`
 - API-маршруты: [waste-requests.ts](../apps/api/src/routes/waste-requests.ts), [waste-tariffs.ts](../apps/api/src/routes/waste-tariffs.ts), [waste-types.ts](../apps/api/src/routes/waste-types.ts), [waste-tickets.ts](../apps/api/src/routes/waste-tickets.ts)
 - Остальной API: [waste-request-vehicles.ts](../apps/api/src/services/waste-request-vehicles.ts), [waste-pricing.ts](../apps/api/src/services/waste-pricing.ts)
