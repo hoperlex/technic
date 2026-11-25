@@ -106,6 +106,15 @@ and two judges before implementation; its final text is the reference for the de
   reuses the live job. The statistics count a scan as unread by the same rule, so garbage months
   with failed pages or dead jobs show more unread scans and fewer scans read without tickets
   (ADR 0213, decision 4). The saved review state format was raised to 2, so stored counts refresh.
+- **The format bump has a visible cost after the deploy.** `WASTE_TICKET_REVIEW_STATE_VERSION` 1 → 2
+  changes the input fingerprint of EVERY stored review-state row, and the «Требуют разбора» register
+  reads a row with a foreign fingerprint as "not known, so show it" (ADR 0155, R21). Right after the
+  restart every request with paper — garbage and snow alike, settled ones included — is listed there
+  until its row is recomputed: lazily, when its list row or card is read, or in bulk by
+  `pnpm --filter @technic/api recompute:ticket-review`. The register is briefly long, not wrong, and
+  nothing real is hidden. The deploy runs the bulk warm-up once after the restart (runbook, «Snow
+  removal request: steps after the deploy»); the same happened with the release of the stored state
+  itself (`docs/waste-ticket-auto-confirm-plan.md`, R19).
 - Scrap and container requests with an attached ticket whose recognition is queued, running or was
   interrupted now hold completion; receipts that were never queued stay outside review (ADR 0150).
 - An upload completed by the previous API during the deploy window has no storage mark and is

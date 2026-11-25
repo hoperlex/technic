@@ -870,6 +870,38 @@ SELECT u.id, u.email, u.full_name, u.is_active,
 A rental whose lessor is changed leaves the previous lessor's list at once, with every receipt
 version of it; nothing has to be done for that.
 
+### Snow removal request: steps after the deploy (ADR 0250)
+
+Migrations `0427`–`0430` add the request type, the file mark `storage_verified_at` and the SQL
+guards around the reserved waste type «Снег»; the migrations are forward-only (the previous image
+refuses to start on the newer schema, see «Необратимый выкат»). If `0429` stops with
+`Reserved waste type «Снег» collides with existing rows`, nothing was changed: resolve the named
+row with the owner and rerun the same deploy. The release has one manual step, and it is about the
+register of ticket review.
+
+**The «Требуют разбора» register is long right after the restart.** The release raises the stored
+review-state format (`WASTE_TICKET_REVIEW_STATE_VERSION` 1 → 2), which changes the input fingerprint
+of every stored row. The register treats a row with a foreign fingerprint as "not known" and shows
+the request (a false row costs less than a hidden one, ADR 0155, R21), so every request with ticket
+paper — garbage and snow, settled ones included — is listed until its row is recomputed. Requests
+recompute lazily when someone opens their list row or card; the bulk warm-up does the rest.
+
+Note the register's count before the deploy («Вывоз мусора» → «Требуют разбора»), then run the
+warm-up **after the restart** — a run before it would count requests by the old rules and write them
+with the old fingerprint, which the first read throws away:
+
+```bash
+docker compose -f deploy/docker-compose.yml -p technic exec technic-api \
+  pnpm --filter @technic/api recompute:ticket-review
+```
+
+It selects only requests that have paper, in batches of 200 (`-- --batch 500` changes the size),
+takes no request lock and writes by revision, so it is safe next to live work and safe to rerun. Exit
+code `0` — everything computed; `2` — some requests did not compute (the first errors are printed
+with their numbers): run it again; `1` — a bad argument. Afterwards the register's count is back to
+the number noted before the deploy, plus whatever really arrived meanwhile. A request that still
+shows up with a recognition job queued or running is a real wait, not a leftover.
+
 ### Документ выполненных работ и автосогласование оргтехники (ADR 0208)
 
 Оба рабочих ключа включены миграцией `0341`: `service_estimate_document_mode` открывает подачу
