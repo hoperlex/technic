@@ -164,8 +164,12 @@ export async function markFilesActive(tx: Tx, fileIds: string[]): Promise<void> 
  *
  * Теперь оба варианта спрашивают одну функцию БД, и разъехаться им негде.
  */
-export async function isFileLinked(fileId: string): Promise<boolean> {
-  const rows = await db
+export async function isFileLinked(
+  fileId: string,
+  /** The caller's transaction, when the answer must be read under a lock it already holds. */
+  executor: Pick<typeof db, 'select'> = db,
+): Promise<boolean> {
+  const rows = await executor
     .select({ id: files.id })
     .from(files)
     .where(and(eq(files.id, fileId), sql`file_is_linked(${files.id})`))

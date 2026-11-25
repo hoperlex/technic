@@ -141,17 +141,68 @@ export function toFileDto(f: FileRow): FileDto {
   };
 }
 
-/** Помечает файл удалённым и планирует физическое удаление из S3 через 30 дней. */
-export async function softDeleteFile(fileId: string, objectKey: string): Promise<void> {
-  await db
-    .update(files)
-    .set({ status: 'deleted', deletedAt: new Date() })
-    .where(eq(files.id, fileId));
-  await enqueueJob(
-    JOB_DELETE_S3_OBJECT,
-    { objectKey },
-    { runAt: new Date(Date.now() + S3_DELETE_DELAY_MS) },
-  );
+/**
+ * Discards an uploaded file that nothing holds: marks it deleted and schedules the S3 delete in
+ * thirty days. The check and the write are ONE transaction under the file's row lock.
+ *
+ * The lock is the same one every attach path takes (`assertFilesAttachable`, `FOR UPDATE`) and the
+ * worker's cleanup takes (`cleanupUnlinkedFiles`). Without it the route's own read — "not linked,
+ * not quarantined" — is stale by the time the unconditional UPDATE runs: a status transition or
+ * `POST /:id/ticket-files` may lock the file, link it as a ticket and commit in that gap, and the
+ * discard would then delete the file of an already committed completion (plan §3.3: the discard
+ * must not take away the files of a completion or a late attachment that committed while the
+ * form was closing). After a wait on the lock the recheck below sees the committed state, because
+ * every statement of a READ COMMITTED transaction takes a fresh snapshot.
+ *
+ * The delete job is enqueued in the same transaction: a deleted row without its job would leave
+ * the object in storage forever, and a job without the row would remove the object of a live file.
+ *
+ * Refusals are the route's contract, kept in this one place: 404 for a missing or already deleted
+ * file (a second concurrent discard lands here, instead of queueing a second job), 409 for a
+ * quarantined file and for a linked one.
+ */
+export async function softDeleteFile(fileId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [file] = await tx
+      .select({
+        objectKey: files.objectKey,
+        deletedAt: files.deletedAt,
+        quarantinedAt: files.quarantinedAt,
+      })
+      .from(files)
+      .where(eq(files.id, fileId))
+      .for('update');
+    if (!file || file.deletedAt) throw err.notFound('Файл не найден');
+    /*
+     * A quarantined file is not deleted at all — not by the author, not by a holder of
+     * `files.manageAny`, not by the incident reviewer (plan of the signature exemption, R6, item 4).
+     *
+     * Marking it deleted queues the physical removal from S3 in thirty days, which takes away the
+     * subject of the review together with the hash that proves it. "Evidence hidden on request" and
+     * "there was no evidence" are different facts, and a deletion would turn the first into the
+     * second at the hands of whoever is most often the cause of the incident.
+     *
+     * `409`, not `404`: quarantine is no secret — the `quarantined` flag is visible in the request
+     * card to everyone who sees the request — and the refusal must say what to do (release the
+     * quarantine first). The order "release → delete" leaves both rows in the journal with reasons.
+     */
+    if (file.quarantinedAt) {
+      throw err.conflict('Файл в карантине — сначала снимите карантин');
+    }
+    // A file attached to a request is removed only by editing that request.
+    if (await isFileLinked(fileId, tx)) {
+      throw err.conflict('Файл прикреплён к заявке — удалите его через редактирование заявки');
+    }
+    await tx
+      .update(files)
+      .set({ status: 'deleted', deletedAt: new Date() })
+      .where(eq(files.id, fileId));
+    await enqueueJob(
+      JOB_DELETE_S3_OBJECT,
+      { objectKey: file.objectKey },
+      { runAt: new Date(Date.now() + S3_DELETE_DELAY_MS), tx },
+    );
+  });
 }
 
 /**
@@ -986,31 +1037,14 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
 
   r.delete('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
+    // Unlocked read: only for the existence and ownership answers (`uploaded_by` never changes).
+    // Everything that can change under concurrent attachment or quarantine — the quarantine mark
+    // and the links — is checked by `softDeleteFile` under the row lock.
     const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
     if (!file || file.deletedAt) throw err.notFound('Файл не найден');
     // Свой файл удаляет автор загрузки, чужой — тот, кто ведёт заявки.
     if (file.uploadedBy !== p.id && !can(p, 'files.manageAny')) throw err.forbidden();
-    /*
-     * КАРАНТИННЫЙ ФАЙЛ НЕ УДАЛЯЕТСЯ ВОВСЕ — ни автором, ни держателем `files.manageAny`, ни
-     * держателем права разбора (план освобождения от подписи, Р6, п. 4).
-     *
-     * Пометка «удалён» ставит объекту задачу на физическое удаление из S3 через тридцать суток
-     * (`softDeleteFile`), то есть уносит предмет разбора вместе с хешем, которым он доказан.
-     * «Доказательство скрыто по обращению» и «доказательства не было» — разные факты, и удаление
-     * превратило бы первый во второй руками того, кто чаще всего и есть виновник инцидента.
-     *
-     * `409`, а не `404`: карантин не секрет — признак `quarantined` виден в карточке заявки всякому,
-     * кому видна сама заявка, — и отказ обязан сказать, что делать (сперва снять карантин). Порядок
-     * «снять карантин → удалить» оставляет в журнале обе строки с причинами.
-     */
-    if (file.quarantinedAt) {
-      throw err.conflict('Файл в карантине — сначала снимите карантин');
-    }
-    // Прикреплённый к заявке файл удаляется только через редактирование заявки.
-    if (await isFileLinked(file.id)) {
-      throw err.conflict('Файл прикреплён к заявке — удалите его через редактирование заявки');
-    }
-    await softDeleteFile(file.id, file.objectKey);
+    await softDeleteFile(file.id);
     return { ok: true };
   });
 
