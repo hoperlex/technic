@@ -25,6 +25,7 @@ import {
 import { buildInfographicsSheet } from './analytics-export-charts';
 import { periodKeyOf, splitPeriods } from './analytics/periods';
 import {
+  combinedMoneyOf,
   customerKey,
   moneyOf,
   rollupByCustomer,
@@ -50,9 +51,10 @@ import type { AnalyticsAtom, AnalyticsRange } from './analytics/types';
  *    §4). Атомы приходят из `loadAnalyticsAtoms` ровно один раз, а «Свод», «Детализация»,
  *    «Инфографика» и «Данные» — четыре его группировки. Второй ответ на «сколько смен за август»
  *    в проекте недопустим, а заводится он ровно так: отдельной выборкой «специально для листа».
- * 2. **Своей арифметики нет** (Р13): числа приходят готовыми из `rollup.ts`. Исключения
- *    перечислимы — доля на листе «Качество», «итого» денежной вилки (сложение двух готовых чисел,
- *    которого в `AnalyticsTotals` нет вовсе) и подписи в заголовках блоков.
+ * 2. **No arithmetic of its own** (R13): the figures come ready from `rollup.ts`, the fork totals
+ *    «итого ниж./верх.» included — they are summed there from the atoms' exact money units, not by
+ *    adding two rounded cells here (`combinedMoneyOf`). The exceptions are enumerable: the share on
+ *    the «Качество» sheet and the captions of block headers.
  * 3. **Числа лежат числами, даты — датами** (Р4 книги показаний): по текстовой ячейке не считает
  *    ни формула, ни сводная, и «1 234,5», набранное строкой, числом уже не станет.
  * 4. **Объём и масса не складываются никогда, часы и смены механизации — тоже** (Р17): разные
@@ -78,15 +80,6 @@ function num(value: number | null, digits: 0 | 1 = 0): CellInput {
  */
 function raw(value: number | null, digits: 0 | 1 = 0): CellInput {
   return value === null ? '' : { num: value, digits };
-}
-
-/**
- * Округление до копейки при сложении двух готовых чисел вилки. Складываются уже округлённые
- * `fact` и `low`, и двоичный хвост суммы («2196300.0000000005») попал бы в книгу как есть:
- * формат ячейки прячет его от глаза, но не от формулы и не от сводной.
- */
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
 }
 
 /** Деньги в подписи блока: «2 196 300». Разряды разделены пробелом — книгу читают глазами. */
@@ -205,6 +198,11 @@ type TotalsField = {
 interface SummaryValues {
   byModule: Record<AnalyticsModule, AnalyticsTotals>;
   money: AnalyticsMoney;
+  /**
+   * «Итого ниж./верх.» — fact plus an estimate, summed from the atoms' exact units and converted
+   * once (`combinedMoneyOf`), not by adding the two published cells: that would round twice.
+   */
+  combined: { low: number; high: number };
 }
 
 interface SummaryColumn {
@@ -254,10 +252,19 @@ function money(
   pick: (value: AnalyticsMoney) => number,
   method: Omit<MethodRow, 'day' | 'excluded'> & Partial<MethodRow>,
 ): SummaryColumn {
+  return combinedMoney(title, (values) => pick(values.money), method);
+}
+
+/** A money column over the whole row values: the derived totals live beside `money`. */
+function combinedMoney(
+  title: string,
+  pick: (values: SummaryValues) => number,
+  method: Omit<MethodRow, 'day' | 'excluded'> & Partial<MethodRow>,
+): SummaryColumn {
   return {
     title,
     width: 15,
-    cell: (values) => ({ num: pick(values.money), digits: 0 }),
+    cell: (values) => ({ num: pick(values), digits: 0 }),
     method: {
       day: 'День, на который разложена стоимость заявки',
       excluded: NOT_COUNTED,
@@ -394,13 +401,13 @@ const SUMMARY_GROUPS: SummaryGroup[] = [
         source: 'Цена дня × дни срока внутри периода',
         excluded: 'Закрытые заявки: их деньги известны',
       }),
-      money('итого ниж.', (value) => round2(value.fact + value.low), {
+      combinedMoney('итого ниж.', (values) => values.combined.low, {
         what: 'Факт плюс нижняя оценка — осторожный итог',
-        source: 'Сумма двух соседних колонок',
+        source: 'Сумма двух соседних колонок, сложенная до округления',
       }),
-      money('итого верх.', (value) => round2(value.fact + value.high), {
+      combinedMoney('итого верх.', (values) => values.combined.high, {
         what: 'Факт плюс верхняя оценка — итог по сроку',
-        source: 'Сумма двух соседних колонок',
+        source: 'Сумма двух соседних колонок, сложенная до округления',
       }),
       {
         title: 'без цены',
@@ -427,7 +434,11 @@ function summaryRow(values: SummaryValues): CellInput[] {
 }
 
 function valuesOf(atoms: AnalyticsAtom[]): SummaryValues {
-  return { byModule: totalsByModule(atoms), money: moneyOf(atoms) };
+  return {
+    byModule: totalsByModule(atoms),
+    money: moneyOf(atoms),
+    combined: combinedMoneyOf(atoms),
+  };
 }
 
 /**
@@ -473,13 +484,26 @@ function summarySheet(
     rowStyles.push({ fill: 'grey', bold: true });
   };
 
+  // The derived money of a customer row comes from its own atoms, like its fact and estimate.
+  const atomsByCustomer = new Map<string, AnalyticsAtom[]>();
+  for (const atom of atoms) {
+    const key = customerKey(atom.customerKind, atom.customerId);
+    const own = atomsByCustomer.get(key);
+    if (own) own.push(atom);
+    else atomsByCustomer.set(key, [atom]);
+  }
+
   let kind: AnalyticsCustomerKind | null = null;
   for (const row of rows) {
     // Подытог закрывает группу перед первой строкой следующей: объекты идут раньше отделов (Р4),
     // и закрытый объект остаётся внутри своей группы, а не уезжает за отделы.
     if (kind !== null && kind !== row.kind) subtotal(kind, 'Итого по объектам');
     kind = row.kind;
-    sheet.push([customerLabel(row), ...summaryRow({ byModule: row.byModule, money: row.money })]);
+    const combined = combinedMoneyOf(atomsByCustomer.get(customerKey(row.kind, row.id)) ?? []);
+    sheet.push([
+      customerLabel(row),
+      ...summaryRow({ byModule: row.byModule, money: row.money, combined }),
+    ]);
     rowStyles.push(undefined);
   }
   if (kind === 'object') subtotal('object', 'Итого по объектам');
@@ -772,7 +796,7 @@ const SOURCE_COLUMNS: SourceColumn[] = [
     // «Итого» сводной — осторожный итог «факт плюс нижняя оценка», тот же, по которому `rollup`
     // сортирует позиции. Верхняя оценка в источнике сводной подняла бы наверх заказ, который
     // просто долго не закрывают.
-    cell: (atom) => ({ num: round2(atom.moneyFact + atom.moneyLow), digits: 0 }),
+    cell: (atom) => ({ num: combinedMoneyOf([atom]).low, digits: 0 }),
   },
 ];
 

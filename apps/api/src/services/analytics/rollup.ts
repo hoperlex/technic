@@ -11,6 +11,7 @@ import {
   type AnalyticsTotals,
   emptyTotals,
 } from '@technic/contracts';
+import { MoneySum } from './money';
 import { periodKeyOf } from './periods';
 import { type AnalyticsAtom, NO_VEHICLE_POSITION_KEY } from './types';
 
@@ -60,9 +61,10 @@ const MODULE_ORDER: Record<AnalyticsModule, number> = {
 const KIND_ORDER: Record<AnalyticsCustomerKind, number> = { object: 0, department: 1 };
 
 /**
- * Округление **один раз, в конце суммирования**. Округлять слагаемые нельзя: деньги заявки
- * разложены по её дням (Р28), и копейка, потерянная на каждом из 26 дней, уводит итог заказа на
- * четверть рубля — а свод и динамика обязаны сойтись до копейки, потому что собраны из одних строк.
+ * Rounding of the counters happens **once, at the end of the sum**: rounding the addends would let
+ * a share lost on each of 26 days move the total. Money does not come here at all — it is summed
+ * exactly in `money.ts` under the same once-at-the-end rule, because a float sum of thousands of
+ * amounts drifts by more than a kopeck before this rounding could hide it.
  */
 function round(value: number, digits: number): number {
   const factor = 10 ** digits;
@@ -74,6 +76,30 @@ export function customerKey(kind: AnalyticsCustomerKind, id: string): string {
   return `${kind}:${id}`;
 }
 
+/** Running money of a set of atoms: the three sides of the fork, each an exact sum (`money.ts`). */
+interface MoneySums {
+  fact: MoneySum;
+  low: MoneySum;
+  high: MoneySum;
+  unpriced: Set<string>;
+}
+
+function moneySumsOf(atoms: AnalyticsAtom[]): MoneySums {
+  const sums: MoneySums = {
+    fact: new MoneySum(),
+    low: new MoneySum(),
+    high: new MoneySum(),
+    unpriced: new Set<string>(),
+  };
+  for (const atom of atoms) {
+    sums.fact.add(atom.moneyFact);
+    sums.low.add(atom.moneyLow);
+    sums.high.add(atom.moneyHigh);
+    if (!atom.priced) sums.unpriced.add(atom.requestId);
+  }
+  return sums;
+}
+
 /**
  * Деньги набора (Р9).
  *
@@ -81,23 +107,31 @@ export function customerKey(kind: AnalyticsCustomerKind, id: string): string {
  * и счёт строк объявил бы одну неоценённую заявку десятью. Колонка «без цены» существует, чтобы
  * нулевая клетка не читалась как бесплатная работа, — десятикратно завышенная, она ровно это
  * сообщение и уничтожает.
+ *
+ * The sums are exact integers converted once (`money.ts`): a float running total over a year of a
+ * large site drifts by roubles, not kopecks, before the final rounding can hide it.
  */
 export function moneyOf(atoms: AnalyticsAtom[]): AnalyticsMoney {
-  let fact = 0;
-  let low = 0;
-  let high = 0;
-  const unpriced = new Set<string>();
-  for (const atom of atoms) {
-    fact += atom.moneyFact;
-    low += atom.moneyLow;
-    high += atom.moneyHigh;
-    if (!atom.priced) unpriced.add(atom.requestId);
-  }
+  const sums = moneySumsOf(atoms);
   return {
-    fact: round(fact, 2),
-    low: round(low, 2),
-    high: round(high, 2),
-    unpriced: unpriced.size,
+    fact: sums.fact.rubles(),
+    low: sums.low.rubles(),
+    high: sums.high.rubles(),
+    unpriced: sums.unpriced.size,
+  };
+}
+
+/**
+ * The book's derived totals «итого ниж.» and «итого верх.»: fact plus each side of the estimate,
+ * summed from the same exact units as `moneyOf` and converted once. Adding the two published
+ * figures instead would round twice, and above kopeck precision of a double the combined cell
+ * would not be the nearest number to the exact total.
+ */
+export function combinedMoneyOf(atoms: AnalyticsAtom[]): { low: number; high: number } {
+  const sums = moneySumsOf(atoms);
+  return {
+    low: MoneySum.combined(sums.fact, sums.low).rubles(),
+    high: MoneySum.combined(sums.fact, sums.high).rubles(),
   };
 }
 

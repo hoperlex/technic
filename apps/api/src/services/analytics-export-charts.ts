@@ -13,6 +13,7 @@ import type {
   RowStyle,
   SheetInput,
 } from '../lib/xlsx';
+import { addMoney } from './analytics/money';
 import { periodKeyOf } from './analytics/periods';
 import { rollupByPeriod } from './analytics/rollup';
 import type { AnalyticsAtom } from './analytics/types';
@@ -180,7 +181,8 @@ const PERIOD_HEADER: CellInput[] = [
  */
 function money(row: AnalyticsPeriodRow, module: 'freight' | 'onsite' | 'waste' | 'mech'): number {
   const own = row.byModule[module].money;
-  return own.fact + own.low;
+  // Two published figures added exactly and converted once (`money.ts`), not as floats.
+  return addMoney(own.fact, own.low);
 }
 
 function periodBody(rows: AnalyticsPeriodRow[]): CellInput[][] {
