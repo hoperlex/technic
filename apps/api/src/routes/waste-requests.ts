@@ -66,6 +66,7 @@ import {
   type WasteRequestVehicleDto,
   wasteRequestListQuerySchema,
   wasteRequestSummaryQuerySchema,
+  wasteStatsKindOf,
   wasteStatsQuerySchema,
   can,
   type WasteTicketBadgeDto,
@@ -1582,6 +1583,11 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   r.get('/stats', { ...auth, schema: { querystring: wasteStatsQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     assertWasteStatsAudience(p);
+    // An explicit snow selection is a snow filter: a tab that declares no capability for the type
+    // gets the refresh answer, after the audience check (§3.5). Garbage needs no capability.
+    for (const t of REQUEST_TYPES) {
+      if (wasteStatsKindOf(t) === req.query.kind) assertTypeSupported(req, t);
+    }
     return loadWasteStats(p, req.query.month, req.query.kind);
   });
 

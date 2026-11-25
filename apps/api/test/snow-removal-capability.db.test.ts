@@ -196,6 +196,34 @@ describe.skipIf(!RUN_DB)('legacy filter for a tab without the capability', () =>
   });
 });
 
+describe.skipIf(!RUN_DB)('snow statistics need the capability', () => {
+  it('kind=snow answers 426 to the old tab, garbage and a bare month do not', async () => {
+    const month = '2026-10';
+    const snow = await get(
+      `${REQUESTS}/stats?month=${month}&kind=snow`,
+      s.users.dispatcher.auth,
+      OLD,
+    );
+    expect(snow.statusCode, snow.body).toBe(426);
+    expect(snow.json().code).toBe('client_upgrade_required');
+    for (const url of [
+      `${REQUESTS}/stats?month=${month}`,
+      `${REQUESTS}/stats?month=${month}&kind=waste`,
+    ]) {
+      const res = await get(url, s.users.dispatcher.auth, OLD);
+      expect(res.statusCode, `${url}: ${res.body}`).toBe(200);
+      expect(res.json().kind).toBe('waste');
+    }
+    const fresh = await get(
+      `${REQUESTS}/stats?month=${month}&kind=snow`,
+      s.users.dispatcher.auth,
+      SNOW,
+    );
+    expect(fresh.statusCode, fresh.body).toBe(200);
+    expect(fresh.json().kind).toBe('snow');
+  });
+});
+
 describe.skipIf(!RUN_DB)('direct snow requests from an old tab', () => {
   it('detail and request history answer 426 — after the scope checks', async () => {
     const id = await insertRequest({ status: 'new' });
