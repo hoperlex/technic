@@ -53,6 +53,8 @@ interface Ctx {
   admin: Auth;
   /** This run's operator: tariffs belong to an operator (ADR 0026). */
   operator: { id: string; inn: string };
+  /** This run's container type: the exact-type branch of tariff resolution needs one. */
+  containerTypeId: string;
   messages: Pick<
     typeof WasteTypesNs,
     'SERVICE_WASTE_TYPE_LOCKED_MESSAGE' | 'RESERVED_WASTE_TYPE_NAME_MESSAGE'
@@ -187,12 +189,18 @@ describe.skipIf(!DB_URL)('служебный тип «Снег» в справо
       VALUES ('operator', ${`Оператор снега ${RUN}`}, ${inn})
       RETURNING id`);
 
+    const container = await db.execute<{ id: string }>(sql`
+      INSERT INTO container_types (code, name, type, volume_m3)
+      VALUES (${`${CODE}_cont`}, ${`Контейнер снега ${RUN}`}, 'cont', 8)
+      RETURNING id`);
+
     const waste = await import('../src/services/waste-types');
     ctx = {
       app,
       db,
       admin: { authorization: `Bearer ${login.json().accessToken}` },
       operator: { id: operator.rows[0]!.id, inn },
+      containerTypeId: container.rows[0]!.id,
       messages: {
         SERVICE_WASTE_TYPE_LOCKED_MESSAGE: waste.SERVICE_WASTE_TYPE_LOCKED_MESSAGE,
         RESERVED_WASTE_TYPE_NAME_MESSAGE: waste.RESERVED_WASTE_TYPE_NAME_MESSAGE,
@@ -215,6 +223,7 @@ describe.skipIf(!DB_URL)('служебный тип «Снег» в справо
     if (ctx.operator) {
       await ctx.db.execute(sql`DELETE FROM counterparties WHERE id = ${ctx.operator.id}`);
     }
+    await ctx.db.execute(sql`DELETE FROM container_types WHERE code LIKE ${`${CODE}%`}`);
     const users = sql`SELECT id FROM users WHERE email LIKE ${EMAIL('%')}`;
     // The audit log first: `audit_log.actor_user_id` is RESTRICT.
     await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${users})`);
@@ -368,5 +377,103 @@ describe.skipIf(!DB_URL)('служебный тип «Снег» в справо
     );
     expect(type.rows[0]!.code).not.toBe(SNOW_WASTE_TYPE_CODE);
     expect(type.rows[0]!.code).toMatch(/^snow_\d+$/u);
+  });
+  // ── 3. Tariffs and tariff resolution ──
+
+  /** An ordinary priced position of this run's operator: the baseline every refusal is held to. */
+  async function ordinaryTariff(): Promise<{ tariff: WasteTariffDto; typeId: string }> {
+    const own = await ordinaryType();
+    const res = await inject('POST', '/api/v1/waste-tariffs', ctx.admin, {
+      operatorCounterpartyId: ctx.operator.id,
+      wasteTypeId: own.id,
+      containerKind: 'truck',
+      pricePerM3: 700,
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    return { tariff: res.json<WasteTariffDto>(), typeId: own.id };
+  }
+
+  it.each([SNOW_WASTE_TYPE_ID, SNOW_ID_UPPER])(
+    'цена на служебный тип %s не заводится: поле объясняет, что стоимость — при закрытии',
+    async (id) => {
+      for (const target of [
+        { containerKind: 'truck', pricePerM3: 500 },
+        { containerTypeId: ctx.containerTypeId, pricePerM3: 500 },
+        // An inactive position is refused too: the CHECK forbids it, and a fallback that read
+        // inactive prices would price snow by it.
+        { containerKind: 'cont', pricePerM3: 500, isActive: false },
+      ]) {
+        const res = await inject('POST', '/api/v1/waste-tariffs', ctx.admin, {
+          operatorCounterpartyId: ctx.operator.id,
+          wasteTypeId: id,
+          ...target,
+        });
+        expect(res.statusCode, res.body).toBe(400);
+        expect(res.json<{ fields: Record<string, string> }>().fields).toEqual({
+          wasteTypeId: SNOW_COST_AT_COMPLETION_MESSAGE,
+        });
+      }
+      const tariffs = await ctx.db.execute(
+        sql`SELECT id FROM waste_tariffs WHERE waste_type_id = ${SNOW_WASTE_TYPE_ID}`,
+      );
+      expect(tariffs.rows).toEqual([]);
+    },
+  );
+
+  it.each([SNOW_WASTE_TYPE_ID, SNOW_ID_UPPER])(
+    'правка цены не переводит её на служебный тип %s',
+    async (id) => {
+      const { tariff, typeId } = await ordinaryTariff();
+      const res = await inject('PATCH', `/api/v1/waste-tariffs/${tariff.id}`, ctx.admin, {
+        wasteTypeId: id,
+      });
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.json<{ fields: Record<string, string> }>().fields).toEqual({
+        wasteTypeId: SNOW_COST_AT_COMPLETION_MESSAGE,
+      });
+      const after = await ctx.db.execute<{ waste_type_id: string }>(
+        sql`SELECT waste_type_id FROM waste_tariffs WHERE id = ${tariff.id}`,
+      );
+      expect(after.rows[0]!.waste_type_id).toBe(typeId);
+
+      // The same position is still editable as an ordinary price.
+      const price = await inject('PATCH', `/api/v1/waste-tariffs/${tariff.id}`, ctx.admin, {
+        pricePerM3: 750,
+      });
+      expect(price.statusCode, price.body).toBe(200);
+      expect(price.json<WasteTariffDto>().pricePerM3).toBe(750);
+    },
+  );
+
+  it.each([SNOW_WASTE_TYPE_ID, SNOW_ID_UPPER])(
+    'подбор тарифа для служебного типа %s отказывает полем, а не отвечает «тарифа нет»',
+    async (id) => {
+      for (const target of [
+        'containerKind=truck',
+        `containerTypeId=${ctx.containerTypeId}`,
+        `containerKind=truck&operatorCounterpartyId=${ctx.operator.id}`,
+      ]) {
+        const res = await inject(
+          'GET',
+          `/api/v1/waste-tariffs/resolve?wasteTypeId=${id}&${target}`,
+          ctx.admin,
+        );
+        expect(res.statusCode, `${target}: ${res.body}`).toBe(400);
+        expect(res.json<{ fields: Record<string, string> }>().fields).toEqual({
+          wasteTypeId: SNOW_COST_AT_COMPLETION_MESSAGE,
+        });
+      }
+    },
+  );
+
+  it('подбор тарифа для обычного типа работает как прежде', async () => {
+    const { tariff, typeId } = await ordinaryTariff();
+    const res = await inject(
+      'GET',
+      `/api/v1/waste-tariffs/resolve?wasteTypeId=${typeId}&containerKind=truck`,
+      ctx.admin,
+    );
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json<{ tariff: { tariffId: string } | null }>().tariff?.tariffId).toBe(tariff.id);
   });
 });

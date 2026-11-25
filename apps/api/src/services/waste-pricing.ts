@@ -5,8 +5,10 @@ import {
   type ResolvedWasteTariffDto,
   WASTE_REMOVAL_CONTAINER_KIND,
   isPricedRequestType,
+  isServiceWasteTypeId,
   isVolumeAllowed,
   pickWasteTariff,
+  SNOW_COST_AT_COMPLETION_MESSAGE,
   volumeStepMessage,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -16,6 +18,21 @@ import { err } from '../lib/errors';
 /** numeric приходит из pg строкой — DTO и расчёты работают с числом. */
 export function toNum(v: string | null): number | null {
   return v == null ? null : Number(v);
+}
+
+/**
+ * Snow has no price list, tariff or estimate (S6): its cost is entered by hand at completion. Every
+ * tariff lookup refuses the service type before it queries anything, with the field message the
+ * portal shows, instead of answering «no tariff» — that answer would read as a price list that has
+ * not been filled in yet. The id is compared as a UUID, in any case.
+ *
+ * Callers that handle a snow request (completion, operator assignment) must not get here at all:
+ * `isManualCostOnly` sends them past pricing, and this refusal is what they meet if they do not.
+ */
+export function assertPricedWasteType(wasteTypeId: string): void {
+  if (isServiceWasteTypeId(wasteTypeId)) {
+    throw err.validation({ wasteTypeId: SNOW_COST_AT_COMPLETION_MESSAGE });
+  }
 }
 
 /** Позиция прайса вместе с именем владельца — то, чем оперирует подбор. */
@@ -81,6 +98,7 @@ export async function resolveWasteTariffByKind(
   containerKind: ContainerKind,
   operatorCounterpartyId: string | null = null,
 ): Promise<ResolvedWasteTariffDto | null> {
+  assertPricedWasteType(wasteTypeId);
   const candidates = await loadCandidates(wasteTypeId, { containerKind });
   const picked = pickWasteTariff(candidates, { operatorCounterpartyId });
   if (!picked) return null;
@@ -112,6 +130,7 @@ export async function resolveWasteTariff(
   containerTypeId: string,
   operatorCounterpartyId: string | null = null,
 ): Promise<ResolvedWasteTariffDto | null> {
+  assertPricedWasteType(wasteTypeId);
   const [containerType] = await db
     .select({
       id: containerTypes.id,
@@ -183,6 +202,9 @@ export async function priceWasteRequest(input: {
       wasteTypeId: 'Для расчёта нужны тип мусора и объём',
     });
   }
+  // A priced request type with the service waste type is garbage dressed as snow: refused, not
+  // priced as «no tariff». A snow request itself never gets here — it is not a priced type above.
+  assertPricedWasteType(input.wasteTypeId);
 
   const resolved = await resolveWasteTariffByKind(
     input.wasteTypeId,

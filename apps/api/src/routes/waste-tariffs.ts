@@ -5,7 +5,10 @@ import { and, count, eq, ne } from 'drizzle-orm';
 import {
   type ContainerKind,
   createWasteTariffSchema,
+  isServiceWasteTypeCode,
+  isServiceWasteTypeId,
   pricePerM3FromContainer,
+  SNOW_COST_AT_COMPLETION_MESSAGE,
   updateWasteTariffSchema,
   validateWasteTariff,
   validateWasteTypeChoice,
@@ -105,6 +108,13 @@ async function prepareValues(
   input: WasteTariffDefinition & { wasteTypeId: string; operatorCounterpartyId: string },
   excludeId?: string,
 ): Promise<TariffValues> {
+  // Snow has no price list (S6): a tariff for the service type would let a later fallback price a
+  // snow request. Refused first, so the field says why rather than which price is missing, and
+  // before any query; the id is compared as a UUID, in any case. The CHECK
+  // `waste_tariffs_not_service_type_check` (migration 0429) stays the backstop.
+  if (isServiceWasteTypeId(input.wasteTypeId)) {
+    throw err.validation({ wasteTypeId: SNOW_COST_AT_COMPLETION_MESSAGE });
+  }
   const fields = validateWasteTariff(input);
   if (Object.keys(fields).length > 0) throw err.validation(fields);
 
@@ -123,10 +133,13 @@ async function prepareValues(
   }
 
   const [wasteType] = await conn
-    .select({ id: wasteTypes.id })
+    .select({ id: wasteTypes.id, code: wasteTypes.code })
     .from(wasteTypes)
     .where(eq(wasteTypes.id, input.wasteTypeId));
   if (!wasteType) throw err.validation({ wasteTypeId: 'Тип мусора не найден' });
+  if (isServiceWasteTypeCode(wasteType.code)) {
+    throw err.validation({ wasteTypeId: SNOW_COST_AT_COMPLETION_MESSAGE });
+  }
 
   let containerVolumeM3: number | null = null;
   if (input.containerTypeId) {
