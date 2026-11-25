@@ -1,8 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import {
+  Alert,
   Button,
   DatePicker,
   Empty,
+  Segmented,
   Space,
   Table,
   Tooltip,
@@ -12,13 +14,20 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import dayjs from 'dayjs';
-import { monthSchema, type WasteStatsFigures, type WasteStatsRowDto } from '@technic/contracts';
-import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
+import {
+  monthSchema,
+  wasteStatsKindSchema,
+  type WasteStatsFigures,
+  type WasteStatsKind,
+  type WasteStatsRowDto,
+} from '@technic/contracts';
+import { useSnowSupport, wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { FIGURES_WIDTH, figureColumns, figureSummaryCells } from './wasteStatsColumns';
+import { checkedStatsReply, StatsReplyError } from './wasteStatsReply';
 import { WasteStatsObjectModal } from './WasteStatsObjectModal';
 
 const MONTH = 'YYYY-MM';
@@ -28,14 +37,14 @@ const MONTH = 'YYYY-MM';
  * `Table.Summary fixed` itself: rc-table pins the summary only after checking the element type, and
  * a wrapper component would silently turn the pinned row into a footer inside the scroll.
  */
-function totalsSummary(totals: WasteStatsFigures): ReactNode {
+function totalsSummary(totals: WasteStatsFigures, kind: WasteStatsKind): ReactNode {
   return (
     <Table.Summary fixed>
       <Table.Summary.Row>
         <Table.Summary.Cell index={0}>
           <Typography.Text strong>Итого</Typography.Text>
         </Table.Summary.Cell>
-        {figureSummaryCells(totals, 1)}
+        {figureSummaryCells(totals, 1, kind)}
       </Table.Summary.Row>
     </Table.Summary>
   );
@@ -81,44 +90,85 @@ export function WasteStatsTab() {
    */
   const month = monthSchema.safeParse(raw).success ? raw : dayjs().format(MONTH);
   /*
+   * Garbage or snow (snow-removal plan, S8), also from the address: «статистика снега за декабрь»
+   * is sent as a link like the month. A value outside the contract's kinds opens garbage, the
+   * default, and never reaches the server.
+   */
+  const parsedKind = wasteStatsKindSchema.safeParse(sp.get('kind') ?? '');
+  const kind: WasteStatsKind = parsedKind.success ? parsedKind.data : 'waste';
+  /*
    * `tab` is written together with the month on purpose: the page switches tabs via
    * `setSp({ tab })`, i.e. it clears the whole address — losing the month when leaving for "Заявки"
    * is fine, but losing `tab` while changing the month would send the person back to "Заявки" by a
-   * click on the calendar.
+   * click on the calendar. The kind is kept the same way; garbage, the default, is left implicit.
    */
-  const setMonth = (next: string) => setSp({ tab: 'stats', month: next });
+  const setMonth = (next: string) =>
+    setSp(kind === 'waste' ? { tab: 'stats', month: next } : { tab: 'stats', month: next, kind });
 
   // list-query: exception — the server returns the whole month; the visible page is sliced locally.
-  const { params, onTableChange } = useListParams<Record<string, never>>({}, { searchKeys: [] });
+  const { params, setParams, onTableChange } = useListParams<Record<string, never>>(
+    {},
+    { searchKeys: [] },
+  );
   /**
    * The site of the open window is state, not address: the subject of a link here is the month, and
    * the window shows what already came with the table without a request of its own (R11).
    */
   const [openObjectId, setOpenObjectId] = useState<string | null>(null);
 
-  const { data, isFetching } = useQuery({
-    queryKey: wasteRequestKeys.stats(month, 'waste'),
-    queryFn: () => wasteRequestsApi.stats(month, 'waste'),
+  /*
+   * A switch is a different table: page 1, and the site window closes — its row belongs to the
+   * other kind, and keeping it open would show garbage positions under «Снег» or the reverse.
+   */
+  const setKind = (next: WasteStatsKind) => {
+    setOpenObjectId(null);
+    setParams((previous) => ({ ...previous, page: 1 }) as typeof previous);
+    setSp({ tab: 'stats', month, kind: next });
+  };
+
+  // Snow is asked only from a server that confirms it (§3.5); the check is repeated on every
+  // opening of the tab. Garbage needs no confirmation: every server answers `?month=`.
+  const snow = useSnowSupport(active);
+  const snowWaits = kind === 'snow' && !snow.supported;
+
+  const { data, error, isFetching } = useQuery({
+    // Month AND kind: a slow snow reply must never fill the garbage table, or the reverse.
+    queryKey: wasteRequestKeys.stats(month, kind),
+    // The reply is checked before it is cached: a malformed or foreign one becomes this query's
+    // error, and the cache keeps at most an earlier valid reply for the same month and kind.
+    queryFn: async () => checkedStatsReply(await wasteRequestsApi.stats(month, kind), month, kind),
     /*
      * Only on its own tab: a hidden tab is not unmounted (`PageTabs`), and without this condition
      * the month would be recounted on the server every time the request list is opened.
      */
-    enabled: active,
+    enabled: active && !snowWaits,
   });
 
+  const problem = error instanceof StatsReplyError ? error.problem : error ? 'failed' : null;
   /*
    * A new build against an old server — the rollout window or a tab that survived
    * `deploy-auto --previous` — gets a response without the ADR 0209 or ADR 0213 fields. There is no
    * error boundary in the portal, so printing it would throw in render and blank the whole portal;
-   * the tab shows a stub instead. One field per release is enough: the server always sends a
-   * release's fields together, and an ADR 0213 server also sends the ADR 0209 ones.
+   * the tab shows a stub instead.
    */
-  const outdated = data !== undefined && typeof data.totals.ticketVolumeM3 !== 'number';
+  const outdated = problem === 'outdated';
+  /*
+   * Snow is unavailable when the server does not confirm it, does not echo the kind, or refuses
+   * the snow query at all — the last even if a recent capability check said yes (§3.5). A reply
+   * that is merely malformed or for another month stays a local error, as for garbage.
+   */
+  const snowUnavailable =
+    kind === 'snow' &&
+    ((snowWaits && !snow.checking) || problem === 'unavailable' || problem === 'failed');
+  // Rendered only when the cached reply is for exactly what is selected (render-time guard on top
+  // of the per-key cache: figures of another month or kind never reach the table).
+  const shown =
+    data && data.month === month && data.kind === kind && !snowUnavailable ? data : null;
 
-  const rows = outdated ? [] : (data?.rows ?? []);
+  const rows = shown?.rows ?? [];
   // The portal pages the response itself: it arrives whole and is shown with the same content.
   const page = rows.slice((params.page - 1) * params.pageSize, params.page * params.pageSize);
-  const totals = data?.totals;
+  const totals = shown?.totals;
   const opened = rows.find((r) => r.objectId === openObjectId) ?? null;
 
   // The volumes and the money live in the "Итого" row now (decision Z9): the bar keeps the counts.
@@ -150,7 +200,7 @@ export function WasteStatsTab() {
         </Button>
       ),
     },
-    ...figureColumns<WasteStatsRowDto>(),
+    ...figureColumns<WasteStatsRowDto>(kind),
   ];
 
   /*
@@ -164,7 +214,7 @@ export function WasteStatsTab() {
    * inside the scrolling body.
    */
   const qualityBar =
-    data && !outdated && data.quality.length > 0 ? (
+    shown && shown.quality.length > 0 ? (
       <Space size={16} wrap>
         {/*
          * "Of visible requests": the scope and the type filter are part of the query, so these
@@ -174,7 +224,7 @@ export function WasteStatsTab() {
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           По видимым заявкам вывоза за месяц:
         </Typography.Text>
-        {data.quality.map((q) => (
+        {shown.quality.map((q) => (
           <Tooltip key={q.key} title={q.note}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {q.label}: {q.value}
@@ -203,24 +253,47 @@ export function WasteStatsTab() {
               if (v) setMonth(v.format(MONTH));
             }}
           />
+          {/* Garbage and snow are never one table (S8): snow has invoice amounts and no estimate,
+              and a shared total would mix the two kinds of money. */}
+          <Segmented<WasteStatsKind>
+            value={kind}
+            onChange={setKind}
+            options={[
+              { label: 'Мусор', value: 'waste' },
+              { label: 'Снег', value: 'snow', disabled: !snow.supported && kind !== 'snow' },
+            ]}
+          />
           <SummaryBar title="Отчётный месяц" items={summaryItems} />
         </Space>
       </TabsExtra>
 
-      {outdated ? (
+      {problem && problem !== 'outdated' && shown && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          title="Не удалось обновить статистику — показан прежний ответ за этот месяц"
+        />
+      )}
+
+      {snowUnavailable ? (
+        <Empty description="Статистика по снегу недоступна: сервер её не поддерживает. Обновите страницу позже." />
+      ) : outdated ? (
         <Empty description="Сервер ещё отдаёт статистику в прежнем виде — обновите страницу" />
+      ) : problem && !shown ? (
+        <Empty description="Не удалось получить статистику за месяц — обновите страницу" />
       ) : (
         <DataTable<WasteStatsRowDto>
           rowKey="objectId"
           columns={columns}
           data={page}
           total={rows.length}
-          loading={isFetching}
+          loading={isFetching || (kind === 'snow' && snow.checking)}
           page={params.page}
           pageSize={params.pageSize}
           fitWidth={OBJECT_COLUMN_WIDTH + FIGURES_WIDTH}
           // rc-table draws a summary even under an empty table: "Итого 0 м³" under "no data".
-          summary={totals && rows.length > 0 ? totalsSummary(totals) : undefined}
+          summary={totals && rows.length > 0 ? totalsSummary(totals, kind) : undefined}
           onRowClick={(r) => setOpenObjectId(r.objectId)}
           onChange={onTableChange}
         />
@@ -233,7 +306,12 @@ export function WasteStatsTab() {
        * without the `active` check, leaving for "Заявки" would leave it hanging over another list.
        */}
       {active && opened && (
-        <WasteStatsObjectModal row={opened} month={month} onClose={() => setOpenObjectId(null)} />
+        <WasteStatsObjectModal
+          row={opened}
+          month={month}
+          kind={kind}
+          onClose={() => setOpenObjectId(null)}
+        />
       )}
     </PageTableLayout>
   );

@@ -1,5 +1,5 @@
 import { Modal, Table, Typography, type TableColumnsType } from 'antd';
-import type { WasteStatsPositionDto, WasteStatsRowDto } from '@technic/contracts';
+import type { WasteStatsKind, WasteStatsPositionDto, WasteStatsRowDto } from '@technic/contracts';
 import { monthLabel } from '@shared/lib';
 import { figureColumns, figureSummaryCells } from './wasteStatsColumns';
 
@@ -19,15 +19,17 @@ import { figureColumns, figureSummaryCells } from './wasteStatsColumns';
 export function WasteStatsObjectModal({
   row,
   month,
+  kind,
   onClose,
 }: {
   row: WasteStatsRowDto;
   month: string;
+  kind: WasteStatsKind;
   onClose: () => void;
 }) {
   const columns: TableColumnsType<WasteStatsPositionDto> = [
     { key: 'label', title: 'Вид отходов', dataIndex: 'label' },
-    ...figureColumns<WasteStatsPositionDto>(),
+    ...figureColumns<WasteStatsPositionDto>(kind),
   ];
 
   return (
@@ -61,7 +63,7 @@ export function WasteStatsObjectModal({
               <Table.Summary.Cell index={0}>
                 <Typography.Text strong>Итого</Typography.Text>
               </Table.Summary.Cell>
-              {figureSummaryCells(row, 1)}
+              {figureSummaryCells(row, 1, kind)}
             </Table.Summary.Row>
           </Table.Summary>
         )}

@@ -219,6 +219,8 @@ function AddressProbe() {
 /** Вкладка живёт внутри `PageTabs`: без него она не знает, что открыта, и запроса не делает. */
 function renderTab(route: string, body: WasteStatsDto = dto()): HttpMock {
   const http = mockHttp({
+    // The tab asks whether the serving API knows snow each time it opens (§3.5).
+    'GET /waste-requests/capabilities': () => json({ capabilities: ['snow-removal-v1'] }),
     'GET /waste-requests/stats': ({ query }) =>
       json({ ...body, month: query.get('month') ?? body.month }),
   });

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { ExclamationCircleOutlined } from '@ant-design/icons';
 import { Table, Tooltip, Typography, type TableColumnsType } from 'antd';
-import type { WasteStatsFigures } from '@technic/contracts';
+import type { WasteStatsFigures, WasteStatsKind } from '@technic/contracts';
 import {
   costNotes,
   costText,
@@ -104,11 +104,17 @@ function ticketCell(r: WasteStatsFigures, strong = false): ReactNode {
   return figureCell(volumeText(r.ticketVolumeM3), [], strong, ticketWarning(r));
 }
 
-function costCell(r: WasteStatsFigures, strong = false): ReactNode {
-  return figureCell(costText(r.doneCost), costNotes(r), strong, doneCostWarning(r));
+function costCell(r: WasteStatsFigures, kind: WasteStatsKind, strong = false): ReactNode {
+  return figureCell(costText(r.doneCost), costNotes(r, kind), strong, doneCostWarning(r, kind));
 }
 
-export function figureColumns<T extends WasteStatsFigures>(): TableColumnsType<T> {
+/**
+ * `kind` changes only the money wording (snow-removal plan, §3.4): the same columns, rows, total
+ * and site window serve both, so a figure reads the same wherever it appears.
+ */
+export function figureColumns<T extends WasteStatsFigures>(
+  kind: WasteStatsKind = 'waste',
+): TableColumnsType<T> {
   return [
     {
       key: 'planned',
@@ -136,7 +142,7 @@ export function figureColumns<T extends WasteStatsFigures>(): TableColumnsType<T
       title: 'Стоимость',
       align: 'right',
       width: 230,
-      render: (_v, r) => costCell(r),
+      render: (_v, r) => costCell(r, kind),
     },
   ];
 }
@@ -147,7 +153,11 @@ export function figureColumns<T extends WasteStatsFigures>(): TableColumnsType<T
  * when the element it gets IS `Table.Summary` with `fixed` — it checks the element type, and a
  * wrapper component would silently turn the pinned row into a footer inside the scroll.
  */
-export function figureSummaryCells(totals: WasteStatsFigures, from: number): ReactNode {
+export function figureSummaryCells(
+  totals: WasteStatsFigures,
+  from: number,
+  kind: WasteStatsKind = 'waste',
+): ReactNode {
   return (
     <>
       <Table.Summary.Cell index={from} align="right">
@@ -160,7 +170,7 @@ export function figureSummaryCells(totals: WasteStatsFigures, from: number): Rea
         {ticketCell(totals, true)}
       </Table.Summary.Cell>
       <Table.Summary.Cell index={from + 3} align="right">
-        {costCell(totals, true)}
+        {costCell(totals, kind, true)}
       </Table.Summary.Cell>
     </>
   );

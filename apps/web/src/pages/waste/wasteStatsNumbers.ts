@@ -1,4 +1,4 @@
-import type { WasteStatsFigures } from '@technic/contracts';
+import type { WasteStatsFigures, WasteStatsKind } from '@technic/contracts';
 import { formatMoney } from '@shared/lib';
 
 /**
@@ -72,12 +72,30 @@ export function plannedNotes(a: WasteStatsFigures): StatsNote[] {
 const PRICE_SOURCE = 'Цена берётся из прайса вывоза, когда заявку заводят и закрывают';
 
 /**
+ * Snow has no price list (snow-removal plan, S6, S7): its money is the invoice amount the closer
+ * types in, and a missing one is a missing entry, not a missing price. The wording says so.
+ */
+const SNOW_COST_SOURCE = 'Стоимость вывоза снега вносится вручную при закрытии заявки';
+
+/**
  * The unpriced share of a money figure. A partly priced sum is a NUMBER that is understated; a
  * wholly unpriced one is a dash (R3 of ADR 0209) — both get the icon, because a bare dash explained
  * nothing either.
  */
-function unpricedWarning(unpriced: number, volume: number, whose: string): StatsWarning {
+function unpricedWarning(
+  unpriced: number,
+  volume: number,
+  whose: string,
+  kind: WasteStatsKind = 'waste',
+): StatsWarning {
   if (unpriced <= 0 || volume <= 0) return [];
+  if (kind === 'snow') {
+    const head =
+      unpriced >= volume
+        ? `Суммы нет: стоимость не внесена ни для одного из ${volumeText(volume)} ${whose}`
+        : `Сумма неполная: стоимость не внесена для ${volumeText(unpriced)} из ${volumeText(volume)} ${whose}`;
+    return [head, SNOW_COST_SOURCE];
+  }
   const head =
     unpriced >= volume
       ? `Суммы нет: без цены все ${volumeText(volume)} ${whose}`
@@ -126,8 +144,11 @@ export function ticketWarning(a: WasteStatsFigures): StatsWarning {
 }
 
 /** Warning of the removed cost — the large figure of the cost cell. */
-export function doneCostWarning(a: WasteStatsFigures): StatsWarning {
-  return unpricedWarning(a.doneVolumeUnpricedM3, a.doneVolumeM3, 'вывезенного');
+export function doneCostWarning(
+  a: WasteStatsFigures,
+  kind: WasteStatsKind = 'waste',
+): StatsWarning {
+  return unpricedWarning(a.doneVolumeUnpricedM3, a.doneVolumeM3, 'вывезенного', kind);
 }
 
 /**
@@ -136,7 +157,16 @@ export function doneCostWarning(a: WasteStatsFigures): StatsWarning {
  * a person reading "по талонам 27 000 ₽" needs to know both before trusting it. With no tickets at
  * all the caption stays "по талонам 0,00 ₽" (user decision of 29.09.2026).
  */
-export function costNotes(a: WasteStatsFigures): StatsNote[] {
+export function costNotes(a: WasteStatsFigures, kind: WasteStatsKind = 'waste'): StatsNote[] {
+  // Snow has no estimate and no price to put on a ticket volume (S6): both captions are dashes
+  // and carry no unpriced warning — there is nothing that could have had a price. The paper
+  // warnings stay on the ticket volume itself.
+  if (kind === 'snow') {
+    return [
+      { key: 'planned', text: `план ${costText(null)}` },
+      { key: 'tickets', text: `по талонам ${costText(null)}` },
+    ];
+  }
   return [
     {
       key: 'planned',
