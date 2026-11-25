@@ -69,6 +69,13 @@ import type { AnalyticsAtom, AnalyticsFacts, AnalyticsFactsScope, AnalyticsRange
 const MOSCOW = 'Europe/Moscow';
 
 /**
+ * A canonical uuid as text (8-4-4-4-12 hex digits), case-insensitive when used with `~*`. Guards
+ * the cast of a jobs payload id to `uuid` in the ticket-scan counters: only a value of this shape is
+ * cast, so a malformed payload can neither raise nor match.
+ */
+const UUID_TEXT_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+
+/**
  * Списки типов и статусов приходят в запрос ПАРАМЕТРАМИ, а не вписаны в его текст: единственное
  * место, где сказано «этот статус — факт» и «этот тип везёт», — контракты (`analyticsCountsAsFact`,
  * `wasteFactUnit`, `usesContainerType`, `isPricedRequestType`). Перепиши их словами внутри SQL, и
@@ -462,7 +469,14 @@ graded AS (
                                     AND NOT EXISTS (SELECT 1
                                                       FROM waste_ticket_pages p
                                                       JOIN waste_tickets t ON t.page_id = p.id
-                                                     WHERE p.file_id::text = fx.fid)
+                                                     WHERE p.request_id = s.id
+                                                       AND p.file_id = fx.fid
+                                                       /* Same request by the composite key
+                                                          waste_tickets_page_fk; gives the planner
+                                                          waste_tickets_request_idx — page_id has no
+                                                          usable index (the only one is partial) and
+                                                          every evaluation scanned all tickets. */
+                                                       AND t.request_id = s.id)
                                 )                                               AS files_without_tickets
                            FROM (SELECT ids.fid,
                                         f.status,
@@ -478,28 +492,51 @@ graded AS (
                                               OR (f.status IS DISTINCT FROM 'pending'
                                                   AND EXISTS (SELECT 1
                                                                 FROM waste_ticket_pages fp
-                                                               WHERE fp.file_id::text = ids.fid
+                                                               WHERE fp.request_id = s.id
+                                                                 AND fp.file_id = ids.fid
                                                                  AND fp.status = 'failed'))
                                              ))                                 AS broken
-                                   FROM (SELECT wf.file_id::text AS fid
+                                   FROM (SELECT wf.file_id AS fid
                                            FROM waste_ticket_files wf
                                           WHERE wf.request_id = s.id
                                          UNION
-                                         SELECT dj.payload->>'fileId'
-                                           FROM jobs dj
-                                          WHERE dj.type = ${JOB_RECOGNIZE_WASTE_TICKET_FILE}
-                                            AND dj.status IN ('pending', 'running', 'failed', 'dead')
-                                            AND dj.payload->>'requestId' = s.id::text
+                                         SELECT dj.fid
+                                           FROM (SELECT /*
+                                                         * The file id of a job payload becomes a
+                                                         * real uuid HERE, once, so that every
+                                                         * comparison below is uuid = uuid and can
+                                                         * use the (file_id, page_no) and
+                                                         * (request_id, file_id) indexes: casting
+                                                         * the indexed column to text instead
+                                                         * (file_id::text = ...) defeats them
+                                                         * inside this correlated subplan.
+                                                         *
+                                                         * A payload is free text. CASE is the only
+                                                         * construct SQL guarantees to evaluate in
+                                                         * order, so a malformed value yields NULL —
+                                                         * it can neither raise nor match — and the
+                                                         * case-insensitive pattern lets an
+                                                         * uppercase id (a route accepts one) equal
+                                                         * the lowercase column.
+                                                         */
+                                                        CASE WHEN dj.payload->>'fileId' ~* ${UUID_TEXT_PATTERN}
+                                                             THEN (dj.payload->>'fileId')::uuid
+                                                        END AS fid
+                                                   FROM jobs dj
+                                                  WHERE dj.type = ${JOB_RECOGNIZE_WASTE_TICKET_FILE}
+                                                    AND dj.status IN ('pending', 'running', 'failed', 'dead')
+                                                    AND dj.payload->>'requestId' = s.id::text) dj
+                                          WHERE dj.fid IS NOT NULL
                                             AND EXISTS (SELECT 1
                                                           FROM request_files rf
                                                           JOIN files fl ON fl.id = rf.file_id
                                                          WHERE rf.request_id = s.id
                                                            AND rf.kind = 'ticket'
                                                            AND fl.status = 'active'
-                                                           AND rf.file_id::text = dj.payload->>'fileId')
+                                                           AND rf.file_id = dj.fid)
                                         ) ids
                                    LEFT JOIN waste_ticket_files f
-                                          ON f.request_id = s.id AND f.file_id::text = ids.fid
+                                          ON f.request_id = s.id AND f.file_id = ids.fid
                                    LEFT JOIN jobs aj ON aj.id = f.active_job_id
                                    LEFT JOIN LATERAL (
                                         SELECT bool_or(j.status IN ('pending', 'running')) AS live,
@@ -510,7 +547,7 @@ graded AS (
                                          WHERE j.type = ${JOB_RECOGNIZE_WASTE_TICKET_FILE}
                                            AND j.status IN ('pending', 'running', 'failed', 'dead')
                                            AND j.payload->>'requestId' = s.id::text
-                                           AND j.payload->>'fileId' = ids.fid
+                                           AND lower(j.payload->>'fileId') = ids.fid::text
                                    ) jb ON true) fx) tf ON true
 ),
 atoms AS (

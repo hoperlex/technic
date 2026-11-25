@@ -58,6 +58,8 @@ const MONTH = '2041-11';
 const NEXT_MONTH = '2041-12';
 /** A month with garbage only: the snow answer must be empty, not garbage relabelled. */
 const GARBAGE_MONTH = '2042-01';
+/** A month of its own for the queue payload cases: they would move the figures of `MONTH`. */
+const QUEUE_MONTH = '2043-03';
 
 /** Just below the completion ceiling of 999 999 999 ₽ (`MAX_FACT_COST`): large and still legal. */
 const LARGE_1 = '999999998.99';
@@ -807,6 +809,143 @@ describe.skipIf(!DB_URL)('вывоз снега: статистика за от�
       const empty = await stats(`month=${MONTH}&kind=snow`, ctx.emptyScopeAuth);
       expect(empty.rows).toEqual([]);
       expect(empty.totals.requests).toBe(0);
+    });
+  });
+
+  /*
+   * The ticket-scan counters read the recognition queue by the file id inside the job payload,
+   * which is free text. Three claims, each about a value the column never has:
+   *
+   *   · an UPPERCASE id (a route accepts one) is the same file as the lowercase column;
+   *   · a malformed value neither matches a file nor makes the statement fail — a plain
+   *     `::uuid` cast of the payload would raise 22P02 for the whole monthly book;
+   *   · the payload names the request, which the seeded jobs of the other cases do not (they are
+   *     reached through the file row's active job), so these jobs are the only ones that go through
+   *     the payload lookup at all.
+   */
+  describe('очередь распознавания: идентификатор файла в нагрузке задачи', () => {
+    async function closedSnow(site: keyof Ctx['site'], day: string): Promise<string> {
+      const id = await newRequest({
+        site,
+        type: 'snow_removal',
+        volumeM3: 10,
+        deliveryDay: `${QUEUE_MONTH}-${day}`,
+        status: 'done',
+      });
+      await close(id, {
+        volumeM3: '10.000',
+        removedOn: `${QUEUE_MONTH}-${day}`,
+        totalCost: '1000.00',
+      });
+      return id;
+    }
+
+    async function fileOf(requestId: string): Promise<string> {
+      const res = await ctx.db.execute<{ file_id: string }>(
+        sql`SELECT file_id FROM request_files WHERE request_id = ${requestId} AND kind = 'ticket'`,
+      );
+      return res.rows[0]!.file_id;
+    }
+
+    /** A job of the queue as `enqueueTicketRecognition` writes it, with a payload of our choosing. */
+    async function queueJob(
+      payload: Record<string, unknown>,
+      status: 'pending' | 'running' | 'failed' | 'dead',
+    ): Promise<void> {
+      await ctx.db.insert(ctx.schema.jobs).values({
+        type: 'recognize_waste_ticket_file',
+        payload: { ...payload, marker: KEY_PREFIX },
+        status,
+      });
+    }
+
+    async function counters(site: keyof Ctx['site']): Promise<WasteStatsRowDto | undefined> {
+      return rowOf(await stats(`month=${QUEUE_MONTH}&kind=snow`), site);
+    }
+
+    it('живая задача с id заглавными буквами держит прочитанный без талонов скан «живым»', async () => {
+      // A read scan with no ticket on it is "read without tickets" — unless a rerun is in flight.
+      const quiet = await closedSnow('a', '03');
+      await seedScan(quiet, { status: 'done', pages: ['done'] });
+      expect(await counters('a')).toMatchObject({
+        ticketFilesUnread: 0,
+        ticketFilesWithoutTickets: 1,
+      });
+
+      const requestId = await closedSnow('b', '04');
+      await seedScan(requestId, { status: 'done', pages: ['done'] });
+      const fileId = await fileOf(requestId);
+      await queueJob({ requestId, fileId: fileId.toUpperCase() }, 'pending');
+      expect(await counters('b')).toMatchObject({
+        ticketFilesUnread: 0,
+        ticketFilesWithoutTickets: 0,
+      });
+
+      // The same job with the lowercase id, the way the API writes it now, reads the same.
+      const lower = await closedSnow('c', '05');
+      await seedScan(lower, { status: 'done', pages: ['done'] });
+      await queueJob({ requestId: lower, fileId: await fileOf(lower) }, 'running');
+      expect(await counters('c')).toMatchObject({
+        ticketFilesUnread: 0,
+        ticketFilesWithoutTickets: 0,
+      });
+    });
+
+    it('умершая задача с id заглавными буквами у файла без строки обработки — нечитанный скан', async () => {
+      // The job died before its first write: the file has no recognition row, only the queue knows.
+      const requestId = await closedSnow('d', '06');
+      const [file] = await ctx.db
+        .insert(ctx.schema.files)
+        .values({
+          bucket: 'test',
+          objectKey: `${KEY_PREFIX}${randomUUID()}`,
+          filename: 'талон.pdf',
+          contentType: 'application/pdf',
+          size: 1024,
+          status: 'active',
+          uploadedBy: ctx.adminId,
+        })
+        .returning({ id: ctx.schema.files.id });
+      await ctx.db
+        .insert(ctx.schema.requestFiles)
+        .values({ requestId, fileId: file!.id, kind: 'ticket' });
+      await queueJob({ requestId, fileId: file!.id.toUpperCase() }, 'dead');
+      expect(await counters('d')).toMatchObject({ ticketFilesUnread: 1 });
+    });
+
+    it('битые значения нагрузки не роняют статистику и не засчитываются как файлы', async () => {
+      const requestId = await closedSnow('a', '07');
+      await seedScan(requestId, { status: 'done', pages: ['done'] });
+      const before = await counters('a');
+      const fileId = await fileOf(requestId);
+      const malformed: unknown[] = [
+        'not-a-uuid',
+        '',
+        // Thirty-six characters of the right shape, none of them hex digits.
+        'zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz',
+        // A uuid in braces and without hyphens: valid for `::uuid`, never what a route writes.
+        `{${fileId}}`,
+        fileId.replace(/-/g, ''),
+        `${fileId} `,
+        null,
+        123,
+        { nested: fileId },
+      ];
+      for (const bad of malformed) {
+        await queueJob({ requestId, fileId: bad }, 'dead');
+      }
+      // A payload without the key at all.
+      await queueJob({ requestId }, 'dead');
+
+      const after = await counters('a');
+      expect(after).toBeDefined();
+      expect({
+        unread: after?.ticketFilesUnread,
+        withoutTickets: after?.ticketFilesWithoutTickets,
+      }).toEqual({
+        unread: before?.ticketFilesUnread,
+        withoutTickets: before?.ticketFilesWithoutTickets,
+      });
     });
   });
 
