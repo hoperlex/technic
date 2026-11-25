@@ -1,26 +1,31 @@
 import { and, ne, notInArray, sql, type SQL } from 'drizzle-orm';
 import {
+  isServiceWasteTypeCode,
+  isServiceWasteTypeId,
   SERVICE_WASTE_TYPE_CODES,
+  SNOW_COST_AT_COMPLETION_MESSAGE,
   SNOW_WASTE_TYPE_ID,
+  SNOW_WASTE_TYPE_NAME,
   wasteTypeDuplicateMessage,
 } from '@technic/contracts';
-// Только для вывода типа транзакции: связь с пулом не нужна, чистые проверки должны быть
-// импортируемы без поднятой БД.
+// Only to derive the transaction type: the module needs no pool, and its pure checks must be
+// importable without a running database.
 import type { db } from '../db/client';
 import { wasteTypes, type WasteTypeRow } from '../db/schema';
-import { err } from '../lib/errors';
+import { type AppError, err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
 
-// Типы мусора (ADR 0017). Отдельного справочника в интерфейсе нет: тип заводится вместе с первой
-// ценой и правится в строке тарифа, поэтому и правила его заведения живут рядом с прайсом.
+// Waste types (ADR 0017). The portal has no separate directory tab for them: a type is created
+// together with its first price and edited from the tariff row, so the rules of creating it live
+// next to the price list.
 //
-// Нормализацию названия приложение НЕ дублирует: и проверка, и уникальный индекс опираются на
-// SQL-функцию waste_type_name_key (приём ADR 0007 §2). Двойник в контрактах существует только
-// ради мгновенной подсказки в форме — источник истины здесь, в БД.
+// The application does NOT copy the name normalization: both the check and the unique index rely on
+// the SQL function `waste_type_name_key` (the ADR 0007 §2 technique). The contracts' twin exists
+// only for the instant hint in the form; the source of truth is the database.
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-/** Читающее соединение: подходит и пул, и транзакция. */
-type Reader = Pick<Tx, 'select'>;
+/** A connection that reads: the pool and a transaction both fit. */
+type Reader = Pick<Tx, 'select' | 'execute'>;
 
 // ── The reserved service type «Снег» (snow-removal plan, S2, S10; migration 0429) ──
 //
@@ -41,6 +46,45 @@ export function editableWasteTypes(): SQL {
     ne(wasteTypes.id, SNOW_WASTE_TYPE_ID),
     notInArray(wasteTypes.code, [...SERVICE_WASTE_TYPE_CODES]),
   )!;
+}
+
+/** Refusal of any edit or purge of the service row: it is never renamed, deactivated or removed. */
+export const SERVICE_WASTE_TYPE_LOCKED_MESSAGE = `«${SNOW_WASTE_TYPE_NAME}» — служебный тип заявок «Вывоз снега»: его ставит портал, и в справочнике его не переименовывают, не отключают и не удаляют`;
+
+/**
+ * Refusal of a name whose database key equals the reserved one. The reserved row already holds that
+ * key under `waste_types_name_key_unique`, so without this text the person would read «такой тип уже
+ * есть — выберите его в списке» about a type that no list offers.
+ */
+export const RESERVED_WASTE_TYPE_NAME_MESSAGE = `Название «${SNOW_WASTE_TYPE_NAME}» занято служебным типом заявок «Вывоз снега». ${SNOW_COST_AT_COMPLETION_MESSAGE}`;
+
+/** The service row by either identity. UUIDs compare case-insensitively, codes after trimming. */
+export function isServiceWasteTypeRow(row: { id: string; code: string }): boolean {
+  return isServiceWasteTypeId(row.id) || isServiceWasteTypeCode(row.code);
+}
+
+/**
+ * Field refusal of an edit of the service row, put on every field the request tried to change: the
+ * form shows a field error next to its field, and a request that touched only `isActive` would
+ * otherwise get a refusal marked on a field it never sent.
+ */
+export function serviceWasteTypeEditRefusal(fields: readonly string[]): AppError {
+  const marked = fields.length > 0 ? fields : ['name'];
+  return err.validation(
+    Object.fromEntries(marked.map((field) => [field, SERVICE_WASTE_TYPE_LOCKED_MESSAGE])),
+  );
+}
+
+/**
+ * Does the name belong to the reserved service type? Asked of the database's own
+ * `waste_type_name_key`, the function behind the unique index, and compared with the key of the
+ * literal name rather than with the seeded row: the answer must not depend on the row being present.
+ */
+export async function isReservedWasteTypeName(conn: Reader, name: string): Promise<boolean> {
+  const res = await conn.execute<{ reserved: boolean }>(
+    sql`SELECT waste_type_name_key(${name}) = waste_type_name_key(${SNOW_WASTE_TYPE_NAME}) AS reserved`,
+  );
+  return res.rows[0]?.reserved === true;
 }
 
 const TRANSLIT: Record<string, string> = {
@@ -102,7 +146,11 @@ export function wasteTypeCodeFromName(name: string): string {
   return /^[a-z]/.test(base) ? base : `wt_${base}`.replace(/_$/, '');
 }
 
-/** Свободный код на основе названия: занятая основа получает числовой суффикс. */
+/**
+ * A free code derived from the name: a taken stem gets a numeric suffix. A service code counts as
+ * taken even when no row holds it: «Snow» spelled in Latin derives `snow`, which the CHECK of
+ * migration 0429 reserves for the service row alone.
+ */
 async function freeWasteTypeCode(conn: Reader, name: string): Promise<string> {
   const base = wasteTypeCodeFromName(name);
   const rows = await conn
@@ -110,10 +158,11 @@ async function freeWasteTypeCode(conn: Reader, name: string): Promise<string> {
     .from(wasteTypes)
     .where(sql`${wasteTypes.code} = ${base} OR ${wasteTypes.code} LIKE ${`${base}\\_%`}`);
   const taken = new Set(rows.map((r) => r.code));
-  if (!taken.has(base)) return base;
+  const isFree = (code: string) => !taken.has(code) && !isServiceWasteTypeCode(code);
+  if (isFree(base)) return base;
   for (let i = 2; ; i += 1) {
     const candidate = `${base}_${i}`;
-    if (!taken.has(candidate)) return candidate;
+    if (isFree(candidate)) return candidate;
   }
 }
 
@@ -133,15 +182,24 @@ export async function findWasteTypeByName(
 }
 
 /**
- * Название свободно. Вариации написания («Бетонный бой» / «бетонный-бой») — не новый тип, а тот же
- * самый: вторая строка развалила бы пару «тип × техника» на две цены. Поле ошибки задаётся вызовом:
- * при заведении это `wasteTypeName` формы тарифа, при переименовании — `name`.
+ * The name is free. Spelling variations («Бетонный бой» / «бетонный-бой») are not a new type but the
+ * same one: a second row would split the pair «type × machinery» into two prices. The error field
+ * comes from the caller: `wasteTypeName` of the tariff form on creation, `name` on rename.
+ *
+ * The reserved name is refused first and in its own words (`reservedMessage`, by default
+ * `RESERVED_WASTE_TYPE_NAME_MESSAGE`): the duplicate text would send the person to a list that
+ * never offers the service type.
  */
 export async function assertWasteTypeNameFree(
   conn: Reader,
   name: string,
-  opts: { field: string; excludeId?: string },
+  opts: { field: string; excludeId?: string; reservedMessage?: string },
 ): Promise<void> {
+  if (await isReservedWasteTypeName(conn, name)) {
+    throw err.validation({
+      [opts.field]: opts.reservedMessage ?? RESERVED_WASTE_TYPE_NAME_MESSAGE,
+    });
+  }
   const clash = await findWasteTypeByName(conn, name);
   if (clash && clash.id !== opts.excludeId) {
     throw err.validation({ [opts.field]: wasteTypeDuplicateMessage(clash.name) });
@@ -149,15 +207,21 @@ export async function assertWasteTypeNameFree(
 }
 
 /**
- * Заведение типа. Похожие названия здесь не проверяются намеренно: похожесть — предупреждение
- * формы, а не запрет (ADR 0017 §4), и решение остаётся за человеком.
+ * Creating a type. Similar names are deliberately not checked here: similarity is a warning of the
+ * form, not a ban (ADR 0017 §4), and the decision stays with the person.
+ *
+ * A type is only ever created together with its first price (ADR 0017 §2), so the reserved name here
+ * is an attempt to price snow, and the refusal says why snow has no price list (S6).
  */
 export async function createWasteType(
   tx: Tx,
   name: string,
   field = 'wasteTypeName',
 ): Promise<WasteTypeRow> {
-  await assertWasteTypeNameFree(tx, name, { field });
+  await assertWasteTypeNameFree(tx, name, {
+    field,
+    reservedMessage: SNOW_COST_AT_COMPLETION_MESSAGE,
+  });
   const code = await freeWasteTypeCode(tx, name);
   const [created] = await tx.insert(wasteTypes).values({ code, name }).returning();
   return created!;

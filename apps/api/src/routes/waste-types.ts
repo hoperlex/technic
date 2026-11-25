@@ -3,6 +3,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { and, count, eq, exists, notExists } from 'drizzle-orm';
 import {
+  isServiceWasteTypeId,
   updateWasteTypeSchema,
   type WasteTypeDto,
   wasteTypeListQuerySchema,
@@ -18,6 +19,9 @@ import {
   assertWasteTypeNameFree,
   asWasteTypeNameConflict,
   editableWasteTypes,
+  isServiceWasteTypeRow,
+  SERVICE_WASTE_TYPE_LOCKED_MESSAGE,
+  serviceWasteTypeEditRefusal,
 } from '../services/waste-types';
 
 function toDto(t: WasteTypeRow): WasteTypeDto {
@@ -64,8 +68,8 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
         // request DTO carries the type name from its own join, not from this list.
         editableWasteTypes(),
         q.isActive === undefined ? undefined : eq(wasteTypes.isActive, q.isActive),
-        // Форма заявки спрашивает типы с действующей ценой: выбор типа без тарифа кончался бы
-        // отказом «тариф не найден» уже при сохранении заявки.
+        // The request form asks for types with an active price: choosing a type without a tariff
+        // would end in «тариф не найден» only when the request is saved.
         q.hasActiveTariff === undefined ? undefined : withActiveTariff(q.hasActiveTariff),
         searchCondition(q.search, [wasteTypes.code, wasteTypes.name]),
       );
@@ -95,9 +99,9 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
     },
   );
 
-  // Заведения типа тут нет: тип появляется вместе с первой ценой (POST /waste-tariffs, ADR 0017).
-  // Иначе брошенная на полпути форма оставляла бы тип без цены, а править такой тип негде —
-  // его интерфейс живёт в строке тарифа.
+  // There is no creation here: a type appears together with its first price (POST /waste-tariffs,
+  // ADR 0017). Otherwise a form abandoned halfway would leave a type without a price, and such a
+  // type could not be edited anywhere — its interface lives in the tariff row.
   r.patch(
     '/:id',
     {
@@ -105,12 +109,26 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
       schema: { params: idParams, body: updateWasteTypeSchema },
     },
     async (req) => {
-      // Переименование проверяется тем же правилом, что и заведение: иначе дубль, запрещённый
-      // при создании, заводился бы правкой соседней строки.
+      // The service row «Снег» (S10) is refused before any query and in field words: the database
+      // would refuse a rename or deactivation too, but only by a constraint name. The id is
+      // compared as a UUID — an uppercase spelling still names the reserved row — and the loaded
+      // row is checked by its code as well.
+      const sent = Object.keys(req.body);
+      if (isServiceWasteTypeId(req.params.id)) throw serviceWasteTypeEditRefusal(sent);
+      const [current] = await db
+        .select({ id: wasteTypes.id, code: wasteTypes.code })
+        .from(wasteTypes)
+        .where(eq(wasteTypes.id, req.params.id));
+      if (!current) throw err.notFound('Тип мусора не найден');
+      if (isServiceWasteTypeRow(current)) throw serviceWasteTypeEditRefusal(sent);
+
+      // A rename is checked by the same rule as creation: otherwise a duplicate refused on
+      // creation would be made by editing a neighbouring row, and the reserved name «Снег» would
+      // be taken by an ordinary, priced type.
       if (req.body.name !== undefined) {
         await assertWasteTypeNameFree(db, req.body.name, {
           field: 'name',
-          excludeId: req.params.id,
+          excludeId: current.id,
         });
       }
       const [updated] = await db
@@ -138,11 +156,16 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
     },
   );
 
-  // Удаление насовсем (ADR 0060). Цены прайса — не часть типа, а самостоятельные записи своих
-  // операторов: тип с ценами держит внешний ключ, и убирают их из прайса отдельно.
+  // Purge (ADR 0060). Prices are not part of the type but records of their operators: a type with
+  // prices is held by the foreign key, and they are removed from the price list separately.
   registerPurgeRoute(app, {
     load: async (id) => {
+      // The service row is never purged (S10). It is always active, so without this refusal the
+      // person would be told to deactivate it first — a step its CHECK forbids. Refused by the id
+      // (any case) before the query and by the code of the loaded row.
+      if (isServiceWasteTypeId(id)) throw err.conflict(SERVICE_WASTE_TYPE_LOCKED_MESSAGE);
       const [row] = await db.select().from(wasteTypes).where(eq(wasteTypes.id, id));
+      if (row && isServiceWasteTypeRow(row)) throw err.conflict(SERVICE_WASTE_TYPE_LOCKED_MESSAGE);
       return row;
     },
     isDown: (row) => !row.isActive,

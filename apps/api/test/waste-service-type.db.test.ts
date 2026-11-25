@@ -3,9 +3,12 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  isValidInn,
+  SNOW_COST_AT_COMPLETION_MESSAGE,
   SNOW_WASTE_TYPE_CODE,
   SNOW_WASTE_TYPE_ID,
   SNOW_WASTE_TYPE_NAME,
+  type WasteTariffDto,
   type WasteTypeDto,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -13,6 +16,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // set, because the config validates it at import time.
 import type { buildApp } from '../src/app';
 import type { db as AppDb } from '../src/db/client';
+import type * as WasteTypesNs from '../src/services/waste-types';
 
 /**
  * The reserved service waste type «Снег» at the directory entry points (snow-removal plan, §3.2,
@@ -47,6 +51,35 @@ interface Ctx {
   db: typeof AppDb;
   /** Administrator: directory write, purge, import and export. */
   admin: Auth;
+  /** This run's operator: tariffs belong to an operator (ADR 0026). */
+  operator: { id: string; inn: string };
+  messages: Pick<
+    typeof WasteTypesNs,
+    'SERVICE_WASTE_TYPE_LOCKED_MESSAGE' | 'RESERVED_WASTE_TYPE_NAME_MESSAGE'
+  >;
+}
+
+/** The reserved id as an old tab or a hand-written client may spell it. */
+const SNOW_ID_UPPER = SNOW_WASTE_TYPE_ID.toUpperCase();
+
+/**
+ * Spellings whose database key is the reserved one: case, spaces, «ё», separators and punctuation
+ * do not matter to `waste_type_name_key` (migration 0036).
+ */
+const RESERVED_SPELLINGS = ['Снег', 'снег', '  СНЕГ  ', 'Снёг', 'С-н-е-г', 'снег!', 'С Н Е Г'];
+
+/** Waste types created through the API by this run: their codes come from names, not `CODE`. */
+const createdTypeIds: string[] = [];
+
+/** A random INN with a valid checksum: the counterparty CHECK and the exchange both verify it. */
+function randomInn(): string {
+  const weights = [2, 4, 10, 3, 5, 9, 4, 6, 8];
+  for (;;) {
+    const digits = Array.from({ length: 9 }, () => Math.floor(Math.random() * 10));
+    const check = (weights.reduce((sum, w, i) => sum + w * digits[i]!, 0) % 11) % 10;
+    const inn = [...digits, check].join('');
+    if (isValidInn(inn) && !inn.startsWith('00')) return inn;
+  }
 }
 
 let ctx: Ctx;
@@ -148,13 +181,40 @@ describe.skipIf(!DB_URL)('служебный тип «Снег» в справо
     });
     expect(login.statusCode, login.body).toBe(200);
 
-    ctx = { app, db, admin: { authorization: `Bearer ${login.json().accessToken}` } };
+    const inn = randomInn();
+    const operator = await db.execute<{ id: string }>(sql`
+      INSERT INTO counterparties (type, name, inn)
+      VALUES ('operator', ${`Оператор снега ${RUN}`}, ${inn})
+      RETURNING id`);
+
+    const waste = await import('../src/services/waste-types');
+    ctx = {
+      app,
+      db,
+      admin: { authorization: `Bearer ${login.json().accessToken}` },
+      operator: { id: operator.rows[0]!.id, inn },
+      messages: {
+        SERVICE_WASTE_TYPE_LOCKED_MESSAGE: waste.SERVICE_WASTE_TYPE_LOCKED_MESSAGE,
+        RESERVED_WASTE_TYPE_NAME_MESSAGE: waste.RESERVED_WASTE_TYPE_NAME_MESSAGE,
+      },
+    };
   }, 120_000);
 
   afterAll(async () => {
     if (!ctx?.db) return;
     await ctx.app?.close();
+    if (ctx.operator) {
+      await ctx.db.execute(
+        sql`DELETE FROM waste_tariffs WHERE operator_counterparty_id = ${ctx.operator.id}`,
+      );
+    }
     await ctx.db.execute(sql`DELETE FROM waste_types WHERE code LIKE ${`${CODE}%`}`);
+    for (const id of createdTypeIds) {
+      await ctx.db.execute(sql`DELETE FROM waste_types WHERE id = ${id}`);
+    }
+    if (ctx.operator) {
+      await ctx.db.execute(sql`DELETE FROM counterparties WHERE id = ${ctx.operator.id}`);
+    }
     const users = sql`SELECT id FROM users WHERE email LIKE ${EMAIL('%')}`;
     // The audit log first: `audit_log.actor_user_id` is RESTRICT.
     await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${users})`);
@@ -196,5 +256,117 @@ describe.skipIf(!DB_URL)('служебный тип «Снег» в справо
     const withoutTariff = await listTypes('hasActiveTariff=false');
     expect(withoutTariff.find((t) => t.id === SNOW_WASTE_TYPE_ID)).toBeUndefined();
     expect(withoutTariff.map((t) => t.id)).toContain(own.id);
+  });
+  // ── 2. Edits and purge of the service row, reserved code and name ──
+
+  /** The reserved row as the database holds it: every refusal below must leave it untouched. */
+  async function serviceRow(): Promise<Record<string, unknown>> {
+    const res = await ctx.db.execute(sql`
+      SELECT id, code, name, description, sort_order, is_active, updated_at
+        FROM waste_types WHERE id = ${SNOW_WASTE_TYPE_ID}`);
+    expect(res.rows, 'the reserved row is gone').toHaveLength(1);
+    return res.rows[0]!;
+  }
+
+  it.each([SNOW_WASTE_TYPE_ID, SNOW_ID_UPPER])(
+    'правка служебной строки %s отвергается словами по каждому присланному полю',
+    async (id) => {
+      const before = await serviceRow();
+      const bodies: Record<string, unknown>[] = [
+        { name: 'Снег зимний' },
+        { isActive: false },
+        { name: 'Снег', isActive: true },
+        { description: 'Пояснение' },
+        { sortOrder: 1 },
+      ];
+      for (const body of bodies) {
+        const res = await inject('PATCH', `/api/v1/waste-types/${id}`, ctx.admin, body);
+        expect(res.statusCode, `${JSON.stringify(body)}: ${res.body}`).toBe(400);
+        const fields = res.json<{ fields: Record<string, string> }>().fields;
+        expect(Object.keys(fields).sort()).toEqual(Object.keys(body).sort());
+        for (const message of Object.values(fields)) {
+          expect(message).toBe(ctx.messages.SERVICE_WASTE_TYPE_LOCKED_MESSAGE);
+        }
+      }
+      expect(await serviceRow()).toEqual(before);
+    },
+  );
+
+  it('код через правку не меняется ни у какой строки: поля «Код» в правке нет', async () => {
+    const before = await serviceRow();
+    const res = await inject('PATCH', `/api/v1/waste-types/${SNOW_ID_UPPER}`, ctx.admin, {
+      code: 'sneg',
+    });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(await serviceRow()).toEqual(before);
+  });
+
+  it.each([SNOW_WASTE_TYPE_ID, SNOW_ID_UPPER])(
+    'удаление насовсем служебной строки %s отвергается до базы',
+    async (id) => {
+      const res = await inject('DELETE', `/api/v1/waste-types/${id}/purge`, ctx.admin);
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json<{ message: string }>().message).toBe(
+        ctx.messages.SERVICE_WASTE_TYPE_LOCKED_MESSAGE,
+      );
+      await serviceRow();
+    },
+  );
+
+  it('обычный тип не переименовать в «Снег» ни в каком написании', async () => {
+    const own = await ordinaryType();
+    for (const name of RESERVED_SPELLINGS) {
+      const res = await inject('PATCH', `/api/v1/waste-types/${own.id}`, ctx.admin, { name });
+      expect(res.statusCode, `«${name}»: ${res.body}`).toBe(400);
+      expect(res.json<{ fields: Record<string, string> }>().fields).toEqual({
+        name: ctx.messages.RESERVED_WASTE_TYPE_NAME_MESSAGE,
+      });
+    }
+    const after = await ctx.db.execute<{ name: string }>(
+      sql`SELECT name FROM waste_types WHERE id = ${own.id}`,
+    );
+    expect(after.rows[0]!.name).toBe(own.name);
+
+    // An ordinary rename still works: the refusal is about the reserved key, not about edits.
+    const renamed = await inject('PATCH', `/api/v1/waste-types/${own.id}`, ctx.admin, {
+      name: `${own.name} (переименован)`,
+    });
+    expect(renamed.statusCode, renamed.body).toBe(200);
+  });
+
+  it('новый тип с названием «Снег» через прайс не заводится: стоимость снега — при закрытии', async () => {
+    for (const name of RESERVED_SPELLINGS) {
+      const res = await inject('POST', '/api/v1/waste-tariffs', ctx.admin, {
+        operatorCounterpartyId: ctx.operator.id,
+        wasteTypeName: name,
+        containerKind: 'truck',
+        pricePerM3: 500,
+      });
+      expect(res.statusCode, `«${name}»: ${res.body}`).toBe(400);
+      expect(res.json<{ fields: Record<string, string> }>().fields).toEqual({
+        wasteTypeName: SNOW_COST_AT_COMPLETION_MESSAGE,
+      });
+    }
+    const tariffs = await ctx.db.execute(
+      sql`SELECT id FROM waste_tariffs WHERE operator_counterparty_id = ${ctx.operator.id}`,
+    );
+    expect(tariffs.rows).toEqual([]);
+  });
+
+  it('тип «Snow» латиницей — другое название, и зарезервированного кода он не получает', async () => {
+    const res = await inject('POST', '/api/v1/waste-tariffs', ctx.admin, {
+      operatorCounterpartyId: ctx.operator.id,
+      wasteTypeName: 'Snow',
+      containerKind: 'truck',
+      pricePerM3: 500,
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    const tariff = res.json<WasteTariffDto>();
+    createdTypeIds.push(tariff.wasteTypeId);
+    const type = await ctx.db.execute<{ code: string }>(
+      sql`SELECT code FROM waste_types WHERE id = ${tariff.wasteTypeId}`,
+    );
+    expect(type.rows[0]!.code).not.toBe(SNOW_WASTE_TYPE_CODE);
+    expect(type.rows[0]!.code).toMatch(/^snow_\d+$/u);
   });
 });
