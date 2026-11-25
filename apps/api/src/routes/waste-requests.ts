@@ -823,18 +823,37 @@ async function countRequestTickets(tx: Tx, requestId: string): Promise<number> {
   return Number(row!.c);
 }
 
-async function unlinkFiles(tx: Tx, requestId: string, fileIds: string[]): Promise<void> {
+async function unlinkFiles(
+  tx: Tx,
+  requestId: string,
+  fileIds: string[],
+  // Which links this caller may take off. The ordinary edit removes request documents only; ticket
+  // links leave solely through the authorized reset to «Новая», together with their recognition.
+  kind: 'attachment' | 'ticket',
+): Promise<void> {
   if (fileIds.length === 0) return;
   const linked = await tx
     .select({ id: files.id, objectKey: files.objectKey })
     .from(requestFiles)
     .innerJoin(files, eq(requestFiles.fileId, files.id))
-    .where(and(eq(requestFiles.requestId, requestId), inArray(requestFiles.fileId, fileIds)));
+    .where(
+      and(
+        eq(requestFiles.requestId, requestId),
+        eq(requestFiles.kind, kind),
+        inArray(requestFiles.fileId, fileIds),
+      ),
+    );
   if (linked.length === 0) return;
   const ids = linked.map((l) => l.id);
   await tx
     .delete(requestFiles)
-    .where(and(eq(requestFiles.requestId, requestId), inArray(requestFiles.fileId, ids)));
+    .where(
+      and(
+        eq(requestFiles.requestId, requestId),
+        eq(requestFiles.kind, kind),
+        inArray(requestFiles.fileId, ids),
+      ),
+    );
   await scheduleFilesDeletion(tx, linked, false);
 }
 
@@ -1896,7 +1915,29 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           .where(and(eq(wasteRequests.id, id), eq(wasteRequests.version, body.version)))
           .returning({ id: wasteRequests.id });
         if (!updated) throw err.conflict();
-        if (body.removeFileIds?.length) await unlinkFiles(tx, id, body.removeFileIds);
+        if (body.removeFileIds?.length) {
+          // A ticket named here would lose its file and recognized pages while its ticket row
+          // survived as if entered by hand (snow-removal plan, §3.2: «Ordinary edit removes only
+          // request attachments»). Refused by name rather than skipped, so the form learns why the
+          // paper is still there.
+          const tickets = await tx
+            .select({ fileId: requestFiles.fileId })
+            .from(requestFiles)
+            .where(
+              and(
+                eq(requestFiles.requestId, id),
+                eq(requestFiles.kind, 'ticket'),
+                inArray(requestFiles.fileId, body.removeFileIds),
+              ),
+            );
+          if (tickets.length > 0) {
+            throw err.badRequest(
+              'Талон правкой заявки не снимают — его снимает только возврат заявки в «Новую»',
+              { removeFileIds: 'Талон правкой не снимается' },
+            );
+          }
+          await unlinkFiles(tx, id, body.removeFileIds, 'attachment');
+        }
         if (body.addFileIds?.length) await linkFiles(tx, id, body.addFileIds, p.id, true);
         // Смена типа оставила бы у заявки факт, которого новому типу не полагается: контейнерная
         // операция не несёт вывезенного вовсе (ADR 0035), а мусор и металлолом меряются разными
@@ -2338,7 +2379,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           // удаление общим порядком, и месяц его ещё можно достать, если откат был ошибкой.
           // Обычные вложения не трогаются — они предъявляют саму заявку, а не её выполнение.
           const ticketIds = tickets.map((t) => t.fileId);
-          await unlinkFiles(tx, before.id, ticketIds);
+          await unlinkFiles(tx, before.id, ticketIds, 'ticket');
           ticketsUnlinked = ticketIds.length;
           await tx
             .delete(wasteRequestCompletions)

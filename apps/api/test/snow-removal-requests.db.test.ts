@@ -14,6 +14,8 @@ import {
   garbageWasteType,
   inject,
   insertRequest,
+  linkTicket,
+  newFile,
   newOperator,
   newSite,
   REQUESTS,
@@ -157,6 +159,37 @@ describe.skipIf(!RUN_DB)('editing a snow request', () => {
     });
     expect(res.statusCode, res.body).toBe(400);
     expect(res.json().fields?.requestType).toBe(SNOW_TYPE_CHANGE_MESSAGE);
+  });
+
+  it('an ordinary edit removes attachments only: a ticket id is refused and stays linked', async () => {
+    const id = await insertRequest({ status: 'done' });
+    const ticket = await linkTicket(id, s.users.dispatcher);
+    const attachment = await newFile(s.users.dispatcher);
+    await current().db.execute(sql`
+      INSERT INTO request_files (request_id, file_id, kind)
+      VALUES (${id}, ${attachment.id}, 'attachment')`);
+    let dto = await card(id, s.users.dispatcher.auth);
+    const refused = await inject('PATCH', `${REQUESTS}/${id}`, s.users.dispatcher.auth, {
+      removeFileIds: [ticket, attachment.id],
+      version: dto.version,
+    });
+    expect(refused.statusCode, refused.body).toBe(400);
+    expect(refused.json().fields?.removeFileIds).toBeTruthy();
+    dto = await card(id, s.users.dispatcher.auth);
+    expect(dto.tickets.map((t) => t.id)).toEqual([ticket]);
+    expect(dto.files.map((f) => f.id)).toEqual([attachment.id]);
+    expect(
+      await scalar<string>(sql`SELECT status::text AS v FROM files WHERE id = ${ticket}`),
+    ).toBe('active');
+
+    const removed = await inject('PATCH', `${REQUESTS}/${id}`, s.users.dispatcher.auth, {
+      removeFileIds: [attachment.id],
+      version: dto.version,
+    });
+    expect(removed.statusCode, removed.body).toBe(200);
+    const after = removed.json() as WasteRequestDto;
+    expect(after.files).toEqual([]);
+    expect(after.tickets.map((t) => t.id)).toEqual([ticket]);
   });
 
   it('accepts the equal type', async () => {
