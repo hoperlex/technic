@@ -133,10 +133,11 @@ async function newRequest(
   const volume = requestType === 'metal_removal' || requestType.startsWith('container') ? null : 20;
   const row = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO waste_requests (object_id, request_type, delivery_at, status, created_by, comment,
-                                volume_m3, waste_type_id)
+                                volume_m3, waste_type_id, responsible_name, responsible_phone)
     VALUES (${ctx.objectId}, ${sql.raw(`'${requestType}'::request_type`)},
             '2026-11-20T09:00:00+03:00', ${sql.raw(`'${status}'::request_status`)},
-            ${ctx.adminId}, ${KEY_PREFIX}, ${volume}, ${snow ? SNOW_WASTE_TYPE_ID : null})
+            ${ctx.adminId}, ${KEY_PREFIX}, ${volume}, ${snow ? SNOW_WASTE_TYPE_ID : null},
+            'Иванов Иван Иванович', '+79990000000')
     RETURNING id`);
   const id = row.rows[0]!.id;
   if (opts.factVolumeM3 !== undefined) {
@@ -346,13 +347,16 @@ async function settledSnow(): Promise<{ id: string; fileId: string }> {
   return { id, fileId };
 }
 
+/** Requests are found by their author: an edit under test rewrites the comment. */
 async function cleanup(db: typeof AppDb): Promise<void> {
+  const admin = sql`(SELECT id FROM users WHERE email = ${ADMIN_EMAIL})`;
   await db.execute(sql`
     DELETE FROM jobs
      WHERE type = ${JOB_TYPE}
        AND payload->>'requestId' IN (
-             SELECT id::text FROM waste_requests WHERE comment = ${KEY_PREFIX})`);
-  await db.execute(sql`DELETE FROM waste_requests WHERE comment = ${KEY_PREFIX}`);
+             SELECT id::text FROM waste_requests WHERE created_by IN ${admin})`);
+  await db.execute(sql`DELETE FROM jobs WHERE payload->>'objectKey' LIKE ${`${KEY_PREFIX}%`}`);
+  await db.execute(sql`DELETE FROM waste_requests WHERE created_by IN ${admin}`);
   await db.execute(sql`DELETE FROM files WHERE object_key LIKE ${`${KEY_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM construction_objects WHERE code = ${`SNOW-REVIEW-${RUN}`}`);
   await db.execute(sql`DELETE FROM users WHERE email = ${ADMIN_EMAIL}`);
@@ -793,6 +797,91 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
       const card = await cardOf(id);
       expect(card.badge).toMatchObject({ unreviewedPaper: 1, failures: 0 });
       expect((await complete(id)).statusCode).toBe(400);
+    });
+  });
+
+  describe('edit and reset of a snow request', () => {
+    async function attachDocument(requestId: string): Promise<string> {
+      const file = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO files (bucket, object_key, filename, content_type, size, status, uploaded_by,
+                           storage_verified_at)
+        VALUES ('test', ${`${KEY_PREFIX}${randomUUID()}`}, 'схема.pdf', 'application/pdf', 1024,
+                'active', ${ctx.adminId}, now())
+        RETURNING id`);
+      const fileId = file.rows[0]!.id;
+      await ctx.db.execute(sql`
+        INSERT INTO request_files (request_id, file_id, kind)
+        VALUES (${requestId}, ${fileId}, 'attachment')`);
+      return fileId;
+    }
+
+    async function reviewRows(requestId: string) {
+      const res = await ctx.db.execute<{
+        links: number;
+        attachments: number;
+        files: number;
+        tickets: number;
+        resolutions: number;
+      }>(sql`
+        SELECT (SELECT count(*)::int FROM request_files
+                 WHERE request_id = ${requestId} AND kind = 'ticket') AS links,
+               (SELECT count(*)::int FROM request_files
+                 WHERE request_id = ${requestId} AND kind = 'attachment') AS attachments,
+               (SELECT count(*)::int FROM waste_ticket_files WHERE request_id = ${requestId}) AS files,
+               (SELECT count(*)::int FROM waste_tickets WHERE request_id = ${requestId}) AS tickets,
+               (SELECT count(*)::int FROM waste_ticket_check_resolutions
+                 WHERE request_id = ${requestId}) AS resolutions`);
+      return res.rows[0]!;
+    }
+
+    it('an ordinary edit removes a request attachment and leaves the tickets and their review', async () => {
+      const { id } = await settledSnow();
+      const document = await attachDocument(id);
+      const res = await inject('PATCH', `${REQUESTS}/${id}`, {
+        comment: 'Уточнили подъезд',
+        removeFileIds: [document],
+        version: await versionOf(id),
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(await reviewRows(id)).toEqual({
+        links: 1,
+        attachments: 0,
+        files: 1,
+        tickets: 1,
+        resolutions: 0,
+      });
+    });
+
+    it('the authorized reset to «Новая» removes ticket links and their review data', async () => {
+      const { id } = await settledSnow();
+      const document = await attachDocument(id);
+      await ctx.db.execute(sql`
+        INSERT INTO waste_ticket_check_resolutions (request_id, check_code, subject_key,
+                                                    input_fingerprint, accepted_by, comment)
+        VALUES (${id}, 'volume_mismatch', '', ${'f'.repeat(64)}, ${ctx.adminId}, 'Принято')`);
+
+      for (const status of ['confirmed', 'new'] as const) {
+        const res = await inject('PATCH', `${REQUESTS}/${id}/status`, {
+          status,
+          version: await versionOf(id),
+          comment: 'Заведена не тем типом',
+        });
+        expect(res.statusCode, res.body).toBe(200);
+      }
+      expect(await reviewRows(id)).toEqual({
+        links: 0,
+        attachments: 1,
+        files: 0,
+        tickets: 0,
+        resolutions: 0,
+      });
+      // Nothing left to review: no badge, out of the register.
+      expect(await storedState(id)).toBeNull();
+      expect(await registry()).not.toContain(id);
+      const documentLink = await ctx.db.execute<{ c: number }>(
+        sql`SELECT count(*)::int AS c FROM request_files WHERE file_id = ${document}`,
+      );
+      expect(documentLink.rows[0]?.c).toBe(1);
     });
   });
 
