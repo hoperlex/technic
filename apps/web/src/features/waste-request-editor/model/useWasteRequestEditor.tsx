@@ -120,7 +120,13 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
     objectId: string | undefined,
     assigned?: { id: string | null; name: string | null },
   ) => {
-    const options = operatorOptionsForObject(operators.options ?? [], objectId, assigned);
+    const site = objectId ? objects.options?.find((object) => object.id === objectId) : undefined;
+    const options = operatorOptionsForObject(
+      operators.options ?? [],
+      objectId,
+      assigned,
+      site ? site.operators.length + (site.hiddenOperatorLinks ?? 0) : undefined,
+    );
     return ownOperatorId ? options.filter((option) => option.value === ownOperatorId) : options;
   };
   /**

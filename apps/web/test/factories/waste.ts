@@ -79,6 +79,8 @@ export function objectDto(overrides: Partial<ObjectDto> = {}): ObjectDto {
     name: 'ЖК Северный',
     address: 'г. Москва, ул. Северная, 1',
     isActive: true,
+    // The API always sends the operator list; the editor reads its length for the binding rule.
+    operators: [],
     ...overrides,
   } as ObjectDto;
 }
