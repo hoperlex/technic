@@ -5,11 +5,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   SNOW_WASTE_TYPE_ID,
   SNOW_WASTE_TYPE_NAME,
+  type AnalyticsCustomerRow,
   type AnalyticsQualityEntry,
+  type AnalyticsSummaryDto,
   type WasteStatsDto,
   type WasteStatsRowDto,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
+import { readWorkbook, type SheetOutput } from '../src/lib/xlsx';
 // Types only: the values are imported with `await import` after the environment is set — the
 // config validates it on import and fails without it.
 import type { buildApp } from '../src/app';
@@ -785,6 +788,197 @@ describe.skipIf(!DB_URL)('вывоз снега: статистика за от�
       const empty = await stats(`month=${MONTH}&kind=snow`, ctx.emptyScopeAuth);
       expect(empty.rows).toEqual([]);
       expect(empty.totals.requests).toBe(0);
+    });
+  });
+
+  describe('сводная книга: «Снег» в «Вывозе мусора» (S9)', () => {
+    const period = `from=${MONTH}-01&to=${MONTH}-30&step=month`;
+
+    async function summary(): Promise<AnalyticsSummaryDto> {
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/analytics/summary?${period}`,
+        headers: ctx.auth,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json() as AnalyticsSummaryDto;
+    }
+
+    /** The ACTUAL workbook the route sends, read back the way the portal reads foreign books. */
+    async function workbook(): Promise<SheetOutput[]> {
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/analytics/export?${period}`,
+        headers: ctx.auth,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return readWorkbook(new Uint8Array(res.rawPayload));
+    }
+
+    function sheet(sheets: SheetOutput[], name: string): string[][] {
+      const found = sheets.find((item) => item.name === name);
+      if (!found) throw new Error(`Лист «${name}» не найден`);
+      return found.rows;
+    }
+
+    function customer(dto: AnalyticsSummaryDto, site: keyof Ctx['site']): AnalyticsCustomerRow {
+      const row = dto.rows.find((r) => r.kind === 'object' && r.id === ctx.site[site]);
+      if (!row) throw new Error(`Площадки ${site} в своде нет`);
+      return row;
+    }
+
+    const label = (site: keyof Ctx['site']): string =>
+      `${CODE[site]} Площадка снега ${site.toUpperCase()} ${RUN}`;
+
+    /**
+     * Rows of one customer block of «Детализация», keyed by their first cell: the block starts with
+     * its header row and ends with the blank row before the next customer.
+     */
+    function detailBlock(rows: string[][], site: keyof Ctx['site']): Map<string, string[]> {
+      const start = rows.findIndex((row) => row[0]?.startsWith(`Объект ${label(site)} ·`));
+      if (start === -1) throw new Error(`Блока площадки ${site} нет`);
+      const block = new Map<string, string[]>();
+      for (const row of rows.slice(start + 1)) {
+        if ((row[0] ?? '') === '') break;
+        block.set(row[0]!, row);
+      }
+      return block;
+    }
+
+    it('сумма двух видов вкладки равна разряду вывоза в своде — по каждой площадке и в итоге', async () => {
+      const [dto, waste, snow] = await Promise.all([
+        summary(),
+        stats(`month=${MONTH}&kind=waste`),
+        stats(`month=${MONTH}&kind=snow`),
+      ]);
+      for (const site of ['a', 'b', 'c', 'd'] as const) {
+        const w = rowOf(waste, site);
+        const sn = rowOf(snow, site);
+        const book = customer(dto, site).byModule.waste;
+        const both = (pick: (r: WasteStatsRowDto) => number | null): number =>
+          (w ? (pick(w) ?? 0) : 0) + (sn ? (pick(sn) ?? 0) : 0);
+        expect(book.volumeM3, site).toBe(both((r) => r.doneVolumeM3));
+        expect(book.removals, site).toBe(both((r) => r.removals));
+        expect(book.requests, site).toBe(both((r) => r.requests));
+        expect(book.money.fact, site).toBe(both((r) => r.doneCost));
+        expect(book.money.unpriced, site).toBe(both((r) => r.unpricedRequests));
+      }
+      expect(dto.totals.waste).toMatchObject({
+        volumeM3: waste.totals.doneVolumeM3 + snow.totals.doneVolumeM3,
+        removals: waste.totals.removals + snow.totals.removals,
+        requests: 12,
+        money: { fact: 2_000_003_496.36, low: 1000, high: 1000, unpriced: 3 },
+      });
+      // The price-quality row: snow removed without an amount; all requests of the set below.
+      const price = qualityOf(dto, 'waste.requests_without_price');
+      expect(price).toMatchObject({ value: 3, outOf: 12 });
+      expect(price.value).toBe(
+        qualityOf(waste, 'waste.requests_without_price').value +
+          qualityOf(snow, 'waste.requests_without_price').value,
+      );
+    });
+
+    it('в книге Excel позиция «Снег» отдельно от мусора и несёт числа вкладки', async () => {
+      const [sheets, snow] = await Promise.all([workbook(), stats(`month=${MONTH}&kind=snow`)]);
+      const detail = sheet(sheets, 'Детализация');
+      const titles = detail[2] ?? [];
+      const col = (title: string): number => {
+        const index = titles.indexOf(title);
+        if (index === -1) throw new Error(`Колонки «${title}» нет`);
+        return index;
+      };
+      const numberAt = (row: string[] | undefined, title: string): number =>
+        Number(row?.[col(title)]);
+
+      for (const site of ['a', 'b', 'c', 'd'] as const) {
+        const block = detailBlock(detail, site);
+        const position = block.get(SNOW_WASTE_TYPE_NAME);
+        const tab = rowOf(snow, site)!;
+        expect(position, site).toBeDefined();
+        expect(numberAt(position, 'м³'), site).toBe(tab.doneVolumeM3);
+        expect(numberAt(position, 'Вывозов'), site).toBe(tab.removals);
+        expect(numberAt(position, 'Заявок'), site).toBe(tab.requests);
+        // A dash in the tab is "no amount known"; the book's fact column sums what is known.
+        expect(numberAt(position, '₽ факт'), site).toBe(tab.doneCost ?? 0);
+        expect(numberAt(position, 'Без цены'), site).toBe(tab.unpricedRequests);
+        // Snow has no estimate at all.
+        expect(numberAt(position, '₽ оц. ниж.'), site).toBe(0);
+      }
+
+      // Site A keeps garbage as its own position beside «Снег», and the module row sums both.
+      const a = detailBlock(detail, 'a');
+      const garbage = a.get(`ТЕСТ мусор рядом со снегом ${RUN}`);
+      expect(numberAt(garbage, 'м³')).toBe(20);
+      expect(numberAt(garbage, '₽ факт')).toBe(2000);
+      expect(numberAt(garbage, '₽ оц. ниж.')).toBe(1000);
+      const module = a.get('Вывоз мусора');
+      expect(numberAt(module, 'м³')).toBe(49);
+      expect(numberAt(module, 'Вывозов')).toBe(4);
+      expect(numberAt(module, 'Заявок')).toBe(7);
+      expect(numberAt(module, '₽ факт')).toBe(3500);
+      expect(numberAt(module, 'Без цены')).toBe(1);
+      // Large legal amounts of site B, exactly.
+      expect(numberAt(detailBlock(detail, 'b').get(SNOW_WASTE_TYPE_NAME), '₽ факт')).toBe(
+        1_999_999_996.36,
+      );
+    });
+
+    it('свод и «Всего» в книге — точные суммы, «итого» сложено до округления', async () => {
+      const rows = sheet(await workbook(), 'Свод');
+      const groups = rows[2] ?? [];
+      const titles = rows[3] ?? [];
+      /** A column inside its two-storey header: the group cell, then the title under it. */
+      const col = (group: string, title: string): number => {
+        const start = groups.indexOf(group);
+        if (start === -1) throw new Error(`Группы «${group}» нет`);
+        for (let i = start; i < titles.length; i += 1) {
+          if (i > start && (groups[i] ?? '') !== '') break;
+          if (titles[i] === title) return i;
+        }
+        throw new Error(`Колонки «${group} · ${title}» нет`);
+      };
+      const line = (first: string): string[] => {
+        const row = rows.find((r) => r[0] === first);
+        if (!row) throw new Error(`Строки «${first}» нет`);
+        return row;
+      };
+      const b = line(label('b'));
+      expect(Number(b[col('Вывоз мусора', 'м³')])).toBe(25);
+      expect(Number(b[col('Деньги, ₽', 'факт')])).toBe(1_999_999_996.36);
+      expect(Number(b[col('Деньги, ₽', 'без цены')])).toBe(1);
+      const c = line(label('c'));
+      expect(Number(c[col('Деньги, ₽', 'факт')])).toBe(0);
+      expect(Number(c[col('Деньги, ₽', 'без цены')])).toBe(1);
+
+      const total = line('Всего');
+      expect(Number(total[col('Вывоз мусора', 'м³')])).toBe(84);
+      expect(Number(total[col('Деньги, ₽', 'факт')])).toBe(2_000_003_496.36);
+      expect(Number(total[col('Деньги, ₽', 'итого ниж.')])).toBe(2_000_004_496.36);
+      expect(Number(total[col('Деньги, ₽', 'без цены')])).toBe(3);
+    });
+
+    it('лист «Данные», «Качество» и методика говорят о снеге то же самое', async () => {
+      const sheets = await workbook();
+      const data = sheet(sheets, 'Данные');
+      const head = data[0] ?? [];
+      const at = (title: string): number => head.indexOf(title);
+      const snowRows = data.slice(1).filter((row) => row[at('Позиция')] === SNOW_WASTE_TYPE_NAME);
+      expect(snowRows).toHaveLength(10);
+      const fact = snowRows.reduce(
+        (sum, row) => sum + Math.round(Number(row[at('₽ факт')]) * 100),
+        0,
+      );
+      expect(fact).toBe(200_000_149_636);
+
+      const quality = new Map(sheet(sheets, 'Качество').map((row) => [row[0], row[1]]));
+      expect(quality.get('Заявок вывоза без цены')).toBe('3 из 12 (25 %)');
+
+      const parameters = sheet(sheets, 'Параметры');
+      expect(parameters.find((row) => row[0] === 'Вывоз снега')?.[1]).toContain(
+        'внесённая при закрытии',
+      );
+      const method = parameters.find((row) => row[0] === 'Деньги, ₽ · без цены');
+      expect(method?.[1]).toContain('снега');
     });
   });
 });
