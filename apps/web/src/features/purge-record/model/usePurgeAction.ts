@@ -17,6 +17,13 @@ interface Options {
    * ключ (`objectKeys.list(params)`), и вместо одного запроса погасились бы три чужих, молча.
    */
   invalidate: readonly (readonly unknown[])[];
+  /**
+   * Close the confirmation when the server refuses. Off for the directories: there the dialog
+   * stays open so the person can retry or cancel. On for a purge that carries a confirmed version —
+   * a 409 means the row changed since the dialog opened, the confirmation it answered is stale, and
+   * the same dialog could only resend the same stale version.
+   */
+  closeOnRefusal?: boolean;
 }
 
 interface PurgeAction {
@@ -36,7 +43,12 @@ interface PurgeAction {
  * проверяется второе условие — что запись погашена. Право без него открыло бы удаление активной
  * строки, на которой сервер всё равно откажет.
  */
-export function usePurgeAction({ subject, purge, invalidate }: Options): PurgeAction {
+export function usePurgeAction({
+  subject,
+  purge,
+  invalidate,
+  closeOnRefusal = false,
+}: Options): PurgeAction {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
   const qc = useQueryClient();
@@ -63,10 +75,9 @@ export function usePurgeAction({ subject, purge, invalidate }: Options): PurgeAc
         okText: 'Удалить окончательно',
         okButtonProps: { danger: true },
         cancelText: 'Отмена',
-        // A refusal closes the dialog: the toast names the reason, and the confirmation it answered
-        // is stale (a 409 means the record changed since the dialog opened). A rejected promise
-        // would keep the stale dialog open and surface as an unhandled rejection.
-        onOk: () => mutation.mutateAsync(id).catch(() => undefined),
+        onOk: closeOnRefusal
+          ? () => mutation.mutateAsync(id).catch(() => undefined)
+          : () => mutation.mutateAsync(id),
       }),
   };
 }

@@ -112,6 +112,7 @@ export function WasteArchiveTab() {
       }
     },
     invalidate: [wasteRequestKeys.root],
+    closeOnRefusal: true,
   });
 
   const removePermanently = (r: WasteRequestDto) => {
