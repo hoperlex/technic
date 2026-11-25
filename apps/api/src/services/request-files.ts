@@ -335,3 +335,20 @@ export async function hardDeleteFiles(
     });
   }
 }
+
+/**
+ * Name and quarantine of the given files as they are NOW, by id. A frozen response re-reads these
+ * two columns before it is emitted (snow-removal plan, §3.2): the receipt saved its attachment ids,
+ * and asking the request for a fresh attachment list instead would replace what was frozen.
+ */
+export async function loadFileNameRows(
+  exec: Tx | typeof db,
+  fileIds: readonly string[],
+): Promise<Map<string, { filename: string; quarantinedAt: Date | null }>> {
+  if (fileIds.length === 0) return new Map();
+  const rows = await exec
+    .select({ id: files.id, filename: files.filename, quarantinedAt: files.quarantinedAt })
+    .from(files)
+    .where(inArray(files.id, [...new Set(fileIds)]));
+  return new Map(rows.map((r) => [r.id, { filename: r.filename, quarantinedAt: r.quarantinedAt }]));
+}

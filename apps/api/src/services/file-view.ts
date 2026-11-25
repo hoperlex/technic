@@ -70,3 +70,20 @@ export function fileView(
     createdAt: row.createdAt.toISOString(),
   };
 }
+
+/**
+ * An attachment of a response frozen EARLIER (a create receipt, snow-removal plan §3.2) under the
+ * file's CURRENT state. The receipt keeps everything it froze except the name, which is decided
+ * now by the same rule as above: a file quarantined after the freeze loses its name and gains the
+ * flag, a released one gets its name back. `current` is the file row read by the saved id —
+ * `undefined` means the row is gone and its visibility cannot be established, so the name is
+ * withheld instead of trusting the frozen text.
+ */
+export function refreshedFileView<F extends AttachedFileDto>(
+  frozen: F,
+  current: FileNameRow | undefined,
+): F {
+  const { quarantined: _frozenFlag, ...rest } = frozen;
+  void _frozenFlag;
+  return { ...rest, ...(current ? fileNameView(current) : { filename: '' }) } as F;
+}

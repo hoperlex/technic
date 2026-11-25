@@ -2,7 +2,12 @@ import { desc, eq, sql } from 'drizzle-orm';
 import type { RequestHistoryEntryDto, RequestHistoryKind } from '@technic/contracts';
 import { db } from '../db/client';
 import { requestStatusHistory, users } from '../db/schema';
-import { HISTORY_LIMIT, loadAuditEvents, mergeHistory } from './request-history';
+import {
+  HISTORY_LIMIT,
+  type HistoryReader,
+  loadAuditEvents,
+  mergeHistory,
+} from './request-history';
 
 // История заявки на вывоз (ADR 0012). Общая часть — в request-history.ts; здесь только своя
 // таблица переходов и перечень событий аудита этого модуля.
@@ -51,9 +56,11 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
 export async function loadWasteRequestHistory(
   requestId: string,
   created: { at: Date; actorId: string; actorName: string },
+  // The card's route passes the snapshot transaction in which it authorized the row (§3.2).
+  reader: HistoryReader = db,
 ): Promise<RequestHistoryEntryDto[]> {
   const [statusRows, auditRows] = await Promise.all([
-    db
+    reader
       .select({
         id: requestStatusHistory.id,
         fromStatus: requestStatusHistory.fromStatus,
@@ -73,8 +80,15 @@ export async function loadWasteRequestHistory(
       .where(eq(requestStatusHistory.requestId, requestId))
       .orderBy(desc(requestStatusHistory.changedAt))
       .limit(HISTORY_LIMIT),
-    loadAuditEvents('waste_request', requestId, AUDIT_ACTIONS),
+    loadAuditEvents('waste_request', requestId, AUDIT_ACTIONS, reader),
   ]);
 
-  return mergeHistory({ requestId, statusRows, auditRows, auditKinds: AUDIT_KINDS, created });
+  return mergeHistory({
+    requestId,
+    statusRows,
+    auditRows,
+    auditKinds: AUDIT_KINDS,
+    created,
+    reader,
+  });
 }

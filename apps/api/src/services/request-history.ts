@@ -19,6 +19,14 @@ import { fileListText } from './request-diff';
 // Здесь общая часть обоих модулей: выборка событий аудита (таблица одна на всех) и сборка
 // хронологии. Своя у модуля только выборка истории статусов — таблицы у них разные.
 
+/**
+ * Who reads the history: the pool, or a snapshot transaction of the caller. The waste request
+ * card's history authorizes the row and reads its events in one repeatable-read snapshot
+ * (snow-removal plan, §3.2), so the reads below take an optional executor; other modules keep the
+ * pool.
+ */
+export type HistoryReader = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 /** Хвост длинной истории (правки → откаты → повторные закрытия) человеку уже не нужен. */
 export const HISTORY_LIMIT = 200;
 
@@ -100,9 +108,10 @@ export async function loadAuditEvents(
   entityType: string,
   entityId: string,
   actions: readonly string[],
+  reader: HistoryReader = db,
 ): Promise<AuditEventRow[]> {
   return (
-    db
+    reader
       .select({
         id: auditLog.id,
         action: auditLog.action,
@@ -157,12 +166,13 @@ export async function applyFileNameRule(
    * чего карантин и заведён.
    */
   entries: readonly { changes: RequestChangeDto[] }[],
+  reader: HistoryReader = db,
 ): Promise<void> {
   const ids = new Set<string>();
   for (const entry of entries)
     for (const change of entry.changes) for (const file of change.files ?? []) ids.add(file.id);
   if (ids.size === 0) return;
-  const rows = await db
+  const rows = await reader
     .select({ id: files.id, quarantinedAt: files.quarantinedAt })
     .from(files)
     .where(inArray(files.id, [...ids]));
@@ -195,6 +205,7 @@ export async function mergeHistory(params: {
   /** Какое событие истории означает действие аудита; неизвестное считается правкой. */
   auditKinds: Record<string, RequestHistoryKind>;
   created: { at: Date; actorId: string; actorName: string };
+  reader?: HistoryReader;
 }): Promise<RequestHistoryEntryDto[]> {
   const { requestId, statusRows, auditRows, auditKinds, created } = params;
   const entries: RequestHistoryEntryDto[] = [
@@ -244,6 +255,6 @@ export async function mergeHistory(params: {
     .slice(0, HISTORY_LIMIT)
     .reverse();
   // Правило имени — после обрезки: спрашивать состояние файлов у отброшенного хвоста незачем.
-  await applyFileNameRule(shown);
+  await applyFileNameRule(shown, params.reader);
   return shown;
 }

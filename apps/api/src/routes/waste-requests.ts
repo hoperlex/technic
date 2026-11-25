@@ -104,6 +104,7 @@ import {
   assertFilesAttachable,
   assertTotalWithinLimit,
   hardDeleteFiles,
+  loadFileNameRows,
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
@@ -122,7 +123,7 @@ import {
   ticketsAddedChanges,
 } from '../services/waste-request-diff';
 import { loadWasteRequestHistory } from '../services/waste-request-history';
-import { fileView } from '../services/file-view';
+import { fileView, refreshedFileView } from '../services/file-view';
 import { vehiclesByRequestIds } from '../services/waste-request-vehicles';
 import { assertOperatorServesObject } from '../services/object-operators';
 import { enqueueTicketRecognition, purgeRequestRecognition } from '../services/waste-tickets';
@@ -974,6 +975,49 @@ async function writeOwnerMismatchAudit(
   });
 }
 
+/**
+ * A response built earlier — frozen in a receipt or in the writer's transaction — under the
+ * CURRENT state of its attachments (snow-removal plan, §3.2). Only the names are re-decided, by
+ * the saved file ids: a file quarantined after the snapshot loses its name, a file whose row is
+ * gone keeps its entry without a name, and every other frozen field stays as frozen. A fresh
+ * attachment list is deliberately NOT loaded: it would replace the snapshot with today's request.
+ */
+async function withLiveFileView(dto: WasteRequestDto): Promise<WasteRequestDto> {
+  if (dto.files.length === 0 && dto.tickets.length === 0) return dto;
+  const current = await loadFileNameRows(
+    db,
+    [...dto.files, ...dto.tickets].map((f) => f.id),
+  );
+  return {
+    ...dto,
+    files: dto.files.map((f) => refreshedFileView(f, current.get(f.id))),
+    tickets: dto.tickets.map((f) => refreshedFileView(f, current.get(f.id))),
+  };
+}
+
+/**
+ * Before a frozen creation answer is replayed, the request it names is asked for its CURRENT
+ * site, operator and archive state (§3.2): the receipt binds the key to its creator, not to a
+ * permanent right to read the request. A request moved to another site or archived since the
+ * first send answers as the card would — 403 or 404 — instead of with its frozen data. A request
+ * that no longer exists answers 404 for the same reason.
+ */
+async function emitReceipt(p: Principal, frozen: WasteRequestDto): Promise<WasteRequestDto> {
+  const [row] = await db
+    .select({
+      objectId: wasteRequests.objectId,
+      operatorCounterpartyId: wasteRequests.operatorCounterpartyId,
+      deletedAt: wasteRequests.deletedAt,
+    })
+    .from(wasteRequests)
+    .where(eq(wasteRequests.id, frozen.id));
+  if (!row) throw err.notFound('Заявка не найдена');
+  assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
+  assertPlaceObjectScope(p, row.objectId, WASTE_SCOPE_LABEL);
+  assertOperatorScope(p, row.operatorCounterpartyId);
+  return withLiveFileView(frozen);
+}
+
 export default async function wasteRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   // Право на каждое действие отдельно (ADR 0021). Раньше модуль был открыт любому вошедшему,
@@ -1447,28 +1491,32 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   // отдельного права на неё нет: это те же события, что и в карточке, только по времени.
   r.get('/:id/history', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
-    const [row] = await db
-      .select({
-        id: wasteRequests.id,
-        objectId: wasteRequests.objectId,
-        operatorCounterpartyId: wasteRequests.operatorCounterpartyId,
-        deletedAt: wasteRequests.deletedAt,
-        createdAt: wasteRequests.createdAt,
-        createdBy: wasteRequests.createdBy,
-        createdByName: users.fullName,
-      })
-      .from(wasteRequests)
-      .innerJoin(users, eq(wasteRequests.createdBy, users.id))
-      .where(eq(wasteRequests.id, req.params.id));
-    if (!row) throw err.notFound('Заявка не найдена');
-    assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
-    assertPlaceObjectScope(p, row.objectId, WASTE_SCOPE_LABEL);
-    assertOperatorScope(p, row.operatorCounterpartyId);
-    return loadWasteRequestHistory(row.id, {
-      at: row.createdAt,
-      actorId: row.createdBy,
-      actorName: row.createdByName,
-    });
+    // The row is authorized and its events are read in ONE snapshot (§3.2): an event committed
+    // after a move out of scope cannot slip into an answer authorized on the row before it.
+    return db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({
+          id: wasteRequests.id,
+          objectId: wasteRequests.objectId,
+          operatorCounterpartyId: wasteRequests.operatorCounterpartyId,
+          deletedAt: wasteRequests.deletedAt,
+          createdAt: wasteRequests.createdAt,
+          createdBy: wasteRequests.createdBy,
+          createdByName: users.fullName,
+        })
+        .from(wasteRequests)
+        .innerJoin(users, eq(wasteRequests.createdBy, users.id))
+        .where(eq(wasteRequests.id, req.params.id));
+      if (!row) throw err.notFound('Заявка не найдена');
+      assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
+      assertPlaceObjectScope(p, row.objectId, WASTE_SCOPE_LABEL);
+      assertOperatorScope(p, row.operatorCounterpartyId);
+      return loadWasteRequestHistory(
+        row.id,
+        { at: row.createdAt, actorId: row.createdBy, actorName: row.createdByName },
+        tx,
+      );
+    }, SNAPSHOT_READ);
   });
 
   r.post(
@@ -1523,12 +1571,19 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     if (receiptRequired && !createKey) throw err.unprocessable('Передайте ключ создания заявки');
     const fingerprint = createKey ? createAttemptFingerprint(body) : null;
     if (createKey && fingerprint) {
-      const replay = await replayRequestCreate(createKey, 'waste', p.id, fingerprint, (id) =>
-        getRequestDto(db, id),
+      // A receipt committed without a frozen answer (older code, or a send that failed before the
+      // freeze existed) is completed from ONE snapshot of the request, not from loose reads.
+      const replay = await replayRequestCreate(
+        createKey,
+        'waste',
+        p.id,
+        fingerprint,
+        loadRequestSnapshot,
       );
       if (replay) {
+        const live = await emitReceipt(p, replay);
         reply.code(200);
-        return replay;
+        return live;
       }
     }
     // A committed request can be replayed after its delivery day becomes past; a new request cannot.
@@ -1592,6 +1647,11 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       await linkFiles(tx, row!.id, body.fileIds, p.id);
       return row!;
     };
+    // The creation answer is built by the inserting transaction, files included, and — for keyed
+    // creation — frozen in the receipt before that transaction commits (§3.2). Read after the
+    // commit, it could already show a move or reassignment that someone committed a moment later,
+    // and the creator would receive, and replay forever, data of a request outside their area.
+    const freeze = async (tx: Tx, id: string) => (await getRequestDto(tx, id))!;
     const outcome =
       createKey && fingerprint
         ? await createRequestOnce({
@@ -1600,21 +1660,28 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
             actorUserId: p.id,
             fingerprint,
             create: async (tx) => ({ id: (await insertRequest(tx)).id, metadata: null }),
-            load: (id) => getRequestDto(db, id),
+            freeze: (tx, created) => freeze(tx, created.id),
+            load: loadRequestSnapshot,
           })
-        : null;
-    const created = outcome ? { id: outcome.id } : await db.transaction(insertRequest);
-    if (!outcome?.repeated)
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'waste_request.create',
-        entityType: 'waste_request',
-        entityId: created.id,
-      });
-    const dto = outcome?.response ?? (await getRequestDto(db, created.id))!;
-    if (!outcome?.repeated) await writeOwnerMismatchAudit(p.id, dto, mismatchReason);
-    reply.code(outcome?.repeated ? 200 : 201);
-    return dto;
+        : await db.transaction(async (tx) => {
+            const { id } = await insertRequest(tx);
+            return { id, repeated: false, response: await freeze(tx, id) };
+          });
+    if (outcome.repeated) {
+      // Replay after an insert conflict: the same live scope check as the early lookup.
+      const live = await emitReceipt(p, outcome.response);
+      reply.code(200);
+      return live;
+    }
+    await writeAudit({
+      actorUserId: p.id,
+      action: 'waste_request.create',
+      entityType: 'waste_request',
+      entityId: outcome.id,
+    });
+    await writeOwnerMismatchAudit(p.id, outcome.response, mismatchReason);
+    reply.code(201);
+    return withLiveFileView(outcome.response);
   };
   r.post('/', { ...canCreate, schema: { body: replayBodySchema } }, (req, reply) =>
     createHandler(req, reply, false),
@@ -1756,7 +1823,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         metadata: { changes: diffWasteRequests(before, after) },
       });
       await writeOwnerMismatchAudit(p.id, after, mismatchReason);
-      return after;
+      return withLiveFileView(after);
     },
   );
 
@@ -1832,7 +1899,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         metadata: { operatorCounterpartyId, changes: diffWasteRequests(before, after) },
       });
       await writeOwnerMismatchAudit(p.id, after, mismatchReason);
-      return after;
+      return withLiveFileView(after);
     },
   );
 
@@ -1890,7 +1957,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // Правка примечания — событие истории заявки наравне с правкой её полей (ADR 0012).
         metadata: { changes: diffWasteRequests(before, after) },
       });
-      return after;
+      return withLiveFileView(after);
     },
   );
 
@@ -1987,7 +2054,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         entityId: before.id,
         metadata: { changes: ticketsAddedChanges(added) },
       });
-      return after;
+      return withLiveFileView(after);
     },
   );
 
@@ -2197,7 +2264,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           resetsWork,
         };
       });
-      if (!outcome.changed) return outcome.after;
+      if (!outcome.changed) return withLiveFileView(outcome.after);
       const { before, after, saved: closed, resetsWork } = outcome;
       await writeAudit({
         actorUserId: p.id,
@@ -2240,7 +2307,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           metadata: { changes: diffWasteCompletion(before.completion, null) },
         });
       }
-      return after;
+      return withLiveFileView(after);
     },
   );
 

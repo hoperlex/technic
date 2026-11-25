@@ -198,6 +198,14 @@ export async function createRequestOnce<Response, Metadata = null>(args: {
   fingerprint: string;
   create: (tx: CreateTx) => Promise<{ id: string; metadata: Metadata }>;
   load: (id: string, metadata: Metadata | null) => Promise<Response | null>;
+  /**
+   * Builds the response INSIDE the creating transaction and stores it in the receipt before that
+   * transaction commits. Without it the response is loaded after the commit, through the pool,
+   * and a move or reassignment committed in between would end up frozen in the receipt as the
+   * creation answer (snow-removal plan, §3.2). `load` still serves receipts committed without a
+   * response by older code.
+   */
+  freeze?: (tx: CreateTx, created: { id: string; metadata: Metadata }) => Promise<Response>;
 }): Promise<{ id: string; response: Response; repeated: boolean; metadata: Metadata | null }> {
   const result = await db.transaction(async (tx) => {
     const [claimed] = await tx
@@ -218,14 +226,27 @@ export async function createRequestOnce<Response, Metadata = null>(args: {
       if (!prior) throw err.conflict('Ключ создания заявки занят незавершённой операцией');
       assertSameAttempt(prior, args.kind, args.actorUserId, args.fingerprint);
       if (!prior.requestId) throw err.conflict('Создание заявки с этим ключом не завершено');
-      return { id: prior.requestId, repeated: true, metadata: prior.metadata as Metadata | null };
+      return {
+        id: prior.requestId,
+        repeated: true,
+        metadata: prior.metadata as Metadata | null,
+        frozen: null as Response | null,
+      };
     }
     const created = await args.create(tx);
+    const frozen = args.freeze ? await args.freeze(tx, created) : null;
     await tx
       .update(requestCreateAttempts)
-      .set({ requestId: created.id, metadata: created.metadata })
+      .set({
+        requestId: created.id,
+        metadata: created.metadata,
+        ...(args.freeze ? { response: frozen } : {}),
+      })
       .where(eq(requestCreateAttempts.key, args.key));
-    return { id: created.id, repeated: false, metadata: created.metadata };
+    return { id: created.id, repeated: false, metadata: created.metadata, frozen };
   });
-  return { ...result, response: await finishReceipt(args.key, args.load) };
+  const { frozen, ...outcome } = result;
+  // The frozen answer is returned as frozen; a replay reads the same JSON back from the receipt.
+  if (args.freeze && !outcome.repeated) return { ...outcome, response: frozen as Response };
+  return { ...outcome, response: await finishReceipt(args.key, args.load) };
 }
