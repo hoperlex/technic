@@ -9,6 +9,7 @@ import {
   type DirectoryImportReportDto,
   type DirectoryKey,
   isValidInn,
+  wasteTypeNameKey,
   SNOW_COST_AT_COMPLETION_MESSAGE,
   SNOW_WASTE_TYPE_CODE,
   SNOW_WASTE_TYPE_ID,
@@ -337,6 +338,28 @@ describe.skipIf(!DB_URL)('служебный тип «Снег» в справо
       await serviceRow();
     },
   );
+
+  it('ключ названия в контрактах совпадает с функцией базы, в том числе на написаниях «Снег»', async () => {
+    // The server decides by `waste_type_name_key`; the contracts' twin only gives the form its
+    // instant hint (ADR 0017 §3). Drift would make the hint and the refusal disagree, so they are
+    // compared on the reserved spellings and on the places where copies of such rules drift: case
+    // of both alphabets, «Ё», Latin homoglyphs, a non-breaking space, full-width digits.
+    const samples = [
+      ...RESERVED_SPELLINGS,
+      'СНЁГ',
+      'Snow',
+      'Cнег',
+      'Снег\u00a0мокрый',
+      'Грунт №２',
+      'ТБО-A 3',
+    ];
+    for (const sample of samples) {
+      const res = await ctx.db.execute<{ key: string }>(
+        sql`SELECT waste_type_name_key(${sample}) AS key`,
+      );
+      expect(wasteTypeNameKey(sample), sample).toBe(res.rows[0]!.key);
+    }
+  });
 
   it('обычный тип не переименовать в «Снег» ни в каком написании', async () => {
     const own = await ordinaryType();
