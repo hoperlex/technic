@@ -1342,7 +1342,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   r.get('/stats', { ...auth, schema: { querystring: wasteStatsQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     assertWasteStatsAudience(p);
-    return loadWasteStats(p, req.query.month);
+    return loadWasteStats(p, req.query.month, req.query.kind);
   });
 
   r.get('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
