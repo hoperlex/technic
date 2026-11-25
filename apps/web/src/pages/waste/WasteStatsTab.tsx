@@ -22,6 +22,7 @@ import {
   type WasteStatsRowDto,
 } from '@technic/contracts';
 import { useSnowSupport, wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
+import { isApiError } from '@shared/api';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useIsMobile, useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
@@ -157,9 +158,13 @@ export function WasteStatsTab() {
    * the snow query at all — the last even if a recent capability check said yes (§3.5). A reply
    * that is merely malformed or for another month stays a local error, as for garbage.
    */
+  // A REFUSAL of the snow query — an older API's strict schema answers 400, a missing route 404, a
+  // tab the server does not serve for this type 426. A dropped connection or a server fault is not
+  // «unsupported»: it stays the local error, and a valid cached reply of the same month and kind is
+  // kept, as for garbage.
+  const refused = isApiError(error) && [400, 404, 426].includes(error.status);
   const snowUnavailable =
-    kind === 'snow' &&
-    ((snowWaits && !snow.checking) || problem === 'unavailable' || problem === 'failed');
+    kind === 'snow' && ((snowWaits && !snow.checking) || problem === 'unavailable' || refused);
   // Rendered only when the cached reply is for exactly what is selected (render-time guard on top
   // of the per-key cache: figures of another month or kind never reach the table).
   const shown =

@@ -9,11 +9,22 @@ import type { WasteTicketFileDto } from '@technic/contracts';
  * («Перераспознать», or a reset to «Новая» and a re-close with a usable scan). One rule for the
  * review panel and the completion window, so the two never call the same file differently.
  */
-export function ticketFileOutcome(file: Pick<WasteTicketFileDto, 'status' | 'activeJob'>): {
+export function ticketFileOutcome(
+  file: Pick<WasteTicketFileDto, 'status' | 'activeJob'> &
+    Partial<Pick<WasteTicketFileDto, 'pages'>>,
+): {
   text: string;
   unread: boolean;
 } {
-  if (file.status === 'done') return { text: 'талоны не найдены', unread: false };
+  if (file.status === 'done') {
+    // The worker ends a partly failed scan as `done`, but the review badge counts it as failed (a
+    // page of it was never read): saying "talons not found" would offer a manual ticket that
+    // settles nothing, and hide the rerun.
+    if (file.pages?.some((page) => page.status === 'failed')) {
+      return { text: 'не прочитан: не распознана страница', unread: true };
+    }
+    return { text: 'талоны не найдены', unread: false };
+  }
   if (file.status === 'pending' && file.activeJob) return { text: 'распознаётся…', unread: false };
   if (file.status === 'not_queued') return { text: 'не распознавался', unread: true };
   return { text: 'не прочитан', unread: true };

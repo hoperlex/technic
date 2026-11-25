@@ -365,7 +365,7 @@ export function WasteHistoryTab() {
         columns={columns}
         card={card}
         data={snowBlocked ? [] : (data?.items ?? [])}
-        total={data?.total ?? 0}
+        total={snowBlocked ? 0 : (data?.total ?? 0)}
         loading={isFetching}
         isPlaceholderData={isPlaceholderData}
         page={params.page}

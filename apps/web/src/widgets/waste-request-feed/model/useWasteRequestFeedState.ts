@@ -179,8 +179,10 @@ export function useWasteRequestFeedState(
   };
 
   return {
-    rows: listQueryResult.data?.items ?? [],
-    total: listQueryResult.data?.total ?? 0,
+    // A withdrawn confirmation hides a cached snow answer too: stale rows would stay clickable next
+    // to the «unavailable» notice.
+    rows: snowBlocked ? [] : (listQueryResult.data?.items ?? []),
+    total: snowBlocked ? 0 : (listQueryResult.data?.total ?? 0),
     loading: listQueryResult.isFetching || (snowSelected && snow.checking),
     snowBlocked: snowBlocked && !snow.checking,
     isPlaceholderData: listQueryResult.isPlaceholderData,

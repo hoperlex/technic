@@ -252,6 +252,35 @@ describe('приложенные сканы показаны с номерами
     expect(screen.queryByRole('button', { name: 'Перераспознать' })).toBeNull();
   });
 
+  it('файл с нечитаемой страницей не выдаётся за прочитанный и предлагает перераспознать', async () => {
+    mockHttp({
+      'GET /waste-requests/wr-1/tickets': () =>
+        json({
+          ...EMPTY_TICKETS,
+          // The worker ends a partly failed scan as `done`; the review counts it as failed.
+          files: [
+            {
+              ...EMPTY_TICKETS.files[0],
+              status: 'done',
+              reason: '',
+              pages: [
+                { id: 'p-1', fileId: 'f-1', pageNo: 1, status: 'done', ticketsFound: 0 },
+                { id: 'p-2', fileId: 'f-1', pageNo: 2, status: 'failed', ticketsFound: 0 },
+              ],
+            },
+          ],
+        }),
+      'GET /waste-requests/ticket-recognition/health': () =>
+        json({ ...DISABLED_HEALTH, state: 'ok' }),
+    });
+    renderWithUser(<WasteTicketsPanel requestId="wr-1" />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'talon.jpg' })).toBeDefined());
+    expect(screen.getByText('не прочитан: не распознана страница')).toBeDefined();
+    expect(screen.queryByText('талоны не найдены')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Перераспознать' }).length).toBeGreaterThan(0);
+  });
+
   it('непрочитанный файл не выдаётся за «талоны не найдены» и предлагает перераспознать', async () => {
     const http = mockHttp({
       'GET /waste-requests/wr-1/tickets': () => json(EMPTY_TICKETS),

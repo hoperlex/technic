@@ -189,6 +189,14 @@ describe('переключатель «Мусор / Снег» статисти�
     ).toBeDefined();
   });
 
+  it('сбой сервера на снег — местная ошибка, а не «снег не поддерживается»', async () => {
+    renderTab('/waste?tab=stats&month=2026-12&kind=snow', {
+      'GET /waste-requests/stats': () => apiError(503, { code: 'error', message: 'Сбой сервера' }),
+    });
+    expect(await screen.findByText(/Не удалось получить статистику за месяц/)).toBeDefined();
+    expect(screen.queryByText(/Статистика по снегу недоступна/)).toBeNull();
+  });
+
   it('без подтверждения сервера снег выключен и не спрашивается', async () => {
     const { http } = renderTab('/waste?tab=stats&month=2026-12&kind=snow', {
       'GET /waste-requests/capabilities': () =>
