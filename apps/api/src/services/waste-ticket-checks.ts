@@ -505,6 +505,10 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
       operatorCounterpartyId: effectiveTicketArea(t, request.operatorCounterpartyId),
     }));
   const unconfirmed = active.filter((t) => t.status !== 'confirmed').length;
+  // A confirmed ticket with an unanswered reread proposal still waits for the reviewer
+  // (snow-removal plan, §3.2): a completed rerun read the sheet differently, and confirming the
+  // earlier reading did not answer the new one. Accepting or dismissing the proposal settles it.
+  const awaitingProposal = active.filter((t) => t.status === 'confirmed' && t.hasProposal).length;
   const preliminary = unconfirmed > 0;
   // Готовые к подтверждению одним действием (ADR 0155, Р16): спорное поле роняет подтверждение, а
   // живое предложение означает второе чтение, о котором человек ещё не решил.
@@ -603,7 +607,7 @@ export function wasteTicketChecks(input: WasteTicketChecksInput): WasteTicketChe
         checks.filter((c) => c.severity === 'error' && !c.resolution).length +
         (subsystem?.blindMismatch ?? 0),
       warnings: checks.filter((c) => c.severity === 'warning' && !c.resolution).length,
-      pendingConfirmation: unconfirmed + (subsystem?.blindPending ?? 0),
+      pendingConfirmation: unconfirmed + awaitingProposal + (subsystem?.blindPending ?? 0),
       failures: (subsystem?.failedFiles ?? 0) + (subsystem?.failedPages ?? 0),
       // Приложенная бумага, до которой разбор не дошёл, — ПОФАЙЛОВО (ADR 0155, Р18).
       //

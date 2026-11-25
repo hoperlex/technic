@@ -687,6 +687,40 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
     });
   });
 
+  describe('a completed rerun with an unanswered proposal', () => {
+    it('keeps a confirmed ticket pending until the reviewer answers the proposal', async () => {
+      const id = await newRequest('snow_removal', { factVolumeM3: 20 });
+      const fileId = await attachTicketFile(id);
+      await seedFileRow(id, fileId, 'done');
+      const ticketId = await seedReadTicket(id, fileId, { status: 'confirmed' });
+      expect((await listBadge(id))?.pendingConfirmation).toBe(0);
+
+      expect((await rerun(id, fileId)).statusCode).toBe(200);
+      const [jobId] = await liveJobs(id, fileId);
+      await workerTakes(id, fileId, jobId!);
+      // The worker does not overwrite a confirmed ticket: the new reading lands beside it (R13).
+      await ctx.db.execute(sql`
+        INSERT INTO waste_ticket_proposals (ticket_id, number_raw, issued_on, volume_m3, work_kind)
+        VALUES (${ticketId}, '30477', '2026-11-20', '25', 'removal')`);
+      await workerReads(id, fileId, jobId!, null);
+
+      expect(await listBadge(id)).toMatchObject({ pendingConfirmation: 1, unreviewedPaper: 0 });
+      expect(await registry()).toContain(id);
+      const refused = await complete(id);
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json().message).toContain('не подтверждено талонов: 1');
+
+      const dismissed = await inject(
+        'POST',
+        `${REQUESTS}/${id}/tickets/${ticketId}/proposal/dismiss`,
+        {},
+      );
+      expect(dismissed.statusCode, dismissed.body).toBe(200);
+      expect(await registry()).not.toContain(id);
+      expect((await complete(id)).statusCode).toBe(200);
+    });
+  });
+
   describe("the terminal check reads only through the caller's executor", () => {
     it('sees uncommitted queue and file rows of its own transaction on a pool of one', async () => {
       const { id, fileId } = await settledSnow();

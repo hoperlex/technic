@@ -178,3 +178,53 @@ describe('paper in flight holds the badge whatever tickets it has', () => {
     expect(wasteTicketReviewSettled(badge(true))).toBe(false);
   });
 });
+
+describe('an unanswered reread proposal keeps a non-dismissed ticket pending', () => {
+  const base: WasteTicketCheckTicket = {
+    id: 't1',
+    numberRaw: '30476',
+    numberKey: '30476',
+    numberFuzzy: '30476',
+    issuedOn: '2026-11-20',
+    volumeM3: 20,
+    workKind: 'removal',
+    addressRaw: '',
+    status: 'confirmed',
+    operatorCounterpartyId: null,
+    pageId: 'page-1',
+    pageSha256: 'a'.repeat(64),
+    duplicateOverride: false,
+    fileId: 'file-1',
+    disputed: false,
+    hasProposal: true,
+    updatedAt: new Date('2026-11-20T09:00:00Z'),
+  };
+
+  function badgeOf(ticket: WasteTicketCheckTicket) {
+    return wasteTicketChecks({
+      request: {
+        requestedVolumeM3: 20,
+        deliveryAt: new Date('2026-11-20T06:00:00Z'),
+        objectAddress: '',
+        objectName: '',
+        operatorCounterpartyId: null,
+      },
+      completion: { volumeM3: 20, removedOn: '2026-11-20', removedOnSource: 'entered' },
+      tickets: [ticket],
+    }).badge;
+  }
+
+  it('even when the earlier reading was confirmed', () => {
+    const badge = badgeOf(base);
+    expect(badge.pendingConfirmation).toBe(1);
+    // Not a one-click case: the button confirms readings, it does not answer proposals.
+    expect(badge.confirmable).toBe(0);
+    expect(wasteTicketReviewSettled(badge)).toBe(false);
+  });
+
+  it('counted once for an unconfirmed ticket, not at all for a dismissed one', () => {
+    expect(badgeOf({ ...base, status: 'unconfirmed' }).pendingConfirmation).toBe(1);
+    expect(badgeOf({ ...base, status: 'dismissed' }).pendingConfirmation).toBe(0);
+    expect(badgeOf({ ...base, hasProposal: false }).pendingConfirmation).toBe(0);
+  });
+});
