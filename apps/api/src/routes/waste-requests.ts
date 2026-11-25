@@ -17,6 +17,10 @@ import {
 import { alias } from 'drizzle-orm/pg-core';
 import {
   addWasteTicketsSchema,
+  deleteWasteRequestQuerySchema,
+  purgeWasteRequestQuerySchema,
+  wasteRequestDeleteMode,
+  wasteRequestTypeCapability,
   isManualCostOnly,
   isServiceWasteTypeId,
   serviceWasteTypeCode,
@@ -108,7 +112,7 @@ import {
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
-import { registerPurgeRoute } from '../services/directory-purge';
+import { asReferenceConflict } from '../services/directory-purge';
 import { assertWasteStatsAudience, loadWasteStats } from '../services/waste-stats';
 import { priceWasteRequest, resolveWasteTariffByKind, toNum } from '../services/waste-pricing';
 import {
@@ -496,6 +500,16 @@ async function assertOperatorAssignable(
   if (!cp.isActive) throw err.badRequest('Контрагент неактивен');
   // Исполнитель должен работать на объекте заявки (ADR 0010, миграция 0027).
   await assertOperatorServesObject(tx, objectId, counterpartyId);
+}
+
+/**
+ * A delete or purge of this type must carry the confirmed version (and, for delete, mode). Tied to
+ * capability negotiation on purpose: a type that only capability-aware tabs can see is only ever
+ * deleted by tabs that send the confirmation, while tabs built before it still delete the older
+ * types without one (snow-removal plan, §3.2).
+ */
+function deleteConfirmationRequired(t: RequestType): boolean {
+  return wasteRequestTypeCapability(t) !== null;
 }
 
 /** A garbage request naming the reserved service type: snow has its own request type (S2). */
@@ -2325,57 +2339,88 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     },
   );
 
-  r.delete('/:id', { ...canDelete, schema: { params: idParams } }, async (req) => {
-    const p = requirePrincipal(req);
-    const { id } = req.params;
-    const [existing] = await db.select().from(wasteRequests).where(eq(wasteRequests.id, id));
-    if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
-    assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
-    assertObjectRoleEditable(p, existing.status, 'удалять');
+  /**
+   * Delete or archive (ADR 0070), serialized with status and edit writers (snow-removal plan,
+   * §3.2): the row lock comes first, and scope, status, archive state and version are read from the
+   * locked row. The confirmed `mode` and `version` are compared with that row BEFORE any write, so a
+   * confirmation to archive never becomes a hard delete because the request was rolled back to
+   * «Новая» in between. Required for types that only capability-aware tabs handle (snow), checked
+   * whenever sent for the older types, whose tabs predate the confirmation.
+   */
+  r.delete(
+    '/:id',
+    { ...canDelete, schema: { params: idParams, querystring: deleteWasteRequestQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { id } = req.params;
+      const { version, mode } = req.query;
+      const done = await db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(wasteRequests)
+          .where(eq(wasteRequests.id, id))
+          .for('update');
+        if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
+        assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
+        assertOperatorScope(p, existing.operatorCounterpartyId);
+        assertObjectRoleEditable(p, existing.status, 'удалять');
+        const actual = wasteRequestDeleteMode(existing.status);
+        if (
+          deleteConfirmationRequired(existing.requestType) &&
+          (version === undefined || mode === undefined)
+        ) {
+          throw err.badRequest('Подтвердите удаление по актуальной карточке заявки', {
+            version: 'Обновите карточку',
+            mode: 'Обновите карточку',
+          });
+        }
+        if (version !== undefined && version !== existing.version) throw err.conflict();
+        if (mode !== undefined && mode !== actual) {
+          throw err.conflict(
+            actual === 'hard'
+              ? 'Заявка вернулась в «Новую» и теперь удалится насовсем — обновите карточку и подтвердите заново'
+              : 'Заявка уже в работе и теперь уйдёт в архив — обновите карточку и подтвердите заново',
+          );
+        }
 
-    if (existing.status === 'new') {
-      // Hard delete уносит и обычные вложения, и сканы талонов. После отката талон уже отвязан от
-      // заявки, но остаётся источником наблюдения аудита, поэтому набор собирается по обеим связям.
-      await db.transaction(async (tx) => {
-        const linked = await prepareFilesForFullWasteRequestDeletion(tx, id);
-        // Соседи метятся ДО удаления: после него ключи талонов взять уже неоткуда, а замечание о
-        // дубле у чужой заявки продолжало бы указывать на бумагу, которой больше нет (ADR 0155, Р20).
+        if (actual === 'hard') {
+          // Hard delete уносит и обычные вложения, и сканы талонов. После отката талон уже
+          // отвязан от заявки, но остаётся источником наблюдения аудита, поэтому набор собирается
+          // по обеим связям.
+          const linked = await prepareFilesForFullWasteRequestDeletion(tx, id);
+          // Соседи метятся ДО удаления: после него ключи талонов взять уже неоткуда, а замечание
+          // о дубле у чужой заявки продолжало бы указывать на бумагу, которой больше нет (ADR 0155,
+          // Р20).
+          await refreshRequestReviewState(tx, id, { neighbours: true });
+          // Машины уходят каскадом вместе с заявкой, но строки files каскад не трогает.
+          await tx.delete(wasteRequests).where(eq(wasteRequests.id, id));
+          await hardDeleteFiles(tx, linked);
+          return 'hard' as const;
+        }
+        // Archiving advances the version: a tab holding the live card must not save over it.
+        await tx
+          .update(wasteRequests)
+          .set({
+            deletedAt: new Date(),
+            deletedBy: p.id,
+            version: existing.version + 1,
+            updatedAt: new Date(),
+          })
+          .where(eq(wasteRequests.id, id));
+        // Мягко удалённая заявка выбывает из соседей (`loadNeighbours` смотрит только живые): у
+        // тех, кому она давала замечание о дубле, числа изменились (ADR 0155, Р20).
         await refreshRequestReviewState(tx, id, { neighbours: true });
-        // Машины уходят каскадом вместе с заявкой, но строки files каскад не трогает.
-        await tx.delete(wasteRequests).where(eq(wasteRequests.id, id));
-        await hardDeleteFiles(tx, linked);
+        return 'soft' as const;
       });
       await writeAudit({
         actorUserId: p.id,
-        action: 'waste_request.hard_delete',
+        action: done === 'hard' ? 'waste_request.hard_delete' : 'waste_request.soft_delete',
         entityType: 'waste_request',
         entityId: id,
       });
-      return { ok: true, mode: 'hard' };
-    }
-
-    await db.transaction(async (tx) => {
-      await tx
-        .update(wasteRequests)
-        .set({
-          deletedAt: new Date(),
-          deletedBy: p.id,
-          version: existing.version + 1,
-          updatedAt: new Date(),
-        })
-        .where(eq(wasteRequests.id, id));
-      // Мягко удалённая заявка выбывает из соседей (`loadNeighbours` смотрит только живые): у тех,
-      // кому она давала замечание о дубле, числа изменились (ADR 0155, Р20).
-      await refreshRequestReviewState(tx, id, { neighbours: true });
-    });
-    await writeAudit({
-      actorUserId: p.id,
-      action: 'waste_request.soft_delete',
-      entityType: 'waste_request',
-      entityId: id,
-    });
-    return { ok: true, mode: 'soft' };
-  });
+      return { ok: true, mode: done };
+    },
+  );
 
   r.post(
     '/:id/restore',
@@ -2385,74 +2430,115 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     },
     async (req) => {
       const p = requirePrincipal(req);
-      // Строка берётся без условия по `deleted_at` намеренно: восстанавливают как раз удалённую, и
-      // фильтр «только живые» отвечал бы 404 на единственную заявку, ради которой ручка заведена.
-      const [existing] = await db
-        .select()
-        .from(wasteRequests)
-        .where(eq(wasteRequests.id, req.params.id));
-      if (!existing) throw err.notFound('Заявка не найдена');
-      // Область — до разбора состояния, а не внутри ветки возврата: на живой заявке ручка отдаёт
-      // её карточку целиком, и без проверки здесь `archive.restore` читал бы чужие заявки в обход
-      // `wasteRequests.read`. Проверки те же, что у карточки (`GET /:id`), и обе работают по
-      // реквизитам строки — удалённость на них не влияет.
-      assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, existing.operatorCounterpartyId);
-      if (existing.deletedAt) {
-        await db.transaction(async (tx) => {
-          await tx
-            .update(wasteRequests)
-            .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
-            .where(eq(wasteRequests.id, existing.id));
-          // Вернувшаяся заявка снова становится соседом: её подтверждённые талоны опять занимают
-          // номера, и у тех, кто эти номера предъявлял, замечание появляется заново (ADR 0155, Р20).
-          await refreshRequestReviewState(tx, existing.id, { neighbours: true });
-        });
+      const { restored, after } = await db.transaction(async (tx) => {
+        // Строка берётся без условия по `deleted_at` намеренно: восстанавливают как раз
+        // удалённую, и фильтр «только живые» отвечал бы 404 на единственную заявку, ради которой
+        // ручка заведена. Under the request lock, like delete and purge, so that a restore never
+        // interleaves with a purge or an archive of the same row.
+        const existing = await lockRequestDto(tx, req.params.id);
+        if (!existing) throw err.notFound('Заявка не найдена');
+        // Область — до разбора состояния, а не внутри ветки возврата: на живой заявке ручка
+        // отдаёт её карточку целиком, и без проверки здесь `archive.restore` читал бы чужие заявки
+        // в обход `wasteRequests.read`. Проверки те же, что у карточки (`GET /:id`), и обе работают
+        // по реквизитам строки — удалённость на них не влияет.
+        assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
+        assertOperatorScope(p, existing.operatorCounterpartyId);
+        if (!existing.deletedAt) return { restored: false, after: existing };
+        await tx
+          .update(wasteRequests)
+          // Restoring advances the version like archiving: a confirmation shown on the archived
+          // row must not be replayed against the live one.
+          .set({
+            deletedAt: null,
+            deletedBy: null,
+            version: existing.version + 1,
+            updatedAt: new Date(),
+          })
+          .where(eq(wasteRequests.id, existing.id));
+        // Вернувшаяся заявка снова становится соседом: её подтверждённые талоны опять занимают
+        // номера, и у тех, кто эти номера предъявлял, замечание появляется заново (ADR 0155, Р20).
+        await refreshRequestReviewState(tx, existing.id, { neighbours: true });
+        return { restored: true, after: (await getRequestDto(tx, existing.id))! };
+      });
+      if (restored) {
         await writeAudit({
           actorUserId: p.id,
           action: 'waste_request.restore',
           entityType: 'waste_request',
-          entityId: existing.id,
+          entityId: after.id,
         });
       }
-      return (await getRequestDto(db, existing.id))!;
+      return withLiveFileView(after);
     },
   );
 
   /**
-   * Удаление заявки насовсем (ADR 0070) — общая механика справочников (ADR 0060), право
-   * `records.purge`, только из архива. Второй шаг после осознанного первого: пока заявка не
-   * удалена, сносить нечего, и одного неверного клика для необратимого действия мало.
+   * Удаление заявки насовсем (ADR 0070) — право `records.purge`, только из архива. Второй шаг
+   * после осознанного первого: пока заявка не удалена, сносить нечего, и одного неверного клика
+   * для необратимого действия мало.
+   *
+   * Its own route rather than the directory helper (`registerPurgeRoute`), for the reasons the
+   * mechanization purge gives: the helper reads and checks the row before its transaction, i.e.
+   * without the lock, asks no scope and takes no version. Here the lock comes first, the site and
+   * operator scope and the archived state are read from the locked row, and for snow the archived
+   * version the person confirmed is required (snow-removal plan, §3.2). The audit entry and the
+   * translation of a foreign-key refusal are the helper's (`asReferenceConflict`).
    *
    * Машины, талоны, история статусов и связи с файлами уходят каскадом — они существуют только
    * при заявке. Сами строки `files` каскад не трогает: их удаление вместе с заказом на снос
    * объекта в S3 повторяет то, что делает hard delete «Новой» заявки.
    */
-  registerPurgeRoute(app, {
-    load: async (id) => {
-      const [row] = await db.select().from(wasteRequests).where(eq(wasteRequests.id, id));
-      return row;
+  r.delete(
+    '/:id/purge',
+    {
+      preHandler: [app.authenticate, app.requirePermission('records.purge')],
+      schema: { params: idParams, querystring: purgeWasteRequestQuerySchema },
     },
-    isDown: (row) => !!row.deletedAt,
-    remove: async (tx, row) => {
-      const linked = await prepareFilesForFullWasteRequestDeletion(tx, row.id);
-      await tx.delete(wasteRequests).where(eq(wasteRequests.id, row.id));
-      await hardDeleteFiles(tx, linked);
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { id } = req.params;
+      const { version } = req.query;
+      let metadata: Record<string, unknown> = {};
+      try {
+        await db.transaction(async (tx) => {
+          const [row] = await tx
+            .select()
+            .from(wasteRequests)
+            .where(eq(wasteRequests.id, id))
+            .for('update');
+          if (!row) throw err.notFound('Заявка не найдена');
+          assertPlaceObjectScope(p, row.objectId, WASTE_SCOPE_LABEL);
+          assertOperatorScope(p, row.operatorCounterpartyId);
+          if (!row.deletedAt) throw err.conflict('Заявка не в архиве — сначала удалите её');
+          if (deleteConfirmationRequired(row.requestType) && version === undefined) {
+            throw err.badRequest('Подтвердите удаление по актуальной карточке заявки', {
+              version: 'Обновите карточку',
+            });
+          }
+          if (version !== undefined && version !== row.version) throw err.conflict();
+          // Номер, площадка и статус — то, чем заявку называют: после удаления по entityId искать
+          // уже нечего, а спрашивают «куда делась М-128».
+          metadata = {
+            num: row.num,
+            objectId: row.objectId,
+            requestType: row.requestType,
+            status: row.status,
+          };
+          const linked = await prepareFilesForFullWasteRequestDeletion(tx, row.id);
+          await tx.delete(wasteRequests).where(eq(wasteRequests.id, row.id));
+          await hardDeleteFiles(tx, linked);
+        });
+      } catch (e) {
+        throw asReferenceConflict(e, 'заявку');
+      }
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'waste_request.purge',
+        entityType: 'waste_request',
+        entityId: id,
+        metadata,
+      });
+      return { ok: true };
     },
-    notFound: 'Заявка не найдена',
-    stillLive: 'Заявка не в архиве — сначала удалите её',
-    subject: 'заявку',
-    audit: {
-      action: 'waste_request.purge',
-      entityType: 'waste_request',
-      // Номер, площадка и статус — то, чем заявку называют: после удаления по entityId искать
-      // уже нечего, а спрашивают «куда делась М-128».
-      metadata: (row) => ({
-        num: row.num,
-        objectId: row.objectId,
-        requestType: row.requestType,
-        status: row.status,
-      }),
-    },
-  });
+  );
 }

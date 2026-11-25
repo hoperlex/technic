@@ -339,6 +339,20 @@ export interface WasteRequestCapabilitiesDto {
   capabilities: string[];
 }
 
+// ── Snow removal API: capability per request type (snow-removal plan, §3.5) ──
+
+/**
+ * The capability a client must declare to see or act on requests of this type; `null` — every
+ * client understands the type. The API derives its legacy type filter and its 426 refusals from
+ * this one mapping, so a future type negotiated the same way is hidden from older tabs by adding
+ * one line here rather than by a second list on the server.
+ */
+export function wasteRequestTypeCapability(t: RequestType): string | null {
+  return t === 'snow_removal' ? WASTE_REQUEST_CAPABILITY_SNOW : null;
+}
+
+// ── End of snow removal API additions ──
+
 /**
  * How `DELETE /waste-requests/:id` removes a request: a «Новая» request is deleted for good, any
  * other goes to the archive (ADR 0070). One rule for the server and the confirmation dialog, so the
