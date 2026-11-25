@@ -64,6 +64,7 @@ const CLEAN_PAPER = {
 function dto(over: Partial<WasteStatsDto> = {}): WasteStatsDto {
   return {
     month: '2026-05',
+    kind: 'waste',
     from: '2026-05-01',
     to: '2026-05-31',
     rows: [

@@ -22,12 +22,29 @@ import type { AnalyticsQualityEntry } from './analytics';
  *    read as "nothing was brought". The unconfirmed share, tickets with an unread volume and scans
  *    the recognition could not read travel beside the figure, so the portal can mark it. A ticket
  *    without a read volume is unknown, not zero: it is not in the sum.
- * 3. **Only waste removal in cubic metres** (R6 of ADR 0193). Scrap metal (tonnes, no money at all
- *    — ADR 0067) and container operations (not billed, ADR 0019) never appear here, neither as a
- *    row nor as a position: a site that only had those in the month is absent from the response.
+ * 3. **Only removal in cubic metres, one kind at a time** (R6 of ADR 0193). Scrap metal (tonnes, no
+ *    money at all — ADR 0067) and container operations (not billed, ADR 0019) never appear here,
+ *    neither as a row nor as a position: a site that only had those in the month is absent from
+ *    the response. Garbage and snow are answered separately by `kind` (snow-removal plan, S8);
+ *    snow has no estimate, so its planned and ticket money is always `null`.
  */
 
-export const wasteStatsQuerySchema = z.object({ month: monthSchema }).strict();
+/**
+ * Which removal the tab counts (snow-removal plan, S8): garbage or snow, never both in one table.
+ * Snow has manual costs only and no estimate, so its money columns mean something different, and
+ * a shared total would mix a priced estimate with invoice amounts.
+ */
+export const WASTE_STATS_KINDS = ['waste', 'snow'] as const;
+export type WasteStatsKind = (typeof WASTE_STATS_KINDS)[number];
+export const wasteStatsKindSchema = z.enum(WASTE_STATS_KINDS);
+
+/**
+ * `kind` defaults to `waste`: a tab built before snow sends only `month` and keeps getting the
+ * garbage statistics it always got.
+ */
+export const wasteStatsQuerySchema = z
+  .object({ month: monthSchema, kind: wasteStatsKindSchema.optional().default('waste') })
+  .strict();
 export type WasteStatsQuery = z.infer<typeof wasteStatsQuerySchema>;
 
 /**
@@ -153,6 +170,11 @@ export interface WasteStatsRowDto extends WasteStatsFigures {
 export interface WasteStatsDto {
   /** Эхо запроса: `YYYY-MM`. */
   month: string;
+  /**
+   * Echo of the requested kind. The portal renders snow figures only when the reply says `snow`:
+   * an older API ignores the parameter and would answer with garbage numbers.
+   */
+  kind: WasteStatsKind;
   /** Границы месяца, посчитанные сервером, — портал печатает их в шапке окна. */
   from: string;
   to: string;

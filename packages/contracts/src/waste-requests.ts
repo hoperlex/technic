@@ -25,7 +25,7 @@ import {
   isAllowedRequestDateAt,
   isWithinWorkTimeAt,
 } from './time';
-import { calcWasteAmount, isPricedRequestType } from './waste-tariffs';
+import { calcWasteAmount } from './waste-tariffs';
 
 /** Префикс номера заявки на мусор — как «ТС-» у заявок на технику (миграция 0064). */
 const WASTE_REQUEST_NUM_PREFIX = 'М';
@@ -161,9 +161,17 @@ export interface WasteRequestHistorySummaryDto {
   total: number;
   completed: number;
   cancelled: number;
+  /**
+   * Sum of the known completion costs. Kept a number for tabs built before snow; a snow-only
+   * selection reads `snowCompletedWithoutCost` to show a dash or an incomplete-sum mark next to it.
+   */
   totalCost: number;
   volumeM3: number;
   weightTons: number;
+  /** Completed snow requests whose completion carries a cost (0 included — a known amount). */
+  snowCompletedWithCost: number;
+  /** Completed snow requests whose cost was never entered: the sum above misses them. */
+  snowCompletedWithoutCost: number;
 }
 
 /**
@@ -178,7 +186,18 @@ export type WasteRequestSummaryQuery = z.infer<typeof wasteRequestSummaryQuerySc
 /** Количество видимых заявок в каждом статусе (удалённые не считаются). */
 export type WasteRequestSummaryDto = Record<RequestStatus, number>;
 
-const volumeSchema = z.coerce.number().int().min(MIN_WASTE_VOLUME_M3);
+/**
+ * Upper bound of an ordered volume: `waste_requests.volume_m3` is a PostgreSQL `integer`. Without it
+ * a large number passed validation and failed at the insert as a server error instead of a field
+ * message.
+ */
+export const MAX_ORDERED_VOLUME_M3 = 2_147_483_647;
+
+const volumeSchema = z.coerce
+  .number()
+  .int()
+  .min(MIN_WASTE_VOLUME_M3)
+  .max(MAX_ORDERED_VOLUME_M3, 'Слишком большой объём');
 
 // ── Факт вывоза и талоны (ADR 0035, ADR 0013) ──
 
@@ -202,7 +221,8 @@ export const wasteFactUnitLabels: Record<WasteFactUnit, string> = {
  *  - `null` — контейнерные операции: они считаются по самим контейнерам и закрываются талоном.
  */
 export function wasteFactUnit(t: RequestType): WasteFactUnit | null {
-  if (t === 'waste_removal') return 'volume_m3';
+  // Snow is ordered and closed in cubic metres exactly like garbage (snow-removal plan, §2).
+  if (t === 'waste_removal' || t === 'snow_removal') return 'volume_m3';
   if (t === 'metal_removal') return 'weight_tons';
   return null;
 }
@@ -222,6 +242,101 @@ export function requiresWasteFact(t: RequestType): boolean {
  */
 export function usesContainerType(t: RequestType): boolean {
   return t === 'container_install' || t === 'container_replace' || t === 'container_removal';
+}
+
+// ── Snow removal and the per-rule type predicates (snow-removal plan, §2) ──
+//
+// Garbage and snow share most of the request, but not all of it, and each difference is its own
+// question. One predicate per question, never «is it garbage or snow»: a future type that is
+// ordered by volume but priced by a list would otherwise inherit the wrong half silently.
+
+/** The request is ordered by volume, at least `MIN_WASTE_VOLUME_M3` m³ (S5). */
+export function requiresOrderedVolume(t: RequestType): boolean {
+  return t === 'waste_removal' || t === 'snow_removal';
+}
+
+/**
+ * The requester picks the waste type from the directory. Snow has its type set by the server (S2):
+ * whatever a caller sends there is discarded, and the service row never appears in a picker.
+ */
+export function requesterSelectsWasteType(t: RequestType): boolean {
+  return t === 'waste_removal';
+}
+
+/**
+ * Completion money is entered by hand only (S6): no price list, no tariff snapshot, no estimate,
+ * and the server never computes a sum. An omitted cost on the first completion is unknown, not 0.
+ */
+export function isManualCostOnly(t: RequestType): boolean {
+  return t === 'snow_removal';
+}
+
+/**
+ * Attached ticket paper counts as unreviewed before recognition has looked at it (ADR 0150
+ * boundary). Other types may carry a ticket file from long ago and must not flood the review
+ * register on a cache miss; garbage and snow are reviewed paper (S4).
+ */
+export function countsUnreviewedTicketPaper(t: RequestType): boolean {
+  return t === 'waste_removal' || t === 'snow_removal';
+}
+
+/**
+ * Reserved service waste type «Снег» (S2, S10, S11). The migration seeds this exact row and binds
+ * id, code, name and the active flag together with a CHECK, so these literals are the identity the
+ * SQL guards hold. The server resolves the row by code; the id exists for the guards and for
+ * refusing it at every directory entry point.
+ */
+export const SNOW_WASTE_TYPE_ID = '29cd9e92-0d72-4666-8ff1-76e0d6aad553';
+export const SNOW_WASTE_TYPE_CODE = 'snow';
+export const SNOW_WASTE_TYPE_NAME = 'Снег';
+
+/** The service waste type a request type carries, by reserved code; `null` — the requester picks. */
+export function serviceWasteTypeCode(t: RequestType): string | null {
+  return t === 'snow_removal' ? SNOW_WASTE_TYPE_CODE : null;
+}
+
+/** Service waste type codes: never editable, never priced, never matched by an import. */
+export const SERVICE_WASTE_TYPE_CODES: readonly string[] = [SNOW_WASTE_TYPE_CODE];
+
+export function isServiceWasteTypeCode(code: string | null | undefined): boolean {
+  return code != null && SERVICE_WASTE_TYPE_CODES.includes(code.trim().toLowerCase());
+}
+
+/** UUIDs compare as UUIDs: an uppercase spelling of the reserved id is still the reserved id. */
+export function isServiceWasteTypeId(id: string | null | undefined): boolean {
+  return id != null && id.trim().toLowerCase() === SNOW_WASTE_TYPE_ID;
+}
+
+/** Field message shared by the directory refusals (tariffs, pricing, imports) and the portal. */
+export const SNOW_COST_AT_COMPLETION_MESSAGE =
+  'Для вывоза снега стоимость вносится при закрытии заявки';
+
+/**
+ * May a filed request change its type from `from` to `to` (S12)? An actual change to or from snow
+ * is refused in both directions and for every other type: a wrong type is cancelled and filed again.
+ * Equal types are always valid — the PATCH may repeat the saved type.
+ */
+export function wasteRequestTypeChangeAllowed(from: RequestType, to: RequestType): boolean {
+  if (from === to) return true;
+  return from !== 'snow_removal' && to !== 'snow_removal';
+}
+
+/** One explanation for the portal and the API (S12). */
+export const SNOW_TYPE_CHANGE_MESSAGE =
+  'Тип «Вывоз снега» не меняют на другой и другой тип не меняют на него: отмените заявку и заведите новую';
+
+/**
+ * Capability negotiation for snow (snow-removal plan, §3.5). A portal that understands the snow type
+ * sends this header on waste request calls. Without it the API hides snow from lists and summaries
+ * and answers a direct snow request with `426 client_upgrade_required`: a tab opened before this
+ * release would otherwise close snow requests through the ticket-only flow of an unknown type.
+ */
+export const WASTE_REQUEST_CAPABILITY_HEADER = 'X-Waste-Request-Capability';
+export const WASTE_REQUEST_CAPABILITY_SNOW = 'snow-removal-v1';
+
+/** `GET /waste-requests/capabilities`: what the serving API supports. */
+export interface WasteRequestCapabilitiesDto {
+  capabilities: string[];
 }
 
 /**
@@ -255,11 +370,52 @@ export const factWeightSchema = z.coerce
  * Стоимость закрытия, ₽ (numeric(14,2)). Ноль допустим: вывоз бывает и в счёт другой работы, а
  * запретить нулевую сумму значило бы требовать выдумать цифру.
  */
-export const factCostSchema = z.coerce
-  .number()
-  .min(0, 'Стоимость не может быть отрицательной')
-  .max(999_999_999, 'Слишком большая сумма')
-  .multipleOf(0.01, 'Не более 2 знаков после запятой');
+export const MAX_FACT_COST = 999_999_999;
+
+/** Decimal text of a cost: digits, an optional dot and at most two fraction digits. */
+const COST_TEXT = /^\d+(?:\.\d{1,2})?$/;
+
+/**
+ * Parses a cost exactly or returns the refusal text. Numbers are checked as numbers; strings are
+ * checked as decimal TEXT before any conversion: `z.coerce` turned `""`, `true` and `[]` into 0 or 1
+ * and `"1e-400"` into a false zero, all of which then saved as a known amount (snow-removal plan, §2).
+ */
+function parseFactCost(v: unknown): number | string {
+  let n: number;
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v)) return 'Укажите сумму числом';
+    n = v;
+  } else if (typeof v === 'string') {
+    const text = v.trim();
+    if (!COST_TEXT.test(text)) {
+      return /^\d+\.\d{3,}$/.test(text)
+        ? 'Не более 2 знаков после запятой'
+        : 'Укажите сумму числом';
+    }
+    const [whole] = text.split('.');
+    if (whole!.replace(/^0+(?=\d)/, '').length > String(MAX_FACT_COST).length) {
+      return 'Слишком большая сумма';
+    }
+    n = Number(text);
+  } else {
+    return 'Укажите сумму числом';
+  }
+  if (n < 0) return 'Стоимость не может быть отрицательной';
+  if (n > MAX_FACT_COST) return 'Слишком большая сумма';
+  // Kopecks: the number must round-trip through two fraction digits. A tolerance of a millionth of
+  // a kopeck absorbs binary representation (0.1 + 0.2), not real third digits.
+  if (Math.abs(Math.round(n * 100) - n * 100) > 1e-6) return 'Не более 2 знаков после запятой';
+  return Math.round(n * 100) / 100;
+}
+
+export const factCostSchema = z.unknown().transform((v, ctx): number => {
+  const parsed = parseFactCost(v);
+  if (typeof parsed === 'string') {
+    ctx.addIssue({ code: 'custom', message: parsed });
+    return z.NEVER;
+  }
+  return parsed;
+});
 
 /**
  * Расчёт стоимости по факту: объём × цена прайса. `null` — цены нет, и считать нечем: тогда
@@ -365,6 +521,11 @@ export type WasteRequestCompletionDto = WasteFactAmount & {
   pricePerM3: number | null;
   /** Итоговая стоимость; `null` — считать было нечем и руками не ввели. */
   totalCost: number | null;
+  /**
+   * Stored removal day (`YYYY-MM-DD`), `null` — unknown. Carried so that a re-close can show and
+   * keep it: an omitted date on a snow re-close keeps the saved one (snow-removal plan, §1).
+   */
+  removedOn: string | null;
   completedBy: string;
   completedByName: string;
   completedAt: string;
@@ -544,6 +705,8 @@ export const ownerMismatchReasonSchema = z
  *  - container_replace → containerTypeId + владелец + количество (группа присутствия);
  *  - container_removal → containerTypeId + владелец + количество (группа присутствия);
  *  - waste_removal     → wasteTypeId + volumeM3, техника не указывается (ADR 0022);
+ *  - snow_removal      → volumeM3 only: the server sets the service waste type «Снег», and there
+ *                        is no price list, tariff or estimate (snow-removal plan, S2, S6);
  *  - metal_removal     → ничего сверх общего: ни предмета, ни объёма, ни цены (ADR 0067).
  * Тип мусора, объём и цена есть только у вывоза мусора (ADR 0019). Кросс-полевые требования
  * проверяет superRefine; тариф и сумму считает сервер — кратность объёма известна только ему.
@@ -622,17 +785,15 @@ export const createWasteRequestStableSchema = z
         });
       }
     }
-    // Вывоз мусора заказывается объёмом, а не техникой (ADR 0022): чем вывозить, решает
-    // оператор, а при закрытии предъявляет фактический объём (ADR 0035).
-    // Тарифицируемая операция (вывоз): нужны и тип мусора, и объём — вдвоём с
-    // прайсом они дают сумму заявки (ADR 0019). У контейнерных операций обоих полей нет.
-    if (isPricedRequestType(v.requestType)) {
-      if (!v.wasteTypeId) {
-        ctx.addIssue({ code: 'custom', path: ['wasteTypeId'], message: 'Выберите тип мусора' });
-      }
-      if (v.volumeM3 == null) {
-        ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём' });
-      }
+    // Garbage and snow are ordered by volume, not by machines (ADR 0022): the operator decides
+    // how to remove it and presents the removed volume at completion (ADR 0035). Only garbage asks
+    // the requester for a waste type; snow gets the service type from the server, and a waste type
+    // sent with it is discarded there rather than refused (snow-removal plan, S2).
+    if (requesterSelectsWasteType(v.requestType) && !v.wasteTypeId) {
+      ctx.addIssue({ code: 'custom', path: ['wasteTypeId'], message: 'Выберите тип мусора' });
+    }
+    if (requiresOrderedVolume(v.requestType) && v.volumeM3 == null) {
+      ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём' });
     }
   });
 /** A receipt replay keeps its original date after Moscow midnight; only a new command uses today's gate. */

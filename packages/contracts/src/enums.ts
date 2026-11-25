@@ -463,6 +463,10 @@ export const REQUEST_TYPES = [
   'container_replace',
   'container_removal',
   'waste_removal',
+  // Snow removal (snow-removal plan, S1): offered right after one-off garbage removal. Same volume
+  // order and ticket closing as garbage, but the waste type is a server-owned service row and the
+  // cost is entered by hand at completion (no price list, no estimate).
+  'snow_removal',
   'metal_removal',
 ] as const;
 export const requestTypeSchema = z.enum(REQUEST_TYPES);
@@ -473,6 +477,7 @@ export const requestTypeLabels: Record<RequestType, string> = {
   container_replace: 'Замена полного контейнера на пустой',
   container_removal: 'Снятие контейнера (вывоз без замены)',
   waste_removal: 'Вывоз мусора (разовый объём)',
+  snow_removal: 'Вывоз снега',
   metal_removal: 'Вывоз металлолома',
 };
 
@@ -481,6 +486,7 @@ export const requestTypeColors: Record<RequestType, string> = {
   container_replace: 'gold',
   container_removal: 'volcano',
   waste_removal: 'blue',
+  snow_removal: 'cyan',
   metal_removal: 'purple',
 };
 
@@ -497,6 +503,9 @@ export const requestTypeShort: Record<RequestType, string> = {
   container_replace: 'З',
   container_removal: 'Сн',
   waste_removal: 'ВМ',
+  // Never printed, like the scrap letter: the type appeared long after the «М-» prefix. The map is
+  // total over types so that no type is left without a number format.
+  snow_removal: 'ВС',
   metal_removal: 'МЛ',
 };
 

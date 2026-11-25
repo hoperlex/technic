@@ -262,6 +262,8 @@ export async function loadWasteStats(p: Principal, month: string): Promise<Waste
 
   return {
     month,
+    // Garbage only until the stats layer learns the snow kind; the portal checks the echo.
+    kind: 'waste',
     from: range.from,
     to: range.to,
     rows: items,

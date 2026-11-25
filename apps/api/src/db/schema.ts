@@ -101,6 +101,9 @@ export const requestTypeEnum = pgEnum('request_type', [
   'container_replace',
   'container_removal',
   'waste_removal',
+  // Snow removal (migration 0427): ordered by volume like garbage, service waste type «Снег» set by
+  // the server, manual cost at completion. Placed after garbage in the DB enum as in the portal.
+  'snow_removal',
   // Вывоз металлолома (ADR 0067, миграция 0090): заявка без предмета и цены, факт — весом.
   'metal_removal',
 ]);
@@ -403,6 +406,14 @@ export const wasteTypes = pgTable(
     nameNotBlank: check('waste_types_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
     nameKeyUnique: uniqueIndex('waste_types_name_key_unique').on(t.nameKey),
     nameKeyNotBlank: check('waste_types_name_key_not_blank_check', sql`${t.nameKey} <> ''`),
+    // The reserved service row «Снег» (migration 0429): its id, code, canonical name and active
+    // flag stay bound together, and the code belongs to no other row. A trigger forbids deleting it.
+    serviceSnow: check(
+      'waste_types_service_snow_check',
+      sql`(${t.id} = '29cd9e92-0d72-4666-8ff1-76e0d6aad553'::uuid) = (${t.code} = 'snow')
+          AND (${t.id} <> '29cd9e92-0d72-4666-8ff1-76e0d6aad553'::uuid
+               OR (${t.name} = 'Снег' AND ${t.isActive}))`,
+    ),
   }),
 );
 
@@ -456,6 +467,11 @@ export const wasteTariffs = pgTable(
       .where(sql`${t.containerKind} IS NOT NULL`),
     wasteTypeIdx: index('waste_tariffs_waste_type_idx').on(t.wasteTypeId),
     operatorIdx: index('waste_tariffs_operator_idx').on(t.operatorCounterpartyId),
+    // Snow has no price list (migration 0429): no tariff, active or not, targets the service type.
+    notServiceType: check(
+      'waste_tariffs_not_service_type_check',
+      sql`${t.wasteTypeId} <> '29cd9e92-0d72-4666-8ff1-76e0d6aad553'::uuid`,
+    ),
   }),
 );
 
@@ -4966,6 +4982,12 @@ export const files = pgTable(
      */
     quarantinedAt: timestamp('quarantined_at', { withTimezone: true }),
     /**
+     * When the completion route saw the object in storage (migration 0428). `status = 'active'` is
+     * not that proof: attaching a request document promotes a pending upload without asking the
+     * storage. Ticket write paths require this mark; NULL — never verified by the completion route.
+     */
+    storageVerifiedAt: timestamp('storage_verified_at', { withTimezone: true }),
+    /**
      * Хеш содержимого, посчитанный сервером при постановке в карантин: разбор инцидента обязан
      * доказать, что по праву аудита смотрят тот самый файл, а не подменённый за это время объект.
      * Пусто у всех остальных файлов — считать его всем подряд незачем, вопрос задаётся один раз.
@@ -5123,6 +5145,22 @@ export const wasteRequests = pgTable(
           OR (${t.containerTypeId} IS NULL AND ${t.wasteTypeId} IS NULL
               AND ${t.wasteTariffId} IS NULL AND ${t.pricePerM3} IS NULL
               AND ${t.volumeM3} IS NULL)`,
+    ),
+    // Snow removal (migrations 0429/0430): a row carries the reserved «Снег» id exactly when its
+    // type is `snow_removal`, and a snow row has an ordered volume of at least 8 m³, no container
+    // fields, a count of 1 and no tariff or price. NULL-safe on purpose: a NULL volume or waste type
+    // fails instead of passing as an unknown CHECK result.
+    snowSubject: check(
+      'waste_requests_snow_subject_check',
+      sql`(${t.requestType} = 'snow_removal')
+            = (${t.wasteTypeId} IS NOT NULL
+               AND ${t.wasteTypeId} = '29cd9e92-0d72-4666-8ff1-76e0d6aad553'::uuid)
+          AND (${t.requestType} <> 'snow_removal'
+               OR (${t.volumeM3} IS NOT NULL AND ${t.volumeM3} >= 8
+                   AND ${t.containerTypeId} IS NULL
+                   AND ${t.containerOwnerCounterpartyId} IS NULL
+                   AND ${t.containersCount} = 1
+                   AND ${t.wasteTariffId} IS NULL AND ${t.pricePerM3} IS NULL))`,
     ),
   }),
 );

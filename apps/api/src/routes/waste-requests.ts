@@ -211,6 +211,7 @@ const requestSelect = {
   completionWeightTons: wasteRequestCompletions.weightTons,
   completionPricePerM3: wasteRequestCompletions.pricePerM3,
   completionTotalCost: wasteRequestCompletions.totalCost,
+  completionRemovedOn: wasteRequestCompletions.removedOn,
   completedBy: wasteRequestCompletions.completedBy,
   completedByName: completers.fullName,
   completedAt: wasteRequestCompletions.completedAt,
@@ -287,6 +288,7 @@ function toCompletionDto(r: RequestRow): WasteRequestCompletionDto | null {
     ...amount,
     pricePerM3: toNum(r.completionPricePerM3),
     totalCost: toNum(r.completionTotalCost),
+    removedOn: r.completionRemovedOn ?? null,
     completedBy: r.completedBy,
     completedByName: r.completedByName ?? '',
     completedAt: r.completedAt.toISOString(),
@@ -746,6 +748,7 @@ async function resolveWasteCompletion(
         weightTons: input.weightTons,
         pricePerM3: null,
         totalCost: null,
+        removedOn: input.removedOn ?? null,
         completedBy: actor.id,
         completedByName: actor.name,
         completedAt: new Date().toISOString(),
@@ -781,6 +784,7 @@ async function resolveWasteCompletion(
       // считаем по цене сами; прислан пустым — значит закрываем без суммы (счёт выяснят позже).
       totalCost:
         input.totalCost === undefined ? calcWasteFactCost(volumeM3, pricePerM3) : input.totalCost,
+      removedOn: input.removedOn ?? null,
       completedBy: actor.id,
       completedByName: actor.name,
       completedAt: new Date().toISOString(),
@@ -1286,6 +1290,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           weightTons: sql<
             string | null
           >`sum(${wasteRequestCompletions.weightTons}) FILTER (WHERE ${wasteRequests.status} = 'completed')`,
+          // Snow costs are entered by hand and may be missing (S7): the portal must know whether
+          // the sum above covers every completed snow request, and a recorded 0 is a known cost.
+          snowCompletedWithCost: sql<number>`count(*) FILTER (
+            WHERE ${wasteRequests.status} = 'completed'
+              AND ${wasteRequests.requestType} = 'snow_removal'
+              AND ${wasteRequestCompletions.totalCost} IS NOT NULL)`,
+          snowCompletedWithoutCost: sql<number>`count(*) FILTER (
+            WHERE ${wasteRequests.status} = 'completed'
+              AND ${wasteRequests.requestType} = 'snow_removal'
+              AND ${wasteRequestCompletions.totalCost} IS NULL)`,
         })
         .from(wasteRequests)
         .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
@@ -1298,6 +1312,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         totalCost: toNum(agg!.totalCost) ?? 0,
         volumeM3: toNum(agg!.volumeM3) ?? 0,
         weightTons: toNum(agg!.weightTons) ?? 0,
+        snowCompletedWithCost: Number(agg!.snowCompletedWithCost),
+        snowCompletedWithoutCost: Number(agg!.snowCompletedWithoutCost),
       } satisfies WasteRequestHistorySummaryDto;
     },
   );
