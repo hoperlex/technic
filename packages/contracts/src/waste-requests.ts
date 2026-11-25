@@ -340,6 +340,38 @@ export interface WasteRequestCapabilitiesDto {
 }
 
 /**
+ * How `DELETE /waste-requests/:id` removes a request: a «Новая» request is deleted for good, any
+ * other goes to the archive (ADR 0070). One rule for the server and the confirmation dialog, so the
+ * dialog never promises the archive for a request the server would delete outright.
+ */
+export type WasteRequestDeleteMode = 'hard' | 'soft';
+
+export function wasteRequestDeleteMode(status: RequestStatus): WasteRequestDeleteMode {
+  return status === 'new' ? 'hard' : 'soft';
+}
+
+/**
+ * What the person confirmed when deleting (snow-removal plan, §3.2). The server compares it with
+ * the locked row and answers 409 on drift before any write: a confirmation to archive must not
+ * become a hard delete because the request was rolled back to «Новая» in between. Required for a
+ * snow request; optional for the older types so that tabs built before it keep working, and
+ * checked whenever it is sent.
+ */
+export const deleteWasteRequestQuerySchema = z
+  .object({
+    version: z.coerce.number().int().nonnegative().optional(),
+    mode: z.enum(['hard', 'soft']).optional(),
+  })
+  .strict();
+export type DeleteWasteRequestQuery = z.infer<typeof deleteWasteRequestQuerySchema>;
+
+/** Purge confirmation: the archived version the person saw. Required for snow, as above. */
+export const purgeWasteRequestQuerySchema = z
+  .object({ version: z.coerce.number().int().nonnegative().optional() })
+  .strict();
+export type PurgeWasteRequestQuery = z.infer<typeof purgeWasteRequestQuerySchema>;
+
+/**
  * Талоны на одно закрытие: их несколько (талон с двух сторон, весовая квитанция рядом), но
  * список общий на заявку — к отдельной машине талон больше не крепится (ADR 0024).
  */
