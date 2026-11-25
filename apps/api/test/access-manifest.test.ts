@@ -319,20 +319,25 @@ describe('манифест доступа маршрутов', () => {
 
   it('дизъюнкция объявлена поимённо, и у ходов заявки второй член — назначение', () => {
     const declared = Object.entries(manifest).filter(([, c]) => c.kind === 'anyOf');
-    expect(declared.map(([key]) => key).sort()).toEqual([
-      'GET /api/v1/office-equipment-candidates/:id',
-      'PATCH /api/v1/service-requests/:id/complete',
-      'PATCH /api/v1/service-requests/:id/consumables/issued',
-      'PATCH /api/v1/service-requests/:id/decline',
-      'PATCH /api/v1/service-requests/:id/estimate/approval',
-      'PATCH /api/v1/service-requests/:id/estimate/reopen',
-      'PATCH /api/v1/service-requests/:id/estimate/submit',
-      'PATCH /api/v1/service-requests/:id/start',
-      'PATCH /api/v1/service-requests/:id/status',
-      'POST /api/v1/service-requests/bulk',
-      'PUT /api/v1/service-requests/:id/consumables',
-      'PUT /api/v1/service-requests/:id/estimate',
-    ]);
+    expect(declared.map(([key]) => key).sort()).toEqual(
+      [
+        'GET /api/v1/office-equipment-candidates/:id',
+        'PATCH /api/v1/service-requests/:id/complete',
+        'PATCH /api/v1/service-requests/:id/consumables/issued',
+        'PATCH /api/v1/service-requests/:id/decline',
+        'PATCH /api/v1/service-requests/:id/estimate/approval',
+        'PATCH /api/v1/service-requests/:id/estimate/reopen',
+        'PATCH /api/v1/service-requests/:id/estimate/submit',
+        'PATCH /api/v1/service-requests/:id/start',
+        'PATCH /api/v1/service-requests/:id/status',
+        'POST /api/v1/service-requests/bulk',
+        'PUT /api/v1/service-requests/:id/consumables',
+        'PUT /api/v1/service-requests/:id/estimate',
+        // The waste status door (snow-removal plan, §3.2): the cycle under `wasteRequests.status`,
+        // the terminal «Завершена» under `wasteRequests.ticketReview` — the contract corridor picks.
+        'PATCH /api/v1/waste-requests/:id/status',
+      ].sort(),
+    );
     for (const [key, condition] of declared) {
       if (condition.kind !== 'anyOf') continue;
       // Ходы заявки на обслуживание — и только они: второй член у них обязан быть назначением.

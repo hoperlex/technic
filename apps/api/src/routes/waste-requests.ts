@@ -1048,6 +1048,20 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       app.requirePermission('wasteRequests.status', 'Недостаточно прав для смены статуса'),
     ],
   };
+  // The status door opens to either right; which move the account may make on THIS request is the
+  // contract corridor's answer (`allowedStatusTransitions` via `assertTransitionAllowed`): the
+  // terminal «Выполнена» → «Завершена» belongs to the ticket reviewer, who settles the paper and
+  // may lack the ordinary status right, and every other move needs `wasteRequests.status` with
+  // the role and rollback checks (snow-removal plan, §3.2).
+  const canMoveStatus = {
+    preHandler: [
+      app.authenticate,
+      app.requireAnyPermission(
+        ['wasteRequests.status', 'wasteRequests.ticketReview'],
+        'Недостаточно прав для смены статуса',
+      ),
+    ],
+  };
   const canAssignOperator = {
     preHandler: [
       app.authenticate,
@@ -2060,7 +2074,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
 
   r.patch(
     '/:id/status',
-    { ...canChangeStatus, schema: { params: idParams, body: changeWasteRequestStatusSchema } },
+    { ...canMoveStatus, schema: { params: idParams, body: changeWasteRequestStatusSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const { status, comment, completion, ticketFileIds, version } = req.body;

@@ -357,6 +357,9 @@ describe('авторизация маршрутов', () => {
     const ALLOWED_DISJUNCTIVE = [
       '/api/v1/service-requests/',
       '/api/v1/office-equipment-candidates/:id',
+      // The waste status door, by its full address (snow-removal plan, §3.2): the ticket reviewer
+      // places «Завершена» without the ordinary status right. Every other waste route keeps one.
+      '/api/v1/waste-requests/:id/status',
     ];
     const disjunctive = routes.filter((r) => r.authz.some((a) => a.startsWith(ANY_OF)));
     expect(disjunctive.length).toBeGreaterThan(0);

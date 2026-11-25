@@ -1442,9 +1442,14 @@ export const ACCESS_MANIFEST = {
   },
   'DELETE /api/v1/waste-requests/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
   'POST /api/v1/waste-requests/:id/restore': { kind: 'permissions', allOf: ['archive.restore'] },
+  // Two sides hold the status door (snow-removal plan, §3.2): whoever drives the cycle
+  // (`wasteRequests.status`) and the ticket reviewer, who places the terminal «Завершена» after
+  // settling the paper and may lack the ordinary status right. Which move is open on the request is
+  // the contract corridor's answer in the handler (`allowedStatusTransitions`), not this entry's.
   'PATCH /api/v1/waste-requests/:id/status': {
-    kind: 'permissions',
-    allOf: ['wasteRequests.status'],
+    kind: 'anyOf',
+    anyOf: ['wasteRequests.status', 'wasteRequests.ticketReview'],
+    why: 'The cycle is driven by the status right; the terminal move belongs to the ticket reviewer',
   },
   // Догрузка талонов к выполненной заявке (ADR 0189) — тем же правом, что и закрытие: бумагу
   // приносит тот, кто отмечает заявку выполненной. Соседняя ручка `POST .../:id/tickets` живёт под

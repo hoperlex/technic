@@ -97,6 +97,21 @@ export function nextAddress(): string {
 
 let scene: Scene | null = null;
 
+type ExtraUser = (input: {
+  tag: string;
+  role: string;
+  counterpartyId?: string;
+  objects?: string[];
+  grant?: string[];
+}) => Promise<TestUser>;
+let extraUser: ExtraUser | null = null;
+
+/** One more account for a single case: a role, an object scope and a free grant on top of it. */
+export function addUser(input: Parameters<ExtraUser>[0]): Promise<TestUser> {
+  if (!extraUser) throw new Error('scene is not built');
+  return extraUser(input);
+}
+
 export function current(): Scene {
   if (!scene) throw new Error('scene is not built');
   return scene;
@@ -246,6 +261,12 @@ export async function buildScene(
     });
     if (res.statusCode !== 200) throw new Error(`login ${u.email}: ${res.body}`);
     return { ...u, auth: { authorization: `Bearer ${res.json().accessToken}` } };
+  };
+
+  extraUser = async (input) => {
+    const u = await makeUser(input);
+    if (input.grant) await grant(u, input.role, input.grant);
+    return login(u);
   };
 
   scene = {
