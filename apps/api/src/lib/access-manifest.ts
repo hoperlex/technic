@@ -1420,6 +1420,13 @@ export const ACCESS_MANIFEST = {
   // отказ роли от контрагента и кабинету работника живёт в обработчике (`assertWasteStatsAudience`)
   // — он не открывает маршрут, а закрывает свод площадок тому, кто видит модуль своими заявками.
   'GET /api/v1/waste-requests/stats': { kind: 'permissions', allOf: ['wasteRequests.read'] },
+  // Capability negotiation (snow-removal plan, §3.5): what the serving API supports. The same read
+  // right as the list — the answer only tells a portal which request shapes it may use, and every
+  // request it then sends passes its own permission and scope checks.
+  'GET /api/v1/waste-requests/capabilities': {
+    kind: 'permissions',
+    allOf: ['wasteRequests.read'],
+  },
   'GET /api/v1/waste-requests/:id': { kind: 'permissions', allOf: ['wasteRequests.read'] },
   // То же условие у правки, но схема здесь `uuidSchema.nullable().optional()` — сценариев три:
   // без поля, с идентификатором и `null`. Снять назначенного исполнителя — такое же назначение,

@@ -21,6 +21,10 @@ import {
   purgeWasteRequestQuerySchema,
   wasteRequestDeleteMode,
   wasteRequestTypeCapability,
+  WASTE_REQUEST_CAPABILITY_HEADER,
+  WASTE_REQUEST_CAPABILITY_SNOW,
+  type WasteRequestCapabilitiesDto,
+  REQUEST_TYPES,
   isManualCostOnly,
   isServiceWasteTypeId,
   serviceWasteTypeCode,
@@ -85,7 +89,8 @@ import {
   wasteTicketFieldEvents,
   wasteTypes,
 } from '../db/schema';
-import { err } from '../lib/errors';
+import { AppError, err } from '../lib/errors';
+import { CLIENT_UPGRADE_MESSAGE, CLIENT_UPGRADE_REQUIRED } from '../lib/client-contract';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import type { Principal } from '../auth/principal';
@@ -500,6 +505,44 @@ async function assertOperatorAssignable(
   if (!cp.isActive) throw err.badRequest('Контрагент неактивен');
   // Исполнитель должен работать на объекте заявки (ADR 0010, миграция 0027).
   await assertOperatorServesObject(tx, objectId, counterpartyId);
+}
+
+// ── Capability negotiation (snow-removal plan, §3.5) ──
+//
+// A tab opened before snow existed has no label for it and would close it through the ticket-only
+// flow of an unknown type. Such a tab declares no capability: lists, counts and journals hide the
+// types it cannot handle BEFORE pagination and totals, and a direct request on such a row answers
+// the existing 426 only AFTER the usual permission and scope checks — the refusal must not tell an
+// outsider that the row exists or what type it is. The capability selects shapes; it never grants.
+
+/** Capabilities this request declared: one header, comma-separated tokens. */
+function declaredCapabilities(req: FastifyRequest): ReadonlySet<string> {
+  const raw = req.headers[WASTE_REQUEST_CAPABILITY_HEADER.toLowerCase()];
+  const values = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+  return new Set(
+    values
+      .flatMap((v) => v.split(','))
+      .map((v) => v.trim())
+      .filter(Boolean),
+  );
+}
+
+function supportsType(req: FastifyRequest, t: RequestType): boolean {
+  const needed = wasteRequestTypeCapability(t);
+  return needed === null || declaredCapabilities(req).has(needed);
+}
+
+/** The refresh answer an old tab already understands (`client-contract.ts`, ADR 0146). */
+function assertTypeSupported(req: FastifyRequest, t: RequestType): void {
+  if (!supportsType(req, t)) {
+    throw new AppError(426, CLIENT_UPGRADE_REQUIRED, CLIENT_UPGRADE_MESSAGE);
+  }
+}
+
+/** The one legacy type filter of the feed, archive, counts, journal and its summary. */
+function supportedTypesWhere(req: FastifyRequest): SQL | undefined {
+  const hidden = REQUEST_TYPES.filter((t) => !supportsType(req, t));
+  return hidden.length > 0 ? notInArray(wasteRequests.requestType, hidden) : undefined;
 }
 
 /**
@@ -1016,12 +1059,17 @@ async function withLiveFileView(dto: WasteRequestDto): Promise<WasteRequestDto> 
  * first send answers as the card would — 403 or 404 — instead of with its frozen data. A request
  * that no longer exists answers 404 for the same reason.
  */
-async function emitReceipt(p: Principal, frozen: WasteRequestDto): Promise<WasteRequestDto> {
+async function emitReceipt(
+  req: FastifyRequest,
+  p: Principal,
+  frozen: WasteRequestDto,
+): Promise<WasteRequestDto> {
   const [row] = await db
     .select({
       objectId: wasteRequests.objectId,
       operatorCounterpartyId: wasteRequests.operatorCounterpartyId,
       deletedAt: wasteRequests.deletedAt,
+      requestType: wasteRequests.requestType,
     })
     .from(wasteRequests)
     .where(eq(wasteRequests.id, frozen.id));
@@ -1029,6 +1077,7 @@ async function emitReceipt(p: Principal, frozen: WasteRequestDto): Promise<Waste
   assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
   assertPlaceObjectScope(p, row.objectId, WASTE_SCOPE_LABEL);
   assertOperatorScope(p, row.operatorCounterpartyId);
+  assertTypeSupported(req, row.requestType);
   return withLiveFileView(frozen);
 }
 
@@ -1109,6 +1158,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
      * живут своим журналом («История»). Архив — исключение: удаляют и закрытые заявки, и вкладка
      * удалённого обязана показать их такими, какими они были.
      */
+    // An explicit filter on a type the tab cannot show is a request it cannot render: refresh.
+    if (q.requestType) assertTypeSupported(req, q.requestType);
     const openOnly = q.archive !== 'only';
     if (openOnly && q.status && isClosedWasteStatus(q.status)) {
       // Отклоняется, а не отдаётся пустым списком: пустая таблица на живой фильтр читается как
@@ -1119,6 +1170,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       );
     }
     const where = and(
+      supportedTypesWhere(req),
       openOnly ? notInArray(wasteRequests.status, [...CLOSED_WASTE_STATUSES]) : undefined,
       // Архив (ADR 0070): вкладка «Архив» просит `only`, обычный список — умолчание `exclude`.
       // Границы видимости при этом те же: свой объект, свои заявки, — архив их не расширяет.
@@ -1301,6 +1353,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         .from(wasteRequests)
         .where(
           and(
+            supportedTypesWhere(req),
             isNull(wasteRequests.deletedAt),
             placeObjectVisibilityWhere(p, wasteRequests.objectId),
             operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
@@ -1326,9 +1379,11 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   // «Выполнена» сюда не попадает: по такой заявке ещё разбирают талоны, и работа с ней не кончена.
 
   /** Условия журнала. Границы видимости те же, что у списка: свой объект, свои заявки. */
-  const historyWhere = (p: Principal, q: WasteRequestHistoryQuery): SQL => {
+  const historyWhere = (req: FastifyRequest, p: Principal, q: WasteRequestHistoryQuery): SQL => {
+    if (q.requestType) assertTypeSupported(req, q.requestType);
     const statuses = q.status ? [q.status] : [...CLOSED_WASTE_STATUSES];
     return and(
+      supportedTypesWhere(req),
       // Удалённых в журнале нет вовсе: снесённая заявка живёт вкладкой «Архив» (ADR 0070), а
       // журнал отвечает про состоявшееся. Параметра `archive` у него поэтому нет.
       isNull(wasteRequests.deletedAt),
@@ -1373,7 +1428,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       const p = requirePrincipal(req);
       assertHistoryStatus(req.query);
       const q = req.query;
-      const where = historyWhere(p, q);
+      const where = historyWhere(req, p, q);
       const sortCols = {
         num: wasteRequests.num,
         objectName: constructionObjects.name,
@@ -1432,7 +1487,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       assertHistoryStatus(req.query);
-      const where = historyWhere(p, req.query);
+      const where = historyWhere(req, p, req.query);
       const [agg] = await db
         .select({
           total: count(),
@@ -1499,6 +1554,15 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
    * независимо от порядка объявления, но читателю файла порядок говорит больше, чем порядок
    * разбора.
    */
+  /**
+   * What the serving API supports (snow-removal plan, §3.5). A portal asks it before offering snow:
+   * an older API behind a newer portal answers 404 here, and the portal hides snow until support is
+   * confirmed. Declared before `/:id` for the reader; Fastify prefers the static path anyway.
+   */
+  r.get('/capabilities', auth, async () => {
+    return { capabilities: [WASTE_REQUEST_CAPABILITY_SNOW] } satisfies WasteRequestCapabilitiesDto;
+  });
+
   r.get('/stats', { ...auth, schema: { querystring: wasteStatsQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     assertWasteStatsAudience(p);
@@ -1512,6 +1576,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     assertArchiveVisible(p, dto.deletedAt, 'Заявка не найдена');
     assertPlaceObjectScope(p, dto.objectId, WASTE_SCOPE_LABEL);
     assertOperatorScope(p, dto.operatorCounterpartyId);
+    assertTypeSupported(req, dto.requestType);
     return dto;
   });
 
@@ -1528,6 +1593,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           objectId: wasteRequests.objectId,
           operatorCounterpartyId: wasteRequests.operatorCounterpartyId,
           deletedAt: wasteRequests.deletedAt,
+          requestType: wasteRequests.requestType,
           createdAt: wasteRequests.createdAt,
           createdBy: wasteRequests.createdBy,
           createdByName: users.fullName,
@@ -1539,6 +1605,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
       assertPlaceObjectScope(p, row.objectId, WASTE_SCOPE_LABEL);
       assertOperatorScope(p, row.operatorCounterpartyId);
+      assertTypeSupported(req, row.requestType);
       return loadWasteRequestHistory(
         row.id,
         { at: row.createdAt, actorId: row.createdBy, actorName: row.createdByName },
@@ -1595,6 +1662,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     // A counterparty-scoped creator files only for its own operator, and an omitted operator does
     // not satisfy this: the request would leave the creator's own area at birth (§3.2).
     assertAssignsOwnOperator(p, body.operatorCounterpartyId);
+    // Snow creation, and the replay of a snow receipt, need a tab that knows the type (§3.5). The
+    // header stays out of the fingerprint: the same body from a refreshed tab is the same attempt.
+    assertTypeSupported(req, body.requestType);
     const createKey = createAttemptKey(req.headers['idempotency-key']);
     if (receiptRequired && !createKey) throw err.unprocessable('Передайте ключ создания заявки');
     const fingerprint = createKey ? createAttemptFingerprint(body) : null;
@@ -1609,7 +1679,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         loadRequestSnapshot,
       );
       if (replay) {
-        const live = await emitReceipt(p, replay);
+        const live = await emitReceipt(req, p, replay);
         reply.code(200);
         return live;
       }
@@ -1697,7 +1767,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           });
     if (outcome.repeated) {
       // Replay after an insert conflict: the same live scope check as the early lookup.
-      const live = await emitReceipt(p, outcome.response);
+      const live = await emitReceipt(req, p, outcome.response);
       reply.code(200);
       return live;
     }
@@ -1743,10 +1813,12 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
         assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
         assertOperatorScope(p, before.operatorCounterpartyId);
+        assertTypeSupported(req, before.requestType);
         assertObjectRoleEditable(p, before.status, 'редактировать');
         if (before.version !== body.version) throw err.conflict();
 
         const rt = body.requestType ?? before.requestType;
+        assertTypeSupported(req, rt);
         // Snow and any other type never turn into each other (S12): the subject, the cost model and
         // the paper of a filed request belong to its type, and a wrong type is cancelled and filed
         // again. Asked before the subject is resolved and before the fact-unit guard below, so the
@@ -1875,6 +1947,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // operator are asked as on every other door (§3.2), from the locked row.
         assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
         assertOperatorScope(p, before.operatorCounterpartyId);
+        assertTypeSupported(req, before.requestType);
         if (before.version !== version) throw err.conflict();
         if (operatorCounterpartyId) {
           await assertOperatorAssignable(tx, operatorCounterpartyId, before.objectId);
@@ -1958,6 +2031,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // выдали, а область не написана» означало бы доступ ко всем заявкам сразу.
         assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
         assertOperatorScope(p, before.operatorCounterpartyId);
+        assertTypeSupported(req, before.requestType);
         if (!wasteOperatorCommentEditable(before.status)) {
           throw err.badRequest('Заявка закрыта — примечание исполнителя больше не меняют', {
             operatorComment: 'Заявка закрыта',
@@ -2029,6 +2103,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
         assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
         assertOperatorScope(p, before.operatorCounterpartyId);
+        assertTypeSupported(req, before.requestType);
         if (!wasteTicketsAttachable(before.status)) {
           // Отказы разные, потому что разные и выходы из положения: до выполнения талон едет с
           // закрытием, после завершения нужен откат. «Талон сюда приложить нельзя» не сказало бы
@@ -2123,6 +2198,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
         assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
         assertOperatorScope(p, before.operatorCounterpartyId);
+        assertTypeSupported(req, before.requestType);
         if (before.status === status) {
           // A second snow completion against a request already «Выполнена» would otherwise be
           // answered with the unchanged card while its volume, cost and tickets were silently
@@ -2363,6 +2439,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
         assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
         assertOperatorScope(p, existing.operatorCounterpartyId);
+        assertTypeSupported(req, existing.requestType);
         assertObjectRoleEditable(p, existing.status, 'удалять');
         const actual = wasteRequestDeleteMode(existing.status);
         if (
@@ -2443,6 +2520,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // по реквизитам строки — удалённость на них не влияет.
         assertPlaceObjectScope(p, existing.objectId, WASTE_SCOPE_LABEL);
         assertOperatorScope(p, existing.operatorCounterpartyId);
+        assertTypeSupported(req, existing.requestType);
         if (!existing.deletedAt) return { restored: false, after: existing };
         await tx
           .update(wasteRequests)
@@ -2509,6 +2587,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           if (!row) throw err.notFound('Заявка не найдена');
           assertPlaceObjectScope(p, row.objectId, WASTE_SCOPE_LABEL);
           assertOperatorScope(p, row.operatorCounterpartyId);
+          assertTypeSupported(req, row.requestType);
           if (!row.deletedAt) throw err.conflict('Заявка не в архиве — сначала удалите её');
           if (deleteConfirmationRequired(row.requestType) && version === undefined) {
             throw err.badRequest('Подтвердите удаление по актуальной карточке заявки', {
