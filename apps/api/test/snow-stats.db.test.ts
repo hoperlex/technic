@@ -5,6 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   SNOW_WASTE_TYPE_ID,
   SNOW_WASTE_TYPE_NAME,
+  WASTE_REQUEST_CAPABILITY_HEADER,
+  WASTE_REQUEST_CAPABILITY_SNOW,
   type AnalyticsCustomerRow,
   type AnalyticsQualityEntry,
   type AnalyticsSummaryDto,
@@ -267,6 +269,10 @@ async function seedScan(
   return pageIds;
 }
 
+/**
+ * The snow kind is served only to a client that declares the capability (plan §3.5); the garbage
+ * kind and a bare `?month=` need no header, and a few calls below go without it on purpose.
+ */
 async function stats(
   query: string,
   auth: { authorization: string } = ctx.auth,
@@ -274,7 +280,9 @@ async function stats(
   const res = await ctx.app.inject({
     method: 'GET',
     url: `/api/v1/waste-requests/stats?${query}`,
-    headers: auth,
+    headers: query.includes('kind=snow')
+      ? { ...auth, [WASTE_REQUEST_CAPABILITY_HEADER]: WASTE_REQUEST_CAPABILITY_SNOW }
+      : auth,
   });
   expect(res.statusCode, res.body).toBe(200);
   return res.json() as WasteStatsDto;
@@ -633,6 +641,17 @@ describe.skipIf(!DB_URL)('вывоз снега: статистика за от�
       expect(dto.rows).toEqual([]);
       expect(dto.totals).toMatchObject({ requests: 0, plannedVolumeM3: 0, doneVolumeM3: 0 });
       expect(rowOf(await stats(`month=${GARBAGE_MONTH}`), 'a')?.doneVolumeM3).toBe(8);
+    });
+
+    it('снег без заявленной возможности клиента — 426, мусор и голый месяц — без заголовка', async () => {
+      const bare = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/waste-requests/stats?month=${MONTH}&kind=snow`,
+        headers: ctx.auth,
+      });
+      expect(bare.statusCode, bare.body).toBe(426);
+      expect((await stats(`month=${MONTH}`)).kind).toBe('waste');
+      expect((await stats(`month=${MONTH}&kind=waste`)).kind).toBe('waste');
     });
 
     it('чужой вид отвергается проверкой запроса', async () => {
