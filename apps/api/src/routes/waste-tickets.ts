@@ -75,6 +75,7 @@ import {
 import {
   loadTicketCheckInputs,
   loadTicketCheckRequestRow,
+  readAll,
   type RequestVisibility,
   type TicketCheckBundle,
   type TicketFileReview,
@@ -115,8 +116,8 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
    * Заявка вместе с проверкой области — общее начало каждой ручки. Возвращает то, что нужно и
    * сверкам, и текстам замечаний: тип, план, плановую дату, объект и оператора.
    */
-  async function loadRequest(requestId: string) {
-    const rows = await db
+  async function loadRequest(requestId: string, exec: Tx | typeof db = db) {
+    const rows = await exec
       .select({
         id: wasteRequests.id,
         num: wasteRequests.num,
@@ -536,334 +537,362 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
   // ── Чтение ──
 
   /**
-   * Всё, что нужно экрану разбора: талоны, страницы, файловые строки и посчитанные замечания.
-   * Замечания не хранятся — они считаются здесь функцией от заявки, факта и талонов, иначе
-   * разошлись бы с талонами на первой же правке цифры (Р21).
+   * Everything the review screen needs: tickets, pages, file rows and the computed remarks. Remarks
+   * are not stored — they are a function of the request, the fact and the tickets computed here,
+   * otherwise they would drift from the tickets on the first corrected figure (R21).
    */
   r.get('/:id/tickets', { ...canReview, schema: { params: requestParams } }, async (req) => {
     const p = requirePrincipal(req);
-    const request = await loadRequest(req.params.id);
-    assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
-    assertOperatorScope(p, request.operatorCounterpartyId);
+    /*
+     * ONE AUTHORIZED SNAPSHOT (snow-removal plan, §3.2). The request row is read and its scope
+     * checked inside the same read-only REPEATABLE READ transaction that reads the tickets, files,
+     * attempts and names. Read through the pool, each query saw its own moment: a request moved to
+     * another site after the scope check could still contribute its paper, and the badge could
+     * disagree with the file rows printed next to it. File names go through `fileNameView` (the
+     * quarantine mask), and a file whose row cannot be read gets no name at all.
+     */
+    return db.transaction(
+      async (tx) => {
+        const request = await loadRequest(req.params.id, tx);
+        assertPlaceObjectScope(p, request.objectId, WASTE_SCOPE_LABEL);
+        assertOperatorScope(p, request.operatorCounterpartyId);
 
-    // Вход сверки и всё, что нужно только этому экрану, читаются параллельно: первое — общим
-    // загрузчиком (он же считает значки списка), остальное — здесь.
-    const [bundle, attachedRows, fileRows, attempts] = await Promise.all([
-      collectCheckInputs(p, request.id),
-      // Приложенные талоны — ВСЕ, а не только те, у кого есть строка распознавания. Талон,
-      // приложенный при выключенном модуле, строки не имеет вовсе, и без этого запроса экран
-      // показывал бы пустоту там, где бумага лежит и ждёт человека (Р29).
-      db
-        .select({
-          fileId: requestFiles.fileId,
-          filename: files.filename,
-          contentType: files.contentType,
-          // Карантин читается вместе с именем: имя скрытого талона наружу не уходит, и решает это
-          // общее правило (`fileNameView`), а не этот экран (Р6, п. 4).
-          quarantinedAt: files.quarantinedAt,
-          // Связь `request_files` своей даты не имеет — берём дату файла: она и есть «когда талон
-          // приложили», потому что файл загружают тем же действием.
-          createdAt: files.createdAt,
-        })
-        .from(requestFiles)
-        .innerJoin(files, eq(files.id, requestFiles.fileId))
-        .where(
-          and(
-            eq(requestFiles.requestId, request.id),
-            eq(requestFiles.kind, 'ticket'),
-            sql`${files.deletedAt} IS NULL`,
+        // The checks input comes from the shared loader (it also computes the list badges); what
+        // only this screen needs is read here — all of it in this one transaction.
+        const [bundle, attachedRows, fileRows, attempts] = await readAll(tx, [
+          () => collectCheckInputs(p, request.id, tx),
+          // ALL attached tickets, not only those with a recognition row: a ticket attached while
+          // the module was off has no row, and without this query the screen would show nothing
+          // where paper lies waiting for a person (R29).
+          () =>
+            tx
+              .select({
+                fileId: requestFiles.fileId,
+                filename: files.filename,
+                contentType: files.contentType,
+                // Quarantine is read with the name: a hidden ticket's name never leaves, decided by
+                // the shared rule (`fileNameView`), not by this screen (R6, item 4).
+                quarantinedAt: files.quarantinedAt,
+                // The link has no date of its own; the file's date is "when it was attached", since
+                // the file is uploaded by the same action.
+                createdAt: files.createdAt,
+              })
+              .from(requestFiles)
+              .innerJoin(files, eq(files.id, requestFiles.fileId))
+              .where(
+                and(
+                  eq(requestFiles.requestId, request.id),
+                  eq(requestFiles.kind, 'ticket'),
+                  sql`${files.deletedAt} IS NULL`,
+                ),
+              ),
+          // The file row answers what tickets cannot: why there are none (R29). The job joined by
+          // `active_job_id` gives "попытка 3 из 5, следующая в 14:32"; a job queued before the
+          // worker took the file comes from the overlay (`fileStateView`).
+          () =>
+            tx
+              .select({
+                fileId: wasteTicketFiles.fileId,
+                filename: files.filename,
+                contentType: files.contentType,
+                // The same quarantine rule for the name (R6, item 4): the row stays, the name goes.
+                quarantinedAt: files.quarantinedAt,
+                status: wasteTicketFiles.status,
+                reason: wasteTicketFiles.reason,
+                errorClass: wasteTicketFiles.errorClass,
+                errorScope: wasteTicketFiles.errorScope,
+                totalPages: wasteTicketFiles.totalPages,
+                processedPages: wasteTicketFiles.processedPages,
+                createdAt: wasteTicketFiles.createdAt,
+                updatedAt: wasteTicketFiles.updatedAt,
+                jobId: jobs.id,
+                jobAttempt: jobs.attempts,
+                jobMaxAttempts: jobs.maxAttempts,
+                jobRunAt: jobs.nextRunAt,
+                jobStatus: jobs.status,
+              })
+              .from(wasteTicketFiles)
+              .leftJoin(files, eq(files.id, wasteTicketFiles.fileId))
+              .leftJoin(jobs, eq(jobs.id, wasteTicketFiles.activeJobId))
+              .where(eq(wasteTicketFiles.requestId, request.id)),
+          // The attempt log (R29): the person quotes the proxy request id from it when finding out
+          // why recognition fails; without it the talk is "it does not read".
+          () =>
+            tx
+              .select({
+                id: wasteTicketRecognitionAttempts.id,
+                pageSha256: wasteTicketRecognitionAttempts.pageSha256,
+                engine: wasteTicketRecognitionAttempts.engine,
+                model: wasteTicketRecognitionAttempts.model,
+                modelReported: wasteTicketRecognitionAttempts.modelReported,
+                promptVersion: wasteTicketRecognitionAttempts.promptVersion,
+                preprocessingVersion: wasteTicketRecognitionAttempts.preprocessingVersion,
+                status: wasteTicketRecognitionAttempts.status,
+                forced: wasteTicketRecognitionAttempts.forced,
+                inputTokens: wasteTicketRecognitionAttempts.inputTokens,
+                outputTokens: wasteTicketRecognitionAttempts.outputTokens,
+                durationMs: wasteTicketRecognitionAttempts.durationMs,
+                proxyRequestId: wasteTicketRecognitionAttempts.proxyRequestId,
+                upstreamRequestId: wasteTicketRecognitionAttempts.upstreamRequestId,
+                errorCode: wasteTicketRecognitionAttempts.errorCode,
+                errorClass: wasteTicketRecognitionAttempts.errorClass,
+                errorScope: wasteTicketRecognitionAttempts.errorScope,
+                error: wasteTicketRecognitionAttempts.error,
+                createdAt: wasteTicketRecognitionAttempts.createdAt,
+              })
+              .from(wasteTicketRecognitionAttempts)
+              .innerJoin(
+                wasteTicketPages,
+                eq(wasteTicketPages.pageSha256, wasteTicketRecognitionAttempts.pageSha256),
+              )
+              .where(eq(wasteTicketPages.requestId, request.id))
+              .orderBy(asc(wasteTicketRecognitionAttempts.createdAt)),
+        ]);
+
+        const { tickets, pages } = bundle;
+        const checks = wasteTicketChecks(bundle.inputs);
+        const reviewOf = new Map(bundle.files.map((file) => [file.fileId, file]));
+
+        // Names of people and carriers in a second round, only for those present in the rows: the
+        // card shows who confirmed, not an id.
+        const personIds = [
+          ...new Set(
+            tickets
+              .flatMap((t) => [t.editedBy, t.confirmedBy, t.duplicateOverrideBy])
+              .filter((id): id is string => !!id),
           ),
-        ),
-      // Файловая строка отвечает на вопрос, которого у талонов нет: почему их нет вовсе (Р29).
-      // Имя файла и живая задача — оттуда же: «попытка 3 из 5, следующая в 14:32» собирается из
-      // очереди, и собирать её вторым запросом с экрана значило бы показывать вчерашнее число.
-      db
-        .select({
-          fileId: wasteTicketFiles.fileId,
-          filename: files.filename,
-          contentType: files.contentType,
-          // То же общее правило об имени карантинного файла (Р6, п. 4), что и у приложенных
-          // талонов: строка разбора остаётся, имя — нет.
-          quarantinedAt: files.quarantinedAt,
-          status: wasteTicketFiles.status,
-          reason: wasteTicketFiles.reason,
-          errorClass: wasteTicketFiles.errorClass,
-          errorScope: wasteTicketFiles.errorScope,
-          totalPages: wasteTicketFiles.totalPages,
-          processedPages: wasteTicketFiles.processedPages,
-          createdAt: wasteTicketFiles.createdAt,
-          updatedAt: wasteTicketFiles.updatedAt,
-          jobId: jobs.id,
-          jobAttempt: jobs.attempts,
-          jobMaxAttempts: jobs.maxAttempts,
-          jobRunAt: jobs.nextRunAt,
-          jobStatus: jobs.status,
-        })
-        .from(wasteTicketFiles)
-        .leftJoin(files, eq(files.id, wasteTicketFiles.fileId))
-        .leftJoin(jobs, eq(jobs.id, wasteTicketFiles.activeJobId))
-        .where(eq(wasteTicketFiles.requestId, request.id)),
-      // Журнал попыток (Р29): по нему человек называет оператору прокси идентификатор запроса,
-      // когда разбираются, почему не работает. Без него разговор сводится к «у нас не читается».
-      db
-        .select({
-          id: wasteTicketRecognitionAttempts.id,
-          pageSha256: wasteTicketRecognitionAttempts.pageSha256,
-          engine: wasteTicketRecognitionAttempts.engine,
-          model: wasteTicketRecognitionAttempts.model,
-          modelReported: wasteTicketRecognitionAttempts.modelReported,
-          promptVersion: wasteTicketRecognitionAttempts.promptVersion,
-          preprocessingVersion: wasteTicketRecognitionAttempts.preprocessingVersion,
-          status: wasteTicketRecognitionAttempts.status,
-          forced: wasteTicketRecognitionAttempts.forced,
-          inputTokens: wasteTicketRecognitionAttempts.inputTokens,
-          outputTokens: wasteTicketRecognitionAttempts.outputTokens,
-          durationMs: wasteTicketRecognitionAttempts.durationMs,
-          proxyRequestId: wasteTicketRecognitionAttempts.proxyRequestId,
-          upstreamRequestId: wasteTicketRecognitionAttempts.upstreamRequestId,
-          errorCode: wasteTicketRecognitionAttempts.errorCode,
-          errorClass: wasteTicketRecognitionAttempts.errorClass,
-          errorScope: wasteTicketRecognitionAttempts.errorScope,
-          error: wasteTicketRecognitionAttempts.error,
-          createdAt: wasteTicketRecognitionAttempts.createdAt,
-        })
-        .from(wasteTicketRecognitionAttempts)
-        .innerJoin(
-          wasteTicketPages,
-          eq(wasteTicketPages.pageSha256, wasteTicketRecognitionAttempts.pageSha256),
-        )
-        .where(eq(wasteTicketPages.requestId, request.id))
-        .orderBy(asc(wasteTicketRecognitionAttempts.createdAt)),
-    ]);
+        ];
+        const operatorIds = [
+          ...new Set(
+            tickets.map((t) => t.operatorCounterpartyId).filter((id): id is string => !!id),
+          ),
+        ];
+        const ticketIds = tickets.map((t) => t.id);
+        const [personRows, operatorRows, proposalRows, blindRows] = await readAll(tx, [
+          () =>
+            personIds.length
+              ? tx
+                  .select({ id: users.id, fullName: users.fullName })
+                  .from(users)
+                  .where(inArray(users.id, personIds))
+              : Promise.resolve([]),
+          () =>
+            operatorIds.length
+              ? tx
+                  .select({ id: counterparties.id, name: counterparties.name })
+                  .from(counterparties)
+                  .where(inArray(counterparties.id, operatorIds))
+              : Promise.resolve([]),
+          () =>
+            ticketIds.length
+              ? tx
+                  .select()
+                  .from(wasteTicketProposals)
+                  .where(inArray(wasteTicketProposals.ticketId, ticketIds))
+              : Promise.resolve([]),
+          // Blind checks (R31) are shown next to the ticket only once the checker's reading exists:
+          // an empty task in the card would invite peeking at the machine reading before the
+          // second person read the paper.
+          () =>
+            ticketIds.length
+              ? tx
+                  .select({
+                    row: wasteTicketBlindChecks,
+                    checkerName: sql<string | null>`checker.full_name`,
+                    arbiterName: sql<string | null>`arbiter.full_name`,
+                  })
+                  .from(wasteTicketBlindChecks)
+                  .leftJoin(
+                    sql`users AS checker`,
+                    sql`checker.id = ${wasteTicketBlindChecks.checkerId}`,
+                  )
+                  .leftJoin(
+                    sql`users AS arbiter`,
+                    sql`arbiter.id = ${wasteTicketBlindChecks.arbiterId}`,
+                  )
+                  .where(inArray(wasteTicketBlindChecks.ticketId, ticketIds))
+              : Promise.resolve([]),
+        ]);
+        const personName = new Map(personRows.map((row) => [row.id, row.fullName ?? '']));
+        const operatorName = new Map(operatorRows.map((row) => [row.id, row.name]));
+        const proposalOf = new Map(proposalRows.map((row) => [row.ticketId, row]));
 
-    const { tickets, pages } = bundle;
-    const checks = wasteTicketChecks(bundle.inputs);
-    const reviewOf = new Map(bundle.files.map((file) => [file.fileId, file]));
+        const pagesByFile = new Map<string, WasteTicketPageDto[]>();
+        const pageDtos = pages.map((page): WasteTicketPageDto & { fileId: string } => {
+          const dto = {
+            id: page.id,
+            fileId: page.fileId,
+            pageNo: page.pageNo,
+            status: page.status,
+            ticketsFound: page.ticketsFound,
+          };
+          const list = pagesByFile.get(page.fileId);
+          if (list) list.push(dto);
+          else pagesByFile.set(page.fileId, [dto]);
+          return dto;
+        });
 
-    // Имена людей и перевозчика — вторым запросом и только по тем, кто вправду встретился в
-    // строках: карточка показывает «подтвердил Плехотин А.», а не идентификатор.
-    const personIds = [
-      ...new Set(
-        tickets
-          .flatMap((t) => [t.editedBy, t.confirmedBy, t.duplicateOverrideBy])
-          .filter((id): id is string => !!id),
-      ),
-    ];
-    const operatorIds = [
-      ...new Set(tickets.map((t) => t.operatorCounterpartyId).filter((id): id is string => !!id)),
-    ];
-    const ticketIds = tickets.map((t) => t.id);
-    const [personRows, operatorRows, proposalRows, blindRows] = await Promise.all([
-      personIds.length
-        ? db
-            .select({ id: users.id, fullName: users.fullName })
-            .from(users)
-            .where(inArray(users.id, personIds))
-        : Promise.resolve([]),
-      operatorIds.length
-        ? db
-            .select({ id: counterparties.id, name: counterparties.name })
-            .from(counterparties)
-            .where(inArray(counterparties.id, operatorIds))
-        : Promise.resolve([]),
-      ticketIds.length
-        ? db
-            .select()
-            .from(wasteTicketProposals)
-            .where(inArray(wasteTicketProposals.ticketId, ticketIds))
-        : Promise.resolve([]),
-      // Слепые перепроверки (Р31): показываются разбирающему рядом с талоном — но только со
-      // стороны, где чтение проверяющего уже есть. Пустое задание в карточке было бы приглашением
-      // подсмотреть машинное чтение до того, как второй человек прочитал бумагу сам.
-      ticketIds.length
-        ? db
-            .select({
-              row: wasteTicketBlindChecks,
-              checkerName: sql<string | null>`checker.full_name`,
-              arbiterName: sql<string | null>`arbiter.full_name`,
-            })
-            .from(wasteTicketBlindChecks)
-            .leftJoin(sql`users AS checker`, sql`checker.id = ${wasteTicketBlindChecks.checkerId}`)
-            .leftJoin(sql`users AS arbiter`, sql`arbiter.id = ${wasteTicketBlindChecks.arbiterId}`)
-            .where(inArray(wasteTicketBlindChecks.ticketId, ticketIds))
-        : Promise.resolve([]),
-    ]);
-    const personName = new Map(personRows.map((row) => [row.id, row.fullName ?? '']));
-    const operatorName = new Map(operatorRows.map((row) => [row.id, row.name]));
-    const proposalOf = new Map(proposalRows.map((row) => [row.ticketId, row]));
-
-    const pagesByFile = new Map<string, WasteTicketPageDto[]>();
-    const pageDtos = pages.map((page): WasteTicketPageDto & { fileId: string } => {
-      const dto = {
-        id: page.id,
-        fileId: page.fileId,
-        pageNo: page.pageNo,
-        status: page.status,
-        ticketsFound: page.ticketsFound,
-      };
-      const list = pagesByFile.get(page.fileId);
-      if (list) list.push(dto);
-      else pagesByFile.set(page.fileId, [dto]);
-      return dto;
-    });
-
-    return {
-      tickets: tickets.map((t): WasteTicketDto => ({
-        id: t.id,
-        requestId: t.requestId,
-        pageId: t.pageId,
-        seq: t.seq,
-        origin: t.origin,
-        status: t.status,
-        number: t.numberRaw,
-        issuedOn: t.issuedOn,
-        // Написание даты, как его прочитала модель (ADR 0166, п. 7; Р12 плана). Пустая строка —
-        // законное «написания нет»: у ручного талона его не бывает вовсе, у машинных прошлых
-        // разборов модель о нём не спрашивали. Это не «неизвестно», и подпись под датой её просто
-        // не рисует.
-        issuedOnRaw: t.issuedOnRaw,
-        volumeM3: t.volumeM3 == null ? null : Number(t.volumeM3),
-        workKind: t.workKind,
-        addressRaw: t.addressRaw,
-        needsReviewFields: t.needsReviewFields as WasteTicketField[],
-        candidates: t.candidates as WasteTicketCandidateDto[],
-        operatorCounterpartyId: t.operatorCounterpartyId,
-        operatorName: t.operatorCounterpartyId
-          ? (operatorName.get(t.operatorCounterpartyId) ?? null)
-          : null,
-        editedAt: t.editedAt?.toISOString() ?? null,
-        editedByName: t.editedBy ? (personName.get(t.editedBy) ?? null) : null,
-        confirmedAt: t.confirmedAt?.toISOString() ?? null,
-        confirmedByName: t.confirmedBy ? (personName.get(t.confirmedBy) ?? null) : null,
-        // Тройка клапана неразделима (её держит `CHECK`), поэтому и здесь она одним объектом:
-        // «снято, но без причины» — состояние, которого не бывает (Р17).
-        duplicateOverride:
-          t.duplicateOverrideAt && t.duplicateOverrideBy
-            ? {
-                at: t.duplicateOverrideAt.toISOString(),
-                byName: personName.get(t.duplicateOverrideBy) ?? '',
-                reason: t.duplicateOverrideReason,
-              }
-            : null,
-        proposal: (() => {
-          const row = proposalOf.get(t.id);
-          return row
-            ? {
-                ticketId: row.ticketId,
-                number: row.numberRaw,
-                issuedOn: row.issuedOn,
-                volumeM3: row.volumeM3 == null ? null : Number(row.volumeM3),
-                workKind: row.workKind,
-                addressRaw: row.addressRaw,
-                primaryAttemptId: row.primaryAttemptId,
-                escalationAttemptId: row.escalationAttemptId,
-                createdAt: row.createdAt.toISOString(),
-              }
-            : null;
-        })(),
-        createdAt: t.createdAt.toISOString(),
-        updatedAt: t.updatedAt.toISOString(),
-      })),
-      pages: pageDtos,
-      // Порядок: сперва то, что в разборе, затем приложенное и не поступившее. Второе — не
-      // «пустая строка», а состояние, требующее человека: талон лежит, машина его не видела.
-      files: [
-        ...fileRows.map((f): WasteTicketFileDto => ({
-          fileId: f.fileId,
-          ...fileNameView(f),
-          contentType: f.contentType ?? '',
-          // Пустая строка в базе и «сбоя не было» — одно состояние для читающего экрана, и в DTO
-          // оно одно: `null`. Иначе каждое место показа сравнивало бы значение с `''`.
-          errorClass: f.errorClass === '' ? null : f.errorClass,
-          errorScope: f.errorScope === '' ? null : f.errorScope,
-          totalPages: f.totalPages,
-          processedPages: f.processedPages,
-          ...fileStateView(reviewOf.get(f.fileId), {
-            status: f.status,
-            reason: f.reason,
-            // Задача показывается, только пока повтор ещё будет: завершённая и мёртвая обещают
-            // человеку то, чего не случится (Р29).
-            activeJob:
-              f.jobId && (f.jobStatus === 'pending' || f.jobStatus === 'running')
+        return {
+          tickets: tickets.map((t): WasteTicketDto => ({
+            id: t.id,
+            requestId: t.requestId,
+            pageId: t.pageId,
+            seq: t.seq,
+            origin: t.origin,
+            status: t.status,
+            number: t.numberRaw,
+            issuedOn: t.issuedOn,
+            // The date as the model transcribed it (ADR 0166, item 7). An empty string is a lawful
+            // "no transcription": manual tickets never have one, and older machine readings were
+            // not asked for it. It is not "unknown", and the caption simply is not drawn.
+            issuedOnRaw: t.issuedOnRaw,
+            volumeM3: t.volumeM3 == null ? null : Number(t.volumeM3),
+            workKind: t.workKind,
+            addressRaw: t.addressRaw,
+            needsReviewFields: t.needsReviewFields as WasteTicketField[],
+            candidates: t.candidates as WasteTicketCandidateDto[],
+            operatorCounterpartyId: t.operatorCounterpartyId,
+            operatorName: t.operatorCounterpartyId
+              ? (operatorName.get(t.operatorCounterpartyId) ?? null)
+              : null,
+            editedAt: t.editedAt?.toISOString() ?? null,
+            editedByName: t.editedBy ? (personName.get(t.editedBy) ?? null) : null,
+            confirmedAt: t.confirmedAt?.toISOString() ?? null,
+            confirmedByName: t.confirmedBy ? (personName.get(t.confirmedBy) ?? null) : null,
+            // The override triple is indivisible (a `CHECK` holds it), so it is one object here:
+            // "lifted without a reason" is a state that does not exist (R17).
+            duplicateOverride:
+              t.duplicateOverrideAt && t.duplicateOverrideBy
                 ? {
-                    id: f.jobId,
-                    attempt: f.jobAttempt ?? 0,
-                    maxAttempts: f.jobMaxAttempts ?? 0,
-                    nextRunAt:
-                      f.jobStatus === 'running' ? null : (f.jobRunAt?.toISOString() ?? null),
+                    at: t.duplicateOverrideAt.toISOString(),
+                    byName: personName.get(t.duplicateOverrideBy) ?? '',
+                    reason: t.duplicateOverrideReason,
                   }
                 : null,
-          }),
-          pages: pagesByFile.get(f.fileId) ?? [],
-          createdAt: f.createdAt.toISOString(),
-          updatedAt: f.updatedAt.toISOString(),
-        })),
-        ...attachedRows
-          .filter((a) => !fileRows.some((f) => f.fileId === a.fileId))
-          .map((a): WasteTicketFileDto => ({
-            fileId: a.fileId,
-            ...fileNameView(a),
-            contentType: a.contentType,
-            ...fileStateView(reviewOf.get(a.fileId), {
-              status: 'not_queued',
-              // Manual entry is not offered here: a manual ticket settles only a sheet
-              // recognition has read (ADR 0155, R18), so for unread paper it would be a dead end.
-              reason:
-                'Талон приложен, но в разбор не поступал: распознавание было выключено. ' +
-                'Включите распознавание и нажмите «Перераспознать» — талон, заведённый вручную, ' +
-                'непрочитанный файл не закрывает.',
-              activeJob: null,
-            }),
-            errorClass: null,
-            errorScope: null,
-            totalPages: 0,
-            processedPages: 0,
-            pages: [],
-            createdAt: a.createdAt.toISOString(),
-            updatedAt: a.createdAt.toISOString(),
+            proposal: (() => {
+              const row = proposalOf.get(t.id);
+              return row
+                ? {
+                    ticketId: row.ticketId,
+                    number: row.numberRaw,
+                    issuedOn: row.issuedOn,
+                    volumeM3: row.volumeM3 == null ? null : Number(row.volumeM3),
+                    workKind: row.workKind,
+                    addressRaw: row.addressRaw,
+                    primaryAttemptId: row.primaryAttemptId,
+                    escalationAttemptId: row.escalationAttemptId,
+                    createdAt: row.createdAt.toISOString(),
+                  }
+                : null;
+            })(),
+            createdAt: t.createdAt.toISOString(),
+            updatedAt: t.updatedAt.toISOString(),
           })),
-      ],
-      checks: checks.checks,
-      attempts: attempts.map((a): WasteTicketAttemptDto => ({
-        ...a,
-        errorClass: a.errorClass === '' ? null : a.errorClass,
-        errorScope: a.errorScope === '' ? null : a.errorScope,
-        createdAt: a.createdAt.toISOString(),
-      })),
-      blindChecks: blindRows.map(({ row, checkerName, arbiterName }): WasteTicketBlindCheckDto => ({
-        id: row.id,
-        ticketId: row.ticketId,
-        requestId: request.id,
-        status: row.status,
-        checkerName: checkerName ?? null,
-        review: {
-          number: row.reviewNumberRaw,
-          issuedOn: row.reviewIssuedOn,
-          volumeM3: row.reviewVolumeM3 == null ? null : Number(row.reviewVolumeM3),
-        },
-        baseline: {
-          number: row.baselineNumberRaw,
-          issuedOn: row.baselineIssuedOn,
-          volumeM3: row.baselineVolumeM3 == null ? null : Number(row.baselineVolumeM3),
-        },
-        final:
-          row.status === 'arbitrated'
-            ? {
-                number: row.finalNumberRaw,
-                issuedOn: row.finalIssuedOn,
-                volumeM3: row.finalVolumeM3 == null ? null : Number(row.finalVolumeM3),
-              }
-            : null,
-        resolvedFields: row.resolvedFields as WasteTicketBlindCheckField[],
-        arbiterName: arbiterName ?? null,
-        arbitratedAt: row.arbitratedAt?.toISOString() ?? null,
-        createdAt: row.createdAt.toISOString(),
-      })),
-      ticketsVolumeM3: checks.ticketsVolumeM3,
-      preliminary: checks.preliminary,
-      acceptanceAllowed: checks.acceptanceAllowed,
-      badge: checks.badge,
-    };
+          pages: pageDtos,
+          // Order: files in recognition first, then attached ones that never reached it. The latter
+          // are not "empty rows" but a state needing a person: the ticket lies unread.
+          files: [
+            ...fileRows.map((f): WasteTicketFileDto => ({
+              fileId: f.fileId,
+              ...fileNameView(f),
+              contentType: f.contentType ?? '',
+              // An empty string in the table and "no failure" are one state for the screen, and
+              // one value in the DTO: `null`.
+              errorClass: f.errorClass === '' ? null : f.errorClass,
+              errorScope: f.errorScope === '' ? null : f.errorScope,
+              totalPages: f.totalPages,
+              processedPages: f.processedPages,
+              ...fileStateView(reviewOf.get(f.fileId), {
+                status: f.status,
+                reason: f.reason,
+                // A job is shown only while a retry will still come: a finished or dead one would
+                // promise what will not happen (R29).
+                activeJob:
+                  f.jobId && (f.jobStatus === 'pending' || f.jobStatus === 'running')
+                    ? {
+                        id: f.jobId,
+                        attempt: f.jobAttempt ?? 0,
+                        maxAttempts: f.jobMaxAttempts ?? 0,
+                        nextRunAt:
+                          f.jobStatus === 'running' ? null : (f.jobRunAt?.toISOString() ?? null),
+                      }
+                    : null,
+              }),
+              pages: pagesByFile.get(f.fileId) ?? [],
+              createdAt: f.createdAt.toISOString(),
+              updatedAt: f.updatedAt.toISOString(),
+            })),
+            ...attachedRows
+              .filter((a) => !fileRows.some((f) => f.fileId === a.fileId))
+              .map((a): WasteTicketFileDto => ({
+                fileId: a.fileId,
+                ...fileNameView(a),
+                contentType: a.contentType,
+                ...fileStateView(reviewOf.get(a.fileId), {
+                  status: 'not_queued',
+                  // Manual entry is not offered here: a manual ticket settles only a sheet that
+                  // recognition has read (ADR 0155, R18), so for unread paper it is a dead end.
+                  reason:
+                    'Талон приложен, но в разбор не поступал: распознавание было выключено. ' +
+                    'Включите распознавание и нажмите «Перераспознать» — ' +
+                    'талон, заведённый вручную, непрочитанный файл не закрывает.',
+                  activeJob: null,
+                }),
+                errorClass: null,
+                errorScope: null,
+                totalPages: 0,
+                processedPages: 0,
+                pages: [],
+                createdAt: a.createdAt.toISOString(),
+                updatedAt: a.createdAt.toISOString(),
+              })),
+          ],
+          checks: checks.checks,
+          attempts: attempts.map((a): WasteTicketAttemptDto => ({
+            ...a,
+            errorClass: a.errorClass === '' ? null : a.errorClass,
+            errorScope: a.errorScope === '' ? null : a.errorScope,
+            createdAt: a.createdAt.toISOString(),
+          })),
+          blindChecks: blindRows.map(
+            ({ row, checkerName, arbiterName }): WasteTicketBlindCheckDto => ({
+              id: row.id,
+              ticketId: row.ticketId,
+              requestId: request.id,
+              status: row.status,
+              checkerName: checkerName ?? null,
+              review: {
+                number: row.reviewNumberRaw,
+                issuedOn: row.reviewIssuedOn,
+                volumeM3: row.reviewVolumeM3 == null ? null : Number(row.reviewVolumeM3),
+              },
+              baseline: {
+                number: row.baselineNumberRaw,
+                issuedOn: row.baselineIssuedOn,
+                volumeM3: row.baselineVolumeM3 == null ? null : Number(row.baselineVolumeM3),
+              },
+              final:
+                row.status === 'arbitrated'
+                  ? {
+                      number: row.finalNumberRaw,
+                      issuedOn: row.finalIssuedOn,
+                      volumeM3: row.finalVolumeM3 == null ? null : Number(row.finalVolumeM3),
+                    }
+                  : null,
+              resolvedFields: row.resolvedFields as WasteTicketBlindCheckField[],
+              arbiterName: arbiterName ?? null,
+              arbitratedAt: row.arbitratedAt?.toISOString() ?? null,
+              createdAt: row.createdAt.toISOString(),
+            }),
+          ),
+          ticketsVolumeM3: checks.ticketsVolumeM3,
+          preliminary: checks.preliminary,
+          acceptanceAllowed: checks.acceptanceAllowed,
+          badge: checks.badge,
+        };
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   });
 
   // ── Разбор ──
@@ -1915,8 +1944,9 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         // file recognition has read, and this file is exactly the one waiting to be read.
         if (!config.ticketOcr.enabled) {
           throw err.badRequest(
-            'Распознавание талонов выключено — перераспознать файл нельзя. Включите распознавание ' +
-              'и повторите: талон, заведённый вручную, закрывает только прочитанный файл',
+            'Распознавание талонов выключено — перераспознать файл нельзя. ' +
+              'Включите распознавание и повторите: ' +
+              'талон, заведённый вручную, закрывает только прочитанный файл',
           );
         }
         // Связь проверяется здесь же: право говорит «разбирает талоны», но не «этот файл».

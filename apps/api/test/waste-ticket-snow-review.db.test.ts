@@ -765,6 +765,37 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
     });
   });
 
+  describe('ticket detail is one authorized snapshot', () => {
+    it('masks the name of a quarantined ticket, read or not, and keeps the row', async () => {
+      const id = await newRequest('snow_removal', { factVolumeM3: 20 });
+      const unread = await attachTicketFile(id, 'Паспорт_Иванова.pdf');
+      const read = await attachTicketFile(id, 'Договор_Петрова.pdf');
+      await seedFileRow(id, read, 'done');
+      await seedReadTicket(id, read, { status: 'confirmed' });
+      await ctx.db.execute(
+        sql`UPDATE files SET quarantined_at = now() WHERE id IN (${unread}, ${read})`,
+      );
+
+      const card = await cardOf(id);
+      for (const fileId of [unread, read]) {
+        expect(card.files.find((f) => f.fileId === fileId)).toMatchObject({
+          filename: '',
+          quarantined: true,
+        });
+      }
+      expect(JSON.stringify(card)).not.toContain('Паспорт_Иванова');
+      expect(JSON.stringify(card)).not.toContain('Договор_Петрова');
+    });
+
+    it('the card counts what the terminal check counts', async () => {
+      const { id, fileId } = await settledSnow();
+      await seedJob(id, fileId, 'pending', { forced: true });
+      const card = await cardOf(id);
+      expect(card.badge).toMatchObject({ unreviewedPaper: 1, failures: 0 });
+      expect((await complete(id)).statusCode).toBe(400);
+    });
+  });
+
   describe("the terminal check reads only through the caller's executor", () => {
     it('sees uncommitted queue and file rows of its own transaction on a pool of one', async () => {
       const { id, fileId } = await settledSnow();

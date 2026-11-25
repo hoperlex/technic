@@ -88,6 +88,22 @@ export interface TicketCheckBundle {
 }
 
 /**
+ * Independent reads: together on the pool, one after another on a transaction. A transaction is
+ * one connection: queuing several queries on a busy `pg` client is deprecated and goes away in
+ * pg 9, and the terminal check and the card read through a transaction (snow-removal plan, §3.2).
+ */
+export async function readAll<T extends readonly unknown[] | []>(
+  exec: DbExecutor,
+  reads: { readonly [K in keyof T]: () => PromiseLike<T[K]> },
+): Promise<T> {
+  const thunks = reads as unknown as readonly (() => PromiseLike<unknown>)[];
+  if (exec === db) return (await Promise.all(thunks.map((read) => read()))) as unknown as T;
+  const out: unknown[] = [];
+  for (const read of thunks) out.push(await read());
+  return out as unknown as T;
+}
+
+/**
  * A timestamp as sortable microsecond UTC text. JavaScript dates keep milliseconds, and the
  * question "was the file row written after this job was created" is decided by statements that can
  * fall into one millisecond; the text keeps PostgreSQL's precision and compares as a string.
@@ -240,103 +256,111 @@ export async function loadTicketCheckInputs(
     paperRows,
     proposalRows,
     jobRows,
-  ] = await Promise.all([
-    exec.select().from(wasteTickets).where(inArray(wasteTickets.requestId, ids)),
-    exec
-      .select({
-        id: wasteTicketPages.id,
-        requestId: wasteTicketPages.requestId,
-        fileId: wasteTicketPages.fileId,
-        pageNo: wasteTicketPages.pageNo,
-        pageSha256: wasteTicketPages.pageSha256,
-        status: wasteTicketPages.status,
-        ticketsFound: wasteTicketPages.ticketsFound,
-      })
-      .from(wasteTicketPages)
-      .where(inArray(wasteTicketPages.requestId, ids)),
+  ] = await readAll(exec, [
+    () => exec.select().from(wasteTickets).where(inArray(wasteTickets.requestId, ids)),
+    () =>
+      exec
+        .select({
+          id: wasteTicketPages.id,
+          requestId: wasteTicketPages.requestId,
+          fileId: wasteTicketPages.fileId,
+          pageNo: wasteTicketPages.pageNo,
+          pageSha256: wasteTicketPages.pageSha256,
+          status: wasteTicketPages.status,
+          ticketsFound: wasteTicketPages.ticketsFound,
+        })
+        .from(wasteTicketPages)
+        .where(inArray(wasteTicketPages.requestId, ids)),
     // Мёртвая задача — тоже нечитаемый файл (Р24): строка стоит `pending`, но двигать её больше
     // некому. Без соединения с очередью такой файл выглядел бы как «ещё считается» — вечно.
-    exec
-      .select({
-        requestId: wasteTicketFiles.requestId,
-        fileId: wasteTicketFiles.fileId,
-        status: wasteTicketFiles.status,
-        jobStatus: jobs.status,
-        updatedAtKey: timestampKey(wasteTicketFiles.updatedAt),
-      })
-      .from(wasteTicketFiles)
-      .leftJoin(jobs, eq(jobs.id, wasteTicketFiles.activeJobId))
-      .where(inArray(wasteTicketFiles.requestId, ids)),
-    exec
-      .select()
-      .from(wasteRequestCompletions)
-      .where(inArray(wasteRequestCompletions.requestId, ids)),
-    exec
-      .select({
-        requestId: wasteTicketCheckResolutions.requestId,
-        checkCode: wasteTicketCheckResolutions.checkCode,
-        subjectKey: wasteTicketCheckResolutions.subjectKey,
-        inputFingerprint: wasteTicketCheckResolutions.inputFingerprint,
-        comment: wasteTicketCheckResolutions.comment,
-        acceptedAt: wasteTicketCheckResolutions.acceptedAt,
-        acceptedByName: users.fullName,
-      })
-      .from(wasteTicketCheckResolutions)
-      .leftJoin(users, eq(users.id, wasteTicketCheckResolutions.acceptedBy))
-      .where(inArray(wasteTicketCheckResolutions.requestId, ids)),
-    exec
-      .select({ requestId: wasteTickets.requestId, status: wasteTicketBlindChecks.status })
-      .from(wasteTicketBlindChecks)
-      .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketBlindChecks.ticketId))
-      .where(inArray(wasteTickets.requestId, ids)),
+    () =>
+      exec
+        .select({
+          requestId: wasteTicketFiles.requestId,
+          fileId: wasteTicketFiles.fileId,
+          status: wasteTicketFiles.status,
+          jobStatus: jobs.status,
+          updatedAtKey: timestampKey(wasteTicketFiles.updatedAt),
+        })
+        .from(wasteTicketFiles)
+        .leftJoin(jobs, eq(jobs.id, wasteTicketFiles.activeJobId))
+        .where(inArray(wasteTicketFiles.requestId, ids)),
+    () =>
+      exec
+        .select()
+        .from(wasteRequestCompletions)
+        .where(inArray(wasteRequestCompletions.requestId, ids)),
+    () =>
+      exec
+        .select({
+          requestId: wasteTicketCheckResolutions.requestId,
+          checkCode: wasteTicketCheckResolutions.checkCode,
+          subjectKey: wasteTicketCheckResolutions.subjectKey,
+          inputFingerprint: wasteTicketCheckResolutions.inputFingerprint,
+          comment: wasteTicketCheckResolutions.comment,
+          acceptedAt: wasteTicketCheckResolutions.acceptedAt,
+          acceptedByName: users.fullName,
+        })
+        .from(wasteTicketCheckResolutions)
+        .leftJoin(users, eq(users.id, wasteTicketCheckResolutions.acceptedBy))
+        .where(inArray(wasteTicketCheckResolutions.requestId, ids)),
+    () =>
+      exec
+        .select({ requestId: wasteTickets.requestId, status: wasteTicketBlindChecks.status })
+        .from(wasteTicketBlindChecks)
+        .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketBlindChecks.ticketId))
+        .where(inArray(wasteTickets.requestId, ids)),
     // Приложенная бумага заявки — та, что легла в неё при закрытии (ADR 0020, ADR 0024). Читается
     // здесь, а не выводится из строк распознавания: вопрос «есть ли бумага» и вопрос «дошла ли
     // она до разбора» — разные, и второй отвечает `waste_ticket_files`. Разойдись они (модуль
     // был выключен, задача не дошла до страниц) — заявка с нетронутым сканом выглядела бы
     // разобранной.
-    exec
-      .select({ requestId: requestFiles.requestId, fileId: requestFiles.fileId })
-      .from(requestFiles)
-      .innerJoin(files, eq(files.id, requestFiles.fileId))
-      .where(
-        and(
-          inArray(requestFiles.requestId, ids),
-          eq(requestFiles.kind, 'ticket'),
-          eq(files.status, 'active'),
+    () =>
+      exec
+        .select({ requestId: requestFiles.requestId, fileId: requestFiles.fileId })
+        .from(requestFiles)
+        .innerJoin(files, eq(files.id, requestFiles.fileId))
+        .where(
+          and(
+            inArray(requestFiles.requestId, ids),
+            eq(requestFiles.kind, 'ticket'),
+            eq(files.status, 'active'),
+          ),
         ),
-      ),
     // Живые предложения перераспознавания (ADR 0155, Р16): талон с непринятым вторым чтением
     // одним действием не подтверждают — человек ещё не решил, какое из двух чтений верное.
     // Отдельным запросом, а не соединением с талонами: строка предложения есть у меньшинства, и
     // тащить её левым соединением в основную выборку значило бы платить за неё всегда.
-    exec
-      .select({ ticketId: wasteTicketProposals.ticketId })
-      .from(wasteTicketProposals)
-      .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketProposals.ticketId))
-      .where(inArray(wasteTickets.requestId, ids)),
+    () =>
+      exec
+        .select({ ticketId: wasteTicketProposals.ticketId })
+        .from(wasteTicketProposals)
+        .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketProposals.ticketId))
+        .where(inArray(wasteTickets.requestId, ids)),
     // Recognition jobs that are live or died (see `classifyTicketFile`). Done jobs are not read: a
     // finished job either wrote its outcome into the file row or skipped and left the earlier one
     // intact. The status list keeps the scan on the `jobs_due_idx` prefix — the queue table grows
     // with every mail and storage delete, and only these states stay few.
-    exec
-      .select({
-        id: jobs.id,
-        requestId: sql<string>`${jobs.payload}->>'requestId'`,
-        fileId: sql<string>`${jobs.payload}->>'fileId'`,
-        status: jobs.status,
-        attempts: jobs.attempts,
-        maxAttempts: jobs.maxAttempts,
-        nextRunAt: jobs.nextRunAt,
-        createdAtKey: timestampKey(jobs.createdAt),
-      })
-      .from(jobs)
-      .where(
-        and(
-          eq(jobs.type, JOB_RECOGNIZE_WASTE_TICKET_FILE),
-          inArray(jobs.status, ['pending', 'running', 'failed', 'dead']),
-          inArray(sql`${jobs.payload}->>'requestId'`, ids),
+    () =>
+      exec
+        .select({
+          id: jobs.id,
+          requestId: sql<string>`${jobs.payload}->>'requestId'`,
+          fileId: sql<string>`${jobs.payload}->>'fileId'`,
+          status: jobs.status,
+          attempts: jobs.attempts,
+          maxAttempts: jobs.maxAttempts,
+          nextRunAt: jobs.nextRunAt,
+          createdAtKey: timestampKey(jobs.createdAt),
+        })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.type, JOB_RECOGNIZE_WASTE_TICKET_FILE),
+            inArray(jobs.status, ['pending', 'running', 'failed', 'dead']),
+            inArray(sql`${jobs.payload}->>'requestId'`, ids),
+          ),
         ),
-      ),
   ]);
 
   const pageById = new Map(pageRows.map((p) => [p.id, p]));
