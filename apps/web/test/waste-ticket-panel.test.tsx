@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { WasteTicketsPanel, TicketRecognitionBanner } from '../src/features/waste-ticket-review';
@@ -87,8 +87,10 @@ describe('разбор талонов при выключенном распоз
     renderWithUser(<TicketRecognitionBanner enabled />);
 
     await waitFor(() => expect(screen.getByText(/Распознавание талонов выключено/i)).toBeDefined());
-    // И сразу говорит, что делать: ждать нечего, талон заводится руками.
-    expect(screen.getByText(/вручную/i)).toBeDefined();
+    // It says what to do: unread scans wait for recognition and are reread once it is on; a
+    // manual ticket settles only a read scan (snow-removal plan, §3.2), so it is not the way out.
+    expect(screen.getByText(/«Перераспознать» у непрочитанных файлов/)).toBeDefined();
+    expect(screen.getByText(/только для прочитанного скана/)).toBeDefined();
   });
 
   it('исправная подсистема баннера не рисует', async () => {
@@ -232,14 +234,76 @@ describe('приложенные сканы показаны с номерами
     expect(screen.getByText('30476, 30477')).toBeDefined();
   });
 
-  it('файл без единого талона говорит об этом словами', async () => {
+  it('прочитанный файл без единого талона говорит об этом словами', async () => {
     mockHttp({
-      'GET /waste-requests/wr-1/tickets': () => json(EMPTY_TICKETS),
-      'GET /waste-requests/ticket-recognition/health': () => json(DISABLED_HEALTH),
+      'GET /waste-requests/wr-1/tickets': () =>
+        json({
+          ...EMPTY_TICKETS,
+          files: [{ ...EMPTY_TICKETS.files[0], status: 'done', reason: '' }],
+        }),
+      'GET /waste-requests/ticket-recognition/health': () =>
+        json({ ...DISABLED_HEALTH, state: 'ok' }),
     });
     renderWithUser(<WasteTicketsPanel requestId="wr-1" />);
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'talon.jpg' })).toBeDefined());
     expect(screen.getByText('талоны не найдены')).toBeDefined();
+    // A read file is settled by a manual ticket: no rerun is pushed at it.
+    expect(screen.queryByRole('button', { name: 'Перераспознать' })).toBeNull();
+  });
+
+  it('непрочитанный файл не выдаётся за «талоны не найдены» и предлагает перераспознать', async () => {
+    const http = mockHttp({
+      'GET /waste-requests/wr-1/tickets': () => json(EMPTY_TICKETS),
+      'GET /waste-requests/ticket-recognition/health': () => json(DISABLED_HEALTH),
+      'POST /waste-requests/:id/ticket-files/:fileId/recognize': () =>
+        json({ ok: true, reused: true }),
+    });
+    renderWithUser(<WasteTicketsPanel requestId="wr-1" />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'talon.jpg' })).toBeDefined());
+    // The file never reached recognition: a manual ticket would not settle it (§3.2).
+    expect(screen.getByText('не распознавался')).toBeDefined();
+    expect(screen.queryByText('талоны не найдены')).toBeNull();
+    expect(screen.getByText(/ручной талон не закрывает/)).toBeDefined();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Перераспознать' })[0]!);
+    await waitFor(() =>
+      expect(http.countOf('POST /waste-requests/:id/ticket-files/:fileId/recognize')).toBe(1),
+    );
+    // The server joined a job already queued for the file instead of queueing a duplicate.
+    expect(await screen.findByText('Распознавание файла уже идёт')).toBeDefined();
+  });
+
+  it('оборванная попытка и неудачный файл зовут перераспознать, а не ручной ввод', async () => {
+    mockHttp({
+      'GET /waste-requests/wr-1/tickets': () =>
+        json({
+          ...EMPTY_TICKETS,
+          files: [
+            { ...EMPTY_TICKETS.files[0], fileId: 'f-1', filename: 'dead.jpg', status: 'pending' },
+            {
+              ...EMPTY_TICKETS.files[0],
+              fileId: 'f-2',
+              filename: 'bad.jpg',
+              status: 'failed',
+              reason: 'Скан не читается',
+              errorClass: 'terminal',
+              errorScope: 'file',
+            },
+          ],
+        }),
+      'GET /waste-requests/ticket-recognition/health': () =>
+        json({ ...DISABLED_HEALTH, state: 'ok' }),
+    });
+    renderWithUser(<WasteTicketsPanel requestId="wr-1" />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText(/попытка оборвалась без результата/).length).toBeGreaterThan(0),
+    );
+    expect(
+      screen.getByText(/Этот файл прочитать не удалось: нажмите «Перераспознать»/),
+    ).toBeDefined();
+    expect(screen.queryByText(/заведите талон вручную/)).toBeNull();
+    expect(screen.getAllByText('не прочитан')).toHaveLength(2);
   });
 });

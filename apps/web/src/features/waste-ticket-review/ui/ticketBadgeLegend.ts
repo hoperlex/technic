@@ -23,7 +23,8 @@ export const TICKET_BADGE_STATES: readonly TicketBadgeState[] = [
   { key: 'errors', icon: '⛔', label: 'цифры не сошлись — нужен разбор' },
   { key: 'warnings', icon: '⚠️', label: 'похоже на расхождение, но бывает законно' },
   { key: 'pendingConfirmation', icon: '⏳', label: 'прочитано, ждёт подтверждения' },
-  { key: 'failures', icon: '🚫', label: 'прочитать не удалось — нужен скан или ручной ввод' },
+  // An unread file is settled by reading it, not by a manual ticket (snow-removal plan, §3.2).
+  { key: 'failures', icon: '🚫', label: 'прочитать не удалось — перераспознайте файл' },
   { key: 'unreviewedPaper', icon: '📄', label: 'талон приложен, но не разобран' },
 ];
 

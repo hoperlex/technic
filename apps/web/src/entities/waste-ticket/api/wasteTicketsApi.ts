@@ -104,11 +104,18 @@ export const wasteTicketsApi = {
       body,
     }),
 
-  /** Перераспознать файл: попытка пойдёт мимо кэша и со своим ключом идемпотентности (Р13). */
+  /**
+   * Перераспознать файл: попытка пойдёт мимо кэша и со своим ключом идемпотентности (Р13).
+   * `reused` — the file already had a queued or running job, and the server joined it instead of
+   * queueing a duplicate (snow-removal plan, §3.2); an older API does not send the flag.
+   */
   recognize: (requestId: string, fileId: string) =>
-    apiFetch<{ ok: boolean }>(`/waste-requests/${requestId}/ticket-files/${fileId}/recognize`, {
-      method: 'POST',
-    }),
+    apiFetch<{ ok: boolean; reused?: boolean }>(
+      `/waste-requests/${requestId}/ticket-files/${fileId}/recognize`,
+      {
+        method: 'POST',
+      },
+    ),
 
   blindCheck: (requestId: string, ticketId: string, body: WasteTicketBlindCheckInput) =>
     apiFetch<{ id: string; status: string }>(

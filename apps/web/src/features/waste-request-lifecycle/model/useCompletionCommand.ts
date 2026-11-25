@@ -109,6 +109,7 @@ export function useCompletionCommand(invalidateRequests: () => void) {
   };
 
   const props: WasteRequestCompletionModalProps = {
+    canReviewTickets: can('wasteRequests.ticketReview'),
     request: target,
     confirmLoading: mutation.isPending,
     reload,

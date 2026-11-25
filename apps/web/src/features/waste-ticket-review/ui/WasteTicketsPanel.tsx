@@ -3,6 +3,7 @@ import { Alert, App, Button, Collapse, Empty, Space, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { WasteTicketDto } from '@technic/contracts';
 import {
+  ticketFileOutcome as fileOutcome,
   wasteTicketErrorLabels,
   wasteTicketKeys,
   wasteTicketsApi,
@@ -14,6 +15,7 @@ import { BlindCheckPanel } from './BlindCheckPanel';
 import { TicketFormModal } from './TicketFormModal';
 import { TicketCard } from './TicketCard';
 import { ChecksStrip, FileState } from './RecognitionState';
+import { ScanList } from './ScanList';
 import { ticketDate } from './ticketDate';
 
 /**
@@ -125,9 +127,11 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
 
   const recognize = useMutation({
     mutationFn: (fileId: string) => wasteTicketsApi.recognize(requestId, fileId),
-    onSuccess: async () => {
+    onSuccess: async (res) => {
       await invalidate();
-      message.success('Файл отправлен на повторное распознавание');
+      message.success(
+        res.reused ? 'Распознавание файла уже идёт' : 'Файл отправлен на повторное распознавание',
+      );
     },
     onError: (e) => message.error(errorMessage(e, wasteTicketErrorLabels)),
   });
@@ -208,52 +212,25 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
 
       {/* Ручной ввод — равноправный путь, а не запасной: машина читает не всё, а два талона на
           кадре видит как один (Р15). Кнопка на виду всегда, в том числе когда талонов нет вовсе. */}
-      <Space size={8}>
+      <Space size={8} wrap>
         <Button size="small" onClick={() => setForm({ ticket: null })}>
           Добавить талон вручную
         </Button>
+        {/* A manual ticket settles only a read scan with no ticket found (snow-removal plan,
+            §3.2); with an unread file at hand the person must hear that before typing one. */}
+        {data.files.some((file) => fileOutcome(file).unread) && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Непрочитанный файл ручной талон не закрывает — сначала «Перераспознать»
+          </Typography.Text>
+        )}
       </Space>
 
-      {/* Приложенные сканы с тем, что в них нашлось. Имя файла само по себе не отвечает на вопрос
-          «эта бумага разобрана?» — а рядом с номерами отвечает: видно и сколько талонов на кадре,
-          и что файл вовсе не читали. */}
-      {data.files.length > 0 && (
-        <Space orientation="vertical" size={4} style={{ width: '100%' }}>
-          {data.files.map((file) => {
-            const pageIds = data.pages.filter((pg) => pg.fileId === file.fileId).map((pg) => pg.id);
-            const found = data.tickets.filter(
-              (ticket) => ticket.pageId && pageIds.includes(ticket.pageId),
-            );
-            return (
-              <Space key={file.fileId} size={8} wrap>
-                <Button
-                  size="small"
-                  type="link"
-                  style={{ padding: 0 }}
-                  onClick={() =>
-                    setScan({
-                      fileId: file.fileId,
-                      filename: file.filename,
-                      contentType: file.contentType,
-                    })
-                  }
-                >
-                  {file.filename || 'скан'}
-                </Button>
-                {found.length > 0 ? (
-                  <Typography.Text style={{ fontSize: 13 }}>
-                    {found.map((ticket) => ticket.number || '№ не прочитан').join(', ')}
-                  </Typography.Text>
-                ) : (
-                  <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                    {file.status === 'pending' ? 'распознаётся…' : 'талоны не найдены'}
-                  </Typography.Text>
-                )}
-              </Space>
-            );
-          })}
-        </Space>
-      )}
+      <ScanList
+        data={data}
+        onOpenScan={setScan}
+        onRecognize={(fileId) => recognize.mutate(fileId)}
+        recognizingFileId={recognize.isPending ? recognize.variables : undefined}
+      />
 
       {data.tickets.length === 0 ? (
         <Empty description="Талоны ещё не распознаны" image={Empty.PRESENTED_IMAGE_SIMPLE} />

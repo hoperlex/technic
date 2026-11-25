@@ -55,6 +55,39 @@ function completion(over: Partial<WasteRequestCompletionDto>): WasteRequestCompl
   } as WasteRequestCompletionDto;
 }
 
+/** Review state of the one attached scan `old.jpg`. */
+function paperState(status: 'done' | 'failed' | 'pending') {
+  return {
+    tickets: [],
+    pages: [],
+    files: [
+      {
+        fileId: 'f-old',
+        filename: 'old.jpg',
+        contentType: 'image/jpeg',
+        status,
+        reason: '',
+        errorClass: null,
+        errorScope: null,
+        totalPages: 1,
+        processedPages: status === 'done' ? 1 : 0,
+        // A pending file without a live job: the attempt died before writing a result.
+        activeJob: null,
+        pages: [],
+        createdAt: '2026-12-01T09:00:00.000Z',
+        updatedAt: '2026-12-01T09:00:00.000Z',
+      },
+    ],
+    checks: [],
+    attempts: [],
+    blindChecks: [],
+    ticketsVolumeM3: 0,
+    preliminary: false,
+    acceptanceAllowed: true,
+    badge: { errors: 0, warnings: 0, pendingConfirmation: 0, failures: 0, unreviewedPaper: 0 },
+  };
+}
+
 function setup(rows: WasteRequestDto[], over: RouteMap = {}) {
   const http = mockHttp({
     'GET /waste-requests': () => json(list(rows)),
@@ -69,6 +102,8 @@ function setup(rows: WasteRequestDto[], over: RouteMap = {}) {
     'PATCH /waste-requests/:id/status': ({ params }) =>
       json(wasteRequest({ ...SNOW, id: params.id, status: 'done', version: 5 })),
     'DELETE /files/:id': () => json({ ok: true }),
+    // The window reads the review state of attached paper to name unread files on a re-close.
+    'GET /waste-requests/:id/tickets': () => json(paperState('done')),
     ...over,
   });
   renderWithUser(<WasteRequestsPage />);
@@ -195,6 +230,16 @@ describe('закрытие заявки на вывоз снега', () => {
       totalCost: 0,
       removedOn: '2026-12-01',
     });
+  });
+
+  it('повторное закрытие называет приложенный файл, распознавание которого оборвалось', async () => {
+    setup([{ ...SNOW, completion: completion({}) }], {
+      'GET /waste-requests/:id/tickets': () => json(paperState('pending')),
+    });
+    await openCompletion('М-201');
+    expect(
+      await screen.findByText(/Не прочитаны: old\.jpg\. После закрытия нажмите у них/),
+    ).toBeDefined();
   });
 
   it('новое открытие начинается чистым: ни объём, ни сумма, ни дата не переносятся', async () => {

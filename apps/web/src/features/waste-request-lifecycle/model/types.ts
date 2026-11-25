@@ -34,6 +34,8 @@ export interface CompletionReload {
 }
 
 export interface WasteRequestCompletionModalProps {
+  /** May read the review state of the paper already attached (ADR 0114, R25). */
+  canReviewTickets: boolean;
   confirmLoading: boolean;
   onCancel: () => void;
   onSubmit: (value: WasteRequestCompletionValue) => Promise<CompletionOutcome>;

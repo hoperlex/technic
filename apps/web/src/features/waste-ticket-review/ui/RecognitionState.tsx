@@ -73,10 +73,14 @@ export function FileState({ file }: { file: WasteTicketFileDto }) {
       <Space orientation="vertical" size={0}>
         <Typography.Text>
           Распознаётся…
+          {/* The attempt died without writing a result (snow-removal plan, §3.2): nothing will
+              retry it by itself, and the way out is a rerun, not an administrator or a manual
+              ticket — a manual ticket settles only a file that was read. Newer servers report
+              this state as failed or not queued; older ones still send it as pending. */}
           {!file.activeJob && (
             <Typography.Text type="danger">
               {' '}
-              задача не найдена — повторов не будет, нужен администратор
+              попытка оборвалась без результата — нажмите «Перераспознать»
             </Typography.Text>
           )}
         </Typography.Text>
@@ -88,12 +92,16 @@ export function FileState({ file }: { file: WasteTicketFileDto }) {
   return (
     <Space orientation="vertical" size={0}>
       <Typography.Text type="danger">{file.reason || 'Файл не распознан'}</Typography.Text>
+      {/* The way out of an unread file is reading it (snow-removal plan, §3.2): restore the
+          service or rerun recognition, and for an unusable original reset the request to «Новая»
+          and close it again with a usable scan. A manual ticket settles only a file that was read
+          and had no ticket found, so it is not offered as a way out here. */}
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         {file.errorClass === 'transient'
           ? 'Сбой временный: портал повторит сам'
           : file.errorScope === 'subsystem'
-            ? 'Сбой сервиса: автоматического восстановления не будет, нужен администратор'
-            : 'Этот файл прочитать не удалось: перезалейте скан или заведите талон вручную'}
+            ? 'Сбой сервиса: нужен администратор. После восстановления нажмите «Перераспознать»'
+            : 'Этот файл прочитать не удалось: нажмите «Перераспознать». Если скан непригоден, заявку возвращают в «Новая» (право отката статусов) и закрывают заново с читаемым сканом'}
       </Typography.Text>
       {attempt}
       {pagesLine}

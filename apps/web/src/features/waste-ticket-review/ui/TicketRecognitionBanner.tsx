@@ -31,7 +31,9 @@ export function TicketRecognitionBanner({ enabled }: { enabled: boolean }) {
         showIcon
         style={{ marginBottom: 12 }}
         title="Распознавание талонов выключено"
-        description="Талоны разбираются вручную: откройте скан и заведите строку кнопкой «Добавить талон вручную». Проверки объёма, даты и номера считаются по заведённым талонам."
+        // A manual ticket settles only a scan that was read and had no ticket found (snow-removal
+        // plan, §3.2): unread scans wait for recognition, so the banner names that way out first.
+        description="Приложенные сканы ждут распознавания: включите его и нажмите «Перераспознать» у непрочитанных файлов. Талон вручную заводят только для прочитанного скана, на котором талон не найден."
       />
     );
   }
@@ -47,7 +49,8 @@ export function TicketRecognitionBanner({ enabled }: { enabled: boolean }) {
           <>
             {data.code ? `Отказ доступа (${data.code})` : 'Сервис отвергает запросы портала'}
             {since ? ` с ${since}` : ''}. Нужен администратор: автоматического восстановления не
-            будет. Талоны можно разобрать вручную — заявки закрываются как обычно.
+            будет. После восстановления нажмите «Перераспознать» у непрочитанных файлов — заявки
+            закрываются как обычно.
           </>
         }
       />

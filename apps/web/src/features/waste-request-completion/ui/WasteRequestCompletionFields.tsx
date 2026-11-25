@@ -23,6 +23,8 @@ interface Props {
   request: WasteRequestDto;
   tickets: FileDto[];
   totalCost: number | null | undefined;
+  /** Attached files whose recognition has no result: they need «Перераспознать» after closing. */
+  unreadPaper: string[];
   uploading: boolean;
   volumeDiff: number | null;
 }
@@ -44,6 +46,7 @@ export function WasteRequestCompletionFields({
   request,
   tickets,
   totalCost,
+  unreadPaper,
   uploading,
   volumeDiff,
 }: Props) {
@@ -185,6 +188,12 @@ export function WasteRequestCompletionFields({
                 Уже приложены
               </Typography.Text>
               <FileLinkList files={request.tickets} maxNameWidth={300} />
+              {unreadPaper.length > 0 && (
+                <Typography.Paragraph type="warning" style={{ fontSize: 12, margin: '4px 0 0' }}>
+                  Не прочитаны: {unreadPaper.join(', ')}. После закрытия нажмите у них
+                  «Перераспознать» в карточке заявки — ручной талон такой файл не закрывает.
+                </Typography.Paragraph>
+              )}
             </div>
           )}
           <Space size={8} wrap>

@@ -18,6 +18,7 @@ import {
 import { FILE_MAX_SIZE } from '@shared/config';
 import { filesApi } from '@entities/file';
 import { wasteTariffResolveQuery } from '@entities/waste-tariff';
+import { ticketFileOutcome, wasteTicketsQuery } from '@entities/waste-ticket';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
 import { WasteRequestCompletionFields } from './WasteRequestCompletionFields';
@@ -59,6 +60,8 @@ interface Props {
     completion: CompleteWasteRequestInput | null;
     ticketFileIds: string[];
   }) => Promise<CompletionOutcome>;
+  /** Reads the review state of attached paper to name unread files on a re-close. */
+  canReviewTickets?: boolean;
   /** After a 409: the request is reloaded (`pending`), and may no longer be completable. */
   reload?: { pending: boolean; blocked: boolean } | null;
 }
@@ -84,6 +87,7 @@ interface FormValues {
 
 export function WasteRequestCompletionModal({
   request,
+  canReviewTickets = false,
   confirmLoading,
   onCancel,
   onSubmit,
@@ -141,6 +145,18 @@ export function WasteRequestCompletionModal({
     // query-freshness: exception — tariff quotes may change during completion
     staleTime: 60_000,
   });
+  /*
+   * A re-close over paper whose last recognition left a file without a result (snow-removal plan,
+   * §3.2): the file stays unread, a manual ticket does not settle it, and the rerun is possible
+   * only once the request is «Выполнена» again. The window names such files so the closer knows
+   * to press «Перераспознать» in the card right after closing.
+   */
+  const { data: paper } = useQuery(
+    wasteTicketsQuery(request?.id ?? null, canReviewTickets && (request?.tickets.length ?? 0) > 0),
+  );
+  const unreadPaper = (paper?.files ?? [])
+    .filter((file) => ticketFileOutcome(file).unread)
+    .map((file) => file.filename || 'скан');
   const pricePerM3 = manualCost
     ? null
     : (request?.pricePerM3 ?? tariffResult?.tariff?.pricePerM3 ?? null);
@@ -359,6 +375,7 @@ export function WasteRequestCompletionModal({
             calculated={calculated}
             changeVolume={changeVolume}
             manualCost={manualCost}
+            unreadPaper={unreadPaper}
             costDiffers={costDiffers}
             noTicketYet={noTicketYet}
             onCostChange={() => setCostTouched(true)}
