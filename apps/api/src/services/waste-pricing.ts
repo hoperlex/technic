@@ -26,8 +26,8 @@ export function toNum(v: string | null): number | null {
  * portal shows, instead of answering «no tariff» — that answer would read as a price list that has
  * not been filled in yet. The id is compared as a UUID, in any case.
  *
- * Callers that handle a snow request (completion, operator assignment) must not get here at all:
- * `isManualCostOnly` sends them past pricing, and this refusal is what they meet if they do not.
+ * Callers that handle a snow request (completion fallback, operator assignment) must skip pricing
+ * for manual-cost types (`isManualCostOnly`); this refusal is what they meet if they do not.
  */
 export function assertPricedWasteType(wasteTypeId: string): void {
   if (isServiceWasteTypeId(wasteTypeId)) {
