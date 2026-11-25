@@ -83,6 +83,7 @@ export * from './module-mail';
 export * from './request-history';
 export * from './waste-tariffs';
 export * from './waste-requests';
+export * from './waste-request-schemas';
 /* Общий словарь распознавания (`recognition.ts`) — перед всеми заданиями, потому что общий для
  * них: чем читали, повторится ли сбой, чей он и какое это было задание. Заданий два — талоны
  * вывоза и чеки на автозапчасти, — а словарь один, иначе два его списка разъехались бы молча. */
