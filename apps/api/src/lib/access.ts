@@ -501,6 +501,26 @@ export function assertOperatorScope(p: Principal, operatorCounterpartyId: string
 }
 
 /**
+ * The operator a waste request is filed or reassigned to, when a counterparty-scoped account does
+ * it (snow-removal plan, §3.2): only its own counterparty. Scope and right are granted separately,
+ * so a counterparty given `wasteRequests.create` and `.assignOperator` would otherwise file a
+ * request for another operator — or for none, which no one of its kind could then see — and leave
+ * its own area. An omitted or removed operator (`undefined`, `null`) therefore fails as well.
+ * Other accounts are not narrowed here: their area is the site.
+ */
+export function assertAssignsOwnOperator(
+  p: Principal,
+  operatorCounterpartyId: string | null | undefined,
+): void {
+  assertCounterpartyScope(
+    p,
+    'operator',
+    operatorCounterpartyId ?? null,
+    'Исполнитель заводит и переназначает заявку только на свой контрагент',
+  );
+}
+
+/**
  * Арендодатель работает только с заявками, на которые вышла его техника (ADR 0038). Проверяется
  * арендодатель назначенной машины: у заявки без назначения его нет вовсе — такая заявка ничья, и
  * доступ к ней исполнителю закрыт.

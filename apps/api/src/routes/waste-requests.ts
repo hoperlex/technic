@@ -18,6 +18,10 @@ import { alias } from 'drizzle-orm/pg-core';
 import {
   addWasteTicketsSchema,
   isManualCostOnly,
+  isServiceWasteTypeId,
+  serviceWasteTypeCode,
+  SNOW_TYPE_CHANGE_MESSAGE,
+  wasteRequestTypeChangeAllowed,
   calcWasteFactCost,
   assignWasteOperatorSchema,
   changeWasteRequestStatusSchema,
@@ -84,6 +88,7 @@ import type { Principal } from '../auth/principal';
 import {
   archiveWhere,
   assertArchiveVisible,
+  assertAssignsOwnOperator,
   assertCan,
   assertOperatorScope,
   assertObjectRoleEditable,
@@ -492,6 +497,10 @@ async function assertOperatorAssignable(
   await assertOperatorServesObject(tx, objectId, counterpartyId);
 }
 
+/** A garbage request naming the reserved service type: snow has its own request type (S2). */
+const SERVICE_WASTE_TYPE_REFUSAL =
+  'Тип «Снег» ставится только заявке «Вывоз снега» — выберите другой тип мусора';
+
 /** Нормализованный набор «предметных» колонок заявки, включая снимок цены (ADR 0009). */
 interface RequestSubject {
   containerTypeId: string | null;
@@ -593,24 +602,64 @@ async function resolveSubject(
   // вывозить, решает оператор и предъявляет машинами при закрытии (ADR 0011). Тип из
   // справочника здесь не хранится даже у заявок, заведённых раньше: правка приводит их к
   // общему виду, иначе в карточке осталось бы поле, которого у типа заявки больше нет.
-
-  // Тип мусора и объём обязательны, цена берётся из прайса по виду техники «Самосвал».
-  if (!input.wasteTypeId) throw err.badRequest('Выберите тип мусора');
-  if (input.volumeM3 == null) throw err.badRequest('Укажите объём');
+  //
+  // snow_removal is ordered by volume like garbage, but its waste type is the reserved service
+  // row resolved here by code (S2): whatever the caller sent as `wasteTypeId` is discarded, since
+  // trusting it would let a request carry «Снег» under another type or another row under snow.
+  const serviceCode = serviceWasteTypeCode(input.requestType);
+  if (!serviceCode) {
+    if (!input.wasteTypeId) throw err.badRequest('Выберите тип мусора');
+    // Refused BEFORE pricing and lookup: the reserved row is never a garbage subject, and the
+    // tariff resolver must not even be asked about it. UUIDs compare case-insensitively.
+    if (isServiceWasteTypeId(input.wasteTypeId)) {
+      throw err.badRequest(SERVICE_WASTE_TYPE_REFUSAL, {
+        wasteTypeId: SERVICE_WASTE_TYPE_REFUSAL,
+      });
+    }
+  }
+  // The effective volume: on PATCH the caller passes the sent value or the saved one, so an edit
+  // that omits the volume keeps the stored one and is still checked against the minimum (S5).
+  if (input.volumeM3 == null) throw err.badRequest('Укажите объём', { volumeM3: 'Укажите объём' });
   if (input.volumeM3 < MIN_WASTE_VOLUME_M3) {
-    throw err.badRequest(`Объём не меньше ${MIN_WASTE_VOLUME_M3} м³`);
+    const message = `Объём не меньше ${MIN_WASTE_VOLUME_M3} м³`;
+    throw err.badRequest(message, { volumeM3: message });
   }
   const volumeM3 = input.volumeM3;
+  if (serviceCode) {
+    const [service] = await tx
+      .select({ id: wasteTypes.id })
+      .from(wasteTypes)
+      .where(and(eq(wasteTypes.code, serviceCode), eq(wasteTypes.isActive, true)));
+    // The migration seeds the row and a CHECK keeps it active, so a miss is a broken directory,
+    // not a user error; the request must not be saved without its subject.
+    if (!service) {
+      throw err.conflict(
+        'Служебный тип мусора для этой заявки не найден — обратитесь к администратору',
+      );
+    }
+    // No price list for snow (S6): no tariff, no price snapshot, no estimate. The SQL check
+    // `waste_requests_snow_subject_check` holds the same shape for any writer.
+    return {
+      containerTypeId: null,
+      containersCount: 1,
+      containerOwnerCounterpartyId: null,
+      wasteTypeId: service.id,
+      volumeM3,
+      wasteTariffId: null,
+      pricePerM3: null,
+    };
+  }
+  const wasteTypeId = input.wasteTypeId!;
   const [wt] = await tx
     .select({ id: wasteTypes.id, isActive: wasteTypes.isActive })
     .from(wasteTypes)
-    .where(eq(wasteTypes.id, input.wasteTypeId));
+    .where(eq(wasteTypes.id, wasteTypeId));
   if (!wt) throw err.badRequest('Тип мусора не найден');
   if (!wt.isActive) throw err.badRequest('Тип мусора неактивен');
 
   const pricing = await priceWasteRequest({
     requestType: input.requestType,
-    wasteTypeId: input.wasteTypeId,
+    wasteTypeId,
     volumeM3,
     operatorCounterpartyId: input.operatorCounterpartyId,
   });
@@ -619,7 +668,7 @@ async function resolveSubject(
     containerTypeId: null,
     containersCount: 1,
     containerOwnerCounterpartyId: null,
-    wasteTypeId: input.wasteTypeId,
+    wasteTypeId,
     volumeM3,
     wasteTariffId: pricing.wasteTariffId,
     pricePerM3: pricing.pricePerM3,
@@ -1467,6 +1516,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     if (body.operatorCounterpartyId !== undefined) {
       assertCan(p, 'wasteRequests.assignOperator', ASSIGN_OPERATOR_DENIED);
     }
+    // A counterparty-scoped creator files only for its own operator, and an omitted operator does
+    // not satisfy this: the request would leave the creator's own area at birth (§3.2).
+    assertAssignsOwnOperator(p, body.operatorCounterpartyId);
     const createKey = createAttemptKey(req.headers['idempotency-key']);
     if (receiptRequired && !createKey) throw err.unprocessable('Передайте ключ создания заявки');
     const fingerprint = createKey ? createAttemptFingerprint(body) : null;
@@ -1581,26 +1633,37 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       const { id } = req.params;
       const body = req.body;
       // Смена исполнителя правкой заявки — то же назначение оператора, и спрашивается до
-      // загрузки заявки: право не зависит от её содержимого.
+      // загрузки заявки: право не зависит от её содержимого. A counterparty-scoped account may
+      // only set its own counterparty (§3.2): the edit is a reassignment as much as the route below.
       if (body.operatorCounterpartyId !== undefined) {
         assertCan(p, 'wasteRequests.assignOperator', ASSIGN_OPERATOR_DENIED);
+        assertAssignsOwnOperator(p, body.operatorCounterpartyId);
       }
-      // Состояние «до» берётся сразу как DTO: по нему не только проверки, но и дифф для
-      // истории — названия справочников и суммы там уже собраны (см. waste-request-history).
-      const before = await getRequestDto(db, id);
-      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
-      assertObjectRoleEditable(p, before.status, 'редактировать');
       if (body.objectId) assertPlaceObjectScope(p, body.objectId, WASTE_SCOPE_LABEL);
-
-      const rt = body.requestType ?? before.requestType;
-      const objectId = body.objectId ?? before.objectId;
-      const operatorCounterpartyId =
-        body.operatorCounterpartyId !== undefined
-          ? body.operatorCounterpartyId
-          : before.operatorCounterpartyId;
       let mismatchReason = '';
-      await db.transaction(async (tx) => {
+      const { before, after } = await db.transaction(async (tx) => {
+        // Состояние «до» берётся как DTO под замком заявки: по нему не только проверки, но и
+        // дифф для истории — названия справочников и суммы там уже собраны.
+        const before = await lockRequestDto(tx, id);
+        if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+        assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
+        assertOperatorScope(p, before.operatorCounterpartyId);
+        assertObjectRoleEditable(p, before.status, 'редактировать');
+        if (before.version !== body.version) throw err.conflict();
+
+        const rt = body.requestType ?? before.requestType;
+        // Snow and any other type never turn into each other (S12): the subject, the cost model and
+        // the paper of a filed request belong to its type, and a wrong type is cancelled and filed
+        // again. Asked before the subject is resolved and before the fact-unit guard below, so the
+        // person reads this explanation rather than a refusal about volume or fact units.
+        if (!wasteRequestTypeChangeAllowed(before.requestType, rt)) {
+          throw err.badRequest(SNOW_TYPE_CHANGE_MESSAGE, { requestType: SNOW_TYPE_CHANGE_MESSAGE });
+        }
+        const objectId = body.objectId ?? before.objectId;
+        const operatorCounterpartyId =
+          body.operatorCounterpartyId !== undefined
+            ? body.operatorCounterpartyId
+            : before.operatorCounterpartyId;
         // Проверяем и при переносе заявки на другой объект: пара «оператор — объект» могла
         // разойтись, даже если исполнителя не меняли. До расчёта: цена идёт из прайса оператора.
         if (
@@ -1682,8 +1745,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // Вход сверки меняют и объём, и тип заявки, и отвязанный файл-талон (ADR 0155, Р20):
         // состояние разбора обязано пересчитаться здесь же, под этой транзакцией.
         await refreshRequestReviewState(tx, id);
+        return { before, after: (await getRequestDto(tx, id))! };
       });
-      const after = (await getRequestDto(db, id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.update',
@@ -1708,10 +1771,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       const { operatorCounterpartyId, ownerMismatchReason, version } = req.body;
-      const before = await getRequestDto(db, req.params.id);
-      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertAssignsOwnOperator(p, operatorCounterpartyId);
       let mismatchReason = '';
-      await db.transaction(async (tx) => {
+      const { before, after } = await db.transaction(async (tx) => {
+        const before = await lockRequestDto(tx, req.params.id);
+        if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+        // The right says «may assign», not «on which requests»: the site and the current
+        // operator are asked as on every other door (§3.2), from the locked row.
+        assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
+        assertOperatorScope(p, before.operatorCounterpartyId);
+        if (before.version !== version) throw err.conflict();
         if (operatorCounterpartyId) {
           await assertOperatorAssignable(tx, operatorCounterpartyId, before.objectId);
         }
@@ -1724,10 +1793,12 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           containerOwnerCounterpartyId: before.containerOwnerCounterpartyId,
           ownerMismatchReason,
         });
-        // Заявки старше тарификации (без типа мусора и объёма) пересчёту не поддаются — у них
-        // снимок цены остаётся прежним, а не обнуляется отказом.
-        const pricing =
-          before.wasteTypeId != null && before.volumeM3 != null
+        // Snow has no price list (S6): assignment keeps both price fields NULL and never asks the
+        // tariff resolver. Заявки старше тарификации (без типа мусора и объёма) пересчёту не
+        // поддаются — у них снимок цены остаётся прежним, а не обнуляется отказом.
+        const pricing = isManualCostOnly(before.requestType)
+          ? { wasteTariffId: null, pricePerM3: null }
+          : before.wasteTypeId != null && before.volumeM3 != null
             ? await priceWasteRequest({
                 requestType: before.requestType,
                 wasteTypeId: before.wasteTypeId,
@@ -1750,8 +1821,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // Оператор — область уникальности номера и часть входа сверки (ADR 0155, Р20): смена
         // исполнителя меняет то, в какой области окажется каждый неподтверждённый талон заявки.
         await refreshRequestReviewState(tx, before.id, { neighbours: true });
+        return { before, after: (await getRequestDto(tx, before.id))! };
       });
-      const after = (await getRequestDto(db, before.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.assign_operator',
@@ -1784,30 +1855,33 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       const { operatorComment, version } = req.body;
-      const before = await getRequestDto(db, req.params.id);
-      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      // Своя заявка — для исполнителя; для менеджера и диспетчера обе проверки ничего не сужают.
-      // Область спрашивается и по объекту: право и область выдаются порознь, и «право выдали, а
-      // область не написана» означало бы доступ ко всем заявкам сразу.
-      assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, before.operatorCounterpartyId);
-      if (!wasteOperatorCommentEditable(before.status)) {
-        throw err.badRequest('Заявка закрыта — примечание исполнителя больше не меняют', {
-          operatorComment: 'Заявка закрыта',
-        });
-      }
-      const [updated] = await db
-        .update(wasteRequests)
-        .set({
-          operatorComment,
-          updatedBy: p.id,
-          version: before.version + 1,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(wasteRequests.id, before.id), eq(wasteRequests.version, version)))
-        .returning({ id: wasteRequests.id });
-      if (!updated) throw err.conflict();
-      const after = (await getRequestDto(db, before.id))!;
+      const { before, after } = await db.transaction(async (tx) => {
+        const before = await lockRequestDto(tx, req.params.id);
+        if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+        // Своя заявка — для исполнителя; для менеджера и диспетчера обе проверки ничего не
+        // сужают. Область спрашивается и по объекту: право и область выдаются порознь, и «право
+        // выдали, а область не написана» означало бы доступ ко всем заявкам сразу.
+        assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
+        assertOperatorScope(p, before.operatorCounterpartyId);
+        if (!wasteOperatorCommentEditable(before.status)) {
+          throw err.badRequest('Заявка закрыта — примечание исполнителя больше не меняют', {
+            operatorComment: 'Заявка закрыта',
+          });
+        }
+        if (before.version !== version) throw err.conflict();
+        const [updated] = await tx
+          .update(wasteRequests)
+          .set({
+            operatorComment,
+            updatedBy: p.id,
+            version: before.version + 1,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(wasteRequests.id, before.id), eq(wasteRequests.version, version)))
+          .returning({ id: wasteRequests.id });
+        if (!updated) throw err.conflict();
+        return { before, after: (await getRequestDto(tx, before.id))! };
+      });
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.operator_comment',
