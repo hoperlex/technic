@@ -1,8 +1,9 @@
-import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { config } from '../config';
 import type { db } from '../db/client';
 import {
   files,
+  jobs,
   wasteTicketCheckResolutions,
   wasteTicketFiles,
   wasteTicketPages,
@@ -57,13 +58,14 @@ export async function enqueueTicketRecognition(
    * отличается только отношение к кэшу, и второй тип пришлось бы регистрировать в двух местах.
    */
   opts: { forced?: boolean } = {},
-): Promise<void> {
-  if (fileIds.length === 0) return;
+): Promise<{ reused: string[] }> {
+  const none = { reused: [] };
+  if (fileIds.length === 0) return none;
   // Выключенное распознавание — не «работа впрок». Задачи копились бы в очереди типом, которого
   // никто не разбирает, а после включения модуля разом ушли бы в модель пачкой месячной давности:
   // деньги за вызовы и сканы, отправленные наружу, — за заявки, которые давно закрыты и сверены
   // руками. Ставить работу имеет смысл ровно тогда, когда её есть кому взять (Р29).
-  if (!config.ticketOcr.enabled) return;
+  if (!config.ticketOcr.enabled) return none;
   // ТИП ЗАЯВКИ БОЛЬШЕ НЕ ОТБИРАЕТ БУМАГУ (ADR 0150, снимает Р1 и решение 1 ADR 0114). Раньше здесь
   // стоял `requestType !== 'waste_removal'`, и довод был про сверки: металлолом принимают по весу
   // (ADR 0067), у контейнерных операций вывезенного нет вовсе — считать им объём нечем. Довод
@@ -118,17 +120,61 @@ export async function enqueueTicketRecognition(
     }
     const locked = new Set(quarantined.map((r) => r.id));
     targets = fileIds.filter((id) => !locked.has(id));
-    if (targets.length === 0) return;
+    if (targets.length === 0) return none;
   }
+  /*
+   * ONE LIVE JOB PER FILE (snow-removal plan, §3.2). A file that already has a pending or running
+   * job gets no second one: two jobs on one sheet would race for its file row, the older one could
+   * write over the newer one's outcome, and every second click on «Перераспознать» would be paid
+   * twice. Callers hold the request lock (`FOR UPDATE` first), so concurrent reruns of one file
+   * serialize here and the second one sees the first one's job.
+   *
+   * A reused job that has not started yet is upgraded to `forced` when a rerun asks for it: the
+   * person asked to bypass the cache, and the queued closure job would otherwise answer from it. A
+   * running job is left as it is — its cache lookup may already be behind it — and its result is
+   * what the rerun gets; another click after it lands queues a forced pass.
+   */
+  const live = await tx
+    .select({
+      id: jobs.id,
+      status: jobs.status,
+      fileId: sql<string>`${jobs.payload}->>'fileId'`,
+      forced: sql<boolean>`coalesce(${jobs.payload}->'forced' = 'true'::jsonb, false)`,
+    })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, JOB_RECOGNIZE_WASTE_TICKET_FILE),
+        inArray(jobs.status, ['pending', 'running']),
+        sql`${jobs.payload}->>'requestId' = ${requestId}`,
+        inArray(sql`${jobs.payload}->>'fileId'`, targets),
+      ),
+    );
+  const reused: string[] = [];
   // Последовательно, а не пачкой: талонов у закрытия единицы (общий потолок вложений — 20,
   // ADR 0024), а транзакция drizzle параллельных запросов не допускает.
   for (const fileId of targets) {
+    const existing = live.find((job) => job.fileId === fileId);
+    if (existing) {
+      reused.push(existing.id);
+      if (opts.forced && !existing.forced && existing.status === 'pending') {
+        await tx
+          .update(jobs)
+          .set({
+            payload: sql`${jobs.payload} || '{"forced": true}'::jsonb`,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(jobs.id, existing.id), eq(jobs.status, 'pending')));
+      }
+      continue;
+    }
     await enqueueJob(
       JOB_RECOGNIZE_WASTE_TICKET_FILE,
       opts.forced ? { requestId, fileId, forced: true } : { requestId, fileId },
       { tx },
     );
   }
+  return { reused };
 }
 
 /**

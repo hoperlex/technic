@@ -1903,7 +1903,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
     { ...canReview, schema: { params: requestParams.extend({ fileId: z.string().uuid() }) } },
     async (req) => {
       const p = requirePrincipal(req);
-      await db.transaction(async (tx) => {
+      const reused = await db.transaction(async (tx) => {
         // Заявка `FOR UPDATE` — первым действием (Р22). Транзакция была и раньше, замка в ней не
         // было: постановка задачи расходилась с завершением заявки, и воркер брал в работу файл
         // заявки, разбор которой закрыт. Своя проверка статуса заменена общей политикой —
@@ -1926,10 +1926,15 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
            WHERE rf.request_id = ${request.id} AND rf.file_id = ${req.params.fileId}
              AND rf.kind = 'ticket' AND f.deleted_at IS NULL`);
         if (linked.rows.length === 0) throw err.notFound('Талон не найден');
-        await enqueueTicketRecognition(tx, request.id, [req.params.fileId], { forced: true });
-        // Талонов задача пока не меняет, но состояние разбора — меняет: файловая строка уходит в
-        // ожидание, и без пересчёта список показывал бы прежнее до самого прихода воркера (Р20).
+        // Under the request lock taken above: a file already in the queue keeps its one live job,
+        // so concurrent clicks for one file end with one job, not two racing for its file row.
+        const queued = await enqueueTicketRecognition(tx, request.id, [req.params.fileId], {
+          forced: true,
+        });
+        // Талонов задача пока не меняет, но состояние разбора — меняет: файл уходит в очередь, и
+        // без пересчёта список показывал бы прежнее до самого прихода воркера (Р20).
         await refreshReviewState(tx, request.id, []);
+        return queued.reused[0] ?? null;
       });
 
       await writeAudit({
@@ -1937,9 +1942,11 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         action: 'waste_request.ticket_recognize',
         entityType: 'waste_request',
         entityId: req.params.id,
-        metadata: { fileId: req.params.fileId, forced: true },
+        metadata: { fileId: req.params.fileId, forced: true, reusedJobId: reused ?? undefined },
       });
-      return { ok: true };
+      // `reused` — the file was already queued and no second job was made: the portal can say
+      // «уже распознаётся» instead of promising a new pass.
+      return { ok: true, reused: reused !== null };
     },
   );
 

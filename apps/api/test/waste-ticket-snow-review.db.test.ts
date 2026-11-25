@@ -643,6 +643,50 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
     });
   });
 
+  describe('a rerun reuses the live job of its file', () => {
+    it('concurrent rerun requests for one file produce one live job', async () => {
+      const { id, fileId } = await settledSnow();
+      const responses = await Promise.all([
+        rerun(id, fileId),
+        rerun(id, fileId),
+        rerun(id, fileId),
+      ]);
+      for (const res of responses) expect(res.statusCode, res.body).toBe(200);
+      expect(await liveJobs(id, fileId)).toHaveLength(1);
+      // The first click made the job, the others found it under the request lock.
+      expect(responses.map((res) => res.json().reused).sort()).toEqual([false, true, true]);
+    });
+
+    it('a queued closure job is reused and upgraded to a forced pass', async () => {
+      const { id, fileId } = await settledSnow();
+      const closureJob = await seedJob(id, fileId, 'pending');
+      const res = await rerun(id, fileId);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().reused).toBe(true);
+      expect(await liveJobs(id, fileId)).toEqual([closureJob]);
+      const payload = await ctx.db.execute<{ forced: boolean }>(
+        sql`SELECT (payload->>'forced')::boolean AS forced FROM jobs WHERE id = ${closureJob}`,
+      );
+      expect(payload.rows[0]?.forced).toBe(true);
+    });
+
+    it('a job already running is reused as it is; after it lands a new rerun is queued', async () => {
+      const { id, fileId } = await settledSnow();
+      expect((await rerun(id, fileId)).statusCode).toBe(200);
+      const [first] = await liveJobs(id, fileId);
+      await workerTakes(id, fileId, first!);
+      expect((await rerun(id, fileId)).json().reused).toBe(true);
+      expect(await liveJobs(id, fileId)).toEqual([first]);
+
+      await workerReads(id, fileId, first!, null);
+      const again = await rerun(id, fileId);
+      expect(again.json().reused).toBe(false);
+      const [second] = await liveJobs(id, fileId);
+      expect(second).toBeTruthy();
+      expect(second).not.toBe(first);
+    });
+  });
+
   describe("the terminal check reads only through the caller's executor", () => {
     it('sees uncommitted queue and file rows of its own transaction on a pool of one', async () => {
       const { id, fileId } = await settledSnow();
