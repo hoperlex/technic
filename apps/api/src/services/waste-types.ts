@@ -1,5 +1,9 @@
-import { sql } from 'drizzle-orm';
-import { wasteTypeDuplicateMessage } from '@technic/contracts';
+import { and, ne, notInArray, sql, type SQL } from 'drizzle-orm';
+import {
+  SERVICE_WASTE_TYPE_CODES,
+  SNOW_WASTE_TYPE_ID,
+  wasteTypeDuplicateMessage,
+} from '@technic/contracts';
 // Только для вывода типа транзакции: связь с пулом не нужна, чистые проверки должны быть
 // импортируемы без поднятой БД.
 import type { db } from '../db/client';
@@ -17,6 +21,27 @@ import { pgErrorOf } from '../lib/pg-error';
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 /** Читающее соединение: подходит и пул, и транзакция. */
 type Reader = Pick<Tx, 'select'>;
+
+// ── The reserved service type «Снег» (snow-removal plan, S2, S10; migration 0429) ──
+//
+// The row exists for snow requests only: the server puts it on them, and nobody picks, prices,
+// renames or purges it. Every directory entry point refuses it in this module's words before the
+// database does; the SQL guards of migration 0429 stay the backstop for whatever bypasses the API
+// (the previous release in the deploy window, a hand-written query) and answer only with a
+// constraint name.
+
+/**
+ * Waste types a person may choose or edit: every row but the service types. Picker, tariff editor
+ * and registry filter all read `GET /waste-types`, so excluding the rows there hides them from all
+ * three. Both identities are excluded: the contracts list service types by code
+ * (`SERVICE_WASTE_TYPE_CODES`), and the reserved id is the one the SQL guards hold.
+ */
+export function editableWasteTypes(): SQL {
+  return and(
+    ne(wasteTypes.id, SNOW_WASTE_TYPE_ID),
+    notInArray(wasteTypes.code, [...SERVICE_WASTE_TYPE_CODES]),
+  )!;
+}
 
 const TRANSLIT: Record<string, string> = {
   а: 'a',

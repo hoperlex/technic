@@ -14,7 +14,11 @@ import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
-import { assertWasteTypeNameFree, asWasteTypeNameConflict } from '../services/waste-types';
+import {
+  assertWasteTypeNameFree,
+  asWasteTypeNameConflict,
+  editableWasteTypes,
+} from '../services/waste-types';
 
 function toDto(t: WasteTypeRow): WasteTypeDto {
   return {
@@ -55,6 +59,10 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
     async (req) => {
       const q = req.query;
       const where = and(
+        // The service type «Снег» is set by the server on snow requests (S2): it is neither chosen
+        // in a garbage request nor priced or edited here. A snow request still shows it — the
+        // request DTO carries the type name from its own join, not from this list.
+        editableWasteTypes(),
         q.isActive === undefined ? undefined : eq(wasteTypes.isActive, q.isActive),
         // Форма заявки спрашивает типы с действующей ценой: выбор типа без тарифа кончался бы
         // отказом «тариф не найден» уже при сохранении заявки.
