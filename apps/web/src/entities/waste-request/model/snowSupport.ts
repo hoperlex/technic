@@ -25,6 +25,8 @@ export interface SnowSupport {
   supported: boolean;
   /** No answer yet: the screen waits instead of declaring snow unavailable. */
   checking: boolean;
+  /** Ask again now — on entry to a filter, where there is no window to open. */
+  recheck: () => void;
 }
 
 /**
@@ -50,7 +52,11 @@ export function useSnowSupport(active: boolean): SnowSupport {
     if (active) void refetch({ cancelRefetch: false });
   }, [active, refetch]);
   const supported = query.status === 'success' && confirmsSnowSupport(query.data);
-  return { supported, checking: !supported && query.fetchStatus === 'fetching' };
+  return {
+    supported,
+    checking: !supported && query.fetchStatus === 'fetching',
+    recheck: () => void refetch({ cancelRefetch: false }),
+  };
 }
 
 /**

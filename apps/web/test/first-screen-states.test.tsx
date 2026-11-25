@@ -225,7 +225,13 @@ describe('телефонный шит впервые включает справ
       page: <WasteRequestsPage />,
       section: 'waste' as const,
       user: authUser(),
-      requested: ['GET /container-types', 'GET /counterparties', 'GET /objects'],
+      // The type filter rechecks snow support on entry (snow-removal plan, §3.5).
+      requested: [
+        'GET /container-types',
+        'GET /counterparties',
+        'GET /objects',
+        'GET /waste-requests/capabilities',
+      ],
     },
     {
       name: 'Заказ ТС',

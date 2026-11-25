@@ -1,31 +1,30 @@
-import { Button, Popconfirm, Space, Spin, Tag, Typography } from 'antd';
+import { Alert, Button, Popconfirm, Space, Spin, Tag, Typography } from 'antd';
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   containerOwnerMismatch,
-  isPricedRequestType,
   requestStatusColors,
   requestStatusLabels,
   requestTypeColors,
   requestTypeLabels,
   usesContainerGroup,
   usesContainerType,
-  wasteFactLabel,
   type WasteRequestDto,
   wasteRequestChangeLabels,
   wasteSubjectLabel,
 } from '@technic/contracts';
-import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
+import { useSnowSupport, wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { WasteRequestCommentField } from '@features/waste-request-comment';
 import { useAuth } from '@entities/session';
 import { FileLinkList } from '@entities/file';
 import { RequestHistoryTable } from '@entities/request-history';
 import { ResponsibleValue } from '@entities/user-account';
 
-import { formatDateTime, formatMoney, useScrollIntoViewWhen } from '@shared/lib';
+import { formatDateTime, useScrollIntoViewWhen } from '@shared/lib';
 import { UserAvatar, ViewFields, ViewModal } from '@shared/ui';
 import { formatDateTimeMaybe } from '@entities/request';
 import { buildWasteRequestHistoryRows } from './viewHistory';
+import { factFields, subjectFields } from './viewSubjectFields';
 import { WasteRequestTickets } from './WasteRequestTickets';
 
 /**
@@ -64,8 +63,6 @@ export interface WasteRequestViewProps {
   focus?: 'tickets' | null;
 }
 
-const secondary = { fontSize: 12 } as const;
-
 export function WasteRequestView({
   request,
   onClose,
@@ -83,18 +80,19 @@ export function WasteRequestView({
   const { can } = useAuth();
   const canReviewTickets = can('wasteRequests.ticketReview');
   const ticketsRef = useScrollIntoViewWhen<HTMLDivElement>(focus === 'tickets', request?.id);
+  // A snow request is shown only while the serving API confirms snow (snow-removal plan, §3.5):
+  // a card opened by link against an older or unavailable API would otherwise offer edits,
+  // completion and ticket actions the server cannot take, and its history is not asked either.
+  const snowCard = request?.requestType === 'snow_removal';
+  const snow = useSnowSupport(snowCard);
+  const snowUnavailable = snowCard && !snow.supported;
 
   const { data: history, isPending } = useQuery({
     queryKey: wasteRequestKeys.history(request?.id),
     queryFn: () => wasteRequestsApi.history(request!.id),
-    enabled: !!request,
+    enabled: !!request && !snowUnavailable,
   });
 
-  // The volume / waste type / cost block follows the stored data, not only the request type: only
-  // removal is priced (ADR 0019), but replacements and removals created before that decision kept
-  // their price, and hiding it would lose the history of amounts.
-  const priced =
-    request != null && (isPricedRequestType(request.requestType) || request.amount != null);
   const rows = useMemo(
     () =>
       buildWasteRequestHistoryRows(
@@ -105,6 +103,33 @@ export function WasteRequestView({
       ),
     [history, request?.completion, request?.vehicles, request?.tickets],
   );
+
+  if (request && snowUnavailable) {
+    return (
+      <ViewModal
+        title={`Заявка № ${request.displayNumber}`}
+        open
+        onClose={onClose}
+        width={1000}
+        footer={[
+          <Button key="close" onClick={onClose}>
+            Закрыть
+          </Button>,
+        ]}
+      >
+        {snow.checking ? (
+          <Spin />
+        ) : (
+          <Alert
+            type="warning"
+            showIcon
+            title="Заявка на вывоз снега сейчас недоступна"
+            description="Сервер не подтвердил поддержку вывоза снега. Обновите страницу через несколько минут."
+          />
+        )}
+      </ViewModal>
+    );
+  }
 
   const fields = request
     ? [
@@ -181,81 +206,8 @@ export function WasteRequestView({
               },
             ]
           : []),
-        ...(priced
-          ? [
-              {
-                key: 'volume',
-                label: 'Объём',
-                children: request.volumeM3 != null ? `${request.volumeM3} м³` : '—',
-              },
-              { key: 'wasteType', label: 'Тип мусора', children: request.wasteTypeName ?? '—' },
-              {
-                key: 'amount',
-                label: 'Стоимость',
-                children:
-                  request.amount == null ? (
-                    // The request was created when the price list had no price for this waste type
-                    // (ADR 0046). A dash would read as "not filled in", so the reason is named.
-                    // Requests older than pricing have no waste type either: nothing to say there.
-                    request.wasteTypeId == null ? (
-                      '—'
-                    ) : (
-                      <Typography.Text type="warning">
-                        тариф не задан — стоимость не рассчитана
-                      </Typography.Text>
-                    )
-                  ) : (
-                    <div style={{ lineHeight: 1.3 }}>
-                      {/* Without an operator, ADR 0026 uses the cheapest tariff; “from” signals
-                          that assigning an operator will refine the price. */}
-                      <div>
-                        {request.operatorCounterpartyId ? '' : 'от '}
-                        {formatMoney(request.amount)}
-                      </div>
-                      {request.pricePerM3 != null && (
-                        <Typography.Text type="secondary" style={secondary}>
-                          {formatMoney(request.pricePerM3)}/м³
-                        </Typography.Text>
-                      )}
-                    </div>
-                  ),
-              },
-            ]
-          : []),
-        // Completion fact (ADR 0035): what was hauled and what it cost. Its amount is what the
-        // request actually cost; the price above is the plan for the requested volume. Legacy
-        // vehicle composition is not lifted here: it stays in history, at its completion event.
-        ...(request.completion
-          ? [
-              {
-                key: 'hauled',
-                label: 'Вывезено',
-                full: true,
-                children: (
-                  <div style={{ lineHeight: 1.3 }}>
-                    <div>
-                      {wasteFactLabel(request.completion)}
-                      {request.completion.totalCost != null
-                        ? ` · ${formatMoney(request.completion.totalCost)}`
-                        : ''}
-                    </div>
-                    {request.completion.totalCost != null &&
-                      request.amount != null &&
-                      request.completion.totalCost !== request.amount && (
-                        <Typography.Text type="secondary" style={secondary}>
-                          заявка оформлялась на {formatMoney(request.amount)}
-                        </Typography.Text>
-                      )}
-                    {request.completion.totalCost == null && (
-                      <Typography.Text type="secondary" style={secondary}>
-                        стоимость не указана — цены в прайсе не было
-                      </Typography.Text>
-                    )}
-                  </div>
-                ),
-              },
-            ]
-          : []),
+        ...subjectFields(request),
+        ...factFields(request),
         {
           key: 'author',
           label: 'Автор',

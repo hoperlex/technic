@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, DatePicker, Select, Space } from 'antd';
+import { Alert, App, DatePicker, Select, Space } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import {
@@ -16,17 +16,23 @@ import {
 } from '@technic/contracts';
 import { counterpartyActiveOperatorOptionsQuery } from '@entities/counterparty';
 import { useAuth, usePlaceObjectScope } from '@entities/session';
-import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
+import {
+  offeredRequestTypes,
+  useSnowSupport,
+  wasteRequestKeys,
+  wasteRequestsApi,
+} from '@entities/waste-request';
 import { DataTable, DeferredSearchInput } from '@shared/ui';
 import { listQueryOptions } from '@shared/api';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '@shared/ui';
-import { dayEnd, dayStart, formatMoney, useListParams, useOpenedRecord } from '@shared/lib';
+import { dayEnd, dayStart, useListParams, useOpenedRecord } from '@shared/lib';
 import { wasteRequestErrorMessage as errorMessage } from '@entities/waste-request';
 import { objectFilterOptionLabel, objectRecordsQuery } from '@entities/object';
 import { wasteHistoryCard, wasteHistoryColumns } from './wasteHistoryColumns';
+import { historySummaryItems } from './wasteHistorySummary';
 import { WasteRequestView } from '@widgets/waste-request-view';
 
 const DATE = 'YYYY-MM-DD';
@@ -83,21 +89,42 @@ export function WasteHistoryTab() {
     deliveryFrom: dayStart(params.deliveryFrom),
     deliveryTo: dayEnd(params.deliveryTo),
   };
+  // Snow in the type filter only while the serving API confirms it; a snow filter is not sent to
+  // a server that stopped confirming snow (snow-removal plan, §3.5).
+  const [typesOpened, setTypesOpened] = useState(false);
+  const snowOnly = params.requestType === 'snow_removal';
+  const snow = useSnowSupport(typesOpened || snowOnly);
+  const snowBlocked = snowOnly && !snow.supported;
+  const openTypes = () => {
+    setTypesOpened(true);
+    snow.recheck();
+  };
+  const typeOptions = offeredRequestTypes(
+    REQUEST_TYPES,
+    snow.supported,
+    params.requestType as RequestType | undefined,
+  ).map((t) => ({ value: t, label: requestTypeLabels[t] }));
+
   const { data, isFetching, isPlaceholderData } = useQuery(
     listQueryOptions({
       queryKey: wasteRequestKeys.closed(query),
       queryFn: () => wasteRequestsApi.historyList(query),
+      enabled: !snowBlocked,
     }),
   );
 
-  // Итог считается по тем же фильтрам, что и таблица: сводка, отвечающая не про то, что человек
-  // видит перед собой, вводит в заблуждение вернее, чем её отсутствие.
-  const { data: summary } = useQuery(
+  // The summary is counted by the same filters as the table: a summary about something other than
+  // what the person sees misleads more surely than no summary. Hence it is shown only when both
+  // answers are for the current filters: a kept previous answer of either one would put the last
+  // filter's totals over this filter's rows.
+  const { data: summary, isPlaceholderData: summaryStale } = useQuery(
     listQueryOptions({
       queryKey: wasteRequestKeys.closedSummary(query),
       queryFn: () => wasteRequestsApi.historySummary(query),
+      enabled: !snowBlocked,
     }),
   );
+  const summaryCurrent = !!summary && !summaryStale && !!data && !isPlaceholderData;
 
   const { data: objects } = useQuery({
     ...objectRecordsQuery(true),
@@ -166,17 +193,7 @@ export function WasteHistoryTab() {
     fetch: (id) => wasteRequestsApi.get(id),
   });
 
-  const summaryItems = [
-    { label: 'Закрыто', value: summary?.total ?? 0 },
-    { label: requestStatusLabels.completed, value: summary?.completed ?? 0 },
-    { label: requestStatusLabels.cancelled, value: summary?.cancelled ?? 0 },
-    // Вывезенное двумя числами: мусор меряют объёмом, лом принимают по весу (ADR 0067), и одной
-    // цифрой их не сложить. Пустая величина не показывается вовсе — «0 т» в журнале, где лома не
-    // было ни разу, читается как «привезли ноль».
-    ...(summary?.volumeM3 ? [{ label: 'Вывезено', value: `${summary.volumeM3} м³` }] : []),
-    ...(summary?.weightTons ? [{ label: 'Сдано лома', value: `${summary.weightTons} т` }] : []),
-    { label: 'Стоимость', value: formatMoney(summary?.totalCost ?? 0) },
-  ];
+  const summaryItems = summaryCurrent && !snowBlocked ? historySummaryItems(summary, snowOnly) : [];
 
   const columns = wasteHistoryColumns(setViewRecord);
 
@@ -199,7 +216,8 @@ export function WasteHistoryTab() {
         allowClear
         placeholder="Все типы заявок"
         style={{ width: 220 }}
-        options={REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }))}
+        options={typeOptions}
+        onOpenChange={(open) => open && openTypes()}
         value={params.requestType as RequestType | undefined}
         onChange={(v: RequestType | undefined) => applyFilter({ requestType: v })}
       />
@@ -267,7 +285,8 @@ export function WasteHistoryTab() {
       key: 'requestType',
       label: 'Тип заявки',
       value: params.requestType,
-      options: REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] })),
+      options: typeOptions,
+      onOpen: openTypes,
       placeholder: 'Все типы заявок',
       onChange: (v) => applyFilter({ requestType: v }),
     },
@@ -332,10 +351,20 @@ export function WasteHistoryTab() {
         <SummaryBar title="Журнал" items={summaryItems} />
       </TabsExtra>
 
+      {snowBlocked && !snow.checking && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          title="Вывоз снега сейчас недоступен"
+          description="Сервер не подтвердил поддержку вывоза снега. Снимите фильтр по типу или обновите страницу позже."
+        />
+      )}
+
       <DataTable<WasteRequestDto>
         columns={columns}
         card={card}
-        data={data?.items ?? []}
+        data={snowBlocked ? [] : (data?.items ?? [])}
         total={data?.total ?? 0}
         loading={isFetching}
         isPlaceholderData={isPlaceholderData}

@@ -82,6 +82,8 @@ export function sectionRoutes(user: AuthUser): RouteMap {
       json(list(COUNTERPARTIES.filter((c) => !query.get('type') || c.type === query.get('type')))),
 
     'GET /waste-requests': () => json(list([wasteRequest()])),
+    // Entering the type filter asks whether the serving API knows snow (snow-removal plan, §3.5).
+    'GET /waste-requests/capabilities': () => json({ capabilities: ['snow-removal-v1'] }),
     'GET /waste-requests/summary': () => json(wasteSummary()),
     'GET /waste-requests/ticket-recognition/health': () =>
       json({ state: 'ok', since: null, code: '', attempts: 0, failed: 0, waiting: 0 }),

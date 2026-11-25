@@ -1,10 +1,21 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { parseWasteRequestNumberSearch, type ContainerKind } from '@technic/contracts';
+import {
+  parseWasteRequestNumberSearch,
+  REQUEST_TYPES,
+  requestTypeLabels,
+  type ContainerKind,
+  type RequestType,
+} from '@technic/contracts';
 import { counterpartyActiveOperatorOptionsQuery } from '@entities/counterparty';
 import { containerTypeOptionsQuery } from '@entities/container-type';
 import { objectFilterOptionLabel, objectRecordsQuery } from '@entities/object';
-import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
+import {
+  offeredRequestTypes,
+  useSnowSupport,
+  wasteRequestKeys,
+  wasteRequestsApi,
+} from '@entities/waste-request';
 import { listQueryOptions } from '@shared/api';
 import { dayEnd, dayStart, useDeferredOptions, useListParams } from '@shared/lib';
 import type {
@@ -40,6 +51,12 @@ export function useWasteRequestFeedState(
   const [objectOpened, setObjectOpened] = useState(false);
   const [subjectOpened, setSubjectOpened] = useState(false);
   const [operatorOpened, setOperatorOpened] = useState(false);
+  const [typesOpened, setTypesOpened] = useState(false);
+  // Snow in the type filter only while the serving API confirms it; a snow filter set earlier is
+  // not sent to a server that stopped confirming snow (snow-removal plan, §3.5).
+  const snowSelected = params.requestType === 'snow_removal';
+  const snow = useSnowSupport(typesOpened || snowSelected);
+  const snowBlocked = snowSelected && !snow.supported;
   const objects = useDeferredOptions(
     objectRecordsQuery(true),
     objectOpened || !!params.objectId,
@@ -85,6 +102,7 @@ export function useWasteRequestFeedState(
     listQueryOptions({
       queryKey: wasteRequestKeys.list(listQuery),
       queryFn: () => wasteRequestsApi.list(listQuery),
+      enabled: !snowBlocked,
     }),
   );
   // Header summary: how many requests await processing and how many are in work. Its key shares
@@ -130,6 +148,17 @@ export function useWasteRequestFeedState(
           onOpen: () => setOperatorOpened(true),
         }
       : null,
+    types: {
+      options: offeredRequestTypes(
+        REQUEST_TYPES,
+        snow.supported,
+        params.requestType as RequestType | undefined,
+      ).map((type) => ({ value: type, label: requestTypeLabels[type] })),
+      onOpen: () => {
+        setTypesOpened(true);
+        snow.recheck();
+      },
+    },
     num: { text: numberInput, onChange: applyNumberFilter },
     ticketReview: canReviewTickets,
   };
@@ -152,7 +181,8 @@ export function useWasteRequestFeedState(
   return {
     rows: listQueryResult.data?.items ?? [],
     total: listQueryResult.data?.total ?? 0,
-    loading: listQueryResult.isFetching,
+    loading: listQueryResult.isFetching || (snowSelected && snow.checking),
+    snowBlocked: snowBlocked && !snow.checking,
     isPlaceholderData: listQueryResult.isPlaceholderData,
     filterOptions,
     list,

@@ -1,4 +1,4 @@
-import { Button, Space } from 'antd';
+import { Alert, Button, Space } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { requestStatusLabels, type WasteRequestDto } from '@technic/contracts';
 import { TicketAuditButton, useTicketAuditMobileAction } from '@features/ticket-audit';
@@ -85,6 +85,18 @@ export function WasteRequestFeed({
           registry expects warnings in the list, and a silent service looks like a calm day from
           here. Asked by the same right as the review itself. */}
       {rights.canReviewTickets && <TicketRecognitionBanner enabled />}
+
+      {/* A snow filter against a server that does not confirm snow is not sent (§3.5): the empty
+          table must say why it is empty rather than read as "no snow requests". */}
+      {state.snowBlocked && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          title="Вывоз снега сейчас недоступен"
+          description="Сервер не подтвердил поддержку вывоза снега. Снимите фильтр по типу или обновите страницу позже."
+        />
+      )}
 
       <DataTable<WasteRequestDto>
         columns={columns}

@@ -11,9 +11,10 @@ import {
 } from '@technic/contracts';
 import { type CardConfig } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
-import { formatDate, formatMoney } from '@shared/lib';
+import { formatDate } from '@shared/lib';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '@entities/object';
 import { formatDateTimeMaybe } from '@entities/request';
+import { wasteFactCostLine } from '@entities/waste-request';
 
 /**
  * Как выглядит строка журнала закрытых заявок вывоза (ADR 0135) — отдельным модулем от самой
@@ -103,19 +104,22 @@ export function wasteHistoryColumns(
       key: 'fact',
       title: 'Вывезено',
       width: 150,
-      render: (_v, r) =>
-        r.completion ? (
+      // A snow completion without an amount says it is awaited (S7) instead of staying silent.
+      render: (_v, r) => {
+        const cost = wasteFactCostLine(r);
+        return r.completion ? (
           <div style={{ lineHeight: 1.35 }}>
             <div>{wasteFactLabel(r.completion)}</div>
-            {r.completion.totalCost != null && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {formatMoney(r.completion.totalCost)}
+            {cost && (
+              <Typography.Text type={cost.tone} style={{ fontSize: 12 }}>
+                {cost.text}
               </Typography.Text>
             )}
           </div>
         ) : (
           dash
-        ),
+        );
+      },
     },
     {
       key: 'status',
@@ -167,6 +171,7 @@ export function wasteHistoryCard(open: (r: WasteRequestDto) => void): CardConfig
     ),
     primary: (r) => (r.completion ? wasteFactLabel(r.completion) : 'Без факта'),
     lines: [
+      (r) => wasteFactCostLine(r)?.text ?? null,
       (r) => r.objectName,
       (r) => requestTypeLabels[r.requestType],
       (r) => formatDateTimeMaybe(r.deliveryAt, r.deliveryTimeUnspecified),

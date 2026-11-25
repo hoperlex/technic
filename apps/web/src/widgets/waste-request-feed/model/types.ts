@@ -46,6 +46,11 @@ export interface WasteFilterOptions {
    * in an operator's own list every request is theirs anyway (ADR 0010).
    */
   operators: { options: FilterOption[]; loading: boolean; onOpen: () => void } | null;
+  /**
+   * Request types the filter offers: snow only once the serving API confirmed it (snow-removal
+   * plan, §3.5). Opening the filter asks the API again.
+   */
+  types: { options: FilterOption[]; onOpen: () => void };
   /** Request number: a string in the field ("М-128"), a number in the parameters. */
   num: { text: string; onChange: (raw: string) => void };
   /**

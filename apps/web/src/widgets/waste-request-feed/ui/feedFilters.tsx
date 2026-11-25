@@ -1,20 +1,11 @@
 import type { ReactNode } from 'react';
 import { Button, DatePicker, Select, Space, Tooltip } from 'antd';
 import dayjs from 'dayjs';
-import {
-  OPEN_WASTE_STATUSES,
-  REQUEST_TYPES,
-  requestStatusLabels,
-  requestTypeLabels,
-} from '@technic/contracts';
+import { OPEN_WASTE_STATUSES, requestStatusLabels } from '@technic/contracts';
 import { DeferredSearchInput, type FilterDefinition } from '@shared/ui';
 import type { WasteFilterOptions } from '../model/types';
 
 const DATE = 'YYYY-MM-DD';
-const requestTypeOptions = REQUEST_TYPES.map((type) => ({
-  value: type,
-  label: requestTypeLabels[type],
-}));
 
 // Working statuses only (ADR 0135): completed and cancelled requests live in the "История" tab and
 // the working endpoint does not return them at all; a filter option that ends in a refusal is
@@ -51,7 +42,8 @@ export function WasteRequestFeedFilterBar({ options }: { options: WasteFilterOpt
         style={{ width: 190 }}
         allowClear
         placeholder="Все типы заявок"
-        options={requestTypeOptions}
+        options={options.types.options}
+        onOpenChange={(open) => open && options.types.onOpen()}
         value={options.values.requestType}
         onChange={(value: string | undefined) => options.onChange({ requestType: value })}
       />
@@ -167,7 +159,8 @@ export function wasteRequestFeedMobileFilters(options: WasteFilterOptions): Filt
       key: 'requestType',
       label: 'Тип заявки',
       value: options.values.requestType,
-      options: requestTypeOptions,
+      options: options.types.options,
+      onOpen: options.types.onOpen,
       placeholder: 'Все типы заявок',
       onChange: (value) => options.onChange({ requestType: value }),
     },

@@ -1,5 +1,6 @@
 import {
   calcWasteAmount,
+  isManualCostOnly,
   isPricedRequestType,
   isVolumeAllowed,
   wasteFactLabel,
@@ -91,6 +92,26 @@ export function wasteAmountLine(request: WasteRequestDto): WastePricingHint | nu
   }
   if (!isPricedRequestType(request.requestType) || !request.wasteTypeId) return null;
   return { text: 'тариф не задан — стоимость не рассчитана', tone: 'warning' };
+}
+
+/** Said where a snow completion has no amount yet; the same words in the card and the journal. */
+export const WASTE_COST_AWAITED = 'стоимость ожидает ввода';
+
+/**
+ * The money of a completion fact. A snow completion may be saved without an amount (S7) — the
+ * invoice comes later — and the line then says the amount is awaited: silence would read as a free
+ * removal. A recorded 0 is a known amount and is printed as one. A garbage completion without a
+ * sum keeps its own explanation where it is shown (no price in the list), so it gets `null` here.
+ */
+export function wasteFactCostLine(
+  request: Pick<WasteRequestDto, 'requestType' | 'completion'>,
+): WastePricingHint | null {
+  const fact = request.completion;
+  if (!fact) return null;
+  if (fact.totalCost != null) return { text: formatMoney(fact.totalCost), tone: 'secondary' };
+  return isManualCostOnly(request.requestType)
+    ? { text: WASTE_COST_AWAITED, tone: 'warning' }
+    : null;
 }
 
 /**

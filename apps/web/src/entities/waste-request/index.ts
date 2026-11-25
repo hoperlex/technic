@@ -46,7 +46,9 @@ export {
   type ParsedGroupKey,
 } from './model/containerGroups';
 export {
+  WASTE_COST_AWAITED,
   wasteAmountLine,
+  wasteFactCostLine,
   wastePricingHint,
   wasteRollbackErases,
   wasteWeightFactLine,
