@@ -35,7 +35,10 @@ describe('ordinary create transport survives an older API rollback', () => {
     expect(apiFetch).toHaveBeenCalledWith(
       `${root}/_create-with-receipt`,
       expect.objectContaining({
-        headers: { 'Idempotency-Key': 'efefefef-efef-4fef-8fef-efefefefefef' },
+        // Waste calls also carry the snow capability header; the key header is what this checks.
+        headers: expect.objectContaining({
+          'Idempotency-Key': 'efefefef-efef-4fef-8fef-efefefefefef',
+        }),
       }),
     );
     vi.mocked(apiFetch).mockClear();
