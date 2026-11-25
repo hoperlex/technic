@@ -1,6 +1,6 @@
 import { App, Button, Space, Typography, Upload } from 'antd';
 import { CameraOutlined, UploadOutlined } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { type FileDto, MAX_TICKETS_PER_REQUEST, type WasteRequestDto } from '@technic/contracts';
 import { FILE_MAX_SIZE } from '@shared/config';
 import { errorMessage, useIsMobile } from '@shared/lib';
@@ -28,17 +28,38 @@ export function AddTicketsBlock({
   const isMobile = useIsMobile();
   const [pending, setPending] = useState<FileDto[]>([]);
   const [uploading, setUploading] = useState(false);
-  // Отправленное окно переоткрывают на соседней заявке, а список обновляется после успеха —
-  // черновик следует за самой заявкой и за её талонами: иначе отправленные файлы остались бы
-  // в «ждут отправки» вторым экземпляром.
-  useEffect(() => setPending([]), [request.id, request.tickets.length]);
+  /**
+   * The opening of this block: it moves on when the card switches to another request and when the
+   * card closes. An upload that finishes in a later opening is deleted instead of joining the
+   * pending list of the request shown now — it was chosen for another one (snow-removal plan, §3.3).
+   */
+  const opening = useRef(0);
+  useEffect(() => {
+    opening.current += 1;
+    setPending([]);
+    return () => {
+      opening.current += 1;
+    };
+  }, [request.id]);
+  // Attached files leave the list as soon as the request lists them as its tickets; the rest stay.
+  // A reload after a refusal (409) must not drop uploads the person may still attach or discard.
+  useEffect(
+    () => setPending((prev) => prev.filter((f) => !request.tickets.some((t) => t.id === f.id))),
+    [request.tickets],
+  );
 
   const upload = async (file: File) => {
+    const startedIn = opening.current;
     setUploading(true);
     try {
       const uploaded = await filesApi.upload(file);
+      if (startedIn !== opening.current) {
+        void filesApi.remove(uploaded.id).catch(() => {});
+        return;
+      }
       setPending((prev) => [...prev, uploaded]);
     } catch (e) {
+      if (startedIn !== opening.current) return;
       /*
        * No field dictionary here, and that is an answer rather than an omission: the only refusal
        * this screen can get is from the upload itself (`POST /files/upload-session`), whose fields
@@ -69,6 +90,11 @@ export function AddTicketsBlock({
   };
 
   const discard = (f: FileDto) => {
+    // The file travels with the attach in flight; deleting it could strip committed paper.
+    if (adding) {
+      message.warning('Талоны отправляются — дождитесь ответа');
+      return;
+    }
     void filesApi.remove(f.id).catch(() => {});
     setPending((prev) => prev.filter((t) => t.id !== f.id));
   };

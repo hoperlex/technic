@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import {
   wasteOperatorCommentEditable,
   wasteTicketsAttachable,
@@ -46,8 +46,17 @@ export function useWasteRequestView({
     fetch: (id) => wasteRequestsApi.get(id),
   });
   const viewed = record ?? opened.record;
+  /**
+   * An answer about a request the card no longer shows is dropped: a late attach must neither
+   * reopen a closed card nor replace the request opened after it (snow-removal plan, §3.3).
+   */
+  const viewedId = useRef<string | null>(null);
+  viewedId.current = viewed?.id ?? null;
+  const refreshViewed = (updated: WasteRequestDto) => {
+    if (viewedId.current === updated.id) setRecord(updated);
+  };
   const comment = useWasteRequestComment(setRecord);
-  const tickets = useWasteTicketAttach(setRecord);
+  const tickets = useWasteTicketAttach(refreshViewed);
   // Executor note (ADR 0053): written by its operator and by those who run the request.
   const canComment = can('wasteRequests.operatorComment');
   // Status management also unlocks adding tickets to a completed request (ADR 0189): whoever
