@@ -4,8 +4,6 @@ import {
   checkContainerOwner,
   FOREIGN_CONTAINER_SPLIT_MESSAGE,
   presentGroupLabel,
-  REQUEST_TYPES,
-  requestTypeLabels,
   type WasteRequestDto,
 } from '@technic/contracts';
 import {
@@ -36,8 +34,10 @@ import type {
   WasteRequestEditorSources,
   WasteRequestFormValues,
 } from '../model/types';
+import { withoutHiddenFields } from '../model/payload';
 import { WasteRequestEditorRemovalFields } from './WasteRequestEditorRemovalFields';
 import { WasteRequestEditorSchedule } from './WasteRequestEditorSchedule';
+import { WasteRequestEditorTypeField } from './WasteRequestEditorTypeField';
 
 interface Props {
   draft: LocalFormDraftController<Record<string, unknown>>;
@@ -59,10 +59,8 @@ interface Props {
   uploading: boolean;
 }
 
-const requestTypeOptions = REQUEST_TYPES.map((type) => ({
-  value: type,
-  label: requestTypeLabels[type],
-}));
+const OWN_OPERATOR_SITE_MESSAGE =
+  'Ваша организация не обслуживает этот объект — заявку на него завести нельзя';
 
 /** Render the editor while preserving the domain-owned pricing and container-group rules. */
 export function WasteRequestEditorModal({
@@ -200,17 +198,22 @@ export function WasteRequestEditorModal({
             fileNotice
             createMayHaveSucceeded
             onRestore={(candidate) =>
+              // A draft saved before hidden fields were filtered may still carry them.
               form.setFieldsValue(
-                restoreFormDateFields<WasteRequestFormValues>(draft.restore(candidate), [
-                  'deliveryDate',
-                ]),
+                withoutHiddenFields(
+                  restoreFormDateFields<WasteRequestFormValues>(draft.restore(candidate), [
+                    'deliveryDate',
+                  ]),
+                ),
               )
             }
             onDiscard={draft.discardPending}
           />
           <RequestCreateAttemptNotice
             pending={!!draft.active?.createAttempt}
-            legacy={!!draft.active?.createAttempt && draft.active.createAttempt.protocol !== 'receipt-v1'}
+            legacy={
+              !!draft.active?.createAttempt && draft.active.createAttempt.protocol !== 'receipt-v1'
+            }
             checking={reconciling}
             onCheck={onReconcile}
             onLegacyReset={onLegacyReset}
@@ -225,7 +228,22 @@ export function WasteRequestEditorModal({
             <Form.Item
               name="objectId"
               label="Объект строительства"
-              rules={[{ required: true, message: 'Выберите объект' }]}
+              rules={[
+                { required: true, message: 'Выберите объект' },
+                {
+                  // The server takes the creator's own organisation as the operator and refuses a
+                  // site it does not serve; the form says so on the site, before sending (§3.2).
+                  validator: (_rule, value: string | undefined) =>
+                    !record && sources.ownOperator?.serves(value) === false
+                      ? Promise.reject(new Error(OWN_OPERATOR_SITE_MESSAGE))
+                      : Promise.resolve(),
+                },
+              ]}
+              extra={
+                !record && sources.ownOperator
+                  ? 'Заявка заводится на вашу организацию: она и будет оператором вывоза'
+                  : undefined
+              }
             >
               <AutoSelect
                 options={sources.objectOptions}
@@ -237,29 +255,13 @@ export function WasteRequestEditorModal({
                 onChange={resetSubject}
               />
             </Form.Item>
-            <Form.Item
-              name="requestType"
-              label="Тип заявки"
-              rules={[{ required: true, message: 'Выберите тип заявки' }]}
-            >
-              <AutoSelect
-                options={requestTypeOptions}
-                placeholder={objectId ? 'Выберите тип заявки' : 'Сначала выберите объект'}
-                disabled={!objectId}
-                onChange={() =>
-                  form.setFieldsValue({
-                    containerTypeId: undefined,
-                    containerGroupKey: undefined,
-                    // The count returns to one container: "3" from the previous request type means
-                    // nothing for the new one, and installation and removal have no count at all.
-                    containersCount: 1,
-                    ownerMismatchReason: undefined,
-                    wasteTypeId: undefined,
-                    volumeM3: undefined,
-                  })
-                }
-              />
-            </Form.Item>
+            <WasteRequestEditorTypeField
+              form={form}
+              objectId={objectId}
+              record={record}
+              requestType={requestType}
+              snowSupported={sources.snowSupported}
+            />
 
             {requestType === 'container_install' && (
               <Form.Item

@@ -385,6 +385,23 @@ export const purgeWasteRequestQuerySchema = z
   .strict();
 export type PurgeWasteRequestQuery = z.infer<typeof purgeWasteRequestQuerySchema>;
 
+// ── Operator site binding (snow-removal plan, §3.2; added by the portal wave) ──
+
+/**
+ * May this operator serve a request on the site? The established binding rule (ADR 0010,
+ * migration 0027): a site with no operator link at all accepts any operator, because the directory
+ * fills up gradually; a linked site accepts only its linked operators. `siteOperatorIds` must hold
+ * EVERY link of the site, inactive and archived operators included: a site whose only link points
+ * to an inactive operator is a configured site, and treating it as unlinked would offer operators
+ * the server refuses. Activity of the operator itself is a separate check.
+ */
+export function wasteOperatorServesSite(
+  siteOperatorIds: readonly string[],
+  operatorId: string,
+): boolean {
+  return siteOperatorIds.length === 0 || siteOperatorIds.includes(operatorId);
+}
+
 /**
  * Талоны на одно закрытие: их несколько (талон с двух сторон, весовая квитанция рядом), но
  * список общий на заявку — к отдельной машине талон больше не крепится (ADR 0024).

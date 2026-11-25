@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { App, Form } from 'antd';
 import dayjs from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  isPricedRequestType,
-  normalizeTimeInput,
+  actsForCounterparty,
   usesContainerGroup,
+  wasteOperatorServesSite,
   type WasteRequestDto,
 } from '@technic/contracts';
 import { filesApi } from '@entities/file';
@@ -20,12 +20,11 @@ import { wasteTypeOptionsQuery } from '@entities/waste-type';
 import {
   containerGroupKey,
   minRequestDate,
-  parseContainerGroupKey,
+  useSnowSupport,
   wasteRequestErrorMessage as errorMessage,
   wasteRequestKeys,
   wasteRequestsApi,
   type WasteRequestPayload,
-  type WasteRequestUpdatePayload,
 } from '@entities/waste-request';
 import { MOSCOW_TZ } from '@shared/config';
 import {
@@ -39,11 +38,23 @@ import {
 } from '@shared/lib';
 import { useFormBlockers, type FilterOption } from '@shared/ui';
 import { DeferredWasteRequestEditor as WasteRequestEditorModal } from '../ui/DeferredWasteRequestEditor';
+import { createPayload, updatePayload, withoutHiddenFields } from './payload';
 import type {
   WasteRequestEditorController,
   WasteRequestEditorFile,
   WasteRequestFormValues,
 } from './types';
+
+/** Refusal shown instead of freezing a new snow attempt the serving API may not understand. */
+export const SNOW_UNSUPPORTED_MESSAGE =
+  'Вывоз снега пока недоступен: сервер не подтвердил поддержку. Повторите через несколько минут.';
+
+interface SaveCommand {
+  values: WasteRequestFormValues;
+  /** The opening the save was sent from; its answer may act only on that opening. */
+  opening: number;
+  record: WasteRequestDto | null;
+}
 
 interface EditorScope {
   objectFieldDisabled: boolean;
@@ -57,18 +68,33 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
   const { can, user } = useAuth();
   const qc = useQueryClient();
   const canAssignOperator = can('wasteRequests.assignOperator');
+  // A counterparty-scoped creator files only for their own organisation (snow-removal plan, §3.2):
+  // the server refuses any other operator and an omitted one, so the form sends their own.
+  const ownOperatorId =
+    actsForCounterparty(user, 'operator') && user?.counterpartyId ? user.counterpartyId : null;
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<WasteRequestDto | null>(null);
   const [files, setFiles] = useState<WasteRequestEditorFile[]>([]);
   const [removedIds, setRemovedIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  /**
+   * The current opening of the form. Every open and close moves it on, and an upload or save
+   * answer compares the opening it started in with the current one: the answer of a closed or
+   * replaced form must not add its file to, or close, the form opened after it — the same request
+   * reopened included (snow-removal plan, §3.3).
+   */
+  const opening = useRef(0);
   const [form] = Form.useForm<WasteRequestFormValues>();
   const draft = useLocalFormDraft({
     userId: user?.id ?? null,
     form: 'waste-request',
-    read: () => storeFormDateFields(form.getFieldsValue(true), ['deliveryDate']),
+    // The draft keeps what the person could see: a waste type left over from a garbage choice
+    // never rides along with a snow draft (ADR 0230 shape, snow-removal plan §3.3).
+    read: () =>
+      storeFormDateFields(withoutHiddenFields(form.getFieldsValue(true)), ['deliveryDate']),
     parse: objectDraftPayload,
   });
+  const snow = useSnowSupport(open);
   // The mounted controller survives closing the lazy editor. Its own PICK observers switch off
   // with the dialog and recheck an old cached choice on the next opening.
   const objects = useDeferredOptions(objectRecordsQuery(true), open, (data) => data.items, 'pick');
@@ -93,7 +119,24 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
   const operatorOptionsFor = (
     objectId: string | undefined,
     assigned?: { id: string | null; name: string | null },
-  ) => operatorOptionsForObject(operators.options ?? [], objectId, assigned);
+  ) => {
+    const options = operatorOptionsForObject(operators.options ?? [], objectId, assigned);
+    return ownOperatorId ? options.filter((option) => option.value === ownOperatorId) : options;
+  };
+  /**
+   * Whether the creator's own organisation may serve the chosen site: the same binding rule and
+   * the same input as the server, every link of the site whatever the operator's state (§3.2).
+   * `undefined` — not a counterparty-scoped creator, or the site is not chosen or not loaded yet.
+   */
+  const ownOperatorServes = (objectId: string | undefined): boolean | undefined => {
+    if (!ownOperatorId || !objectId) return undefined;
+    const site = objects.options?.find((object) => object.id === objectId);
+    if (!site) return undefined;
+    return wasteOperatorServesSite(
+      site.operators.map((operator) => operator.id),
+      ownOperatorId,
+    );
+  };
   const sources = {
     containerTypes: {
       cont: (types.options ?? [])
@@ -114,6 +157,8 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
     operatorOptionsFor,
     operatorsLoading: operators.loading,
     operatorsReady: operators.current,
+    ownOperator: ownOperatorId ? { serves: ownOperatorServes } : null,
+    snowSupported: snow.supported,
     soleObjectId: scope.soleObjectId,
     wasteTypes: {
       options: (wasteTypes.options ?? []).map((type) => ({ value: type.id, label: type.name })),
@@ -134,6 +179,7 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
   });
 
   const create = () => {
+    opening.current += 1;
     setRecord(null);
     setFiles([]);
     setRemovedIds([]);
@@ -149,6 +195,7 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
   };
 
   const edit = (request: WasteRequestDto) => {
+    opening.current += 1;
     setRecord(request);
     setFiles(request.files.map((file) => ({ ...file, isNew: false })));
     setRemovedIds([]);
@@ -181,13 +228,25 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
     setOpen(true);
   };
 
+  const close = () => {
+    opening.current += 1;
+    setOpen(false);
+  };
+
   const upload = async (file: File) => {
+    const startedIn = opening.current;
     setUploading(true);
     try {
       const uploaded = await filesApi.upload(file);
+      // The form this upload was chosen in is closed or replaced: the file belongs to no form and
+      // no save references it, so it is removed instead of joining the newer form's files.
+      if (startedIn !== opening.current) {
+        void filesApi.remove(uploaded.id).catch(() => {});
+        return;
+      }
       setFiles((previous) => [...previous, { ...uploaded, isNew: true }]);
     } catch (error) {
-      message.error(errorMessage(error));
+      if (startedIn === opening.current) message.error(errorMessage(error));
     } finally {
       setUploading(false);
     }
@@ -204,79 +263,54 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
   };
 
   const save = useMutation({
-    mutationFn: (values: WasteRequestFormValues) => {
-      // Date and time are composed in Moscow time, the zone in which the server checks the working
-      // window. No time means Moscow midnight plus the unspecified flag: a request "for the day".
-      const time = normalizeTimeInput(values.deliveryTime ?? '');
-      const deliveryAt = dayjs.tz(
-        `${values.deliveryDate.format('YYYY-MM-DD')} ${time ?? '00:00'}`,
-        MOSCOW_TZ,
-      );
-      // Replacement and removal pick the container as a "type + owner" group (ADR 0054);
-      // installation picks a directory type and has no group.
-      const group = values.containerGroupKey
-        ? parseContainerGroupKey(values.containerGroupKey)
-        : null;
-      const withGroup = usesContainerGroup(values.requestType);
-      const base = {
-        objectId: values.objectId,
-        requestType: values.requestType,
-        // Only container operations carry a directory type: removal has no such field, and the
-        // server would null a submitted value anyway (ADR 0022).
-        containerTypeId: withGroup ? group?.containerTypeId : values.containerTypeId,
-        containerOwnerCounterpartyId: withGroup
-          ? (group?.ownerCounterpartyId ?? undefined)
-          : undefined,
-        containersCount: withGroup ? (values.containersCount ?? 1) : 1,
-        // The reason is sent only with a mismatch: matching parties have no reason field.
-        ownerMismatchReason: withGroup ? values.ownerMismatchReason : undefined,
-        // Waste type and volume belong only to removal (ADR 0019); the server nulls them for
-        // container operations anyway.
-        wasteTypeId: isPricedRequestType(values.requestType) ? values.wasteTypeId : undefined,
-        volumeM3: isPricedRequestType(values.requestType) ? values.volumeM3 : undefined,
-        // Only a dispatcher assigns the executor, and only on an existing request: the create form
-        // has no such field, and other roles lack it on edit too (ADR 0010).
-        operatorCounterpartyId:
-          canAssignOperator && record ? values.operatorCounterpartyId : undefined,
-        deliveryAt: deliveryAt.toISOString(),
-        deliveryTimeUnspecified: time === undefined,
-        responsibleName: values.responsibleName!,
-        responsiblePhone: values.responsiblePhone!,
-        comment: values.comment ?? '',
-      };
-      if (record) {
-        const payload: WasteRequestUpdatePayload = {
-          ...base,
-          // An empty field from a dispatcher means "remove the executor": that is null, not
-          // "leave unchanged".
-          operatorCounterpartyId: canAssignOperator
-            ? (values.operatorCounterpartyId ?? null)
-            : undefined,
-          // On update an omitted field means "unchanged", so a group without an owner and a change
-          // of request type send an explicit null: otherwise the owner would outlive a type that
-          // never has one.
-          containerOwnerCounterpartyId: withGroup ? (group?.ownerCounterpartyId ?? null) : null,
+    mutationFn: async ({ values, record: target }: SaveCommand) => {
+      const snowBlocked = values.requestType === 'snow_removal' && !snow.supported;
+      if (target) {
+        if (snowBlocked) throw new LocalCreateAttemptError(SNOW_UNSUPPORTED_MESSAGE);
+        const payload = updatePayload(values, target, {
           addFileIds: files.filter((file) => file.isNew).map((file) => file.id),
           removeFileIds: removedIds,
-          version: record.version,
-        };
-        return wasteRequestsApi.update(record.id, payload);
+          // Only a dispatcher assigns the executor in the form (ADR 0010).
+          operator: canAssignOperator ? 'send' : 'omit',
+        });
+        return { saved: await wasteRequestsApi.update(target.id, payload), attemptKey: null };
       }
-      const payload: WasteRequestPayload = {
-        ...base,
+      // A NEW snow attempt is refused before it is frozen: a frozen body is resent on every retry
+      // and would keep asking a server that does not know snow. An attempt frozen earlier, when
+      // support was confirmed, is still resent with its key — its outcome must be learned, not
+      // abandoned (snow-removal plan, §3.5).
+      if (snowBlocked && !draft.active?.createAttempt) {
+        throw new LocalCreateAttemptError(SNOW_UNSUPPORTED_MESSAGE);
+      }
+      const payload: WasteRequestPayload = createPayload(values, {
         fileIds: files.filter((file) => file.isNew).map((file) => file.id),
-      };
+        ownOperatorId: ownOperatorId ?? undefined,
+      });
       const attempt = draft.prepareCreate(payload);
-      return wasteRequestsApi.create(attempt.body, attempt.key);
+      return {
+        saved: await wasteRequestsApi.create(attempt.body, attempt.key),
+        attemptKey: attempt.key,
+      };
     },
-    onSuccess: () => {
-      if (!record) draft.clear();
+    onSuccess: ({ attemptKey }, command) => {
+      // The draft is cleared only while it still holds this attempt. After the form was reopened
+      // the stored copy waits as a pending draft, and its own check settles it.
+      if (attemptKey && draft.active?.createAttempt?.key === attemptKey) draft.clear();
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
-      setOpen(false);
+      if (command.opening === opening.current) close();
     },
-    onError: (error) => {
-      if (!record && !(error instanceof LocalCreateAttemptError) && draft.active?.createAttempt)
+    onError: (error, command) => {
+      if (command.opening !== opening.current) {
+        // The form is gone or shows another opening: its fields are not this answer's to mark.
+        message.error(errorMessage(error));
+        return;
+      }
+      if (
+        !command.record &&
+        !(error instanceof LocalCreateAttemptError) &&
+        draft.active?.createAttempt
+      )
         message.warning('Исход создания нужно проверить перед исправлением заявки.');
       // A validation error is shown on its field: a generic toast does not say what to fix.
       // deliveryAt is split into date and time in the form, so it maps to the date field.
@@ -305,7 +339,7 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
         draft.clear();
         void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
         message.success('Заявка создана');
-        setOpen(false);
+        close();
         return;
       }
       if (draft.releaseCreateAttempt(key, result.nextOperationId))
@@ -326,11 +360,11 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
         form={form}
         onCancel={() => {
           if (!record && draft.active) draft.persist();
-          setOpen(false);
+          close();
         }}
         onFinish={(values) => {
           if (!record) draft.persist();
-          save.mutate(values);
+          save.mutate({ values, opening: opening.current, record });
         }}
         onRemoveFile={(file) => void removeFile(file)}
         onReconcile={() => reconcile.mutate()}

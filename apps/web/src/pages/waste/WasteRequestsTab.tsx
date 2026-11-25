@@ -18,8 +18,12 @@ export function WasteRequestsTab() {
   // them (ADR 0039), and "all" means all of its own sites because the server returns nothing else.
   const { soleObjectId, objectFieldDisabled, limitObjectOptions } = usePlaceObjectScope();
   // Actions follow permissions only (ADR 0021), the same ones the API checks.
-  const canCreate = can('wasteRequests.create');
   const canAssignOperator = can('wasteRequests.assignOperator');
+  // A creator acting for an operator organisation files requests only for that organisation, and
+  // naming the operator is an assignment: without the assignment right the server refuses every
+  // such creation (snow-removal plan, §3.2), so the button is not offered.
+  const canCreate =
+    can('wasteRequests.create') && (!actsForCounterparty(user, 'operator') || canAssignOperator);
   // Ticket review is a separate permission (ADR 0114, R25): without it there is neither the badge
   // column nor the filter. The server agrees: the ticketReview parameter without the permission is
   // rejected rather than ignored.

@@ -39,6 +39,8 @@ const IN_WORK = wasteRequest({
 
 function setup(requests: WasteRequestDto[] = []) {
   const http = mockHttp({
+    // The editor asks the serving API whether it knows snow each time it opens (§3.5).
+    'GET /waste-requests/capabilities': () => json({ capabilities: ['snow-removal-v1'] }),
     'GET /waste-requests': () => json(list(requests)),
     'GET /waste-requests/summary': () => json(wasteSummary({ confirmed: requests.length })),
     // The recognition health banner polls on this screen; an unmocked request would hide failures.

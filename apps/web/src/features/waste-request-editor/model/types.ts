@@ -56,6 +56,14 @@ export interface WasteRequestEditorSources {
   operatorOptionsFor: (objectId: string | undefined, assigned?: SavedOperator) => FilterOption[];
   operatorsLoading: boolean;
   operatorsReady: boolean;
+  /**
+   * The creator acts for an operator organisation and files only for it (snow-removal plan,
+   * §3.2); `serves` answers whether that organisation may serve the site, `undefined` while unknown.
+   * `null` — an ordinary creator, the operator is assigned later.
+   */
+  ownOperator: { serves: (objectId: string | undefined) => boolean | undefined } | null;
+  /** The serving API confirmed snow removal: only then is «Вывоз снега» offered to a new request. */
+  snowSupported: boolean;
   soleObjectId?: string;
   wasteTypes: {
     loading: boolean;

@@ -30,6 +30,8 @@ const EXPECTED_DELIVERY_AT = dayjs.tz(`${DELIVERY_DAY} 09:30`, 'Europe/Moscow').
  */
 function setup(over: RouteMap = {}, queryClient?: QueryClient) {
   const http = mockHttp({
+    // The editor asks the serving API whether it knows snow each time it opens (§3.5).
+    'GET /waste-requests/capabilities': () => json({ capabilities: ['snow-removal-v1'] }),
     'GET /waste-requests': () => json(list<WasteRequestDto>([])),
     'GET /waste-requests/summary': () => json(wasteSummary()),
     // The recognition health banner polls on this screen; an unmocked request would hide failures.
