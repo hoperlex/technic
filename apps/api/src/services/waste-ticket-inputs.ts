@@ -1,4 +1,4 @@
-import { and, eq, inArray, notInArray, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import {
   countsUnreviewedTicketPaper,
   type RequestType,
@@ -20,8 +20,10 @@ import {
   wasteTicketProposals,
   wasteTickets,
 } from '../db/schema';
-import { effectiveTicketArea } from './waste-ticket-checks';
+import { JOB_RECOGNIZE_WASTE_TICKET_FILE } from '../lib/jobs';
+import { classifyTicketFile, effectiveTicketArea } from './waste-ticket-checks';
 import type {
+  TicketFileReview,
   WasteTicketCheckTicket,
   WasteTicketChecksInput,
   WasteTicketNeighbour,
@@ -47,6 +49,8 @@ export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction
 // одну. Пакетность здесь не оптимизация впрок, а условие того, чтобы список вообще мог считать
 // значок через сверку, а не через второй, упрощённый и потому лгущий SQL.
 
+export type { TicketFileReview, TicketFileReviewState } from './waste-ticket-checks';
+
 /** Заявка, как её видит сверка. Поля читает вызывающий: у списка они уже есть в строке. */
 export interface TicketCheckRequestRow {
   id: string;
@@ -70,6 +74,26 @@ export interface TicketCheckBundle {
   inputs: WasteTicketChecksInput;
   tickets: TicketRow[];
   pages: PageRow[];
+  /**
+   * Every ticket file the review knows of, classified with the recognition queue read alongside.
+   * The card renders its file rows from this, so the card and the badge cannot tell two stories.
+   */
+  files: TicketFileReview[];
+  /**
+   * A recognition job of a counted file is pending or running. The badge then depends on queue
+   * state that may end without anyone marking the stored review state stale (a skipped job, the
+   * gap between the worker's result and its job status), so a writer stores it as stale.
+   */
+  liveRecognition: boolean;
+}
+
+/**
+ * A timestamp as sortable microsecond UTC text. JavaScript dates keep milliseconds, and the
+ * question "was the file row written after this job was created" is decided by statements that can
+ * fall into one millisecond; the text keeps PostgreSQL's precision and compares as a string.
+ */
+export function timestampKey(column: SQLWrapper): SQL<string> {
+  return sql<string>`to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US')`;
 }
 
 /** Видимость чужой заявки: сосед называется по номеру только тому, кто вправе его читать (Р28). */
@@ -215,6 +239,7 @@ export async function loadTicketCheckInputs(
     blindRows,
     paperRows,
     proposalRows,
+    jobRows,
   ] = await Promise.all([
     exec.select().from(wasteTickets).where(inArray(wasteTickets.requestId, ids)),
     exec
@@ -237,6 +262,7 @@ export async function loadTicketCheckInputs(
         fileId: wasteTicketFiles.fileId,
         status: wasteTicketFiles.status,
         jobStatus: jobs.status,
+        updatedAtKey: timestampKey(wasteTicketFiles.updatedAt),
       })
       .from(wasteTicketFiles)
       .leftJoin(jobs, eq(jobs.id, wasteTicketFiles.activeJobId))
@@ -288,6 +314,29 @@ export async function loadTicketCheckInputs(
       .from(wasteTicketProposals)
       .innerJoin(wasteTickets, eq(wasteTickets.id, wasteTicketProposals.ticketId))
       .where(inArray(wasteTickets.requestId, ids)),
+    // Recognition jobs that are live or died (see `classifyTicketFile`). Done jobs are not read: a
+    // finished job either wrote its outcome into the file row or skipped and left the earlier one
+    // intact. The status list keeps the scan on the `jobs_due_idx` prefix — the queue table grows
+    // with every mail and storage delete, and only these states stay few.
+    exec
+      .select({
+        id: jobs.id,
+        requestId: sql<string>`${jobs.payload}->>'requestId'`,
+        fileId: sql<string>`${jobs.payload}->>'fileId'`,
+        status: jobs.status,
+        attempts: jobs.attempts,
+        maxAttempts: jobs.maxAttempts,
+        nextRunAt: jobs.nextRunAt,
+        createdAtKey: timestampKey(jobs.createdAt),
+      })
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.type, JOB_RECOGNIZE_WASTE_TICKET_FILE),
+          inArray(jobs.status, ['pending', 'running', 'failed', 'dead']),
+          inArray(sql`${jobs.payload}->>'requestId'`, ids),
+        ),
+      ),
   ]);
 
   const pageById = new Map(pageRows.map((p) => [p.id, p]));
@@ -317,6 +366,7 @@ export async function loadTicketCheckInputs(
   for (const row of rows) {
     const tickets = ticketRows.filter((t) => t.requestId === row.id);
     const recognitionFiles = fileRows.filter((f) => f.requestId === row.id);
+    const pagesOfRequest = pageRows.filter((p) => p.requestId === row.id);
     /*
      * "Attached, but review never started" counts only for the types the contract names
      * (`countsUnreviewedTicketPaper`: garbage and snow). Since ADR 0150 this is no longer a
@@ -334,31 +384,58 @@ export async function loadTicketCheckInputs(
      * them by closing date), not deleting this condition. Snow is inside the boundary from its first
      * request: it has no past to protect (snow-removal plan, S4).
      */
-    const pagesOfRequest = pageRows.filter((p) => p.requestId === row.id);
-    const attachedTicketFiles: WasteTicketAttachedFile[] = countsUnreviewedTicketPaper(
-      row.requestType,
-    )
-      ? paperRows
-          .filter((f) => f.requestId === row.id)
-          .map((f) => {
-            const recognition = recognitionFiles.find((r) => r.fileId === f.fileId);
-            // «Сломан» — то же самое, что попало в 🚫, и провалившаяся страница входит сюда
-            // наравне с отказом по файлу: иначе единственный нечитаемый лист показывался бы
-            // дважды — и как 🚫, и как 📄 (ADR 0155, Р18).
-            const broken =
-              recognition?.status === 'unsupported' ||
-              recognition?.status === 'failed' ||
-              recognition?.jobStatus === 'dead' ||
-              pagesOfRequest.some((p) => p.fileId === f.fileId && p.status === 'failed');
-            return { fileId: f.fileId, broken, readOk: recognition?.status === 'done' };
-          })
-      : [];
+    const countsPaper = countsUnreviewedTicketPaper(row.requestType);
+    const attached = new Set(paperRows.filter((f) => f.requestId === row.id).map((f) => f.fileId));
+    const jobsOfRequest = jobRows.filter((j) => j.requestId === row.id);
+    // Files the review knows of: attached scans and recognition rows (a row cannot outlive its
+    // link — composite key with cascade). A live job of an unlinked file is ignored: the reset to
+    // «Новая» unlinks tickets and leaves queued jobs to become no-ops (ADR 0114, decision 4).
+    const universe = [...new Set([...attached, ...recognitionFiles.map((f) => f.fileId)])];
+    const files: TicketFileReview[] = universe.map((fileId) => {
+      const recognition = recognitionFiles.find((f) => f.fileId === fileId);
+      return {
+        fileId,
+        ...classifyTicketFile({
+          row: recognition
+            ? {
+                status: recognition.status,
+                jobStatus: recognition.jobStatus,
+                updatedAtKey: recognition.updatedAtKey,
+              }
+            : null,
+          jobs: jobsOfRequest.filter((j) => j.fileId === fileId),
+          pageFailed: pagesOfRequest.some((p) => p.fileId === fileId && p.status === 'failed'),
+        }),
+      };
+    });
     /*
-     * Заявка без бумаги вовсе значка не получает (`badge = null`, и завершению это не помеха).
-     * Приложенный талон бумагой считается наравне со строкой распознавания: именно он и есть то,
-     * что предстоит разобрать.
+     * Which files count, per type. Inside the unreviewed-paper boundary every attached file does.
+     * Outside it (scrap, container operations) an attached file counts only once recognition is
+     * involved — a row, a live or interrupted attempt, a dead one — so an old receipt never queued
+     * stays out of review (ADR 0150) while new paper in flight still holds completion.
      */
-    if (tickets.length === 0 && recognitionFiles.length === 0 && attachedTicketFiles.length === 0) {
+    const counted = files.filter(
+      (f) =>
+        recognitionFiles.some((r) => r.fileId === f.fileId) ||
+        (attached.has(f.fileId) && (countsPaper || f.state !== 'unread')),
+    );
+    const needsReading = (f: TicketFileReview): boolean =>
+      f.state === 'live' || f.state === 'interrupted';
+    const attachedTicketFiles: WasteTicketAttachedFile[] = counted
+      .filter((f) => attached.has(f.fileId) && (countsPaper || needsReading(f)))
+      .map((f) => ({
+        fileId: f.fileId,
+        // "Broken" is what 🚫 counts, a failed page included: otherwise a single unreadable sheet
+        // would show twice, as 🚫 and as 📄 (ADR 0155, R18).
+        broken: f.state === 'failed',
+        readOk: f.state === 'read',
+        pending: needsReading(f),
+      }));
+    /*
+     * A request without paper gets no badge (`badge = null`, which does not block completion).
+     * An attached ticket counts as paper just like a recognition row: it is what awaits review.
+     */
+    if (tickets.length === 0 && counted.length === 0) {
       continue;
     }
 
@@ -370,6 +447,8 @@ export async function loadTicketCheckInputs(
     result.set(row.id, {
       tickets,
       pages,
+      files,
+      liveRecognition: counted.some((f) => f.state === 'live'),
       inputs: {
         request: {
           requestedVolumeM3: row.volumeM3 == null ? null : Number(row.volumeM3),
@@ -399,10 +478,9 @@ export async function loadTicketCheckInputs(
           })),
         subsystem: {
           attachedTicketFiles,
-          failedFiles: recognitionFiles.filter(
-            (f) => f.status === 'unsupported' || f.status === 'failed' || f.jobStatus === 'dead',
-          ).length,
-          failedPages: pages.filter((p) => p.status === 'failed').length,
+          // Once per file: a partially failed scan is one unreadable file, not one per page.
+          failedFiles: counted.filter((f) => f.failedBy === 'file').length,
+          failedPages: counted.filter((f) => f.failedBy === 'page').length,
           blindPending: blind.filter((b) => b.status === 'pending').length,
           blindMismatch: blind.filter((b) => b.status === 'mismatch').length,
         },

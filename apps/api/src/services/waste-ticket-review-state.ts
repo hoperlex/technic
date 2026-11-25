@@ -9,12 +9,14 @@ import {
 import { config } from '../config';
 import { db } from '../db/client';
 import {
+  jobs,
   wasteRequests,
   wasteTicketPages,
   wasteTicketReviewState,
   wasteTickets,
   type WasteTicketReviewStateRow,
 } from '../db/schema';
+import { JOB_RECOGNIZE_WASTE_TICKET_FILE } from '../lib/jobs';
 import { WASTE_TICKET_CHECKS_VERSION, wasteTicketChecks } from './waste-ticket-checks';
 import {
   loadTicketCheckInputs,
@@ -137,6 +139,28 @@ export function ticketPaperSql(requestId: SQLWrapper, requestType: SQLWrapper): 
                    WHERE rf.request_id = ${requestId}
                      AND rf.kind = 'ticket' AND f.status = 'active')
     )
+    OR ${recognitionJobSql(requestId, ['pending', 'running', 'failed', 'dead'])}
+  )`;
+}
+
+/**
+ * A recognition job in one of `statuses` for a ticket file still attached to the request — the
+ * queue half of the overlay (`classifyTicketFile`). Any type: paper in flight or a dead latest
+ * attempt holds review even where old unqueued receipts do not (ADR 0150 is about the past).
+ * Pending and running jobs sit on the `jobs_due_idx` prefix, dead ones are rare.
+ */
+function recognitionJobSql(requestId: SQLWrapper, statuses: readonly string[]): SQL {
+  const list = sql.join(
+    statuses.map((status) => sql`${status}`),
+    sql`, `,
+  );
+  return sql`EXISTS (
+    SELECT 1 FROM jobs j
+      JOIN request_files rjf ON rjf.request_id = ${requestId} AND rjf.kind = 'ticket'
+                            AND rjf.file_id::text = j.payload->>'fileId'
+     WHERE j.type = ${JOB_RECOGNIZE_WASTE_TICKET_FILE}
+       AND j.status IN (${list})
+       AND j.payload->>'requestId' = (${requestId})::text
   )`;
 }
 
@@ -160,6 +184,9 @@ export function ticketReviewPendingSql(requestId: SQLWrapper, requestType: SQLWr
                          OR s.input_fingerprint <> ${reviewStateInputFingerprint()}
                          OR s.errors > 0 OR s.pending_confirmation > 0
                          OR s.failures > 0 OR s.unreviewed_paper > 0))
+      -- The live queue is read alongside the stored state: a row written before a rerun was
+      -- queued (or by an older attempt finishing) must not hide the attempt still in flight.
+      OR ${recognitionJobSql(requestId, ['pending', 'running'])}
     )
   )`;
 }
@@ -203,16 +230,33 @@ async function readState(
  * Обе половины входа читаются исполнителем вызывающего: пересчёт под замком, прочитавший заявку
  * мимо транзакции, посчитал бы состояние по данным, которых в ней нет.
  */
-async function computeBadge(
+async function computeReview(
   exec: DbExecutor,
   requestId: string,
-): Promise<WasteTicketBadgeDto | null> {
+): Promise<{ badge: WasteTicketBadgeDto; live: boolean } | null> {
   // Мягко удалённой заявки загрузчик не отдаёт, и это правильный ответ «состояния нет»: строку
   // такой заявки видит только восстановление, и первое же чтение после него посчитает её заново.
   const row = await loadTicketCheckRequestRow(requestId, exec);
   if (!row) return null;
   const bundle = (await loadTicketCheckInputs([row], { exec })).get(requestId);
-  return bundle ? wasteTicketChecks(bundle.inputs).badge : null;
+  return bundle
+    ? { badge: wasteTicketChecks(bundle.inputs).badge, live: bundle.liveRecognition }
+    : null;
+}
+
+/**
+ * The review badge of one request computed fresh — the terminal check's input (ADR 0135): it
+ * never trusts the stored state and reads the recognition queue alongside the outcomes.
+ *
+ * Every query runs on `exec`. Under the request lock the caller passes its transaction: a read
+ * through the pool would wait for a second connection while the first holds the lock, which with a
+ * pool of one is a deadlock, and with any pool reads past the locked state.
+ */
+export async function computeTicketReviewBadge(
+  exec: DbExecutor,
+  requestId: string,
+): Promise<WasteTicketBadgeDto | null> {
+  return (await computeReview(exec, requestId))?.badge ?? null;
 }
 
 /** Пустая строка под будущую запись: `stale = true` и `revision = 0` — умолчания схемы. */
@@ -226,6 +270,13 @@ async function writeBadge(
   requestId: string,
   revision: number,
   badge: WasteTicketBadgeDto,
+  /**
+   * Store the numbers as stale: they rest on a live recognition job, and the end of a job is not
+   * always followed by a stale mark (a job skipped by a worker with recognition off, the gap
+   * between the worker's result and its job status). Stale keeps the request in the register and
+   * makes the next reader recompute instead of trusting numbers about a queue that moved on.
+   */
+  stale = false,
 ): Promise<boolean> {
   const written = await exec
     .update(wasteTicketReviewState)
@@ -238,7 +289,7 @@ async function writeBadge(
       confirmable: badge.confirmable,
       confirmableFingerprint: badge.confirmableFingerprint,
       inputFingerprint: reviewStateInputFingerprint(),
-      stale: false,
+      stale,
       revision: sql`${wasteTicketReviewState.revision} + 1`,
       computedAt: new Date(),
     })
@@ -290,16 +341,16 @@ export async function recomputeTicketReviewState(
 ): Promise<void> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const before = await readState(exec, requestId);
-    const badge = await computeBadge(exec, requestId);
+    const review = await computeReview(exec, requestId);
 
-    if (!badge) {
+    if (!review) {
       // Бумаги нет и строки нет — записывать нечего: заявка без бумаги в таблице не заводится.
       if (!before) return;
       if (await dropState(exec, requestId, before.revision)) return;
       continue;
     }
     if (!before) await ensureRow(exec, requestId);
-    if (await writeBadge(exec, requestId, before?.revision ?? 0, badge)) return;
+    if (await writeBadge(exec, requestId, before?.revision ?? 0, review.badge, review.live)) return;
   }
   // Проиграли дважды — последнее слово пересчёта это пометка: честнее и устаревших чисел, и
   // молчания, а починит строку первое чтение. Строку, которую победитель убрал вместе с исчезнувшей
@@ -425,10 +476,25 @@ export async function readOrRecomputeBadges(
     .where(inArray(wasteTicketReviewState.requestId, ids));
   const stored = new Map(storedRows.map((row) => [row.requestId, row]));
 
+  // The live queue is read alongside the stored rows (snow-removal plan, §3.2): a fresh row was
+  // computed with no job in flight — numbers with one are stored stale — so a live job now means
+  // the row predates it and an older outcome must not speak for paper being reread.
+  const liveRows = await exec
+    .selectDistinct({ requestId: sql<string>`${jobs.payload}->>'requestId'` })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.type, JOB_RECOGNIZE_WASTE_TICKET_FILE),
+        inArray(jobs.status, ['pending', 'running']),
+        inArray(sql`${jobs.payload}->>'requestId'`, ids),
+      ),
+    );
+  const live = new Set(liveRows.map((row) => row.requestId));
+
   const misses: TicketCheckRequestRow[] = [];
   for (const row of rows) {
     const state = stored.get(row.id);
-    if (state && isFresh(state, fingerprint)) {
+    if (state && isFresh(state, fingerprint) && !live.has(row.id)) {
       badges.set(row.id, badgeOf(state));
       continue;
     }
@@ -452,12 +518,16 @@ export async function readOrRecomputeBadges(
     const badge = wasteTicketChecks(bundle.inputs).badge;
     badges.set(row.id, badge);
     if (!known) await ensureRow(exec, row.id);
-    if (await writeBadge(exec, row.id, known?.revision ?? 0, badge)) continue;
+    if (await writeBadge(exec, row.id, known?.revision ?? 0, badge, bundle.liveRecognition)) {
+      continue;
+    }
 
     // Проиграли. Числа победителя годятся человеку, только если он посчитал их по действующим
     // правилам; иначе показываем своё, но в базу не пишем — чинить строку будет тот, кто её испортил.
     const winner = await readState(exec, row.id);
-    if (winner && isFresh(winner, fingerprint)) badges.set(row.id, badgeOf(winner));
+    if (winner && isFresh(winner, fingerprint) && !bundle.liveRecognition) {
+      badges.set(row.id, badgeOf(winner));
+    }
   }
   return badges;
 }

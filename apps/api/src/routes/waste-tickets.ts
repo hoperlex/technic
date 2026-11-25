@@ -77,6 +77,7 @@ import {
   loadTicketCheckRequestRow,
   type RequestVisibility,
   type TicketCheckBundle,
+  type TicketFileReview,
 } from '../services/waste-ticket-inputs';
 import {
   markTicketReviewStale,
@@ -483,8 +484,53 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         },
         tickets: [],
         pages: [],
+        files: [],
+        liveRecognition: false,
       }
     );
+  }
+
+  /**
+   * A file row of the card in the state the badge counts it in (`classifyTicketFile`). The stored
+   * row alone tells the last finished attempt; the card must also show a rerun in the queue, an
+   * attempt that died before writing, and one that took the file and ended without a result —
+   * otherwise it would say «Файл разобран» next to a badge that holds completion.
+   */
+  function fileStateView(
+    review: TicketFileReview | undefined,
+    stored: Pick<WasteTicketFileDto, 'status' | 'reason' | 'activeJob'>,
+  ): Pick<WasteTicketFileDto, 'status' | 'reason' | 'activeJob'> {
+    if (!review) return stored;
+    if (review.state === 'live' && review.liveJob) {
+      const job = review.liveJob;
+      return {
+        status: 'pending',
+        reason: '',
+        activeJob: {
+          id: job.id,
+          attempt: job.attempts,
+          maxAttempts: job.maxAttempts,
+          nextRunAt: job.status === 'running' ? null : job.nextRunAt.toISOString(),
+        },
+      };
+    }
+    if (review.diedWithoutResult) {
+      return {
+        status: 'failed',
+        reason:
+          stored.reason ||
+          'Распознавание прервалось, не записав результата: нажмите «Перераспознать»',
+        activeJob: null,
+      };
+    }
+    if (review.state === 'interrupted') {
+      return {
+        status: 'not_queued',
+        reason: 'Распознавание файла прервалось без результата: нажмите «Перераспознать»',
+        activeJob: null,
+      };
+    }
+    return stored;
   }
 
   // ── Чтение ──
@@ -592,6 +638,7 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
 
     const { tickets, pages } = bundle;
     const checks = wasteTicketChecks(bundle.inputs);
+    const reviewOf = new Map(bundle.files.map((file) => [file.fileId, file]));
 
     // Имена людей и перевозчика — вторым запросом и только по тем, кто вправду встретился в
     // строках: карточка показывает «подтвердил Плехотин А.», а не идентификатор.
@@ -725,25 +772,28 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           fileId: f.fileId,
           ...fileNameView(f),
           contentType: f.contentType ?? '',
-          status: f.status,
-          reason: f.reason,
           // Пустая строка в базе и «сбоя не было» — одно состояние для читающего экрана, и в DTO
           // оно одно: `null`. Иначе каждое место показа сравнивало бы значение с `''`.
           errorClass: f.errorClass === '' ? null : f.errorClass,
           errorScope: f.errorScope === '' ? null : f.errorScope,
           totalPages: f.totalPages,
           processedPages: f.processedPages,
-          // Задача показывается, только пока повтор ещё будет: завершённая и мёртвая обещают
-          // человеку то, чего не случится (Р29).
-          activeJob:
-            f.jobId && (f.jobStatus === 'pending' || f.jobStatus === 'running')
-              ? {
-                  id: f.jobId,
-                  attempt: f.jobAttempt ?? 0,
-                  maxAttempts: f.jobMaxAttempts ?? 0,
-                  nextRunAt: f.jobStatus === 'running' ? null : (f.jobRunAt?.toISOString() ?? null),
-                }
-              : null,
+          ...fileStateView(reviewOf.get(f.fileId), {
+            status: f.status,
+            reason: f.reason,
+            // Задача показывается, только пока повтор ещё будет: завершённая и мёртвая обещают
+            // человеку то, чего не случится (Р29).
+            activeJob:
+              f.jobId && (f.jobStatus === 'pending' || f.jobStatus === 'running')
+                ? {
+                    id: f.jobId,
+                    attempt: f.jobAttempt ?? 0,
+                    maxAttempts: f.jobMaxAttempts ?? 0,
+                    nextRunAt:
+                      f.jobStatus === 'running' ? null : (f.jobRunAt?.toISOString() ?? null),
+                  }
+                : null,
+          }),
           pages: pagesByFile.get(f.fileId) ?? [],
           createdAt: f.createdAt.toISOString(),
           updatedAt: f.updatedAt.toISOString(),
@@ -754,18 +804,20 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
             fileId: a.fileId,
             ...fileNameView(a),
             contentType: a.contentType,
-            status: 'not_queued',
-            // Manual entry is not offered here: a manual ticket settles only a sheet recognition
-            // has read (ADR 0155, R18), so for unread paper it would be a dead end.
-            reason:
-              'Талон приложен, но в разбор не поступал: распознавание было выключено. ' +
-              'Включите распознавание и нажмите «Перераспознать» — талон, заведённый вручную, ' +
-              'непрочитанный файл не закрывает.',
+            ...fileStateView(reviewOf.get(a.fileId), {
+              status: 'not_queued',
+              // Manual entry is not offered here: a manual ticket settles only a sheet
+              // recognition has read (ADR 0155, R18), so for unread paper it would be a dead end.
+              reason:
+                'Талон приложен, но в разбор не поступал: распознавание было выключено. ' +
+                'Включите распознавание и нажмите «Перераспознать» — талон, заведённый вручную, ' +
+                'непрочитанный файл не закрывает.',
+              activeJob: null,
+            }),
             errorClass: null,
             errorScope: null,
             totalPages: 0,
             processedPages: 0,
-            activeJob: null,
             pages: [],
             createdAt: a.createdAt.toISOString(),
             updatedAt: a.createdAt.toISOString(),

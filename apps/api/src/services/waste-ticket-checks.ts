@@ -11,6 +11,7 @@ import {
   type WasteTicketCheckCode,
   type WasteTicketCheckDto,
   wasteTicketCheckSeverity,
+  type WasteTicketFileStatus,
   type WasteTicketStatus,
   type WasteTicketSubsystemState,
   type WasteTicketWorkKind,
@@ -127,6 +128,122 @@ export function effectiveTicketArea(
   return ticket.status === 'unconfirmed'
     ? requestOperatorCounterpartyId
     : ticket.operatorCounterpartyId;
+}
+
+// ── Recognition queue overlay (snow-removal plan, §3.2) ──
+//
+// The stored outcome of a file (`waste_ticket_files`) says what the LAST FINISHED attempt wrote. It
+// does not say that another attempt is queued: a forced rerun of a file with an accepted reading
+// changes nothing in the file row until the worker reaches it, and a job that dies before its first
+// transaction never touches the row at all. Read alone, the row would let terminal completion pass
+// while paper is being reread, or call settled a file whose latest attempt is dead. So the queue is
+// read alongside it, by the job payload (the worker writes `active_job_id` only from its first
+// transaction on).
+
+/** A recognition job of one file, as the review needs it. */
+export interface TicketRecognitionJob {
+  id: string;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'dead';
+  attempts: number;
+  maxAttempts: number;
+  nextRunAt: Date;
+  /**
+   * `created_at` as microsecond UTC text (`timestampKey` in `waste-ticket-inputs.ts`): compared
+   * with the file row's last write, which JavaScript dates would round to the millisecond.
+   */
+  createdAtKey: string;
+}
+
+/**
+ * - `live` — a job is pending or running: the paper is being (re)read, whatever an earlier reading
+ *   said;
+ * - `failed` — unreadable: the file was refused or failed, a page failed, or the latest attempt
+ *   died without writing a result;
+ * - `interrupted` — an attempt took the file and ended without a committed outcome (skipped after
+ *   its first transaction): the paper needs reading again even if an earlier ticket was accepted;
+ * - `read` — recognition committed a successful result;
+ * - `unread` — recognition never reached the file.
+ */
+export type TicketFileReviewState = 'live' | 'failed' | 'interrupted' | 'read' | 'unread';
+
+export interface TicketFileReview {
+  fileId: string;
+  state: TicketFileReviewState;
+  /** Whole-file failure versus a failed page of an otherwise read file — counted once either way. */
+  failedBy: 'file' | 'page' | null;
+  /** The latest attempt died before writing a result: the row alone would not say it. */
+  diedWithoutResult: boolean;
+  /** The newest pending or running job of the file (state `live`). */
+  liveJob: TicketRecognitionJob | null;
+}
+
+/** The recognition file row as the classification reads it. */
+export interface TicketFileRowState {
+  status: WasteTicketFileStatus;
+  /** Status of the job in `active_job_id`; `null` — none recorded or the job row is gone. */
+  jobStatus: TicketRecognitionJob['status'] | null;
+  /** `timestampKey` of the row's last write. */
+  updatedAtKey: string;
+}
+
+/**
+ * Classify one ticket file. One function for the badge, the register warm-up and the card: the
+ * order of the branches IS the rule, and a second copy would drift exactly where it matters.
+ *
+ * The order, and why:
+ * 1. A live job wins over everything: paper being reread is not settled by an earlier reading, nor
+ *    failed by an earlier failure (the retry is under way).
+ * 2. A dead job created after the file row's last write died before writing a result. Any attempt
+ *    that reached its first transaction would have written the row after the job was created, so
+ *    the timestamps tell "died before start" from "died after its outcome" without a second column.
+ *    A later skipped job does not hide it: skipping reuses the earlier outcome, and that outcome is
+ *    the death.
+ * 3. Outcomes of the row. A `pending` row with no live job was left by an attempt that ended
+ *    without a result: dead — failed; done (skipped after taking the file) or vanished — interrupted.
+ * 4. A failed page fails a read file, once per file however many pages failed.
+ *
+ * Done jobs that never touched the row (skipped before their first transaction, e.g. recognition
+ * off on the worker) are ignored on purpose: the earlier outcome is intact and stays valid.
+ */
+export function classifyTicketFile(input: {
+  row: TicketFileRowState | null;
+  jobs: readonly TicketRecognitionJob[];
+  pageFailed: boolean;
+}): Omit<TicketFileReview, 'fileId'> {
+  const { row, jobs: fileJobs, pageFailed } = input;
+  const live = fileJobs
+    .filter((job) => job.status === 'pending' || job.status === 'running')
+    .sort((a, b) => (a.createdAtKey < b.createdAtKey ? 1 : -1))[0];
+  if (live) return { state: 'live', failedBy: null, diedWithoutResult: false, liveJob: live };
+
+  const failed = (failedBy: 'file' | 'page', diedWithoutResult = false) => ({
+    state: 'failed' as const,
+    failedBy,
+    diedWithoutResult,
+    liveJob: null,
+  });
+  // `now()` is the transaction start: a write and the creation of the next job are ordered by the
+  // request lock, so the write of an attempt that reached the file always carries a later time
+  // than its job's creation. Equal times read as "no write since" — the safe side.
+  const lastWrite = row?.updatedAtKey ?? null;
+  const diedBeforeResult = fileJobs.some(
+    (job) =>
+      (job.status === 'dead' || job.status === 'failed') &&
+      (lastWrite === null || lastWrite <= job.createdAtKey),
+  );
+  if (diedBeforeResult) return failed('file', true);
+  if (row?.status === 'unsupported' || row?.status === 'failed') return failed('file');
+  if (row?.status === 'pending') {
+    if (row.jobStatus === 'dead' || row.jobStatus === 'failed') return failed('file', true);
+    return { state: 'interrupted', failedBy: null, diedWithoutResult: false, liveJob: null };
+  }
+  if (pageFailed) return failed('page');
+  return {
+    state: row?.status === 'done' ? 'read' : 'unread',
+    failedBy: null,
+    diedWithoutResult: false,
+    liveJob: null,
+  };
 }
 
 /** Как совпал сосед, найденный вне этой заявки. */
@@ -516,17 +633,19 @@ function confirmableFingerprint(tickets: readonly WasteTicketCheckTicket[]): str
 }
 
 /**
- * Сколько приложенных листов ждут, чтобы к ним ПРИСТУПИЛИ (ADR 0155, Р18). Лист считается дошедшим
- * до разбора, если верно любое:
+ * How many attached sheets wait for review to REACH them (ADR 0155, R18). A sheet whose recognition
+ * is in flight or was interrupted always waits (`pending`, snow-removal plan §3.2). Otherwise it
+ * has reached review if any of these holds:
  *
- * 1. по нему есть неотклонённый талон — бумага прочитана, дальше о ней говорят ⏳ и ⛔;
- * 2. он сломан и уже посчитан в 🚫 — про такой сказано другим числом;
- * 3. он прочитан успешно, талона в нём не нашлось, а в заявке есть неотклонённый талон БЕЗ
- *    страницы, то есть заведённый руками. Это единственный выход из тупика: разобрать лист, в
- *    котором машина талона не увидела, можно только руками, а ручной талон к файлу не привязан.
+ * 1. it has a non-dismissed ticket — the paper was read, ⏳ and ⛔ speak about it from here on;
+ * 2. it is broken and already counted in 🚫 — another number speaks about it;
+ * 3. it was read successfully, no ticket was found in it, and the request has a non-dismissed ticket
+ *    WITHOUT a page, i.e. entered by hand. This is the only way out: a sheet the machine found no
+ *    ticket in can only be reviewed by hand, and a manual ticket is not bound to a file. It does
+ *    not apply to an unread sheet — there the way out is recognition.
  *
- * Отклонённый талон лист НЕ закрывает: «это не талон» говорит ровно обратное — настоящей бумаги в
- * разборе так и нет (правило ADR 0135 сохранено дословно).
+ * A dismissed ticket does NOT settle a sheet: "not a ticket" says the opposite — there is still no
+ * real paper in review (the ADR 0135 rule, kept as it was).
  */
 function unreviewedPaperFiles(
   active: readonly WasteTicketCheckTicket[],
@@ -538,6 +657,10 @@ function unreviewedPaperFiles(
   );
   const hasManual = active.some((t) => t.fileId === null);
   return attached.filter((file) => {
+    // Recognition in flight or interrupted: an earlier reading of the sheet does not settle it — a
+    // forced rerun is exactly the case where the reviewer asked to read it again (§3.2 of the snow
+    // plan), and an interrupted attempt has no outcome to rely on.
+    if (file.pending) return true;
     if (file.broken || coveredFiles.has(file.fileId)) return false;
     return !(file.readOk && hasManual);
   }).length;

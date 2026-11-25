@@ -1286,6 +1286,13 @@ export interface WasteTicketAttachedFile {
   broken: boolean;
   /** Распознавание по файлу отработало успешно (`waste_ticket_files.status = 'done'`). */
   readOk: boolean;
+  /**
+   * Recognition of the sheet is queued or running, or an attempt took it and ended without a
+   * result (snow-removal plan, §3.2). The sheet counts as unreviewed paper whatever tickets it
+   * already has: a forced rerun of an accepted reading must hold completion until it lands, and an
+   * interrupted attempt leaves no outcome to rely on. Optional — absent means "not in flight".
+   */
+  pending?: boolean;
 }
 
 export interface WasteTicketSubsystemState {
@@ -1300,9 +1307,15 @@ export interface WasteTicketSubsystemState {
    * талона» повторяло ⏳ у распознанной бумаги и 🚫 у сломанной — два числа об одном и том же.
    */
   attachedTicketFiles: WasteTicketAttachedFile[];
-  /** Файлы `unsupported`/`failed` плюс мёртвые задачи распознавания. */
+  /**
+   * Files unreadable as a whole: `unsupported`/`failed`, or the latest attempt died without a result.
+   * Counted per file.
+   */
   failedFiles: number;
-  /** Страницы, на которых распознавание кончилось отказом. */
+  /**
+   * Read files with a failed page — a partially failed scan. Counted per file, not per page, and a
+   * file already in `failedFiles` is not counted again: the badge counts unreadable FILES.
+   */
   failedPages: number;
   /** Слепые перепроверки, ждущие второго чтения. */
   blindPending: number;

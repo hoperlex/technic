@@ -6,13 +6,16 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import type { InjectOptions, LightMyRequestResponse } from 'light-my-request';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import {
   SNOW_WASTE_TYPE_ID,
   WASTE_REQUEST_CAPABILITY_HEADER,
   WASTE_REQUEST_CAPABILITY_SNOW,
   type RequestStatus,
   type RequestType,
+  type WasteRequestDto,
   type WasteRequestTicketsDto,
+  type WasteTicketBadgeDto,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Types only: the values are imported after the environment is set, because the config validates
@@ -20,6 +23,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { db as AppDb } from '../src/db/client';
 import type { config as AppConfig } from '../src/config';
 import type { buildApp } from '../src/app';
+import type * as ReviewStateNs from '../src/services/waste-ticket-review-state';
 
 /**
  * Ticket review of snow and garbage on the live schema (snow-removal plan, §3.2 and §4 «Close and
@@ -60,6 +64,7 @@ interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
   db: typeof AppDb;
   config: typeof AppConfig;
+  reviewState: typeof ReviewStateNs;
   closeDb: () => Promise<void>;
   auth: Record<string, string>;
   adminId: string;
@@ -262,6 +267,85 @@ async function cardOf(requestId: string): Promise<WasteRequestTicketsDto> {
   return res.json() as WasteRequestTicketsDto;
 }
 
+async function setJobStatus(jobId: string, status: 'pending' | 'running' | 'done' | 'dead') {
+  await ctx.db.execute(
+    sql`UPDATE jobs SET status = ${sql.raw(`'${status}'::job_status`)} WHERE id = ${jobId}`,
+  );
+}
+
+/** The worker's stale mark (`TICKET_REVIEW_STALE_SQL`): it cannot compute the numbers itself. */
+async function markStale(requestId: string): Promise<void> {
+  await ctx.db.execute(sql`
+    INSERT INTO waste_ticket_review_state (request_id, stale, revision) VALUES (${requestId}, true, 1)
+    ON CONFLICT (request_id) DO UPDATE
+       SET stale = true, revision = waste_ticket_review_state.revision + 1`);
+}
+
+/** Worker T0: the job is claimed and the file row goes `pending` with its number. */
+async function workerTakes(requestId: string, fileId: string, jobId: string): Promise<void> {
+  await setJobStatus(jobId, 'running');
+  await seedFileRow(requestId, fileId, 'pending', jobId);
+  await markStale(requestId);
+}
+
+/**
+ * Worker T2 and the job's end: the outcome is written, the job number cleared, the state marked
+ * stale; the queue marks the job done only after the transaction — that order is the real one.
+ */
+async function workerReads(
+  requestId: string,
+  fileId: string,
+  jobId: string,
+  ticket: 'confirmed' | 'unconfirmed' | null = 'unconfirmed',
+): Promise<string | null> {
+  await seedFileRow(requestId, fileId, 'done', null);
+  const ticketId = ticket ? await seedReadTicket(requestId, fileId, { status: ticket }) : null;
+  await markStale(requestId);
+  await setJobStatus(jobId, 'done');
+  return ticketId;
+}
+
+/**
+ * The reviewer presses «Подтвердить» in the list row: the batch route, which recomputes the
+ * stored state in its own transaction and never samples blind checks (ADR 0155).
+ */
+async function confirmAll(requestId: string): Promise<void> {
+  const badge = await listBadge(requestId);
+  const res = await inject('POST', `${REQUESTS}/${requestId}/tickets/confirm-ready`, {
+    fingerprint: badge?.confirmableFingerprint ?? '',
+  });
+  expect(res.statusCode, res.body).toBe(200);
+}
+
+/** The list badge: stored numbers where fresh, recomputed where not (`readOrRecomputeBadges`). */
+async function listBadge(requestId: string): Promise<WasteTicketBadgeDto | null> {
+  const res = await inject('GET', `${REQUESTS}?objectId=${ctx.objectId}&pageSize=100`);
+  expect(res.statusCode, res.body).toBe(200);
+  const item = (res.json() as { items: WasteRequestDto[] }).items.find((i) => i.id === requestId);
+  return item?.ticketBadge ?? null;
+}
+
+async function liveJobs(requestId: string, fileId: string): Promise<string[]> {
+  const res = await ctx.db.execute<{ id: string }>(sql`
+    SELECT id FROM jobs
+     WHERE type = ${JOB_TYPE} AND status IN ('pending', 'running')
+       AND payload->>'requestId' = ${requestId} AND payload->>'fileId' = ${fileId}`);
+  return res.rows.map((r) => r.id);
+}
+
+async function rerun(requestId: string, fileId: string): Promise<LightMyRequestResponse> {
+  return inject('POST', `${REQUESTS}/${requestId}/ticket-files/${fileId}/recognize`);
+}
+
+/** A done snow request whose only sheet is read and its ticket confirmed: review is settled. */
+async function settledSnow(): Promise<{ id: string; fileId: string }> {
+  const id = await newRequest('snow_removal', { factVolumeM3: 20 });
+  const fileId = await attachTicketFile(id);
+  await seedFileRow(id, fileId, 'done');
+  await seedReadTicket(id, fileId, { status: 'confirmed' });
+  return { id, fileId };
+}
+
 async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`
     DELETE FROM jobs
@@ -289,6 +373,7 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
     const { config } = await import('../src/config');
     const { hashPassword } = await import('../src/auth/password');
     const { buildApp } = await import('../src/app');
+    const reviewState = await import('../src/services/waste-ticket-review-state');
 
     const admin = await db.execute<{ id: string }>(sql`
       INSERT INTO users (email, last_name, first_name, middle_name, password_hash, role, is_active,
@@ -315,6 +400,7 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
       app,
       db,
       config,
+      reviewState,
       closeDb,
       auth: { authorization: `Bearer ${login.json().accessToken as string}` },
       adminId: admin.rows[0]!.id,
@@ -371,6 +457,212 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
       expect(out.status, `${out.stdout}\n${out.stderr}`).toBe(0);
       expect(await storedState(id)).toMatchObject({ unreviewed_paper: 1, stale: false });
     }, 180_000);
+  });
+
+  describe('live recognition jobs overlay the stored outcome', () => {
+    it('recovery after OCR off: rerun, recognition, confirmation, completion', async () => {
+      await setOcrEnabled(false);
+      const id = await newRequest('snow_removal', { factVolumeM3: 20 });
+      const fileId = await attachTicketFile(id);
+      expect((await complete(id)).statusCode).toBe(400);
+      await setOcrEnabled(true);
+
+      expect((await rerun(id, fileId)).statusCode).toBe(200);
+      const [jobId] = await liveJobs(id, fileId);
+      expect(jobId).toBeTruthy();
+      // Queued, not started: nothing in the file row yet, the queue alone says paper is in flight.
+      expect((await listBadge(id))?.unreviewedPaper).toBe(1);
+      expect(await registry()).toContain(id);
+      expect((await complete(id)).statusCode).toBe(400);
+
+      await workerTakes(id, fileId, jobId!);
+      expect((await complete(id)).statusCode).toBe(400);
+      await workerReads(id, fileId, jobId!);
+      // Read but not confirmed: ⏳, not 📄.
+      expect(await listBadge(id)).toMatchObject({ unreviewedPaper: 0, pendingConfirmation: 1 });
+      expect((await complete(id)).statusCode).toBe(400);
+
+      await confirmAll(id);
+      expect(await registry()).not.toContain(id);
+      const done = await complete(id);
+      expect(done.statusCode, done.body).toBe(200);
+    });
+
+    it('recovery after a failed scan goes through a rerun as well', async () => {
+      const id = await newRequest('waste_removal', { factVolumeM3: 20 });
+      const fileId = await attachTicketFile(id);
+      await seedFileRow(id, fileId, 'failed');
+      const refused = await complete(id);
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json().message).toContain('не разобрано файлов: 1');
+
+      expect((await rerun(id, fileId)).statusCode).toBe(200);
+      const [jobId] = await liveJobs(id, fileId);
+      // The retry is under way: 📄 in flight instead of 🚫, and still no completion.
+      expect(await listBadge(id)).toMatchObject({ failures: 0, unreviewedPaper: 1 });
+      expect((await complete(id)).statusCode).toBe(400);
+
+      await workerTakes(id, fileId, jobId!);
+      await workerReads(id, fileId, jobId!, 'confirmed');
+      expect((await complete(id)).statusCode).toBe(200);
+    });
+
+    it('a rerun queued against terminal completion blocks it, even over a confirmed reading', async () => {
+      const { id, fileId } = await settledSnow();
+      expect(await listBadge(id)).toMatchObject({ unreviewedPaper: 0, pendingConfirmation: 0 });
+
+      expect((await rerun(id, fileId)).statusCode).toBe(200);
+      expect(await listBadge(id)).toMatchObject({ unreviewedPaper: 1 });
+      expect(await registry()).toContain(id);
+      const res = await complete(id);
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.json().message).toContain('приложенных талонов не разобрано: 1');
+
+      const card = await cardOf(id);
+      expect(card.files.find((f) => f.fileId === fileId)).toMatchObject({
+        status: 'pending',
+        activeJob: { maxAttempts: 5 },
+      });
+      expect(card.badge.unreviewedPaper).toBe(1);
+    });
+
+    it('a stored row written before the rerun was queued does not hide it', async () => {
+      const { id, fileId } = await settledSnow();
+      // Warm the stored state with no job in flight: fresh, nothing to review.
+      await ctx.reviewState.recomputeTicketReviewState(ctx.db, id);
+      expect(await storedState(id)).toMatchObject({ unreviewed_paper: 0, stale: false });
+      // A queue row appears without anyone recomputing (an old API in the deploy window).
+      await seedJob(id, fileId, 'pending', { forced: true });
+
+      expect(await registry()).toContain(id);
+      expect((await listBadge(id))?.unreviewedPaper).toBe(1);
+      // While the job is live the numbers are stored stale: its end may come with no stale mark.
+      expect(await storedState(id)).toMatchObject({ unreviewed_paper: 1, stale: true });
+    });
+
+    it('a job expiring before the worker started counts as failed', async () => {
+      const { id, fileId } = await settledSnow();
+      expect((await rerun(id, fileId)).statusCode).toBe(200);
+      const [jobId] = await liveJobs(id, fileId);
+      // Lease after lease expired before the first transaction: the queue buries the job.
+      await setJobStatus(jobId!, 'dead');
+      await markStale(id);
+
+      expect(await listBadge(id)).toMatchObject({ failures: 1, unreviewedPaper: 0 });
+      const res = await complete(id);
+      expect(res.statusCode).toBe(400);
+      expect(res.json().message).toContain('не разобрано файлов: 1');
+      const card = await cardOf(id);
+      expect(card.files.find((f) => f.fileId === fileId)?.status).toBe('failed');
+    });
+
+    it('skipped retries: a read scan keeps its outcome, a failed one stays failed', async () => {
+      const read = await settledSnow();
+      const readJob = await seedJob(read.id, read.fileId, 'pending', { forced: true });
+      // Recognition off on the worker: the job ends `done` without touching the file row.
+      await setJobStatus(readJob, 'done');
+      expect((await complete(read.id)).statusCode).toBe(200);
+
+      const failedId = await newRequest('snow_removal', { factVolumeM3: 20 });
+      const failedFile = await attachTicketFile(failedId);
+      await seedFileRow(failedId, failedFile, 'failed');
+      const failedJob = await seedJob(failedId, failedFile, 'pending', { forced: true });
+      await setJobStatus(failedJob, 'done');
+      expect((await listBadge(failedId))?.failures).toBe(1);
+      expect((await complete(failedId)).statusCode).toBe(400);
+    });
+
+    it('a skipped attempt that took the file leaves paper to read again despite a confirmed ticket', async () => {
+      const { id, fileId } = await settledSnow();
+      const jobId = await seedJob(id, fileId, 'pending', { forced: true });
+      await workerTakes(id, fileId, jobId);
+      // The request moved while the worker held the file; the job ended as a no-op.
+      await setJobStatus(jobId, 'done');
+      await markStale(id);
+
+      expect((await listBadge(id))?.unreviewedPaper).toBe(1);
+      expect((await complete(id)).statusCode).toBe(400);
+      const card = await cardOf(id);
+      expect(card.files.find((f) => f.fileId === fileId)).toMatchObject({
+        status: 'not_queued',
+        reason: expect.stringContaining('Перераспознать'),
+      });
+    });
+
+    it('a partially failed scan is counted once per file', async () => {
+      const id = await newRequest('snow_removal', { factVolumeM3: 20 });
+      const fileId = await attachTicketFile(id);
+      await seedFileRow(id, fileId, 'done');
+      await seedReadTicket(id, fileId, { status: 'confirmed' });
+      // Two more pages of the same file, both failed.
+      for (const pageNo of [2, 3]) {
+        await ctx.db.execute(sql`
+          INSERT INTO waste_ticket_pages (file_id, request_id, page_no, page_sha256, status,
+                                          tickets_found)
+          VALUES (${fileId}, ${id}, ${pageNo}, ${pageSha()}, 'failed', 0)`);
+      }
+      expect((await listBadge(id))?.failures).toBe(1);
+      expect((await cardOf(id)).badge.failures).toBe(1);
+      expect((await complete(id)).statusCode).toBe(400);
+    });
+
+    it('re-close while OCR is queued keeps the paper in review until recognition lands', async () => {
+      const id = await newRequest('snow_removal', { factVolumeM3: 20 });
+      const fileId = await attachTicketFile(id);
+      const jobId = await seedJob(id, fileId, 'pending');
+
+      for (const status of ['confirmed', 'done'] as const) {
+        const res = await inject('PATCH', `${REQUESTS}/${id}/status`, {
+          status,
+          version: await versionOf(id),
+        });
+        expect(res.statusCode, res.body).toBe(200);
+      }
+      // The queued job survived the round trip and is still the paper's only reading.
+      expect(await liveJobs(id, fileId)).toEqual([jobId]);
+      expect(await registry()).toContain(id);
+      expect((await complete(id)).statusCode).toBe(400);
+
+      await workerTakes(id, fileId, jobId);
+      await workerReads(id, fileId, jobId, 'confirmed');
+      expect((await complete(id)).statusCode).toBe(200);
+    });
+
+    it('scrap: a queued job holds completion, an old unqueued receipt still does not', async () => {
+      const id = await newRequest('metal_removal');
+      const fileId = await attachTicketFile(id);
+      const jobId = await seedJob(id, fileId, 'pending');
+      expect(await registry()).toContain(id);
+      expect((await complete(id)).statusCode).toBe(400);
+
+      await setJobStatus(jobId, 'done');
+      await markStale(id);
+      // Skipped before the worker took it: an unread receipt of scrap is outside review (ADR 0150).
+      expect(await registry()).not.toContain(id);
+      expect((await complete(id)).statusCode).toBe(200);
+    });
+  });
+
+  describe("the terminal check reads only through the caller's executor", () => {
+    it('sees uncommitted queue and file rows of its own transaction on a pool of one', async () => {
+      const { id, fileId } = await settledSnow();
+      const pool = new pg.Pool({ connectionString: DB_URL, max: 1 });
+      const single = drizzle(pool, { casing: 'snake_case' });
+      try {
+        const badge = await single.transaction(async (tx) => {
+          await tx.execute(sql`SELECT id FROM waste_requests WHERE id = ${id} FOR UPDATE`);
+          await tx.execute(sql`
+            INSERT INTO jobs (type, payload)
+            VALUES (${JOB_TYPE}, ${JSON.stringify({ requestId: id, fileId, forced: true })}::jsonb)`);
+          // A read through any other connection would not see this job, and on a pool of one it
+          // would wait for the connection this transaction holds.
+          return ctx.reviewState.computeTicketReviewBadge(tx as never, id);
+        });
+        expect(badge?.unreviewedPaper).toBe(1);
+      } finally {
+        await pool.end();
+      }
+    }, 60_000);
   });
 
   describe('texts for unread paper do not offer manual entry alone', () => {
