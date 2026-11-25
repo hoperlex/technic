@@ -135,6 +135,7 @@ export function useWasteRequestEditor(scope: EditorScope): WasteRequestEditorCon
     return wasteOperatorServesSite(
       site.operators.map((operator) => operator.id),
       ownOperatorId,
+      site.hiddenOperatorLinks ?? 0,
     );
   };
   const sources = {

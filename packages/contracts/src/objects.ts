@@ -51,6 +51,13 @@ export interface ObjectDto {
   isActive: boolean;
   /** Операторы вывоза, обслуживающие объект (ADR 0010); порядок — по наименованию. */
   operators: ObjectOperatorRefDto[];
+  /**
+   * Links of the site to operators that are removed (soft-deleted) and so absent from `operators`.
+   * The server's binding rule counts every link, and a site whose only links are to removed
+   * operators is configured, not unlinked: the portal needs the number to ask the same question
+   * (snow-removal plan, §3.2). Absent from an older API, where it reads as 0.
+   */
+  hiddenOperatorLinks?: number;
   createdAt: string;
   updatedAt: string;
 }

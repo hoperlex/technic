@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, count, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type { CounterpartyObjectRefDto, ObjectOperatorRefDto } from '@technic/contracts';
 import { db } from '../db/client';
 import { constructionObjectOperators, constructionObjects, counterparties } from '../db/schema';
@@ -12,6 +12,34 @@ import { err } from '../lib/errors';
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Операторы объектов одним запросом: список объектов не должен порождать запрос на строку. */
+/**
+ * Links of each site to removed (soft-deleted) operators: the ones `operatorsByObjectIds` hides.
+ * `assertOperatorServesObject` counts every link, so the portal needs this number to tell a site
+ * with no links from one whose links all point at removed operators.
+ */
+export async function hiddenOperatorLinksByObjectIds(
+  objectIds: string[],
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  if (objectIds.length === 0) return map;
+  const rows = await db
+    .select({
+      objectId: constructionObjectOperators.constructionObjectId,
+      links: count(),
+    })
+    .from(constructionObjectOperators)
+    .innerJoin(counterparties, eq(constructionObjectOperators.counterpartyId, counterparties.id))
+    .where(
+      and(
+        inArray(constructionObjectOperators.constructionObjectId, objectIds),
+        isNotNull(counterparties.deletedAt),
+      ),
+    )
+    .groupBy(constructionObjectOperators.constructionObjectId);
+  for (const row of rows) map.set(row.objectId, Number(row.links));
+  return map;
+}
+
 export async function operatorsByObjectIds(
   objectIds: string[],
 ): Promise<Map<string, ObjectOperatorRefDto[]>> {

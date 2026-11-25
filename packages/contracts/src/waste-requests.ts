@@ -398,8 +398,10 @@ export type PurgeWasteRequestQuery = z.infer<typeof purgeWasteRequestQuerySchema
 export function wasteOperatorServesSite(
   siteOperatorIds: readonly string[],
   operatorId: string,
+  /** Links to removed operators, which `siteOperatorIds` omits but the server counts. */
+  hiddenLinks = 0,
 ): boolean {
-  return siteOperatorIds.length === 0 || siteOperatorIds.includes(operatorId);
+  return siteOperatorIds.length + hiddenLinks === 0 || siteOperatorIds.includes(operatorId);
 }
 
 /**

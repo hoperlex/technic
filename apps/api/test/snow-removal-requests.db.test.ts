@@ -3,6 +3,7 @@ import {
   REQUEST_TYPES,
   SNOW_TYPE_CHANGE_MESSAGE,
   SNOW_WASTE_TYPE_ID,
+  type ObjectDto,
   type RequestType,
   type WasteRequestDto,
 } from '@technic/contracts';
@@ -274,6 +275,31 @@ describe.skipIf(!RUN_DB)('operator assignment and counterparty scope', () => {
     );
     expect(res.statusCode, res.body).toBe(400);
     expect(res.json().fields?.operatorCounterpartyId).toBeTruthy();
+  });
+
+  it('the site card counts links to removed operators that its operator list hides', async () => {
+    const site = await newSite();
+    const removed = await newOperator([site]);
+    const active = await newOperator([site]);
+    await s.db.execute(sql`UPDATE counterparties SET deleted_at = now() WHERE id = ${removed}`);
+    const res = await inject(
+      'GET',
+      `/api/v1/objects?search=${encodeURIComponent('Площадка без своих')}&pageSize=200`,
+      s.users.admin.auth,
+    );
+    expect(res.statusCode, res.body).toBe(200);
+    const row = (res.json().items as ObjectDto[]).find((o) => o.id === site);
+    expect(row?.operators.map((o) => o.id)).toEqual([active]);
+    expect(row?.hiddenOperatorLinks).toBe(1);
+    // A site whose only link is a removed operator is configured: the server still refuses others.
+    const only = await newSite();
+    const gone = await newOperator([only]);
+    await s.db.execute(sql`UPDATE counterparties SET deleted_at = now() WHERE id = ${gone}`);
+    const refused = await create(
+      snowBody({ objectId: only, operatorCounterpartyId: s.operatorA }),
+      () => s.users.dispatcher,
+    );
+    expect(refused.statusCode, refused.body).toBe(400);
   });
 
   it('a site whose only binding is an inactive operator accepts no other operator', async () => {

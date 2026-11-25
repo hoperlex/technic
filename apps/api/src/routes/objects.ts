@@ -20,10 +20,18 @@ import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
 import { purgeWeeklyRequestsOfObject } from '../services/weekly-request-cleanup';
-import { operatorsByObjectIds, replaceObjectOperators } from '../services/object-operators';
+import {
+  hiddenOperatorLinksByObjectIds,
+  operatorsByObjectIds,
+  replaceObjectOperators,
+} from '../services/object-operators';
 import { z } from 'zod';
 
-function toDto(r: ObjectRow, operators: ObjectDto['operators']): ObjectDto {
+function toDto(
+  r: ObjectRow,
+  operators: ObjectDto['operators'],
+  hiddenOperatorLinks: number,
+): ObjectDto {
   return {
     id: r.id,
     code: r.code,
@@ -31,6 +39,7 @@ function toDto(r: ObjectRow, operators: ObjectDto['operators']): ObjectDto {
     address: r.address,
     isActive: r.isActive,
     operators,
+    hiddenOperatorLinks,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
@@ -40,8 +49,11 @@ function toDto(r: ObjectRow, operators: ObjectDto['operators']): ObjectDto {
 async function getDto(id: string): Promise<ObjectDto | null> {
   const [row] = await db.select().from(constructionObjects).where(eq(constructionObjects.id, id));
   if (!row) return null;
-  const operators = await operatorsByObjectIds([id]);
-  return toDto(row, operators.get(id) ?? []);
+  const [operators, hidden] = await Promise.all([
+    operatorsByObjectIds([id]),
+    hiddenOperatorLinksByObjectIds([id]),
+  ]);
+  return toDto(row, operators.get(id) ?? [], hidden.get(id) ?? 0);
 }
 
 const idParams = z.object({ id: z.string().uuid() });
@@ -83,9 +95,13 @@ export default async function objectsRoutes(app: FastifyInstance): Promise<void>
           .offset(p.offset),
         db.select({ c: count() }).from(constructionObjects).where(where),
       ]);
-      const operators = await operatorsByObjectIds(rows.map((row) => row.id));
+      const ids = rows.map((row) => row.id);
+      const [operators, hidden] = await Promise.all([
+        operatorsByObjectIds(ids),
+        hiddenOperatorLinksByObjectIds(ids),
+      ]);
       return {
-        items: rows.map((row) => toDto(row, operators.get(row.id) ?? [])),
+        items: rows.map((row) => toDto(row, operators.get(row.id) ?? [], hidden.get(row.id) ?? 0)),
         total: Number(totalRows[0]!.c),
         page: p.page,
         pageSize: p.pageSize,
