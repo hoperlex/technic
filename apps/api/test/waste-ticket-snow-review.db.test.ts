@@ -721,6 +721,50 @@ describe.skipIf(!DB_URL)('ticket review of snow and garbage (live schema)', () =
     });
   });
 
+  describe('the stored badge format version', () => {
+    it('a row written by the previous format is refreshed by the register and the list', async () => {
+      const { createHash } = await import('node:crypto');
+      const { WASTE_TICKET_CHECKS_VERSION } = await import('../src/services/waste-ticket-checks');
+      const tolerances = ctx.config.ticketOcr.tolerances;
+      // The fingerprint the previous release wrote: same formula, form version 1.
+      const previous = createHash('sha256')
+        .update(
+          JSON.stringify([
+            1,
+            WASTE_TICKET_CHECKS_VERSION,
+            tolerances.volumeM3,
+            tolerances.volumePlanShare,
+            tolerances.dateDays,
+          ]),
+          'utf8',
+        )
+        .digest('hex');
+      expect(ctx.reviewState.WASTE_TICKET_REVIEW_STATE_VERSION).toBeGreaterThan(1);
+      expect(ctx.reviewState.reviewStateInputFingerprint()).not.toBe(previous);
+
+      // Old code counted nothing for this sheet: a queued rerun over an accepted reading.
+      const { id, fileId } = await settledSnow();
+      await seedJob(id, fileId, 'pending', { forced: true });
+      await ctx.db.execute(sql`
+        INSERT INTO waste_ticket_review_state (request_id, errors, warnings, pending_confirmation,
+                                               failures, unreviewed_paper, confirmable,
+                                               confirmable_fingerprint, input_fingerprint, stale,
+                                               revision, computed_at)
+        VALUES (${id}, 0, 0, 0, 0, 0, 0, '', ${previous}, false, 1, now())`);
+
+      expect(await registry()).toContain(id);
+      expect((await listBadge(id))?.unreviewedPaper).toBe(1);
+      const stored = await ctx.db.execute<{ input_fingerprint: string; unreviewed_paper: number }>(
+        sql`SELECT input_fingerprint, unreviewed_paper FROM waste_ticket_review_state
+             WHERE request_id = ${id}`,
+      );
+      expect(stored.rows[0]).toEqual({
+        input_fingerprint: ctx.reviewState.reviewStateInputFingerprint(),
+        unreviewed_paper: 1,
+      });
+    });
+  });
+
   describe("the terminal check reads only through the caller's executor", () => {
     it('sees uncommitted queue and file rows of its own transaction on a pool of one', async () => {
       const { id, fileId } = await settledSnow();

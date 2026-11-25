@@ -68,17 +68,19 @@ import {
 // замка у них нет и не должно быть, их защищает условная запись.
 
 /**
- * Версия сохранённой ФОРМЫ состояния — не версия правил сверки.
+ * Version of the stored FORM of the state — not the version of the check rules.
  *
- * Поднимается, когда меняется смысл сохранённых чисел: в выпуске B — новое `unreviewed_paper`, в
- * выпуске C — появление `confirmable`. Без неё строка, записанная кодом предыдущего выпуска,
- * осталась бы `stale = false` с совпадающим отпечатком и читалась бы как своя.
+ * It is raised when the meaning of the stored numbers changes: release B added `unreviewed_paper`,
+ * release C added `confirmable`; version 2 (snow removal) counts snow paper, overlays live and dead
+ * recognition jobs, counts a partially failed scan once per file and keeps a confirmed ticket with
+ * an unanswered reread proposal pending. Without the bump a row written by the previous release
+ * would stay `stale = false` with a matching fingerprint and read as current.
  *
- * Своя, а не `WASTE_TICKET_CHECKS_VERSION`, потому что вторая входит в отпечаток ПРИНЯТЫХ
- * расхождений (`wasteTicketCheckFingerprint`): подними её ради формы хранения — и все принятия
- * людей молча отменятся.
+ * Its own constant, not `WASTE_TICKET_CHECKS_VERSION`: that one is part of the fingerprint of
+ * ACCEPTED discrepancies (`wasteTicketCheckFingerprint`), and raising it for the storage form would
+ * silently revoke every acceptance people made.
  */
-export const WASTE_TICKET_REVIEW_STATE_VERSION = 1;
+export const WASTE_TICKET_REVIEW_STATE_VERSION = 2;
 
 /**
  * Отпечаток входа: версия формы, версия правил сверки и действующие допуски.

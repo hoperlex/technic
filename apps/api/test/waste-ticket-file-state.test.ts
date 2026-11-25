@@ -4,6 +4,8 @@ import {
   classifyTicketFile,
   type TicketFileRowState,
   type TicketRecognitionJob,
+  WASTE_TICKET_CHECKS_VERSION,
+  wasteTicketCheckFingerprint,
   wasteTicketChecks,
   type WasteTicketCheckTicket,
 } from '../src/services/waste-ticket-checks';
@@ -226,5 +228,48 @@ describe('an unanswered reread proposal keeps a non-dismissed ticket pending', (
     expect(badgeOf({ ...base, status: 'unconfirmed' }).pendingConfirmation).toBe(1);
     expect(badgeOf({ ...base, status: 'dismissed' }).pendingConfirmation).toBe(0);
     expect(badgeOf({ ...base, hasProposal: false }).pendingConfirmation).toBe(0);
+  });
+});
+
+describe('accepted discrepancies keep their fingerprints across the badge format bump', () => {
+  it('the check rules version and the fingerprint scheme are unchanged', () => {
+    // The stored badge FORM moved to version 2; the acceptance fingerprint must not move with it,
+    // or every discrepancy people accepted would silently come back (ADR 0114, R21).
+    expect(WASTE_TICKET_CHECKS_VERSION).toBe(1);
+    const fingerprint = wasteTicketCheckFingerprint({
+      request: {
+        requestedVolumeM3: 20,
+        deliveryAt: new Date('2026-11-20T06:00:00Z'),
+        objectAddress: 'ул Снежная, 1',
+        objectName: 'Площадка',
+        operatorCounterpartyId: null,
+      },
+      completion: { volumeM3: 20, removedOn: '2026-11-20', removedOnSource: 'entered' },
+      tickets: [
+        {
+          id: 't1',
+          numberRaw: '30476',
+          numberKey: '30476',
+          numberFuzzy: '30476',
+          issuedOn: '2026-11-20',
+          volumeM3: 20,
+          workKind: 'removal',
+          addressRaw: 'ул Снежная, 1',
+          status: 'confirmed',
+          operatorCounterpartyId: null,
+          pageId: 'p',
+          pageSha256: 'a'.repeat(64),
+          duplicateOverride: false,
+          fileId: 'f',
+          // A proposal changes the badge, not the acceptance input.
+          disputed: false,
+          hasProposal: true,
+          updatedAt: new Date('2026-11-20T09:00:00Z'),
+        },
+      ],
+      checkCode: 'volume_mismatch',
+      subjectKey: '',
+    });
+    expect(fingerprint).toBe('9ad9bb2edb21104158d529679e340adb3cd04535995d3df99b6c07e761e60849');
   });
 });
