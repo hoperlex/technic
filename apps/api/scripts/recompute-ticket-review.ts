@@ -1,13 +1,10 @@
-import { and, asc, eq, exists, gt, or, sql } from 'drizzle-orm';
+import { and, asc, gt, sql } from 'drizzle-orm';
 import { db } from '../src/db/client';
+import { wasteRequests } from '../src/db/schema';
 import {
-  files,
-  requestFiles,
-  wasteRequests,
-  wasteTicketFiles,
-  wasteTickets,
-} from '../src/db/schema';
-import { recomputeTicketReviewState } from '../src/services/waste-ticket-review-state';
+  recomputeTicketReviewState,
+  ticketPaperSql,
+} from '../src/services/waste-ticket-review-state';
 
 /**
  * Прогрев состояния разбора талонов (план `docs/waste-ticket-auto-confirm-plan.md`, Р19; выпуск A,
@@ -29,10 +26,11 @@ import { recomputeTicketReviewState } from '../src/services/waste-ticket-review-
  * пропущенную строку, которую перечитает и починит список. Отсюда же отсутствие транзакции на
  * заявку: атомарности здесь защищать нечего.
  *
- * ЧТО В ОТБОРЕ. Заявки, у которых есть БУМАГА, — тем же тройным условием, каким её видит сверка:
- * талон, строка распознавания либо живой приложенный файл-талон у вывоза мусора. Последнее — не
- * оговорка про типы, а граница ADR 0150 про прошлое: приложенная квитанция прочих типов разбора не
- * ждёт, и прогрев, посчитавший их, вывалил бы в реестр давно закрытые заявки.
+ * WHAT IT SELECTS. Requests that have PAPER, by the same condition the checks use: a ticket, a
+ * recognition row, or a live attached ticket file of a type inside the unreviewed-paper boundary
+ * (`countsUnreviewedTicketPaper`: garbage and snow). The last part is not a remark about types but
+ * the ADR 0150 boundary about the past: attached receipts of other types do not wait for review,
+ * and a warm-up that counted them would flood the register with long-closed requests.
  *
  * Заявки без бумаги не считаются вовсе: строки у них нет и быть не должно («разбирать нечего» и
  * «всё разобрано» — разные ответы), а прогон по всей таблице заявок стоил бы часов ради пустых
@@ -76,40 +74,11 @@ function parseArgs(argv: readonly string[]): Options | string {
 }
 
 /**
- * «У заявки есть бумага» — то же условие, что решает, получит ли она значок (Р21). Три ветви, и
- * каждая отвечает за свой способ бумаге появиться: разобранный талон (в том числе заведённый
- * руками), файл, взятый распознаванием, и скан, приложенный при закрытии.
+ * "The request has paper" — the same condition that decides whether it gets a badge (R21), shared
+ * with the register (`ticketPaperSql`): a ticket (manual ones included), a recognition file row, or
+ * a ticket file attached to a type whose unreviewed paper counts (garbage and snow, ADR 0150).
  */
-const hasPaper = or(
-  exists(
-    db
-      .select({ one: sql`1` })
-      .from(wasteTickets)
-      .where(eq(wasteTickets.requestId, wasteRequests.id)),
-  ),
-  exists(
-    db
-      .select({ one: sql`1` })
-      .from(wasteTicketFiles)
-      .where(eq(wasteTicketFiles.requestId, wasteRequests.id)),
-  ),
-  and(
-    eq(wasteRequests.requestType, 'waste_removal'),
-    exists(
-      db
-        .select({ one: sql`1` })
-        .from(requestFiles)
-        .innerJoin(files, eq(files.id, requestFiles.fileId))
-        .where(
-          and(
-            eq(requestFiles.requestId, wasteRequests.id),
-            eq(requestFiles.kind, 'ticket'),
-            eq(files.status, 'active'),
-          ),
-        ),
-    ),
-  ),
-);
+const hasPaper = ticketPaperSql(wasteRequests.id, wasteRequests.requestType);
 
 /**
  * Следующая пачка заявок с бумагой — по возрастанию `id`, начиная с последней посчитанной.

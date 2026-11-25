@@ -1,5 +1,9 @@
 import { and, eq, inArray, notInArray, or, sql } from 'drizzle-orm';
-import type { RequestType, WasteTicketAttachedFile } from '@technic/contracts';
+import {
+  countsUnreviewedTicketPaper,
+  type RequestType,
+  type WasteTicketAttachedFile,
+} from '@technic/contracts';
 import { db } from '../db/client';
 import {
   constructionObjects,
@@ -314,41 +318,41 @@ export async function loadTicketCheckInputs(
     const tickets = ticketRows.filter((t) => t.requestId === row.id);
     const recognitionFiles = fileRows.filter((f) => f.requestId === row.id);
     /*
-     * «Приложено, а разбор не начинался» считается по-прежнему только вывозу мусора — и с ADR 0150
-     * это уже НЕ следствие того, какому типу ставится распознавание: читаются теперь талоны всех
-     * типов. Причина другая и целиком про прошлое.
+     * "Attached, but review never started" counts only for the types the contract names
+     * (`countsUnreviewedTicketPaper`: garbage and snow). Since ADR 0150 this is no longer a
+     * consequence of which types get recognition — every type does. The reason is the past.
      *
-     * Это число закрывает завершение заявки (`wasteTicketReviewSettled`). Сними его здесь для
-     * прочих типов — и каждая давно закрытая заявка металлолома или контейнерной операции, к
-     * которой когда-либо прикладывали талон, в момент выката перестала бы завершаться: разбора у
-     * неё нет и не будет, потому что задачи ставятся при закрытии, а её закрыли месяцы назад.
-     * Ровно так уже случилось с выкатом `0195`, и возвращать эти заявки пришлось миграцией `0204`
-     * (ADR 0135). Новая бумага прочих типов в разбор попадает своим ходом — через распознавание
-     * при закрытии, — и неподтверждённый талон закрывает завершение уже по `pendingConfirmation`,
-     * то есть ровно так же, как у вывоза.
+     * The number blocks completion (`wasteTicketReviewSettled`). Count it for scrap or container
+     * operations and every long-closed request of those types that ever carried a ticket file would
+     * stop completing at deploy time: it has no review and never will, because jobs are enqueued at
+     * closing, and it was closed months ago. Exactly that happened with deploy `0195` and needed
+     * migration `0204` to return those requests (ADR 0135). New paper of other types reaches review
+     * on its own — through recognition at closing — and an unconfirmed ticket blocks completion by
+     * `pendingConfirmation`, the same way as for garbage.
      *
-     * Отменить границу — значит не удалить это условие, а провести прошлые заявки: снять их
-     * бумагу разом либо отобрать по дате закрытия. Это отдельная работа с миграцией, а не строка
-     * в сверке.
+     * Lifting the boundary means migrating the past requests (clear their paper at once or select
+     * them by closing date), not deleting this condition. Snow is inside the boundary from its first
+     * request: it has no past to protect (snow-removal plan, S4).
      */
     const pagesOfRequest = pageRows.filter((p) => p.requestId === row.id);
-    const attachedTicketFiles: WasteTicketAttachedFile[] =
-      row.requestType === 'waste_removal'
-        ? paperRows
-            .filter((f) => f.requestId === row.id)
-            .map((f) => {
-              const recognition = recognitionFiles.find((r) => r.fileId === f.fileId);
-              // «Сломан» — то же самое, что попало в 🚫, и провалившаяся страница входит сюда
-              // наравне с отказом по файлу: иначе единственный нечитаемый лист показывался бы
-              // дважды — и как 🚫, и как 📄 (ADR 0155, Р18).
-              const broken =
-                recognition?.status === 'unsupported' ||
-                recognition?.status === 'failed' ||
-                recognition?.jobStatus === 'dead' ||
-                pagesOfRequest.some((p) => p.fileId === f.fileId && p.status === 'failed');
-              return { fileId: f.fileId, broken, readOk: recognition?.status === 'done' };
-            })
-        : [];
+    const attachedTicketFiles: WasteTicketAttachedFile[] = countsUnreviewedTicketPaper(
+      row.requestType,
+    )
+      ? paperRows
+          .filter((f) => f.requestId === row.id)
+          .map((f) => {
+            const recognition = recognitionFiles.find((r) => r.fileId === f.fileId);
+            // «Сломан» — то же самое, что попало в 🚫, и провалившаяся страница входит сюда
+            // наравне с отказом по файлу: иначе единственный нечитаемый лист показывался бы
+            // дважды — и как 🚫, и как 📄 (ADR 0155, Р18).
+            const broken =
+              recognition?.status === 'unsupported' ||
+              recognition?.status === 'failed' ||
+              recognition?.jobStatus === 'dead' ||
+              pagesOfRequest.some((p) => p.fileId === f.fileId && p.status === 'failed');
+            return { fileId: f.fileId, broken, readOk: recognition?.status === 'done' };
+          })
+      : [];
     /*
      * Заявка без бумаги вовсе значка не получает (`badge = null`, и завершению это не помеха).
      * Приложенный талон бумагой считается наравне со строкой распознавания: именно он и есть то,

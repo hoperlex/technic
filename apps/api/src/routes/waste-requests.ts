@@ -135,7 +135,7 @@ import {
   neighbourRequestIds,
   readOrRecomputeBadges,
   recomputeTicketReviewState,
-  reviewStateInputFingerprint,
+  ticketReviewPendingSql,
 } from '../services/waste-ticket-review-state';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -958,41 +958,11 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       q.num ? eq(wasteRequests.num, q.num) : undefined,
       q.deliveryFrom ? gte(wasteRequests.deliveryAt, q.deliveryFrom) : undefined,
       q.deliveryTo ? lte(wasteRequests.deliveryAt, q.deliveryTo) : undefined,
-      // «Требуют разбора»: неподтверждённый или спорный талон, неудачный файл, мёртвая задача,
-      // непринятое расхождение либо приложенная бумага, к разбору которой не приступали. Именно
-      // ждущая работа, а не только расхождения, — иначе корректно распознанный талон без замечаний
-      // остался бы неподтверждённым навсегда (Р24).
+      // "Требуют разбора" selects waiting work, not only discrepancies: a correctly read ticket
+      // without remarks would otherwise stay unconfirmed forever (R24). The condition lives with
+      // the review state it reads, next to the loader's no-badge rule it mirrors.
       q.ticketReview === 'pending'
-        ? sql`(
-            -- Отбор идёт по СОХРАНЁННОМУ состоянию разбора (ADR 0155, Р21): второе определение
-            -- «разбор не закончен» в SQL разъехалось с первым и молча прятало заявку, где все
-            -- талоны подтверждены, а расхождение не принято — такая не завершается и не находится.
-            --
-            -- Три первых условия — про НЕЗНАНИЕ: строки ещё нет, кто-то пометил её устаревшей,
-            -- правила или допуски сменились. Не знаем — показываем: ложная строка в реестре стоит
-            -- дешевле спрятанной работы.
-            EXISTS (SELECT 1 FROM waste_tickets wt WHERE wt.request_id = ${wasteRequests.id})
-            OR EXISTS (SELECT 1 FROM waste_ticket_files wf WHERE wf.request_id = ${wasteRequests.id})
-            OR (
-              -- Приложенный файл считается бумагой только у вывоза мусора — ровно как в загрузчике
-              -- сверки (граница ADR 0150 про прошлое). Иначе на промахе кэша в реестр попали бы
-              -- давно закрытые заявки прочих типов, к которым когда-то прикладывали квитанцию.
-              ${wasteRequests.requestType} = 'waste_removal'
-              AND EXISTS (SELECT 1 FROM request_files rf
-                            JOIN files f ON f.id = rf.file_id
-                           WHERE rf.request_id = ${wasteRequests.id}
-                             AND rf.kind = 'ticket' AND f.status = 'active')
-            )
-          ) AND (
-            NOT EXISTS (SELECT 1 FROM waste_ticket_review_state s
-                         WHERE s.request_id = ${wasteRequests.id})
-            OR EXISTS (SELECT 1 FROM waste_ticket_review_state s
-                        WHERE s.request_id = ${wasteRequests.id}
-                          AND (s.stale
-                               OR s.input_fingerprint <> ${reviewStateInputFingerprint()}
-                               OR s.errors > 0 OR s.pending_confirmation > 0
-                               OR s.failures > 0 OR s.unreviewed_paper > 0))
-          )`
+        ? ticketReviewPendingSql(wasteRequests.id, wasteRequests.requestType)
         : undefined,
       // Ищут по тексту, не помня, чья это была строка, — поэтому обе (ADR 0053).
       searchCondition(q.search, [

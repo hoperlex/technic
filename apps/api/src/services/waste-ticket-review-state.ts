@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
-import { and, eq, inArray, ne, or, sql } from 'drizzle-orm';
-import type { WasteTicketBadgeDto } from '@technic/contracts';
+import { and, eq, inArray, ne, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import {
+  countsUnreviewedTicketPaper,
+  REQUEST_TYPES,
+  type RequestType,
+  type WasteTicketBadgeDto,
+} from '@technic/contracts';
 import { config } from '../config';
 import { db } from '../db/client';
 import {
@@ -96,6 +101,67 @@ export function reviewStateInputFingerprint(): string {
     tolerances.dateDays,
   ]);
   return createHash('sha256').update(payload, 'utf8').digest('hex');
+}
+
+// ── Who has paper and who waits for review, in SQL (ADR 0155, R21) ──
+//
+// Two readers select requests in SQL rather than by running the checks: the "Требуют разбора"
+// register and the warm-up script. Both must ask the SAME question the loader answers when it
+// decides whether a request gets a badge at all (`loadTicketCheckInputs`), otherwise the script
+// would skip requests the list badges, or the register would hide paper the card shows. The type
+// list is derived from the contract predicate over `REQUEST_TYPES`, never written by hand: a hand
+// list is exactly how snow would have been left out.
+
+/** Request types whose attached ticket file counts as paper before recognition (ADR 0150). */
+export const UNREVIEWED_PAPER_REQUEST_TYPES: readonly RequestType[] = REQUEST_TYPES.filter(
+  countsUnreviewedTicketPaper,
+);
+
+/**
+ * "The request has paper": a ticket (manual ones included), a recognition file row, or a live ticket
+ * file attached to a type inside the unreviewed-paper boundary. Mirrors the loader's
+ * no-badge rule; `requestId` and `requestType` are the outer query's columns.
+ */
+export function ticketPaperSql(requestId: SQLWrapper, requestType: SQLWrapper): SQL {
+  const types = sql.join(
+    UNREVIEWED_PAPER_REQUEST_TYPES.map((type) => sql`${type}`),
+    sql`, `,
+  );
+  return sql`(
+    EXISTS (SELECT 1 FROM waste_tickets wt WHERE wt.request_id = ${requestId})
+    OR EXISTS (SELECT 1 FROM waste_ticket_files wf WHERE wf.request_id = ${requestId})
+    OR (
+      ${requestType} IN (${types})
+      AND EXISTS (SELECT 1 FROM request_files rf
+                    JOIN files f ON f.id = rf.file_id
+                   WHERE rf.request_id = ${requestId}
+                     AND rf.kind = 'ticket' AND f.status = 'active')
+    )
+  )`;
+}
+
+/**
+ * The "Требуют разбора" register condition. It selects by the STORED review state (ADR 0155, R21):
+ * a second SQL definition of "review is not finished" once drifted from the checks and silently
+ * hid a request whose tickets were all confirmed but whose discrepancy was not accepted.
+ *
+ * The first three state conditions are about NOT KNOWING: no row yet, a neighbour marked it stale,
+ * the rules or tolerances changed. Not knowing means showing: a false row in the register costs
+ * less than hidden work.
+ */
+export function ticketReviewPendingSql(requestId: SQLWrapper, requestType: SQLWrapper): SQL {
+  return sql`(
+    ${ticketPaperSql(requestId, requestType)}
+    AND (
+      NOT EXISTS (SELECT 1 FROM waste_ticket_review_state s WHERE s.request_id = ${requestId})
+      OR EXISTS (SELECT 1 FROM waste_ticket_review_state s
+                  WHERE s.request_id = ${requestId}
+                    AND (s.stale
+                         OR s.input_fingerprint <> ${reviewStateInputFingerprint()}
+                         OR s.errors > 0 OR s.pending_confirmation > 0
+                         OR s.failures > 0 OR s.unreviewed_paper > 0))
+    )
+  )`;
 }
 
 /** Числа значка из сохранённой строки — ровно те же поля, что вернула бы сверка. */
