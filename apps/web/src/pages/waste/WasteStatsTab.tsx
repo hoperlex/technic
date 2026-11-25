@@ -97,8 +97,8 @@ export function WasteStatsTab() {
   const [openObjectId, setOpenObjectId] = useState<string | null>(null);
 
   const { data, isFetching } = useQuery({
-    queryKey: wasteRequestKeys.stats(month),
-    queryFn: () => wasteRequestsApi.stats(month),
+    queryKey: wasteRequestKeys.stats(month, 'waste'),
+    queryFn: () => wasteRequestsApi.stats(month, 'waste'),
     /*
      * Only on its own tab: a hidden tab is not unmounted (`PageTabs`), and without this condition
      * the month would be recounted on the server every time the request list is opened.

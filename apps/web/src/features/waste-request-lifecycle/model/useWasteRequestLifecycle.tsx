@@ -5,11 +5,13 @@ import {
   isPlaceScopedRole,
   statusChangeRequiresReason,
   transitionResetsWork,
+  wasteRequestDeleteMode,
   type CompleteWasteRequestInput,
   type RequestStatus,
   type WasteRequestDto,
 } from '@technic/contracts';
 import { CancelReasonModal, RollbackReasonModal } from '@entities/request';
+import { isApiError } from '@shared/api';
 import { useAuth } from '@entities/session';
 import { wasteTicketKeys } from '@entities/waste-ticket';
 import {
@@ -147,13 +149,25 @@ export function useWasteRequestLifecycle({
     status.mutate({ id: request.id, status: next, version: request.version });
   };
 
+  // The dialog and the request say the same thing: the mode comes from one contract rule, and the
+  // version is the one the dialog was opened on (snow-removal plan, §3.2).
   const removeRequest = useMutation({
-    mutationFn: (id: string) => wasteRequestsApi.remove(id),
+    mutationFn: (request: WasteRequestDto) =>
+      wasteRequestsApi.remove(request.id, {
+        version: request.version,
+        mode: wasteRequestDeleteMode(request.status),
+      }),
     onSuccess: (result) => {
       message.success(result.mode === 'hard' ? 'Заявка удалена' : 'Заявка перемещена в архив');
       invalidateRequests();
     },
-    onError: (error) => message.error(errorMessage(error)),
+    onError: (error) => {
+      message.error(errorMessage(error));
+      // A 409 means the request changed after the dialog opened (a rollback to «Новая» turns an
+      // archive into a hard delete). The list reloads so that the next click asks again about
+      // the current request instead of repeating the refused confirmation.
+      if (isApiError(error) && error.status === 409) invalidateRequests();
+    },
   });
   const restoreRequest = useMutation({
     mutationFn: (id: string) => wasteRequestsApi.restore(id),
@@ -163,18 +177,22 @@ export function useWasteRequestLifecycle({
     },
     onError: (error) => message.error(errorMessage(error)),
   });
-  const remove = (request: WasteRequestDto) =>
-    modal.confirm({
-      title: request.status === 'new' ? 'Удалить заявку?' : 'Переместить заявку в архив?',
-      content:
-        request.status === 'new'
-          ? 'Заявка в статусе «Новая» будет удалена безвозвратно вместе с файлами.'
-          : 'Заявка будет помечена удалённой (soft-delete) и может быть восстановлена администратором.',
+  const remove = (request: WasteRequestDto) => {
+    const hard = wasteRequestDeleteMode(request.status) === 'hard';
+    return modal.confirm({
+      title: hard ? 'Удалить заявку?' : 'Переместить заявку в архив?',
+      content: hard
+        ? 'Заявка в статусе «Новая» будет удалена безвозвратно вместе с файлами.'
+        : 'Заявка будет помечена удалённой (soft-delete) и может быть восстановлена администратором.',
       okText: 'Подтвердить',
       okButtonProps: { danger: true },
       cancelText: 'Отмена',
-      onOk: () => removeRequest.mutateAsync(request.id),
+      // A refusal closes the dialog too: its toast names the reason, and after a 409 the list is
+      // being reread, so this confirmation is stale. A rejected promise here would instead keep
+      // the stale dialog open and surface as an unhandled rejection.
+      onOk: () => removeRequest.mutateAsync(request).catch(() => undefined),
     });
+  };
   // A place-scoped customer (site or department role) edits a request only until it is taken into
   // work: after that it is bound by arrangements with the executor. This is the same predicate as
   // the server's assertObjectRoleEditable (apps/api/src/lib/access.ts), and this copy must match

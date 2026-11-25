@@ -1,3 +1,4 @@
+import type { WasteStatsKind } from '@technic/contracts';
 import { createQueryKeys, type Query } from '@shared/api';
 
 /**
@@ -94,8 +95,12 @@ export const wasteRequestKeys = createQueryKeys('waste-requests', {
    * Месяц в ключе обязателен: по нему сервер и считает, а ключ, о месяце не знающий, показал бы
    * январь под заголовком февраля. Отдельной ячейкой на месяц ещё и листается дёшево — уже
    * посчитанный месяц возвращается мгновенно, а не пересчитывается сводной аналитикой заново.
+   *
+   * The kind (garbage or snow, snow-removal plan S8) is a segment for the same reason as the
+   * month: the two answers share every field name, so a key without it would print garbage
+   * figures under the «Снег» switch whenever the snow reply is slower or fails.
    */
-  stats: (month: string) => ['stats', month],
+  stats: (month: string, kind: WasteStatsKind) => ['stats', month, kind],
   /**
    * Журнал закрытых заявок — вкладка «История» (ADR 0135): завершённые и отменённые за отбор.
    *
@@ -141,4 +146,10 @@ export const wasteRequestKeys = createQueryKeys('waste-requests', {
    * собирается всё равно.
    */
   history: (id: string | undefined) => [id, 'history'],
+  /**
+   * What the serving API supports (snow-removal plan, §3.5). Under the root on purpose: the tab's
+   * refresh button and every module mutation recheck it together with the data, so a server that
+   * was rolled back mid-session stops being trusted with snow at the next refresh, not at reload.
+   */
+  capabilities: () => ['capabilities'],
 });

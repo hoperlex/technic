@@ -63,7 +63,10 @@ export function usePurgeAction({ subject, purge, invalidate }: Options): PurgeAc
         okText: 'Удалить окончательно',
         okButtonProps: { danger: true },
         cancelText: 'Отмена',
-        onOk: () => mutation.mutateAsync(id),
+        // A refusal closes the dialog: the toast names the reason, and the confirmation it answered
+        // is stale (a 409 means the record changed since the dialog opened). A rejected promise
+        // would keep the stale dialog open and surface as an unhandled rejection.
+        onOk: () => mutation.mutateAsync(id).catch(() => undefined),
       }),
   };
 }

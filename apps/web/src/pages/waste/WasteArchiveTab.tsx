@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { App, Space, Tag, Typography } from 'antd';
 import { DeleteFilled, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -13,7 +13,7 @@ import {
 import { useAuth } from '@entities/session';
 import { wasteRequestKeys, wasteRequestsApi } from '@entities/waste-request';
 import { DataTable, DeferredSearchInput, type CardConfig } from '@shared/ui';
-import { listQueryOptions } from '@shared/api';
+import { isApiError, listQueryOptions } from '@shared/api';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
@@ -87,16 +87,36 @@ export function WasteArchiveTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  /**
+   * The archived version each purge dialog was opened on (snow-removal plan, §3.2). The purge
+   * sends it, and the server refuses with 409 when the request was restored, changed or archived
+   * again since: the person confirmed destroying what they saw, not whatever the row became. The
+   * shared purge hook knows only an id, so the version travels beside it, keyed by that id.
+   */
+  const confirmedVersions = useRef(new Map<string, number>());
+
   // Удаление насовсем — общий хук справочников и учёток (ADR 0060, ADR 0063): подтверждение
   // необратимого действия должно звучать везде одинаково.
   const purge = usePurgeAction({
     subject: 'заявку',
-    purge: wasteRequestsApi.purge,
+    purge: async (id) => {
+      try {
+        return await wasteRequestsApi.purge(id, confirmedVersions.current.get(id) ?? 0);
+      } catch (error) {
+        // Drift: reload the archive before the person can confirm again, so the next dialog
+        // opens on the current row and its current version rather than on the refused one.
+        if (isApiError(error) && error.status === 409) {
+          void qc.invalidateQueries({ queryKey: wasteRequestKeys.root });
+        }
+        throw error;
+      }
+    },
     invalidate: [wasteRequestKeys.root],
   });
 
   const removePermanently = (r: WasteRequestDto) => {
     setViewRecord(null);
+    confirmedVersions.current.set(r.id, r.version);
     purge.confirm(r.id, r.displayNumber);
   };
 

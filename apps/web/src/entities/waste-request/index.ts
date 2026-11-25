@@ -9,7 +9,21 @@
  */
 export { wasteRequestKeys } from './api/keys';
 export { wasteRequestsApi } from './api/wasteRequestsApi';
-export type { WasteRequestPayload, WasteRequestUpdatePayload } from './api/wasteRequestsApi';
+export type {
+  WasteRequestPayload,
+  WasteRequestUpdatePayload,
+  WasteStatsReply,
+} from './api/wasteRequestsApi';
+/**
+ * Snow support of the serving API (snow-removal plan, §3.5): every screen that offers snow asks
+ * this one hook, so a rolled-back API hides snow everywhere at once rather than screen by screen.
+ */
+export {
+  confirmsSnowSupport,
+  offeredRequestTypes,
+  useSnowSupport,
+  type SnowSupport,
+} from './model/snowSupport';
 
 /*
  * Request calendar boundaries: "not earlier than today" on creation and "not back into the past" on
