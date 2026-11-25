@@ -169,17 +169,27 @@ export const MAX_FACT_COST = 999_999_999;
 const COST_TEXT = /^\d+(?:\.\d{1,2})?$/;
 
 /**
- * Parses a cost exactly or returns the refusal text. Numbers are checked as numbers; strings are
- * checked as decimal TEXT before any conversion: `z.coerce` turned `""`, `true` and `[]` into 0 or 1
- * and `"1e-400"` into a false zero, all of which then saved as a known amount (snow-removal plan, §2).
+ * Parses a cost exactly or returns the refusal text. Both a string and a number are judged as
+ * decimal TEXT before any arithmetic: `z.coerce` turned `""`, `true` and `[]` into 0 or 1 and
+ * `"1e-400"` into a false zero, all of which then saved as a known amount (snow-removal plan, §2).
+ *
+ * A number is judged by its shortest round-trip text (`String(n)`), never by `n * 100`. The float
+ * test `|round(n * 100) - n * 100| > 1e-6` refused about one valid two-decimal amount in ten above
+ * ≈1.34e8 (301939990.46, 141256549.58, 134219621.95: the product carries a binary error larger
+ * than the tolerance there), while the old `multipleOf(0.01)` accepted them. The text of a
+ * two-decimal double is always its two decimals, and any other text is a real third decimal or an
+ * exponent form: a JSON `1e-9` is refused instead of becoming a known zero.
  */
 function parseFactCost(v: unknown): number | string {
-  let n: number;
+  let text: string;
   if (typeof v === 'number') {
     if (!Number.isFinite(v)) return 'Укажите сумму числом';
-    n = v;
+    if (v < 0) return 'Стоимость не может быть отрицательной';
+    if (v > MAX_FACT_COST) return 'Слишком большая сумма';
+    text = String(v);
+    if (!COST_TEXT.test(text)) return 'Не более 2 знаков после запятой';
   } else if (typeof v === 'string') {
-    const text = v.trim();
+    text = v.trim();
     if (!COST_TEXT.test(text)) {
       return /^\d+\.\d{3,}$/.test(text)
         ? 'Не более 2 знаков после запятой'
@@ -189,16 +199,12 @@ function parseFactCost(v: unknown): number | string {
     if (whole!.replace(/^0+(?=\d)/, '').length > String(MAX_FACT_COST).length) {
       return 'Слишком большая сумма';
     }
-    n = Number(text);
   } else {
     return 'Укажите сумму числом';
   }
-  if (n < 0) return 'Стоимость не может быть отрицательной';
+  const n = Number(text);
   if (n > MAX_FACT_COST) return 'Слишком большая сумма';
-  // Kopecks: the number must round-trip through two fraction digits. A tolerance of a millionth of
-  // a kopeck absorbs binary representation (0.1 + 0.2), not real third digits.
-  if (Math.abs(Math.round(n * 100) - n * 100) > 1e-6) return 'Не более 2 знаков после запятой';
-  return Math.round(n * 100) / 100;
+  return n;
 }
 
 export const factCostSchema = z.unknown().transform((v, ctx): number => {

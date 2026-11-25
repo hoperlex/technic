@@ -4,8 +4,10 @@ import {
   calcWasteFactCost,
   changeWasteRequestStatusSchema,
   completeWasteRequestSchema,
+  factCostSchema,
   factVolumeOf,
   factWeightOf,
+  MAX_FACT_COST,
   requiresWasteFact,
   sumVehicleVolume,
   updateWasteRequestSchema,
@@ -293,5 +295,89 @@ describe('окно приёма добавочных талонов', () => {
     expect(addWasteTicketsSchema.safeParse({ ticketFileIds: many, version: 3 }).success).toBe(
       false,
     );
+  });
+});
+
+describe('стоимость закрытия: точная сумма в копейках (factCostSchema)', () => {
+  /** A small seeded generator: the sweep must be the same on every run, on every machine. */
+  function mulberry32(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /** The decimal text of `kopecks / 100`, built from integers: no float arithmetic in the oracle. */
+  function textOf(kopecks: number): string {
+    return `${Math.floor(kopecks / 100)}.${String(kopecks % 100).padStart(2, '0')}`;
+  }
+
+  const refusal = (v: unknown): string | undefined => {
+    const r = factCostSchema.safeParse(v);
+    return r.success ? undefined : r.error.issues[0]?.message;
+  };
+
+  it('amounts the float kopeck test used to refuse above 1.34e8 are accepted, as number and as string', () => {
+    // Each of these failed `|round(n * 100) - n * 100| > 1e-6`; the old `multipleOf(0.01)` took them.
+    for (const text of ['301939990.46', '141256549.58', '134219621.95']) {
+      expect(factCostSchema.parse(Number(text)), text).toBe(Number(text));
+      expect(factCostSchema.parse(text), text).toBe(Number(text));
+    }
+  });
+
+  it('20 000 pseudo-random two-decimal amounts in [0, 999999999] all parse, as number and as string', () => {
+    const random = mulberry32(20_261_125);
+    const maxKopecks = MAX_FACT_COST * 100;
+    for (let i = 0; i < 20_000; i += 1) {
+      const kopecks = Math.floor(random() * (maxKopecks + 1));
+      const text = textOf(kopecks);
+      // A JSON number is the double nearest to its decimal text — what the route receives.
+      const asNumber = Number(text);
+      expect(factCostSchema.safeParse(asNumber).success, `number ${text}`).toBe(true);
+      expect(factCostSchema.parse(asNumber), `number ${text}`).toBe(asNumber);
+      expect(factCostSchema.safeParse(text).success, `string ${text}`).toBe(true);
+      expect(factCostSchema.parse(text), `string ${text}`).toBe(asNumber);
+    }
+  });
+
+  it('the edges of the range: zero, one kopeck, the ceiling and one kopeck above it', () => {
+    expect(factCostSchema.parse(0)).toBe(0);
+    expect(factCostSchema.parse('0.00')).toBe(0);
+    expect(factCostSchema.parse(0.01)).toBe(0.01);
+    expect(factCostSchema.parse(MAX_FACT_COST)).toBe(MAX_FACT_COST);
+    expect(factCostSchema.parse(`${MAX_FACT_COST}.00`)).toBe(MAX_FACT_COST);
+    expect(refusal(999_999_999.01)).toBe('Слишком большая сумма');
+    expect(refusal('999999999.01')).toBe('Слишком большая сумма');
+    expect(refusal('1000000000')).toBe('Слишком большая сумма');
+  });
+
+  it('a third decimal and an exponent form are refused, never rounded or read as a known zero', () => {
+    for (const bad of [0.001, 1.005, 12.345, 0.1 + 0.2, 40_800.555]) {
+      expect(refusal(bad), String(bad)).toBe('Не более 2 знаков после запятой');
+    }
+    // JSON `1e-9` and friends: the shortest text of the number is an exponent form.
+    for (const bad of [1e-9, 1e-7, 5e-324]) {
+      expect(refusal(bad), String(bad)).toBe('Не более 2 знаков после запятой');
+    }
+    expect(refusal(1e21)).toBe('Слишком большая сумма');
+    expect(refusal('1.234')).toBe('Не более 2 знаков после запятой');
+    expect(refusal('1e-400')).toBe('Укажите сумму числом');
+    expect(refusal('1e3')).toBe('Укажите сумму числом');
+  });
+
+  it('blank, boolean, array, null and non-finite values are refused as before', () => {
+    for (const bad of ['', '   ', true, false, [], {}, null, undefined, NaN, Infinity, -Infinity]) {
+      expect(refusal(bad), String(bad)).toBe('Укажите сумму числом');
+    }
+  });
+
+  it('a negative amount is refused with its own text', () => {
+    expect(refusal(-1)).toBe('Стоимость не может быть отрицательной');
+    expect(refusal(-0.01)).toBe('Стоимость не может быть отрицательной');
+    expect(refusal('-1')).toBe('Укажите сумму числом');
   });
 });
