@@ -835,10 +835,27 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
       throw err.notFound('Файл не найден');
     }
     if (file.uploadedBy !== p.id) throw err.forbidden();
-    if (file.status === 'active') return toFileDto(file);
+    // Only a row this route has already verified against the storage returns early. `active`
+    // alone is not that proof: attaching a request document promotes a pending upload without
+    // asking the storage (`markFilesActive`), and ticket write paths accept a file only with the
+    // storage mark (snow-removal plan, §3.2). Such a row goes through the same storage check below.
+    if (file.status === 'active' && file.storageVerifiedAt) return toFileDto(file);
 
     const head = await headObject(file.objectKey);
     if (!head) throw err.badRequest('Файл не найден в хранилище — загрузка не завершена');
+    if (file.status === 'active') {
+      // The row may already be linked as an attachment, so an oversized object is refused rather
+      // than deleted: deleting it here would take a document out of somebody's request.
+      if (head.size > config.files.maxSize)
+        throw err.badRequest('Файл превышает допустимый размер');
+      const [verified] = await db
+        .update(files)
+        .set({ size: head.size, storageVerifiedAt: new Date() })
+        .where(and(eq(files.id, file.id), eq(files.status, 'active'), isNull(files.deletedAt)))
+        .returning();
+      if (verified) return toFileDto(verified);
+      throw err.conflict('Загрузка устарела — загрузите файл заново');
+    }
     if (head.size > config.files.maxSize) {
       await deleteObject(file.objectKey);
       await db
@@ -854,15 +871,21 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
     // перестал открываться позже, без единого следа. Строка меняется только пока она `pending`.
     const [updated] = await db
       .update(files)
-      .set({ status: 'active', size: head.size })
+      .set({ status: 'active', size: head.size, storageVerifiedAt: new Date() })
       .where(and(eq(files.id, file.id), eq(files.status, 'pending')))
       .returning();
     if (updated) return toFileDto(updated);
 
     // Ноль строк — значит статус сменился рядом. Перечитываем: `active` мог поставить параллельный
     // повтор того же `complete` (тогда всё в порядке и ответ прежний), а `deleted` — уборка.
-    const [after] = await db.select().from(files).where(eq(files.id, file.id));
-    if (after && after.status === 'active' && !after.deletedAt) return toFileDto(after);
+    // The neighbour may also be an attachment that promoted the upload without the storage mark;
+    // the object was just seen in the storage, so the mark is set here rather than lost.
+    const [after] = await db
+      .update(files)
+      .set({ storageVerifiedAt: sql`coalesce(${files.storageVerifiedAt}, now())` })
+      .where(and(eq(files.id, file.id), eq(files.status, 'active'), isNull(files.deletedAt)))
+      .returning();
+    if (after) return toFileDto(after);
     throw err.conflict('Загрузка устарела — загрузите файл заново');
   });
 

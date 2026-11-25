@@ -18,10 +18,12 @@ const toNum = (v: string | null): number | null => (v == null ? null : Number(v)
  */
 export async function vehiclesByRequestIds(
   ids: string[],
+  // A request mutation builds its response inside its own transaction (snow-removal plan, §3.2).
+  exec: typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0] = db,
 ): Promise<Map<string, WasteRequestVehicleDto[]>> {
   const map = new Map<string, WasteRequestVehicleDto[]>();
   if (ids.length === 0) return map;
-  const rows = await db
+  const rows = await exec
     .select({
       id: wasteRequestVehicles.id,
       requestId: wasteRequestVehicles.requestId,

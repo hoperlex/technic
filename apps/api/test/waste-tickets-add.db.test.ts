@@ -131,13 +131,18 @@ async function newRequest(
   return row.rows[0]!.id;
 }
 
-/** Свободный файл того, кто его будет подшивать: чужой ручка не примет (`assertFilesAttachable`). */
+/**
+ * Свободный файл того, кто его будет подшивать: чужой ручка не примет (`assertFilesAttachable`).
+ * The storage mark stands for a finished `POST /files/:id/complete`: ticket doors refuse paper
+ * that the completion route never saw in the storage (snow-removal plan, §3.2).
+ */
 async function newFile(owner: TestUser): Promise<string> {
   fileNo += 1;
   const row = await ctx.db.execute<{ id: string }>(sql`
-    INSERT INTO files (bucket, object_key, filename, content_type, size, status, uploaded_by)
+    INSERT INTO files (bucket, object_key, filename, content_type, size, status, uploaded_by,
+                       storage_verified_at)
     VALUES ('test', ${`${KEY_PREFIX}${randomUUID()}`}, ${`талон-${fileNo}.pdf`},
-            'application/pdf', 1024, 'active', ${owner.id})
+            'application/pdf', 1024, 'active', ${owner.id}, now())
     RETURNING id`);
   return row.rows[0]!.id;
 }
@@ -303,7 +308,9 @@ describe.skipIf(!DB_URL)('догрузка талонов к выполненн�
     const id = await newRequest('done');
     const fileId = await newFile(ctx.operator);
     const before = await card(id, ctx.operator.auth);
-    expect((await addTickets(id, [fileId], before.version, ctx.operator.auth)).statusCode).toBe(200);
+    expect((await addTickets(id, [fileId], before.version, ctx.operator.auth)).statusCode).toBe(
+      200,
+    );
 
     const res = await inject('GET', `${REQUESTS}/${id}/history`, ctx.dispatcher.auth);
     expect(res.statusCode, res.body).toBe(200);

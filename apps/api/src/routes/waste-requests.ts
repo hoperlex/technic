@@ -17,6 +17,7 @@ import {
 import { alias } from 'drizzle-orm/pg-core';
 import {
   addWasteTicketsSchema,
+  isManualCostOnly,
   calcWasteFactCost,
   assignWasteOperatorSchema,
   changeWasteRequestStatusSchema,
@@ -139,6 +140,8 @@ import {
 } from '../services/waste-ticket-review-state';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** A plain connection or a transaction: mutation handlers build their response inside their own. */
+type Exec = typeof db | Tx;
 
 const idParams = z.object({ id: z.string().uuid() });
 
@@ -234,10 +237,13 @@ interface RequestFileGroups {
 
 const EMPTY_FILE_GROUPS: RequestFileGroups = { files: [], tickets: [] };
 
-async function filesByRequestIds(ids: string[]): Promise<Map<string, RequestFileGroups>> {
+async function filesByRequestIds(
+  ids: string[],
+  exec: Exec = db,
+): Promise<Map<string, RequestFileGroups>> {
   const map = new Map<string, RequestFileGroups>();
   if (ids.length === 0) return map;
-  const rows = await db
+  const rows = await exec
     .select({
       requestId: requestFiles.requestId,
       kind: requestFiles.kind,
@@ -370,10 +376,13 @@ async function refreshRequestReviewState(
  * `null` возвращается и там, где бумага не распознавалась вовсе: разбирать нечего — значит и
  * завершению ничто не мешает.
  */
-async function ticketReviewBlockerFor(requestId: string): Promise<string | null> {
-  const row = await loadTicketCheckRequestRow(requestId);
+async function ticketReviewBlockerFor(tx: Tx, requestId: string): Promise<string | null> {
+  // The request and its evidence are read by the transaction that holds the lock (snow-removal
+  // plan, §3.2): read through the pool, they would describe another moment than the one this
+  // transaction writes, and with a pool of one connection the read would wait for itself.
+  const row = await loadTicketCheckRequestRow(requestId, tx);
   if (!row) return null;
-  const bundle = (await loadTicketCheckInputs([row])).get(requestId);
+  const bundle = (await loadTicketCheckInputs([row], { exec: tx })).get(requestId);
   return wasteTicketReviewBlocker(bundle ? wasteTicketChecks(bundle.inputs).badge : null);
 }
 
@@ -437,9 +446,9 @@ function toDto(
 // Справочники присоединяются left join: тип контейнера/машины опционален в зависимости от типа
 // заявки, тип мусора есть только у тарифицируемых операций (ADR 0009), а оператор может быть
 // ещё не назначен (ADR 0010). Факт выполнения — тоже left join: он появляется при закрытии.
-function baseQuery() {
+function baseQuery(exec: Exec = db) {
   return (
-    db
+    exec
       .select(requestSelect)
       .from(wasteRequests)
       .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
@@ -617,14 +626,48 @@ async function resolveSubject(
   };
 }
 
-async function getRequestDto(id: string): Promise<WasteRequestDto | null> {
-  const [row] = await baseQuery().where(eq(wasteRequests.id, id));
+/**
+ * The request as one DTO, read through `exec`. Mutation handlers pass their transaction and call it
+ * under the request lock after their writes: the response then shows exactly what this request
+ * committed, and a move or reassignment committed a moment later cannot add its attachments or
+ * comments to it (snow-removal plan, §3.2).
+ */
+async function getRequestDto(exec: Exec, id: string): Promise<WasteRequestDto | null> {
+  const [row] = await baseQuery(exec).where(eq(wasteRequests.id, id));
   if (!row) return null;
   const [filesMap, vehiclesMap] = await Promise.all([
-    filesByRequestIds([id]),
-    vehiclesByRequestIds([id]),
+    filesByRequestIds([id], exec),
+    vehiclesByRequestIds([id], exec),
   ]);
   return toDto(row, filesMap.get(id) ?? EMPTY_FILE_GROUPS, vehiclesMap.get(id) ?? []);
+}
+
+const SNAPSHOT_READ = { isolationLevel: 'repeatable read', accessMode: 'read only' } as const;
+
+/**
+ * A read-only DTO from ONE snapshot: the row, its files and its completion are read by statements
+ * of a single repeatable-read transaction, so a write committed between two of them cannot mix two
+ * states of the request in one answer. Used by the card and by a receipt completed after a failed
+ * first send.
+ */
+function loadRequestSnapshot(id: string): Promise<WasteRequestDto | null> {
+  return db.transaction((tx) => getRequestDto(tx, id), SNAPSHOT_READ);
+}
+
+/**
+ * The request row lock (`FOR UPDATE`) as the FIRST statement of a writer's transaction, then the
+ * request as it is under that lock. Every writer of the waste request — status, edit, operator,
+ * comment, tickets, delete, restore, purge, and the recognition worker — starts with the same lock
+ * (ADR 0114, decision 4), so state, scope and version read here cannot change before the writes.
+ */
+async function lockRequestDto(tx: Tx, id: string): Promise<WasteRequestDto | null> {
+  const [locked] = await tx
+    .select({ id: wasteRequests.id })
+    .from(wasteRequests)
+    .where(eq(wasteRequests.id, id))
+    .for('update');
+  if (!locked) return null;
+  return getRequestDto(tx, id);
 }
 
 async function linkFiles(
@@ -637,7 +680,12 @@ async function linkFiles(
   kind: 'attachment' | 'ticket' = 'attachment',
 ): Promise<void> {
   if (fileIds.length === 0) return;
-  await assertFilesAttachable(tx, fileIds, uploaderId);
+  // A NEW ticket must be an upload the completion route saw in the storage: both ticket doors
+  // (closing and late attachment) come through here, and a pending upload must finish through
+  // `POST /files/:id/complete` before it can count as the paper that closes a request.
+  await assertFilesAttachable(tx, fileIds, uploaderId, {
+    requireStorageVerified: kind === 'ticket',
+  });
   if (enforceTotal) {
     const [c] = await tx
       .select({ c: count() })
@@ -758,6 +806,27 @@ async function resolveWasteCompletion(
   // Дальше — закрытие объёмом; что величина прислана ровно одна, проверила схема тела запроса,
   // а что именно та, которой меряется эта заявка, — роут статуса перед вызовом.
   const volumeM3 = input.volumeM3!;
+  if (isManualCostOnly(request.requestType)) {
+    // Snow (S6, S7): no price list, so no snapshot, no tariff fallback and no computed sum — the
+    // money is what a person entered. `request` is read under the request lock, so `saved` is the
+    // completion this re-close corrects. On a re-close an omitted cost or day keeps the saved
+    // value and an explicit null clears it: a late invoice is entered by re-closing, and a form
+    // that sends only the volume must not erase the amount entered last time. 0 is a known cost.
+    const saved = request.completion;
+    return {
+      wasteTariffId: null,
+      dto: {
+        unit: 'volume_m3',
+        volumeM3,
+        pricePerM3: null,
+        totalCost: input.totalCost !== undefined ? input.totalCost : (saved?.totalCost ?? null),
+        removedOn: input.removedOn !== undefined ? input.removedOn : (saved?.removedOn ?? null),
+        completedBy: actor.id,
+        completedByName: actor.name,
+        completedAt: new Date().toISOString(),
+      },
+    };
+  }
   const [snapshot] = await tx
     .select({ wasteTariffId: wasteRequests.wasteTariffId, pricePerM3: wasteRequests.pricePerM3 })
     .from(wasteRequests)
@@ -1317,7 +1386,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
 
   r.get('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
-    const dto = await getRequestDto(req.params.id);
+    const dto = await loadRequestSnapshot(req.params.id);
     if (!dto) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, dto.deletedAt, 'Заявка не найдена');
     assertPlaceObjectScope(p, dto.objectId, WASTE_SCOPE_LABEL);
@@ -1402,12 +1471,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     if (receiptRequired && !createKey) throw err.unprocessable('Передайте ключ создания заявки');
     const fingerprint = createKey ? createAttemptFingerprint(body) : null;
     if (createKey && fingerprint) {
-      const replay = await replayRequestCreate(
-        createKey,
-        'waste',
-        p.id,
-        fingerprint,
-        getRequestDto,
+      const replay = await replayRequestCreate(createKey, 'waste', p.id, fingerprint, (id) =>
+        getRequestDto(db, id),
       );
       if (replay) {
         reply.code(200);
@@ -1483,7 +1548,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
             actorUserId: p.id,
             fingerprint,
             create: async (tx) => ({ id: (await insertRequest(tx)).id, metadata: null }),
-            load: getRequestDto,
+            load: (id) => getRequestDto(db, id),
           })
         : null;
     const created = outcome ? { id: outcome.id } : await db.transaction(insertRequest);
@@ -1494,7 +1559,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         entityType: 'waste_request',
         entityId: created.id,
       });
-    const dto = outcome?.response ?? (await getRequestDto(created.id))!;
+    const dto = outcome?.response ?? (await getRequestDto(db, created.id))!;
     if (!outcome?.repeated) await writeOwnerMismatchAudit(p.id, dto, mismatchReason);
     reply.code(outcome?.repeated ? 200 : 201);
     return dto;
@@ -1522,7 +1587,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       }
       // Состояние «до» берётся сразу как DTO: по нему не только проверки, но и дифф для
       // истории — названия справочников и суммы там уже собраны (см. waste-request-history).
-      const before = await getRequestDto(id);
+      const before = await getRequestDto(db, id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
       assertObjectRoleEditable(p, before.status, 'редактировать');
@@ -1618,7 +1683,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // состояние разбора обязано пересчитаться здесь же, под этой транзакцией.
         await refreshRequestReviewState(tx, id);
       });
-      const after = (await getRequestDto(id))!;
+      const after = (await getRequestDto(db, id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.update',
@@ -1643,7 +1708,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       const { operatorCounterpartyId, ownerMismatchReason, version } = req.body;
-      const before = await getRequestDto(req.params.id);
+      const before = await getRequestDto(db, req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       let mismatchReason = '';
       await db.transaction(async (tx) => {
@@ -1686,7 +1751,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // исполнителя меняет то, в какой области окажется каждый неподтверждённый талон заявки.
         await refreshRequestReviewState(tx, before.id, { neighbours: true });
       });
-      const after = (await getRequestDto(before.id))!;
+      const after = (await getRequestDto(db, before.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.assign_operator',
@@ -1719,7 +1784,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       const { operatorComment, version } = req.body;
-      const before = await getRequestDto(req.params.id);
+      const before = await getRequestDto(db, req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       // Своя заявка — для исполнителя; для менеджера и диспетчера обе проверки ничего не сужают.
       // Область спрашивается и по объекту: право и область выдаются порознь, и «право выдали, а
@@ -1742,7 +1807,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         .where(and(eq(wasteRequests.id, before.id), eq(wasteRequests.version, version)))
         .returning({ id: wasteRequests.id });
       if (!updated) throw err.conflict();
-      const after = (await getRequestDto(before.id))!;
+      const after = (await getRequestDto(db, before.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.operator_comment',
@@ -1785,38 +1850,30 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       const { ticketFileIds, version } = req.body;
-      const before = await getRequestDto(req.params.id);
-      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, before.operatorCounterpartyId);
-      if (!wasteTicketsAttachable(before.status)) {
-        // Отказы разные, потому что разные и выходы из положения: до выполнения талон едет с
-        // закрытием, после завершения нужен откат. «Талон сюда приложить нельзя» не сказало бы
-        // ни того, ни другого.
-        throw err.badRequest(
-          before.status === 'completed'
-            ? `Заявка завершена — талоны в ней больше не правят. Нужна правка — верните заявку в «${requestStatusLabels.done}»`
-            : 'Талон прикладывают к выполненной заявке: до этого он идёт вместе с закрытием',
-          { ticketFileIds: 'Заявка не принимает талоны' },
-        );
-      }
-      await db.transaction(async (tx) => {
+      const { before, after } = await db.transaction(async (tx) => {
         // Общий замок контура вывоза — первым действием транзакции, как у закрытия и у каждой
         // мутации талонов (ADR 0114, решение 4). Без него добавление разошлось бы с фоновой
         // задачей распознавания и с откатом статуса: талон успел бы привязаться к заявке, которую
-        // в этот момент возвращают в «Новую», — и остался бы на ней бумагой без закрытия.
-        await tx
-          .select({ id: wasteRequests.id })
-          .from(wasteRequests)
-          .where(eq(wasteRequests.id, before.id))
-          .for('update');
-        // Статус перечитывается ПОД ЗАМКОМ: между проверкой выше и этой строкой заявку могли
-        // завершить или откатить, и тогда талон лёг бы мимо окна приёма.
-        const [current] = await tx
-          .select({ status: wasteRequests.status })
-          .from(wasteRequests)
-          .where(eq(wasteRequests.id, before.id));
-        if (!current || !wasteTicketsAttachable(current.status)) throw err.conflict();
+        // в этот момент возвращают в «Новую», — и остался бы на ней бумагой без закрытия. Статус,
+        // область и версия читаются уже ПОД ЗАМКОМ: прочитанные раньше, они устарели бы к записи.
+        const before = await lockRequestDto(tx, req.params.id);
+        if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+        assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
+        assertOperatorScope(p, before.operatorCounterpartyId);
+        if (!wasteTicketsAttachable(before.status)) {
+          // Отказы разные, потому что разные и выходы из положения: до выполнения талон едет с
+          // закрытием, после завершения нужен откат. «Талон сюда приложить нельзя» не сказало бы
+          // ни того, ни другого.
+          throw err.badRequest(
+            before.status === 'completed'
+              ? `Заявка завершена — талоны в ней больше не правят. Нужна правка — верните заявку в «${requestStatusLabels.done}»`
+              : 'Талон прикладывают к выполненной заявке: до этого он идёт вместе с закрытием',
+            { ticketFileIds: 'Заявка не принимает талоны' },
+          );
+        }
+        // A stale card loses before any file is linked, not at the final UPDATE: the files of a
+        // losing attempt stay free for the person to retry or discard.
+        if (before.version !== version) throw err.conflict();
         // Предел считается по состоянию заявки, а не по телу запроса: схема отбивает пачку из
         // двадцати одного талона разом, а двадцать первый, донесённый по одному, прошёл бы мимо
         // неё. Своя проверка рядом с общим пределом файлов заявки — они про разное: тот про вес
@@ -1846,8 +1903,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // состояние заявки: у неё появилась неразобранная бумага, а значит закрылось завершение
         // (ADR 0135, пятое число значка).
         await refreshRequestReviewState(tx, before.id);
+        return { before, after: (await getRequestDto(tx, before.id))! };
       });
-      const after = (await getRequestDto(before.id))!;
       const added = after.tickets.filter((t) => ticketFileIds.includes(t.id));
       await writeAudit({
         actorUserId: p.id,
@@ -1866,58 +1923,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       const { status, comment, completion, ticketFileIds, version } = req.body;
-      // Состояние «до» берётся как DTO: по нему и проверки, и дифф факта для истории.
-      const before = await getRequestDto(req.params.id);
-      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
-      assertOperatorScope(p, before.operatorCounterpartyId);
-      if (before.status === status) return before;
-      assertTransitionAllowed(p, before.status, status, 'waste');
-      // Возврат «В работе» → «Новая» стирает нажитое в работе (`transitionResetsWork`), и причина
-      // ему нужна наравне с причиной отмены: без неё в истории осталась бы пара переходов, по
-      // которой не понять, зачем стёрли факт и талоны. Спрашивает её сервер, а не схема тела:
-      // схеме известен только целевой статус, а требование держится на паре «откуда → куда».
-      const resetsWork = transitionResetsWork(before.status, status);
-      if (resetsWork && !comment) {
-        throw err.badRequest('Укажите причину возврата заявки в «Новую»', {
-          comment: 'Укажите причину',
-        });
-      }
-      // Чем меряется вывезенное у этой заявки: объёмом (мусор), весом (металлолом) или ничем
-      // (контейнерные операции — они закрываются одним талоном).
-      const factUnit = wasteFactUnit(before.requestType);
-      if (completion && factUnit == null) {
-        throw err.badRequest(FACT_NOT_APPLICABLE, {
-          completion: 'Вывезенное предъявляют только заявки на вывоз',
-        });
-      }
-      // Величину закрытия схема тела проверила на «ровно одна», но какая именно нужна, знает лишь
-      // заявка: вес в заявке на мусор и объём в заявке на лом — это закрытие в чужих единицах, и
-      // молча пересчитать одно в другое нечем.
-      if (completion && factUnit != null) {
-        const sent: WasteFactUnit = completion.weightTons != null ? 'weight_tons' : 'volume_m3';
-        if (sent !== factUnit) {
-          throw err.badRequest(FACT_UNIT_MISMATCH_MESSAGE, {
-            completion: factUnit === 'weight_tons' ? 'Укажите вес, т' : 'Укажите объём, м³',
-          });
-        }
-      }
-      // «Выполнена» без предъявленного вывезенного — отметка о работе, про которую неизвестно,
-      // сколько увезли. При повторном закрытии (после отката администратором) хватает уже
-      // предъявленного: просить те же цифры второй раз незачем.
-      if (status === 'done' && factUnit != null && !completion && !before.completion) {
-        throw err.badRequest(
-          factUnit === 'weight_tons'
-            ? 'Укажите фактически вывезенный вес'
-            : 'Укажите фактически вывезенный объём',
-          { completion: factUnit === 'weight_tons' ? 'Укажите вес' : 'Укажите объём' },
-        );
-      }
-      let saved: WasteRequestCompletionDto | null = null;
       // Сколько талонов снял возврат в «Новую» — считается там, где они отвязываются: после
       // транзакции их уже не по чему пересчитать.
       let ticketsUnlinked = 0;
-      const closed = await db.transaction(async (tx) => {
+      const outcome = await db.transaction(async (tx) => {
         // Строка заявки берётся `FOR UPDATE` **первым** действием транзакции — до чтения талонов,
         // факта и вообще чего бы то ни было связанного. Это общий замок всего контура вывоза:
         // любая транзакция, меняющая талоны, страницы распознавания, файловые строки или статус
@@ -1936,25 +1945,85 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // его, — а перепроверка под общим замком делает опоздавшую задачу no-op, в том числе уже
         // взятую в работу, поэтому отменять задачи при откате не нужно.
         //
-        // Оптимистическую проверку версии ниже (`WHERE version = $version`) замок не заменяет и
-        // не дублирует: та отвечает за конкурентную правку из интерфейса — «карточку открыли
-        // вдвоём, один сохранил раньше» — и опирается на данные, прочитанные до транзакции. Замок
-        // отвечает за писателей, которые версию не двигают вовсе: воркер распознавания сверяет
-        // состояние (заявка выполнена и связь талона жива), а не версию, — правка выполненной
-        // заявки поднимает `version`, и сверка по ней молча отменяла бы распознавание.
-        await tx
-          .select({ id: wasteRequests.id })
-          .from(wasteRequests)
-          .where(eq(wasteRequests.id, before.id))
-          .for('update');
+        // The state «before», the scope and the version are read UNDER the lock, not before the
+        // transaction: the saved completion that a snow re-close keeps, the equal-status refusal
+        // and the version check must all describe the row this transaction is about to write.
+        // A concurrent update that loses the version check therefore throws before the fact or
+        // any file is written, and its whole transaction rolls back.
+        const before = await lockRequestDto(tx, req.params.id);
+        if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+        assertPlaceObjectScope(p, before.objectId, WASTE_SCOPE_LABEL);
+        assertOperatorScope(p, before.operatorCounterpartyId);
+        if (before.status === status) {
+          // A second snow completion against a request already «Выполнена» would otherwise be
+          // answered with the unchanged card while its volume, cost and tickets were silently
+          // dropped. The snow form reloads the saved fact and tickets on 409 before the person
+          // retries or discards the uploads. Older types keep the idempotent answer their
+          // clients were built for.
+          if (
+            status === 'done' &&
+            isManualCostOnly(before.requestType) &&
+            (completion !== undefined || ticketFileIds.length > 0)
+          ) {
+            throw err.conflict(
+              `Заявка уже «${requestStatusLabels.done}» — обновите карточку: исправление факта идёт через возврат в работу, добавочный талон — отдельной кнопкой`,
+            );
+          }
+          return { before, after: before, changed: false as const, saved: null };
+        }
+        if (before.version !== version) throw err.conflict();
+        assertTransitionAllowed(p, before.status, status, 'waste');
+        // Возврат «В работе» → «Новая» стирает нажитое в работе (`transitionResetsWork`), и
+        // причина ему нужна наравне с причиной отмены: без неё в истории осталась бы пара
+        // переходов, по которой не понять, зачем стёрли факт и талоны. Спрашивает её сервер, а не
+        // схема тела: схеме известен только целевой статус, а требование держится на паре
+        // «откуда → куда».
+        const resetsWork = transitionResetsWork(before.status, status);
+        if (resetsWork && !comment) {
+          throw err.badRequest('Укажите причину возврата заявки в «Новую»', {
+            comment: 'Укажите причину',
+          });
+        }
+        // Чем меряется вывезенное у этой заявки: объёмом (мусор, снег), весом (металлолом) или
+        // ничем (контейнерные операции — они закрываются одним талоном).
+        const factUnit = wasteFactUnit(before.requestType);
+        if (completion && factUnit == null) {
+          throw err.badRequest(FACT_NOT_APPLICABLE, {
+            completion: 'Вывезенное предъявляют только заявки на вывоз',
+          });
+        }
+        // Величину закрытия схема тела проверила на «ровно одна», но какая именно нужна, знает лишь
+        // заявка: вес в заявке на мусор и объём в заявке на лом — это закрытие в чужих единицах,
+        // и молча пересчитать одно в другое нечем.
+        if (completion && factUnit != null) {
+          const sent: WasteFactUnit = completion.weightTons != null ? 'weight_tons' : 'volume_m3';
+          if (sent !== factUnit) {
+            throw err.badRequest(FACT_UNIT_MISMATCH_MESSAGE, {
+              completion: factUnit === 'weight_tons' ? 'Укажите вес, т' : 'Укажите объём, м³',
+            });
+          }
+        }
+        // «Выполнена» без предъявленного вывезенного — отметка о работе, про которую неизвестно,
+        // сколько увезли. При повторном закрытии (после отката администратором) хватает уже
+        // предъявленного: просить те же цифры второй раз незачем.
+        if (status === 'done' && factUnit != null && !completion && !before.completion) {
+          throw err.badRequest(
+            factUnit === 'weight_tons'
+              ? 'Укажите фактически вывезенный вес'
+              : 'Укажите фактически вывезенный объём',
+            { completion: factUnit === 'weight_tons' ? 'Укажите вес' : 'Укажите объём' },
+          );
+        }
         // Завершение — точка в разборе бумаги (ADR 0135), и ставится она только когда разбирать
         // нечего: все талоны подтверждены, расхождения приняты, нечитаемых файлов нет. Проверка
-        // идёт здесь, под общим замком контура вывоза, а не до транзакции: писатели талонов
-        // начинают с того же замка, и ответ, прочитанный раньше него, устарел бы к записи.
+        // идёт здесь, под общим замком контура вывоза, и читает заявку и её бумагу ЭТОЙ ЖЕ
+        // транзакцией: писатели талонов начинают с того же замка, а ответ, прочитанный другим
+        // соединением, видел бы не то состояние, которое транзакция сейчас держит.
         if (status === 'completed') {
-          const blocker = await ticketReviewBlockerFor(before.id);
+          const blocker = await ticketReviewBlockerFor(tx, before.id);
           if (blocker) throw err.badRequest(blocker, { status: 'Разбор не закончен' });
         }
+        let saved: WasteRequestCompletionDto | null = null;
         // Закрытие заявки — это предъявление факта, и оно проводится тем же запросом, что и смена
         // статуса. Талон обязателен: «Выполнена» без бумаги о вывозе — отметка о работе, которую
         // нечем подтвердить (ADR 0020). Крепится он к самой заявке у любого типа — общим пулом
@@ -1973,7 +2042,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
               before.id,
               resolved.dto,
               resolved.wasteTariffId,
-              completion.removedOn,
+              resolved.dto.removedOn,
             );
           }
           await linkFiles(tx, before.id, ticketFileIds, p.id, true, 'ticket');
@@ -2015,10 +2084,6 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           // не заявке (заявки нет даже в их ключе), и служат кэшем — повторное закрытие тем же
           // листом, самый частый исход отката, не стоит ни копейки и не отправляет скан наружу
           // второй раз. Подробности порядка удаления — в сервисе.
-          //
-          // Идёт под тем же `FOR UPDATE`, что взят первым действием транзакции: уборка,
-          // выполненная мимо общего замка, разошлась бы с фоновой задачей ровно так, как описано
-          // выше. Отменять уже поставленные задачи не нужно — под замком они становятся no-op.
           await purgeRequestRecognition(tx, before.id);
           const tickets = await tx
             .select({ fileId: requestFiles.fileId })
@@ -2050,8 +2115,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // Закрытие приносит факт и бумагу, откат уносит распознанное вместе с талонами (ADR 0155,
         // Р20) — и то и другое меняет не только свою заявку: снятые талоны были соседями чужих.
         await refreshRequestReviewState(tx, before.id, { neighbours: true });
-        return saved;
+        return {
+          before,
+          after: (await getRequestDto(tx, before.id))!,
+          changed: true as const,
+          saved,
+          resetsWork,
+        };
       });
+      if (!outcome.changed) return outcome.after;
+      const { before, after, saved: closed, resetsWork } = outcome;
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.status',
@@ -2093,7 +2166,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           metadata: { changes: diffWasteCompletion(before.completion, null) },
         });
       }
-      return (await getRequestDto(before.id))!;
+      return after;
     },
   );
 
@@ -2187,7 +2260,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           entityId: existing.id,
         });
       }
-      return (await getRequestDto(existing.id))!;
+      return (await getRequestDto(db, existing.id))!;
     },
   );
 

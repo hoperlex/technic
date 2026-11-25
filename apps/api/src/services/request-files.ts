@@ -64,14 +64,29 @@ export async function assertFilesAttachable(
   tx: Tx,
   fileIds: string[],
   uploaderId: string,
-  options: { requireActive?: boolean } = {},
+  options: {
+    requireActive?: boolean;
+    /**
+     * The file must be `active` AND carry the mark of `POST /files/:id/complete`, which saw the
+     * object in the storage (`files.storage_verified_at`, migration 0428). Ticket paper asks for
+     * it: a ticket is the proof that a request was closed, and `active` alone may come from an
+     * attachment that promoted a pending upload without asking the storage — an upload interrupted
+     * there would close a request with paper that never reached the storage.
+     */
+    requireStorageVerified?: boolean;
+  } = {},
 ): Promise<void> {
   if (fileIds.length === 0) return;
   if (fileIds.length > config.files.maxPerRequest) {
     throw err.badRequest(`Не более ${config.files.maxPerRequest} файлов`);
   }
   const rows = await tx
-    .select({ id: files.id, status: files.status, quarantinedAt: files.quarantinedAt })
+    .select({
+      id: files.id,
+      status: files.status,
+      quarantinedAt: files.quarantinedAt,
+      storageVerifiedAt: files.storageVerifiedAt,
+    })
     .from(files)
     .where(
       and(inArray(files.id, fileIds), eq(files.uploadedBy, uploaderId), isNull(files.deletedAt)),
@@ -82,6 +97,15 @@ export async function assertFilesAttachable(
   }
   if (options.requireActive && rows.some((r) => r.status !== 'active')) {
     throw err.badRequest('Загрузка файла не завершена — дождитесь окончания и повторите');
+  }
+  if (
+    options.requireStorageVerified &&
+    rows.some((r) => r.status !== 'active' || !r.storageVerifiedAt)
+  ) {
+    throw err.badRequest(
+      'Загрузка талона не завершена — дождитесь окончания загрузки и повторите',
+      { ticketFileIds: 'Загрузка не завершена' },
+    );
   }
   /*
    * КАРАНТИННЫЙ ФАЙЛ НЕ ПОДШИВАЕТСЯ НИКУДА — ни в ту заявку, из которой его заперли, ни в новую
