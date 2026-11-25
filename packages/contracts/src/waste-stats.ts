@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { monthSchema } from './common';
 import type { AnalyticsQualityEntry } from './analytics';
+import type { RequestType } from './enums';
 
 /**
  * Waste removal statistics for a reporting month — the "Statistics" tab of the waste section
@@ -39,6 +40,23 @@ export type WasteStatsKind = (typeof WASTE_STATS_KINDS)[number];
 export const wasteStatsKindSchema = z.enum(WASTE_STATS_KINDS);
 
 /**
+ * The stats kind a request type is counted under, `null` — never in the tab (snow-removal plan, §2
+ * table «Tab statistics kind»). The server derives the SQL type filter of each kind from this map
+ * and `REQUEST_TYPES`, so a new type lands in a kind here or nowhere — never through a list typed
+ * by hand into a query. Scrap metal (tonnes, no money) and container operations (not billed) have
+ * no kind: R6 of ADR 0193.
+ *
+ * A question of its own, not a conclusion from `isManualCostOnly` or `wasteFactUnit`: a future
+ * volume type priced by hand need not be snow, and a kind mixing estimated and invoiced money in one
+ * total is exactly what S8 forbids.
+ */
+export function wasteStatsKindOf(t: RequestType): WasteStatsKind | null {
+  if (t === 'waste_removal') return 'waste';
+  if (t === 'snow_removal') return 'snow';
+  return null;
+}
+
+/**
  * `kind` defaults to `waste`: a tab built before snow sends only `month` and keeps getting the
  * garbage statistics it always got.
  */
@@ -65,16 +83,24 @@ export interface WasteStatsFigures {
   /**
    * Money of the ordered volume, from the same source. `null` — none of that volume has a price
    * (a dash, not zero); a number with `plannedVolumeUnpricedM3 > 0` is understated and must be
-   * signed.
+   * signed. Always `null` for snow, even at zero volume: snow has no estimate at all (S6).
    */
   plannedCost: number | null;
-  /** Share of the ordered volume without money. */
+  /** Share of the ordered volume without money. Always 0 for snow: nothing is missing a price. */
   plannedVolumeUnpricedM3: number;
   /** REMOVED volume: completions of requests in a fact status ("done" / "completed"). */
   doneVolumeM3: number;
-  /** Completion sums of those requests; `null` — none of the removed volume has a sum. */
+  /**
+   * Completion sums of those requests; `null` — none of the removed volume has a sum.
+   *
+   * Snow (S6, S7): the amounts entered at completion, a recorded 0 included as a known amount;
+   * `null` when removed requests exist and none of them has an amount. No removed request — 0.
+   */
   doneCost: number | null;
-  /** Share of the removed volume whose completion has no sum. */
+  /**
+   * Share of the removed volume whose completion has no sum. For snow — the removed volume whose
+   * invoice amount is still missing («без цены», S7).
+   */
   doneVolumeUnpricedM3: number;
   /**
    * TICKET volume of removed requests: every ticket that is not dismissed — accepted and
@@ -88,7 +114,7 @@ export interface WasteStatsFigures {
    * Of the ticket volume — the part that cannot be priced: its completion has no price (R5 of
    * ADR 0193). A field of its own and not a conclusion from zero money: zero money means both
    * "there was no price" and "there was nothing to price", and after atoms are summed these cannot
-   * be told apart.
+   * be told apart. Always 0 for snow: there is no price per cubic metre to miss.
    */
   ticketVolumeUnpricedM3: number;
   /**
@@ -96,7 +122,8 @@ export interface WasteStatsFigures {
    *
    * `null` — the whole ticket volume of the cell has no completion price. Zero here would mean a
    * free removal, not a missing price. A mixed case gives a NUMBER, and `ticketVolumeUnpricedM3`
-   * must be shown next to it: an understated sum without a mark looks calculated.
+   * must be shown next to it: an understated sum without a mark looks calculated. Always `null`
+   * for snow: an invoice amount cannot be split by ticket volume.
    */
   ticketCost: number | null;
   /** Tickets (not dismissed, not idle) whose volume is unread: not in the sum, and that must be said. */
@@ -107,7 +134,11 @@ export interface WasteStatsFigures {
   ticketFilesUnread: number;
   /** Ticket scans read without a single ticket found on them (ADR 0213). */
   ticketFilesWithoutTickets: number;
-  /** Requests that could not be priced at all: zero money must mean free work. */
+  /**
+   * Requests that could not be priced at all: zero money must mean free work. For snow — removed
+   * requests (fact status) without an entered amount; an unfinished or rolled-back snow request is
+   * not missing anything yet, because its cost is entered only at completion.
+   */
   unpricedRequests: number;
   /** Removals — requests in a fact status; requests are counted, not trucks (R21 of analytics). */
   removals: number;
@@ -136,7 +167,7 @@ export interface WasteStatsFigures {
   confirmedVolumeM3: number;
   /** @deprecated Same value as `ticketVolumeUnpricedM3`; see `confirmedVolumeM3`. */
   confirmedVolumeUnpricedM3: number;
-  /** @deprecated Same value as `ticketCost`; see `confirmedVolumeM3`. */
+  /** @deprecated Same value as `ticketCost` (so `null` for snow); see `confirmedVolumeM3`. */
   confirmedCost: number | null;
 }
 
