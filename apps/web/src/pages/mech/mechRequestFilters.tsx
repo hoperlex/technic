@@ -60,7 +60,7 @@ export interface MechListFilters {
    */
   approved?: string;
   /**
-   * «Чек» (lessor receipt plan, P16): the state of the current receipt version — the visa holder
+   * «Счёт» (lessor receipt plan, P16): the state of the current invoice version — the visa holder
    * finds what waits for him by «ждёт визы», the office the rentals still without one by «нет».
    * Served by the server over the current row, so it answers for every page, not the one on screen.
    */
@@ -130,7 +130,7 @@ export function mechHistoryFilterQuery(
  * который сервер отвечает пустотой, хуже его отсутствия. `closed` — те же два статуса, что
  * составляют журнал: заявка, по которой уже нечего решать.
  */
-/** The values of «Чек» in the order of the question: what waits, what is wrong, what is settled. */
+/** The values of «Счёт» in the order of the question: what waits, what is wrong, what is settled. */
 const RECEIPT_OPTIONS = MECH_LESSOR_RECEIPT_FILTERS.map((value) => ({
   value,
   label: mechLessorReceiptFilterLabels[value],
@@ -334,14 +334,14 @@ export function useMechRequestFilters({
       onChange: (value?: string) => apply({ approved: value }),
     },
     {
-      // The receipt is asked of the current version on the server (`EXISTS` over the current row),
-      // the same in the list and the journal: «what closed without a receipt» is a journal question.
+      // The invoice is asked of the current version on the server (`EXISTS` over the current row),
+      // the same in the list and the journal: «what closed without an invoice» is a journal question.
       kind: 'select' as const,
       key: 'lessorReceipt',
-      label: 'Чек',
+      label: 'Счёт',
       value: params.lessorReceipt,
       options: RECEIPT_OPTIONS,
-      placeholder: 'Чек: любой',
+      placeholder: 'Счёт: любой',
       onChange: (value?: string) => apply({ lessorReceipt: value }),
     },
     ...(overdue

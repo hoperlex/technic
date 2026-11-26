@@ -74,7 +74,7 @@ const DEFAULT_STATUS_DICT: HistoryStatusDict = {
 
 /**
  * The files of a change drawn by the module instead of their names as text (lessor receipt plan,
- * P9, O8): the mechanization card turns them into links, so a receipt version opens from its own
+ * P9, O8): the mechanization card turns them into links, so an invoice version opens from its own
  * history line. Optional, and absent everywhere else: a module that passes nothing keeps the line
  * exactly as it was. The module decides, because only it knows which of the named files the reader
  * may still open and how — the history keeps names, not access. On the phone a tap anywhere on an

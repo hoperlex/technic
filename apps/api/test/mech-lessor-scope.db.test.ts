@@ -38,8 +38,8 @@ import type * as ListNs from '../src/services/mech-request-list';
  *   the list comes from the manifest and the marks from the app, not from this file;
  * - the lessor's own doors: his rentals «В работе» only, in an allow-list DTO, versions of the
  *   current deal only, 404 for anything else, the attach door included;
- * - files: receipt versions by the rental and the deal, the requester's attachments never, the
- *   archive's receipts for the archive holder in his area (O17).
+ * - files: invoice versions by the rental and the deal, the requester's attachments never, the
+ *   archive's invoices for the archive holder in his area (O17).
  *
  * Run on its own database (the file applies the migrations itself):
  *
@@ -291,7 +291,7 @@ async function rental(
   return created.id;
 }
 
-/** Completes a rental that requires no receipt: the gate is not this suite's subject. */
+/** Completes a rental that requires no invoice: the gate is not this suite's subject. */
 async function completeWithoutGate(id: string): Promise<void> {
   await ctx.db
     .update(ctx.schema.mechRequests)
@@ -320,7 +320,7 @@ async function upload(userId: string): Promise<string> {
     .values({
       bucket: 'test',
       objectKey: `${EMAIL_PREFIX}/${randomUUID()}`,
-      filename: 'чек.pdf',
+      filename: 'счёт.pdf',
       contentType: 'application/pdf',
       size: 2048,
       status: 'active',
@@ -390,7 +390,7 @@ async function canDownload(who: keyof People, fileId: string): Promise<boolean> 
   return res.statusCode === 200;
 }
 
-/** The file ids of the request's receipt versions, oldest first. */
+/** The file ids of the request's invoice versions, oldest first. */
 async function versionFiles(requestId: string): Promise<string[]> {
   const receipts = ctx.schema.mechRequestLessorReceipts;
   const rows = await ctx.db
@@ -405,7 +405,7 @@ function sortedKeys(value: object): string[] {
   return Object.keys(value).sort();
 }
 
-describe.skipIf(!DB_URL)('механизация: область арендодателя (план чека, W2)', () => {
+describe.skipIf(!DB_URL)('механизация: область арендодателя (план счёта, W2)', () => {
   beforeAll(async () => {
     prepareEnv(DB_URL!);
     await migrate(DB_URL!);
@@ -504,7 +504,7 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
      * bypassing the grant form and its barriers on purpose (approved by the owner, survey of
      * 09.11.2026). The grant matrix refuses the `records` module to a site axis, so no real
      * principal holds both today; but the O17 branch promises "inside his mechScopeWhere", and only
-     * such a principal can prove the archive does not open another site's receipts. The set exists
+     * such a principal can prove the archive does not open another site's invoices. The set exists
      * for this proof only and is removed with the suite.
      */
     const [grant] = await db
@@ -531,7 +531,7 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
     if (!ctx) return;
     const users = sql`(SELECT id FROM users WHERE email LIKE ${`${EMAIL_PREFIX}%`})`;
     await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN ${users}`);
-    // Receipt versions go with their requests (CASCADE) and hold their files by RESTRICT, so the
+    // Invoice versions go with their requests (CASCADE) and hold their files by RESTRICT, so the
     // requests go first, then the files, then the accounts every row names.
     await ctx.db.execute(
       sql`DELETE FROM mech_requests WHERE object_id IN
@@ -689,7 +689,7 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
       refusedWith(await lessorRental(auth.c1, randomUUID()), 404);
     });
 
-    it('filters: the period crosses the term, the receipt state is the current version', async () => {
+    it('filters: the period crosses the term, the invoice state is the current version', async () => {
       const items = await lessorList(auth.c1);
       expect(items).toHaveLength(2);
       const [sooner, later] = items as [MechLessorRentalDto, MechLessorRentalDto];
@@ -765,8 +765,8 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
       ok(await attach(id, 'a1'));
       ok(await decide(id, 'approve', `Замечание скрытое ${RUN}`));
       ok(await decide(id, 'revoke', `Отзыв утверждения скрытый ${RUN}`));
-      ok(await waive(id, `Без чека скрытое ${RUN}`));
-      ok(await decide(id, 'revoke', `Отзыв без чека скрытый ${RUN}`));
+      ok(await waive(id, `Без счёта скрытое ${RUN}`));
+      ok(await decide(id, 'revoke', `Отзыв без счёта скрытый ${RUN}`));
       ok(await attach(id, 'a1'));
 
       const res = await lessorRental(auth.a1, id);
@@ -788,8 +788,8 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
       for (const hidden of [
         'Замечание скрытое',
         'Отзыв утверждения',
-        'Без чека скрытое',
-        'Отзыв без чека',
+        'Без счёта скрытое',
+        'Отзыв без счёта',
       ]) {
         expect(res.body, hidden).not.toContain(hidden);
       }
@@ -849,8 +849,8 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
     /** Lessor A's file version, then a waiver over it, then the waiver revoked: nothing current. */
     async function afterRevokedWaiver(id: string): Promise<string> {
       ok(await attach(id, 'a1'));
-      ok(await waive(id, 'Арендодатель чеков не выдаёт'));
-      ok(await decide(id, 'revoke', 'Чек всё-таки будет'));
+      ok(await waive(id, 'Арендодатель счетов не выдаёт'));
+      ok(await decide(id, 'revoke', 'Счёт всё-таки будет'));
       expect((await card(id)).lessorReceipt, 'no current version').toBeNull();
       const [aFile] = (await versionFiles(id)) as [string];
       expect(await canDownload('a1', aFile), 'his own file before the change').toBe(true);
@@ -977,7 +977,7 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
       ok(await decide(id, 'approve'));
       refusedWith(await attach(id, 'a1'), 422, MECH_LESSOR_RECEIPT_LESSOR_LOCKED_MESSAGE);
       const waived = await rental(ctx.lessorA);
-      ok(await waive(waived, 'Арендодатель чеков не выдаёт'));
+      ok(await waive(waived, 'Арендодатель счетов не выдаёт'));
       refusedWith(await attach(waived, 'a1'), 422, MECH_LESSOR_RECEIPT_LESSOR_LOCKED_MESSAGE);
       ok(await attach(waived, 'dispatcher'));
     });
@@ -989,7 +989,7 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
       // Per account: the lessor's second account still attaches.
       ok(await attach(id, 'a2'));
       refusedWith(await attach(id, 'a1'), 422, MECH_LESSOR_RECEIPT_CAP_MESSAGE);
-      // The office is never capped: a lessor's loop must not lock out the real receipt.
+      // The office is never capped: a lessor's loop must not lock out the real invoice.
       ok(await attach(id, 'dispatcher'));
     });
   });
@@ -997,7 +997,7 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
   // ── Files (P11, P13, O17) ──
 
   describe('файлы', () => {
-    it('a receipt opens for the office in scope and its own lessor, nobody else', async () => {
+    it('an invoice opens for the office in scope and its own lessor, nobody else', async () => {
       const id = await rental(ctx.lessorA);
       ok(await attach(id, 'dispatcher'));
       const [fileId] = (await versionFiles(id)) as [string];
@@ -1047,12 +1047,12 @@ describe.skipIf(!DB_URL)('механизация: область арендод�
     });
 
     /**
-     * O17: the receipt is the evidence of a payment, examined after archiving too — the archive
+     * O17: the invoice is the evidence of a payment, examined after archiving too — the archive
      * holder opens it in his area without a restore; the attachments of the same archived request
-     * stay closed, as they were before the receipt existed. `archivistOther` holds `archive.read`
+     * stay closed, as they were before the invoice existed. `archivistOther` holds `archive.read`
      * only through the set inserted directly in `beforeAll` (see the comment there).
      */
-    it('an archived request: receipts open for the archive holder in his area, attachments never', async () => {
+    it('an archived request: invoices open for the archive holder in his area, attachments never', async () => {
       const attachment = await upload(people.rukstroy);
       const id = await rental(ctx.lessorA, { fileIds: [attachment] });
       ok(await attach(id, 'dispatcher'));

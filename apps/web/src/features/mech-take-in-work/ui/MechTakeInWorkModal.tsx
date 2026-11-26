@@ -187,12 +187,12 @@ export function MechTakeInWorkModal({
             <Form.Item
               name="rateUnit"
               label="За что ставка"
-              /* Умолчания нет намеренно: час и смена отличаются в разы, и подставленное портала
-                 значение пришлось бы вычитать глазами в каждой заявке. */
+              /* No default on purpose: an hour, a shift and a day differ several times over, and a
+                 value the portal put in would have to be proofread in every request. */
               rules={[{ required: true, message: 'Выберите единицу ставки' }]}
             >
               <Select
-                placeholder="час или смена"
+                placeholder="час, смена или сутки"
                 options={MECH_RATE_UNITS.map((value) => ({
                   value,
                   label: mechRateUnitLabels[value],

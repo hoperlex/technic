@@ -721,7 +721,7 @@ describe('механизация: аренда малой механизации
      */
     expect(mechOf(of('site'))).toEqual([]);
     // The office runs the rental: the deal with the lessor, the issue mark, the completion with the
-    // facts — and attaches the lessor's receipt with it (lessor receipt plan, P4).
+    // facts — and attaches the lessor's invoice with it (lessor receipt plan, P4).
     const MECH_OFFICE = [...MECH_CUSTOMER, 'mechRequests.status', 'mechRequests.lessorReceipt'];
     expect(mechOf(of('manager'))).toEqual([...MECH_OFFICE].sort());
     expect(mechOf(of('dispatcher'))).toEqual([...MECH_OFFICE, 'mechRequests.extend'].sort());

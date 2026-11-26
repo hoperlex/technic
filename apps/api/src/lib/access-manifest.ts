@@ -1302,7 +1302,7 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['mechRequests.extend'],
   },
-  // The lessor receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P5–P7): the office and the
+  // The lessor invoice (plan `docs/mechanization-lessor-receipt-plan.md`, P5–P7): the office and the
   // lessor attach (`.lessorReceipt`), the request visa circle decides and waives (`.approve`). Whose
   // visa it is, and which rental is the lessor's, are questions of the row, not of the route.
   'POST /api/v1/mech-requests/:id/lessor-receipt': {

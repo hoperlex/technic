@@ -23,7 +23,7 @@ export default defineConfig({
   plugins: [
     react(),
     versionFilePlugin(),
-    // The worker, CMaps and fonts the receipt preview loads by URL (lessor receipt plan, P14).
+    // The worker, CMaps and fonts the invoice preview loads by URL (lessor receipt plan, P14).
     pdfjsAssets(),
     { name: 'audit-pure-barrels', buildStart: checkPureBarrels },
   ],

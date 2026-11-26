@@ -53,7 +53,7 @@ export function mechRequest(overrides: Partial<MechRequestDto> = {}): MechReques
     deletedByName: null,
     // No extension request: the state every rental starts in (ADR 0171, stage 3).
     extension: null,
-    // No lessor receipt, not required: a «Новая» before take-in-work (lessor receipt plan, P3).
+    // No lessor invoice, not required: a «Новая» before take-in-work (lessor receipt plan, P3).
     lessorReceiptRequired: false,
     lessorReceipt: null,
     lessorReceiptVersionCount: 0,
@@ -68,7 +68,7 @@ export function mechSummary(overrides: Partial<MechRequestSummaryDto> = {}): Mec
 }
 
 /**
- * A receipt version as the mechanization lessor sees it (lessor receipt plan, P12): his own upload,
+ * An invoice version as the mechanization lessor sees it (lessor receipt plan, P12): his own upload,
  * waiting for the visa — no names and no reason but a rejection's are in this shape at all.
  */
 export function mechLessorReceiptView(
@@ -91,7 +91,7 @@ export function mechLessorReceiptView(
 
 /**
  * `GET /mech-requests/lessor-rentals[/:id]`: a running rental of the lessor taken into work after the
- * receipt's release, no receipt yet — the state in which his page asks him to act.
+ * invoice's release, no invoice yet — the state in which his page asks him to act.
  */
 export function mechLessorRental(
   overrides: Partial<MechLessorRentalDto> = {},

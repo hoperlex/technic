@@ -4,10 +4,10 @@ import type { HistoryFilesRenderer } from '@entities/request-history';
 import { MechLessorReceiptFileLink } from './MechLessorReceiptFileLink';
 
 /**
- * The files of the card's history lines (lessor receipt plan, P9, O8): a receipt version opens from
+ * The files of the card's history lines (lessor receipt plan, P9, O8): an invoice version opens from
  * the line that attached it, in the same preview as in the block.
  *
- * Only the request's own receipt versions become links — they are what this card may open, the
+ * Only the request's own invoice versions become links — they are what this card may open, the
  * archive included (O17). Every other named file stays its name as text, exactly as before: a
  * requester attachment removed since, or one closed by the archive, would otherwise be a link that
  * ends in a refusal. The history names files; whether a file still opens is the card's knowledge.

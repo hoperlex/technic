@@ -109,11 +109,11 @@ export const requestTypeEnum = pgEnum('request_type', [
 ]);
 export const containerKindEnum = pgEnum('container_kind', ['cont', 'truck']);
 /**
- * Единица ставки аренды малой механизации (миграция 0238): цена договаривается за час или за смену.
- * Enum, а не текст: значений ровно два, они входят в расчёт `actualUnits × rate` и в подписи итогов
- * — часы и смены между собой не складываются.
+ * The rate unit of a mechanization rental (migration 0238; `day` since 0432, ADR 0251): the price is
+ * agreed per hour, per shift or per day. An enum, not text: the values enter `actualUnits × rate`
+ * and the captions of the totals, and units of different values never add up.
  */
-export const mechRateUnitEnum = pgEnum('mech_rate_unit', ['hour', 'shift']);
+export const mechRateUnitEnum = pgEnum('mech_rate_unit', ['hour', 'shift', 'day']);
 /**
  * State of a rental extension request (ADR 0171, stage 3): the office asks, the site's visa holder
  * decides. Its own type rather than `vehicle_early_end_status`: the values coincide today, but the
@@ -125,8 +125,8 @@ export const mechExtensionStatusEnum = pgEnum('mech_extension_status', [
   'rejected',
 ]);
 /**
- * State of a version of the lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P1;
- * migration "mech_lessor_receipts"). `waived` is the «без чека» visa: a row without a file, born
+ * State of a version of the lessor's invoice (plan `docs/mechanization-lessor-receipt-plan.md`, P1;
+ * migration "mech_lessor_receipts"). `waived` is the «без счёта» visa: a row without a file, born
  * decided. Retiring a version never changes its status — "approved, then replaced" stays approved.
  */
 export const mechLessorReceiptStatusEnum = pgEnum('mech_lessor_receipt_status', [
@@ -272,7 +272,7 @@ export const counterpartyTypeEnum = pgEnum('counterparty_type', [
   // Сервисная компания (ADR 0085, миграция 0103): исполнитель заявок на обслуживание оргтехники.
   'service',
   // Lessor of small mechanization (migration 0237). Since ADR 0248 the type has accounts: its list
-  // is `mechRequests.read` and `mechRequests.lessorReceipt` (his rentals in work and their receipts),
+  // is `mechRequests.read` and `mechRequests.lessorReceipt` (his rentals in work and their invoices),
   // and no permission set can add to it. The base still accepts a `vehicle_lessor` as the lessor of
   // a rental (`mech_requests_lessor_type_check`) although the server assigns only this type
   // (ADR 0152 decision 6): such rentals are invisible to every lessor account.
@@ -7350,14 +7350,14 @@ export const mechRequests = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
-    // Completion waits for an approved or waived lessor receipt (lessor receipt plan, P3). Set by
-    // the server at `new → confirmed` and by attaching a receipt, never cleared: `false` is a rental
+    // Completion waits for an approved or waived lessor invoice (lessor receipt plan, P3). Set by
+    // the server at `new → confirmed` and by attaching an invoice, never cleared: `false` is a rental
     // taken into work before the release (or by the old code in the deploy window) and is not
-    // gated. A column, not a date cutoff: an old rental that later got a receipt must be gated too.
+    // gated. A column, not a date cutoff: an old rental that later got an invoice must be gated too.
     lessorReceiptRequired: boolean('lessor_receipt_required').notNull().default(false),
     // Which deal the request is on (lessor receipt plan, P12): the server adds one under the
     // request's lock when the lessor, the unit or the rate changes and on every entry into «Новая»;
-    // receipt versions are stamped with it, and the lessor sees only those of the current number.
+    // invoice versions are stamped with it, and the lessor sees only those of the current number.
     // A number on the request, not a retire marker on a version: a marker needs a current version,
     // and a deal moved after a revoked waiver would leave no boundary (review of W2).
     dealNo: integer('deal_no').notNull().default(1),
@@ -7570,7 +7570,7 @@ export const mechRequestExtensions = pgTable(
   }),
 );
 
-// ── The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P1; migration
+// ── The lessor's invoice (plan `docs/mechanization-lessor-receipt-plan.md`, P1; migration
 // "mech_lessor_receipts") ──
 // One row per version: O4 says one file, O8 says every version stays openable, and both hold when
 // the request has one CURRENT row (`retiredAt` empty, at most one per request) and retired ones. The

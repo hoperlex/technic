@@ -45,7 +45,7 @@
   (площадки отдела), [ADR 0106](0106-assignable-permission-grants.md) и
   [ADR 0112](0112-site-role-and-role-grants.md) (наборы полномочий, куда уезжает подпись)
 - Изменён: [ADR 0248](0248-mechanization-lessor-receipt.md) — decision 3 (completion of a rental
-  that requires the lessor's receipt waits for its approval or a «без чека» visa, given by the same
+  that requires the lessor's invoice waits for its approval or a «без счёта» visa, given by the same
   visa circle) and decision 4 (a counterparty-scoped role never passes the visa circle, although it
   has no axis of its own)
 
@@ -117,8 +117,8 @@
 
 _Changed by [ADR 0248](0248-mechanization-lessor-receipt.md) (09.11.2026):_ completion is no longer
 decided only by those who run the rental. A rental taken into work from that release on (and any
-rental that got a receipt) completes only with the lessor's receipt approved by the visa circle of
-decision 4 or with its «без чека» visa (`mechLessorReceiptCompletionBlocker`); the request visa
+rental that got an invoice) completes only with the lessor's invoice approved by the visa circle of
+decision 4 or with its «без счёта» visa (`mechLessorReceiptCompletionBlocker`); the request visa
 itself still holds only take-in-work.
 
 ### 4. Область подписи — своя сторона заявки, по оси роли
@@ -136,7 +136,7 @@ _Changed by [ADR 0248](0248-mechanization-lessor-receipt.md) (09.11.2026):_ the 
 `packages/contracts/src/mech-approval.ts` and answers «нет» for a counterparty-scoped role before
 the last row: an executor has no axis of its own either, and since the mechanization lessor has
 accounts the visa must not rest on his lacking `mechRequests.approve`. The same circle decides the
-lessor's receipt and its «без чека» visa.
+lessor's invoice and its «без счёта» visa.
 
 Ветвление идёт по **оси роли**, а не дизъюнкцией «совпал объект ИЛИ отдел». У роли отдела есть
 производный список площадок (ADR 0062/0144), и спроси мы по нему — руководитель отдела визировал бы

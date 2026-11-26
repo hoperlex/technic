@@ -21,7 +21,7 @@ const secondary = { fontSize: 12 } as const;
 function decisionWords(status: MechLessorReceiptLine['status'], by: string | null): string {
   const waiver = status === 'waived';
   if (by) return `${waiver ? 'Разрешил' : status === 'rejected' ? 'Отклонил' : 'Утвердил'} ${by}`;
-  return waiver ? 'Разрешено без чека' : status === 'rejected' ? 'Отклонён' : 'Утверждён';
+  return waiver ? 'Разрешено без счёта' : status === 'rejected' ? 'Отклонён' : 'Утверждён';
 }
 
 /**
@@ -68,7 +68,7 @@ export function MechLessorReceiptVersionLine({ line }: { line: MechLessorReceipt
 }
 
 /**
- * «Версии чека (n)» — the retired versions, newest first, collapsed: the current one is what is
+ * «Версии счёта (n)» — the retired versions, newest first, collapsed: the current one is what is
  * decided on, the rest is the evidence kept openable while the request lives (O8).
  *
  * `lines` is `null` while only the list row is on screen (its DTO carries the count, not the
@@ -89,7 +89,7 @@ export function MechLessorReceiptVersions({
       items={[
         {
           key: 'versions',
-          label: `Версии чека (${count})`,
+          label: `Версии счёта (${count})`,
           children: lines ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {lines.map((line) => (

@@ -33,14 +33,14 @@ import { emptyList, list } from './factories/common';
 import { mechRequest } from './factories/mech';
 
 /**
- * The lessor's receipt in the office portal (plan `docs/mechanization-lessor-receipt-plan.md`, W3).
+ * The lessor's invoice in the office portal (plan `docs/mechanization-lessor-receipt-plan.md`, W3).
  *
- * Pinned here: the menu offers each receipt action exactly to whom the server allows it, by the
+ * Pinned here: the menu offers each invoice action exactly to whom the server allows it, by the
  * server's permission list; «Завершить аренду» stays in the menu, disabled with the gate's words,
- * while the receipt is neither approved nor waived; the upload takes one PDF or JPG; the visa
+ * while the invoice is neither approved nor waived; the upload takes one PDF or JPG; the visa
  * window shows a JPEG as a picture and hands a PDF to pdf.js with one plain GET of the signed URL;
  * every decision but approval needs its reason; the window signs the version it shows and closes
- * on a 409 with the server's words; the marks and the filter «Чек»; a version opens from its
+ * on a 409 with the server's words; the marks and the filter «Счёт»; a version opens from its
  * history line.
  */
 
@@ -112,7 +112,7 @@ const REJECTED_V1 = version({
   retiredReason: 'replaced',
 });
 
-/** A running rental taken into work after the release: completion waits for its receipt. */
+/** A running rental taken into work after the release: completion waits for its invoice. */
 const rental = (over: Partial<MechRequestDto> = {}): MechRequestDto =>
   mechRequest({
     status: 'confirmed',
@@ -132,7 +132,7 @@ const rental = (over: Partial<MechRequestDto> = {}): MechRequestDto =>
     ...over,
   });
 
-/** The rental with a pending receipt, its first version rejected (card view: retired loaded). */
+/** The rental with a pending invoice, its first version rejected (card view: retired loaded). */
 const withPending = (over: Partial<MechRequestDto> = {}) =>
   rental({
     lessorReceipt: version(),
@@ -190,16 +190,16 @@ const receiptKeys = (user: AuthUser, request: MechRequestDto): string[] =>
 
 describe('menu by role', () => {
   it('the dispatcher attaches and replaces, and never decides', () => {
-    expect(receiptKeys(dispatcher, rental())).toEqual(['lessor-receipt:attach:Прикрепить чек']);
-    expect(receiptKeys(dispatcher, withPending())).toEqual(['lessor-receipt:attach:Заменить чек']);
+    expect(receiptKeys(dispatcher, rental())).toEqual(['lessor-receipt:attach:Прикрепить счёт']);
+    expect(receiptKeys(dispatcher, withPending())).toEqual(['lessor-receipt:attach:Заменить счёт']);
   });
 
-  it('the visa holder of the site checks a pending receipt; «Без чека» is then inside the window', () => {
-    expect(receiptKeys(holder, withPending())).toEqual(['lessor-receipt:review:Проверить чек']);
-    // Nothing to look at — no receipt, or a rejected one: «Без чека» is its own item.
-    expect(receiptKeys(holder, rental())).toEqual(['lessor-receipt:waive:Без чека']);
+  it('the visa holder of the site checks a pending invoice; «Без счёта» is then inside the window', () => {
+    expect(receiptKeys(holder, withPending())).toEqual(['lessor-receipt:review:Проверить счёт']);
+    // Nothing to look at — no invoice, or a rejected one: «Без счёта» is its own item.
+    expect(receiptKeys(holder, rental())).toEqual(['lessor-receipt:waive:Без счёта']);
     expect(receiptKeys(holder, rental({ lessorReceipt: version({ status: 'rejected' }) }))).toEqual(
-      ['lessor-receipt:waive:Без чека'],
+      ['lessor-receipt:waive:Без счёта'],
     );
   });
 
@@ -210,7 +210,7 @@ describe('menu by role', () => {
     ]);
     const waived = version({ status: 'waived', file: null, decidedAt: '2026-11-06T08:00:00.000Z' });
     expect(receiptKeys(holder, rental({ lessorReceipt: waived }))).toEqual([
-      'lessor-receipt:revoke-waiver:Отменить «без чека»',
+      'lessor-receipt:revoke-waiver:Отменить «без счёта»',
     ]);
   });
 
@@ -222,7 +222,7 @@ describe('menu by role', () => {
     expect(menu(dispatcher, withPending({ deletedAt: '2026-11-07T08:00:00.000Z' }))).toEqual([]);
   });
 
-  it('the «В аренде» tab keeps the receipt items', () => {
+  it('the «В аренде» tab keeps the invoice items', () => {
     const kept = menu(holder, withPending()).filter((item) =>
       MECH_RENTAL_ACTION_KEYS.includes(item.key),
     );
@@ -230,19 +230,19 @@ describe('menu by role', () => {
   });
 });
 
-describe('«Завершить аренду» waits for the receipt', () => {
+describe('«Завершить аренду» waits for the invoice', () => {
   const done = (request: MechRequestDto) =>
     menu(dispatcher, request).find((item) => item.key === 'status:done');
 
-  it('is shown disabled with the gate words while the receipt is not decided', () => {
+  it('is shown disabled with the gate words while the invoice is not decided', () => {
     expect(done(withPending())).toMatchObject({
       label: 'Завершить аренду',
       disabled: true,
-      disabledReason: 'Чек арендодателя ждёт визы — аренду завершают после неё',
+      disabledReason: 'Счёт арендодателя ждёт визы — аренду завершают после неё',
     });
     expect(done(rental())).toMatchObject({
       disabled: true,
-      disabledReason: 'Прикрепите чек арендодателя или получите визу «без чека»',
+      disabledReason: 'Прикрепите счёт арендодателя или получите визу «без счёта»',
     });
   });
 
@@ -255,7 +255,7 @@ describe('«Завершить аренду» waits for the receipt', () => {
   });
 
   it('other blocked moves are still dropped, not disabled', () => {
-    // Issued equipment is not cancelled: the item is absent, as before the receipt.
+    // Issued equipment is not cancelled: the item is absent, as before the invoice.
     expect(menu(dispatcher, withPending()).some((item) => item.key === 'status:cancelled')).toBe(
       false,
     );
@@ -273,7 +273,7 @@ const UPLOAD: RouteMap = {
   'POST /files/:id/complete': () =>
     json({
       id: 'f-new',
-      filename: 'чек.pdf',
+      filename: 'счёт.pdf',
       contentType: 'application/pdf',
       size: 2,
       status: 'active',
@@ -289,7 +289,7 @@ const reply = (request: MechRequestDto) =>
 
 describe('the upload window', () => {
   const pick = (name: string, type: string) => {
-    const input = screen.getByLabelText('Файл чека') as HTMLInputElement;
+    const input = screen.getByLabelText('Файл счёта') as HTMLInputElement;
     fireEvent.change(input, {
       target: { files: [new File([new Uint8Array([0x25, 0x50])], name, { type })] },
     });
@@ -307,18 +307,18 @@ describe('the upload window', () => {
       onClose: noop,
     });
 
-    const input = screen.getByLabelText('Файл чека') as HTMLInputElement;
+    const input = screen.getByLabelText('Файл счёта') as HTMLInputElement;
     expect(input.getAttribute('accept')).toBe(MECH_LESSOR_RECEIPT_ACCEPT);
     expect(input.multiple).toBe(false);
     // Inside antd's form `hidden` would lose to its stylesheet and show the browser's own picker.
     expect(window.getComputedStyle(input).display).toBe('none');
 
-    pick('чек.png', 'image/png');
+    pick('счёт.png', 'image/png');
     fireEvent.click(screen.getByRole('button', { name: 'Прикрепить' }));
     expect(await screen.findByText(MECH_LESSOR_RECEIPT_CONTENT_TYPE_MESSAGE)).toBeTruthy();
     expect(http.countOf('POST /files/upload-session')).toBe(0);
 
-    pick('чек.pdf', 'application/pdf');
+    pick('счёт.pdf', 'application/pdf');
     fireEvent.click(screen.getByRole('button', { name: 'Прикрепить' }));
     await waitFor(() => expect(http.countOf('POST /mech-requests/:id/lessor-receipt')).toBe(1));
     expect(http.lastCall('POST /mech-requests/:id/lessor-receipt')?.body).toEqual({
@@ -441,14 +441,14 @@ describe('the visa window', () => {
     });
   });
 
-  it('«Без чека» from the window needs its reason and goes to the waiver door', async () => {
+  it('«Без счёта» from the window needs its reason and goes to the waiver door', async () => {
     const request = withPending();
     const { http } = renderVisa(request, {
       'POST /mech-requests/:id/lessor-receipt/waiver': () => reply(request),
     });
-    fireEvent.click(within(dialog()).getByRole('button', { name: 'Без чека' }));
-    fireEvent.click(within(dialog()).getByRole('button', { name: 'Разрешить без чека' }));
-    expect(await screen.findByText('Укажите, почему аренду завершают без чека')).toBeTruthy();
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Без счёта' }));
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'Разрешить без счёта' }));
+    expect(await screen.findByText('Укажите, почему аренду завершают без счёта')).toBeTruthy();
     expect(http.countOf('POST /mech-requests/:id/lessor-receipt/waiver')).toBe(0);
   });
 
@@ -482,14 +482,14 @@ describe('decisions without a file', () => {
   it('the waiver goes to its own door without any file or version id', async () => {
     const request = rental();
     const http = renderReason(request, 'waive');
-    submit('Разрешить без чека');
-    expect(await screen.findByText('Укажите, почему аренду завершают без чека')).toBeTruthy();
+    submit('Разрешить без счёта');
+    expect(await screen.findByText('Укажите, почему аренду завершают без счёта')).toBeTruthy();
     expect(http.countOf('POST /mech-requests/:id/lessor-receipt/waiver')).toBe(0);
 
-    fireEvent.change(screen.getByLabelText('Почему аренду завершают без чека'), {
+    fireEvent.change(screen.getByLabelText('Почему аренду завершают без счёта'), {
       target: { value: 'Арендодатель закрылся' },
     });
-    submit('Разрешить без чека');
+    submit('Разрешить без счёта');
     await waitFor(() =>
       expect(http.countOf('POST /mech-requests/:id/lessor-receipt/waiver')).toBe(1),
     );
@@ -501,7 +501,7 @@ describe('decisions without a file', () => {
 
   it.each([
     ['revokeApproval', 'approved', 'Отозвать', 'Укажите причину отзыва', 'Причина отзыва'],
-    ['revokeWaiver', 'waived', 'Отменить «без чека»', 'Укажите причину отмены', 'Причина отмены'],
+    ['revokeWaiver', 'waived', 'Отменить «без счёта»', 'Укажите причину отмены', 'Причина отмены'],
   ] as const)('%s needs its reason and names the version it withdraws', async (...args) => {
     const [kind, status, button, required, label] = args;
     const request = rental({
@@ -535,23 +535,23 @@ describe('marks', () => {
   };
 
   it('pending, rejected and missing are marked next to the state', () => {
-    expect(marks(withPending())).toContain('чек ждёт визы');
+    expect(marks(withPending())).toContain('счёт ждёт визы');
     expect(marks(rental({ lessorReceipt: version({ status: 'rejected' }) }))).toContain(
-      'чек отклонён',
+      'счёт отклонён',
     );
-    expect(marks(rental())).toContain('нет чека');
+    expect(marks(rental())).toContain('нет счёта');
   });
 
   it('approved, not required and archived rows carry no mark', () => {
     const none = (request: MechRequestDto) =>
-      expect(marks(request).filter((text) => text?.startsWith('чек') || text === 'нет чека'));
+      expect(marks(request).filter((text) => text?.startsWith('счёт') || text === 'нет счёта'));
     none(rental({ lessorReceipt: version({ status: 'approved' }) })).toEqual([]);
     none(rental({ lessorReceiptRequired: false })).toEqual([]);
     none(withPending({ deletedAt: '2026-11-07T08:00:00.000Z' })).toEqual([]);
   });
 });
 
-describe('the filter «Чек»', () => {
+describe('the filter «Счёт»', () => {
   const DICTIONARIES: RouteMap = {
     'GET /objects': () => json(emptyList()),
     'GET /departments': () => json(emptyList()),
@@ -560,7 +560,7 @@ describe('the filter «Чек»', () => {
   };
 
   async function choose(option: string) {
-    const placeholder = await screen.findByText('Чек: любой');
+    const placeholder = await screen.findByText('Счёт: любой');
     fireEvent.mouseDown(placeholder.closest('.ant-select')!.querySelector('.ant-select-content')!);
     await waitFor(() => {
       const item = [...document.querySelectorAll('.ant-select-item-option')].find(
@@ -585,7 +585,7 @@ describe('the filter «Чек»', () => {
     );
   });
 
-  it('and in the journal, where «what closed without a receipt» is asked', async () => {
+  it('and in the journal, where «what closed without an invoice» is asked', async () => {
     const http = mockHttp({
       ...DICTIONARIES,
       'GET /mech-requests/history': () => json(list([])),
@@ -593,7 +593,7 @@ describe('the filter «Чек»', () => {
         json({ closed: 0, rentals: 0, cancelled: 0, days: 0, hours: 0, shifts: 0, cost: '0' }),
     });
     renderWithUser(<MechRequestsPage />, { route: '/mech?tab=history', user: holder });
-    await choose('без чека');
+    await choose('без счёта');
     await waitFor(() =>
       expect(http.lastCall('GET /mech-requests/history')?.query.get('lessorReceipt')).toBe(
         'waived',

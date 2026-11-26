@@ -7,12 +7,12 @@ import {
   MechLessorReceiptVersions,
 } from './MechLessorReceiptVersions';
 
-/** The windows a receipt button opens; who owns them is the caller's business (ADR 0140). */
+/** The windows an invoice button opens; who owns them is the caller's business (ADR 0140). */
 export interface MechLessorReceiptHandlers {
   attach: (request: MechRequestDto) => void;
   /** The visa window over the pending version. */
   review: (request: MechRequestDto) => void;
-  /** The «без чека» reason dialog, without a preview: there is nothing to look at. */
+  /** The «без счёта» reason dialog, without a preview: there is nothing to look at. */
   waive: (request: MechRequestDto) => void;
   revokeApproval: (request: MechRequestDto) => void;
   revokeWaiver: (request: MechRequestDto) => void;
@@ -23,7 +23,7 @@ export interface MechLessorReceiptHandlers {
  * `mechLessorReceiptAccess` of the contracts — the same blockers the server answers with (ADR 0223):
  * this markup only draws them.
  *
- * «Без чека» is a button of its own only when there is no file to look at (none, or the last one
+ * «Без счёта» is a button of its own only when there is no file to look at (none, or the last one
  * rejected, P6); over a pending file it lives inside the visa window, where the holder sees what he
  * waives.
  */
@@ -35,17 +35,17 @@ function receiptButtons(
   return [
     access.review && (
       <Button key="review" type="primary" size="small" onClick={() => on.review(request)}>
-        Проверить чек
+        Проверить счёт
       </Button>
     ),
     access.attach && (
       <Button key="attach" size="small" onClick={() => on.attach(request)}>
-        {access.replace ? 'Заменить чек' : 'Прикрепить чек'}
+        {access.replace ? 'Заменить счёт' : 'Прикрепить счёт'}
       </Button>
     ),
     access.waive && !access.review && (
       <Button key="waive" size="small" onClick={() => on.waive(request)}>
-        Без чека
+        Без счёта
       </Button>
     ),
     access.revokeApproval && (
@@ -55,21 +55,21 @@ function receiptButtons(
     ),
     access.revokeWaiver && (
       <Button key="revoke-waiver" size="small" onClick={() => on.revokeWaiver(request)}>
-        Отменить «без чека»
+        Отменить «без счёта»
       </Button>
     ),
   ].filter(Boolean);
 }
 
 /**
- * «Чек арендодателя» in the rental card (lessor receipt plan, P15): the current version — its file
+ * «Счёт арендодателя» in the rental card (lessor receipt plan, P15): the current version — its file
  * opens in the same preview as in the visa window, its status, who and when, the decision and its
- * words — then «Версии чека (n)» collapsed, and the buttons of whoever may act.
+ * words — then «Версии счёта (n)» collapsed, and the buttons of whoever may act.
  *
  * Without `access` the block is read-only: the archive and the journal show the evidence, and the
  * requester sees it too and acts on nothing (his access is all `false`). A rental that neither needs
- * a receipt nor ever had one shows no block at all — a heading over nothing would read as a missing
- * receipt.
+ * an invoice nor ever had one shows no block at all — a heading over nothing would read as a missing
+ * invoice.
  */
 export function MechLessorReceiptBlock({
   request,
@@ -92,17 +92,17 @@ export function MechLessorReceiptBlock({
   }
 
   return (
-    <section aria-label="Чек арендодателя" style={{ marginTop: 16 }}>
+    <section aria-label="Счёт арендодателя" style={{ marginTop: 16 }}>
       <Typography.Title level={5} style={{ marginTop: 0 }}>
-        Чек арендодателя
+        Счёт арендодателя
       </Typography.Title>
       {current ? (
         <MechLessorReceiptVersionLine line={officeReceiptLine(current)} />
       ) : (
         <Typography.Text type="secondary">
           {request.lessorReceiptRequired
-            ? 'Чек не прикреплён: аренду завершают после утверждённого чека или визы «без чека»'
-            : 'Чек не прикреплён. Аренда взята в работу до появления чека — завершают её и без него'}
+            ? 'Счёт не прикреплён: аренду завершают после утверждённого счёта или визы «без счёта»'
+            : 'Счёт не прикреплён. Аренда взята в работу до появления счёта — завершают её и без него'}
         </Typography.Text>
       )}
       {buttons.length > 0 && (
@@ -139,7 +139,7 @@ export function MechLessorReceiptStrip({
       type="warning"
       showIcon
       style={{ marginBottom: 12 }}
-      title="Чек арендодателя ждёт визы"
+      title="Счёт арендодателя ждёт визы"
       description={
         <>
           <Typography.Text type="secondary">
@@ -149,7 +149,7 @@ export function MechLessorReceiptStrip({
           {access.review && (
             <div style={{ marginTop: 8 }}>
               <Button type="primary" size="small" onClick={() => on.review(request)}>
-                Проверить чек
+                Проверить счёт
               </Button>
             </div>
           )}

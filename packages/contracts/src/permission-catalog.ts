@@ -269,14 +269,14 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     label: 'Запрашивает продление аренды механизации',
   },
   /*
-   * «Особые» like the extension, not «Ход»: attaching a receipt moves the rental nowhere, and the
+   * «Особые» like the extension, not «Ход»: attaching an invoice moves the rental nowhere, and the
    * catalog must not say that whoever holds it runs the rental — the lessor holds it and runs
    * nothing (lessor receipt plan, P4).
    */
   'mechRequests.lessorReceipt': {
     module: 'mech',
     action: 'manage',
-    label: 'Прикрепляет чек арендодателя к аренде механизации',
+    label: 'Прикрепляет счёт арендодателя к аренде механизации',
   },
   /*
    * Виза площадки — своё действие витрины, как у заказа ТС и недельной заявки: подпись не входит

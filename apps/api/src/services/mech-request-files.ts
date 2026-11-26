@@ -79,7 +79,7 @@ export async function unlinkMechRequestFiles(
  * The set is collected by a join BEFORE the request is deleted: the cascade removes the link rows,
  * and the guarded `hardDeleteFiles` then sees really free rows.
  *
- * The files of every lessor receipt version are collected too, retired ones included (lessor
+ * The files of every lessor invoice version are collected too, retired ones included (lessor
  * receipt plan, P13): purge is the administrator's explicit end of the request, files included
  * (ADR 0070). A version row holds its file by RESTRICT, which is why the order matters — the
  * request's deletion cascades the version rows first, then the files go. A «Новая» with versions is

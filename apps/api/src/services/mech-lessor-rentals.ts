@@ -9,7 +9,7 @@ import { mechLessorReceiptLessorState, type MechLessorReceiptRow } from './mech-
 /*
  * The mechanization lessor's own view of his rentals (lessor receipt plan, P12, O7): an allow-list
  * read by its own query, not the office's card with fields blanked. The query selects only what the
- * lessor is shown, plus the columns his predicate and his receipt block ask (`lessorId`, `status`,
+ * lessor is shown, plus the columns his predicate and his invoice block ask (`lessorId`, `status`,
  * `deletedAt`, `lessorReceiptRequired`, `dealNo`) —
  * the department, the requester, the comment and files, the visa, the cancel reason, the worked
  * units, the final cost and the extension are never even read for him, so a mapper bug cannot leak
@@ -35,7 +35,7 @@ const rentalSelect = {
   responsibleName: mechRequests.responsibleName,
   responsiblePhone: mechRequests.responsiblePhone,
   lessorReceiptRequired: mechRequests.lessorReceiptRequired,
-  // Read for the receipt block, never shown: the lessor's versions are those of this deal number.
+  // Read for the invoice block, never shown: the lessor's versions are those of this deal number.
   dealNo: mechRequests.dealNo,
 };
 
@@ -56,7 +56,7 @@ export type MechLessorRentalRow = Awaited<ReturnType<typeof mechLessorRentalQuer
 
 /**
  * One rental as the lessor sees it, field by field (P12): a field added to `MechRequestDto`
- * tomorrow does not reach the lessor unless someone writes it here. The receipt block is his
+ * tomorrow does not reach the lessor unless someone writes it here. The invoice block is his
  * audience's (versions of the current deal, `MechLessorReceiptVersionView`).
  */
 export function toMechLessorRentalDto(

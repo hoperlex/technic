@@ -8,7 +8,7 @@ import {
 } from '@technic/contracts';
 
 /**
- * One receipt version as the block and the version list draw it — whoever reads it. The office's
+ * One invoice version as the block and the version list draw it — whoever reads it. The office's
  * version (`MechLessorReceiptVersionDto`) and the lessor's (`MechLessorReceiptVersionView`, P12) are
  * different allow-lists; each is turned into this line by its own function below, so the markup is
  * one and cannot show the lessor a field his view does not carry: what is absent from the view is
@@ -18,7 +18,7 @@ export interface MechLessorReceiptLine {
   id: string;
   versionNo: number;
   status: MechLessorReceiptStatus;
-  /** `null` — a waiver: the «без чека» visa has no file. */
+  /** `null` — a waiver: the «без счёта» visa has no file. */
   file: AttachedFileDto | null;
   /** Who attached it: a name and its side for the office, the side alone for the lessor. */
   author: string;
@@ -84,5 +84,5 @@ export const RECEIPT_REASON_LABELS: Record<MechLessorReceiptStatus, string> = {
   pending: 'Комментарий',
   approved: 'Комментарий',
   rejected: 'Причина отказа',
-  waived: 'Почему без чека',
+  waived: 'Почему без счёта',
 };

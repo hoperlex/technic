@@ -1123,13 +1123,13 @@ export const PERMISSION_REQUIRES: Partial<Record<Permission, readonly Permission
   /*
    * Mechanization (plan `docs/mechanization-module-plan.md`, R9) — the commandant's case three
    * times over. Running a rental without reading it is a deal and an issue mark on a request the
-   * holder cannot see; an extension is agreeing to keep paying for the same unseen thing; a receipt
+   * holder cannot see; an extension is agreeing to keep paying for the same unseen thing; an invoice
    * is evidence of money attached to it. The manager and the dispatcher read the module by
    * construction — the rows are for free assembly, where a permission is granted alone.
    *
    * `.status` also requires `.lessorReceipt` (lessor receipt plan, P4), and this is the opposite
    * kind of row: not "the module is closed by reading" but "whoever runs a rental attaches its
-   * receipt". Barrier 4 checks it over every account's effective permissions after every operation
+   * invoice". Barrier 4 checks it over every account's effective permissions after every operation
    * that changes access, so no account holds the pair half, whether it comes from a role, a set or
    * both. Its refusal has its own words (`PERMISSION_REQUIREMENT_REASONS`): the generic "the account
    * does not see the module" would be false here.
@@ -1201,7 +1201,7 @@ export const PERMISSION_REQUIREMENT_REASONS: Partial<
   Record<Permission, Partial<Record<Permission, string>>>
 > = {
   'mechRequests.status': {
-    'mechRequests.lessorReceipt': 'Ведущий аренду прикрепляет и чек арендодателя',
+    'mechRequests.lessorReceipt': 'Ведущий аренду прикрепляет и счёт арендодателя',
   },
 };
 

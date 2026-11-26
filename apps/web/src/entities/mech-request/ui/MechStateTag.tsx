@@ -36,8 +36,8 @@ const STATE_COLORS: Record<MechStateTagKind, string> = {
 };
 
 /**
- * Receipt marks (lessor receipt plan, P16): «ждёт визы» gold like every signature the module waits
- * for; a refusal red — the lessor has something to fix; «нет чека» orange, as every wait on the
+ * Invoice marks (lessor receipt plan, P16): «ждёт визы» gold like every signature the module waits
+ * for; a refusal red — the lessor has something to fix; «нет счёта» orange, as every wait on the
  * portal's own side.
  */
 const RECEIPT_MARK_COLORS: Record<MechLessorReceiptMark, string> = {
@@ -47,7 +47,7 @@ const RECEIPT_MARK_COLORS: Record<MechLessorReceiptMark, string> = {
 };
 
 /**
- * The receipt mark alone: next to the state here, and on its own in the lessor's list, where every
+ * The invoice mark alone: next to the state here, and on its own in the lessor's list, where every
  * rental is «В работе» (O12) and a state tag would repeat one word on every row.
  */
 export function MechLessorReceiptMarkTag({ mark }: { mark: MechLessorReceiptMark }) {
@@ -74,7 +74,7 @@ export function MechLessorReceiptMarkTag({ mark }: { mark: MechLessorReceiptMark
 export function MechStateTag({ row }: { row: MechStateRow }) {
   const state = mechStateTag(row);
   // A second mark, not a fifth value of the state tag: the tag is the rental's single state (ADR
-  // 0171 decision 13), and a receipt can wait for a visa in any of them.
+  // 0171 decision 13), and an invoice can wait for a visa in any of them.
   const receipt = mechLessorReceiptMark(row);
   const status = (
     <Tag color={requestStatusColors[row.status]} style={{ marginInlineEnd: 0 }}>

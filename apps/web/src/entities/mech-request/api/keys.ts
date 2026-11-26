@@ -37,7 +37,7 @@ export const mechRequestKeys = createQueryKeys('mech-requests', {
   /**
    * The mechanization lessor's own list and card (lessor receipt plan, P12): other doors and
    * another DTO, so families of their own — an office card and a lessor card of the same id must
-   * never answer for each other. Under the module's root on purpose: the receipt doors drop the
+   * never answer for each other. Under the module's root on purpose: the invoice doors drop the
    * whole root when they settle, and the lessor's attach must refresh his list and card with it.
    */
   lessorList: (params: Query) => ['lessor-list', params],

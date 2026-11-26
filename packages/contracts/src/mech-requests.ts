@@ -33,7 +33,7 @@ import {
 } from './mech-approval';
 import type { MechExtensionStatus, MechRequestExtensionDto } from './mech-request-extensions';
 // The only runtime import between the two files, and it goes this way only: the transition barrier
-// asks the receipt's completion gate. `mech-lessor-receipts.ts` never imports this file at runtime.
+// asks the invoice's completion gate. `mech-lessor-receipts.ts` never imports this file at runtime.
 import {
   MECH_LESSOR_RECEIPT_FILTERS,
   mechLessorReceiptCompletionBlocker,
@@ -195,11 +195,11 @@ export type MechTransitionState = MechRentalState & {
    */
   extension?: { status: MechExtensionStatus } | null;
   /**
-   * Completion waits for an approved or waived lessor receipt (lessor receipt plan, P3); `false` —
+   * Completion waits for an approved or waived lessor invoice (lessor receipt plan, P3); `false` —
    * a rental taken into work before the release, not gated.
    *
-   * Both receipt fields are REQUIRED, unlike `extension`: the barrier reads them, and an optional
-   * field would let a caller that forgot to load the receipt pass the completion gate. The server
+   * Both invoice fields are REQUIRED, unlike `extension`: the barrier reads them, and an optional
+   * field would let a caller that forgot to load the invoice pass the completion gate. The server
    * loads the current version under the request's lock on every transition; the portal reads it
    * from the DTO.
    */
@@ -453,7 +453,7 @@ export const mechRequestListQuerySchema = baseListQuery(MECH_REQUEST_SORT_FIELDS
    */
   approved: booleanFlagSchema,
   /**
-   * The filter «Чек» (lessor receipt plan, P16): the visa holder finds the receipts waiting for
+   * The filter «Счёт» (lessor receipt plan, P16): the visa holder finds the invoices waiting for
    * him by it, the office the rentals still without one.
    */
   lessorReceipt: z.enum(MECH_LESSOR_RECEIPT_FILTERS).optional(),
@@ -532,7 +532,7 @@ export const mechRequestHistoryQuerySchema = baseListQuery(MECH_HISTORY_SORT_FIE
   periodFrom: dateOnlySchema.optional(),
   periodTo: dateOnlySchema.optional(),
   approved: booleanFlagSchema,
-  /** «Чек» in the journal: «what closed without a receipt» is asked of closed rentals too. */
+  /** «Счёт» in the journal: «what closed without an invoice» is asked of closed rentals too. */
   lessorReceipt: z.enum(MECH_LESSOR_RECEIPT_FILTERS).optional(),
 });
 export type MechRequestHistoryQuery = z.infer<typeof mechRequestHistoryQuerySchema>;
@@ -544,8 +544,8 @@ export type MechRequestHistoryQuery = z.infer<typeof mechRequestHistoryQuerySche
  *
  * Три особенности, и каждая — находка ревью плана:
  *
- * 1. **часы и смены не складываются**: ставка задаётся за час либо за смену (Р7), и «120» без
- *    единицы не значит ничего — поэтому чисел два, по одному на значение `rate_unit`;
+ * 1. **hours, shifts and days do not add up**: the rate is per hour, per shift or per day (Р7,
+ *    ADR 0251), and «120» without a unit means nothing — so there is one number per `rate_unit`;
  * 2. **арендой считается только выданное** (`actual_from IS NOT NULL`): отменённая до подачи
  *    заявка арендой не была, и в `rentals` её включать нельзя — при том что закрытой она является
  *    и в `closed` с `cancelled` входит;
@@ -564,6 +564,12 @@ export interface MechRequestHistorySummaryDto {
   hours: number;
   /** Отработано там, где ставка за смену. */
   shifts: number;
+  /**
+   * Worked where the rate is per day (ADR 0251). Not `days`: that one is the calendar span of the
+   * rentals, which a day rate's billed units may differ from (a machine idle for a day the lessor
+   * does not bill). Optional for the client only — an API older than ADR 0251 does not send it.
+   */
+  dayUnits?: number;
   /**
    * Сумма `final_cost`, ₽ — **строкой**: `numeric(14,2)` складывает база точно, а перевод суммы в
    * число с плавающей точкой по дороге к экрану даёт «9600.000000000001» на ровном месте. Строка
@@ -751,7 +757,7 @@ export type RevokeMechIssueInput = z.infer<typeof revokeMechIssueSchema>;
 
 /*
  * The visa circle (`MechApprovalSubject`, `MechApprovalTarget`, `canApproveMechRequest`) lives in
- * `mech-approval.ts`: the lessor receipt's decisions ask it too, and that file must not import this
+ * `mech-approval.ts`: the lessor invoice's decisions ask it too, and that file must not import this
  * one at runtime (see the header there). Re-exported here so that every caller keeps its import.
  */
 export {
@@ -879,15 +885,17 @@ export function calcMechCost(rate: number | null, units: number): number | null 
 }
 
 /**
- * Отработанное строкой с единицей: «26 ч», «3 смены», «2,5 смены».
+ * The worked amount with its unit: «26 ч», «3 смены», «2,5 смены», «4 сут.».
  *
- * Через `workedAmountLabel` заказа ТС, а не своей копией: русское склонение «смена / смены / смен»
- * — это правило языка, а не модуля, и вторая его копия разошлась бы с первой на первом же «11
- * смен». Единицы переименовываются здесь ровно потому, что у соседа они отвечают на другой вопрос
- * («чем меряют отработанное», отсюда множественное число), а у механизации одна колонка служит и
- * ставке, и факту.
+ * Hours and shifts go through the vehicle module's `workedAmountLabel` rather than a copy: the
+ * declension «смена / смены / смен» is a rule of the language, and a second copy would drift on the
+ * first «11 смен». Days are abbreviated like hours («сут.»): «сутки» has no singular, and «1 сутки /
+ * 2 суток / 21 сутки» next to «1,5 суток» would be one more declension table for no gain.
  */
 export function mechUnitsLabel(unit: MechRateUnit, amount: number): string {
+  if (unit === 'day') {
+    return `${amount.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} сут.`;
+  }
   return workedAmountLabel(unit === 'hour' ? 'hours' : 'shifts', amount);
 }
 
@@ -976,10 +984,10 @@ export const MECH_NO_COMPLETED_STATUS_MESSAGE = 'У аренды механиз�
  *    **The rollback «Выполнена» → «В работе» is not locked by it, and that is no relaxation**: the
  *    rental took place, the rollback opens it to correct the fact, and requests older than the visa
  *    have no signature and nowhere to get one;
- * 2. **completion without an approved or waived lessor receipt** (lessor receipt plan, P3) — the
+ * 2. **completion without an approved or waived lessor invoice** (lessor receipt plan, P3) — the
  *    gate is `mechLessorReceiptCompletionBlocker`, asked for every completion including the repeat
  *    after «Вернуть в работу»; a rental with `lessorReceiptRequired = false` passes. It is a state
- *    barrier: nobody bypasses it, the administrator closes a stuck rental by the «без чека» visa;
+ *    barrier: nobody bypasses it, the administrator closes a stuck rental by the «без счёта» visa;
  * 3. **cancellation after the issue** — the issued equipment will be billed, and a cancellation
  *    would mean the rental never happened. The cure is completion with the actual dates;
  * 4. **a return to «Новая» after the issue** — its own barrier, not a consequence of the third.
@@ -1055,9 +1063,9 @@ export function mechEditScope(row: MechRentalState & { deletedAt: string | null 
 export type MechDeleteScope = 'hard' | 'archive' | 'none';
 
 /**
- * `lessorReceiptVersionCount` — every lessor receipt version of the request, the current one
+ * `lessorReceiptVersionCount` — every lessor invoice version of the request, the current one
  * included (lessor receipt plan, P8). A «Новая» that has versions is ARCHIVED, not hard-deleted: a
- * rental returned to «Новая» before issue may hold an approved prepayment receipt, and a hard delete
+ * rental returned to «Новая» before issue may hold an approved prepayment invoice, and a hard delete
  * would take every version and file at once (O8 keeps them). The argument is required on purpose — a
  * caller that forgot the count must not compile into `hard`.
  */
@@ -1154,7 +1162,7 @@ export interface MechRequestDto {
    */
   extension: MechRequestExtensionDto | null;
   /*
-   * The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P3, P15, P16). Four flat
+   * The lessor's invoice (plan `docs/mechanization-lessor-receipt-plan.md`, P3, P15, P16). Four flat
    * fields, the same in list rows and in the card, so the DTO itself is the `MechTransitionState`
    * and the `MechLessorReceiptTarget` the barrier, the mark and the menu ask — a list row opens the
    * card and is shown there until the fresh read arrives.
@@ -1162,7 +1170,7 @@ export interface MechRequestDto {
    * `MechRequestDto` is the office's DTO: the lessor never receives it (his doors answer
    * `MechLessorRentalDto`, P12), so the versions here are the office view with names.
    */
-  /** Completion waits for a receipt; `false` — a rental taken into work before the release. */
+  /** Completion waits for an invoice; `false` — a rental taken into work before the release. */
   lessorReceiptRequired: boolean;
   /** The current version; `null` — none (never attached, or retired by a deal change). */
   lessorReceipt: MechLessorReceiptVersionDto | null;
@@ -1226,17 +1234,17 @@ export const mechRequestChangeLabels: Record<string, string> = {
   extendApproveComment: 'Комментарий к визе продления',
   extendRejectReason: 'Причина отказа в продлении',
   extendDropReason: 'Почему запрос продления снят',
-  // The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P9). The version number
+  // The lessor's invoice (plan `docs/mechanization-lessor-receipt-plan.md`, P9). The version number
   // goes as a list row: a version has no "before". The replaced version names its number and the
   // status it had, so a replaced approval reads as one.
-  lessorReceiptVersion: 'Версия чека',
-  lessorReceiptReplaced: 'Заменённая версия чека',
-  lessorReceiptApproveComment: 'Комментарий к визе чека',
-  lessorReceiptRejectReason: 'Причина отказа в чеке',
+  lessorReceiptVersion: 'Версия счёта',
+  lessorReceiptReplaced: 'Заменённая версия счёта',
+  lessorReceiptApproveComment: 'Комментарий к визе счёта',
+  lessorReceiptRejectReason: 'Причина отказа в счёте',
   lessorReceiptRevoked: 'Отозвано',
   lessorReceiptRevokeReason: 'Причина отзыва',
-  lessorReceiptWaiveReason: 'Почему без чека',
-  lessorReceiptRetireReason: 'Почему чек снят',
+  lessorReceiptWaiveReason: 'Почему без счёта',
+  lessorReceiptRetireReason: 'Почему счёт снят',
   // Завершение (`mech_request.complete`), в том числе повторное после отката: прежние числа не
   // сохранит ничто, кроме этой записи, а именно их спрашивают, разбирая счёт.
   actualTo: 'Возвращена',

@@ -43,7 +43,7 @@ export const MECH_LESSOR_DOOR_GUARD_MARK = 'scope:mech-lessor-door';
  * request; an unauthenticated call still answers 401 here.
  *
  * Installed through `onRoute`, before the module's first route: the guard becomes each route's own
- * `preValidation`, so it covers the extension and receipt doors registered on the same instance and
+ * `preValidation`, so it covers the extension and invoice doors registered on the same instance and
  * is visible in the route's options, where the route authorization test finds it by its mark.
  * Every executor type is refused, not only the mechanization lessor: another type holds no
  * permission of this module today, and the guard must not rely on that.

@@ -125,17 +125,18 @@ export function HistoryTab() {
   );
 
   /**
-   * Итог журнала. Два числа в нём объяснены прямо в подписи, потому что иначе их читают неверно:
+   * The journal's totals. Two of its numbers are explained right in the caption, because otherwise
+   * they are misread:
    *
-   * «Из них с выдачей» — сколько закрытых заявок были **арендой**: отменённая до подачи заявка
-   * закрыта, но техника по ней не выезжала, и в расходы она не идёт. Разностью с «Отменено» это
-   * число не является — отменить заявку можно и после выдачи.
+   * «Из них с выдачей» — how many closed requests were a **rental**: a request cancelled before
+   * delivery is closed, but no machine went out, and it is not an expense. It is not the difference
+   * with «Отменено» either — a request can be cancelled after the issue too.
    *
-   * **Часы и смены — два числа, а не одно.** Ставка задаётся за час либо за смену (Р7), и сложить
-   * их нельзя: «120» без единицы не значит ничего. Единица стоит в подписи, а не в значении —
-   * число рядом с ней остаётся числом. Не встретившаяся в отборе единица не показывается вовсе:
-   * «Отработано смен: 0» в журнале, где смен не было ни одной, читается как «отработали ноль», то
-   * есть как простой техники.
+   * **Hours, shifts and days are separate numbers.** The rate is per hour, per shift or per day
+   * (Р7, ADR 0251), and they cannot be added: «120» without a unit means nothing. The unit sits in
+   * the caption, not in the value, so the number stays a number. A unit absent from the selection
+   * is not shown at all: «Отработано смен: 0» in a journal with no shift rentals reads as "worked
+   * zero", that is, as idle machinery.
    */
   const worked = (value: number) => value.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
   const summaryItems = [
@@ -145,6 +146,7 @@ export function HistoryTab() {
     { label: 'Дней аренды', value: summary?.days ?? 0 },
     ...(summary?.hours ? [{ label: 'Отработано часов', value: worked(summary.hours) }] : []),
     ...(summary?.shifts ? [{ label: 'Отработано смен', value: worked(summary.shifts) }] : []),
+    ...(summary?.dayUnits ? [{ label: 'Отработано суток', value: worked(summary.dayUnits) }] : []),
     { label: 'Стоимость', value: mechMoneySum(summary?.cost) },
   ];
 

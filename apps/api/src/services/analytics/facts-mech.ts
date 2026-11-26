@@ -210,8 +210,8 @@ graded AS (
     /*
      * ДЕНЬГИ (Р9) — итогом аренды; по дням их делит следующий шаг. Факт — final_cost у заявки,
      * чей статус контракт считает фактом. Оценка незакрытой одна: rate × actual_units, а без
-     * отработанных единиц — rate × дни присутствия, и ТОЛЬКО при ставке за смену: смена и день
-     * сопоставимы, а сколько часов в дне — не знает никто. Часовая ставка без actual_units не
+     * отработанных единиц — rate × дни присутствия, и ТОЛЬКО при ставке за смену или за сутки
+     * (ADR 0251): смена и сутки сопоставимы с днём присутствия, а сколько часов в дне — не знает никто. Часовая ставка без actual_units не
      * даёт оценки вовсе (Р29): «500 ₽/ч, 5 дней» превратились бы в 2 500 ₽ вместо примерно
      * 20 000 — число правдоподобное и потому неопровержимое. Такая аренда идёт в счётчик «без
      * цены»: ноль в денежной клетке обязан означать бесплатную работу и ничего больше, и ровно
@@ -231,7 +231,7 @@ graded AS (
                                                     AS priced
       FROM span s
       CROSS JOIN LATERAL (SELECT CASE WHEN s.actual_units IS NOT NULL THEN s.rate * s.actual_units
-                                      WHEN s.rate_unit = 'shift'      THEN s.rate * s.total_days
+                                      WHEN s.rate_unit IN ('shift', 'day') THEN s.rate * s.total_days
                                  END AS total) e
 ),
 atoms AS (
@@ -252,7 +252,11 @@ atoms AS (
            g.id                                     AS request_id,
            g.num                                    AS request_num,
            g.status                                 AS request_status,
-           /* Единица ставки решает, какое поле наполняется; складывать их между собой нельзя. */
+           /*
+            * Единица ставки решает, какое поле наполняется; складывать их между собой нельзя.
+            * Сутки (ADR 0251) своего счётчика в своде не получили: дни присутствия (mechDays)
+            * отвечают за них, а деньги считаются по ставке так же, как у смены.
+            */
            (${perDay(sql`CASE WHEN g.rate_unit = 'shift' THEN coalesce(g.actual_units, 0)::numeric
                               ELSE 0::numeric END`)})::text           AS shifts,
            (${perDay(sql`CASE WHEN g.rate_unit = 'hour' THEN coalesce(g.actual_units, 0)::numeric

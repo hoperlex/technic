@@ -97,19 +97,19 @@ type MechCommonFilters = Pick<
   // отборов: визирующий начинает день с неподписанных, а журнал отвечает на вопрос «что закрылось
   // без подписи» — про заявки, прошедшие до появления визы или взятые в работу откатом.
   | 'approved'
-  // The receipt (lessor receipt plan, P16): the visa holder looks for receipts waiting for him in the
-  // working list, and «what closed without a receipt» is a question to the journal.
+  // The invoice (lessor receipt plan, P16): the visa holder looks for invoices waiting for him in the
+  // working list, and «what closed without an invoice» is a question to the journal.
   | 'lessorReceipt'
 >;
 
 /**
- * Whether the request has a current lessor receipt version, optionally of one status.
+ * Whether the request has a current lessor invoice version, optionally of one status.
  *
  * `EXISTS` over the current row, never a join: the count query of the list (`GET /` in
  * `routes/mech-requests.ts`) joins only the site and the model, and a condition that relied on a
  * join of `mechBaseQuery` would break it. The outer row is named by its TABLE (`mech_requests.id`),
  * not by the column object: drizzle rewrites column references of a single-table select to bare
- * names, and a bare `id` inside this subquery would resolve to the receipt's own `id`.
+ * names, and a bare `id` inside this subquery would resolve to the invoice's own `id`.
  */
 function currentLessorReceiptExists(status?: MechLessorReceiptStatus): SQL {
   return sql`EXISTS (
@@ -120,7 +120,7 @@ function currentLessorReceiptExists(status?: MechLessorReceiptStatus): SQL {
 }
 
 /**
- * The filter «Чек» (P16). `missing` is a rental that requires a receipt and has no current version;
+ * The filter «Счёт» (P16). `missing` is a rental that requires an invoice and has no current version;
  * a rental that does not require one matches no value — it is not waiting for anything.
  */
 export function lessorReceiptWhere(filter: MechLessorReceiptFilter | undefined): SQL | undefined {
@@ -315,6 +315,8 @@ export async function loadMechHistorySummary(
         sum(${mechRequests.actualUnits}) FILTER (WHERE ${mechRequests.rateUnit} = 'hour'), 0)`,
       shifts: sql<string>`coalesce(
         sum(${mechRequests.actualUnits}) FILTER (WHERE ${mechRequests.rateUnit} = 'shift'), 0)`,
+      dayUnits: sql<string>`coalesce(
+        sum(${mechRequests.actualUnits}) FILTER (WHERE ${mechRequests.rateUnit} = 'day'), 0)`,
       // Приведение к `numeric(20,2)` — ради ДВУХ знаков в ответе всегда: пустой отбор иначе отдал
       // бы «0» там, где соседняя строка отдаёт «9600.00», и портал показал бы две разные валюты.
       // Ширина взята с запасом от колонки (`numeric(14,2)`): сумма тысяч заявок в саму колонку не
@@ -336,6 +338,7 @@ export async function loadMechHistorySummary(
     days: await loadMechHistoryDays(where),
     hours: Number(totals?.hours ?? 0),
     shifts: Number(totals?.shifts ?? 0),
+    dayUnits: Number(totals?.dayUnits ?? 0),
     cost: totals?.cost ?? '0.00',
   };
 }

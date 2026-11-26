@@ -9,7 +9,7 @@ import { MechLessorReceiptUploadModal } from '../ui/MechLessorReceiptUploadModal
 import { MechLessorReceiptVisaModal } from '../ui/MechLessorReceiptVisaModal';
 
 /**
- * The receipt windows of one call site (ADR 0140): the upload, the visa window and the reason
+ * The invoice windows of one call site (ADR 0140): the upload, the visa window and the reason
  * dialog. Like the rest of the module's actions, one set lives per place — the windows of a list row
  * at the tab, the windows of the card inside the card — because one window drawn in two places is
  * two instances, and the second hides under the first.

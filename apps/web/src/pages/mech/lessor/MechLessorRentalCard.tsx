@@ -30,10 +30,10 @@ import { ViewFields, ViewModal, type ViewField } from '@shared/ui';
 import { lessorAttachHint, lessorRentalMark, mechLessorRentalAccess } from './lessorRental';
 
 /*
- * The lessor's rental card (lessor receipt plan, P12, O7): the fields of his DTO and his receipt.
+ * The lessor's rental card (lessor receipt plan, P12, O7): the fields of his DTO and his invoice.
  * Built from his allow-list alone — not the office card with fields hidden: there is no department,
  * requester, comment, files, visa, worked units, final cost, extension or history here, because his
- * DTO does not carry them, and the receipt lines are his view's (no staff names, no reason but a
+ * DTO does not carry them, and the invoice lines are his view's (no staff names, no reason but a
  * rejection's).
  */
 
@@ -113,9 +113,9 @@ function cardFields(rental: MechLessorRentalDto, today: string): ViewField[] {
 }
 
 /**
- * «Чек арендодателя» as the lessor sees it: the current version of this deal, his one button and
+ * «Счёт арендодателя» as the lessor sees it: the current version of this deal, his one button and
  * the earlier versions of the same deal, each file openable (O8 within the deal). The button is
- * `mechLessorReceiptAccess` — «Заменить чек» only over a pending or rejected version (O13); over an
+ * `mechLessorReceiptAccess` — «Заменить счёт» only over a pending or rejected version (O13); over an
  * approved one the hint names who replaces it instead of a button that would end in a refusal.
  */
 function LessorReceiptBlock({
@@ -132,23 +132,23 @@ function LessorReceiptBlock({
 }) {
   const { current, retired, required } = rental.lessorReceipt;
   return (
-    <section aria-label="Чек арендодателя" style={{ marginTop: 16 }}>
+    <section aria-label="Счёт арендодателя" style={{ marginTop: 16 }}>
       <Typography.Title level={5} style={{ marginTop: 0 }}>
-        Чек арендодателя
+        Счёт арендодателя
       </Typography.Title>
       {current ? (
         <MechLessorReceiptVersionLine line={lessorReceiptLine(current)} />
       ) : (
         <Typography.Text type="secondary">
           {required
-            ? 'Чек не прикреплён. Прикрепите скан или фото чека: аренду закрывают после его утверждения'
-            : 'Чек не прикреплён'}
+            ? 'Счёт не прикреплён. Прикрепите скан или фото счёта: аренду закрывают после его утверждения'
+            : 'Счёт не прикреплён'}
         </Typography.Text>
       )}
       {access?.attach ? (
         <div style={{ marginTop: 8 }}>
           <Button type="primary" size="small" onClick={() => onAttach(access.replace)}>
-            {access.replace ? 'Заменить чек' : 'Прикрепить чек'}
+            {access.replace ? 'Заменить счёт' : 'Прикрепить счёт'}
           </Button>
         </div>
       ) : (
@@ -177,7 +177,7 @@ export function MechLessorRentalCard({
   const { user, can } = useAuth();
 
   /*
-   * The card reads itself: the receipt's decision may arrive while it is open, and the attach door
+   * The card reads itself: the invoice's decision may arrive while it is open, and the attach door
    * needs the version of now, not of the list row (R21). A 404 means the rental left «В работе» or
    * changed hands in the meantime — the row is still drawn, without anything to do.
    */

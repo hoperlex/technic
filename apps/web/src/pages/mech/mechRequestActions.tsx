@@ -53,7 +53,7 @@ export function useMechRequestActions({
    */
   extensionStrip: (request: MechRequestDto) => ReactNode;
   /**
-   * The card's lessor receipt (lessor receipt plan, P15): the strip «Чек арендодателя ждёт визы»
+   * The card's lessor invoice (lessor receipt plan, P15): the strip «Счёт арендодателя ждёт визы»
    * above the fields and the block below them, with the buttons of the menu from the same
    * `mechLessorReceiptAccess`.
    */

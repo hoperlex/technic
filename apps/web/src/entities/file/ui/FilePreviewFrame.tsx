@@ -20,7 +20,7 @@ export interface FileRef {
  * - `frame` — the browser's own viewer in an `<iframe>`, as every attachment of the portal is
  *   shown today. Desktop browsers draw it; Android Chrome shows an empty frame;
  * - `pages` — the portal draws every page itself with pdf.js (lessor receipt plan, O11, P14). Only
- *   the receipt preview asks for it in this release, so no other screen changes behaviour; the
+ *   the invoice preview asks for it in this release, so no other screen changes behaviour; the
  *   library is loaded on the first such preview, never with the screen around it.
  */
 export type PdfPreviewMode = 'frame' | 'pages';

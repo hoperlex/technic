@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
+import { moscowDateKeyOf, shiftDateKey, type MechRateUnit } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 import { readWorkbook } from '../src/lib/xlsx';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -68,6 +68,7 @@ const PLANNED_TO = shiftDateKey(TODAY, 14);
  */
 const HOUR_MODEL_CODE = `mech-journal-hour-${RUN}`;
 const SHIFT_MODEL_CODE = `mech-journal-shift-${RUN}`;
+const DAY_MODEL_CODE = `mech-journal-day-${RUN}`;
 
 interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -86,7 +87,7 @@ interface Ctx {
   };
   lessorId: string;
   /** Модели справочника: почасовая аренда заказывает одну, сменная — другую. */
-  models: { hour: string; shift: string };
+  models: { hour: string; shift: string; day: string };
   /** Заявки, заведённые один раз на весь файл: журнал читают, а не правят. */
   requests: {
     /** Аренда с почасовой ставкой, выданная и возвращённая одним днём. */
@@ -155,7 +156,7 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`DELETE FROM counterparties WHERE comment = ${CODE_PREFIX}`);
   // Модели — после заявок: ссылка стоит с `ON DELETE RESTRICT`.
   await db.execute(
-    sql`DELETE FROM mech_models WHERE code IN (${HOUR_MODEL_CODE}, ${SHIFT_MODEL_CODE})`,
+    sql`DELETE FROM mech_models WHERE code IN (${HOUR_MODEL_CODE}, ${SHIFT_MODEL_CODE}, ${DAY_MODEL_CODE})`,
   );
 }
 
@@ -281,9 +282,9 @@ async function seedNew(input: SeedInput): Promise<string> {
 }
 
 /**
- * Completion waits for an approved or waived lessor receipt (lessor receipt plan, P3) — a
+ * Completion waits for an approved or waived lessor invoice (lessor receipt plan, P3) — a
  * precondition of this file's scenes, not their subject: the gate and its rules live in
- * `mech-lessor-receipt.db.test.ts`. The rental is made one that does not require a receipt, as every
+ * `mech-lessor-receipt.db.test.ts`. The rental is made one that does not require an invoice, as every
  * rental taken into work before the release is, by the column alone: the request's version does not
  * move, so the versions the scenes read stay what they were.
  */
@@ -321,7 +322,7 @@ async function approve(id: string): Promise<void> {
 
 /** Действующая аренда: договорённость и выдача приезжают вместе с переходом в «В работе» (Р2). */
 async function seedRunning(
-  input: SeedInput & { rateUnit?: 'hour' | 'shift'; actualFrom?: string },
+  input: SeedInput & { rateUnit?: MechRateUnit; actualFrom?: string },
 ): Promise<string> {
   const id = await seedNew(input);
   await approve(id);
@@ -329,7 +330,7 @@ async function seedRunning(
     status: 'confirmed',
     deal: {
       lessorId: ctx.lessorId,
-      rate: input.rateUnit === 'shift' ? 18_000 : 1200,
+      rate: input.rateUnit === 'shift' ? 18_000 : input.rateUnit === 'day' ? 25_000 : 1200,
       rateUnit: input.rateUnit ?? 'hour',
     },
     actualFrom: input.actualFrom ?? TODAY,
@@ -340,7 +341,7 @@ async function seedRunning(
 /** Закрытая аренда: факт предъявлен целиком (`done_check`). */
 async function seedDone(
   input: SeedInput & {
-    rateUnit?: 'hour' | 'shift';
+    rateUnit?: MechRateUnit;
     actualFrom?: string;
     actualUnits: number;
     finalCost: number;
@@ -387,6 +388,7 @@ interface Summary {
   days: number;
   hours: number;
   shifts: number;
+  dayUnits: number;
   cost: string;
 }
 
@@ -472,6 +474,7 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
     ctx.models = {
       hour: await model(HOUR_MODEL_CODE, 'Виброплита'),
       shift: await model(SHIFT_MODEL_CODE, 'Компрессор'),
+      day: await model(DAY_MODEL_CODE, 'Генератор'),
     };
 
     // Подопытные заводятся один раз: журнал читают, а не правят, и каждый тест спрашивает один и
@@ -638,6 +641,7 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
       days: 6,
       hours: 8,
       shifts: 3,
+      dayUnits: 0,
       cost: '63600.00',
     });
 
@@ -657,6 +661,7 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
       days: 5,
       hours: 0,
       shifts: 3,
+      dayUnits: 0,
       cost: '54000.00',
     });
   });
@@ -753,5 +758,58 @@ describe.skipIf(!DB_URL)('механизация: журнал закрытых,
         '63600.00',
       ]),
     );
+  });
+  /*
+   * A day rate (ADR 0251) on a site of its own, seeded last: every test above asks about the shared
+   * rows, and this one must not move their numbers. The manager has no area, so the site filter is
+   * what narrows his question.
+   */
+  it('сутки — своя единица: своё число в итоге и своя колонка в выгрузке', async () => {
+    const dayObject = await newObject('day');
+    const id = await seedDone({
+      objectId: dayObject,
+      mechModelId: ctx.models.day,
+      rateUnit: 'day',
+      actualFrom: FOUR_DAYS_AGO,
+      actualUnits: 4.5,
+      finalCost: 112_500,
+    });
+    const office = await headersOf(ctx.users.manager);
+
+    const summary = await summaryOf(office, `placeObjectId=${dayObject}`);
+    expect(summary).toEqual({
+      closed: 1,
+      rentals: 1,
+      cancelled: 0,
+      days: 5,
+      hours: 0,
+      shifts: 0,
+      dayUnits: 4.5,
+      cost: '112500.00',
+    });
+
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/mech-requests/history/export?placeObjectId=${dayObject}`,
+      headers: office,
+    });
+    expect(res.statusCode, res.body.slice(0, 200)).toBe(200);
+    const [sheet] = readWorkbook(new Uint8Array(res.rawPayload));
+    const header = sheet!.rows[0]!;
+    const column = (title: string): number => header.indexOf(title);
+    const [row] = await ctx.db
+      .select({ num: ctx.schema.mechRequests.num })
+      .from(ctx.schema.mechRequests)
+      .where(eq(ctx.schema.mechRequests.id, id));
+    const line = sheet!.rows.find((cells) => cells[0] === `МХ-${row!.num}`)!;
+    expect(line[column('Единица ставки')]).toBe('сутки');
+    // Worked days go to their own column only: in the hours or shifts column they would be added
+    // to units of another price.
+    expect(line[column('Отработано, сут.')]).toBe('4.5');
+    expect(line[column('Отработано, ч')]).toBe('');
+    expect(line[column('Отработано, смен')]).toBe('');
+    const totals = sheet!.rows.find((cells) => cells[0] === 'Итого')!;
+    expect(totals[column('Отработано, сут.')]).toBe('4.5');
+    expect(totals[column('Стоимость, ₽')]).toBe('112500.00');
   });
 });

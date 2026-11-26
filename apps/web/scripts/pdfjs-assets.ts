@@ -7,7 +7,7 @@ import type { Plugin } from 'vite';
  * The files pdf.js loads BY URL at run time, served from the portal's own origin (lessor receipt
  * plan, P14): the worker, the Adobe CMaps, the standard fonts and the no-WebAssembly fallbacks of
  * the JBIG2 and JPX decoders. They are not imports, so the bundler never sees them; a renderer that
- * found none of them would still draw a Cyrillic receipt with a non-embedded font as empty boxes.
+ * found none of them would still draw a Cyrillic invoice with a non-embedded font as empty boxes.
  *
  * WHY SAME ORIGIN AND NOT A BLOB OR A CDN. The portal's CSP (`deploy/nginx/technic.conf`) has
  * `script-src 'self'` and no `worker-src`, so a worker from a `blob:` URL or another host is

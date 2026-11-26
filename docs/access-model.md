@@ -90,7 +90,7 @@ right itself still implies no readings.
 | Waste operator       | `operator`        | «Вывоз мусора» | requests assigned to its counterparty                                   |
 | Vehicle lessor       | `vehicle_lessor`  | «Заказ ТС»     | requests its vehicles are assigned to                                   |
 | Service company      | `service`         | «Оргтехника»   | service requests assigned to its company                                |
-| Mechanization lessor | `mech_lessor`     | «Механизация»  | its rentals «В работе» in a narrow card; attaches their receipts (§9.5) |
+| Mechanization lessor | `mech_lessor`     | «Механизация»  | its rentals «В работе» in a narrow card; attaches their invoices (§9.5) |
 
 Роль отвечает «кем человек работает», тип контрагента — «по какому предмету». Второй роли под
 арендодателя нет намеренно: она отличалась бы от первой только модулем и требовала бы ручной
@@ -349,7 +349,7 @@ The executors' module permissions are listed by a matrix of their own —
 «Оргтехника: ИТ-служба». «Ведению» оно не нужно (у него `serviceRequests.status` с теми же дугами
 отмены), сервисной компании не выдаётся.
 
-⁸ The mechanization lessor (ADR 0248) reads his rentals «В работе» and attaches their receipts —
+⁸ The mechanization lessor (ADR 0248) reads his rentals «В работе» and attaches their invoices —
 no status, no edit, no visa: the deal, the issue and the completion stay the office's. These two
 permissions are the whole of his powers. The grant matrix keeps the mechanization × counterparty
 cell `forbidden`, so no set adds to them, and the module refuses him every route but his three doors
@@ -1076,7 +1076,7 @@ return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
   вложение любой заявки вывоза по известному id. В ветке заказа ТС к заявке присоединяется
   назначение: вложения арендодателю открыты по тому же правилу, что и сами заявки.
 - **Mechanization (ADR 0248):** the requester's attachments never open for the mechanization
-  lessor, even of his own rental and by a known id. Receipt versions open by their own flag
+  lessor, even of his own rental and by a known id. Invoice versions open by their own flag
   `visibleMechLessorReceipt` under `mechRequests.read`: for the office within `mechScopeWhere`; of an
   archived request too for a holder of `archive.read` in his scope, while that request's attachments
   stay closed; for the lessor only the versions of the current deal of his rental «В работе».
@@ -1179,9 +1179,9 @@ doors:
 
 | Door                                            | What he gets                                                                                              |
 | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `GET /api/v1/mech-requests/lessor-rentals`      | his rentals «В работе» in his own DTO; filters «Период аренды» and «Чек», soonest return first            |
+| `GET /api/v1/mech-requests/lessor-rentals`      | his rentals «В работе» in his own DTO; filters «Период аренды» and «Счёт», soonest return first            |
 | `GET /api/v1/mech-requests/lessor-rentals/:id`  | one rental; 404 when it is not his, not in work or archived                                               |
-| `POST /api/v1/mech-requests/:id/lessor-receipt` | attach or replace his receipt: over a pending or rejected one only, 20 versions per account within a deal |
+| `POST /api/v1/mech-requests/:id/lessor-receipt` | attach or replace his invoice: over a pending or rejected one only, 20 versions per account within a deal |
 
 An office account at his two reads gets 403 from the handler: the reply would be the lessor's shape.
 
@@ -1195,7 +1195,7 @@ mechanization route) and `mech-lessor-scope.db.test.ts` (every unmarked manifest
 real lessor account 403 with an empty body).
 
 **What he sees** is an allow-list DTO built field by field: number, status, model, site and its
-address, dates, his rate and unit, the person who meets the machine, and the receipt versions of the
+address, dates, his rate and unit, the person who meets the machine, and the invoice versions of the
 current deal (`mech_requests.deal_no`) without staff names or internal reasons — only a rejection's
 reason. No department, requester, comment, requester's files, visa, worked units, final cost,
 extension or card history.

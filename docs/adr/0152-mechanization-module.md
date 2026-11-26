@@ -89,7 +89,7 @@
 
    _Changed by [ADR 0248](0248-mechanization-lessor-receipt.md) (09.11.2026):_ the type's list is
    `mechRequests.read` and `mechRequests.lessorReceipt`, and the lessor has accounts — he sees his
-   rentals «В работе» in a narrow card and attaches their receipts. The rest of the module refuses
+   rentals «В работе» in a narrow card and attaches their invoices. The rest of the module refuses
    him by a door guard, a second scope axis (`lessor_id`) stands behind it, and no permission set
    can add to his list. The base still allows a `vehicle_lessor` as the lessor of a rental; such
    rentals are invisible to every lessor account.

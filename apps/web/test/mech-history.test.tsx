@@ -76,7 +76,7 @@ function requestDto(over: Partial<MechRequestDto> = {}): MechRequestDto {
     deletedByName: null,
     // No extension request: the state every rental starts in (ADR 0171, stage 3).
     extension: null,
-    // A journal row closed before the lessor receipt existed: not required, no versions; list rows
+    // A journal row closed before the lessor invoice existed: not required, no versions; list rows
     // never carry the retired versions (lessor receipt plan, P16).
     lessorReceiptRequired: false,
     lessorReceipt: null,
@@ -181,6 +181,21 @@ describe('механизация: журнал закрытых аренд', () 
     await waitFor(() => expect(summaryText()).toContain('Отработано часов: 120'));
     expect(summaryText()).toContain('Отработано смен: 3');
     expect(summaryText()).not.toContain('123');
+  });
+
+  it('сутки — третье число со своей подписью (ADR 0251)', async () => {
+    renderHistory({ [SUMMARY]: () => json(summaryDto({ hours: 0, shifts: 3, dayUnits: 4.5 })) });
+
+    await waitFor(() => expect(summaryText()).toContain('Отработано суток: 4,5'));
+    expect(summaryText()).toContain('Отработано смен: 3');
+    expect(summaryText()).not.toContain('Отработано часов');
+  });
+
+  it('API без итога суток (старше ADR 0251) — строки суток нет, как при нуле', async () => {
+    renderHistory({ [SUMMARY]: () => json(summaryDto({ hours: 120 })) });
+
+    await waitFor(() => expect(summaryText()).toContain('Отработано часов: 120'));
+    expect(summaryText()).not.toContain('Отработано суток');
   });
 
   it('закрытые и аренды показаны разными числами с разными подписями', async () => {

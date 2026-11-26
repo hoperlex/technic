@@ -4,7 +4,7 @@ import type { AttachedFileDto } from '@technic/contracts';
 import { FilePreviewModal } from '@entities/file';
 
 /**
- * The name of a receipt file as a link to its preview — the block, the version list and the card's
+ * The name of an invoice file as a link to its preview — the block, the version list and the card's
  * history line open a version through this one link, so all three show it the same way: the pages
  * drawn by the portal (P14), «Скачать» in the window.
  *

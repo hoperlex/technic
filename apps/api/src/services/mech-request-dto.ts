@@ -62,7 +62,7 @@ const extensionRequesters = alias(users, 'mech_extension_requesters');
 const extensionDeciders = alias(users, 'mech_extension_deciders');
 
 /*
- * The current lessor receipt version (lessor receipt plan, P16): at most one per request by the
+ * The current lessor invoice version (lessor receipt plan, P16): at most one per request by the
  * partial unique index, so the outer join never multiplies rows of the list. Its file and the two
  * names on it (author and visa holder) under their own aliases, for the reason given above; the
  * current version is never retired, so it has no retirer to join.
@@ -265,7 +265,7 @@ function extensionOf(r: MechRequestRow): MechRequestExtensionDto | null {
 }
 
 /**
- * The current lessor receipt version from the joined columns, through the same mapper the card's
+ * The current lessor invoice version from the joined columns, through the same mapper the card's
  * versions go through (`toMechLessorReceiptVersionDto`), so a list row and the card cannot describe
  * one version differently. Asked by the id: it is the primary key, so empty means no current row.
  */
@@ -355,7 +355,7 @@ export function toMechRequestDto(
 }
 
 /**
- * One request's card, with its retired lessor receipt versions (newest first). Deletion is not
+ * One request's card, with its retired lessor invoice versions (newest first). Deletion is not
  * filtered: the caller decides about the archive (ADR 0070).
  */
 export async function loadMechRequestDto(

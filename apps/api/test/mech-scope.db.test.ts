@@ -332,9 +332,9 @@ function patchRequest(headers: Headers, id: string, payload: Record<string, unkn
 }
 
 /**
- * Completion waits for an approved or waived lessor receipt (lessor receipt plan, P3) — a
+ * Completion waits for an approved or waived lessor invoice (lessor receipt plan, P3) — a
  * precondition of this file's scenes, not their subject: the gate and its rules live in
- * `mech-lessor-receipt.db.test.ts`. The rental is made one that does not require a receipt, as every
+ * `mech-lessor-receipt.db.test.ts`. The rental is made one that does not require an invoice, as every
  * rental taken into work before the release is, by the column alone: the request's version does not
  * move, so the versions the scenes read stay what they were.
  */

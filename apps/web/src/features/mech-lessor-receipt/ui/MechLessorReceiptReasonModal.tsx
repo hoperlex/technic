@@ -6,11 +6,11 @@ import { FormModal, useFormBlockers } from '@shared/ui';
 import { useDecideMechLessorReceipt, useWaiveMechLessorReceipt } from '../model/mutations';
 
 /**
- * The three receipt decisions taken without looking at a file (P6, O15):
+ * The three invoice decisions taken without looking at a file (P6, O15):
  *
- * - `waive` — «Без чека» when there is nothing to look at: no current version, or a rejected one;
+ * - `waive` — «Без счёта» when there is nothing to look at: no current version, or a rejected one;
  * - `revokeApproval` — «Отозвать утверждение»: the approved version goes back to «ждёт визы»;
- * - `revokeWaiver` — «Отменить „без чека“»: the rental needs a receipt again.
+ * - `revokeWaiver` — «Отменить „без счёта“»: the rental needs an invoice again.
  */
 export type MechLessorReceiptReasonKind = 'waive' | 'revokeApproval' | 'revokeWaiver';
 
@@ -19,25 +19,25 @@ const TEXTS: Record<
   { title: string; label: string; ok: string; notice: string; required: string }
 > = {
   waive: {
-    title: 'Завершение без чека',
-    label: 'Почему аренду завершают без чека',
-    ok: 'Разрешить без чека',
+    title: 'Завершение без счёта',
+    label: 'Почему аренду завершают без счёта',
+    ok: 'Разрешить без счёта',
     notice:
-      'Аренду можно будет завершить без чека арендодателя. Чек, прикреплённый позже, заменит это решение и снова будет ждать визы.',
-    required: 'Укажите, почему аренду завершают без чека',
+      'Аренду можно будет завершить без счёта арендодателя. Счёт, прикреплённый позже, заменит это решение и снова будет ждать визы.',
+    required: 'Укажите, почему аренду завершают без счёта',
   },
   revokeApproval: {
-    title: 'Отозвать утверждение чека',
+    title: 'Отозвать утверждение счёта',
     label: 'Причина отзыва',
     ok: 'Отозвать',
-    notice: 'Чек вернётся в «ждёт визы»: аренду не завершат, пока его не утвердят снова.',
+    notice: 'Счёт вернётся в «ждёт визы»: аренду не завершат, пока его не утвердят снова.',
     required: 'Укажите причину отзыва',
   },
   revokeWaiver: {
-    title: 'Отменить «без чека»',
+    title: 'Отменить «без счёта»',
     label: 'Причина отмены',
-    ok: 'Отменить «без чека»',
-    notice: 'Аренде снова понадобится чек: завершить её можно будет после утверждённого чека.',
+    ok: 'Отменить «без счёта»',
+    notice: 'Аренде снова понадобится счёт: завершить её можно будет после утверждённого счёта.',
     required: 'Укажите причину отмены',
   },
 };
@@ -81,10 +81,10 @@ export function MechLessorReceiptReasonModal({
     onSuccess: () => {
       message.success(
         kind === 'waive'
-          ? 'Завершение без чека разрешено'
+          ? 'Завершение без счёта разрешено'
           : kind === 'revokeApproval'
-            ? 'Утверждение чека отозвано'
-            : '«Без чека» отменено — аренде снова нужен чек',
+            ? 'Утверждение счёта отозвано'
+            : '«Без счёта» отменено — аренде снова нужен счёт',
       );
       onClose();
     },

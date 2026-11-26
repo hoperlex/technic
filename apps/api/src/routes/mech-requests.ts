@@ -196,7 +196,7 @@ const versionQuery = z.object({ version: z.coerce.number().int().nonnegative() }
 const restoreBody = z.object({ version: z.number().int().nonnegative() });
 
 export default async function mechRequestsRoutes(app: FastifyInstance): Promise<void> {
-  // Before the first route, and on this instance: every route below — the extension and receipt
+  // Before the first route, and on this instance: every route below — the extension and invoice
   // doors included — refuses a counterparty-scoped principal unless marked a lessor door (lessor
   // receipt plan, P11). A route registered after this line on another instance would escape it;
   // the route authorization test looks for the guard on every mechanization route.
@@ -250,7 +250,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
   };
 
   await registerMechExtensionRoutes(app);
-  // The lessor receipt's doors (lessor receipt plan, P5–P7) on this same instance, so a guard of the
+  // The lessor invoice's doors (lessor receipt plan, P5–P7) on this same instance, so a guard of the
   // module's plugin covers them as it covers the extension doors.
   await registerMechLessorReceiptRoutes(app);
   // The lessor's own reads (lessor receipt plan, P12), the module's two other lessor doors.
@@ -932,7 +932,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         }
         const lessor = await assertMechLessorAssignable(tx, lessorId);
         const before = (await loadMechRequestDto(tx, id))!;
-        // The receipt was issued under the old terms: a new lessor, unit or rate retires it (lessor
+        // The invoice was issued under the old terms: a new lessor, unit or rate retires it (lessor
         // receipt plan, P8). The rate is compared AS A NUMBER: the column is `numeric(12,2)` and
         // reads back as '1500.00', so `1500` sent again is no change. Not `mechDealChanges` — it
         // compares the lessor's name and formatted money, which is the history's question, not this.
@@ -949,7 +949,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
             lessorIsActive: lessor.lessorIsActive,
             rate: String(rate),
             rateUnit,
-            // A new deal number on every real change, with or without a current receipt: the
+            // A new deal number on every real change, with or without a current invoice: the
             // lessor's view and files are filtered by it (P12). The retire marker above needs a
             // current version, and after a revoked waiver there is none (review of W2).
             ...(dealChanged ? { dealNo: row.dealNo + 1 } : {}),
@@ -1014,8 +1014,8 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
           return { dto: before, changed: false as const, from: row.status };
         }
         assertTransitionAllowed(p, row.status, status, 'mech');
-        // The current lessor receipt is read under the request's lock on EVERY transition, not only
-        // on completion (lessor receipt plan, P3): the barrier's receipt fields are required, and a
+        // The current lessor invoice is read under the request's lock on EVERY transition, not only
+        // on completion (lessor receipt plan, P3): the barrier's invoice fields are required, and a
         // door that skipped the read for some moves would be one edit away from passing the gate.
         const currentReceipt = await loadCurrentMechLessorReceipt(tx, id);
         // The visa reaches the barrier as a string, as in the DTO: the base row holds a
@@ -1046,11 +1046,11 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         // Every take-in-work from now on gates completion (lessor receipt plan, P3), whatever the
         // client. Never set back: a return to «Новая» and a new take-in-work set it again anyway.
         const takesIntoWork = row.status === 'new' && status === 'confirmed';
-        // Any entry into «Новая» erases the deal, and the receipt issued under it stops counting
+        // Any entry into «Новая» erases the deal, and the invoice issued under it stops counting
         // (P8) — `cancelled → new` included: naming only `confirmed → new` would leave an approved
-        // receipt of the old deal current after `confirmed → cancelled → new → confirmed`.
+        // invoice of the old deal current after `confirmed → cancelled → new → confirmed`.
         //
-        // The deal number moves on EVERY entry into «Новая», a current receipt or not: it is the
+        // The deal number moves on EVERY entry into «Новая», a current invoice or not: it is the
         // boundary of the lessor's view (P12), and the retire marker above exists only when a
         // current version does — after a revoked waiver there is none (review of W2).
         const resetsDeal = mechTransitionResetsDeal(row.status, status);
@@ -1395,7 +1395,7 @@ export default async function mechRequestsRoutes(app: FastifyInstance): Promise<
         assertMechRequestLive(row, 'удалить');
         assertObjectRoleEditable(p, row.status, 'удалять');
         // B3 is passed above, so `deletedAt` goes empty: otherwise `mechDeleteScope` would answer
-        // `none` about the archive, while here it is asked about the rental's state. The receipt
+        // `none` about the archive, while here it is asked about the rental's state. The invoice
         // versions are counted under the request's lock — they are inserted only under it — and a
         // «Новая» that holds any is archived, not hard-deleted (lessor receipt plan, P8).
         const scope = mechDeleteScope(

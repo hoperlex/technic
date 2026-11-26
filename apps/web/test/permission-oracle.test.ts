@@ -291,7 +291,7 @@ function calendar(user: AuthUser, can: Can): unknown {
   });
 }
 
-/** A lessor receipt version in a given state (lessor receipt plan, P1). */
+/** A lessor invoice version in a given state (lessor receipt plan, P1). */
 function receiptVersion(
   status: MechLessorReceiptVersionDto['status'],
 ): MechLessorReceiptVersionDto {
@@ -302,7 +302,7 @@ function receiptVersion(
     file:
       status === 'waived'
         ? null
-        : { id: 'f-lr', filename: 'чек.pdf', contentType: 'application/pdf', size: 1 },
+        : { id: 'f-lr', filename: 'счёт.pdf', contentType: 'application/pdf', size: 1 },
     createdBy: 'user-1',
     createdByName: 'Диспетчеров Д. П.',
     createdAs: 'office',
@@ -318,7 +318,7 @@ function receiptVersion(
 }
 
 /*
- * A running rental taken into work after the receipt's release. Its lessor is the mechanization
+ * A running rental taken into work after the invoice's release. Its lessor is the mechanization
  * lessor subject's own counterparty, so his branch of `mechLessorReceiptAccess` (his own rental,
  * the replace rule of O13) is walked; one rental of another lessor below walks the refusal.
  */
@@ -371,18 +371,18 @@ const MECH_REQUESTS: readonly MechRequestDto[] = [
     },
   }),
   mechRequest({ status: 'done', actualFrom: '2026-08-03', actualTo: '2026-08-10' }),
-  // The lessor receipt (lessor receipt plan, P15): none yet, waiting, rejected, approved, waived —
+  // The lessor invoice (lessor receipt plan, P15): none yet, waiting, rejected, approved, waived —
   // every button of the block and the menu, and the completion held by the gate.
   receiptRental(null),
   receiptRental(receiptVersion('pending')),
   receiptRental(receiptVersion('rejected')),
   receiptRental(receiptVersion('approved')),
   receiptRental(receiptVersion('waived')),
-  // A pending receipt on a rental of the department, and one cancelled after the attach: the visa
+  // A pending invoice on a rental of the department, and one cancelled after the attach: the visa
   // circle and the "decide a cancelled one" rule of P5.
   receiptRental(receiptVersion('pending'), { departmentId: 'dep-1' }),
   receiptRental(receiptVersion('pending'), { status: 'cancelled', actualFrom: null }),
-  // A rental of another lessor with a receipt to replace: the lessor subject gets nothing here.
+  // A rental of another lessor with an invoice to replace: the lessor subject gets nothing here.
   receiptRental(receiptVersion('pending'), { lessorId: OTHER_MECH_LESSOR }),
 ];
 
@@ -429,7 +429,7 @@ function mechMenu(user: AuthUser, can: Can): unknown {
 
 /*
  * The mechanization lessor's own page (lessor receipt plan, W4): his rentals in his allow-listed DTO,
- * the receipt in every state a lessor may meet, and one at his cap. The page builds its button from
+ * the invoice in every state a lessor may meet, and one at his cap. The page builds its button from
  * `mechLessorReceiptAccess` over the session's list like every other screen.
  */
 const LESSOR_RENTALS = [
@@ -465,7 +465,7 @@ const LESSOR_RENTALS = [
   }),
 ];
 
-/** The lessor page's receipt button over each of his rentals. */
+/** The lessor page's invoice button over each of his rentals. */
 function mechLessorPage(user: AuthUser, can: Can): unknown {
   return LESSOR_RENTALS.map((rental) => mechLessorRentalAccess(user, rental, can));
 }

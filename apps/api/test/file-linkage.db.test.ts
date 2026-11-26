@@ -358,7 +358,7 @@ async function newReading(vehicleId: string, personId: string, waybillId: string
   return reading!.id;
 }
 
-/** A mechanization rental without a model or a deal: a «Новая» is enough to hold receipt rows. */
+/** A mechanization rental without a model or a deal: a «Новая» is enough to hold invoice rows. */
 async function newMechRequest(): Promise<string> {
   const [request] = await ctx.db
     .insert(ctx.schema.mechRequests)

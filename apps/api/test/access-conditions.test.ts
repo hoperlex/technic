@@ -950,8 +950,8 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
   },
   'PATCH /api/v1/mech-requests/:id/extension': { payload: { approved: true, version: 1 } },
   'DELETE /api/v1/mech-requests/:id/extension': { query: 'version=1' },
-  // The lessor receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P5–P7): attaching under
-  // `.lessorReceipt`, deciding and the «без чека» visa under `.approve`. The bodies pass the
+  // The lessor invoice (plan `docs/mechanization-lessor-receipt-plan.md`, P5–P7): attaching under
+  // `.lessorReceipt`, deciding and the «без счёта» visa under `.approve`. The bodies pass the
   // schemas, so a refusal comes from the guard, not the validation.
   'POST /api/v1/mech-requests/:id/lessor-receipt': {
     payload: { fileId: RECORD_ID, version: 1 },
@@ -960,7 +960,7 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { receiptId: RECORD_ID, decision: 'approve', version: 1 },
   },
   'POST /api/v1/mech-requests/:id/lessor-receipt/waiver': {
-    payload: { comment: 'арендодатель чеков не выдаёт', version: 1 },
+    payload: { comment: 'арендодатель счетов не выдаёт', version: 1 },
   },
   // The lessor's reads (P12) answer only a mechanization lessor: the sweep's role is not one, so
   // past the guard the handler refuses it in its own words — the positive case proves the guard

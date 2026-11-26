@@ -53,7 +53,7 @@ import {
 } from '@technic/contracts';
 
 /**
- * The contract of the lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, W1): the
+ * The contract of the lessor's invoice (plan `docs/mechanization-lessor-receipt-plan.md`, W1): the
  * permission and its invariants (P4, P10), the visa circle closed to executors (P5). Everything here
  * must answer the portal and the server identically; the live rows and the routes are W2's db
  * suites.
@@ -69,12 +69,12 @@ const listOf =
 
 const MECH_PERMISSIONS = PERMISSIONS.filter((p) => p.startsWith('mechRequests.'));
 
-describe('the permission to attach a lessor receipt (P4)', () => {
+describe('the permission to attach a lessor invoice (P4)', () => {
   it('is a manage action of the mechanization module with its own label', () => {
     expect(PERMISSION_CATALOG['mechRequests.lessorReceipt']).toEqual({
       module: 'mech',
       action: 'manage',
-      label: 'Прикрепляет чек арендодателя к аренде механизации',
+      label: 'Прикрепляет счёт арендодателя к аренде механизации',
     });
   });
 
@@ -82,7 +82,7 @@ describe('the permission to attach a lessor receipt (P4)', () => {
    * Over the access profiles, not the role list: a permission can reach an account from its role,
    * its counterparty type or an add-on, and the invariant is about the account.
    */
-  it('every role and profile that runs rentals also attaches receipts', () => {
+  it('every role and profile that runs rentals also attaches invoices', () => {
     const broken: string[] = [];
     for (const subject of ACCESS_PROFILES) {
       const held = permissionsFor(subject);
@@ -106,7 +106,7 @@ describe('the permission to attach a lessor receipt (P4)', () => {
 
   /**
    * The requirement is checked over the account's effective permissions after every operation that
-   * changes access, and its refusal speaks of the receipt: the generic text would tell the
+   * changes access, and its refusal speaks of the invoice: the generic text would tell the
    * administrator the account does not see the module, which is false for this pair.
    */
   it('`.status` requires `.lessorReceipt`, refused with the pair’s own reason', () => {
@@ -121,7 +121,7 @@ describe('the permission to attach a lessor receipt (P4)', () => {
       permission: 'mechRequests.status',
       requires: 'mechRequests.lessorReceipt',
     });
-    expect(violations[0]?.message).toContain('Ведущий аренду прикрепляет и чек арендодателя');
+    expect(violations[0]?.message).toContain('Ведущий аренду прикрепляет и счёт арендодателя');
     expect(violations[0]?.message).not.toContain('которого учётка не видит');
 
     // With the pair complete nothing is missing; the attach permission alone needs reading.
@@ -209,7 +209,7 @@ describe('the visa circle refuses executors (P5)', () => {
   });
 });
 
-// ── The receipt's rules (W1): blockers, gate, mark, versions, buttons ──
+// ── The invoice's rules (W1): blockers, gate, mark, versions, buttons ──
 
 const LESSOR_ID = 'cp-lessor';
 const UUID = '00000000-0000-4000-8000-000000000001';
@@ -288,8 +288,8 @@ describe('attaching (P7)', () => {
   });
 });
 
-describe('deciding (P5) and the «без чека» visa (P6)', () => {
-  /** A cancelled rental may still hold a pending receipt (a prepayment): deciding it is allowed. */
+describe('deciding (P5) and the «без счёта» visa (P6)', () => {
+  /** A cancelled rental may still hold a pending invoice (a prepayment): deciding it is allowed. */
   it('approve and reject need a pending current version, whatever the request status', () => {
     for (const status of REQUEST_STATUSES) {
       for (const cur of CURRENTS) {
@@ -357,7 +357,7 @@ describe('deciding (P5) and the «без чека» visa (P6)', () => {
     expect(decide('waive', 'x')).toBe(false);
     expect(waiveMechLessorReceiptSchema.safeParse({ comment: '', version: 1 }).success).toBe(false);
     expect(
-      waiveMechLessorReceiptSchema.safeParse({ comment: 'арендодатель без чеков', version: 1 })
+      waiveMechLessorReceiptSchema.safeParse({ comment: 'арендодатель без счетов', version: 1 })
         .success,
     ).toBe(true);
   });
@@ -372,16 +372,16 @@ describe('the completion gate (P3)', () => {
     }
   });
 
-  it('a required receipt passes approved or waived, and says what is missing otherwise', () => {
+  it('a required invoice passes approved or waived, and says what is missing otherwise', () => {
     const gate = (cur: MechLessorReceiptCurrent) =>
       mechLessorReceiptCompletionBlocker({ lessorReceiptRequired: true, lessorReceipt: cur });
     expect(gate(current('approved'))).toBeNull();
     expect(gate(current('waived'))).toBeNull();
     expect(gate(current('pending'))).toBe(
-      'Чек арендодателя ждёт визы — аренду завершают после неё',
+      'Счёт арендодателя ждёт визы — аренду завершают после неё',
     );
-    expect(gate(current('rejected'))).toBe('Чек арендодателя отклонён — прикрепите исправленный');
-    expect(gate(null)).toBe('Прикрепите чек арендодателя или получите визу «без чека»');
+    expect(gate(current('rejected'))).toBe('Счёт арендодателя отклонён — прикрепите исправленный');
+    expect(gate(null)).toBe('Прикрепите счёт арендодателя или получите визу «без счёта»');
   });
 
   /**
@@ -398,13 +398,13 @@ describe('the completion gate (P3)', () => {
       lessorReceipt: current('pending'),
     };
     expect(mechTransitionBlocker(issued, 'done')).toBe(
-      'Чек арендодателя ждёт визы — аренду завершают после неё',
+      'Счёт арендодателя ждёт визы — аренду завершают после неё',
     );
     expect(mechTransitionBlocker({ ...issued, lessorReceipt: current('approved') }, 'done')).toBe(
       null,
     );
     expect(mechTransitionBlocker({ ...issued, lessorReceiptRequired: false }, 'done')).toBeNull();
-    // Cancellation keeps its own answer (the issued equipment), never the receipt's.
+    // Cancellation keeps its own answer (the issued equipment), never the invoice's.
     expect(mechTransitionBlocker(issued, 'cancelled')).toMatch(/завершить, а не отменять/);
     const awaitingIssue = { ...issued, actualFrom: null };
     expect(mechTransitionBlocker(awaitingIssue, 'cancelled')).toBeNull();
@@ -412,7 +412,7 @@ describe('the completion gate (P3)', () => {
   });
 });
 
-describe('deleting a «Новая» that holds receipt versions (P8)', () => {
+describe('deleting a «Новая» that holds invoice versions (P8)', () => {
   const fresh = { status: 'new' as const, actualFrom: null, actualTo: null, deletedAt: null };
 
   it('is archived, not hard-deleted, so every version stays (O8)', () => {
@@ -430,7 +430,7 @@ describe('deleting a «Новая» that holds receipt versions (P8)', () => {
   });
 });
 
-describe('the filter «Чек» (P16)', () => {
+describe('the filter «Счёт» (P16)', () => {
   it('is a parameter of the list and of the journal, with five values', () => {
     for (const value of MECH_LESSOR_RECEIPT_FILTERS) {
       expect(mechRequestListQuerySchema.parse({ lessorReceipt: value }).lessorReceipt).toBe(value);
@@ -466,7 +466,7 @@ describe('the mark (P16)', () => {
 
   it('marks what waits for someone, and nothing on an archived row', () => {
     expect(mark('confirmed', current('pending'))).toBe('pending');
-    // A pending receipt of a cancelled rental is still decidable, so it still asks for the visa.
+    // A pending invoice of a cancelled rental is still decidable, so it still asks for the visa.
     expect(mark('cancelled', current('pending'))).toBe('pending');
     expect(mark('confirmed', current('rejected'))).toBe('rejected');
     expect(mark('cancelled', current('rejected'))).toBeNull();
@@ -665,7 +665,7 @@ describe('the buttons (P15)', () => {
       ...NONE,
       revokeWaiver: true,
     });
-    // After completion: nothing to revoke; a cancelled rental's pending receipt is still reviewed.
+    // After completion: nothing to revoke; a cancelled rental's pending invoice is still reviewed.
     expect(
       mechLessorReceiptAccess(siteVisa, rental(current('approved'), { status: 'done' }), has),
     ).toEqual(NONE);

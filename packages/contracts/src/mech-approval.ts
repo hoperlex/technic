@@ -5,11 +5,11 @@ import { visaLimitedToApprovalDepartments, type VisaSubject } from './visa-scope
 /*
  * The request visa circle of mechanization (visa plan `docs/mechanization-approval-and-grants-plan.md`,
  * R1–R6; ADR 0171 decision 4). A leaf module of its own, re-exported by `mech-requests.ts`, because
- * two rule files ask it: the request visa there, and the lessor receipt's decisions
- * (`mech-lessor-receipts.ts`, plan `docs/mechanization-lessor-receipt-plan.md`, P5). The receipt
- * file must not import `mech-requests.ts` at runtime — `mechTransitionBlocker` imports the receipt's
+ * two rule files ask it: the request visa there, and the lessor invoice's decisions
+ * (`mech-lessor-receipts.ts`, plan `docs/mechanization-lessor-receipt-plan.md`, P5). The invoice
+ * file must not import `mech-requests.ts` at runtime — `mechTransitionBlocker` imports the invoice's
  * completion gate, and the reverse import would close a cycle and drag the whole module's rules
- * after the receipt into every chunk that asks the gate.
+ * after the invoice into every chunk that asks the gate.
  */
 
 /**
@@ -50,8 +50,8 @@ export interface MechApprovalTarget {
  * module, so without its own branch it would fall through to the administrator's "not limited by
  * anything" — today unreachable only because no executor can hold `mechRequests.approve` (the type
  * list lacks it, the grant matrix refuses every `mechRequests.*` to the executor role). Mechanization
- * lessors log in from the receipt release on, and the visa of a rental must not depend on a list
- * staying short: the lessor would otherwise approve his own receipt.
+ * lessors log in from the invoice release on, and the visa of a rental must not depend on a list
+ * staying short: the lessor would otherwise approve his own invoice.
  *
  * `has` answers the permission, as in `canApproveMechExtension`. The server leaves the default (the
  * matrix over its own principal is exactly what it builds the session list with); the portal passes

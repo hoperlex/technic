@@ -43,8 +43,8 @@ const AUDIT_ACTIONS = [
   'mech_request.extend_request',
   'mech_request.extend_reject',
   'mech_request.extend_drop',
-  // The lessor's receipt (plan `docs/mechanization-lessor-receipt-plan.md`, P9): six strict events.
-  // A revoked approval and a version retired by the deal leave no trace in the receipt row's
+  // The lessor's invoice (plan `docs/mechanization-lessor-receipt-plan.md`, P9): six strict events.
+  // A revoked approval and a version retired by the deal leave no trace in the invoice row's
   // decision columns, so these events are the only memory of them in the card.
   'mech_request.lessor_receipt_attach',
   'mech_request.lessor_receipt_approve',

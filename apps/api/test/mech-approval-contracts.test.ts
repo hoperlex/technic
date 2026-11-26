@@ -31,7 +31,7 @@ const NEW: MechTransitionState = {
   actualFrom: null,
   actualTo: null,
   approvedAt: null,
-  // No lessor receipt required: the completion gate is the receipt suite's subject.
+  // No lessor invoice required: the completion gate is the invoice suite's subject.
   lessorReceiptRequired: false,
   lessorReceipt: null,
 };

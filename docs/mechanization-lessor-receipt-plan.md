@@ -1,10 +1,10 @@
-# Plan: Mechanization — the lessor's receipt, its visa and lessor accounts
+# Plan: Mechanization — the lessor's invoice, its visa and lessor accounts
 
 A new approval step in the mechanization module ([ADR 0152](adr/0152-mechanization-module.md)).
-After a rental is taken into work, the lessor or the dispatcher attaches the lessor's receipt
-(«чек»): one PDF or JPG file. A holder of the request visa reviews it in a preview window and
-approves or rejects it. A rental is not completed without an approved receipt or an explicit
-«без чека» visa. Lessors of mechanization get portal accounts in the same release, with a narrow
+After a rental is taken into work, the lessor or the dispatcher attaches the lessor's invoice
+(«счёт»): one PDF or JPG file. A holder of the request visa reviews it in a preview window and
+approves or rejects it. A rental is not completed without an approved invoice or an explicit
+«без счёта» visa. Lessors of mechanization get portal accounts in the same release, with a narrow
 view of their rentals in work.
 
 Basis: the module [ADR 0152](adr/0152-mechanization-module.md); the site visa and the extension
@@ -28,49 +28,49 @@ Five surveys on 02–03.11.2026. Each answer is binding for this plan; changing 
 
 | #   | Question                                               | Answer                                                                                                   |
 | --- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| O1  | From when can a receipt be attached                    | From «Взять в работу» (`new → confirmed`), at any point in «В работе»                                    |
-| O2  | What waits for the approved receipt                    | Completion (`confirmed → done`) only; issue, extension and cancellation do not                           |
+| O1  | From when can an invoice be attached                   | From «Взять в работу» (`new → confirmed`), at any point in «В работе»                                    |
+| O2  | What waits for the approved invoice                    | Completion (`confirmed → done`) only; issue, extension and cancellation do not                           |
 | O3  | Who approves                                           | The request visa circle, ADR 0171 decision 4: the site, and for a department request also its department |
-| O4  | One receipt or several                                 | One file, PDF or JPG                                                                                     |
-| O5  | Preview                                                | The visa is given in a preview window that shows the receipt itself                                      |
-| O6  | Lessor accounts                                        | In the same release as the receipt                                                                       |
+| O4  | One invoice or several                                 | One file, PDF or JPG                                                                                     |
+| O5  | Preview                                                | The visa is given in a preview window that shows the invoice itself                                      |
+| O6  | Lessor accounts                                        | In the same release as the invoice                                                                       |
 | O7  | What the lessor sees                                   | A narrow card (P12); no department, comment, requester files, visa, final cost or foreign history        |
 | O8  | Replaced and rejected files                            | Kept: every version stays openable from the card's history while the request lives                       |
-| O9  | Amount of the receipt                                  | No number: the file only                                                                                 |
-| O10 | A rental that will never have a receipt                | The visa holder may allow completion «без чека» with a required reason: own button, own history event    |
-| O11 | PDF on phones (Android Chrome shows no PDF in a frame) | The portal renders PDF itself with pdf.js, loaded lazily only for receipt previews                       |
+| O9  | Amount of the invoice                                  | No number: the file only                                                                                 |
+| O10 | A rental that will never have an invoice               | The visa holder may allow completion «без счёта» with a required reason: own button, own history event   |
+| O11 | PDF on phones (Android Chrome shows no PDF in a frame) | The portal renders PDF itself with pdf.js, loaded lazily only for invoice previews                       |
 | O12 | Which rentals the lessor sees                          | Only «В работе» (`confirmed`); closed and cancelled rentals leave his list                               |
-| O13 | Who replaces an approved receipt                       | Only the office; the lessor replaces a pending or rejected one                                           |
-| O14 | May the one who attached a receipt approve it          | Yes: the permission and the visa circle decide, no "two keys" rule                                       |
+| O13 | Who replaces an approved invoice                       | Only the office; the lessor replaces a pending or rejected one                                           |
+| O14 | May the one who attached an invoice approve it         | Yes: the permission and the visa circle decide, no "two keys" rule                                       |
 | O15 | May the visa holder undo his approval                  | Yes, while the rental is «В работе»; the history keeps the event                                         |
 | O16 | The executors' base `directories.read` for the lessor  | Accepted as for vehicle lessors; narrowing it for all executors is a separate task in the journal        |
-| O17 | Receipts of an archived request                        | Openable by holders of the archive without a restore; requester attachments keep today's rule            |
+| O17 | Invoices of an archived request                        | Openable by holders of the archive without a restore; requester attachments keep today's rule            |
 
 Accepted without objection from the user-facing description of 02.11 (restated here so that review
 can challenge them):
 
 - rentals taken into work before the release are not gated at completion (P3);
 - no mail: the module has no mail contour, the visa holder finds work by a mark and a filter;
-- a deal change before issue and any return to «Новая» retire the current receipt (P8);
+- a deal change before issue and any return to «Новая» retire the current invoice (P8);
 - «Вернуть в работу» (`done → confirmed`) keeps the approval.
 
 ## 2. What changes for people
 
-- **Dispatcher (office).** After «Взять в работу» the card shows a «Чек арендодателя» block with
-  «Прикрепить чек». While the receipt waits, is rejected, approved or waived, he can replace it;
+- **Dispatcher (office).** After «Взять в работу» the card shows a «Счёт арендодателя» block with
+  «Прикрепить счёт». While the invoice waits, is rejected, approved or waived, he can replace it;
   replacing an approved or waived one asks for a new visa. «Завершить аренду» stays in the menu,
-  disabled with the reason, while the receipt is neither approved nor waived.
+  disabled with the reason, while the invoice is neither approved nor waived.
 - **Lessor (new portal user).** Sees only his rentals «В работе», in a narrow card. Attaches a
-  receipt, replaces it while it waits or after a rejection, sees the decision and the reason of a
+  invoice, replaces it while it waits or after a rejection, sees the decision and the reason of a
   rejection.
-- **Visa holder.** Finds rentals by the mark «чек ждёт визы» and the filter «Чек». «Проверить чек»
-  opens a window: the receipt rendered in the portal next to the rental's facts, and the actions
-  «Утвердить», «Отклонить» (reason required), «Без чека» (reason required). When there is no receipt
-  to look at — none attached, or the last one rejected — «Без чека» is its own menu item and card
+- **Visa holder.** Finds rentals by the mark «счёт ждёт визы» and the filter «Счёт». «Проверить счёт»
+  opens a window: the invoice rendered in the portal next to the rental's facts, and the actions
+  «Утвердить», «Отклонить» (reason required), «Без счёта» (reason required). When there is no invoice
+  to look at — none attached, or the last one rejected — «Без счёта» is its own menu item and card
   button with a reason dialog (O10). While the rental is «В работе» he can undo his decision (O15),
-  reason required: «Отозвать утверждение» returns an approved receipt to «ждёт визы»; «Отменить
-  „без чека“» withdraws a waiver, and the rental needs a receipt again («нет чека»).
-- **Requester (site, department, commandant).** Sees the receipt block and its versions, acts on
+  reason required: «Отозвать утверждение» returns an approved invoice to «ждёт визы»; «Отменить
+  „без счёта“» withdraws a waiver, and the rental needs an invoice again («нет счёта»).
+- **Requester (site, department, commandant).** Sees the invoice block and its versions, acts on
   nothing.
 - **Administrator.** Creates lessor accounts in the account form (the counterparty type
   «Арендодатель механизации» now appears there). To cut a lessor off, he deactivates the accounts:
@@ -78,9 +78,9 @@ can challenge them):
 
 ## 3. Decisions
 
-### P1. Versions of the receipt: one table, a row per version, the current row is the one not retired
+### P1. Versions of the invoice: one table, a row per version, the current row is the one not retired
 
-O4 says one file, O8 says every version is kept. Both hold when the card has **one current receipt**
+O4 says one file, O8 says every version is kept. Both hold when the card has **one current invoice**
 and a list of **retired versions**. A table `mech_request_lessor_receipts` keeps one row per version:
 
 - a **file version**: `file_id` set, status `pending → approved | rejected`;
@@ -107,8 +107,8 @@ history because nothing but a date is overwritten. Here the file is the evidence
 asks to keep it openable; history entries alone cannot keep a file linked.
 
 Why not a `kind` column on `mech_request_files` (the ADR 0235 shape): the requester's attachments
-are edited as a whole set through `PATCH /:id` (`addFileIds`/`removeFileIds`), and a receipt in the
-same table would be one forgotten filter away from leaving through the editor. A receipt also has
+are edited as a whole set through `PATCH /:id` (`addFileIds`/`removeFileIds`), and an invoice in the
+same table would be one forgotten filter away from leaving through the editor. An invoice also has
 a lifecycle (decision, retirement) that an attachment does not.
 
 ### P2. "Lessor receipt" is the name everywhere
@@ -116,16 +116,16 @@ a lifecycle (decision, retirement) that an attachment does not.
 `receipt` already means three things in this repository: the create receipt of ADR 0231
 (`receiptRequired` in `apps/api/src/routes/mech-requests.ts:595` is exactly that), garage auto-part
 receipts, and warehouse receipt lines. The new term is always **lessor receipt** in code
-(`mech_request_lessor_receipts`, `MechLessorReceiptVersionDto`, `mechLessorReceiptAccess`), and «чек
+(`mech_request_lessor_receipts`, `MechLessorReceiptVersionDto`, `mechLessorReceiptAccess`), and «счёт
 арендодателя» in the portal. A bare `receipt` in a new identifier is a review finding.
 
-### P3. Completion requires an approved or waived receipt, for rentals that require one
+### P3. Completion requires an approved or waived invoice, for rentals that require one
 
 A column `mech_requests.lessor_receipt_required boolean NOT NULL DEFAULT false`:
 
 - set to `true` by the server in the transition `new → confirmed` (every take-in-work after the
-  release, whatever the client) and by attaching a receipt (an old rental that got a receipt is
-  gated like a new one: a receipt that was shown must be decided);
+  release, whatever the client) and by attaching an invoice (an old rental that got an invoice is
+  gated like a new one: an invoice that was shown must be decided);
 - never set back to `false`: a return to «Новая» and a new take-in-work set it again anyway.
 
 The gate is one predicate, `mechLessorReceiptCompletionBlocker`, called by `mechTransitionBlocker`
@@ -134,33 +134,33 @@ for `to === 'done'`:
 ```text
 required = false                         → no barrier (rental taken into work before the release)
 current is approved or waived            → no barrier
-current is pending                       → «Чек арендодателя ждёт визы — аренду завершают после неё»
-current is rejected                      → «Чек арендодателя отклонён — прикрепите исправленный»
-no current row                           → «Прикрепите чек арендодателя или получите визу „без чека“»
+current is pending                       → «Счёт арендодателя ждёт визы — аренду завершают после неё»
+current is rejected                      → «Счёт арендодателя отклонён — прикрепите исправленный»
+no current row                           → «Прикрепите счёт арендодателя или получите визу „без счёта“»
 ```
 
 It applies to **every** completion, including the repeat completion after «Вернуть в работу»: the
-approval survives that rollback, so the repeat passes unless the receipt was replaced or the
+approval survives that rollback, so the repeat passes unless the invoice was replaced or the
 approval revoked in between. Why a column and not "taken into work after a date": a date cutoff in
 the schema outlives everyone who remembers its meaning, the reason ADR 0133 decision 3 rejected it;
-and an old rental that later got a receipt must be gated, which a date cannot say.
+and an old rental that later got an invoice must be gated, which a date cannot say.
 
 `MechTransitionState` gets `lessorReceiptRequired: boolean` and `lessorReceipt: { status } | null`
 as **required** fields (`null` = no current row). Unlike the optional `extension` field
 (`packages/contracts/src/mech-requests.ts:155-160`, which the barrier never reads), the barrier reads
-these, and an optional field would let a caller that forgot to load the receipt pass the gate. So
-the status route **always** loads the current receipt under the request lock, for every transition,
+these, and an optional field would let a caller that forgot to load the invoice pass the gate. So
+the status route **always** loads the current invoice under the request lock, for every transition,
 and the portal menu reads it from the DTO.
 
 The barrier is a state barrier: nobody bypasses it, the administrator included (ADR 0152 decision 7).
-The administrator who must close a stuck rental gives the «без чека» visa with a reason.
+The administrator who must close a stuck rental gives the «без счёта» visa with a reason.
 
 ### P4. Who attaches: a new permission `mechRequests.lessorReceipt`
 
 The lessor must attach without holding `mechRequests.status` (that would let him record the deal,
 the issue and the completion). So attaching gets its own permission:
 
-- `mechRequests.lessorReceipt`, label «Прикрепляет чек арендодателя к аренде механизации», action
+- `mechRequests.lessorReceipt`, label «Прикрепляет счёт арендодателя к аренде механизации», action
   `manage` (as `.extend`), `PERMISSION_REQUIRES` → `mechRequests.read`, listed in
   `MECH_REQUEST_PERMISSIONS` (module scope);
 - holders: everyone who holds `mechRequests.status`, held as an invariant in three places:
@@ -176,7 +176,7 @@ the issue and the completion). So attaching gets its own permission:
     restart its save is refused with `requirement_missing` for every holder whose role does not
     bring `.lessorReceipt` itself. Barrier 4's fixed text says "the account does not see the
     module", which is false for this pair, so the requirement table gains an optional reason per
-    pair and this pair reads «Ведущий аренду прикрепляет и чек арендодателя»;
+    pair and this pair reads «Ведущий аренду прикрепляет и счёт арендодателя»;
   - **the base**: permission sets assembled by administrators live in `grant_permissions` as free
     text (`apps/api/src/db/schema.ts:1291-1305`). The schema migration adds the row to **every** set
     that holds `mechRequests.status`, deleted ones included (they have no holders, and a restore
@@ -214,7 +214,7 @@ Like attaching, every decision bumps the request version, writes its strict even
 **Binding the signature to the version seen.** The `receiptId` is the version shown in the window.
 The door keeps the module's protocol as it is (lock → existence and scope → version 409 → subject
 checks, `apps/api/src/services/mech-request-guards.ts:50-80`): it loads the current row under the
-lock first only to choose the words of a version 409 — «Чек заменили, пока окно было открыто —
+lock first only to choose the words of a version 409 — «Счёт заменили, пока окно было открыто —
 откройте его заново» when `receiptId` is no longer current, the generic text otherwise. After the
 version check the write itself binds the id:
 `UPDATE … WHERE id = $receiptId AND request_id = $id AND retired_at IS NULL AND status = <expected>
@@ -223,9 +223,9 @@ same 409. The `request_id` term is not decoration: without it a visa holder of s
 own rental's id and version with a pending `receiptId` of site B. The portal's `mechFailureText` maps
 every 409 to `MECH_STALE_MESSAGE`; the visa window shows the server's text for this door instead.
 
-`approve` and `reject` do not ask the request's status: a pending receipt can exist on a rental
+`approve` and `reject` do not ask the request's status: a pending invoice can exist on a rental
 cancelled after it was attached, and deciding it is still useful (a prepayment). A `done` rental
-never holds a pending receipt (P3), and a return to «Новая» retires it (P8). `revoke` is limited to
+never holds a pending invoice (P3), and a return to «Новая» retires it (P8). `revoke` is limited to
 «В работе» (O15): after completion the approval is the basis of a closed rental.
 
 Who attached a version does not matter (O14): the permission and the circle decide. Approval is
@@ -236,7 +236,7 @@ every role without its own axis, which includes the executor role. It gains an e
 counterparty-scoped roles: no executor can hold `.approve` in mechanization (P10), and the predicate
 should not depend on that alone.
 
-### P6. The «без чека» visa (O10)
+### P6. The «без счёта» visa (O10)
 
 `POST /:id/lessor-receipt/waiver` with `{ comment, version }`, same permission and circle as P5,
 same reply. It inserts a current row with `status = 'waived'`, `file_id = NULL`,
@@ -245,14 +245,14 @@ current row (if any) with `replaced`; the event names the replaced version. Allo
 request is `confirmed` and live and the current row is absent, `pending` or `rejected`; not over
 `approved` (nothing to allow) or `waived` (a second one is noise).
 
-Two doors in the portal, one dialog: «Без чека» inside the visa window when a file is shown, and a
-menu item and card button «Без чека» with a reason dialog (no preview) when there is no current
+Two doors in the portal, one dialog: «Без счёта» inside the visa window when a file is shown, and a
+menu item and card button «Без счёта» with a reason dialog (no preview) when there is no current
 row or the current one is rejected.
 
-A later receipt replaces the waiver like any version (P7), and the gate asks for its approval
+A later invoice replaces the waiver like any version (P7), and the gate asks for its approval
 again. Only the office replaces a waiver: like an approval, it closes the question (O13). The visa
-holder withdraws his own waiver by `revoke` (P5), labelled «Отменить „без чека“»; the rental is then
-«нет чека» again.
+holder withdraws his own waiver by `revoke` (P5), labelled «Отменить „без счёта“»; the rental is then
+«нет счёта» again.
 
 ### P7. Attaching and replacing
 
@@ -260,22 +260,22 @@ holder withdraws his own waiver by `revoke` (P5), labelled «Отменить �
 
 1. module protocol: lock first, existence and scope (P11), version 409 before any 422, live;
 2. `mechLessorReceiptAttachBlocker({ row, current, lessorVersionCount, actsAsLessor })`, each refusal
-   a 422 with its text: the request is not `confirmed` («Чек прикрепляют к аренде в работе»); the
-   lessor over an approved or waived current row («Утверждённый чек меняет диспетчер», O13); the
+   a 422 with its text: the request is not `confirmed` («Счёт прикрепляют к аренде в работе»); the
+   lessor over an approved or waived current row («Утверждённый счёт меняет диспетчер», O13); the
    lessor's cap — 20 versions created by **his account within the current deal** («Слишком много
-   замен чека — обратитесь к диспетчеру»). The cap is the lessor's only: it guards against an
+   замен счёта — обратитесь к диспетчеру»). The cap is the lessor's only: it guards against an
    external loop, and capping the office too would let a lessor's loop lock the office out of
-   attaching the real receipt; counting per account within the deal keeps a new lessor from
+   attaching the real invoice; counting per account within the deal keeps a new lessor from
    inheriting his predecessor's count;
 3. the file: `assertFilesAttachable(…, { requireActive: true })` (own upload, finished, not linked,
    not quarantined — the option the readings path uses for evidence,
    `apps/api/src/services/request-files.ts:52-58`) and its stored `content_type` in
-   `MECH_LESSOR_RECEIPT_CONTENT_TYPES = ['application/pdf', 'image/jpeg']`, otherwise 422 «Чек
+   `MECH_LESSOR_RECEIPT_CONTENT_TYPES = ['application/pdf', 'image/jpeg']`, otherwise 422 «Счёт
    принимается в PDF или JPG»; the portal sends `accept=".pdf,.jpg,.jpeg"`;
 4. retire the current row (`replaced`), insert the new one `pending` with the next `version_no`
    (computed under the request lock) and `created_as`, set `lessor_receipt_required = true`, bump
    the request version, strict audit;
-5. reply with the request's new `version` and the receipt state (`MechLessorReceiptStateDto`) **for
+5. reply with the request's new `version` and the invoice state (`MechLessorReceiptStateDto`) **for
    the caller's audience**: the office gets every version with names; the lessor gets the P12 view.
    Not the whole request: the reply then needs no request-level audience switch, and the portal
    invalidates its queries.
@@ -284,9 +284,9 @@ The content type is the one the browser declared at upload; the plan does not sn
 mislabelled file fails to render in the preview and gets rejected; serving it is not a new
 exposure — every attachment of the portal is already shown inline by its declared type.
 
-### P8. What else touches the receipt
+### P8. What else touches the invoice
 
-| Event                                                                                        | Effect on the current receipt                                       |
+| Event                                                                                        | Effect on the current invoice                                       |
 | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | `PATCH /:id/deal` that changes lessor, rate or unit                                          | retired `deal_changed` (it was issued under other terms)            |
 | `PATCH /:id/deal` with the same values                                                       | none                                                                |
@@ -295,19 +295,19 @@ exposure — every attachment of the portal is already shown inline by its decla
 | `done → confirmed` («Вернуть в работу»)                                                      | none; the approval survives                                         |
 | issue revoke, extension request/decision                                                     | none                                                                |
 | archive (soft delete) and restore                                                            | none; no attach or decision while archived                          |
-| delete of a «Новая» that has receipt versions                                                | **archive, not hard delete** (`mechDeleteScope`); the versions stay |
+| delete of a «Новая» that has invoice versions                                                | **archive, not hard delete** (`mechDeleteScope`); the versions stay |
 | duplicate                                                                                    | not copied: the copy is a new request                               |
 | hard delete of a «Новая» without versions, purge                                             | rows cascade; every version file of a purged request deleted        |
 
 The rule follows `mechTransitionResetsDeal` (`packages/contracts/src/enums.ts:401`) rather than
 naming transitions: the module erases the deal on **any** entry into «Новая», including the chain
 `confirmed → cancelled → new` (`apps/api/src/services/mech-request-transition.ts:126-134`). Naming
-only `confirmed → new` would leave the old deal's approved receipt current after
+only `confirmed → new` would leave the old deal's approved invoice current after
 `cancelled → new → confirmed`, passing the new deal's gate and showing it to a new lessor.
 
 **Hard delete.** `mechDeleteScope` answers `hard` for every «Новая»
 (`packages/contracts/src/mech-requests.ts:1045-1051`), and a site requester holds `.delete`. A rental
-with an approved prepayment receipt, returned to «Новая» before issue, would then lose every version
+with an approved prepayment invoice, returned to «Новая» before issue, would then lose every version
 and file at once, and O8 would hold only on paper. So `mechDeleteScope` takes the version count as a
 **required** argument (a caller that forgot it must not compile into `hard`) and answers `archive`
 for a «Новая» with versions. Its callers — the API delete route (`mech-requests.ts:1329`), the menu
@@ -341,7 +341,7 @@ has `extend` and `extend_reject` apart:
 | `mech_request.lessor_receipt_waive`   | `mechLessorReceiptWaived`                             | reason, replaced version and its status                                        |
 | `mech_request.lessor_receipt_retire`  | `mechLessorReceiptRetired`                            | version number, `deal_changed` or `rolled_back`                                |
 
-Strict for the reason ADR 0152 decision 9 gives for money events: the receipt is the evidence of a
+Strict for the reason ADR 0152 decision 9 gives for money events: the invoice is the evidence of a
 payment, and a revoked approval survives only in its event. The events are strict also because the
 card's history must not disagree with the block above it.
 
@@ -350,7 +350,7 @@ card's history must not disagree with the block above it.
 the text today (`ChangeLines` in `apps/web/src/entities/request-history/ui/RequestHistory.tsx:158`).
 W3 adds an optional `renderFiles` prop to the history table; the mechanization card passes the file
 link list, so a version opens from its history line. Other modules pass nothing and do not change.
-The versions list in the receipt block (P15) is the second way to the same files.
+The versions list in the invoice block (P15) is the second way to the same files.
 
 ### P10. Lessor accounts: the counterparty type gets two permissions, and nothing else can
 
@@ -423,7 +423,7 @@ loaded once), and it refuses a counterparty-scoped principal with 403 «Арен
 список его аренд» unless the route's config marks it a lessor door
 (`config: { mechLessorDoor: true }`). Three doors carry the mark: the two `lessor-rentals` reads
 (P12) and `POST /:id/lessor-receipt` (P7). The extension routes are registered on the same instance
-(`registerMechExtensionRoutes(app)`, `mech-requests.ts:239`), and so are the receipt routes, so the
+(`registerMechExtensionRoutes(app)`, `mech-requests.ts:239`), and so are the invoice routes, so the
 hook covers them. The hook carries the marker that `apps/api/test/route-authorization.test.ts:181`
 needs to tell a guard from the login check. A route added tomorrow is closed to the lessor unless
 someone marks it. The scope suite iterates the exported `ACCESS_MANIFEST`
@@ -453,7 +453,7 @@ mechRequests.lessorId))` — list, summary, history list, history summary, expor
 - files (`canAccessFile`, `apps/api/src/routes/files.ts:409`, flags in `FileLinkage` `:159-215`):
   the attachment branch `visibleMech` (`:555-575`) **never matches for a mech lessor** — O7 hides
   the requester's files, and a lessor who learnt an attachment's id must not open it; for everyone
-  else it uses `mechScopeWhere`. Receipt files get their own flag (P13).
+  else it uses `mechScopeWhere`. Invoice files get their own flag (P13).
 
 ### P12. The lessor's own read doors and DTO: an allow-list, not a mask
 
@@ -462,7 +462,7 @@ Two routes under `mechRequests.read`, marked as lessor doors, that only a mech l
 
 - `GET /mech-requests/lessor-rentals` — his rentals by `mechLessorRentalVisibleWhere`, in the
   module's list envelope (`baseListQuery` paging, `ListResult<MechLessorRentalDto>`); filters:
-  period, receipt state; sort by planned return;
+  period, invoice state; sort by planned return;
 - `GET /mech-requests/lessor-rentals/:id` — one rental, 404 when not visible to him.
 
 Both return `MechLessorRentalDto`, built field by field (`toMechLessorRentalDto`), never by blanking
@@ -476,7 +476,7 @@ the full DTO: a field added to `MechRequestDto` tomorrow must not reach the less
 | planned from/to, actual from/to                    | worked units, final cost                          |
 | his rate and unit                                  | extension request and its reason                  |
 | responsible name and phone (who meets the machine) | card history                                      |
-| receipt versions of the current deal (view below)  | versions of earlier deals                         |
+| invoice versions of the current deal (view below)  | versions of earlier deals                         |
 
 **Versions of the current deal**: back to, not including, the last version retired with
 `deal_changed` or `rolled_back`; older versions belong to another deal and may belong to another
@@ -495,34 +495,34 @@ reasons are internal notes), retired at and why. The office view carries names a
   branch). Retired versions stay linked: that is O8. `apps/api/test/file-linkage.db.test.ts:656`
   fails if the branch is missing, and `LINK_CASES` (`:372`) gets the new case.
 - `canAccessFile` gets a flag `visibleMechLessorReceipt` (field in `FileLinkage`, read by
-  `decideFileAccess`, `:244`): the file is a receipt version of a request the principal may see by
+  `decideFileAccess`, `:244`): the file is an invoice version of a request the principal may see by
   `mechScopeWhere`; for a lessor, `isMechLessorRentalVisible` and a version of the current deal
   (`mechLessorVisibleVersions`). Permission: `mechRequests.read`.
-- **Archived requests (O17).** Receipt files of an archived request open for a holder of the
+- **Archived requests (O17).** Invoice files of an archived request open for a holder of the
   archive permission (the one that opens the module's archive tab, `assertArchiveVisible`), inside
-  his `mechScopeWhere`, without a restore: the receipt is the evidence of a payment and is examined
+  his `mechScopeWhere`, without a restore: the invoice is the evidence of a payment and is examined
   after archiving too. Requester attachments keep today's rule — the archive opens the card, not
   their files (`files.ts:563-575`). A lessor never sees archived rentals (O12).
-- `collectMechRequestFiles` (`apps/api/src/services/mech-request-files.ts:82`) also collects receipt
+- `collectMechRequestFiles` (`apps/api/src/services/mech-request-files.ts:82`) also collects invoice
   files, so purge deletes them immediately.
 - The FK `file_id → files` is **`ON DELETE RESTRICT`**, unlike the link table: this row carries a
   decision. No current path deletes a linked file (`request-files.ts:294-303`; the worker's cleanup
   filters on `NOT file_is_linked`), so the difference shows only when a future bug tries — and then
-  it fails loudly instead of silently removing an approved version. Purge deletes the receipt rows
+  it fails loudly instead of silently removing an approved version. Purge deletes the invoice rows
   (cascade from the request) before it deletes the collected files.
 
-### P14. The preview renders the receipt itself
+### P14. The preview renders the invoice itself
 
 - JPEG: `<img>` from the inline signed URL, as `FilePreviewModal` does
   (`apps/web/src/entities/file/ui/FileLinks.tsx:29`).
 - PDF: **pdf.js** (`pdfjs-dist`, exact version pinned, at least two weeks old, ≥ 4.2.67 for
-  CVE-2024-4367), imported dynamically only by the receipt preview, so neither the entry nor the
+  CVE-2024-4367), imported dynamically only by the invoice preview, so neither the entry nor the
   mechanization route chunk grows by it. Every page drawn to a canvas, fit to width, scrolled
   vertically; «Скачать» always present.
 - Settings that the portal's CSP (`deploy/nginx/technic.conf:49`) forces: `isEvalSupported: false`;
   the worker served as a same-origin file (`script-src 'self'` covers it; a `blob:` worker would be
   refused); `cMapUrl` and `standardFontDataUrl` pointing to copies served from the portal (Cyrillic
-  receipts with non-embedded fonts need cMaps); no WebAssembly decoders (`'wasm-unsafe-eval'` is not
+  invoices with non-embedded fonts need cMaps); no WebAssembly decoders (`'wasm-unsafe-eval'` is not
   in the policy). If the pinned version cannot run under these rules, the CSP change is its own
   decision in the ADR, with `deploy/nginx/stand.conf` kept identical
   (`apps/api/test/deploy-config.test.ts`).
@@ -538,51 +538,51 @@ reasons are internal notes), retired at and why. The office view carries names a
   extracted, plus the PDF branch); `FilePreviewModal` keeps its frame for other files, so no other
   screen changes behaviour in this release.
 
-### P15. The visa window and the receipt block
+### P15. The visa window and the invoice block
 
-«Проверить чек» (row menu, card strip) opens one window:
+«Проверить счёт» (row menu, card strip) opens one window:
 
-- desktop (≥ 992 px): the receipt on the left (about two thirds), facts on the right: number, site,
+- desktop (≥ 992 px): the invoice on the left (about two thirds), facts on the right: number, site,
   model, lessor, rate and unit, planned term, issue date, the version («Версия 2 из 2»), who
   attached it and when, the previous version's rejection reason if any;
-- phone: full-screen sheet, the receipt on top, facts below, actions in a sticky footer;
-- actions: «Утвердить» (primary), «Отклонить» (reveals a required reason), «Без чека» (reason
+- phone: full-screen sheet, the invoice on top, facts below, actions in a sticky footer;
+- actions: «Утвердить» (primary), «Отклонить» (reveals a required reason), «Без счёта» (reason
   required), «Отозвать утверждение» (reason required, when the current version is approved and the
   rental is «В работе»), «Скачать»; the buttons come from `mechLessorReceiptAccess` over the
   server's permission list (ADR 0223), so a shown button does not end in a 422;
 - the window sends the `receiptId` it shows (P5); the 409 closes the window with the server's
   message and refreshes the card.
 
-The receipt block in the card: the current version (file opens in the same preview, status, who and
-when, decision and reason), «Версии чека (n)» collapsed below with every retired version openable,
-and the buttons of `mechLessorReceiptAccess` («Прикрепить чек» / «Заменить чек», «Проверить чек»,
-«Без чека», «Отозвать утверждение», «Отменить „без чека“»).
+The invoice block in the card: the current version (file opens in the same preview, status, who and
+when, decision and reason), «Версии счёта (n)» collapsed below with every retired version openable,
+and the buttons of `mechLessorReceiptAccess` («Прикрепить счёт» / «Заменить счёт», «Проверить счёт»,
+«Без счёта», «Отозвать утверждение», «Отменить „без счёта“»).
 
 The windows live inside the card when opened from it (ADR 0140, `modals` of
 `MechRequestViewModal`); the four tabs that open the card (requests, «В аренде», history, archive)
-pass the receipt props the way they pass `extension` today.
+pass the invoice props the way they pass `extension` today.
 
 ### P16. Marks and the filter
 
 `mechLessorReceiptMark(row)` — a second mark next to the state tag, not a fifth value of it: the
-state tag is the rental's single state (ADR 0171 decision 13), and a receipt can wait for a visa in
+state tag is the rental's single state (ADR 0171 decision 13), and an invoice can wait for a visa in
 any of «ждёт подачи», the running rental, «продление ждёт визы», «коррекция завершения». Archived
 rows show no mark.
 
-| Mark            | When                                            |
-| --------------- | ----------------------------------------------- |
-| «чек ждёт визы» | current version `pending`                       |
-| «чек отклонён»  | current version `rejected`, request `confirmed` |
-| «нет чека»      | `required`, no current row, request `confirmed` |
-| none            | approved, waived, not required, or archived     |
+| Mark             | When                                            |
+| ---------------- | ----------------------------------------------- |
+| «счёт ждёт визы» | current version `pending`                       |
+| «счёт отклонён»  | current version `rejected`, request `confirmed` |
+| «нет счёта»      | `required`, no current row, request `confirmed` |
+| none             | approved, waived, not required, or archived     |
 
-The filter «Чек» — «ждёт визы», «отклонён», «нет», «утверждён», «без чека» — is a parameter of
+The filter «Счёт» — «ждёт визы», «отклонён», «нет», «утверждён», «без счёта» — is a parameter of
 `mechRequestListQuerySchema` (`packages/contracts/src/mech-requests.ts:364`) and of the history
 query, served by `mechListWhere` (`apps/api/src/services/mech-request-list.ts:123`) with `EXISTS` /
 `NOT EXISTS` over the current row: the count query of `GET /`
 (`apps/api/src/routes/mech-requests.ts:261-270`) joins only sites and models, and a condition that
 relies on a join would break it. «нет» means `required` and no current row; a rental that does not
-require a receipt matches no value. The list rows themselves get the current row by a LEFT JOIN in
+require an invoice matches no value. The list rows themselves get the current row by a LEFT JOIN in
 `mechBaseQuery` for the mark, and the version count for `mechDeleteScope` (P8) by a grouped
 subquery joined under its own alias — a correlated subquery in a single-table drizzle select reads
 the wrong row silently, so the count gets a test on a single-table query too.
@@ -639,7 +639,7 @@ CREATE TABLE mech_request_lessor_receipts (
 CREATE UNIQUE INDEX mech_lessor_receipts_current_unique
   ON mech_request_lessor_receipts (request_id) WHERE retired_at IS NULL;
 
--- Every permission set that runs rentals also attaches receipts (P4); deleted sets too, so that a
+-- Every permission set that runs rentals also attaches invoices (P4); deleted sets too, so that a
 -- restore stays consistent. The version moves so that an editor opened before the migration saves
 -- into a 409, not over the new permission.
 WITH touched AS (
@@ -653,7 +653,7 @@ WITH touched AS (
 UPDATE grants SET version = version + 1, updated_at = now()
 WHERE id IN (SELECT grant_id FROM touched);
 
--- file_is_linked: full CREATE OR REPLACE, body of 0243 plus the receipt branch
+-- file_is_linked: full CREATE OR REPLACE, body of 0243 plus the invoice branch
 ```
 
 Notes:
@@ -682,13 +682,13 @@ Notes:
   old and new API serving together; the window is "migration applied, old code still running".
 - **Old code on the new schema.** Old code never reads or writes the table or the column. It takes
   rentals into work with `required = false` — they are then not gated, the same as rentals taken
-  before the release (accepted). Its purge and hard delete cascade receipt rows, but no receipt row
+  before the release (accepted). Its purge and hard delete cascade invoice rows, but no invoice row
   exists before the new code runs. Its worker's file cleanup is guarded by the new `file_is_linked`.
   It reads the new permission string as unknown — and would delete it on a save of a set (P4).
 - **Proof, as for ADR 0171 §15:** the mechanization db suite of the release serving production runs
   green against its own schema plus this migration.
 - **Old tabs (bundles before this release) on the new server.**
-  - They cannot show or attach a receipt. Their «Завершить аренду» gets a 422 with the P3 text on a
+  - They cannot show or attach an invoice. Their «Завершить аренду» gets a 422 with the P3 text on a
     gated rental; a reload gives the new portal.
   - Their delete of a «Новая» with versions still confirms "deleted with its attachments" while the
     server archives it — the safer of the two, and a reload shows the right label.
@@ -772,7 +772,7 @@ In this order; each step is a commit that builds:
    filter parameter in `mechRequestListQuerySchema` and the history query; `mechBaseQuery`
    (`apps/api/src/services/mech-request-dto.ts:140`) with the LEFT JOIN and the grouped count;
    `loadMechRequestDto` with the versions; the portal's menu, `MechStateTag` and the contract test
-   fixtures fill the fields (no receipt UI yet); the entry-chunk measurement.
+   fixtures fill the fields (no invoice UI yet); the entry-chunk measurement.
 3. `apps/api/src/services/mech-lessor-receipt.ts`: `loadMechLessorReceipts(tx, requestId)` (under the
    request lock), `attachMechLessorReceipt`, `decideMechLessorReceipt` (approve, reject, revoke),
    `waiveMechLessorReceipt`, `retireMechLessorReceipt(tx, row, reason, actor)`,
@@ -782,7 +782,7 @@ In this order; each step is a commit that builds:
    (`mech-requests.ts:239`); `bumpRequest` moves from
    `apps/api/src/routes/mech-request-extension.ts:59` to `mech-request-guards.ts` and both use it;
    `assertMechRequestOpenable` takes an optional stale message (P5).
-4. The status route: `lessor_receipt_required = true` on `new → confirmed`; the current receipt
+4. The status route: `lessor_receipt_required = true` on `new → confirmed`; the current invoice
    loaded under the lock on every transition and passed to `mechTransitionBlocker`
    (`mech-requests.ts:973`); retire on every `mechTransitionResetsDeal` move (P8).
    `PATCH /:id/deal` (`mech-requests.ts:879-931`): retire only when lessor, unit or the numeric rate
@@ -810,7 +810,7 @@ Tests of W2:
   replacing an approved or waived version refused; approve/reject (reason required), decide on a
   cancelled rental allowed, decide while archived refused; revoke of an approval (back to `pending`,
   gate closes again) and of a waiver (retired `revoked`), revoke after completion refused; a stale
-  `receiptId` gets the receipt text on the version 409; a `receiptId` of **another request** is
+  `receiptId` gets the invoice text on the version 409; a `receiptId` of **another request** is
   refused with 409 and changes neither request; version 409 before 422; foreign visa circle 403;
   department visa allowed per ADR 0171 decision 4; the attacher approving his own version allowed
   (O14); waiver rules; completion gate (422, then passes after approval and after waiver; old rental
@@ -833,10 +833,10 @@ Tests of W2:
   `mechRequests.read` through a test `has`: `NEVER_MATCH` — the "vehicle lessor sees nothing" db
   case alone passes on the permission check and pins nothing;
 - `apps/api/test/route-authorization.test.ts` recognises the guard by its marker;
-- `apps/api/test/file-access.test.ts` and a db case: receipt files for office in scope, foreign
+- `apps/api/test/file-access.test.ts` and a db case: invoice files for office in scope, foreign
   site, own lessor, foreign lessor, vehicle lessor; versions of an earlier deal refused to the
   lessor; files of his rental refused once it closed; a requester's attachment refused to the
-  lessor of that very rental; receipt files of an archived request open for an archive holder in
+  lessor of that very rental; invoice files of an archived request open for an archive holder in
   scope and stay closed for one out of scope, while its attachments stay closed (O17);
 - `apps/api/test/file-linkage.db.test.ts` with its new `LINK_CASES` entry;
 - the window proof of §5.
@@ -852,16 +852,16 @@ Tests of W2:
   `ui/MechLessorReceiptUploadModal` (one file, `accept`), `ui/MechLessorReceiptVisaModal` (P15),
   `ui/MechLessorReceiptReasonModal` (waiver and both revocations: a reason only).
 - `pages/mech`:
-  - `mechRequestMenu.tsx`: items «Прикрепить чек» / «Заменить чек», «Проверить чек», «Без чека»,
-    «Отозвать утверждение», «Отменить „без чека“»; their keys join `MECH_RENTAL_ACTION_KEYS`
+  - `mechRequestMenu.tsx`: items «Прикрепить счёт» / «Заменить счёт», «Проверить счёт», «Без счёта»,
+    «Отозвать утверждение», «Отменить „без счёта“»; their keys join `MECH_RENTAL_ACTION_KEYS`
     (`:111-119`) so the «В аренде» tab keeps them; the transition loop (`:143`) today **drops** a
-    blocked move — it changes so that `done` blocked by the receipt is pushed `disabled` with the
+    blocked move — it changes so that `done` blocked by the invoice is pushed `disabled` with the
     blocker text, key `status:done` unchanged (the header comment `:34-37`, which says only delete
     is shown disabled, is updated);
-  - `mechRequestActions.tsx`: the strip «Чек арендодателя ждёт визы» with its actions;
-  - `MechRequestViewModal.tsx` and the four tabs that open it: the receipt block and windows (P15);
-  - `mechRequestFilters.tsx` and `MechFilterBar.tsx`: the filter «Чек» (P16);
-- `entities/mech-request/ui/MechStateTag.tsx` and the phone card: the receipt mark (P16), none on
+  - `mechRequestActions.tsx`: the strip «Счёт арендодателя ждёт визы» with its actions;
+  - `MechRequestViewModal.tsx` and the four tabs that open it: the invoice block and windows (P15);
+  - `mechRequestFilters.tsx` and `MechFilterBar.tsx`: the filter «Счёт» (P16);
+- `entities/mech-request/ui/MechStateTag.tsx` and the phone card: the invoice mark (P16), none on
   archived rows; the visa window uses the server's 409 text instead of `mechFailureText`
   (`entities/mech-request/model/failure.ts`).
 - Tests: `apps/web/test/mech-lessor-receipt.test.tsx` — menu by role; «Завершить аренду» disabled
@@ -877,9 +877,9 @@ Tests of W2:
 
 ### W4. Portal: the lessor
 
-- `pages/mech/lessor/`: `MechLessorRentalsPage` (one list: number, model, site, term, rate, receipt
-  mark; filters period and receipt state), `MechLessorRentalCard` (P12 fields, receipt block with
-  «Прикрепить чек» / «Заменить чек», versions of the current deal); `MechRequestsPage` renders it
+- `pages/mech/lessor/`: `MechLessorRentalsPage` (one list: number, model, site, term, rate, invoice
+  mark; filters period and invoice state), `MechLessorRentalCard` (P12 fields, invoice block with
+  «Прикрепить счёт» / «Заменить счёт», versions of the current deal); `MechRequestsPage` renders it
   when `isMechLessorSubject(user)`, lazily, so the office route chunk does not carry it, and never
   mounts the office tabs (they would call routes that refuse him).
 - `entities/mech-request/api`: `lessorRentals`, `lessorRental` client methods and query keys.
@@ -931,7 +931,7 @@ is shown to the owner before the budget is raised by hand; `pnpm maintain surfac
    checklist.
 4. **The lessor of an old rental is a `vehicle_lessor`.** The base still allows that type in
    `lessor_type` (ADR 0152 decision 6). Such rentals are invisible to every lessor account: the axis
-   matches `mech_lessor` only. Only the office attaches their receipts; their number is asked of the
+   matches `mech_lessor` only. Only the office attaches their invoices; their number is asked of the
    owner before the release (§5).
 5. **iPhone photos.** HEIC is not accepted; iOS Safari converts a library photo to JPEG when the
    input accepts only JPEG — confirmed in the W3 browser check, otherwise the upload window says
@@ -943,9 +943,9 @@ is shown to the owner before the budget is raised by hand; `pnpm maintain surfac
 
 ## 8. Out of scope
 
-Mail and reminders; the receipt amount (O9); self-registration of lessors; anything for the lessor
+Mail and reminders; the invoice amount (O9); self-registration of lessors; anything for the lessor
 outside his rentals in work (no closed list, no other modules); lessor edits of the request;
-receipts for vehicle orders; OCR of receipts; byte sniffing of uploads; proxying files through the
+invoices for vehicle orders; OCR of invoices; byte sniffing of uploads; proxying files through the
 API; narrowing directories for executors (its own card, O16); tying sessions to the counterparty's
 state.
 
@@ -955,7 +955,7 @@ state.
 
 21 findings, all accepted; six of them changed decisions:
 
-1. **Any entry into «Новая» retires the receipt**, not only `confirmed → new`: the deal is erased by
+1. **Any entry into «Новая» retires the invoice**, not only `confirmed → new`: the deal is erased by
    `mechTransitionResetsDeal`, including `cancelled → new`; the lessor's version cut stops at
    `rolled_back` too (P8, P12).
 2. **Five audit actions, not four**: one action maps to one history kind; approve and reject split
@@ -963,8 +963,8 @@ state.
 3. **The history table does not render file links** — it prints text. O8 "openable from the
    history" now has its own change: a `renderFiles` prop used by the mechanization card only (P9, W3).
 4. **«Завершить аренду» was hidden, not disabled**, by the menu loop; W3 changes the loop for the
-   receipt barrier.
-5. **«Без чека» had no door when there is no file to show**: a menu item and card button with a
+   invoice barrier.
+5. **«Без счёта» had no door when there is no file to show**: a menu item and card button with a
    reason dialog (P6).
 6. **The lessor could open requester attachments** of his own rental by id: the attachment branch
    never matches for him (P11).
@@ -987,7 +987,7 @@ permission sets get the new permission by a data step of the migration.
    test; `canApproveMechRequest` no longer answers `true` for an executor (P5, P10).
 2. **The refusal of the lessor was opt-in per route.** It became deny-by-default in the plugin with
    marked lessor doors, and the suite walks the access manifest (P11).
-3. **Hard delete would have erased receipt versions** of a «Новая» that had been in work; such a
+3. **Hard delete would have erased invoice versions** of a «Новая» that had been in work; such a
    «Новая» is archived instead (P8).
 4. **A `receiptId` of another request** could have been decided through one's own rental; the write
    binds `request_id`, with a test (P5).
@@ -1026,7 +1026,7 @@ accepted:
 3. **The API file fallback contradicted the runbook**, and the dev browser check proved nothing
    about the prod bucket. No fallback; pdf.js asks one plain `GET`; the prod bucket is a deploy
    checklist step (P14, §5).
-4. **O8 for archived requests** — the owner chose: receipts open in the archive for its holders
+4. **O8 for archived requests** — the owner chose: invoices open in the archive for its holders
    (O17, P13).
 5. **The window between migration and restart** can still lose the new permission (the old API
    deletes unknown strings as orphans); a runbook step forbids set edits in the window and a
@@ -1042,13 +1042,13 @@ accepted:
     named before (P11).
 11. **Guesses removed**: reply shape and version bump of decide and waive; texts of the cap and the
     content-type refusals; the lessor list envelope; the SQL twin of the visibility predicate with a
-    test; the cap per account within the deal; the receipt loaded on every transition; the grouped
+    test; the cap per account within the deal; the invoice loaded on every transition; the grouped
     count against the drizzle correlation trap; the replaced version in the waiver event;
     `permissions.test.ts:722-725`.
 12. **Production exposure**: cutting a lessor off is a runbook step and an ADR note (counterparty
     deactivation does not end sessions); the release entry is written for external readers; risks 2
     and 4 go to an owner survey before the release; the waiver's revocation has its own label and
-    result («нет чека»).
+    result («нет счёта»).
 
 Verdict of round 3, after these fixes: implementable. The largest remaining risk is still a scope
 leak to the first external users; it is now held by the guard, the wave order, the grant matrix and

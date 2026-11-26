@@ -237,11 +237,11 @@ export interface FileLinkage {
    */
   visibleMech: boolean;
   /**
-   * The file is a version of a mechanization lessor receipt (lessor receipt plan, P13), read under
+   * The file is a version of a mechanization lessor invoice (lessor receipt plan, P13), read under
    * `mechRequests.read`:
    *
    * - for the office, of a request visible by `mechScopeWhere`; of an ARCHIVED request too for a
-   *   holder of `archive.read` (O17) — the receipt is the evidence of a payment and is examined
+   *   holder of `archive.read` (O17) — the invoice is the evidence of a payment and is examined
    *   after archiving, while the request's attachments stay closed there;
    * - for the lessor, of his rental by the one predicate (`isMechLessorRentalVisible`: his
    *   counterparty, «В работе», not archived) AND a version of the current deal
@@ -479,7 +479,7 @@ function serviceNomenclatureWhere(p: Principal): SQL | undefined {
 }
 
 /**
- * Is the file a lessor receipt version the principal may open (lessor receipt plan, P13, O17)?
+ * Is the file a lessor invoice version the principal may open (lessor receipt plan, P13, O17)?
  * The caller has asked `mechRequests.read`. See `FileLinkage.visibleMechLessorReceipt` for the rule.
  *
  * The lessor's half asks the contracts' predicates themselves, not a SQL copy: the rental by
@@ -692,7 +692,7 @@ async function canAccessFile(
     // rules here would drift from it on the first edit.
     //
     // Never for the mechanization lessor (lessor receipt plan, P11, O7): the requester's files are
-    // not his to see, even of his own rental. His receipts open by the branch below.
+    // not his to see, even of his own rental. His invoices open by the branch below.
     //
     // A deleted request gives no attachments — as with waste, vehicles and office equipment above:
     // the archive opens the card, not a direct link to the file.

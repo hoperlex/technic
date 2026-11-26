@@ -403,29 +403,32 @@ export function mechTransitionResetsDeal(from: RequestStatus, to: RequestStatus)
 }
 
 /**
- * Единица ставки аренды механизации (Р7): цена договаривается за час либо за смену, и третьей
- * единицы нет намеренно — за что не назначена ставка, то нечем и считать (то же правило, что у
- * ставок техники, ADR 0018 и `VEHICLE_WORK_UNITS`).
+ * The unit of a mechanization rental rate (ADR 0152 decision 4, ADR 0251): the price is agreed per
+ * hour, per shift or per day («сутки» — a lessor bills a machine that stays on site round the clock
+ * by the day, and forcing that price into a shift would make the office divide the invoice by hand).
+ * Nothing else: a unit nobody prices in cannot be counted either.
  *
- * Единственное число (`hour`, а не `hours`), потому что значение отвечает на «за что ставка», а
- * не «чем меряют отработанное»: у соседнего модуля это две разные пары полей, а здесь одна
- * колонка `rate_unit` служит и ставке, и факту — `actual_units` обязан прийти в тех же единицах.
- * Значения совпадают с enum'ом базы `mech_rate_unit`.
+ * Singular (`hour`, not `hours`) because the value answers "what is the rate for", not "what
+ * measures the work": one column `rate_unit` serves both the rate and the fact, so `actual_units`
+ * comes in the same unit. The values match the database enum `mech_rate_unit`; a new value is
+ * added there first (`ALTER TYPE … ADD VALUE`), because old code reading a row never meets it.
  */
-export const MECH_RATE_UNITS = ['hour', 'shift'] as const;
+export const MECH_RATE_UNITS = ['hour', 'shift', 'day'] as const;
 export const mechRateUnitSchema = z.enum(MECH_RATE_UNITS);
 export type MechRateUnit = (typeof MECH_RATE_UNITS)[number];
 
-/** Единица ставки в списке выбора и в карточке: «час», «смена». */
+/** The rate unit in the picker and the card. */
 export const mechRateUnitLabels: Record<MechRateUnit, string> = {
   hour: 'час',
   shift: 'смена',
+  day: 'сутки',
 };
 
-/** Подпись ставки в форме и карточке: «за час» / «за смену» — как у ставок техники (ADR 0027). */
+/** The rate's caption in the form and the card, worded as vehicle rates are (ADR 0027). */
 export const mechRateUnitRateLabels: Record<MechRateUnit, string> = {
   hour: 'за час',
   shift: 'за смену',
+  day: 'за сутки',
 };
 
 /**

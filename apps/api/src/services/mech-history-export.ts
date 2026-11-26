@@ -62,6 +62,7 @@ const HEADER = [
   'Дней',
   'Отработано, ч',
   'Отработано, смен',
+  'Отработано, сут.',
   'Стоимость, ₽',
   'Ответственный',
   'Комментарий',
@@ -99,6 +100,7 @@ function rowOf(request: MechRequestDto): string[] {
       : '',
     hour ? amount(request.actualUnits) : '',
     request.rateUnit === 'shift' ? amount(request.actualUnits) : '',
+    request.rateUnit === 'day' ? amount(request.actualUnits) : '',
     money(request.finalCost),
     request.responsibleName,
     request.comment,
@@ -124,7 +126,8 @@ function totalsRow(summary: MechRequestHistorySummaryDto): string[] {
   row[12] = String(summary.days);
   row[13] = String(summary.hours);
   row[14] = String(summary.shifts);
-  row[15] = summary.cost;
+  row[15] = String(summary.dayUnits ?? 0);
+  row[16] = summary.cost;
   return row;
 }
 
@@ -161,7 +164,7 @@ export function mechHistoryWorkbook(input: MechHistoryExportInput): {
       {
         name: 'Журнал закрытых',
         rows,
-        widths: [10, 12, 24, 28, 24, 24, 12, 14, 12, 12, 12, 12, 8, 14, 16, 14, 22, 40, 24],
+        widths: [10, 12, 24, 28, 24, 24, 12, 14, 12, 12, 12, 12, 8, 14, 16, 16, 14, 22, 40, 24],
         freezeHeader: true,
       },
     ]),

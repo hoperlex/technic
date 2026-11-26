@@ -1250,7 +1250,7 @@ describe.skipIf(!DB_URL)('чеки на автозапчасти: ведение
       // тело целиком, и забытая прежняя ветка — тихая потеря защиты: сравнение множеством ловит и
       // пропавшую ветку, и лишнюю (второй ответ на тот же вопрос запирает файл навсегда в первом же
       // расклеившемся случае).
-      // The eleventh branch is the lessor's receipt versions (migration 0420, ADR 0248); its link
+      // The eleventh branch is the lessor's invoice versions (migration 0420, ADR 0248); its link
       // case lives in `file-linkage.db.test.ts`, the suite that owns every branch's case.
       expect(await tablesKnownToFunction()).toEqual([
         'auto_part_receipt_files',

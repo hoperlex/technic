@@ -1,10 +1,10 @@
 /**
- * The lessor's receipt of a mechanization rental (plan `docs/mechanization-lessor-receipt-plan.md`):
+ * The lessor's invoice of a mechanization rental (plan `docs/mechanization-lessor-receipt-plan.md`):
  * after «Взять в работу» the lessor or the office attaches one PDF or JPG, a holder of the request
- * visa approves or rejects it in a window that shows the receipt itself, or allows completion «без
- * чека»; completion waits for one of the two.
+ * visa approves or rejects it in a window that shows the invoice itself, or allows completion «без
+ * счёта»; completion waits for one of the two.
  *
- * A slice of its own, not a part of the extension or the completion: the receipt lives by its own
+ * A slice of its own, not a part of the extension or the completion: the invoice lives by its own
  * permission (`mechRequests.lessorReceipt` to attach, `mechRequests.approve` to decide), its own
  * doors and its own history events. What is available is never decided here — the buttons come from
  * `mechLessorReceiptAccess` of the contracts.

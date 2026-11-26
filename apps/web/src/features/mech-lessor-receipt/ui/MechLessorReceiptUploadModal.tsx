@@ -22,7 +22,7 @@ interface Values {
  */
 const fileRule: FormRule = {
   validator: async (_rule, file?: File) => {
-    if (!file) throw new Error('Выберите файл чека');
+    if (!file) throw new Error('Выберите файл счёта');
     if (!isMechLessorReceiptContentType(file.type)) {
       throw new Error(MECH_LESSOR_RECEIPT_CONTENT_TYPE_MESSAGE);
     }
@@ -31,7 +31,7 @@ const fileRule: FormRule = {
 };
 
 /**
- * «Прикрепить чек» / «Заменить чек» (lessor receipt plan, P7): ONE file, PDF or JPG (O4). The file
+ * «Прикрепить счёт» / «Заменить счёт» (lessor receipt plan, P7): ONE file, PDF or JPG (O4). The file
  * goes to storage first and is attached second, as every attachment of the portal.
  *
  * Shared by the office's card and the lessor's page (W4): it asks only the rental's id, number and
@@ -39,7 +39,7 @@ const fileRule: FormRule = {
  * replace may touch (O13).
  *
  * A replacement says what it does to a decision: the new version waits for the visa again, whatever
- * the old one was. Where the old one stays is named in words true for both readers: «Версии чека»
+ * the old one was. Where the old one stays is named in words true for both readers: «Версии счёта»
  * — the lessor has no card history (O7), so a promise of «история заявки» would point him nowhere.
  */
 export function MechLessorReceiptUploadModal({
@@ -71,7 +71,7 @@ export function MechLessorReceiptUploadModal({
       { rental, file },
       {
         onSuccess: () => {
-          message.success(replace ? 'Чек заменён — он снова ждёт визы' : 'Чек прикреплён');
+          message.success(replace ? 'Счёт заменён — он снова ждёт визы' : 'Счёт прикреплён');
           onClose();
         },
         onError: (e) => {
@@ -85,8 +85,8 @@ export function MechLessorReceiptUploadModal({
     <FormModal
       title={
         rental
-          ? `${replace ? 'Заменить' : 'Прикрепить'} чек арендодателя · ${rental.displayNumber}`
-          : 'Чек арендодателя'
+          ? `${replace ? 'Заменить' : 'Прикрепить'} счёт арендодателя · ${rental.displayNumber}`
+          : 'Счёт арендодателя'
       }
       open={!!rental}
       onCancel={onClose}
@@ -101,7 +101,7 @@ export function MechLessorReceiptUploadModal({
           showIcon
           style={{ marginBottom: 16 }}
           title="Новая версия заменит текущую и будет ждать визы заново"
-          description="Прежняя версия останется в «Версиях чека»."
+          description="Прежняя версия останется в «Версиях счёта»."
         />
       )}
       <Form
@@ -113,8 +113,8 @@ export function MechLessorReceiptUploadModal({
       >
         <Form.Item
           name="file"
-          label="Файл чека"
-          extra="Один файл: PDF или JPG — скан или фото чека"
+          label="Файл счёта"
+          extra="Один файл: PDF или JPG — скан или фото счёта"
           rules={[fileRule]}
         >
           <ReceiptFileField />
@@ -150,7 +150,7 @@ function ReceiptFileField({
         type="file"
         accept={MECH_LESSOR_RECEIPT_ACCEPT}
         style={{ display: 'none' }}
-        aria-label="Файл чека"
+        aria-label="Файл счёта"
         onChange={(event) => {
           const picked = event.target.files?.[0];
           // Cleared so the same file can be chosen again after the window was reset.

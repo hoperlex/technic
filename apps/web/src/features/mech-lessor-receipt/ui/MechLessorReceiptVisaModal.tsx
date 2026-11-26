@@ -32,9 +32,9 @@ type Step = 'look' | 'reject' | 'waive' | 'revoke';
 const STEP_TEXTS: Record<Exclude<Step, 'look'>, { label: string; ok: string; required: string }> = {
   reject: { label: 'Причина отказа', ok: 'Отклонить', required: 'Укажите причину отказа' },
   waive: {
-    label: 'Почему аренду завершают без чека',
-    ok: 'Разрешить без чека',
-    required: 'Укажите, почему аренду завершают без чека',
+    label: 'Почему аренду завершают без счёта',
+    ok: 'Разрешить без счёта',
+    required: 'Укажите, почему аренду завершают без счёта',
   },
   revoke: {
     label: 'Причина отзыва',
@@ -44,10 +44,10 @@ const STEP_TEXTS: Record<Exclude<Step, 'look'>, { label: string; ok: string; req
 };
 
 const SUCCESS: Record<Exclude<Step, 'look'> | 'approve', string> = {
-  approve: 'Чек утверждён',
-  reject: 'Чек отклонён',
-  waive: 'Завершение без чека разрешено',
-  revoke: 'Утверждение чека отозвано',
+  approve: 'Счёт утверждён',
+  reject: 'Счёт отклонён',
+  waive: 'Завершение без счёта разрешено',
+  revoke: 'Утверждение счёта отозвано',
 };
 
 interface Values {
@@ -55,17 +55,17 @@ interface Values {
 }
 
 /**
- * «Проверить чек» (lessor receipt plan, O5, P15): the receipt itself next to the facts it is signed
+ * «Проверить счёт» (lessor receipt plan, O5, P15): the invoice itself next to the facts it is signed
  * against, and the decision in the same window.
  *
- * - Desktop (≥ 992 px): the receipt on the left, about two thirds, the facts on the right.
- * - Phone: the full-screen sheet, the receipt on top, the facts below, the actions in the sheet's
- *   pinned footer — the thumb reaches them without scrolling past the receipt.
+ * - Desktop (≥ 992 px): the invoice on the left, about two thirds, the facts on the right.
+ * - Phone: the full-screen sheet, the invoice on top, the facts below, the actions in the sheet's
+ *   pinned footer — the thumb reaches them without scrolling past the invoice.
  *
  * THE WINDOW SIGNS WHAT IT SHOWS. It keeps the version it opened with and sends that `receiptId`
  * and the request version of that moment; the server binds the write to both (P5). A version
  * replaced while the window was open is a 409, and the window closes with the SERVER's words —
- * «Чек заменили, пока окно было открыто» says more than the module's generic «reread» — and the card
+ * «Счёт заменили, пока окно было открыто» says more than the module's generic «reread» — and the card
  * reads itself again.
  *
  * Which actions exist is `mechLessorReceiptAccess` over the server's permission list (ADR 0223), so a
@@ -175,7 +175,7 @@ function VisaWindow({
           downloadButton,
           access.waive && (
             <Button key="waive" size={size} onClick={() => setStep('waive')}>
-              Без чека
+              Без счёта
             </Button>
           ),
           access.revokeApproval && (
@@ -302,7 +302,7 @@ function VisaWindow({
 
   return (
     <ViewModal
-      title={`Чек арендодателя · ${request.displayNumber}`}
+      title={`Счёт арендодателя · ${request.displayNumber}`}
       open
       onClose={onClose}
       width={1200}

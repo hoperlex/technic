@@ -319,7 +319,7 @@ describe('назначаемые права: 81 из 87', () => {
     // системный набор ИТ-службы, а набор наполняется выдачей прав. Оба числа выросли на единицу:
     // восемьдесят из восьмидесяти шести.
     //
-    // The eighty-seventh is attaching the lessor's receipt (`mechRequests.lessorReceipt`, plan
+    // The eighty-seventh is attaching the lessor's invoice (`mechRequests.lessorReceipt`, plan
     // `docs/mechanization-lessor-receipt-plan.md`, P4) — split from `.status` so that the lessor can
     // attach without running the rental. Grantable, and it must stay so: `.status` requires it, and a
     // set holding `.status` (the migration added it to every such set) could not be saved otherwise.

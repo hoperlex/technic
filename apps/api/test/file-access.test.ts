@@ -163,7 +163,7 @@ const IN_OWN_READING = { ...NOWHERE, ownDriverReading: true, linkedAnywhere: tru
 /** An attachment of a mechanization request in the principal's scope (mechanization plan, R14). */
 const IN_MECH = { ...NOWHERE, visibleMech: true, linkedAnywhere: true };
 /**
- * A version of a mechanization lessor receipt the principal may see (lessor receipt plan, P13):
+ * A version of a mechanization lessor invoice the principal may see (lessor receipt plan, P13):
  * the scope, the archive (O17) and the lessor's deal were asked by `canAccessFile` before.
  */
 const IN_MECH_LESSOR_RECEIPT = { ...NOWHERE, visibleMechLessorReceipt: true, linkedAnywhere: true };
@@ -245,7 +245,7 @@ describe('привязанный файл живёт по правилам св�
 });
 
 /**
- * The receipt flag decides only "is the module his at all": which versions, of which requests and
+ * The invoice flag decides only "is the module his at all": which versions, of which requests and
  * deals, was asked in SQL and in the contracts' predicates before (db cases in
  * `mech-lessor-scope.db.test.ts`).
  */
@@ -272,7 +272,7 @@ describe('mechanization lessor receipt (lessor receipt plan, P13)', () => {
    * lessor (P11, O7). Both are db cases in `mech-lessor-scope.db.test.ts`; here, that the flag he
    * may get opens the file, and that his module is nothing else.
    */
-  it('the mechanization lessor opens a receipt flagged for him, and no other module', () => {
+  it('the mechanization lessor opens an invoice flagged for him, and no other module', () => {
     const p = mechLessor();
     expect(can(p, 'mechRequests.read')).toBe(true);
     expect(decideFileAccess(p, UPLOADER, IN_MECH_LESSOR_RECEIPT)).toBe(true);
@@ -290,7 +290,7 @@ describe('mechanization lessor receipt (lessor receipt plan, P13)', () => {
   });
 
   it('the uploader of a linked receipt keeps no key of his own', () => {
-    // The lessor uploads his receipt, it is attached, and from then on only the rental's rules
+    // The lessor uploads his invoice, it is attached, and from then on only the rental's rules
     // open it: a closed rental or a changed deal must take the file away from him too.
     expect(decideFileAccess(mechLessor(UPLOADER), UPLOADER, IN_INVISIBLE_REQUEST)).toBe(false);
     expect(decideFileAccess(vehicleLessor(UPLOADER), UPLOADER, IN_INVISIBLE_REQUEST)).toBe(false);

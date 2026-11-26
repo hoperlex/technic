@@ -51,9 +51,9 @@ export function MechRequestViewModal({
    */
   extension?: (request: MechRequestDto) => ReactNode;
   /**
-   * The lessor's receipt with its buttons (lessor receipt plan, P15): the strip above the fields and
+   * The lessor's invoice with its buttons (lessor receipt plan, P15): the strip above the fields and
    * the block below them. Not passed — the block is still shown, read-only: the archive and the
-   * journal keep the receipt as evidence, and its versions open there too (O8, O17).
+   * journal keep the invoice as evidence, and its versions open there too (O8, O17).
    */
   lessorReceipt?: {
     strip: (request: MechRequestDto) => ReactNode;

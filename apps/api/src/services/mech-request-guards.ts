@@ -65,7 +65,7 @@ export function assertMechRequestOpenable(
   version: number,
   /**
    * The words of the version 409 when the door knows better than the generic «reread»: the lessor
-   * receipt's visa says the receipt was replaced while the window was open (lessor receipt plan,
+   * invoice's visa says the invoice was replaced while the window was open (lessor receipt plan,
    * P5). Only the words change — the order of the checks and the status code stay the protocol's.
    */
   staleMessage?: string,
@@ -79,7 +79,7 @@ export function assertMechRequestOpenable(
 }
 
 /**
- * CAS on the request after a write to its child rows (the extension, the lessor receipt): the
+ * CAS on the request after a write to its child rows (the extension, the lessor invoice): the
  * version was matched under the lock, and only it is bumped here, with the request columns the door
  * changes alongside. Every such door bumps the version even when only `updated_at` changes in the
  * request: the card shows the child, and a CAS on a child table without its own version does not

@@ -25,7 +25,7 @@ import { lessorRentalMark } from './lessorRental';
  * planned return).
  *
  * No state column: every row is «В работе» by construction (O12), so a state tag would repeat one
- * word. The receipt is the column that tells his rows apart, and his work in this section.
+ * word. The invoice is the column that tells his rows apart, and his work in this section.
  */
 
 export interface LessorRentalGridOptions {
@@ -35,8 +35,8 @@ export interface LessorRentalGridOptions {
 }
 
 /**
- * The receipt of a row: a mark while something waits — for the visa or for him — and the decision's
- * own word once it is settled. Without the second half an approved receipt would read as an empty
+ * The invoice of a row: a mark while something waits — for the visa or for him — and the decision's
+ * own word once it is settled. Without the second half an approved invoice would read as an empty
  * cell, and the lessor would wonder whether it reached anyone.
  */
 export function LessorReceiptCell({ rental }: { rental: MechLessorRentalDto }) {
@@ -46,7 +46,7 @@ export function LessorReceiptCell({ rental }: { rental: MechLessorRentalDto }) {
   if (!current) return <Typography.Text type="secondary">—</Typography.Text>;
   return (
     <Typography.Text type={current.status === 'approved' ? 'success' : 'secondary'}>
-      чек {mechLessorReceiptStatusLabels[current.status]}
+      счёт {mechLessorReceiptStatusLabels[current.status]}
     </Typography.Text>
   );
 }
@@ -115,7 +115,7 @@ export function lessorRentalColumns(
     },
     {
       key: 'lessorReceipt',
-      title: 'Чек',
+      title: 'Счёт',
       width: 150,
       render: (_v: unknown, r: MechLessorRentalDto) => <LessorReceiptCell rental={r} />,
     },
@@ -136,7 +136,7 @@ export function lessorRentalColumns(
 }
 
 /**
- * His rental on the phone (ADR 0030): the site in the head — he drives there — and the receipt as
+ * His rental on the phone (ADR 0030): the site in the head — he drives there — and the invoice as
  * the badge, the one thing a row may ask him to do. The card opens on a tap; it has no actions
  * sheet, because the only action lives inside the card.
  */
@@ -162,7 +162,7 @@ export function lessorRentalCard(opts: LessorRentalGridOptions): CardConfig<Mech
   };
 }
 
-/** The receipt states of the filter, in the order of the contracts' question. */
+/** The invoice states of the filter, in the order of the contracts' question. */
 export const LESSOR_RECEIPT_OPTIONS = MECH_LESSOR_RECEIPT_FILTERS.map((value) => ({
   value,
   label: mechLessorReceiptFilterLabels[value],
@@ -203,10 +203,10 @@ export function lessorRentalFilters(
     {
       kind: 'select',
       key: 'lessorReceipt',
-      label: 'Чек',
+      label: 'Счёт',
       value: params.lessorReceipt,
       options: LESSOR_RECEIPT_OPTIONS,
-      placeholder: 'Чек: любой',
+      placeholder: 'Счёт: любой',
       onChange: (value) => apply({ lessorReceipt: value }),
     },
   ];

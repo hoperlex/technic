@@ -205,7 +205,7 @@ export const GRANT_SCOPE_MATRIX: Record<PermissionModule, Record<RoleScopeAxis, 
    * The counterparty cell is `forbidden`, and it stays so although mechanization lessors have
    * accounts and a scope predicate of their own (lessor receipt plan, P10) — the rule "scoped iff a
    * predicate exists" does not apply to it. The lessor's powers are exactly his counterparty type's list (read
-   * and attach a receipt) over a narrow view built for him. A set with `.status`, `.update`,
+   * and attach an invoice) over a narrow view built for him. A set with `.status`, `.update`,
    * `.extend` or `.approve` given to the executor role would open write doors that answer with the
    * full request and predicates that know nothing of that narrow view: the lessor would see the
    * department, the comment, the requester's files and the money of his rentals, and could move

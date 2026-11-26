@@ -12,14 +12,14 @@ import {
 } from '@technic/contracts';
 
 /*
- * The lessor's rental as the contracts' receipt rules ask it (lessor receipt plan, P12, P15). His
- * DTO is an allow-list and carries the receipt as his audience's block, not the office's flat
+ * The lessor's rental as the contracts' invoice rules ask it (lessor receipt plan, P12, P15). His
+ * DTO is an allow-list and carries the invoice as his audience's block, not the office's flat
  * fields, so the rules get the same facts by this one translation — the page never decides an
  * availability itself.
  */
 
 /**
- * The receipt's side of the rental. `deletedAt` is `null` by construction: his doors never return
+ * The invoice's side of the rental. `deletedAt` is `null` by construction: his doors never return
  * an archived rental (O12), the server's predicate refuses it before the DTO is built.
  */
 export function lessorReceiptTarget(rental: MechLessorRentalDto): MechLessorReceiptTarget {
@@ -38,7 +38,7 @@ export function lessorRentalMark(rental: MechLessorRentalDto): MechLessorReceipt
 }
 
 /**
- * «Прикрепить чек» / «Заменить чек» of his card: `mechLessorReceiptAccess`, the predicate the server
+ * «Прикрепить счёт» / «Заменить счёт» of his card: `mechLessorReceiptAccess`, the predicate the server
  * answers with, over the facts his DTO carries.
  *
  * - `lessorId` is his own counterparty: a rental reaches him only through the server's

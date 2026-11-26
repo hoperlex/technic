@@ -13,13 +13,13 @@ import {
  * make the visa a signature on nothing.
  *
  * THIS MODULE IS REACHED ONLY THROUGH A DYNAMIC IMPORT (`FilePreviewFrame`), so the library stays
- * out of the entry and of every route chunk; it is downloaded the first time a receipt is shown.
+ * out of the entry and of every route chunk; it is downloaded the first time an invoice is shown.
  *
  * Every setting below answers the portal's CSP (`deploy/nginx/technic.conf`) or the storage:
  * - the worker, the CMaps, the standard fonts and the decoder fallbacks come from the portal's own
  *   origin (`scripts/pdfjs-assets.ts` puts them there): `script-src 'self'` refuses a `blob:` or a
  *   foreign worker, `connect-src 'self'` lets the worker fetch only same-origin files, and a
- *   Cyrillic receipt with non-embedded fonts needs the CMaps and fonts to draw its letters;
+ *   Cyrillic invoice with non-embedded fonts needs the CMaps and fonts to draw its letters;
  * - `useWasm: false` — the policy has no `'wasm-unsafe-eval'`; the JBIG2 and JPX decoders run from
  *   their JS fallbacks under `wasmUrl`. pdf.js 6 has no `eval` path left (its `isEvalSupported`
  *   option was removed together with the code it switched off), so there is nothing to turn off;

@@ -134,18 +134,18 @@ export const mechRequestsApi = {
     apiFetch<MechRequestDto>(`${PATH}/${id}/extension`, { method: 'DELETE', query: { version } }),
 
   /*
-   * The lessor's receipt (lessor receipt plan, P5–P7). The three doors answer the request's new
-   * version and the receipt block, not the whole request: the caller drops the module's cache and
+   * The lessor's invoice (lessor receipt plan, P5–P7). The three doors answer the request's new
+   * version and the invoice block, not the whole request: the caller drops the module's cache and
    * the card reads itself again. Attaching is also the lessor's own write door — his page calls the
    * same method from his account.
    */
-  /** Attach a receipt, or replace the current version. */
+  /** Attach an invoice, or replace the current version. */
   attachLessorReceipt: (id: string, body: AttachMechLessorReceiptInput) =>
     apiFetch<MechLessorReceiptReplyDto>(`${PATH}/${id}/lessor-receipt`, { method: 'POST', body }),
   /** Approve, reject or revoke — always of the version the window showed (`receiptId`). */
   decideLessorReceipt: (id: string, body: DecideMechLessorReceiptInput) =>
     apiFetch<MechLessorReceiptReplyDto>(`${PATH}/${id}/lessor-receipt`, { method: 'PATCH', body }),
-  /** The «без чека» visa: completion without a receipt, with its reason. */
+  /** The «без счёта» visa: completion without an invoice, with its reason. */
   waiveLessorReceipt: (id: string, body: WaiveMechLessorReceiptInput) =>
     apiFetch<MechLessorReceiptReplyDto>(`${PATH}/${id}/lessor-receipt/waiver`, {
       method: 'POST',
@@ -157,7 +157,7 @@ export const mechRequestsApi = {
    * own allow-listed DTO. Only a lessor account passes them; every other door of the module refuses
    * him, so his page never calls the office methods above except `attachLessorReceipt`.
    */
-  /** His rentals: the period, the receipt state and a search over what his card shows. */
+  /** His rentals: the period, the invoice state and a search over what his card shows. */
   lessorRentals: (query: Query) =>
     apiFetch<ListResult<MechLessorRentalDto>>(`${PATH}/lessor-rentals`, { query }),
   /** One of his rentals; 404 once it left «В работе» or was never his. */

@@ -772,9 +772,9 @@ mandatory reload banner on its next request. Rolling step 2 back is `deploy-auto
 and the command permits it only while the serving release requires no more than 6. Once R2 serves,
 its requirement is 7, so lowering to 6 is refused before `prod.env` changes.
 
-### Mechanization lessor receipt and lessor accounts (ADR 0248, release 0.1.142.0248)
+### Mechanization lessor invoice and lessor accounts (ADR 0248, release 0.1.142.0248)
 
-Migration `0420` adds the receipt table, two columns of `mech_requests`, the permission
+Migration `0420` adds the invoice table, two columns of `mech_requests`, the permission
 `mechRequests.lessorReceipt` to every permission set that holds `mechRequests.status` (version +1
 each) and the eleventh branch of `file_is_linked`; `0421` is the release entry. No client floor
 raise, no maintenance mode. Before the release the owner confirmed (survey of 09.11.2026) that every
@@ -787,7 +787,7 @@ on any save of that set's contents. Tell the administrators not to save anything
 «Администрирование» → «Права» for the duration of the deploy. An editor opened before the migration
 is safe: the version bump turns its save into a 409.
 
-**2. After the restart, sets that run rentals must also attach receipts.** Through `db-tools`
+**2. After the restart, sets that run rentals must also attach invoices.** Through `db-tools`
 (the connection command is in «A migration fails with `canceling statement due to lock timeout`»):
 
 ```sql
@@ -824,7 +824,7 @@ COMMIT;
 Then run the first query again: no rows. Holders need no re-login — the API reads a set's
 permissions on every request. Until the repair, barrier 4 refuses saving such a set, and any access
 change of its holders, whenever a holder's role does not bring `mechRequests.lessorReceipt` itself
-(«Ведущий аренду прикрепляет и чек арендодателя»).
+(«Ведущий аренду прикрепляет и счёт арендодателя»).
 
 **3. The storage bucket answers the receipt preview from the portal's origin.** The preview reads a
 PDF with pdf.js by one plain `GET` of the signed link, straight from the bucket (files never pass
@@ -841,13 +841,13 @@ curl -s -D - -o /dev/null "$DOWNLOAD_URL" -H 'Origin: https://auto.su10.ru'
 
 The first answer (`200`/`204`) carries `Access-Control-Allow-Origin: https://auto.su10.ru` and
 `GET` among `Access-Control-Allow-Methods`; the second is `200` with the same
-`Access-Control-Allow-Origin`. Without it the visa window shows no receipt while «Скачать» still
+`Access-Control-Allow-Origin`. Without it the visa window shows no invoice while «Скачать» still
 works: fix the bucket's CORS rule (`docs/setup-infra.md` §3, `AllowedMethods` with `GET`), not the
 portal. The origin is the address people open, the same as `PUBLIC_ORIGIN`.
 
 **4. Smoke.** As a dispatcher, attach a PDF to a rental «В работе»; as its site's visa holder, open
-«Проверить чек»: the pages are drawn in the window, on a phone too. «Завершить аренду» is disabled
-until the receipt is approved or «Без чека» is given.
+«Проверить счёт»: the pages are drawn in the window, on a phone too. «Завершить аренду» is disabled
+until the invoice is approved or «Без счёта» is given.
 
 **Lessor accounts.** The administrator creates them in «Администрирование» → «Пользователи»: the
 role «Оператор (внешний исполнитель)» and a counterparty of type «Арендодатель механизации». Such an
@@ -867,7 +867,7 @@ SELECT u.id, u.email, u.full_name, u.is_active,
  ORDER BY c.name, u.full_name;
 ```
 
-A rental whose lessor is changed leaves the previous lessor's list at once, with every receipt
+A rental whose lessor is changed leaves the previous lessor's list at once, with every invoice
 version of it; nothing has to be done for that.
 
 ### Snow removal request: steps after the deploy (ADR 0250)
@@ -901,6 +901,18 @@ code `0` — everything computed; `2` — some requests did not compute (the fir
 with their numbers): run it again; `1` — a bad argument. Afterwards the register's count is back to
 the number noted before the deploy, plus whatever really arrived meanwhile. A request that still
 shows up with a recognition job queued or running is a real wait, not a leftover.
+
+### Mechanization invoice wording and the day rate (ADR 0251, release 0.1.147.0251)
+
+No manual step. Migration `0432` adds the value `day` to `mech_rate_unit` while the previous image
+still serves (no row can hold it before the new portal offers it); `0433` is the release entry. An
+enum value cannot be dropped in place, and the previous image refuses a newer schema: a rollback is
+the usual one of «Необратимый выкат».
+
+After the restart, check on a phone or a desktop: «Механизация» → a rental «В работе» → its menu
+reads «Прикрепить счёт» / «Проверить счёт» (no «чек» left), and «Взять в работу» offers «сутки» in
+«За что ставка». A tab opened before the deploy shows a day-rate rental without its unit until it
+reloads; that is display only.
 
 ### Документ выполненных работ и автосогласование оргтехники (ADR 0208)
 

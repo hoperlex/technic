@@ -237,7 +237,7 @@ describe('стартовый раздел субъекта', () => {
 
 describe('the mechanization lessor (lessor receipt plan, W4)', () => {
   /*
-   * His accounts are new with the receipt release: the counterparty type got its permissions
+   * His accounts are new with the invoice release: the counterparty type got its permissions
    * (`COUNTERPARTY_TYPE_PERMISSIONS.mech_lessor`), and nothing else was added for his navigation.
    * The registry must make mechanization his only section and therefore his start page, with any
    * scope — he has no site axis, his rentals are found by his counterparty. Had his list opened

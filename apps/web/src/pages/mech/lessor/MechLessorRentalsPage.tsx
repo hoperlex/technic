@@ -28,7 +28,7 @@ const SEARCH_PLACEHOLDER = 'Номер, модель, площадка, адре
 
 /**
  * «Механизация» for a mechanization lessor (lessor receipt plan, §2, P12): his rentals «В работе»,
- * one list and a narrow card, where he attaches the receipts. His only section, so his start page.
+ * one list and a narrow card, where he attaches the invoices. His only section, so his start page.
  *
  * One page, no tabs: the office's tabs call doors that refuse him (every mechanization door but his
  * three answers a lessor 403, P11), and none of their questions — what to take into work, what it

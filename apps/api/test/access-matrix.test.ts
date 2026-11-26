@@ -1613,7 +1613,7 @@ const CASES: Case[] = [
     allowed: ['operator/mech_lessor'],
   },
   {
-    title: 'механизация — прикрепить чек арендодателя',
+    title: 'механизация — прикрепить счёт арендодателя',
     method: 'POST',
     url: `/api/v1/mech-requests/${RECORD_ID}/lessor-receipt`,
     payload: { fileId: RECORD_ID, version: 1 },

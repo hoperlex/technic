@@ -155,7 +155,7 @@ describe('вход приводит в раздел роли, а не на сл�
   });
 
   it('a mechanization lessor lands in «Механизация», his only section', async () => {
-    // His accounts appear with the receipt release (lessor receipt plan, W4): the registry, not a
+    // His accounts appear with the invoice release (lessor receipt plan, W4): the registry, not a
     // list of his own, makes mechanization his start page and his whole menu.
     renderPortal(
       authUser({

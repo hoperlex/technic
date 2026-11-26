@@ -187,11 +187,11 @@ export const PERMISSIONS = [
   'mechRequests.status',
   'mechRequests.extend',
   /**
-   * Attaching the lessor's receipt to a rental in work (plan
+   * Attaching the lessor's invoice to a rental in work (plan
    * `docs/mechanization-lessor-receipt-plan.md`, P4). Its own permission, not `.status`: the lessor
-   * attaches his receipt, and `.status` would let him record the deal, the issue and the completion.
+   * attaches his invoice, and `.status` would let him record the deal, the issue and the completion.
    *
-   * Everyone who runs rentals attaches receipts too, and that is an invariant held in three places,
+   * Everyone who runs rentals attaches invoices too, and that is an invariant held in three places,
    * not a habit of the matrix: the office bundle (`MECH_REQUEST_OFFICE_PERMISSIONS`), the requirement
    * `.status` → `.lessorReceipt` (`PERMISSION_REQUIRES`, checked over every account's effective
    * permissions) and the migration that added it to every permission set holding `.status`.
@@ -952,8 +952,8 @@ const MECH_REQUEST_CUSTOMER_PERMISSIONS = [
  * — the dispatcher holds it by name (R9), and a shared bundle would hand it to the manager, deciding
  * for the customer a question he never asked.
  *
- * The lessor's receipt rides with `.status` (lessor receipt plan, P4): whoever runs a rental also
- * attaches its receipt when the lessor does not. `PERMISSION_REQUIRES` turns this pairing into an
+ * The lessor's invoice rides with `.status` (lessor receipt plan, P4): whoever runs a rental also
+ * attaches its invoice when the lessor does not. `PERMISSION_REQUIRES` turns this pairing into an
  * invariant for every account, so a role row listing `.status` without this bundle would be refused
  * the first time anything about its accounts changes.
  */
@@ -1445,7 +1445,7 @@ export const COUNTERPARTY_TYPE_PERMISSIONS: Record<CounterpartyType, readonly Pe
   vehicle_lessor: ['vehicleRequests.read', 'vehicleRequests.status', 'weeklyRequests.read'],
   /*
    * The mechanization lessor (lessor receipt plan, P10, owner decision O6): sees his rentals «В
-   * работе» in a narrow card and attaches their receipts. This reverses ADR 0152 decision 6 ("no
+   * работе» in a narrow card and attaches their invoices. This reverses ADR 0152 decision 6 ("no
    * accounts"); the list being non-empty is what makes his accounts creatable
    * (`COUNTERPARTY_TYPES_WITH_ACCOUNTS`, the account form, `resolveCounterpartyId`).
    *

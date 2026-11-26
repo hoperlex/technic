@@ -47,14 +47,14 @@ import {
 import { assertFilesAttachable } from './request-files';
 
 /*
- * The lessor's receipt of a mechanization rental (plan `docs/mechanization-lessor-receipt-plan.md`,
+ * The lessor's invoice of a mechanization rental (plan `docs/mechanization-lessor-receipt-plan.md`,
  * P1, P5–P8, P12): how the versions are read, how each audience sees them, and how a version stops
  * being current.
  *
  * The table is read and written only under the lock of its request (`lockMechRequest` first), in
- * the order "request → receipt", as the extension row is: the request's version is the one etag of
- * the card, and a door that took the receipt row first could deadlock with a status change that
- * holds the request and retires the receipt.
+ * the order "request → invoice", as the extension row is: the request's version is the one etag of
+ * the card, and a door that took the invoice row first could deadlock with a status change that
+ * holds the request and retires the invoice.
  *
  * The rules — who may attach, decide or waive, and when — live in
  * `packages/contracts/src/mech-lessor-receipts.ts`; nothing here repeats them.
@@ -103,7 +103,7 @@ export interface MechLessorReceiptFileColumns {
 
 /**
  * The file of a version through the portal's one rule for names (`attachedFileView`): a
- * quarantined file's name never leaves the server, in the receipt block as anywhere else.
+ * quarantined file's name never leaves the server, in the invoice block as anywhere else.
  */
 export function mechLessorReceiptFileOf(c: MechLessorReceiptFileColumns): AttachedFileDto | null {
   if (!c.fileId) return null;
@@ -249,7 +249,7 @@ export async function countMechLessorReceiptVersions(
  * The version count of every request as a grouped subquery, joined by `mechBaseQuery` under its own
  * alias (P16). Not a correlated subquery in the select list: in a single-table drizzle select the
  * column references of such a subquery are rewritten to bare names, and `request_id = id` would
- * then compare the receipt table with itself — a count that is silently wrong
+ * then compare the invoice table with itself — a count that is silently wrong
  * (`apps/api/test/mech-lessor-receipt.db.test.ts` pins it on a single-table query).
  *
  * Built by the standalone `QueryBuilder`, not `db.select`: it is only SQL to join, and a module that
@@ -335,7 +335,7 @@ function newestFirst<T extends { versionNo: number }>(rows: readonly T[]): T[] {
 }
 
 /**
- * The lessor's receipt block (P12): only the versions of the current deal — older ones were issued
+ * The lessor's invoice block (P12): only the versions of the current deal — older ones were issued
  * under other terms and may belong to another lessor — as `MechLessorReceiptVersionView`, and his
  * own count within the deal, which is exactly what the cap of P7 compares. One function for the
  * replies of the doors and for his rental DTO, so the two cannot show him different versions.
@@ -359,7 +359,7 @@ export function mechLessorReceiptLessorState(
 }
 
 /**
- * What the receipt block needs of its request: whether completion waits for a receipt, and the
+ * What the invoice block needs of its request: whether completion waits for an invoice, and the
  * current deal number the lessor's versions are filtered by. A locked row and the lessor's rental
  * row both fit it.
  */
@@ -375,12 +375,12 @@ export type MechLessorReceiptLessorStateDto = Extract<
 >;
 
 /**
- * The receipt block for the caller's audience — the reply of every receipt door (P5–P7).
+ * The invoice block for the caller's audience — the reply of every invoice door (P5–P7).
  *
  * The office gets every version with names. The lessor gets only the versions of the current deal
  * (`mechLessorVisibleVersions`: older ones were issued under other terms and may belong to another
  * lessor) and his own count within it, which is exactly what the cap of P7 compares — so the portal
- * hides «Заменить чек» exactly when the server would refuse.
+ * hides «Заменить счёт» exactly when the server would refuse.
  */
 export function mechLessorReceiptStateFor(
   p: Principal,
@@ -432,7 +432,7 @@ export async function retireMechLessorReceipt(
  *
  * Called inside the deal and status doors, under the request's lock and before their CAS; the strict
  * event goes in the same transaction — the card's history must not disagree with the block above it,
- * and after the retire nothing but this event says why an approved receipt stopped counting.
+ * and after the retire nothing but this event says why an approved invoice stopped counting.
  */
 export async function retireMechLessorReceiptForDeal(
   tx: MechTx,
@@ -463,7 +463,7 @@ export async function retireMechLessorReceiptForDeal(
 //
 // Every door keeps the module's protocol (`mech-request-guards.ts`): the request's lock first →
 // existence, archive and scope → the client's version (409 "reread") BEFORE any rule (422 "the rule
-// forbids") → the receipt rows read and written under that lock → CAS on the request with
+// forbids") → the invoice rows read and written under that lock → CAS on the request with
 // `version + 1` → the strict event in the same transaction → the reply for the caller's audience.
 
 /** The next version number, computed under the request's lock; the unique pair is the backstop. */
@@ -489,7 +489,7 @@ async function replyFor(
 }
 
 /**
- * Attach a receipt or replace the current version (P7) — the office's door and the lessor's.
+ * Attach an invoice or replace the current version (P7) — the office's door and the lessor's.
  *
  * The lessor is asked his one predicate before anything else (`isMechLessorRentalVisible`: his
  * counterparty, «В работе», not archived) and gets **404** for a rental that is not his or no
@@ -523,7 +523,7 @@ export async function attachMechLessorReceipt(
     throw err.notFound('Заявка не найдена');
   }
   const row = assertMechRequestOpenable(p, locked, input.version);
-  assertMechRequestLive(row, 'прикрепить чек арендодателя');
+  assertMechRequestLive(row, 'прикрепить счёт арендодателя');
 
   const versions = await loadMechLessorReceipts(tx, id);
   const current = currentMechLessorReceipt(versions);
@@ -562,8 +562,8 @@ export async function attachMechLessorReceipt(
       createdAs: actsAsLessor ? 'lessor' : 'office',
     })
     .returning({ id: receipts.id });
-  // Attaching gates the rental (P3): an old rental that got a receipt is gated like a new one — a
-  // receipt that was shown must be decided.
+  // Attaching gates the rental (P3): an old rental that got an invoice is gated like a new one — a
+  // invoice that was shown must be decided.
   await bumpRequest(tx, p, row, input.version, { lessorReceiptRequired: true });
   const replaced = current && { versionNo: current.versionNo, status: current.status };
   await writeAuditTx(tx, {
@@ -602,15 +602,15 @@ const DECISION_ACTIONS: Record<MechLessorReceiptDecision, string> = {
  * Approve, reject or revoke the version the holder saw (P5).
  *
  * **The signature is bound to the version seen.** The current row is read under the lock first
- * only to choose the words of a version 409 — «Чек заменили, пока окно было открыто» when the
+ * only to choose the words of a version 409 — «Счёт заменили, пока окно было открыто» when the
  * window's `receiptId` is no longer current; the existence, archive and scope checks still come
  * before it is used. A matching request version with a `receiptId` that is not current (another
  * request's version, say) is the same 409. The write itself then binds
  * `id = receiptId AND request_id = id AND retired_at IS NULL AND status = <expected>`: the
- * `request_id` term keeps a visa holder of one site from signing another site's receipt through his
+ * `request_id` term keeps a visa holder of one site from signing another site's invoice through his
  * own rental's id and version, and zero rows is the same 409 again.
  *
- * `approve` and `reject` do not ask the request's status — a pending receipt of a rental cancelled
+ * `approve` and `reject` do not ask the request's status — a pending invoice of a rental cancelled
  * after it was attached is still worth deciding (a prepayment); `revoke` is limited to «В работе»
  * (O15). Who attached the version does not matter (O14): the permission and the circle decide.
  */
@@ -630,7 +630,7 @@ export async function decideMechLessorReceipt(
     seenIsCurrent ? undefined : MECH_LESSOR_RECEIPT_STALE_MESSAGE,
   );
   if (!seenIsCurrent) throw err.conflict(MECH_LESSOR_RECEIPT_STALE_MESSAGE);
-  assertMechRequestLive(row, 'решить чек арендодателя');
+  assertMechRequestLive(row, 'решить счёт арендодателя');
   if (!canApproveMechRequest(p, row)) throw err.forbidden(MECH_LESSOR_RECEIPT_SCOPE_MESSAGE);
   const seen = current!;
   const blocker = mechLessorReceiptDecisionBlocker(row, { status: seen.status }, input.decision);
@@ -694,7 +694,7 @@ export async function decideMechLessorReceipt(
 }
 
 /**
- * The «без чека» visa (P6, O10): a current row without a file, born decided by the visa holder with
+ * The «без счёта» visa (P6, O10): a current row without a file, born decided by the visa holder with
  * his reason, retiring the previous current version as `replaced`. Allowed while the rental is in
  * work and the current version is absent, pending or rejected (`mechLessorReceiptWaiverBlocker`).
  * Over a pending file it replaces the file: the holder saw it and decided the rental closes without
@@ -707,7 +707,7 @@ export async function waiveMechLessorReceipt(
   input: WaiveMechLessorReceiptInput,
 ): Promise<MechLessorReceiptReplyDto> {
   const row = assertMechRequestOpenable(p, await lockMechRequest(tx, id), input.version);
-  assertMechRequestLive(row, 'разрешить завершение без чека');
+  assertMechRequestLive(row, 'разрешить завершение без счёта');
   if (!canApproveMechRequest(p, row)) throw err.forbidden(MECH_LESSOR_RECEIPT_SCOPE_MESSAGE);
   const versions = await loadMechLessorReceipts(tx, id);
   const current = currentMechLessorReceipt(versions);

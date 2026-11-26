@@ -23,8 +23,8 @@ import { mechLessorReceiptView, mechLessorRental } from './factories/mech';
  * Pinned here: the section greets a lessor with his own list and never mounts the office tabs (their
  * doors refuse him — an unmocked call fails the test by itself, see `test/http.ts`); there is no
  * create button; the list and the card draw his allow-list and nothing else, even when a payload
- * carries more; «Прикрепить чек» uploads and attaches with the version of the fresh card and
- * refreshes his list; «Заменить чек» exists only over a pending or rejected version (O13) and within
+ * carries more; «Прикрепить счёт» uploads and attaches with the version of the fresh card and
+ * refreshes his list; «Заменить счёт» exists only over a pending or rejected version (O13) and within
  * his cap, the refusal's words standing in for the button otherwise.
  */
 
@@ -56,7 +56,7 @@ const UPLOAD: RouteMap = {
   'POST /files/:id/complete': () =>
     json({
       id: 'f-new',
-      filename: 'чек.pdf',
+      filename: 'счёт.pdf',
       contentType: 'application/pdf',
       size: 2,
       status: 'active',
@@ -120,7 +120,7 @@ describe('the section for a lessor', () => {
     expect(first.get('sortBy')).toBe('plannedTo');
     expect(first.get('sortOrder')).toBe('asc');
 
-    const placeholder = await screen.findByText('Чек: любой');
+    const placeholder = await screen.findByText('Счёт: любой');
     fireEvent.mouseDown(placeholder.closest('.ant-select')!.querySelector('.ant-select-content')!);
     await waitFor(() => {
       const item = [...document.querySelectorAll('.ant-select-item-option')].find(
@@ -140,7 +140,7 @@ describe('the section for a lessor', () => {
     expect(screen.getByPlaceholderText('Номер, модель, площадка, адрес')).toBeTruthy();
   });
 
-  it('shows the rental as a card on the phone, the receipt mark as its badge', async () => {
+  it('shows the rental as a card on the phone, the invoice mark as its badge', async () => {
     lessorRoutes([withReceipt(mechLessorReceiptView({ status: 'rejected' }))]);
     renderWithUser(<MechRequestsPage />, {
       route: '/mech',
@@ -150,7 +150,7 @@ describe('the section for a lessor', () => {
 
     const card = (await screen.findByText('ЖК Северный')).closest('.list-card') as HTMLElement;
     expect(card).toBeTruthy();
-    expect(within(card).getByText('чек отклонён')).toBeTruthy();
+    expect(within(card).getByText('счёт отклонён')).toBeTruthy();
     expect(within(card).getByText(/за смену/)).toBeTruthy();
   });
 });
@@ -255,10 +255,10 @@ describe('only his fields are drawn (O7, P12)', () => {
     const card = await openCard();
     await card.findByText('Аренда МХ-42');
     // Expanded: a collapsed list would hide a leak instead of proving there is none.
-    fireEvent.click(card.getByText('Версии чека (1)'));
+    fireEvent.click(card.getByText('Версии счёта (1)'));
     await card.findByText('чек-1.pdf');
 
-    // What he is shown: his fields, his receipt and the rejection he has to fix.
+    // What he is shown: his fields, his invoice and the rejection he has to fix.
     for (const shown of [
       'ЖК Северный',
       'г. Москва, ул. Северная, 1',
@@ -281,7 +281,7 @@ describe('only his fields are drawn (O7, P12)', () => {
   });
 });
 
-describe('«Прикрепить чек»', () => {
+describe('«Прикрепить счёт»', () => {
   it('uploads, attaches with the fresh card version and refreshes his list and card', async () => {
     const row = mechLessorRental({ version: 7 });
     const fresh = mechLessorRental({ version: 8 });
@@ -301,13 +301,13 @@ describe('«Прикрепить чек»', () => {
     const listReads = http.countOf(LIST);
     const cardReads = http.countOf(CARD);
 
-    fireEvent.click(await card.findByRole('button', { name: 'Прикрепить чек' }));
+    fireEvent.click(await card.findByRole('button', { name: 'Прикрепить счёт' }));
     // The upload window opens inside the card (ADR 0140): the second dialog, titled by the rental.
-    const title = await screen.findByText('Прикрепить чек арендодателя · МХ-42');
+    const title = await screen.findByText('Прикрепить счёт арендодателя · МХ-42');
     const modal = within(title.closest('.ant-modal') as HTMLElement);
-    fireEvent.change(modal.getByLabelText('Файл чека'), {
+    fireEvent.change(modal.getByLabelText('Файл счёта'), {
       target: {
-        files: [new File([new Uint8Array([0x25, 0x50])], 'чек.pdf', { type: 'application/pdf' })],
+        files: [new File([new Uint8Array([0x25, 0x50])], 'счёт.pdf', { type: 'application/pdf' })],
       },
     });
     fireEvent.click(modal.getByRole('button', { name: 'Прикрепить' }));
@@ -316,7 +316,7 @@ describe('«Прикрепить чек»', () => {
     const attach = http.lastCall(ATTACH)!;
     expect(attach.path).toBe('/mech-requests/mech-1/lessor-receipt');
     expect(attach.body).toEqual({ fileId: 'f-new', version: 8 });
-    expect(await screen.findByText('Чек прикреплён')).toBeTruthy();
+    expect(await screen.findByText('Счёт прикреплён')).toBeTruthy();
     await waitFor(() => {
       expect(http.countOf(LIST)).toBeGreaterThan(listReads);
       expect(http.countOf(CARD)).toBeGreaterThan(cardReads);
@@ -324,27 +324,27 @@ describe('«Прикрепить чек»', () => {
   });
 });
 
-describe('«Заменить чек» only over a pending or rejected version (O13)', () => {
+describe('«Заменить счёт» only over a pending or rejected version (O13)', () => {
   async function renderCard(rental: MechLessorRentalDto) {
     lessorRoutes([rental]);
     renderWithUser(<MechLessorRentalCard rental={rental} today="2026-11-09" onClose={() => {}} />, {
       user: lessor,
     });
     const card = within(await screen.findByRole('dialog'));
-    await card.findByText('Чек арендодателя');
+    await card.findByText('Счёт арендодателя');
     return card;
   }
 
   const buttonOf = (card: ReturnType<typeof within>) =>
-    card.queryByRole('button', { name: /чек$/ })?.textContent ?? null;
+    card.queryByRole('button', { name: /счёт$/ })?.textContent ?? null;
 
   it.each([
-    ['none attached', null, 'Прикрепить чек'],
-    ['pending', mechLessorReceiptView({ status: 'pending' }), 'Заменить чек'],
+    ['none attached', null, 'Прикрепить счёт'],
+    ['pending', mechLessorReceiptView({ status: 'pending' }), 'Заменить счёт'],
     [
       'rejected',
       mechLessorReceiptView({ status: 'rejected', rejectionReason: 'Не видно суммы' }),
-      'Заменить чек',
+      'Заменить счёт',
     ],
   ])('%s → %s', async (_name, current, button) => {
     const card = await renderCard(withReceipt(current));

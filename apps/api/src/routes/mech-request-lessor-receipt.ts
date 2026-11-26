@@ -16,12 +16,12 @@ import {
 } from '../services/mech-lessor-receipt';
 
 /*
- * The lessor's receipt of a rental (plan `docs/mechanization-lessor-receipt-plan.md`, P5–P7): three
+ * The lessor's invoice of a rental (plan `docs/mechanization-lessor-receipt-plan.md`, P5–P7): three
  * doors, registered on the mechanization routes' own Fastify instance next to the extension doors,
  * so whatever guards that instance — the lessor guard of P11 among them — covers them too.
  *
  * Attaching is `mechRequests.lessorReceipt` (the office, and the lessor from his own account);
- * deciding and the «без чека» visa are `mechRequests.approve` plus the request visa circle, asked of
+ * deciding and the «без счёта» visa are `mechRequests.approve` plus the request visa circle, asked of
  * the locked row in the service. The doors reply `{ version, lessorReceipt }` for the caller's
  * audience, not the whole request: the reply then needs no request-level audience switch, and the
  * portal invalidates its queries.
@@ -36,7 +36,7 @@ export async function registerMechLessorReceiptRoutes(app: FastifyInstance): Pro
       app.authenticate,
       app.requirePermission(
         'mechRequests.lessorReceipt',
-        'Недостаточно прав, чтобы прикрепить чек арендодателя',
+        'Недостаточно прав, чтобы прикрепить счёт арендодателя',
       ),
     ],
   };
@@ -47,12 +47,12 @@ export async function registerMechLessorReceiptRoutes(app: FastifyInstance): Pro
       app.authenticate,
       app.requirePermission(
         'mechRequests.approve',
-        'Недостаточно прав для визирования чека арендодателя',
+        'Недостаточно прав для визирования счёта арендодателя',
       ),
     ],
   };
 
-  /** Attach a receipt, or replace the current version (P7). The lessor's one write door. */
+  /** Attach an invoice, or replace the current version (P7). The lessor's one write door. */
   r.post(
     '/:id/lessor-receipt',
     {
@@ -76,7 +76,7 @@ export async function registerMechLessorReceiptRoutes(app: FastifyInstance): Pro
     },
   );
 
-  /** The «без чека» visa (P6, O10). */
+  /** The «без счёта» visa (P6, O10). */
   r.post(
     '/:id/lessor-receipt/waiver',
     { ...canDecide, schema: { params: idParams, body: waiveMechLessorReceiptSchema } },

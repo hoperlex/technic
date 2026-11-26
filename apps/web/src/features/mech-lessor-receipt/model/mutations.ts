@@ -4,7 +4,7 @@ import { filesApi } from '@entities/file';
 import { mechRequestKeys, mechRequestsApi } from '@entities/mech-request';
 
 /**
- * The rental a receipt door acts on: its id, its number for the window's title and the version the
+ * The rental an invoice door acts on: its id, its number for the window's title and the version the
  * person saw. Narrow on purpose: the office's `MechRequestDto` and the lessor's own rental both fit,
  * so the lessor's page (W4) opens the same upload window.
  */
@@ -18,7 +18,7 @@ export interface MechLessorReceiptRental {
  * One mutation per door (lessor receipt plan, P5–P7). Each drops the module's whole cache when it
  * settles, refusal included: a 409 means the card under the hand is another one already, and a 422
  * means the state differs from what the buttons were built on — leaving the old card on screen would
- * invite the same press again. The doors answer only the receipt block; the card, the list rows and
+ * invite the same press again. The doors answer only the invoice block; the card, the list rows and
  * their marks are read again from the server.
  */
 
@@ -60,7 +60,7 @@ export function useDecideMechLessorReceipt() {
   });
 }
 
-/** The «без чека» visa (P6): the reason is its only record. */
+/** The «без счёта» visa (P6): the reason is its only record. */
 export function useWaiveMechLessorReceipt() {
   const qc = useQueryClient();
   return useMutation({

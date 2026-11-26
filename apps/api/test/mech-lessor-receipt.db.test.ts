@@ -32,7 +32,7 @@ import type * as ReceiptServiceNs from '../src/services/mech-lessor-receipt';
 import type * as DtoServiceNs from '../src/services/mech-request-dto';
 
 /**
- * The lessor's receipt of a mechanization rental (plan `docs/mechanization-lessor-receipt-plan.md`,
+ * The lessor's invoice of a mechanization rental (plan `docs/mechanization-lessor-receipt-plan.md`,
  * W2) on a real database.
  *
  * The rules themselves are pure functions checked without one (`mech-lessor-receipt-contracts.test.ts`);
@@ -61,7 +61,7 @@ const EMAIL_PREFIX = `db-mech-lessor-receipt-${RUN}`;
 const CODE_PREFIX = `яя-MECHLR-${RUN}`;
 const GRANT_PREFIX = `test_mech_lessor_receipt_${RUN}`;
 
-const MARK = `ТЕСТОВЫЕ ДАННЫЕ: чек арендодателя механизации ${RUN}`;
+const MARK = `ТЕСТОВЫЕ ДАННЫЕ: счёт арендодателя механизации ${RUN}`;
 
 const TODAY = moscowDateKeyOf(new Date());
 const WEEK_AGO = shiftDateKey(TODAY, -7);
@@ -122,7 +122,7 @@ interface People {
   otherRukstroy: string;
   /** The head of the department the site belongs to: signs his department's rentals only. */
   head: string;
-  /** Runs rentals and attaches receipts; no visa. */
+  /** Runs rentals and attaches invoices; no visa. */
   dispatcher: string;
 }
 
@@ -331,7 +331,7 @@ async function upload(
     .values({
       bucket: 'test',
       objectKey: `${EMAIL_PREFIX}/${randomUUID()}`,
-      filename: over.filename ?? 'чек.pdf',
+      filename: over.filename ?? 'счёт.pdf',
       contentType: over.contentType ?? 'application/pdf',
       size: 2048,
       status: over.status ?? 'active',
@@ -395,7 +395,7 @@ async function waive(
   over: { comment?: string; version?: number; headers?: Headers } = {},
 ): Promise<Injected> {
   return call(over.headers ?? auth.rukstroy, 'POST', `/${id}/lessor-receipt/waiver`, {
-    comment: over.comment ?? 'Арендодатель чеков не выдаёт',
+    comment: over.comment ?? 'Арендодатель счетов не выдаёт',
     version: over.version ?? (await versionOf(id)),
   });
 }
@@ -427,7 +427,7 @@ async function bareFile(): Promise<string> {
     .values({
       bucket: 'test',
       objectKey: `${EMAIL_PREFIX}/${randomUUID()}`,
-      filename: 'чек.pdf',
+      filename: 'счёт.pdf',
       contentType: 'application/pdf',
       size: 1024,
       status: 'active',
@@ -449,7 +449,7 @@ async function refusal(run: () => Promise<unknown>): Promise<string | null> {
   }
 }
 
-describe.skipIf(!DB_URL)('механизация: чек арендодателя (план чека, W2)', () => {
+describe.skipIf(!DB_URL)('механизация: счёт арендодателя (план счёта, W2)', () => {
   beforeAll(async () => {
     prepareEnv(DB_URL!);
     await migrate(DB_URL!);
@@ -481,7 +481,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         .insert(schema.constructionObjects)
         .values({
           code: `${CODE_PREFIX}-${tag}`,
-          name: `Площадка чека ${tag} ${RUN}`,
+          name: `Площадка счёта ${tag} ${RUN}`,
           address: 'г. Москва, тестовый проезд, 3',
         })
         .returning({ id: schema.constructionObjects.id });
@@ -501,7 +501,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       .insert(schema.counterparties)
       .values({
         type: 'mech_lessor',
-        name: `Арендодатель чека ${RUN}`,
+        name: `Арендодатель счёта ${RUN}`,
         inn: `8${String(Date.now() % 100_000_000).padStart(8, '0')}5`,
         isActive: true,
         comment: MARK,
@@ -512,7 +512,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       .insert(schema.counterparties)
       .values({
         type: 'mech_lessor',
-        name: `Другой арендодатель чека ${RUN}`,
+        name: `Другой арендодатель счёта ${RUN}`,
         inn: `8${String((Date.now() + 1) % 100_000_000).padStart(8, '0')}6`,
         isActive: true,
         comment: MARK,
@@ -521,7 +521,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
     ctx.otherLessorId = otherLessor!.id;
     const [model] = await db
       .insert(schema.mechModels)
-      .values({ code: `mech-lessor-receipt-${RUN}`, name: `Виброплита чека ${RUN}` })
+      .values({ code: `mech-lessor-receipt-${RUN}`, name: `Виброплита счёта ${RUN}` })
       .returning({ id: schema.mechModels.id });
     ctx.modelId = model!.id;
 
@@ -547,7 +547,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
     if (!ctx) return;
     const users = sql`(SELECT id FROM users WHERE email LIKE ${`${EMAIL_PREFIX}%`})`;
     await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN ${users}`);
-    // Receipt versions go with their requests (CASCADE) and hold their files by RESTRICT, so the
+    // Invoice versions go with their requests (CASCADE) and hold their files by RESTRICT, so the
     // requests go first, then the files, then the accounts every row names.
     await ctx.db.execute(
       sql`DELETE FROM mech_requests WHERE object_id IN
@@ -704,7 +704,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         status: 'waived' as const,
         decidedBy: ctx.adminId,
         decidedAt: now,
-        decisionComment: 'Арендодатель чек не выдаёт',
+        decisionComment: 'Арендодатель счёт не выдаёт',
       };
       expect(
         await refusal(() => insert({ ...waiver, fileId: undefined, createdAs: 'lessor' })),
@@ -766,9 +766,9 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
     });
   });
 
-  // ── The read side: the current version, the count and the filter «Чек» (P8, P16) ──
+  // ── The read side: the current version, the count and the filter «Счёт» (P8, P16) ──
 
-  describe('строки списка и карточка: текущая версия, число версий, фильтр «Чек»', () => {
+  describe('строки списка и карточка: текущая версия, число версий, фильтр «Счёт»', () => {
     /**
      * The count is right per row, read every way the server reads it: the delete door's plain
      * count under the lock, the grouped subquery the list joins, and the DTO. Neighbouring rows with
@@ -826,7 +826,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         createdAs: 'office',
         createdByName: expect.stringContaining('Тестовый'),
         retiredAt: null,
-        file: { filename: 'чек.pdf', contentType: 'application/pdf' },
+        file: { filename: 'счёт.pdf', contentType: 'application/pdf' },
       });
       expect(row.lessorReceiptVersionCount).toBe(3);
       expect(row.lessorReceiptRetired, 'list rows never load the retired versions').toBeNull();
@@ -844,7 +844,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
      * The filter is asked of the current row by `EXISTS`, so the count query of the list — which
      * joins only the site and the model — agrees with the page: `total` equals the rows found.
      */
-    it('«Чек» picks by the current version; «нет» is required without a current one', async () => {
+    it('«Счёт» picks by the current version; «нет» is required without a current one', async () => {
       const make = async (
         versions: { status: MechLessorReceiptStatus; retired?: MechLessorReceiptRetireReason }[],
         required = true,
@@ -891,7 +891,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       }
     });
 
-    it('the journal filters closed rentals by «Чек» too, with its summary', async () => {
+    it('the journal filters closed rentals by «Счёт» too, with its summary', async () => {
       const waiting = await bareRequest({ status: 'cancelled', lessorReceiptRequired: true });
       await seedVersions(waiting, [{ status: 'pending' }]);
       const without = await bareRequest({ status: 'cancelled', lessorReceiptRequired: true });
@@ -918,7 +918,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
     });
 
     /**
-     * P8: a rental returned to «Новая» may hold an approved prepayment receipt; deleting it archives
+     * P8: a rental returned to «Новая» may hold an approved prepayment invoice; deleting it archives
      * it, and every version stays. Its neighbour without versions is still deleted for good — the
      * count is per row, read under the lock.
      */
@@ -964,7 +964,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         createdBy: people.dispatcher,
         createdByName: expect.stringContaining('dispatcher'),
         decidedAt: null,
-        file: { filename: 'чек.pdf', contentType: 'application/pdf' },
+        file: { filename: 'счёт.pdf', contentType: 'application/pdf' },
       });
       expect(opened.lessorReceiptRequired).toBe(true);
       expect(opened.lessorReceipt?.id).toBe(block.current!.id);
@@ -974,7 +974,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       const request = await rental();
       const first = officeOf(await attached(request.id)).current!;
       ok(await decide(request.id, { decision: 'approve' }));
-      // The office replaces even an approved receipt (O13); the new version asks for a new visa.
+      // The office replaces even an approved invoice (O13); the new version asks for a new visa.
       const reply = officeOf(await attached(request.id));
       expect(reply.current).toMatchObject({ versionNo: 2, status: 'pending' });
       expect(
@@ -984,11 +984,11 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       expect((await card(request.id)).lessorReceiptVersionCount).toBe(2);
     });
 
-    it('a JPEG is accepted; another declared type is refused with the receipt words', async () => {
+    it('a JPEG is accepted; another declared type is refused with the invoice words', async () => {
       const request = await rental();
       const png = await upload(people.dispatcher, {
         contentType: 'image/png',
-        filename: 'чек.png',
+        filename: 'счёт.png',
       });
       refusedWith(
         await attach(request.id, { fileId: png }),
@@ -997,7 +997,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       );
       const jpeg = await upload(people.dispatcher, {
         contentType: 'image/jpeg',
-        filename: 'чек.jpg',
+        filename: 'счёт.jpg',
       });
       ok(await attach(request.id, { fileId: jpeg }));
     });
@@ -1014,7 +1014,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       refusedWith(await attach(neighbour.id, { fileId: once }), 400);
     });
 
-    it('only a rental in work takes a receipt: not «Новая», cancelled, done or archived', async () => {
+    it('only a rental in work takes an invoice: not «Новая», cancelled, done or archived', async () => {
       const fresh = ok(
         await call(auth.rukstroy, 'POST', '/', {
           objectId: ctx.objectId,
@@ -1103,7 +1103,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       expect(reply.current).toMatchObject({ status: 'rejected', decisionComment: 'Не та сумма' });
     });
 
-    it('a pending receipt of a rental cancelled after it was attached is still decided', async () => {
+    it('a pending invoice of a rental cancelled after it was attached is still decided', async () => {
       const request = await rental({ issued: false });
       await attached(request.id);
       ok(await setStatus(request.id, 'cancelled', { comment: 'Передумали' }));
@@ -1140,11 +1140,11 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       refusedWith(
         await complete(request.id),
         422,
-        'Чек арендодателя ждёт визы — аренду завершают после неё',
+        'Счёт арендодателя ждёт визы — аренду завершают после неё',
       );
     });
 
-    it('revoking a waiver retires it «revoked»; the rental needs a receipt again', async () => {
+    it('revoking a waiver retires it «revoked»; the rental needs an invoice again', async () => {
       const request = await rental();
       await attached(request.id);
       ok(await waive(request.id));
@@ -1152,7 +1152,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       expect(waiver.status).toBe('waived');
       const reply = officeOf(
         ok(
-          await decide(request.id, { decision: 'revoke', comment: 'Чек нашёлся' }),
+          await decide(request.id, { decision: 'revoke', comment: 'Счёт нашёлся' }),
         ) as unknown as MechLessorReceiptReplyDto,
       );
       expect(reply.current).toBeNull();
@@ -1164,7 +1164,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       refusedWith(
         await complete(request.id),
         422,
-        'Прикрепите чек арендодателя или получите визу «без чека»',
+        'Прикрепите счёт арендодателя или получите визу «без счёта»',
       );
     });
 
@@ -1180,12 +1180,12 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       );
     });
 
-    it('a stale receiptId gets the receipt words on the version 409', async () => {
+    it('a stale receiptId gets the invoice words on the version 409', async () => {
       const request = await rental();
       const first = officeOf(await attached(request.id)).current!;
       const seenVersion = await versionOf(request.id);
       await attached(request.id);
-      // The window opened before the replacement: its version and its receipt are both stale.
+      // The window opened before the replacement: its version and its invoice are both stale.
       refusedWith(
         await decide(request.id, {
           decision: 'approve',
@@ -1195,13 +1195,13 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         409,
         MECH_LESSOR_RECEIPT_STALE_MESSAGE,
       );
-      // A fresh version with the old receipt is the same answer.
+      // A fresh version with the old invoice is the same answer.
       refusedWith(
         await decide(request.id, { decision: 'approve', receiptId: first.id }),
         409,
         MECH_LESSOR_RECEIPT_STALE_MESSAGE,
       );
-      // A stale version with the current receipt keeps the module's own words.
+      // A stale version with the current invoice keeps the module's own words.
       const refused = await decide(request.id, { decision: 'approve', version: seenVersion });
       refusedWith(refused, 409);
       expect(refused.json().message).not.toBe(MECH_LESSOR_RECEIPT_STALE_MESSAGE);
@@ -1224,7 +1224,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       );
     });
 
-    it('the version 409 comes before the 422 of a decided receipt', async () => {
+    it('the version 409 comes before the 422 of a decided invoice', async () => {
       const request = await rental();
       await attached(request.id);
       const seenVersion = await versionOf(request.id);
@@ -1245,7 +1245,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       refusedWith(await decide(request.id, { decision: 'approve' }, auth.dispatcher), 403);
     });
 
-    it('the department head signs the receipt of his department rental (ADR 0171 decision 4)', async () => {
+    it('the department head signs the invoice of his department rental (ADR 0171 decision 4)', async () => {
       const request = await rental({ department: true });
       await attached(request.id);
       ok(await decide(request.id, { decision: 'approve' }, auth.head));
@@ -1258,9 +1258,9 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
     });
   });
 
-  // ── The «без чека» visa (P6) ──
+  // ── The «без счёта» visa (P6) ──
 
-  describe('«без чека» (P6)', () => {
+  describe('«без счёта» (P6)', () => {
     it('over nothing, over a pending file (replacing it) and over a rejection', async () => {
       const bare = await rental();
       const overNothing = officeOf(
@@ -1273,7 +1273,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         createdAs: 'office',
         createdBy: people.rukstroy,
         decidedBy: people.rukstroy,
-        decisionComment: 'Арендодатель чеков не выдаёт',
+        decisionComment: 'Арендодатель счетов не выдаёт',
       });
 
       const pending = await rental();
@@ -1326,19 +1326,19 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
   // ── The completion gate (P3) ──
 
   describe('ворота завершения (P3)', () => {
-    it('a required receipt holds completion: 422 while pending, passes once approved', async () => {
+    it('a required invoice holds completion: 422 while pending, passes once approved', async () => {
       const request = await rental();
       await attached(request.id);
       refusedWith(
         await complete(request.id),
         422,
-        'Чек арендодателя ждёт визы — аренду завершают после неё',
+        'Счёт арендодателя ждёт визы — аренду завершают после неё',
       );
       ok(await decide(request.id, { decision: 'reject', comment: 'Не та сумма' }));
       refusedWith(
         await complete(request.id),
         422,
-        'Чек арендодателя отклонён — прикрепите исправленный',
+        'Счёт арендодателя отклонён — прикрепите исправленный',
       );
       await attached(request.id);
       ok(await decide(request.id, { decision: 'approve' }));
@@ -1352,7 +1352,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       ok(await complete(request.id));
     });
 
-    it('a rental not requiring a receipt completes; attaching one gates it', async () => {
+    it('a rental not requiring an invoice completes; attaching one gates it', async () => {
       // A rental taken into work before the release, or by the old code in the deploy window.
       const old = await rental();
       await ctx.db
@@ -1372,7 +1372,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
     });
   });
 
-  // ── What else touches the receipt (P8) ──
+  // ── What else touches the invoice (P8) ──
 
   describe('договорённость, откаты, удаление и purge (P8)', () => {
     async function deal(
@@ -1394,7 +1394,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       return card(request.id);
     }
 
-    it('taking a «Новая» into work makes it require a receipt', async () => {
+    it('taking a «Новая» into work makes it require an invoice', async () => {
       const request = await rental({ issued: false });
       expect(request.lessorReceiptRequired).toBe(true);
       expect(request.lessorReceipt).toBeNull();
@@ -1446,9 +1446,9 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
 
     /**
      * The chain the plan names: naming only `confirmed → new` would leave the old deal's approved
-     * receipt current after `cancelled → new → confirmed`, passing the new deal's gate.
+     * invoice current after `cancelled → new → confirmed`, passing the new deal's gate.
      */
-    it('«Отменена» → «Новая» retires it too, and the next deal starts without a receipt', async () => {
+    it('«Отменена» → «Новая» retires it too, and the next deal starts without an invoice', async () => {
       const request = await approvedRental({ issued: false });
       ok(await setStatus(request.id, 'cancelled', { comment: 'Передумали' }));
       expect((await card(request.id)).lessorReceipt?.status, 'cancellation keeps it').toBe(
@@ -1465,7 +1465,7 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       refusedWith(
         await complete(request.id),
         422,
-        'Прикрепите чек арендодателя или получите визу «без чека»',
+        'Прикрепите счёт арендодателя или получите визу «без счёта»',
       );
     });
 
@@ -1527,15 +1527,15 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       return Object.fromEntries((entry?.changes ?? []).map((c) => [c.field, c.to]));
     }
 
-    it('every receipt event reaches the card as its own kind, with its change keys', async () => {
+    it('every invoice event reaches the card as its own kind, with its change keys', async () => {
       const request = await rental({ issued: false });
       const first = officeOf(await attached(request.id)).current!;
       ok(await decide(request.id, { decision: 'reject', comment: 'Нечитаемо' }));
       await attached(request.id);
       ok(await decide(request.id, { decision: 'approve', comment: 'Сверено' }));
       ok(await decide(request.id, { decision: 'revoke', comment: 'Сумма не та' }));
-      ok(await waive(request.id, { comment: 'Чек потерян' }));
-      ok(await decide(request.id, { decision: 'revoke', comment: 'Чек нашёлся' }));
+      ok(await waive(request.id, { comment: 'Счёт потерян' }));
+      ok(await decide(request.id, { decision: 'revoke', comment: 'Счёт нашёлся' }));
       await attached(request.id);
       ok(
         await call(admin, 'PATCH', `/${request.id}/deal`, {
@@ -1559,10 +1559,10 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
         'mechLessorReceiptRetired',
       ]);
       const [attach1, reject, attach2, approve, revoke, waiver, unwaive, attach4, retire] = events;
-      expect(lines(attach1)).toEqual({ lessorReceiptVersion: '1', filesAdded: 'чек.pdf' });
+      expect(lines(attach1)).toEqual({ lessorReceiptVersion: '1', filesAdded: 'счёт.pdf' });
       // The file rides as a file list with its id, so the history line opens the version (O8).
       expect(attach1!.changes.find((c) => c.field === 'filesAdded')?.files).toEqual([
-        { id: first.file!.id, filename: 'чек.pdf' },
+        { id: first.file!.id, filename: 'счёт.pdf' },
       ]);
       expect(lines(reject)).toEqual({
         lessorReceiptVersion: '1',
@@ -1583,15 +1583,15 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
       });
       expect(lines(waiver)).toEqual({
         lessorReceiptVersion: '3',
-        lessorReceiptWaiveReason: 'Чек потерян',
+        lessorReceiptWaiveReason: 'Счёт потерян',
         lessorReceiptReplaced: '2 — ждёт визы',
       });
       expect(lines(unwaive)).toEqual({
         lessorReceiptVersion: '3',
-        lessorReceiptRevoked: '«без чека»',
-        lessorReceiptRevokeReason: 'Чек нашёлся',
+        lessorReceiptRevoked: '«без счёта»',
+        lessorReceiptRevokeReason: 'Счёт нашёлся',
       });
-      expect(lines(attach4)).toEqual({ lessorReceiptVersion: '4', filesAdded: 'чек.pdf' });
+      expect(lines(attach4)).toEqual({ lessorReceiptVersion: '4', filesAdded: 'счёт.pdf' });
       expect(lines(retire)).toEqual({
         lessorReceiptVersion: '4',
         lessorReceiptRetireReason: 'изменилась договорённость',
@@ -1612,12 +1612,12 @@ describe.skipIf(!DB_URL)('механизация: чек арендодател�
 
     /**
      * The events are strict (`writeAuditTx`): a failure after the audit row was written rolls the
-     * receipt change back with it. The failure is a deferred constraint trigger on `audit_log`
+     * invoice change back with it. The failure is a deferred constraint trigger on `audit_log`
      * itself — the one way to fail AFTER the audit insert, at commit — aimed at this request's id,
      * so neighbouring runs never see it. That it fires also proves the event is written in the
      * door's transaction: had it not been, the change would have gone through.
      */
-    it('a failing strict audit rolls the receipt change back', async () => {
+    it('a failing strict audit rolls the invoice change back', async () => {
       const request = await rental();
       const fn = `zz_test_lessor_receipt_audit_boom_${RUN}`;
       await ctx.db.execute(
